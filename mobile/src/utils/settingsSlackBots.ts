@@ -8,7 +8,7 @@
  * tokens.
  */
 export function isMaskedSlackToken(value: any) {
-    return typeof value === 'string' && value.includes('****');
+  return typeof value === 'string' && value.includes('****');
 }
 /**
  * Validate the bot form. `isNew` requires both tokens (POST contract:
@@ -17,19 +17,15 @@ export function isMaskedSlackToken(value: any) {
  * Returns an error string or null.
  */
 export function validateSlackBotForm(form: any, { isNew = false }: any = {}) {
-    if (!(form?.name || '').trim())
-        return 'Name is required.';
-    if (!(form?.agent_id || '').trim())
-        return 'Agent ID is required.';
-    const bot = (form?.bot_token || '').trim();
-    const app = (form?.app_token || '').trim();
-    if (isNew) {
-        if (!bot || isMaskedSlackToken(bot))
-            return 'Bot token (xoxb-…) is required.';
-        if (!app || isMaskedSlackToken(app))
-            return 'App token (xapp-…) is required.';
-    }
-    return null;
+  if (!(form?.name || '').trim()) return 'Name is required.';
+  if (!(form?.agent_id || '').trim()) return 'Agent ID is required.';
+  const bot = (form?.bot_token || '').trim();
+  const app = (form?.app_token || '').trim();
+  if (isNew) {
+    if (!bot || isMaskedSlackToken(bot)) return 'Bot token (xoxb-…) is required.';
+    if (!app || isMaskedSlackToken(app)) return 'App token (xapp-…) is required.';
+  }
+  return null;
 }
 /**
  * Build the POST/PUT body from the form. On update, masked or empty token
@@ -37,19 +33,16 @@ export function validateSlackBotForm(form: any, { isNew = false }: any = {}) {
  * values.
  */
 export function buildSlackBotPayload(form: any, { isNew = false }: any = {}) {
-    const payload: Record<string, any> = {
-        name: (form.name || '').trim(),
-        agent_id: (form.agent_id || '').trim(),
-    };
-    const bot = (form.bot_token || '').trim();
-    const app = (form.app_token || '').trim();
-    if (isNew || (bot && !isMaskedSlackToken(bot)))
-        payload.bot_token = bot;
-    if (isNew || (app && !isMaskedSlackToken(app)))
-        payload.app_token = app;
-    if (form.enabled !== undefined)
-        payload.enabled = !!form.enabled;
-    return payload;
+  const payload: Record<string, any> = {
+    name: (form.name || '').trim(),
+    agent_id: (form.agent_id || '').trim(),
+  };
+  const bot = (form.bot_token || '').trim();
+  const app = (form.app_token || '').trim();
+  if (isNew || (bot && !isMaskedSlackToken(bot))) payload.bot_token = bot;
+  if (isNew || (app && !isMaskedSlackToken(app))) payload.app_token = app;
+  if (form.enabled !== undefined) payload.enabled = !!form.enabled;
+  return payload;
 }
 /**
  * Human-readable summary of a POST /api/slack/bots/:id/test response.
@@ -57,10 +50,10 @@ export function buildSlackBotPayload(form: any, { isNew = false }: any = {}) {
  * here in the api helper, but a non-ok body is handled defensively.
  */
 export function describeSlackTestResult(result: any) {
-    if (result?.ok) {
-        const team = result.team ? ` team "${result.team}"` : '';
-        const user = result.user ? ` as ${result.user}` : '';
-        return `Connected to${team}${user}`.trim();
-    }
-    return result?.error || 'Connection test failed';
+  if (result?.ok) {
+    const team = result.team ? ` team "${result.team}"` : '';
+    const user = result.user ? ` as ${result.user}` : '';
+    return `Connected to${team}${user}`.trim();
+  }
+  return result?.error || 'Connection test failed';
 }

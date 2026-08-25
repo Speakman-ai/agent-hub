@@ -152,7 +152,9 @@ export default function CaptureToTicketModal({
                       onPress={() => setProjectId(id)}
                       style={[styles.chip, active && styles.chipActive]}
                     >
-                      <Text style={[styles.chipText, active && styles.chipTextActive]}>{p.name}</Text>
+                      <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                        {p.name}
+                      </Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -174,7 +176,9 @@ export default function CaptureToTicketModal({
                       onPress={() => setColumnId(c.id)}
                       style={[styles.chip, active && styles.chipActive]}
                     >
-                      <Text style={[styles.chipText, active && styles.chipTextActive]}>{c.name}</Text>
+                      <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                        {c.name}
+                      </Text>
                     </TouchableOpacity>
                   );
                 })}

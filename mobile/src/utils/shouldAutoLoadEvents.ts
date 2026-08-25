@@ -29,11 +29,8 @@
  * @returns {boolean}
  */
 export function shouldAutoLoadEvents({ messageId, streaming, events }: any) {
-    if (!messageId)
-        return false;
-    if (streaming)
-        return false; // live ws will fill this in
-    if (events !== undefined)
-        return false; // already loaded (possibly empty)
-    return true;
+  if (!messageId) return false;
+  if (streaming) return false; // live ws will fill this in
+  if (events !== undefined) return false; // already loaded (possibly empty)
+  return true;
 }

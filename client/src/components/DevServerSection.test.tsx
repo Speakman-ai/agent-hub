@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import DevServerSection from './DevServerSection';
 import { api } from '../utils/api';
-import { SECRET_MASK } from '../utils/devServerConfig';
+import { SECRET_MASK } from '@shared/utils/devServerConfig';
 
 (vi as any).mock('../utils/api.js', () => ({
   api: {

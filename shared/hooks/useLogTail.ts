@@ -1,5 +1,7 @@
 /**
- * Live application-log tail hook (LOG-QUERY WebSocket contract).
+ * Live application-log tail hook (LOG-QUERY WebSocket contract), shared by the
+ * web Logs module (`client/src/components/logs/LiveLogsView.tsx`) and the
+ * mobile one (`mobile/src/screens/LogsScreen.tsx`).
  *
  * Wire protocol (server `websocket.ts`):
  *   → { type: 'logs_subscribe', projectId, cursor, seed?, sinceUnixNano? }
@@ -23,13 +25,12 @@
  * reconnect that carries accepted rows drains forward instead.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getWsUrl } from '../utils/connection';
 import {
   buildLogSubscribeFrame,
   mergeTailRecords,
   resolveTailCursor,
   type LogRecord,
-} from '../utils/logStream';
+} from '../utils/logTailWire';
 
 export type LogTailStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
@@ -50,7 +51,17 @@ export interface UseLogTailOptions {
   /** Base reconnect delay in ms (exponential backoff, capped). */
   reconnectBaseMs?: number;
   maxReconnectMs?: number;
-  /** Socket factory — defaults to the real browser WebSocket at the /ws URL. */
+  /**
+   * Platform seam: resolves the authenticated WebSocket URL to connect to.
+   * Web passes `getWsUrl` from `client/src/utils/connection`, mobile passes the
+   * one from `mobile/src/utils/config`. Required so this hook holds no
+   * knowledge of how either app stores its connection config.
+   */
+  getWsUrl: () => string;
+  /**
+   * Socket factory. Defaults to the ambient global `WebSocket`, which is the
+   * browser's on web and React Native's on mobile.
+   */
   createSocket?: (url: string) => SocketLike;
   /**
    * Lower bound (nanoseconds) on the initial backfill window. Seeds the tail
@@ -91,7 +102,7 @@ function defaultCreateSocket(url: string): SocketLike {
 
 export function useLogTail(
   projectId: string | null | undefined,
-  options: UseLogTailOptions = {},
+  options: UseLogTailOptions,
 ): UseLogTailResult {
   const cap = options.cap ?? DEFAULT_CAP;
   const reconnectBaseMs = options.reconnectBaseMs ?? 500;
@@ -130,6 +141,8 @@ export function useLogTail(
   capRef.current = cap;
   const createSocketRef = useRef(createSocket);
   createSocketRef.current = createSocket;
+  const getWsUrlRef = useRef(options.getWsUrl);
+  getWsUrlRef.current = options.getWsUrl;
   const reconnectBaseMsRef = useRef(reconnectBaseMs);
   reconnectBaseMsRef.current = reconnectBaseMs;
   const maxReconnectMsRef = useRef(maxReconnectMs);
@@ -172,7 +185,7 @@ export function useLogTail(
     if (closedRef.current || !pid) return;
     let socket: SocketLike;
     try {
-      socket = createSocketRef.current(getWsUrl());
+      socket = createSocketRef.current(getWsUrlRef.current());
     } catch (err) {
       setStatus('reconnecting');
       setError(err instanceof Error ? err.message : 'Log stream connection failed');

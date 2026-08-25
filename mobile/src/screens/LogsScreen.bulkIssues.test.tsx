@@ -29,7 +29,10 @@ import { clearSubmittedIds, toggleSelectedId } from '@shared/utils/logIssueSelec
 describe('runBulkIssueStatus', () => {
   it('posts the mapped status and toasts the applied count', async () => {
     const bulkSetStatus = vi.fn().mockResolvedValue({
-      updated: [{ id: 'a', status: 'resolved' }, { id: 'b', status: 'resolved' }],
+      updated: [
+        { id: 'a', status: 'resolved' },
+        { id: 'b', status: 'resolved' },
+      ],
       notFound: [],
     });
     const showToast = vi.fn();

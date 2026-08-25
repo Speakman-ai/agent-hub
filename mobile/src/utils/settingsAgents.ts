@@ -12,20 +12,20 @@
  * @returns {Array<{projectId: string|null, projectName: string, color: string|null, agents: Array}>}
  */
 export function groupAgentsByProject(agents: any, projects: any) {
-    const safeAgents = Array.isArray(agents) ? agents.filter(Boolean) : [];
-    const safeProjects = Array.isArray(projects) ? projects.filter(Boolean) : [];
-    const groups = safeProjects.map((p: any) => ({
-        projectId: p.id,
-        projectName: p.name || p.id,
-        color: p.color || null,
-        agents: safeAgents.filter((a: any) => a.projectId === p.id),
-    }));
-    const knownIds = new Set(safeProjects.map((p: any) => p.id));
-    const orphans = safeAgents.filter((a: any) => !knownIds.has(a.projectId));
-    if (orphans.length > 0) {
-        groups.push({ projectId: null, projectName: 'Other', color: null, agents: orphans });
-    }
-    return groups;
+  const safeAgents = Array.isArray(agents) ? agents.filter(Boolean) : [];
+  const safeProjects = Array.isArray(projects) ? projects.filter(Boolean) : [];
+  const groups = safeProjects.map((p: any) => ({
+    projectId: p.id,
+    projectName: p.name || p.id,
+    color: p.color || null,
+    agents: safeAgents.filter((a: any) => a.projectId === p.id),
+  }));
+  const knownIds = new Set(safeProjects.map((p: any) => p.id));
+  const orphans = safeAgents.filter((a: any) => !knownIds.has(a.projectId));
+  if (orphans.length > 0) {
+    groups.push({ projectId: null, projectName: 'Other', color: null, agents: orphans });
+  }
+  return groups;
 }
 /**
  * Resolve the effective new-agent form for submission.
@@ -43,9 +43,8 @@ export function groupAgentsByProject(agents: any, projects: any) {
  * @returns {object}
  */
 export function resolveNewAgentForm(form: any, filterProjectId: any) {
-    if (!filterProjectId)
-        return form;
-    return { ...form, projectId: filterProjectId };
+  if (!filterProjectId) return form;
+  return { ...form, projectId: filterProjectId };
 }
 /**
  * Validate the new-agent form. Returns an error string, or null when valid.
@@ -53,15 +52,13 @@ export function resolveNewAgentForm(form: any, filterProjectId: any) {
  * `projectId` are required; ids are slug-shaped.
  */
 export function validateNewAgentForm(form: any) {
-    const id = (form?.id || '').trim();
-    if (!id)
-        return 'Agent ID is required.';
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9-_]*$/.test(id)) {
-        return 'Agent ID must be alphanumeric (hyphens/underscores allowed).';
-    }
-    if (!form?.projectId)
-        return 'Pick a project for the new agent.';
-    return null;
+  const id = (form?.id || '').trim();
+  if (!id) return 'Agent ID is required.';
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9-_]*$/.test(id)) {
+    return 'Agent ID must be alphanumeric (hyphens/underscores allowed).';
+  }
+  if (!form?.projectId) return 'Pick a project for the new agent.';
+  return null;
 }
 /**
  * Build the POST /api/agents payload from the new-agent form. Empty
@@ -71,20 +68,16 @@ export function validateNewAgentForm(form: any) {
  * agents are opt-in for autonomous-ticket dispatch.
  */
 export function buildCreateAgentPayload(form: any) {
-    const payload: Record<string, any> = {
-        id: (form.id || '').trim(),
-        projectId: form.projectId,
-        isDev: form.isDev === true,
-    };
-    if ((form.name || '').trim())
-        payload.name = form.name.trim();
-    if (form.engine)
-        payload.engine = form.engine;
-    if (form.model)
-        payload.model = form.model;
-    if ((form.systemPrompt || '').trim())
-        payload.systemPrompt = form.systemPrompt.trim();
-    return payload;
+  const payload: Record<string, any> = {
+    id: (form.id || '').trim(),
+    projectId: form.projectId,
+    isDev: form.isDev === true,
+  };
+  if ((form.name || '').trim()) payload.name = form.name.trim();
+  if (form.engine) payload.engine = form.engine;
+  if (form.model) payload.model = form.model;
+  if ((form.systemPrompt || '').trim()) payload.systemPrompt = form.systemPrompt.trim();
+  return payload;
 }
 /**
  * Build the PATCH /api/agents/:id payload from an edit form, including only
@@ -92,24 +85,23 @@ export function buildCreateAgentPayload(form: any) {
  * empty object when nothing changed (caller can skip the request).
  */
 export function buildUpdateAgentPayload(original: any, edit: any) {
-    const payload: Record<string, any> = {};
-    if (!original || !edit)
-        return payload;
-    for (const field of ['name', 'engine', 'systemPrompt']) {
-        const next = edit[field];
-        if (next !== undefined && next !== (original[field] ?? '')) {
-            payload[field] = next;
-        }
+  const payload: Record<string, any> = {};
+  if (!original || !edit) return payload;
+  for (const field of ['name', 'engine', 'systemPrompt']) {
+    const next = edit[field];
+    if (next !== undefined && next !== (original[field] ?? '')) {
+      payload[field] = next;
     }
-    // The Dev flag: include it only when the editable value actually differs
-    // from the agent's effective eligibility, and never for locked agents
-    // (default Dev roles / out-of-band roles can't be changed).
-    if (edit.isDev !== undefined && !isAutonomyLocked(original)) {
-        if (edit.isDev !== agentAcceptsAutonomousTickets(original)) {
-            payload.isDev = edit.isDev;
-        }
+  }
+  // The Dev flag: include it only when the editable value actually differs
+  // from the agent's effective eligibility, and never for locked agents
+  // (default Dev roles / out-of-band roles can't be changed).
+  if (edit.isDev !== undefined && !isAutonomyLocked(original)) {
+    if (edit.isDev !== agentAcceptsAutonomousTickets(original)) {
+      payload.isDev = edit.isDev;
     }
-    return payload;
+  }
+  return payload;
 }
 // ─── Per-agent "Dev" flag (autonomous-ticket eligibility) ────────────────────
 // Mirror of server/agent-autonomy.ts — keep in sync with the server + web util.
@@ -118,19 +110,19 @@ export function buildUpdateAgentPayload(original: any, edit: any) {
 const OUT_OF_BAND_ROLES = new Set(['docs', 'reviewer', 'skill-builder', 'hub-assistant']);
 const DEFAULT_DEV_ROLES = new Set(['dev', 'lead']);
 function autonomyRoleOf(agent: any) {
-    return agent && typeof agent.role === 'string' ? agent.role.trim().toLowerCase() : '';
+  return agent && typeof agent.role === 'string' ? agent.role.trim().toLowerCase() : '';
 }
 /** Out-of-band role (docs/reviewer) — the Dev toggle is locked OFF. */
 export function isAutonomyLockedOff(agent: any) {
-    return OUT_OF_BAND_ROLES.has(autonomyRoleOf(agent));
+  return OUT_OF_BAND_ROLES.has(autonomyRoleOf(agent));
 }
 /** Default Dev role (dev/lead) — the Dev toggle is locked ON. */
 export function isAutonomyLockedOn(agent: any) {
-    return DEFAULT_DEV_ROLES.has(autonomyRoleOf(agent));
+  return DEFAULT_DEV_ROLES.has(autonomyRoleOf(agent));
 }
 /** The Dev toggle cannot be changed for this agent. */
 export function isAutonomyLocked(agent: any) {
-    return isAutonomyLockedOff(agent) || isAutonomyLockedOn(agent);
+  return isAutonomyLockedOff(agent) || isAutonomyLockedOn(agent);
 }
 /**
  * Effective: may this agent receive an autonomously-dispatched ticket?
@@ -140,35 +132,30 @@ export function isAutonomyLocked(agent: any) {
  *  - otherwise (isDev true, or undefined for pre-flag agents) → eligible
  */
 export function agentAcceptsAutonomousTickets(agent: any) {
-    if (!agent)
-        return false;
-    if (isAutonomyLockedOff(agent))
-        return false;
-    if (isAutonomyLockedOn(agent))
-        return true;
-    return agent.isDev !== false;
+  if (!agent) return false;
+  if (isAutonomyLockedOff(agent)) return false;
+  if (isAutonomyLockedOn(agent)) return true;
+  return agent.isDev !== false;
 }
 /**
  * Engines offered by the picker — keys of `engineValidModels` that have at
  * least one model (i.e. the host/user is authenticated for that engine).
  */
 export function settingsEngineChoices(modelConfig: any) {
-    const map = modelConfig?.engineValidModels;
-    if (!map)
-        return [];
-    return Object.keys(map).filter((eng: any) => (map[eng]?.length ?? 0) > 0);
+  const map = modelConfig?.engineValidModels;
+  if (!map) return [];
+  return Object.keys(map).filter((eng: any) => (map[eng]?.length ?? 0) > 0);
 }
 /** Models valid for an engine, per the server's /api/config/models map. */
 export function settingsModelsForEngine(modelConfig: any, engine: any) {
-    return modelConfig?.engineValidModels?.[engine] || [];
+  return modelConfig?.engineValidModels?.[engine] || [];
 }
 /** The server-side default model for an engine (used as picker fallback). */
 export function settingsDefaultModelForEngine(modelConfig: any, engine: any) {
-    if (!modelConfig)
-        return '';
-    const models = modelConfig.engineValidModels?.[engine] || [];
-    const configuredDefault = modelConfig.engineDefaultModels?.[engine];
-    return models.includes(configuredDefault) ? configuredDefault : models[0] || '';
+  if (!modelConfig) return '';
+  const models = modelConfig.engineValidModels?.[engine] || [];
+  const configuredDefault = modelConfig.engineDefaultModels?.[engine];
+  return models.includes(configuredDefault) ? configuredDefault : models[0] || '';
 }
 /**
  * Sentinel chip value for "use the engine fallback model" in the
@@ -186,8 +173,8 @@ export const PER_USER_DEFAULT_MODEL = '__default__';
  * highlights whenever no (valid) personal override is set.
  */
 export function settingsSelectedModelChip(modelOverride: any, models: any) {
-    const valid = Array.isArray(models) ? models : [];
-    return modelOverride && valid.includes(modelOverride) ? modelOverride : PER_USER_DEFAULT_MODEL;
+  const valid = Array.isArray(models) ? models : [];
+  return modelOverride && valid.includes(modelOverride) ? modelOverride : PER_USER_DEFAULT_MODEL;
 }
 /**
  * Resolve a model-chip press to the value handed to the override saver. The
@@ -196,7 +183,7 @@ export function settingsSelectedModelChip(modelOverride: any, models: any) {
  * unchanged.
  */
 export function settingsResolveModelChip(chip: any) {
-    return chip === PER_USER_DEFAULT_MODEL ? '' : chip;
+  return chip === PER_USER_DEFAULT_MODEL ? '' : chip;
 }
 /**
  * The engine actually in effect for a user's sessions with an agent: their
@@ -204,7 +191,7 @@ export function settingsResolveModelChip(chip: any) {
  * the built-in default. Mirrors the resolution the runtime uses.
  */
 export function settingsEffectiveEngine(engineOverride: any, sharedEngine: any) {
-    return engineOverride || sharedEngine || 'claude-code';
+  return engineOverride || sharedEngine || 'claude-code';
 }
 /**
  * True when a stored per-user model override is no longer valid for the
@@ -214,8 +201,11 @@ export function settingsEffectiveEngine(engineOverride: any, sharedEngine: any) 
  * engine/model pair and the picker's "Default" fallback reflects real state.
  * An empty override is never stale (there is nothing to clear).
  */
-export function settingsModelOverrideIsStale(modelOverride: any, effectiveEngine: any, modelConfig: any) {
-    if (!modelOverride)
-        return false;
-    return !settingsModelsForEngine(modelConfig, effectiveEngine).includes(modelOverride);
+export function settingsModelOverrideIsStale(
+  modelOverride: any,
+  effectiveEngine: any,
+  modelConfig: any,
+) {
+  if (!modelOverride) return false;
+  return !settingsModelsForEngine(modelConfig, effectiveEngine).includes(modelOverride);
 }

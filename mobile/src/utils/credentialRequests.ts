@@ -17,9 +17,7 @@ function parseField(raw: any) {
   const key = cleanText(raw.key, '', 64);
   if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(key)) return null;
   const type =
-    raw.type === 'username' || raw.type === 'password' || raw.type === 'text'
-      ? raw.type
-      : 'text';
+    raw.type === 'username' || raw.type === 'password' || raw.type === 'text' ? raw.type : 'text';
   return { key, label: cleanText(raw.label, key, 80), type };
 }
 

@@ -20,9 +20,9 @@ describe('mobile isSecurityScanSchedule', () => {
 
 describe('mobile readSecurityScheduleConfig', () => {
   it('reads an explicit schedule + onPush', () => {
-    expect(readSecurityScheduleConfig({ securityScan: { schedule: 'daily', onPush: true } })).toEqual(
-      { schedule: 'daily', onPush: true },
-    );
+    expect(
+      readSecurityScheduleConfig({ securityScan: { schedule: 'daily', onPush: true } }),
+    ).toEqual({ schedule: 'daily', onPush: true });
   });
 
   it('defaults unset/unknown to placeholder + onPush false', () => {

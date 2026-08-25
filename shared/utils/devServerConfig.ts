@@ -1,13 +1,17 @@
 /**
- * Client-side form helpers for the dev-server config
- * (`Project.prEnv.devServer`). The bounds and rules below mirror the
- * server Zod schema in `server/dev-server-config.ts` so the settings form
- * surfaces the same validation errors at edit time that the PATCH would
- * reject at save time.
+ * Form helpers for the dev-server config (`Project.prEnv.devServer`), shared by
+ * the web (`client/src/components/DevServerSection.tsx`) and mobile
+ * (`mobile/src/components/settings/DevServerSection.tsx`) settings forms so the
+ * two surfaces validate identically.
+ *
+ * Pure: no DOM, no React, no RN primitives. The bounds and rules below mirror
+ * the server Zod schema in `server/dev-server-config.ts` so the settings form
+ * surfaces the same validation errors at edit time that the PATCH would reject
+ * at save time.
  *
  * Secrets are **key references only**: `secretKeys[]` names entries in the
- * project-secrets store. The form never round-trips a stored secret value
- * — secret rows load masked (empty input, `hadSecret` flag) and only a
+ * project-secrets store. The form never round-trips a stored secret value:
+ * secret rows load masked (empty input, `hadSecret` flag) and only a
  * freshly-typed value is written back to the store (write-only).
  */
 

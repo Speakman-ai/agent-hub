@@ -32,7 +32,10 @@ describe('mobile deploySchedules helpers', () => {
     expect(validateScheduleDraft({ ref: '', cron: '0 9 * * *' })).toMatch(/Ref is required/);
     expect(validateScheduleDraft({ ref: 'main', cron: '' })).toMatch(/Cron expression is required/);
     expect(
-      validateScheduleDraft({ ref: 'x'.repeat(DEPLOY_SCHEDULE_REF_MAX_LENGTH + 1), cron: '0 9 * * *' }),
+      validateScheduleDraft({
+        ref: 'x'.repeat(DEPLOY_SCHEDULE_REF_MAX_LENGTH + 1),
+        cron: '0 9 * * *',
+      }),
     ).toMatch(/Ref must be/);
     expect(
       validateScheduleDraft({ ref: 'main', cron: '*'.repeat(DEPLOY_SCHEDULE_CRON_MAX_LENGTH + 1) }),

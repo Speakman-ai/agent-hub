@@ -173,7 +173,12 @@ describe('planSessionControlChange', () => {
 describe('sessionControlOptionsForProject', () => {
   it('offers only server-accepted workflow modes (incl. Design) on workflow projects', () => {
     const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'sub' });
-    expect(opts.map((o: any) => o.value)).toEqual(['consult', 'design', 'scoping', 'skill-builder']);
+    expect(opts.map((o: any) => o.value)).toEqual([
+      'consult',
+      'design',
+      'scoping',
+      'skill-builder',
+    ]);
   });
   it('hides Skill Builder on workflow projects when the agent is a helper', () => {
     const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'docs' });

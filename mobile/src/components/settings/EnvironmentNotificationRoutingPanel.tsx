@@ -51,8 +51,8 @@ export function EnvironmentNotificationRoutingPanelContent({
         ) : null}
       </View>
       <Text style={styles.help}>
-        Which release emails fire when a deployment to {environmentName} succeeds. Production defaults
-        to reporter + digest; other environments send nothing until enabled here.
+        Which release emails fire when a deployment to {environmentName} succeeds. Production
+        defaults to reporter + digest; other environments send nothing until enabled here.
       </Text>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -64,7 +64,9 @@ export function EnvironmentNotificationRoutingPanelContent({
           <View style={styles.optionRow}>
             <View style={styles.optionText}>
               <Text style={styles.optionLabel}>Reporter emails</Text>
-              <Text style={styles.optionHint}>notify support-ticket reporters their fix shipped</Text>
+              <Text style={styles.optionHint}>
+                notify support-ticket reporters their fix shipped
+              </Text>
             </View>
             <Switch
               value={ticketReleaseEnabled}

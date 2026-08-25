@@ -268,170 +268,170 @@ export function LogSourcesPanel({
 
   return (
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        {/* AI setup wizard */}
-        {onOpenSession && (
-          <TouchableOpacity
-            style={[styles.primaryBtn, wizardStarting && styles.btnDisabled]}
-            onPress={handleStartWizard}
-            disabled={wizardStarting}
-            testID="logs-setup-wizard-button"
-          >
-            <Text style={styles.primaryBtnText}>
-              {wizardStarting ? 'Starting…' : 'Set up with AI'}
-            </Text>
-          </TouchableOpacity>
-        )}
-
-        {/* Write-only credential warning */}
-        <View style={styles.warnBox} testID="logs-writeonly-warning">
-          <Text style={styles.warnTitle}>Ingest tokens are write-only server secrets</Text>
-          <Text style={styles.warnBody}>
-            An ahlog_ token can only send logs — it cannot read logs or call any Agent Hub API. Put
-            it in your server or collector config, never in browser/client code. Direct browser
-            ingestion is not supported.
-          </Text>
-        </View>
-
-        {/* Storage limits */}
-        <Text style={styles.sectionTitle}>Storage limits (this project)</Text>
-        {metrics ? (
-          <View style={styles.card} testID="logs-limits">
-            <Text style={styles.row} testID="logs-retention">
-              Retention: {metrics.retentionDays} days
-            </Text>
-            <Text style={styles.row} testID="logs-quota">
-              Quota: {formatBytes(metrics.quotaBytes)}
-            </Text>
-            <Text style={styles.row} testID="logs-stored">
-              Stored: {formatBytes(metrics.projectBytes)}
-            </Text>
-            <Text style={styles.row}>Past retention: {metrics.retentionLagRecords} records</Text>
-          </View>
-        ) : (
-          <Text style={styles.hint}>Storage metrics unavailable.</Text>
-        )}
-
-        {/* Create source */}
-        <Text style={styles.sectionTitle}>Create a log source</Text>
-        <TextInput
-          style={styles.input}
-          value={newName}
-          onChangeText={setNewName}
-          placeholder="Source name (e.g. production-api)"
-          placeholderTextColor={colors.gray600}
-          testID="logs-new-name"
-        />
-        <TextInput
-          style={[styles.input, { marginTop: 8 }]}
-          value={newService}
-          onChangeText={setNewService}
-          placeholder="Service (optional)"
-          placeholderTextColor={colors.gray600}
-          testID="logs-new-service"
-        />
-        <TextInput
-          style={[styles.input, { marginTop: 8 }]}
-          value={newEnv}
-          onChangeText={setNewEnv}
-          placeholder="Environment (optional)"
-          placeholderTextColor={colors.gray600}
-          testID="logs-new-env"
-        />
+      {/* AI setup wizard */}
+      {onOpenSession && (
         <TouchableOpacity
-          style={[styles.primaryBtn, creating && styles.btnDisabled]}
-          onPress={handleCreate}
-          disabled={creating}
-          testID="logs-create-btn"
+          style={[styles.primaryBtn, wizardStarting && styles.btnDisabled]}
+          onPress={handleStartWizard}
+          disabled={wizardStarting}
+          testID="logs-setup-wizard-button"
         >
-          <Text style={styles.primaryBtnText}>{creating ? '…' : 'Create source & token'}</Text>
+          <Text style={styles.primaryBtnText}>
+            {wizardStarting ? 'Starting…' : 'Set up with AI'}
+          </Text>
         </TouchableOpacity>
+      )}
 
-        {/* One-time token reveal */}
-        <FreshTokenReveal
-          token={freshToken}
-          label={freshLabel}
-          onDismiss={() => setFreshToken(null)}
-        />
+      {/* Write-only credential warning */}
+      <View style={styles.warnBox} testID="logs-writeonly-warning">
+        <Text style={styles.warnTitle}>Ingest tokens are write-only server secrets</Text>
+        <Text style={styles.warnBody}>
+          An ahlog_ token can only send logs — it cannot read logs or call any Agent Hub API. Put it
+          in your server or collector config, never in browser/client code. Direct browser ingestion
+          is not supported.
+        </Text>
+      </View>
 
-        {/* Source list */}
-        <Text style={styles.sectionTitle}>Log sources</Text>
-        {loading && <ActivityIndicator color={colors.gray400} />}
-        {loadError && (
-          <Text style={styles.error} testID="logs-error">
-            {loadError}
+      {/* Storage limits */}
+      <Text style={styles.sectionTitle}>Storage limits (this project)</Text>
+      {metrics ? (
+        <View style={styles.card} testID="logs-limits">
+          <Text style={styles.row} testID="logs-retention">
+            Retention: {metrics.retentionDays} days
           </Text>
-        )}
-        {!loading && sources.length === 0 && !loadError && (
-          <Text style={styles.hint} testID="logs-empty">
-            No log sources yet.
+          <Text style={styles.row} testID="logs-quota">
+            Quota: {formatBytes(metrics.quotaBytes)}
           </Text>
-        )}
-        {sources.map((s: any) => {
-          const revoked = s.status === 'revoked';
-          // Any in-flight action disables every row's buttons — matches the
-          // global `runBusy` guard so a disabled action never looks tappable
-          // while another source's mutation is running.
-          const busy = busyId != null;
-          return (
-            <View key={s.id} style={styles.sourceCard} testID="logs-source-card">
-              <View style={styles.sourceHead}>
-                <Text style={styles.sourceName}>{s.name}</Text>
-                <Text
-                  style={[styles.statusChip, revoked ? styles.statusRevoked : styles.statusActive]}
-                  testID="logs-source-status"
-                >
-                  {revoked ? 'revoked' : 'active'}
-                </Text>
-              </View>
-              <Text style={styles.sourceMeta}>
-                {s.tokenPrefix ? `${s.tokenPrefix}…` : 'no token'}
-                {s.serviceName ? ` · ${s.serviceName}` : ''}
-                {s.environment ? ` · ${s.environment}` : ''}
-              </Text>
-              <Text style={styles.sourceMeta}>{formatLastIngest(s.lastIngestAt)}</Text>
-              <View style={styles.sourceActions}>
-                <TouchableOpacity
-                  disabled={busy}
-                  onPress={() => handleRotate(s)}
-                  testID="logs-rotate"
-                >
-                  <Text style={[styles.actionRotate, busy && styles.btnDisabled]}>Rotate</Text>
-                </TouchableOpacity>
-                {!revoked && (
-                  <TouchableOpacity
-                    disabled={busy}
-                    onPress={() => handleRevoke(s)}
-                    testID="logs-revoke"
-                  >
-                    <Text style={[styles.actionRevoke, busy && styles.btnDisabled]}>Revoke</Text>
-                  </TouchableOpacity>
-                )}
-                <TouchableOpacity
-                  disabled={busy}
-                  onPress={() => handleDelete(s)}
-                  testID="logs-delete"
-                >
-                  <Text style={[styles.actionDelete, busy && styles.btnDisabled]}>Delete</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          );
-        })}
-
-        {/* Endpoint reference */}
-        <Text style={styles.sectionTitle}>Ingest endpoints</Text>
-        <View style={styles.card}>
-          <Text style={styles.hint}>
-            Authenticate with Authorization: Bearer &lt;token&gt; (or the X-AgentHub-Log-Token
-            header). Identity is derived from the token, never the request body.
+          <Text style={styles.row} testID="logs-stored">
+            Stored: {formatBytes(metrics.projectBytes)}
           </Text>
-          <Text style={styles.endpoint} testID="logs-endpoint-otlp">
-            POST /api/otel/v1/logs
-          </Text>
-          <Text style={styles.endpoint} testID="logs-endpoint-batch">
-            POST /api/logs/ingest
-          </Text>
+          <Text style={styles.row}>Past retention: {metrics.retentionLagRecords} records</Text>
         </View>
+      ) : (
+        <Text style={styles.hint}>Storage metrics unavailable.</Text>
+      )}
+
+      {/* Create source */}
+      <Text style={styles.sectionTitle}>Create a log source</Text>
+      <TextInput
+        style={styles.input}
+        value={newName}
+        onChangeText={setNewName}
+        placeholder="Source name (e.g. production-api)"
+        placeholderTextColor={colors.gray600}
+        testID="logs-new-name"
+      />
+      <TextInput
+        style={[styles.input, { marginTop: 8 }]}
+        value={newService}
+        onChangeText={setNewService}
+        placeholder="Service (optional)"
+        placeholderTextColor={colors.gray600}
+        testID="logs-new-service"
+      />
+      <TextInput
+        style={[styles.input, { marginTop: 8 }]}
+        value={newEnv}
+        onChangeText={setNewEnv}
+        placeholder="Environment (optional)"
+        placeholderTextColor={colors.gray600}
+        testID="logs-new-env"
+      />
+      <TouchableOpacity
+        style={[styles.primaryBtn, creating && styles.btnDisabled]}
+        onPress={handleCreate}
+        disabled={creating}
+        testID="logs-create-btn"
+      >
+        <Text style={styles.primaryBtnText}>{creating ? '…' : 'Create source & token'}</Text>
+      </TouchableOpacity>
+
+      {/* One-time token reveal */}
+      <FreshTokenReveal
+        token={freshToken}
+        label={freshLabel}
+        onDismiss={() => setFreshToken(null)}
+      />
+
+      {/* Source list */}
+      <Text style={styles.sectionTitle}>Log sources</Text>
+      {loading && <ActivityIndicator color={colors.gray400} />}
+      {loadError && (
+        <Text style={styles.error} testID="logs-error">
+          {loadError}
+        </Text>
+      )}
+      {!loading && sources.length === 0 && !loadError && (
+        <Text style={styles.hint} testID="logs-empty">
+          No log sources yet.
+        </Text>
+      )}
+      {sources.map((s: any) => {
+        const revoked = s.status === 'revoked';
+        // Any in-flight action disables every row's buttons — matches the
+        // global `runBusy` guard so a disabled action never looks tappable
+        // while another source's mutation is running.
+        const busy = busyId != null;
+        return (
+          <View key={s.id} style={styles.sourceCard} testID="logs-source-card">
+            <View style={styles.sourceHead}>
+              <Text style={styles.sourceName}>{s.name}</Text>
+              <Text
+                style={[styles.statusChip, revoked ? styles.statusRevoked : styles.statusActive]}
+                testID="logs-source-status"
+              >
+                {revoked ? 'revoked' : 'active'}
+              </Text>
+            </View>
+            <Text style={styles.sourceMeta}>
+              {s.tokenPrefix ? `${s.tokenPrefix}…` : 'no token'}
+              {s.serviceName ? ` · ${s.serviceName}` : ''}
+              {s.environment ? ` · ${s.environment}` : ''}
+            </Text>
+            <Text style={styles.sourceMeta}>{formatLastIngest(s.lastIngestAt)}</Text>
+            <View style={styles.sourceActions}>
+              <TouchableOpacity
+                disabled={busy}
+                onPress={() => handleRotate(s)}
+                testID="logs-rotate"
+              >
+                <Text style={[styles.actionRotate, busy && styles.btnDisabled]}>Rotate</Text>
+              </TouchableOpacity>
+              {!revoked && (
+                <TouchableOpacity
+                  disabled={busy}
+                  onPress={() => handleRevoke(s)}
+                  testID="logs-revoke"
+                >
+                  <Text style={[styles.actionRevoke, busy && styles.btnDisabled]}>Revoke</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                disabled={busy}
+                onPress={() => handleDelete(s)}
+                testID="logs-delete"
+              >
+                <Text style={[styles.actionDelete, busy && styles.btnDisabled]}>Delete</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        );
+      })}
+
+      {/* Endpoint reference */}
+      <Text style={styles.sectionTitle}>Ingest endpoints</Text>
+      <View style={styles.card}>
+        <Text style={styles.hint}>
+          Authenticate with Authorization: Bearer &lt;token&gt; (or the X-AgentHub-Log-Token
+          header). Identity is derived from the token, never the request body.
+        </Text>
+        <Text style={styles.endpoint} testID="logs-endpoint-otlp">
+          POST /api/otel/v1/logs
+        </Text>
+        <Text style={styles.endpoint} testID="logs-endpoint-batch">
+          POST /api/logs/ingest
+        </Text>
+      </View>
     </ScrollView>
   );
 }

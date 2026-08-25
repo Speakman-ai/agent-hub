@@ -27,7 +27,10 @@ describe('getTerminalWsUrl', () => {
 
   it('builds a trimmed wss URL with encoded session id and JWT precedence', async () => {
     getToken.mockReturnValue('jwt token');
-    await saveConnectionConfig({ remoteUrl: 'https://hub.example.test///', apiKey: 'fallback key' });
+    await saveConnectionConfig({
+      remoteUrl: 'https://hub.example.test///',
+      apiKey: 'fallback key',
+    });
 
     expect(getTerminalWsUrl('session/a?')).toBe(
       'wss://hub.example.test/api/sessions/session%2Fa%3F/terminal/ws?token=jwt%20token',
@@ -35,7 +38,10 @@ describe('getTerminalWsUrl', () => {
   });
 
   it('uses ws for http and falls back to a cleaned, encoded API key', async () => {
-    await saveConnectionConfig({ remoteUrl: 'http://hub.example.test/', apiKey: ' key with spaces ' });
+    await saveConnectionConfig({
+      remoteUrl: 'http://hub.example.test/',
+      apiKey: ' key with spaces ',
+    });
 
     expect(getTerminalWsUrl('session-1')).toBe(
       'ws://hub.example.test/api/sessions/session-1/terminal/ws?apiKey=keywithspaces',

@@ -1,5 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Alert, Platform, Pressable, ActivityIndicator, } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  ScrollView,
+  StyleSheet,
+  Alert,
+  Platform,
+  Pressable,
+  ActivityIndicator,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
@@ -38,577 +48,744 @@ import BrandLogo from './BrandLogo';
  * per-account saver shares the same function identity — the account binding
  * lives in the saver's lifetime, not in this closure.
  */
-const putCollapsedProject = (projectId: string, collapsed: boolean) => api.putMySidebarCollapsedProject(projectId, collapsed);
+const putCollapsedProject = (projectId: string, collapsed: boolean) =>
+  api.putMySidebarCollapsedProject(projectId, collapsed);
 
 export default function DrawerContent({ navigation }: any) {
-    const { agents, projects, activeAgentId, setActiveAgentId, sessions, activeSessionId, setActiveSessionId, handleNewSession, handleDeleteSession, archivedSessions, handleRestoreSession, restoringSessionIds, handleSwitchOrg, refreshProjects, refreshAgents, cronSessions, activeTasks, finalizeStatusBySession, unreadThreadCounts, unreadTicketCounts, openPullCounts, securityOpenCounts, skillImprovementPendingTotal, reloadMessages, connected, reconnecting, } = useApp();
-    const activeAgent = agents.find((a: any) => a.id === activeAgentId) || null;
-    const bugReportProjectId = activeAgent?.projectId || '';
-    const [collapsedAgents, setCollapsedAgents] = useState<any>({});
-    // Which projects are collapsed in the drawer. The authoritative store is
-    // per-USER on the server (`/api/auth/me/sidebar-collapsed-projects`), so the
-    // same account sees the same collapsed projects on web, mobile, and
-    // Electron. AsyncStorage is only a cold-start cache that keeps the drawer
-    // from flashing every project open while the hydration GET is in flight —
-    // and it is keyed per account, so a second user signing in on this device
-    // never inherits the first user's view.
-    const [collapsedProjects, setCollapsedProjects] = useState<any>({});
-    // AsyncStorage is asynchronous, so do not paint project rows until this
-    // account's cold-start cache has been read. Without the gate the first
-    // render shows every project expanded and then visibly snaps to the cache.
-    const [projectCollapseCacheHydrated, setProjectCollapseCacheHydrated] = useState(false);
-    // Taps made before hydration resolved; they win over the server list so an
-    // early interaction is neither discarded nor written back to the cache.
-    const pendingProjectCollapseRef = useRef<Record<string, boolean>>({});
-    const projectCollapseHydratedRef = useRef(false);
-    // Serializes + coalesces the save PUTs per project. Rapid taps would
-    // otherwise race and could leave the account holding the opposite of what
-    // the drawer shows — a divergence that only surfaces on the next launch.
-    //
-    // The saver belongs to ONE account: its queue holds values, and the auth
-    // token is only read when a value is finally dispatched. The effect below
-    // retires it and installs a replacement whenever the account changes, so a
-    // tap queued by the previous user can never be written to the new user's
-    // preferences. Seeded eagerly so a tap landing between first render and the
-    // first effect flush still has somewhere to go.
-    // Re-hydrate when the signed-in account changes (sign-out/sign-in keeps the
-    // drawer mounted), so the new user never keeps looking at the old state.
-    const collapseAccountKey = currentCollapsedProjectsKey();
-    const projectCollapseSaverRef = useRef<ReturnType<typeof createCollapsedProjectSaver> | null>(null);
-    if (!projectCollapseSaverRef.current)
-        projectCollapseSaverRef.current = createCollapsedProjectSaver(putCollapsedProject);
-    const projectCollapseSaverAccountKeyRef = useRef(collapseAccountKey);
-    const projectCollapseCacheSaverRef = useRef<ReturnType<typeof createCollapsedProjectsCacheSaver> | null>(null);
-    if (!projectCollapseCacheSaverRef.current)
-        projectCollapseCacheSaverRef.current = createCollapsedProjectsCacheSaver();
-    const projectCollapseCacheSaverAccountKeyRef = useRef(collapseAccountKey);
-    // Retire and replace both eager savers synchronously on an account change.
-    // This closes the gap before the hydration effect runs: a pre-effect queue
-    // can never become orphaned and dispatch under the next account's token.
-    if (projectCollapseSaverAccountKeyRef.current !== collapseAccountKey) {
-        projectCollapseSaverRef.current!.cancel();
-        projectCollapseSaverRef.current = createCollapsedProjectSaver(putCollapsedProject);
-        projectCollapseSaverAccountKeyRef.current = collapseAccountKey;
-    }
-    if (projectCollapseCacheSaverAccountKeyRef.current !== collapseAccountKey) {
-        projectCollapseCacheSaverRef.current!.cancel();
-        projectCollapseCacheSaverRef.current = createCollapsedProjectsCacheSaver();
-        projectCollapseCacheSaverAccountKeyRef.current = collapseAccountKey;
-    }
-    useEffect(() => {
-        let cancelled = false;
-        const accountSaver = projectCollapseSaverRef.current!;
-        const accountCacheSaver = projectCollapseCacheSaverRef.current!;
-        projectCollapseHydratedRef.current = false;
-        pendingProjectCollapseRef.current = {};
-        setProjectCollapseCacheHydrated(false);
-        setCollapsedProjects({});
-        (async () => {
-            const cachedIds = await loadCollapsedProjects();
-            if (cancelled)
-                return;
-            if (cachedIds.length) {
-                // Cache paints UNDER any taps already made (`prev` wins).
-                setCollapsedProjects((prev: any) => ({ ...toCollapsedMap(cachedIds), ...prev }));
-            }
-            // The cache is the first-paint source of truth while the server
-            // request is still in flight. An empty cache is also a completed
-            // read and must release the loading gate.
-            setProjectCollapseCacheHydrated(true);
-            let serverIds: string[] | null = null;
-            try {
-                const data: any = await api.getMySidebarCollapsedProjects();
-                serverIds = normalizeCollapsedProjects(data?.sidebarCollapsedProjects);
-            }
-            catch {
-                // Offline / no per-user row — keep the cached view rather than
-                // expanding everything.
-                serverIds = null;
-            }
-            if (cancelled)
-                return;
-            if (serverIds) {
-                const merged = mergeHydratedCollapsedProjects(serverIds, pendingProjectCollapseRef.current);
-                setCollapsedProjects(toCollapsedMap(merged));
-                void accountCacheSaver.save(merged);
-            }
-            projectCollapseHydratedRef.current = true;
-            pendingProjectCollapseRef.current = {};
-        })();
-        return () => {
-            cancelled = true;
-            // Runs before the next effect body (account change) and on unmount
-            // (sign-out). Either way the queued taps belong to an account that
-            // is no longer the one we'd authenticate as.
-            accountSaver.cancel();
-            accountCacheSaver.cancel();
-        };
-    }, [collapseAccountKey]);
-    const toggleProjectCollapse = (projectId: string) => {
-        const collapsed = !collapsedProjects[projectId];
-        const next = { ...collapsedProjects, [projectId]: collapsed };
-        setCollapsedProjects(next);
-        if (!projectCollapseHydratedRef.current)
-            pendingProjectCollapseRef.current[projectId] = collapsed;
-        void projectCollapseCacheSaverRef.current!.save(fromCollapsedMap(next));
-        // Serialized + coalesced per project, so double-tapping can't land the
-        // PUTs out of order. Still fire-and-forget: the optimistic local state is
-        // already correct and the saver swallows failures.
-        void projectCollapseSaverRef.current!.save(projectId, collapsed);
+  const {
+    agents,
+    projects,
+    activeAgentId,
+    setActiveAgentId,
+    sessions,
+    activeSessionId,
+    setActiveSessionId,
+    handleNewSession,
+    handleDeleteSession,
+    archivedSessions,
+    handleRestoreSession,
+    restoringSessionIds,
+    handleSwitchOrg,
+    refreshProjects,
+    refreshAgents,
+    cronSessions,
+    activeTasks,
+    finalizeStatusBySession,
+    unreadThreadCounts,
+    unreadTicketCounts,
+    openPullCounts,
+    securityOpenCounts,
+    skillImprovementPendingTotal,
+    reloadMessages,
+    connected,
+    reconnecting,
+  } = useApp();
+  const activeAgent = agents.find((a: any) => a.id === activeAgentId) || null;
+  const bugReportProjectId = activeAgent?.projectId || '';
+  const [collapsedAgents, setCollapsedAgents] = useState<any>({});
+  // Which projects are collapsed in the drawer. The authoritative store is
+  // per-USER on the server (`/api/auth/me/sidebar-collapsed-projects`), so the
+  // same account sees the same collapsed projects on web, mobile, and
+  // Electron. AsyncStorage is only a cold-start cache that keeps the drawer
+  // from flashing every project open while the hydration GET is in flight —
+  // and it is keyed per account, so a second user signing in on this device
+  // never inherits the first user's view.
+  const [collapsedProjects, setCollapsedProjects] = useState<any>({});
+  // AsyncStorage is asynchronous, so do not paint project rows until this
+  // account's cold-start cache has been read. Without the gate the first
+  // render shows every project expanded and then visibly snaps to the cache.
+  const [projectCollapseCacheHydrated, setProjectCollapseCacheHydrated] = useState(false);
+  // Taps made before hydration resolved; they win over the server list so an
+  // early interaction is neither discarded nor written back to the cache.
+  const pendingProjectCollapseRef = useRef<Record<string, boolean>>({});
+  const projectCollapseHydratedRef = useRef(false);
+  // Serializes + coalesces the save PUTs per project. Rapid taps would
+  // otherwise race and could leave the account holding the opposite of what
+  // the drawer shows — a divergence that only surfaces on the next launch.
+  //
+  // The saver belongs to ONE account: its queue holds values, and the auth
+  // token is only read when a value is finally dispatched. The effect below
+  // retires it and installs a replacement whenever the account changes, so a
+  // tap queued by the previous user can never be written to the new user's
+  // preferences. Seeded eagerly so a tap landing between first render and the
+  // first effect flush still has somewhere to go.
+  // Re-hydrate when the signed-in account changes (sign-out/sign-in keeps the
+  // drawer mounted), so the new user never keeps looking at the old state.
+  const collapseAccountKey = currentCollapsedProjectsKey();
+  const projectCollapseSaverRef = useRef<ReturnType<typeof createCollapsedProjectSaver> | null>(
+    null,
+  );
+  if (!projectCollapseSaverRef.current)
+    projectCollapseSaverRef.current = createCollapsedProjectSaver(putCollapsedProject);
+  const projectCollapseSaverAccountKeyRef = useRef(collapseAccountKey);
+  const projectCollapseCacheSaverRef = useRef<ReturnType<
+    typeof createCollapsedProjectsCacheSaver
+  > | null>(null);
+  if (!projectCollapseCacheSaverRef.current)
+    projectCollapseCacheSaverRef.current = createCollapsedProjectsCacheSaver();
+  const projectCollapseCacheSaverAccountKeyRef = useRef(collapseAccountKey);
+  // Retire and replace both eager savers synchronously on an account change.
+  // This closes the gap before the hydration effect runs: a pre-effect queue
+  // can never become orphaned and dispatch under the next account's token.
+  if (projectCollapseSaverAccountKeyRef.current !== collapseAccountKey) {
+    projectCollapseSaverRef.current!.cancel();
+    projectCollapseSaverRef.current = createCollapsedProjectSaver(putCollapsedProject);
+    projectCollapseSaverAccountKeyRef.current = collapseAccountKey;
+  }
+  if (projectCollapseCacheSaverAccountKeyRef.current !== collapseAccountKey) {
+    projectCollapseCacheSaverRef.current!.cancel();
+    projectCollapseCacheSaverRef.current = createCollapsedProjectsCacheSaver();
+    projectCollapseCacheSaverAccountKeyRef.current = collapseAccountKey;
+  }
+  useEffect(() => {
+    let cancelled = false;
+    const accountSaver = projectCollapseSaverRef.current!;
+    const accountCacheSaver = projectCollapseCacheSaverRef.current!;
+    projectCollapseHydratedRef.current = false;
+    pendingProjectCollapseRef.current = {};
+    setProjectCollapseCacheHydrated(false);
+    setCollapsedProjects({});
+    (async () => {
+      const cachedIds = await loadCollapsedProjects();
+      if (cancelled) return;
+      if (cachedIds.length) {
+        // Cache paints UNDER any taps already made (`prev` wins).
+        setCollapsedProjects((prev: any) => ({ ...toCollapsedMap(cachedIds), ...prev }));
+      }
+      // The cache is the first-paint source of truth while the server
+      // request is still in flight. An empty cache is also a completed
+      // read and must release the loading gate.
+      setProjectCollapseCacheHydrated(true);
+      let serverIds: string[] | null = null;
+      try {
+        const data: any = await api.getMySidebarCollapsedProjects();
+        serverIds = normalizeCollapsedProjects(data?.sidebarCollapsedProjects);
+      } catch {
+        // Offline / no per-user row — keep the cached view rather than
+        // expanding everything.
+        serverIds = null;
+      }
+      if (cancelled) return;
+      if (serverIds) {
+        const merged = mergeHydratedCollapsedProjects(serverIds, pendingProjectCollapseRef.current);
+        setCollapsedProjects(toCollapsedMap(merged));
+        void accountCacheSaver.save(merged);
+      }
+      projectCollapseHydratedRef.current = true;
+      pendingProjectCollapseRef.current = {};
+    })();
+    return () => {
+      cancelled = true;
+      // Runs before the next effect body (account change) and on unmount
+      // (sign-out). Either way the queued taps belong to an account that
+      // is no longer the one we'd authenticate as.
+      accountSaver.cancel();
+      accountCacheSaver.cancel();
     };
-    // Per-project nav-group collapse state, keyed by `${projectId}:${groupKey}`.
-    // Default COLLAPSED (mirrors the web sidebar). Hydrated from AsyncStorage on
-    // mount and persisted on change so the user's choices survive app restarts.
-    const [collapsedNavGroups, setCollapsedNavGroups] = useState<any>({});
-    const [navGroupsHydrated, setNavGroupsHydrated] = useState(false);
-    useEffect(() => {
-        let cancelled = false;
-        loadNavGroupCollapsed().then((stored) => {
-            if (!cancelled) {
-                // Merge stored state UNDER any toggles the user made before the
-                // async load resolved — `prev` (their taps) wins over `stored` so
-                // an early interaction is neither discarded nor lost to storage
-                // (the post-hydration persist effect then saves the merged result).
-                setCollapsedNavGroups((prev: any) => mergeHydratedNavGroups(stored, prev));
-                setNavGroupsHydrated(true);
-            }
-        });
-        return () => {
-            cancelled = true;
-        };
-    }, []);
-    useEffect(() => {
-        // Skip until hydration so we don't clobber storage with the empty initial
-        // state before the stored map has been merged in.
-        if (!navGroupsHydrated) return;
-        saveNavGroupCollapsed(collapsedNavGroups);
-    }, [collapsedNavGroups, navGroupsHydrated]);
-    const [archivedExpanded, setArchivedExpanded] = useState(false);
-    const [showOrgPicker, setShowOrgPicker] = useState(false);
-    // Server version / git hash for the footer (matches the web sidebar footer).
-    const [health, setHealth] = useState<any>(null);
-    useEffect(() => {
-        let cancelled = false;
-        api
-            .getHealth()
-            .then((h: any) => {
-            if (!cancelled)
-                setHealth(h);
-        })
-            .catch(() => {
-            /* footer version is best-effort — ignore failures */
-        });
-        return () => {
-            cancelled = true;
-        };
-    }, []);
-    const orgState = getOrgs();
-    const orgs = orgState?.orgs || [];
-    const activeOrg = getActiveOrg();
-    const toggleCollapse = (agentId: any) => {
-        setCollapsedAgents((prev: any) => ({ ...prev, [agentId]: !prev[agentId] }));
-    };
-    const isRecent = (dateStr: any) => {
-        const d = parseDate(dateStr);
-        if (!d || Number.isNaN(d.getTime()))
-            return false;
-        return Date.now() - d.getTime() < 30 * 60 * 1000;
-    };
-    const handleAgentSelect = (agentId: any) => {
-        setActiveAgentId(agentId);
-        navigation.navigate('Chat');
-        navigation.closeDrawer();
-    };
-    const showConnectionInfo = () => {
-        const org = getActiveOrg();
-        const apiUrl = getApiBaseUrl();
-        const wsUrl = getWsUrl();
-        Alert.alert('Connection Info', `Org: ${org?.name || '(none)'}\n` +
-            `URL: ${org?.remoteUrl || '(not set)'}\n` +
-            `API: ${apiUrl || '(empty)'}\n` +
-            `WS: ${wsUrl ? wsUrl.replace(/apiKey=[^&]+/, 'apiKey=***') : '(empty)'}\n` +
-            `Key: ${org?.apiKey ? `${org.apiKey.slice(0, 5)}...${org.apiKey.slice(-4)}` : '(none)'}\n` +
-            `Status: ${connected ? 'Connected' : reconnecting ? 'Reconnecting' : 'Disconnected'}`);
-    };
-    const handleSessionSelect = (sessionId: any) => {
-        // If the user taps the already-active session, `setActiveSessionId` is
-        // a no-op and React Navigation's focus event won't fire either — so the
-        // chat wouldn't refresh at all. Explicitly reload so every drawer tap
-        // pulls the latest message history from the server.
-        if (sessionId === activeSessionId) {
-            reloadMessages();
-        }
-        else {
-            setActiveSessionId(sessionId);
-        }
-        navigation.navigate('Chat');
-        navigation.closeDrawer();
-    };
-    const confirmDeleteSession = (sessionId: any) => {
-        // The confirmation copy already explains the 7-day window, so the
-        // archive action completes silently — no second "Archived" modal that
-        // would block interaction. The row appears in the Archived drawer
-        // section immediately and failures surface via an error Alert from
-        // handleDeleteSession itself.
-        Alert.alert('Delete Session', 'Archive this session? You can restore it within 7 days from the Archived section.', [
-            { text: 'Cancel', style: 'cancel' },
-            {
-                text: 'Archive',
-                style: 'destructive',
-                onPress: () => {
-                    // Swallow the rejection — handleDeleteSession surfaces its own
-                    // alert on failure, so we just need to avoid an unhandled promise.
-                    handleDeleteSession(sessionId).catch(() => { });
-                },
-            },
-        ]);
-    };
-    // Same reload-on-re-tap logic as handleSessionSelect — if the user taps the
-    // already-active cron session, explicitly reload since neither setState nor
-    // navigation focus will trigger a refresh.
-    const handleCronSessionSelect = (sessionId: any) => {
-        if (sessionId === activeSessionId) {
-            reloadMessages();
-        }
-        else {
-            setActiveSessionId(sessionId);
-        }
-        navigation.navigate('Chat');
-        navigation.closeDrawer();
-    };
-    // Agents that belong to a known project
-    const projectAgentIds = new Set();
-    projects.forEach((p: any) => {
-        agents.forEach((a: any) => {
-            if (a.projectId === p.id)
-                projectAgentIds.add(a.id);
-        });
+  }, [collapseAccountKey]);
+  const toggleProjectCollapse = (projectId: string) => {
+    const collapsed = !collapsedProjects[projectId];
+    const next = { ...collapsedProjects, [projectId]: collapsed };
+    setCollapsedProjects(next);
+    if (!projectCollapseHydratedRef.current)
+      pendingProjectCollapseRef.current[projectId] = collapsed;
+    void projectCollapseCacheSaverRef.current!.save(fromCollapsedMap(next));
+    // Serialized + coalesced per project, so double-tapping can't land the
+    // PUTs out of order. Still fire-and-forget: the optimistic local state is
+    // already correct and the saver swallows failures.
+    void projectCollapseSaverRef.current!.save(projectId, collapsed);
+  };
+  // Per-project nav-group collapse state, keyed by `${projectId}:${groupKey}`.
+  // Default COLLAPSED (mirrors the web sidebar). Hydrated from AsyncStorage on
+  // mount and persisted on change so the user's choices survive app restarts.
+  const [collapsedNavGroups, setCollapsedNavGroups] = useState<any>({});
+  const [navGroupsHydrated, setNavGroupsHydrated] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    loadNavGroupCollapsed().then((stored) => {
+      if (!cancelled) {
+        // Merge stored state UNDER any toggles the user made before the
+        // async load resolved — `prev` (their taps) wins over `stored` so
+        // an early interaction is neither discarded nor lost to storage
+        // (the post-hydration persist effect then saves the merged result).
+        setCollapsedNavGroups((prev: any) => mergeHydratedNavGroups(stored, prev));
+        setNavGroupsHydrated(true);
+      }
     });
-    const orphanAgents = agents.filter((a: any) => !projectAgentIds.has(a.id) && a.active !== false);
-    const renderAgentRow = (agent: any) => (<View key={agent.id}>
-      <TouchableOpacity style={[
-            styles.agentItem,
-            activeAgentId === agent.id && styles.agentItemActive,
-        ]} onPress={() => handleAgentSelect(agent.id)}>
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    // Skip until hydration so we don't clobber storage with the empty initial
+    // state before the stored map has been merged in.
+    if (!navGroupsHydrated) return;
+    saveNavGroupCollapsed(collapsedNavGroups);
+  }, [collapsedNavGroups, navGroupsHydrated]);
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [showOrgPicker, setShowOrgPicker] = useState(false);
+  // Server version / git hash for the footer (matches the web sidebar footer).
+  const [health, setHealth] = useState<any>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getHealth()
+      .then((h: any) => {
+        if (!cancelled) setHealth(h);
+      })
+      .catch(() => {
+        /* footer version is best-effort — ignore failures */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const orgState = getOrgs();
+  const orgs = orgState?.orgs || [];
+  const activeOrg = getActiveOrg();
+  const toggleCollapse = (agentId: any) => {
+    setCollapsedAgents((prev: any) => ({ ...prev, [agentId]: !prev[agentId] }));
+  };
+  const isRecent = (dateStr: any) => {
+    const d = parseDate(dateStr);
+    if (!d || Number.isNaN(d.getTime())) return false;
+    return Date.now() - d.getTime() < 30 * 60 * 1000;
+  };
+  const handleAgentSelect = (agentId: any) => {
+    setActiveAgentId(agentId);
+    navigation.navigate('Chat');
+    navigation.closeDrawer();
+  };
+  const showConnectionInfo = () => {
+    const org = getActiveOrg();
+    const apiUrl = getApiBaseUrl();
+    const wsUrl = getWsUrl();
+    Alert.alert(
+      'Connection Info',
+      `Org: ${org?.name || '(none)'}\n` +
+        `URL: ${org?.remoteUrl || '(not set)'}\n` +
+        `API: ${apiUrl || '(empty)'}\n` +
+        `WS: ${wsUrl ? wsUrl.replace(/apiKey=[^&]+/, 'apiKey=***') : '(empty)'}\n` +
+        `Key: ${org?.apiKey ? `${org.apiKey.slice(0, 5)}...${org.apiKey.slice(-4)}` : '(none)'}\n` +
+        `Status: ${connected ? 'Connected' : reconnecting ? 'Reconnecting' : 'Disconnected'}`,
+    );
+  };
+  const handleSessionSelect = (sessionId: any) => {
+    // If the user taps the already-active session, `setActiveSessionId` is
+    // a no-op and React Navigation's focus event won't fire either — so the
+    // chat wouldn't refresh at all. Explicitly reload so every drawer tap
+    // pulls the latest message history from the server.
+    if (sessionId === activeSessionId) {
+      reloadMessages();
+    } else {
+      setActiveSessionId(sessionId);
+    }
+    navigation.navigate('Chat');
+    navigation.closeDrawer();
+  };
+  const confirmDeleteSession = (sessionId: any) => {
+    // The confirmation copy already explains the 7-day window, so the
+    // archive action completes silently — no second "Archived" modal that
+    // would block interaction. The row appears in the Archived drawer
+    // section immediately and failures surface via an error Alert from
+    // handleDeleteSession itself.
+    Alert.alert(
+      'Delete Session',
+      'Archive this session? You can restore it within 7 days from the Archived section.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Archive',
+          style: 'destructive',
+          onPress: () => {
+            // Swallow the rejection — handleDeleteSession surfaces its own
+            // alert on failure, so we just need to avoid an unhandled promise.
+            handleDeleteSession(sessionId).catch(() => {});
+          },
+        },
+      ],
+    );
+  };
+  // Same reload-on-re-tap logic as handleSessionSelect — if the user taps the
+  // already-active cron session, explicitly reload since neither setState nor
+  // navigation focus will trigger a refresh.
+  const handleCronSessionSelect = (sessionId: any) => {
+    if (sessionId === activeSessionId) {
+      reloadMessages();
+    } else {
+      setActiveSessionId(sessionId);
+    }
+    navigation.navigate('Chat');
+    navigation.closeDrawer();
+  };
+  // Agents that belong to a known project
+  const projectAgentIds = new Set();
+  projects.forEach((p: any) => {
+    agents.forEach((a: any) => {
+      if (a.projectId === p.id) projectAgentIds.add(a.id);
+    });
+  });
+  const orphanAgents = agents.filter((a: any) => !projectAgentIds.has(a.id) && a.active !== false);
+  const renderAgentRow = (agent: any) => (
+    <View key={agent.id}>
+      <TouchableOpacity
+        style={[styles.agentItem, activeAgentId === agent.id && styles.agentItemActive]}
+        onPress={() => handleAgentSelect(agent.id)}
+      >
         <View style={styles.agentDotContainer}>
-          <View style={[styles.agentDot, { backgroundColor: agent.color }]}/>
-          {isRecent(agent.lastActivity) && (<View style={styles.activityIndicator}/>)}
+          <View style={[styles.agentDot, { backgroundColor: agent.color }]} />
+          {isRecent(agent.lastActivity) && <View style={styles.activityIndicator} />}
         </View>
         <View style={styles.agentInfo}>
-          <Text style={[
-            styles.agentName,
-            activeAgentId === agent.id && styles.agentNameActive,
-        ]} numberOfLines={1}>
+          <Text
+            style={[styles.agentName, activeAgentId === agent.id && styles.agentNameActive]}
+            numberOfLines={1}
+          >
             {agent.name}
           </Text>
-          {agent.lastMessage && (<Text style={styles.agentLastMessage} numberOfLines={1}>
+          {agent.lastMessage && (
+            <Text style={styles.agentLastMessage} numberOfLines={1}>
               {agent.lastMessage.content}
-            </Text>)}
+            </Text>
+          )}
         </View>
-        {activeAgentId === agent.id && (<TouchableOpacity onPress={() => toggleCollapse(agent.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+        {activeAgentId === agent.id && (
+          <TouchableOpacity
+            onPress={() => toggleCollapse(agent.id)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
             <Text style={styles.collapseIcon}>
               {collapsedAgents[agent.id] ? '\u25B8' : '\u25BE'}
             </Text>
-          </TouchableOpacity>)}
+          </TouchableOpacity>
+        )}
       </TouchableOpacity>
 
       {/* Sessions */}
-      {activeAgentId === agent.id && !collapsedAgents[agent.id] && (<View style={styles.sessionsContainer}>
-          {sessions.map((session: any) => (<TouchableOpacity key={session.id} style={[
-                    styles.sessionItem,
-                    activeSessionId === session.id && styles.sessionItemActive,
-                ]} onPress={() => handleSessionSelect(session.id)} onLongPress={() => confirmDeleteSession(session.id)}>
-              <SessionStateIcon state={deriveSessionState(session, {
-                    activeTaskSessionIds: activeTasks,
-                    finalizeStatusBySession,
-                })} testID={`session-state-icon-${session.id}`}/>
-              <Text style={[
-                    styles.sessionName,
-                    activeSessionId === session.id && styles.sessionNameActive,
-                ]} numberOfLines={1}>
+      {activeAgentId === agent.id && !collapsedAgents[agent.id] && (
+        <View style={styles.sessionsContainer}>
+          {sessions.map((session: any) => (
+            <TouchableOpacity
+              key={session.id}
+              style={[
+                styles.sessionItem,
+                activeSessionId === session.id && styles.sessionItemActive,
+              ]}
+              onPress={() => handleSessionSelect(session.id)}
+              onLongPress={() => confirmDeleteSession(session.id)}
+            >
+              <SessionStateIcon
+                state={deriveSessionState(session, {
+                  activeTaskSessionIds: activeTasks,
+                  finalizeStatusBySession,
+                })}
+                testID={`session-state-icon-${session.id}`}
+              />
+              <Text
+                style={[
+                  styles.sessionName,
+                  activeSessionId === session.id && styles.sessionNameActive,
+                ]}
+                numberOfLines={1}
+              >
                 {session.name}
               </Text>
-            </TouchableOpacity>))}
+            </TouchableOpacity>
+          ))}
           {/* Reviewer agents are spawned only by the Finalize review phase —
                   hide manual "+ New Session" so the user can't kick a 403 from
                   the POST /api/agents/:id/sessions gate. */}
-          {agent.role !== 'reviewer' && (<TouchableOpacity style={styles.newSessionButton} onPress={async () => {
-                    await handleNewSession();
-                    navigation.navigate('Chat');
-                    navigation.closeDrawer();
-                }}>
+          {agent.role !== 'reviewer' && (
+            <TouchableOpacity
+              style={styles.newSessionButton}
+              onPress={async () => {
+                await handleNewSession();
+                navigation.navigate('Chat');
+                navigation.closeDrawer();
+              }}
+            >
               <Text style={styles.newSessionText}>+ New Session</Text>
-            </TouchableOpacity>)}
+            </TouchableOpacity>
+          )}
 
           {/* Archived (soft-deleted within 7 days) — collapsed by default so
                   the drawer stays quiet when nothing is pending recovery. Mirror
                   of the web sidebar's Archived section in Sidebar.jsx. */}
-          {archivedSessions && archivedSessions.length > 0 && (<View style={styles.archivedSection} testID="archived-sessions-section">
-              <TouchableOpacity onPress={() => setArchivedExpanded((v: any) => !v)} style={styles.archivedHeader}>
-                <Text style={styles.archivedHeaderText}>
-                  Archived ({archivedSessions.length})
-                </Text>
-                <Text style={styles.archivedChevron}>
-                  {archivedExpanded ? '\u25BE' : '\u25B8'}
-                </Text>
+          {archivedSessions && archivedSessions.length > 0 && (
+            <View style={styles.archivedSection} testID="archived-sessions-section">
+              <TouchableOpacity
+                onPress={() => setArchivedExpanded((v: any) => !v)}
+                style={styles.archivedHeader}
+              >
+                <Text style={styles.archivedHeaderText}>Archived ({archivedSessions.length})</Text>
+                <Text style={styles.archivedChevron}>{archivedExpanded ? '\u25BE' : '\u25B8'}</Text>
               </TouchableOpacity>
-              {archivedExpanded && (<View testID="archived-sessions-list">
+              {archivedExpanded && (
+                <View testID="archived-sessions-list">
                   {archivedSessions.map((a: any) => {
-                        const purge = daysUntilPurge(a.deleted_at);
-                        // AppContext always passes a Set; optional chaining keeps
-                        // this safe if a test mounts DrawerContent without it.
-                        const isRestoring = restoringSessionIds.has(a.id);
-                        const urgent = purge && purge.daysLeft <= 1;
-                        return (<View key={a.id} style={styles.archivedRow}>
+                    const purge = daysUntilPurge(a.deleted_at);
+                    // AppContext always passes a Set; optional chaining keeps
+                    // this safe if a test mounts DrawerContent without it.
+                    const isRestoring = restoringSessionIds.has(a.id);
+                    const urgent = purge && purge.daysLeft <= 1;
+                    return (
+                      <View key={a.id} style={styles.archivedRow}>
                         <View style={{ flex: 1 }}>
                           <Text style={styles.archivedName} numberOfLines={1}>
                             {a.name}
                           </Text>
-                          {purge && (<Text style={[
-                                    styles.archivedPurge,
-                                    urgent && styles.archivedPurgeUrgent,
-                                ]}>
+                          {purge && (
+                            <Text
+                              style={[styles.archivedPurge, urgent && styles.archivedPurgeUrgent]}
+                            >
                               {purge.label}
-                            </Text>)}
+                            </Text>
+                          )}
                         </View>
-                        <TouchableOpacity onPress={() => handleRestoreSession(a.id)} disabled={isRestoring} style={[
-                                styles.restoreButton,
-                                isRestoring && styles.restoreButtonDisabled,
-                            ]}>
+                        <TouchableOpacity
+                          onPress={() => handleRestoreSession(a.id)}
+                          disabled={isRestoring}
+                          style={[
+                            styles.restoreButton,
+                            isRestoring && styles.restoreButtonDisabled,
+                          ]}
+                        >
                           <Text style={styles.restoreButtonText}>
                             {isRestoring ? '…' : 'Restore'}
                           </Text>
                         </TouchableOpacity>
-                      </View>);
-                    })}
-                </View>)}
-            </View>)}
-        </View>)}
-    </View>);
-    const renderMenuItem = (project: any, entry: any) => (<TouchableOpacity key={entry.key} style={styles.projectMenuItem} onPress={() => {
-            navigation.navigate(entry.screen, {
-                projectId: project.id,
-                project,
-            });
-            navigation.closeDrawer();
-        }}>
-      <HubIcon name={entry.icon} size={14} color={colors.gray500} style={styles.projectMenuItemIcon}/>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          )}
+        </View>
+      )}
+    </View>
+  );
+  const renderMenuItem = (project: any, entry: any) => (
+    <TouchableOpacity
+      key={entry.key}
+      style={styles.projectMenuItem}
+      onPress={() => {
+        navigation.navigate(entry.screen, {
+          projectId: project.id,
+          project,
+        });
+        navigation.closeDrawer();
+      }}
+    >
+      <HubIcon
+        name={entry.icon}
+        size={14}
+        color={colors.gray500}
+        style={styles.projectMenuItemIcon}
+      />
       <Text style={styles.projectMenuItemText} numberOfLines={1}>
         {entry.label}
       </Text>
-      {entry.key === 'threads' && unreadThreadCounts?.[project.id] > 0 && (<View style={styles.unreadBadge}>
+      {entry.key === 'threads' && unreadThreadCounts?.[project.id] > 0 && (
+        <View style={styles.unreadBadge}>
           <Text style={styles.unreadBadgeText}>
             {unreadThreadCounts[project.id] > 99 ? '99+' : unreadThreadCounts[project.id]}
           </Text>
-        </View>)}
-      {entry.key === 'support' && unreadTicketCounts?.[project.id] > 0 && (<View style={styles.unreadBadge}>
+        </View>
+      )}
+      {entry.key === 'support' && unreadTicketCounts?.[project.id] > 0 && (
+        <View style={styles.unreadBadge}>
           <Text style={styles.unreadBadgeText}>
             {unreadTicketCounts[project.id] > 99 ? '99+' : unreadTicketCounts[project.id]}
           </Text>
-        </View>)}
-      {entry.key === 'pulls' && openPullCounts?.[project.id] > 0 && (<View style={styles.unreadBadge}>
+        </View>
+      )}
+      {entry.key === 'pulls' && openPullCounts?.[project.id] > 0 && (
+        <View style={styles.unreadBadge}>
           <Text style={styles.unreadBadgeText}>
             {openPullCounts[project.id] > 99 ? '99+' : openPullCounts[project.id]}
           </Text>
-        </View>)}
+        </View>
+      )}
       {entry.key === 'security' &&
-            (() => {
-                const counts = securityOpenCounts?.[project.id];
-                const criticalHigh = counts ? (counts.critical || 0) + (counts.high || 0) : 0;
-                if (criticalHigh <= 0)
-                    return null;
-                return (<View style={[styles.unreadBadge, styles.securityBadge]}>
-              <Text style={styles.unreadBadgeText}>
-                {criticalHigh > 99 ? '99+' : criticalHigh}
-              </Text>
-            </View>);
-            })()}
-    </TouchableOpacity>);
-    // Grouped nav (Git / Planning / Support / AI / Settings), each group a
-    // collapsible section (default collapsed), mirroring the web sidebar.
-    const renderProjectMenu = (project: any) => {
-        const groups = projectNavGroups(project);
-        return (<View style={styles.projectMenu}>
+        (() => {
+          const counts = securityOpenCounts?.[project.id];
+          const criticalHigh = counts ? (counts.critical || 0) + (counts.high || 0) : 0;
+          if (criticalHigh <= 0) return null;
+          return (
+            <View style={[styles.unreadBadge, styles.securityBadge]}>
+              <Text style={styles.unreadBadgeText}>{criticalHigh > 99 ? '99+' : criticalHigh}</Text>
+            </View>
+          );
+        })()}
+    </TouchableOpacity>
+  );
+  // Grouped nav (Git / Planning / Support / AI / Settings), each group a
+  // collapsible section (default collapsed), mirroring the web sidebar.
+  const renderProjectMenu = (project: any) => {
+    const groups = projectNavGroups(project);
+    return (
+      <View style={styles.projectMenu}>
         {groups.map((group: any) => {
-            const collapseKey = `${project.id}:${group.key}`;
-            const collapsed = collapsedNavGroups[collapseKey] ?? true;
-            return (<View key={group.key}>
-              <TouchableOpacity style={styles.projectMenuToggle} testID={`drawer-nav-group-${group.key}-${project.id}`} onPress={() => setCollapsedNavGroups((prev: any) => ({
+          const collapseKey = `${project.id}:${group.key}`;
+          const collapsed = collapsedNavGroups[collapseKey] ?? true;
+          return (
+            <View key={group.key}>
+              <TouchableOpacity
+                style={styles.projectMenuToggle}
+                testID={`drawer-nav-group-${group.key}-${project.id}`}
+                onPress={() =>
+                  setCollapsedNavGroups((prev: any) => ({
                     ...prev,
                     [collapseKey]: !(prev[collapseKey] ?? true),
-                }))}>
-                <HubIcon name={collapsed ? 'ChevronRight' : 'ChevronDown'} size={14} color={colors.gray500} style={styles.projectMenuChevron}/>
+                  }))
+                }
+              >
+                <HubIcon
+                  name={collapsed ? 'ChevronRight' : 'ChevronDown'}
+                  size={14}
+                  color={colors.gray500}
+                  style={styles.projectMenuChevron}
+                />
                 <Text style={styles.projectMenuGroupLabel} numberOfLines={1}>
                   {group.label}
                 </Text>
               </TouchableOpacity>
-              {!collapsed && (<View style={styles.projectMenuItems}>
+              {!collapsed && (
+                <View style={styles.projectMenuItems}>
                   {group.entries.map((entry: any) => renderMenuItem(project, entry))}
-                </View>)}
-            </View>);
+                </View>
+              )}
+            </View>
+          );
         })}
-      </View>);
-    };
-    return (<SafeAreaView style={styles.container}>
+      </View>
+    );
+  };
+  return (
+    <SafeAreaView style={styles.container}>
       {/* Org Switcher Header */}
       <TouchableOpacity style={styles.header} onPress={() => setShowOrgPicker(!showOrgPicker)}>
-        <View style={[styles.orgDot, { backgroundColor: activeOrg?.color || '#6366f1' }]}/>
+        <View style={[styles.orgDot, { backgroundColor: activeOrg?.color || '#6366f1' }]} />
         <Text style={styles.headerTitle} numberOfLines={1}>
           {activeOrg?.name || 'Agent Hub'}
         </Text>
         <Text style={styles.chevron}>{showOrgPicker ? '\u25B4' : '\u25BE'}</Text>
       </TouchableOpacity>
 
-      {showOrgPicker && (<View style={styles.orgDropdown}>
-          {orgs.map((org: any) => (<TouchableOpacity key={org.id} style={[styles.orgItem, org.id === activeOrg?.id && styles.orgItemActive]} onPress={async () => {
-                    if (org.id !== activeOrg?.id) {
-                        await handleSwitchOrg(org.id);
-                    }
-                    setShowOrgPicker(false);
-                }}>
-              <View style={[styles.orgItemDot, { backgroundColor: org.color }]}/>
-              <Text style={styles.orgItemName} numberOfLines={1}>{org.name}</Text>
+      {showOrgPicker && (
+        <View style={styles.orgDropdown}>
+          {orgs.map((org: any) => (
+            <TouchableOpacity
+              key={org.id}
+              style={[styles.orgItem, org.id === activeOrg?.id && styles.orgItemActive]}
+              onPress={async () => {
+                if (org.id !== activeOrg?.id) {
+                  await handleSwitchOrg(org.id);
+                }
+                setShowOrgPicker(false);
+              }}
+            >
+              <View style={[styles.orgItemDot, { backgroundColor: org.color }]} />
+              <Text style={styles.orgItemName} numberOfLines={1}>
+                {org.name}
+              </Text>
               <Text style={styles.orgMode}>{'\u2601'}</Text>
               {org.id === activeOrg?.id && <Text style={styles.orgCheck}>{'\u2713'}</Text>}
-            </TouchableOpacity>))}
-          <TouchableOpacity style={styles.orgManage} onPress={() => {
-                setShowOrgPicker(false);
-                navigation.navigate('Settings');
-                navigation.closeDrawer();
-            }}>
+            </TouchableOpacity>
+          ))}
+          <TouchableOpacity
+            style={styles.orgManage}
+            onPress={() => {
+              setShowOrgPicker(false);
+              navigation.navigate('Settings');
+              navigation.closeDrawer();
+            }}
+          >
             <Text style={styles.orgManageText}>Manage Organizations</Text>
           </TouchableOpacity>
-        </View>)}
+        </View>
+      )}
 
       {/* Agents grouped by Project */}
       <ScrollView style={styles.agentList}>
-        <TouchableOpacity testID="drawer-global-hub" style={styles.dashboardItem} onPress={() => {
+        <TouchableOpacity
+          testID="drawer-global-hub"
+          style={styles.dashboardItem}
+          onPress={() => {
             navigation.navigate('Hub');
             navigation.closeDrawer();
-        }} accessibilityLabel="Hub">
+          }}
+          accessibilityLabel="Hub"
+        >
           <BrandLogo size="sm" />
         </TouchableOpacity>
         <View style={styles.connectionRow}>
-          <Pressable onLongPress={showConnectionInfo} style={[
-            styles.connectionBadge,
-            connected
+          <Pressable
+            onLongPress={showConnectionInfo}
+            style={[
+              styles.connectionBadge,
+              connected
                 ? styles.connectionBadgeConnected
                 : reconnecting
-                    ? styles.connectionBadgeReconnecting
-                    : styles.connectionBadgeDisconnected,
-        ]} accessibilityRole="text" accessibilityLabel={connected ? 'Connected' : reconnecting ? 'Reconnecting' : 'Disconnected'} testID="sidebar-connection-status">
-            <Text style={[
-            styles.connectionText,
-            connected
-                ? styles.connectionTextConnected
-                : reconnecting
+                  ? styles.connectionBadgeReconnecting
+                  : styles.connectionBadgeDisconnected,
+            ]}
+            accessibilityRole="text"
+            accessibilityLabel={
+              connected ? 'Connected' : reconnecting ? 'Reconnecting' : 'Disconnected'
+            }
+            testID="sidebar-connection-status"
+          >
+            <Text
+              style={[
+                styles.connectionText,
+                connected
+                  ? styles.connectionTextConnected
+                  : reconnecting
                     ? styles.connectionTextReconnecting
                     : styles.connectionTextDisconnected,
-        ]} numberOfLines={1}>
+              ]}
+              numberOfLines={1}
+            >
               {connected ? '● Connected' : reconnecting ? '● Reconnecting…' : '● Disconnected'}
             </Text>
           </Pressable>
-          <BugReportButton projectId={bugReportProjectId} agentId={activeAgentId || ''} sourceUrl={activeAgent?.name ? `agent:${activeAgent.name}` : ''} buttonStyle={styles.bugReportButton}/>
+          <BugReportButton
+            projectId={bugReportProjectId}
+            agentId={activeAgentId || ''}
+            sourceUrl={activeAgent?.name ? `agent:${activeAgent.name}` : ''}
+            buttonStyle={styles.bugReportButton}
+          />
         </View>
 
-        {cronSessions.length > 0 && (<View style={{ marginBottom: 16 }}>
+        {cronSessions.length > 0 && (
+          <View style={{ marginBottom: 16 }}>
             <View style={styles.sectionLabelRow}>
-              <HubIcon name="Clock" size={12} color={colors.gray500}/>
+              <HubIcon name="Clock" size={12} color={colors.gray500} />
               <Text style={[styles.sectionLabel, styles.sectionLabelInline]}>SCHEDULED TASKS</Text>
             </View>
-            {cronSessions.map((cs: any) => (<TouchableOpacity key={cs.id} style={[
-                    styles.agentItem,
-                    activeSessionId === cs.id && styles.agentItemActive,
-                ]} onPress={() => handleCronSessionSelect(cs.id)}>
-                <SessionStateIcon state={deriveSessionState(cs, {
+            {cronSessions.map((cs: any) => (
+              <TouchableOpacity
+                key={cs.id}
+                style={[styles.agentItem, activeSessionId === cs.id && styles.agentItemActive]}
+                onPress={() => handleCronSessionSelect(cs.id)}
+              >
+                <SessionStateIcon
+                  state={deriveSessionState(cs, {
                     activeTaskSessionIds: activeTasks,
                     finalizeStatusBySession,
-                })} testID={`session-state-icon-${cs.id}`}/>
+                  })}
+                  testID={`session-state-icon-${cs.id}`}
+                />
                 <View style={styles.agentInfo}>
-                  <Text style={[
-                    styles.agentName,
-                    activeSessionId === cs.id && styles.agentNameActive,
-                ]} numberOfLines={1}>
+                  <Text
+                    style={[styles.agentName, activeSessionId === cs.id && styles.agentNameActive]}
+                    numberOfLines={1}
+                  >
                     {cs.cron_name || cs.name}
                   </Text>
-                  <Text style={styles.cronScheduleText}>
-                    {humanCron(cs.cron_schedule)}
-                  </Text>
+                  <Text style={styles.cronScheduleText}>{humanCron(cs.cron_schedule)}</Text>
                 </View>
-              </TouchableOpacity>))}
-          </View>)}
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
 
-        {!projectCollapseCacheHydrated && (<View style={styles.projectCollapseLoading} testID="drawer-projects-loading">
-          <ActivityIndicator color={colors.gray500}/>
-        </View>)}
+        {!projectCollapseCacheHydrated && (
+          <View style={styles.projectCollapseLoading} testID="drawer-projects-loading">
+            <ActivityIndicator color={colors.gray500} />
+          </View>
+        )}
 
-        {projectCollapseCacheHydrated && projects.length > 0 && (<>
+        {projectCollapseCacheHydrated && projects.length > 0 && (
+          <>
             <Text style={styles.sectionLabel}>PROJECTS</Text>
             {projects.map((project: any, index: any) => {
-                const projectAgents = agents.filter((a: any) => a.projectId === project.id && a.active !== false);
-                if (projectAgents.length === 0)
-                    return null;
-                const isCollapsed = collapsedProjects[project.id];
-                return (<View key={project.id}>
-                  {index > 0 && <View style={styles.projectDivider}/>}
+              const projectAgents = agents.filter(
+                (a: any) => a.projectId === project.id && a.active !== false,
+              );
+              if (projectAgents.length === 0) return null;
+              const isCollapsed = collapsedProjects[project.id];
+              return (
+                <View key={project.id}>
+                  {index > 0 && <View style={styles.projectDivider} />}
                   <View style={styles.projectHeaderRow}>
-                    <TouchableOpacity testID={`drawer-project-${project.id}`} style={[styles.projectHeader, { flex: 1 }]} onPress={() => toggleProjectCollapse(project.id)} onLongPress={() => {
-                        Alert.alert('Delete Project', `Delete "${project.name}" and all its agents, sessions, board, and wiki data? This cannot be undone.`, [
+                    <TouchableOpacity
+                      testID={`drawer-project-${project.id}`}
+                      style={[styles.projectHeader, { flex: 1 }]}
+                      onPress={() => toggleProjectCollapse(project.id)}
+                      onLongPress={() => {
+                        Alert.alert(
+                          'Delete Project',
+                          `Delete "${project.name}" and all its agents, sessions, board, and wiki data? This cannot be undone.`,
+                          [
                             { text: 'Cancel', style: 'cancel' },
                             {
-                                text: 'Delete',
-                                style: 'destructive',
-                                onPress: async () => {
-                                    try {
-                                        await api.deleteProject(project.id);
-                                        refreshProjects();
-                                        refreshAgents();
-                                    }
-                                    catch (err: any) {
-                                        Alert.alert('Error', 'Failed to delete project');
-                                    }
-                                },
+                              text: 'Delete',
+                              style: 'destructive',
+                              onPress: async () => {
+                                try {
+                                  await api.deleteProject(project.id);
+                                  refreshProjects();
+                                  refreshAgents();
+                                } catch (err: any) {
+                                  Alert.alert('Error', 'Failed to delete project');
+                                }
+                              },
                             },
-                        ]);
-                    }}>
-                      <View style={[styles.projectDot, { backgroundColor: project.color || '#6366f1' }]}/>
+                          ],
+                        );
+                      }}
+                    >
+                      <View
+                        style={[styles.projectDot, { backgroundColor: project.color || '#6366f1' }]}
+                      />
                       <Text style={styles.projectName} numberOfLines={1}>
                         {project.name}
-                        {isWorkflowProject(project) ? (<Text style={styles.workflowTag}> Wf</Text>) : null}
+                        {isWorkflowProject(project) ? (
+                          <Text style={styles.workflowTag}> Wf</Text>
+                        ) : null}
                       </Text>
-                      <Text style={styles.collapseIcon}>
-                        {isCollapsed ? '\u25B8' : '\u25BE'}
-                      </Text>
+                      <Text style={styles.collapseIcon}>{isCollapsed ? '\u25B8' : '\u25BE'}</Text>
                     </TouchableOpacity>
                   </View>
 
-                  {!isCollapsed && (<>
+                  {!isCollapsed && (
+                    <>
                       {projectAgents.map((agent: any) => renderAgentRow(agent))}
                       {renderProjectMenu(project)}
-                    </>)}
-                </View>);
+                    </>
+                  )}
+                </View>
+              );
             })}
-          </>)}
+          </>
+        )}
 
         {/* Agents without a project (fallback / orphans) */}
-        {orphanAgents.length > 0 && (<View>
+        {orphanAgents.length > 0 && (
+          <View>
             <Text style={styles.sectionLabel}>
               {projects.length > 0 ? 'OTHER AGENTS' : 'AGENTS'}
             </Text>
             {orphanAgents.map((agent: any) => renderAgentRow(agent))}
-          </View>)}
-
+          </View>
+        )}
       </ScrollView>
 
       {/* Bottom Nav — mirrors the web sidebar footer (Skills, Settings, then
               the server version line). Wiki / Notes now live under each project's
               "Settings" submenu, matching the web sidebar's project-scoped grouping. */}
       <View style={styles.bottomNav}>
-        <TouchableOpacity style={styles.navButton} onPress={() => {
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => {
             navigation.navigate('Skills');
             navigation.closeDrawer();
-        }}>
-          <HubIcon name="BookOpen" size={16} style={styles.navButtonIcon}/>
+          }}
+        >
+          <HubIcon name="BookOpen" size={16} style={styles.navButtonIcon} />
           <Text style={styles.navButtonText}>Skills</Text>
           {skillImprovementPendingTotal > 0 && (
             <View testID="skills-pending-badge" style={[styles.unreadBadge, styles.skillBadge]}>
@@ -618,477 +795,492 @@ export default function DrawerContent({ navigation }: any) {
             </View>
           )}
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navButton} onPress={() => {
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => {
             navigation.navigate('Releases');
             navigation.closeDrawer();
-        }}>
-          <HubIcon name="Sparkles" size={16} style={styles.navButtonIcon}/>
+          }}
+        >
+          <HubIcon name="Sparkles" size={16} style={styles.navButtonIcon} />
           <Text style={styles.navButtonText}>What's new</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navButton} onPress={() => {
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => {
             navigation.navigate('NewProject');
             navigation.closeDrawer();
-        }}>
-          <HubIcon name="Plus" size={18} strokeWidth={2.5} style={styles.navButtonIcon}/>
+          }}
+        >
+          <HubIcon name="Plus" size={18} strokeWidth={2.5} style={styles.navButtonIcon} />
           <Text style={styles.navButtonText}>New Project</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navButton} onPress={() => {
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => {
             navigation.navigate('ImportProject');
             navigation.closeDrawer();
-        }}>
-          <HubIcon name="FolderOpen" size={17} style={styles.navButtonIcon}/>
+          }}
+        >
+          <HubIcon name="FolderOpen" size={17} style={styles.navButtonIcon} />
           <Text style={styles.navButtonText}>Import Project</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navButton} onPress={() => {
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => {
             navigation.navigate('Settings');
             navigation.closeDrawer();
-        }}>
-          <HubIcon name="Settings" size={16} style={styles.navButtonIcon}/>
+          }}
+        >
+          <HubIcon name="Settings" size={16} style={styles.navButtonIcon} />
           <Text style={styles.navButtonText}>Settings</Text>
         </TouchableOpacity>
-        {health?.version && (<View style={styles.versionBox}>
+        {health?.version && (
+          <View style={styles.versionBox}>
             <Text style={styles.versionText}>v{health.version}</Text>
-            {health.gitHash && (<Text style={styles.versionHash}>{health.gitHash}</Text>)}
-          </View>)}
+            {health.gitHash && <Text style={styles.versionHash}>{health.gitHash}</Text>}
+          </View>
+        )}
       </View>
-    </SafeAreaView>);
+    </SafeAreaView>
+  );
 }
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: colors.gray900,
-    },
-    header: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        padding: 16,
-        borderBottomWidth: 1,
-        borderBottomColor: colors.gray800,
-    },
-    headerTitle: {
-        flex: 1,
-        fontSize: 18,
-        fontWeight: 'bold',
-        color: colors.white,
-    },
-    orgDot: {
-        width: 20,
-        height: 20,
-        borderRadius: 6,
-    },
-    chevron: {
-        color: colors.gray500,
-        fontSize: 12,
-    },
-    orgDropdown: {
-        backgroundColor: colors.gray800,
-        borderRadius: 8,
-        marginHorizontal: 12,
-        marginBottom: 8,
-        overflow: 'hidden',
-    },
-    orgItem: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-    },
-    orgItemActive: {
-        backgroundColor: colors.gray700,
-    },
-    orgItemDot: {
-        width: 14,
-        height: 14,
-        borderRadius: 4,
-    },
-    orgItemName: {
-        flex: 1,
-        fontSize: 13,
-        color: colors.gray300,
-    },
-    orgMode: {
-        fontSize: 12,
-    },
-    orgCheck: {
-        color: colors.emerald400,
-        fontSize: 14,
-        fontWeight: 'bold',
-    },
-    orgManage: {
-        borderTopWidth: 1,
-        borderTopColor: colors.gray700,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-    },
-    orgManageText: {
-        fontSize: 12,
-        color: colors.gray500,
-    },
-    agentList: {
-        flex: 1,
-        padding: 12,
-    },
-    connectionRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        marginBottom: 12,
-    },
-    connectionBadge: {
-        flex: 1,
-        minWidth: 0,
-        borderRadius: 8,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        alignItems: 'center',
-    },
-    connectionBadgeConnected: {
-        backgroundColor: colors.emerald900_50,
-    },
-    connectionBadgeReconnecting: {
-        backgroundColor: colors.yellow900_50,
-    },
-    connectionBadgeDisconnected: {
-        backgroundColor: colors.red900_50,
-    },
-    connectionText: {
-        fontSize: 12,
-        textAlign: 'center',
-    },
-    connectionTextConnected: {
-        color: colors.emerald400,
-    },
-    connectionTextReconnecting: {
-        color: colors.yellow400,
-    },
-    connectionTextDisconnected: {
-        color: colors.red400,
-    },
-    bugReportButton: {
-        padding: 8,
-        marginRight: 0,
-    },
-    sectionLabel: {
-        fontSize: 10,
-        fontWeight: '600',
-        color: colors.gray500,
-        letterSpacing: 1,
-        marginBottom: 8,
-        paddingHorizontal: 8,
-    },
-    sectionLabelRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        marginBottom: 8,
-        paddingHorizontal: 8,
-    },
-    sectionLabelInline: {
-        marginBottom: 0,
-        paddingHorizontal: 0,
-    },
-    dashboardItem: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderRadius: 8,
-        marginBottom: 16,
-        backgroundColor: colors.gray800,
-    },
-    projectCollapseLoading: {
-        minHeight: 44,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    projectHeader: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        borderRadius: 8,
-    },
-    projectDot: {
-        width: 16,
-        height: 16,
-        borderRadius: 4,
-    },
-    projectName: {
-        flex: 1,
-        fontSize: 13,
-        fontWeight: '600',
-        color: colors.gray300,
-    },
-    workflowTag: {
-        fontSize: 10,
-        fontWeight: '700',
-        color: colors.amber400,
-    },
-    projectHeaderRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    unreadBadge: {
-        backgroundColor: colors.rose400,
-        borderRadius: 8,
-        minWidth: 16,
-        height: 16,
-        paddingHorizontal: 4,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    securityBadge: {
-        backgroundColor: colors.red500,
-    },
-    skillBadge: {
-        backgroundColor: colors.amber400,
-        marginLeft: 'auto',
-    },
-    unreadBadgeText: {
-        color: colors.white,
-        fontSize: 9,
-        fontWeight: '700',
-    },
-    projectDivider: {
-        borderTopWidth: 1,
-        borderTopColor: colors.gray800,
-        marginHorizontal: 8,
-        marginVertical: 4,
-    },
-    agentItem: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 12,
-        paddingHorizontal: 12,
-        paddingVertical: 12,
-        borderRadius: 8,
-        marginBottom: 2,
-    },
-    agentItemActive: {
-        backgroundColor: colors.gray800,
-    },
-    agentDotContainer: {
-        position: 'relative',
-    },
-    agentDot: {
-        width: 12,
-        height: 12,
-        borderRadius: 6,
-    },
-    miniDot: {
-        width: 6,
-        height: 6,
-        borderRadius: 3,
-    },
-    activityIndicator: {
-        position: 'absolute',
-        top: -2,
-        right: -2,
-        width: 8,
-        height: 8,
-        borderRadius: 4,
-        backgroundColor: colors.emerald500,
-        borderWidth: 1.5,
-        borderColor: colors.gray900,
-    },
-    agentInfo: {
-        flex: 1,
-        minWidth: 0,
-    },
-    agentName: {
-        fontSize: 14,
-        fontWeight: '500',
-        color: colors.gray400,
-    },
-    agentNameActive: {
-        color: colors.white,
-    },
-    agentLastMessage: {
-        fontSize: 11,
-        color: colors.gray600,
-        marginTop: 2,
-    },
-    cronScheduleText: {
-        fontSize: 11,
-        color: colors.gray600,
-        marginTop: 2,
-    },
-    collapseIcon: {
-        color: colors.gray500,
-        fontSize: 12,
-        paddingHorizontal: 4,
-    },
-    sessionsContainer: {
-        marginLeft: 24,
-        marginBottom: 8,
-    },
-    sessionItem: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 7,
-        paddingHorizontal: 8,
-        paddingVertical: 10,
-        borderRadius: 6,
-        marginBottom: 2,
-    },
-    sessionItemActive: {
-        backgroundColor: colors.gray800,
-    },
-    sessionName: {
-        flex: 1,
-        minWidth: 0,
-        fontSize: 12,
-        color: colors.gray500,
-    },
-    sessionNameActive: {
-        color: colors.white,
-    },
-    newSessionButton: {
-        paddingHorizontal: 8,
-        paddingVertical: 6,
-    },
-    newSessionText: {
-        fontSize: 12,
-        color: colors.gray600,
-    },
-    archivedSection: {
-        marginTop: 6,
-        paddingTop: 6,
-        borderTopWidth: 1,
-        borderTopColor: colors.gray800,
-    },
-    archivedHeader: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: 8,
-        paddingVertical: 6,
-    },
-    archivedHeaderText: {
-        flex: 1,
-        fontSize: 10,
-        letterSpacing: 1,
-        textTransform: 'uppercase',
-        color: colors.gray600,
-    },
-    archivedChevron: {
-        color: colors.gray600,
-        fontSize: 12,
-    },
-    archivedRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: 8,
-        paddingVertical: 6,
-    },
-    archivedName: {
-        fontSize: 12,
-        color: colors.gray500,
-    },
-    archivedPurge: {
-        fontSize: 10,
-        color: colors.gray600,
-        marginTop: 1,
-    },
-    archivedPurgeUrgent: {
-        color: '#fbbf24', // amber-400 — mirrors web sidebar's urgency signal
-    },
-    restoreButton: {
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        borderRadius: 6,
-        backgroundColor: colors.gray800,
-        marginLeft: 8,
-    },
-    restoreButtonDisabled: {
-        opacity: 0.4,
-    },
-    restoreButtonText: {
-        fontSize: 11,
-        color: colors.gray300,
-    },
-    bottomNav: {
-        borderTopWidth: 1,
-        borderTopColor: colors.gray800,
-        padding: 12,
-        gap: 4,
-    },
-    navButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        paddingHorizontal: 12,
-        paddingVertical: 12,
-        borderRadius: 8,
-    },
-    navButtonIcon: {
-        flexShrink: 0,
-    },
-    navButtonText: {
-        fontSize: 14,
-        color: colors.gray400,
-    },
-    versionBox: {
-        paddingHorizontal: 12,
-        paddingTop: 8,
-    },
-    versionText: {
-        fontSize: 12,
-        color: colors.gray500,
-    },
-    versionHash: {
-        fontSize: 10,
-        color: colors.gray600,
-        marginTop: 1,
-        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    },
-    // Per-project "<project> Settings" submenu (mirrors the web sidebar).
-    projectMenu: {
-        marginLeft: 24,
-        marginBottom: 6,
-    },
-    projectMenuToggle: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        paddingHorizontal: 8,
-        paddingVertical: 6,
-        borderRadius: 6,
-    },
-    projectMenuChevron: {
-        flexShrink: 0,
-    },
-    projectMenuGroupLabel: {
-        flex: 1,
-        fontSize: 10,
-        fontWeight: '600',
-        letterSpacing: 1,
-        textTransform: 'uppercase',
-        color: colors.gray500,
-    },
-    projectMenuItems: {
-        marginLeft: 9,
-        paddingLeft: 8,
-        borderLeftWidth: 1,
-        borderLeftColor: colors.gray800,
-    },
-    projectMenuItem: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        paddingHorizontal: 8,
-        paddingVertical: 8,
-        borderRadius: 6,
-    },
-    projectMenuItemIcon: {
-        flexShrink: 0,
-    },
-    projectMenuItemText: {
-        flex: 1,
-        fontSize: 13,
-        color: colors.gray400,
-    },
+  container: {
+    flex: 1,
+    backgroundColor: colors.gray900,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+  },
+  headerTitle: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.white,
+  },
+  orgDot: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+  },
+  chevron: {
+    color: colors.gray500,
+    fontSize: 12,
+  },
+  orgDropdown: {
+    backgroundColor: colors.gray800,
+    borderRadius: 8,
+    marginHorizontal: 12,
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  orgItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  orgItemActive: {
+    backgroundColor: colors.gray700,
+  },
+  orgItemDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 4,
+  },
+  orgItemName: {
+    flex: 1,
+    fontSize: 13,
+    color: colors.gray300,
+  },
+  orgMode: {
+    fontSize: 12,
+  },
+  orgCheck: {
+    color: colors.emerald400,
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  orgManage: {
+    borderTopWidth: 1,
+    borderTopColor: colors.gray700,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  orgManageText: {
+    fontSize: 12,
+    color: colors.gray500,
+  },
+  agentList: {
+    flex: 1,
+    padding: 12,
+  },
+  connectionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  connectionBadge: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  connectionBadgeConnected: {
+    backgroundColor: colors.emerald900_50,
+  },
+  connectionBadgeReconnecting: {
+    backgroundColor: colors.yellow900_50,
+  },
+  connectionBadgeDisconnected: {
+    backgroundColor: colors.red900_50,
+  },
+  connectionText: {
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  connectionTextConnected: {
+    color: colors.emerald400,
+  },
+  connectionTextReconnecting: {
+    color: colors.yellow400,
+  },
+  connectionTextDisconnected: {
+    color: colors.red400,
+  },
+  bugReportButton: {
+    padding: 8,
+    marginRight: 0,
+  },
+  sectionLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.gray500,
+    letterSpacing: 1,
+    marginBottom: 8,
+    paddingHorizontal: 8,
+  },
+  sectionLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
+    paddingHorizontal: 8,
+  },
+  sectionLabelInline: {
+    marginBottom: 0,
+    paddingHorizontal: 0,
+  },
+  dashboardItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+    marginBottom: 16,
+    backgroundColor: colors.gray800,
+  },
+  projectCollapseLoading: {
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  projectHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  projectDot: {
+    width: 16,
+    height: 16,
+    borderRadius: 4,
+  },
+  projectName: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.gray300,
+  },
+  workflowTag: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.amber400,
+  },
+  projectHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  unreadBadge: {
+    backgroundColor: colors.rose400,
+    borderRadius: 8,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  securityBadge: {
+    backgroundColor: colors.red500,
+  },
+  skillBadge: {
+    backgroundColor: colors.amber400,
+    marginLeft: 'auto',
+  },
+  unreadBadgeText: {
+    color: colors.white,
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  projectDivider: {
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+    marginHorizontal: 8,
+    marginVertical: 4,
+  },
+  agentItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginBottom: 2,
+  },
+  agentItemActive: {
+    backgroundColor: colors.gray800,
+  },
+  agentDotContainer: {
+    position: 'relative',
+  },
+  agentDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  miniDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  activityIndicator: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.emerald500,
+    borderWidth: 1.5,
+    borderColor: colors.gray900,
+  },
+  agentInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  agentName: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.gray400,
+  },
+  agentNameActive: {
+    color: colors.white,
+  },
+  agentLastMessage: {
+    fontSize: 11,
+    color: colors.gray600,
+    marginTop: 2,
+  },
+  cronScheduleText: {
+    fontSize: 11,
+    color: colors.gray600,
+    marginTop: 2,
+  },
+  collapseIcon: {
+    color: colors.gray500,
+    fontSize: 12,
+    paddingHorizontal: 4,
+  },
+  sessionsContainer: {
+    marginLeft: 24,
+    marginBottom: 8,
+  },
+  sessionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    borderRadius: 6,
+    marginBottom: 2,
+  },
+  sessionItemActive: {
+    backgroundColor: colors.gray800,
+  },
+  sessionName: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 12,
+    color: colors.gray500,
+  },
+  sessionNameActive: {
+    color: colors.white,
+  },
+  newSessionButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  newSessionText: {
+    fontSize: 12,
+    color: colors.gray600,
+  },
+  archivedSection: {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+  },
+  archivedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  archivedHeaderText: {
+    flex: 1,
+    fontSize: 10,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: colors.gray600,
+  },
+  archivedChevron: {
+    color: colors.gray600,
+    fontSize: 12,
+  },
+  archivedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  archivedName: {
+    fontSize: 12,
+    color: colors.gray500,
+  },
+  archivedPurge: {
+    fontSize: 10,
+    color: colors.gray600,
+    marginTop: 1,
+  },
+  archivedPurgeUrgent: {
+    color: '#fbbf24', // amber-400 — mirrors web sidebar's urgency signal
+  },
+  restoreButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: colors.gray800,
+    marginLeft: 8,
+  },
+  restoreButtonDisabled: {
+    opacity: 0.4,
+  },
+  restoreButtonText: {
+    fontSize: 11,
+    color: colors.gray300,
+  },
+  bottomNav: {
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+    padding: 12,
+    gap: 4,
+  },
+  navButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  navButtonIcon: {
+    flexShrink: 0,
+  },
+  navButtonText: {
+    fontSize: 14,
+    color: colors.gray400,
+  },
+  versionBox: {
+    paddingHorizontal: 12,
+    paddingTop: 8,
+  },
+  versionText: {
+    fontSize: 12,
+    color: colors.gray500,
+  },
+  versionHash: {
+    fontSize: 10,
+    color: colors.gray600,
+    marginTop: 1,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  // Per-project "<project> Settings" submenu (mirrors the web sidebar).
+  projectMenu: {
+    marginLeft: 24,
+    marginBottom: 6,
+  },
+  projectMenuToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  projectMenuChevron: {
+    flexShrink: 0,
+  },
+  projectMenuGroupLabel: {
+    flex: 1,
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: colors.gray500,
+  },
+  projectMenuItems: {
+    marginLeft: 9,
+    paddingLeft: 8,
+    borderLeftWidth: 1,
+    borderLeftColor: colors.gray800,
+  },
+  projectMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  projectMenuItemIcon: {
+    flexShrink: 0,
+  },
+  projectMenuItemText: {
+    flex: 1,
+    fontSize: 13,
+    color: colors.gray400,
+  },
 });

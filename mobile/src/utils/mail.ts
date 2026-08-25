@@ -29,7 +29,10 @@ export function mailSenderName(from: string | null | undefined): string {
   if (!raw) return 'Unknown sender';
   const named = raw.match(/^(.*?)<[^>]*>\s*$/);
   if (named) {
-    const name = named[1].trim().replace(/^"(.*)"$/, '$1').trim();
+    const name = named[1]
+      .trim()
+      .replace(/^"(.*)"$/, '$1')
+      .trim();
     if (name) return name;
     const addr = raw.match(/<([^>]*)>/);
     return addr?.[1].trim() || raw;

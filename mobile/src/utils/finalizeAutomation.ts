@@ -95,7 +95,12 @@ export const SESSION_CONTROL_OPTIONS = [
  * server/session-mode.ts — Skill Builder prepends a dev coach prompt and
  * force-loads skill-authoring skills, so it only makes sense on a dev agent.
  */
-export const SKILL_BUILDER_INELIGIBLE_ROLES = ['skill-builder', 'reviewer', 'docs', 'hub-assistant'];
+export const SKILL_BUILDER_INELIGIBLE_ROLES = [
+  'skill-builder',
+  'reviewer',
+  'docs',
+  'hub-assistant',
+];
 /** Whether an agent (by role) is eligible to run Skill Builder mode. */
 export function isSkillBuilderEligibleAgent(agent: any): boolean {
   if (!agent) return false;
@@ -184,8 +189,8 @@ export function planSessionControlChange(current: any, target: any, options: any
             : current?.sessionMode === 'hub'
               ? 'hub'
               : current?.sessionMode === 'isolated'
-              ? 'isolated'
-              : 'chat';
+                ? 'isolated'
+                : 'chat';
   const askMode = !!current?.askMode;
   const automation = parseFinalizeAutomation(current?.automation);
   const currentValue = sessionControlValue({ sessionMode, askMode, automation });

@@ -1,6 +1,6 @@
 import { getApiBase, getAuthHeaders } from './connection';
 import { getToken as getJwt, clearToken, isLocalBundledDeployment } from './auth';
-import { normalizeSessionMessagesResponse } from './sessionMessagesResponse';
+import { normalizeSessionMessagesResponse } from '@shared/utils/sessionMessagesResponse';
 import { isDeadSessionResponse } from '@shared/utils/authErrorCodes';
 import type { ApiErrorBody, AgentWire, MessageWire, ProjectWire, SessionWire } from '@shared/types';
 import type { DeployTriggerEvent } from './deployTriggers';
@@ -1617,7 +1617,7 @@ export const api = {
     if (opts.limit != null || opts.before != null) params.set('paginated', '1');
     const qs = params.toString();
     const data = await fetchJSON(`/sessions/${sessionId}/messages${qs ? `?${qs}` : ''}`);
-    return normalizeSessionMessagesResponse(data).messages;
+    return normalizeSessionMessagesResponse<MessageWire>(data).messages;
   },
   getSessionHandoffs: (sessionId: any) => fetchJSON(`/sessions/${sessionId}/handoffs`),
   /**

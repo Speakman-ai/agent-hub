@@ -7,5 +7,5 @@
  * "Assistant" so the header is never blank.
  */
 export function resolveAgentDisplayName(message: any, agentName: any) {
-    return message?.agent_name || agentName || 'Assistant';
+  return message?.agent_name || agentName || 'Assistant';
 }

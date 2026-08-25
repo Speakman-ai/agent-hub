@@ -1,11 +1,19 @@
+/**
+ * Tests for the shared `useLogTail` hook (`shared/hooks/useLogTail.ts`), which
+ * web and mobile both consume. They live in the client package because that is
+ * where the jsdom + @testing-library/react harness is configured; `shared/` runs
+ * vitest in the `node` env with no React renderer.
+ */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { useLogTail, type SocketLike } from './useLogTail';
+import { useLogTail, type SocketLike } from '@shared/hooks/useLogTail';
 import { SEVERITY_NUMBER } from '../utils/logStream';
 
-vi.mock('../utils/connection', () => ({
-  getWsUrl: () => 'ws://test/ws',
-}));
+/**
+ * The shared hook takes its WS URL through an injected `getWsUrl`, so these
+ * tests pass a stub rather than mocking a platform connection module.
+ */
+const getWsUrl = () => 'ws://test/ws';
 
 class FakeSocket implements SocketLike {
   static instances: FakeSocket[] = [];
@@ -74,7 +82,12 @@ function record(id: number) {
   };
 }
 
-const opts = { createSocket: () => new FakeSocket(), reconnectBaseMs: 10, maxReconnectMs: 50 };
+const opts = {
+  getWsUrl,
+  createSocket: () => new FakeSocket(),
+  reconnectBaseMs: 10,
+  maxReconnectMs: 50,
+};
 
 beforeEach(() => {
   FakeSocket.instances = [];

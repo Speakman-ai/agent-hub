@@ -90,7 +90,10 @@ export async function sendMemberInviteEmail({ apiClient, invite }: any) {
 
 export async function resetMemberMfa({ apiClient, user }: any) {
   await apiClient.resetUserMfa(user.id);
-  return { type: 'success', message: `MFA cleared for ${user.email || user.username || 'member'}.` };
+  return {
+    type: 'success',
+    message: `MFA cleared for ${user.email || user.username || 'member'}.`,
+  };
 }
 
 export default function MembersSection() {
@@ -271,7 +274,11 @@ export default function MembersSection() {
         disabled={!isValidInviteEmail(email) || busy}
       >
         <Text style={styles.saveBtnText}>
-          {busy ? 'Inviting...' : emailDelivery?.smtpConfigured ? 'Send Invite Email' : 'Create Invite Link'}
+          {busy
+            ? 'Inviting...'
+            : emailDelivery?.smtpConfigured
+              ? 'Send Invite Email'
+              : 'Create Invite Link'}
         </Text>
       </TouchableOpacity>
 
@@ -320,7 +327,9 @@ export default function MembersSection() {
           <View key={invite.token} style={styles.inviteCard}>
             <View style={{ flex: 1 }}>
               <Text style={styles.pluginKeyTitle}>{invite.email || 'Open invite'}</Text>
-              <Text style={styles.accountMutedText}>{invite.role} · expires {invite.expiresAt}</Text>
+              <Text style={styles.accountMutedText}>
+                {invite.role} · expires {invite.expiresAt}
+              </Text>
               <Text style={styles.inviteUrl} numberOfLines={1}>
                 {absoluteInviteUrl(invite)}
               </Text>
@@ -338,7 +347,10 @@ export default function MembersSection() {
               <TouchableOpacity style={styles.cancelBtn} onPress={() => copyInvite(invite)}>
                 <Text style={styles.cancelBtnText}>Copy</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.accountDangerBtn} onPress={() => revokeInvite(invite)}>
+              <TouchableOpacity
+                style={styles.accountDangerBtn}
+                onPress={() => revokeInvite(invite)}
+              >
                 <Text style={styles.accountDangerBtnText}>Revoke</Text>
               </TouchableOpacity>
             </View>

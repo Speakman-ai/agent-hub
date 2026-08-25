@@ -43,7 +43,9 @@ function trigger(over: Partial<DeployTrigger> = {}): DeployTrigger {
 
 const noop = () => undefined;
 
-function renderContent(over: Partial<React.ComponentProps<typeof EnvironmentTriggersPanelContent>> = {}) {
+function renderContent(
+  over: Partial<React.ComponentProps<typeof EnvironmentTriggersPanelContent>> = {},
+) {
   return renderToStaticMarkup(
     <EnvironmentTriggersPanelContent
       environmentName="prod"

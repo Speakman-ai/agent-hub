@@ -41,9 +41,7 @@ export function phaseProgress(tickets: any[], colMap: Record<string, string>) {
  * the Done column. An empty phase is never complete (nothing was finished yet).
  */
 export function phaseComplete(tickets: any[], colMap: Record<string, string>) {
-  return (
-    !!tickets && tickets.length > 0 && countDoneTickets(tickets, colMap) === tickets.length
-  );
+  return !!tickets && tickets.length > 0 && countDoneTickets(tickets, colMap) === tickets.length;
 }
 
 export function epicAutonomousSummary(phases: any[]) {
@@ -62,7 +60,9 @@ export function epicAutonomousSummary(phases: any[]) {
  * `specProgress` and `specStatusLabel` both route through this so the count
  * that gates autonomous runs and the badge shown in the UI never disagree.
  */
-export function normalizeSpecStatus(status: string | null | undefined): 'open' | 'chosen' | 'deferred' {
+export function normalizeSpecStatus(
+  status: string | null | undefined,
+): 'open' | 'chosen' | 'deferred' {
   const s = String(status || '').toLowerCase();
   if (s === 'chosen') return 'chosen';
   if (s === 'deferred') return 'deferred';

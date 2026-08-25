@@ -402,9 +402,7 @@ describe('streamReplayTarget (host → frame orchestration)', () => {
       getSessionSegments: vi.fn(),
       getSessionSegmentEvents: vi.fn(),
       getReplay: vi.fn().mockRejectedValue(new Error('no meta')),
-      getReplayEvents: vi
-        .fn()
-        .mockResolvedValue({ events: [{ t: 1 }], total: 1, hasMore: false }),
+      getReplayEvents: vi.fn().mockResolvedValue({ events: [{ t: 1 }], total: 1, hasMore: false }),
     };
     const posts: any[] = [];
     const count = await streamReplayTarget({

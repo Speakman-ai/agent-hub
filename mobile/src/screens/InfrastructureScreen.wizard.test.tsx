@@ -35,9 +35,8 @@ vi.mock('../context/AppContext', () => ({ useApp: () => testState.app }));
 vi.mock('../utils/config', () => ({ getServerBaseUrl: () => 'https://hub.example.com' }));
 vi.mock('../utils/api', () => ({ api: testState.api }));
 
-const { default: InfrastructureScreen, InfraSetupWizardButton } = await import(
-  './InfrastructureScreen'
-);
+const { default: InfrastructureScreen, InfraSetupWizardButton } =
+  await import('./InfrastructureScreen');
 
 const EMPTY_DRAFT = { blockers: [], notes: [] };
 
@@ -168,9 +167,9 @@ describe('InfrastructureScreen — AI setup wizard', () => {
     });
 
     expect(textOf(renderer, 'infra-setup-wizard-button')).toContain('Starting…');
-    expect(
-      renderer.root.findByProps({ testID: 'infra-setup-wizard-button' }).props.disabled,
-    ).toBe(true);
+    expect(renderer.root.findByProps({ testID: 'infra-setup-wizard-button' }).props.disabled).toBe(
+      true,
+    );
 
     await TestRenderer.act(async () => {
       request.resolve({ sessionId: 's', agentId: 'a' });
@@ -189,9 +188,9 @@ describe('InfrastructureScreen — AI setup wizard', () => {
     expect(textOf(renderer, 'infra-setup-wizard-error')).toContain('no monitoring profile');
     expect(navigation.navigate).not.toHaveBeenCalled();
     // Recoverable: the operator can fix the cause and press again.
-    expect(
-      renderer.root.findByProps({ testID: 'infra-setup-wizard-button' }).props.disabled,
-    ).toBe(false);
+    expect(renderer.root.findByProps({ testID: 'infra-setup-wizard-button' }).props.disabled).toBe(
+      false,
+    );
   });
 
   it('treats a response without a session id as a failure rather than navigating nowhere', async () => {
@@ -279,9 +278,9 @@ describe('InfraSetupWizardButton', () => {
     expect(onOpenSession).not.toHaveBeenCalled();
     // And the new project starts with a usable button: the stale request's
     // guarded `finally` never clears the pending flag, so the effect must.
-    expect(
-      renderer.root.findByProps({ testID: 'infra-setup-wizard-button' }).props.disabled,
-    ).toBe(false);
+    expect(renderer.root.findByProps({ testID: 'infra-setup-wizard-button' }).props.disabled).toBe(
+      false,
+    );
     expect(textOf(renderer, 'infra-setup-wizard-button')).toContain('Set up with AI');
   });
 

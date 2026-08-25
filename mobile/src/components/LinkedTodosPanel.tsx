@@ -23,13 +23,15 @@ import {
  * screen shows up without a manual refresh.
  */
 
-const PRIORITY_BADGE_STYLE: Record<LinkedTodoPriority, { bg: string; text: string; border: string }> =
-  {
-    urgent: { bg: colors.red900_50, text: colors.red400, border: colors.red600 },
-    high: { bg: colors.amber900_40, text: colors.amber400, border: colors.amber400 },
-    medium: { bg: colors.gray800, text: colors.gray400, border: colors.gray700 },
-    low: { bg: colors.gray800, text: colors.gray500, border: colors.gray700 },
-  };
+const PRIORITY_BADGE_STYLE: Record<
+  LinkedTodoPriority,
+  { bg: string; text: string; border: string }
+> = {
+  urgent: { bg: colors.red900_50, text: colors.red400, border: colors.red600 },
+  high: { bg: colors.amber900_40, text: colors.amber400, border: colors.amber400 },
+  medium: { bg: colors.gray800, text: colors.gray400, border: colors.gray700 },
+  low: { bg: colors.gray800, text: colors.gray500, border: colors.gray700 },
+};
 
 const DUE_BADGE_STYLE: Record<string, { bg: string; text: string; border: string }> = {
   overdue: { bg: colors.red900_50, text: colors.red400, border: colors.red600 },
@@ -96,10 +98,7 @@ export function LinkedTodosPanelContent({ todos }: { todos: LinkedTodoSummary[] 
             <View style={[styles.check, todo.done && styles.checkDone]}>
               {todo.done ? <Text style={styles.checkMark}>{'✓'}</Text> : null}
             </View>
-            <Text
-              style={[styles.title, todo.done && styles.titleDone]}
-              numberOfLines={1}
-            >
+            <Text style={[styles.title, todo.done && styles.titleDone]} numberOfLines={1}>
               {todo.title}
             </Text>
             <View
@@ -112,7 +111,10 @@ export function LinkedTodosPanelContent({ todos }: { todos: LinkedTodoSummary[] 
             </View>
             {badge ? (
               <View
-                style={[styles.chip, { backgroundColor: dueStyle.bg, borderColor: dueStyle.border }]}
+                style={[
+                  styles.chip,
+                  { backgroundColor: dueStyle.bg, borderColor: dueStyle.border },
+                ]}
               >
                 <Text style={[styles.chipText, { color: dueStyle.text }]}>{badge}</Text>
               </View>

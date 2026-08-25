@@ -108,6 +108,8 @@ jobs:
         run: npm ci --ignore-scripts --include=dev
       - name: Lint
         run: npm run lint
+      - name: No new mirrored client/mobile modules
+        run: npm run check:mirrored-modules
 
   # ── GHA `secret-scan` gate (ci.yml) ─────────────────────────────────
   # Working-tree gitleaks scan. The run script below is kept BYTE-IDENTICAL to

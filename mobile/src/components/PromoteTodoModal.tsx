@@ -96,7 +96,11 @@ export function PromoteTodoModalContent({
 
           <Text style={styles.label}>Project</Text>
           {loadingProjects ? (
-            <ActivityIndicator color={colors.blue400} style={styles.loader} testID="promote-loading-projects" />
+            <ActivityIndicator
+              color={colors.blue400}
+              style={styles.loader}
+              testID="promote-loading-projects"
+            />
           ) : !projects.length ? (
             <Text style={styles.muted}>No projects available</Text>
           ) : (
@@ -121,7 +125,11 @@ export function PromoteTodoModalContent({
 
           <Text style={styles.label}>Column</Text>
           {loadingBoard ? (
-            <ActivityIndicator color={colors.blue400} style={styles.loader} testID="promote-loading-board" />
+            <ActivityIndicator
+              color={colors.blue400}
+              style={styles.loader}
+              testID="promote-loading-board"
+            />
           ) : !columns.length ? (
             <Text style={styles.muted}>No columns</Text>
           ) : (

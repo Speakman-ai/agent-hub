@@ -29,11 +29,25 @@ describe('mobile terminal WebView bridge', () => {
       }),
     ).toMatchObject({ type: 'input', data: 'YWJj' });
     expect(
-      parseTerminalBridgeMessage({ ch: TERMINAL_BRIDGE_CHANNEL, type: 'resize', cols: 120, rows: 40 }),
+      parseTerminalBridgeMessage({
+        ch: TERMINAL_BRIDGE_CHANNEL,
+        type: 'resize',
+        cols: 120,
+        rows: 40,
+      }),
     ).toMatchObject({ type: 'resize', cols: 120, rows: 40 });
     expect(parseTerminalBridgeMessage({ ch: 'other', type: 'ready' })).toBeNull();
-    expect(parseTerminalBridgeMessage({ ch: TERMINAL_BRIDGE_CHANNEL, type: 'input', data: 'bad' })).toBeNull();
-    expect(parseTerminalBridgeMessage({ ch: TERMINAL_BRIDGE_CHANNEL, type: 'resize', cols: 0, rows: 20 })).toBeNull();
+    expect(
+      parseTerminalBridgeMessage({ ch: TERMINAL_BRIDGE_CHANNEL, type: 'input', data: 'bad' }),
+    ).toBeNull();
+    expect(
+      parseTerminalBridgeMessage({
+        ch: TERMINAL_BRIDGE_CHANNEL,
+        type: 'resize',
+        cols: 0,
+        rows: 20,
+      }),
+    ).toBeNull();
   });
 
   it('encodes special-key and Unicode input without TextEncoder or btoa', () => {
@@ -68,7 +82,7 @@ describe('mobile terminal WebView bridge', () => {
   });
 
   it('serializes native-to-WebView frames as one executable bridge call', () => {
-    const script = buildTerminalReceiveScript({ type: 'error', message: 'bad \'frame\'' });
+    const script = buildTerminalReceiveScript({ type: 'error', message: "bad 'frame'" });
     expect(script).toContain('window.__ahTerminalReceive(');
     expect(script).toContain("bad 'frame'");
     expect(script.endsWith('true;')).toBe(true);

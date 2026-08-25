@@ -121,10 +121,12 @@ describe('buildLogSubscribeFrame', () => {
     // An empty frame advances the cursor without delivering rows, so the two
     // facts can disagree. The flag follows the records; the server's own
     // `cursor === 0` guard resolves the disagreement toward the safe drain.
-    expect(buildLogSubscribeFrame({ projectId: 'p1', cursor: 7, hasRecords: false })).toMatchObject({
-      cursor: 7,
-      seed: true,
-    });
+    expect(buildLogSubscribeFrame({ projectId: 'p1', cursor: 7, hasRecords: false })).toMatchObject(
+      {
+        cursor: 7,
+        seed: true,
+      },
+    );
     expect(buildLogSubscribeFrame({ projectId: 'p1', cursor: 0, hasRecords: true })).toMatchObject({
       cursor: 0,
       seed: false,
@@ -227,7 +229,9 @@ describe('oldestRecordCursor', () => {
     expect(capped.map((r) => r.id)).toEqual([1, 2]); // delayed row evicted
     const cursor = oldestRecordCursor(capped)!;
     // The evicted record is strictly older than the cursor on the paged axis...
-    expect(isOlderCursor({ timeUnixNano: delayed.timeUnixNano, id: delayed.id }, cursor)).toBe(true);
+    expect(isOlderCursor({ timeUnixNano: delayed.timeUnixNano, id: delayed.id }, cursor)).toBe(
+      true,
+    );
     // ...even though its ingest id is far ABOVE the minimum id held, which is
     // precisely what an id-only cursor could never reach.
     expect(delayed.id > Math.min(...capped.map((r) => r.id))).toBe(true);
@@ -317,13 +321,33 @@ describe('isOlderCursor', () => {
 
 describe('recordMatchesFilter / filterLogRecords — facet + text filters', () => {
   const records = [
-    rec({ id: 1, severityNumber: SEVERITY_NUMBER.INFO, sourceId: 'a', environment: 'prod', body: 'hello world' }),
-    rec({ id: 2, severityNumber: SEVERITY_NUMBER.ERROR, sourceId: 'b', environment: 'staging', body: 'boom failed' }),
-    rec({ id: 3, severityNumber: SEVERITY_NUMBER.WARN, sourceId: 'a', environment: 'prod', body: 'careful now' }),
+    rec({
+      id: 1,
+      severityNumber: SEVERITY_NUMBER.INFO,
+      sourceId: 'a',
+      environment: 'prod',
+      body: 'hello world',
+    }),
+    rec({
+      id: 2,
+      severityNumber: SEVERITY_NUMBER.ERROR,
+      sourceId: 'b',
+      environment: 'staging',
+      body: 'boom failed',
+    }),
+    rec({
+      id: 3,
+      severityNumber: SEVERITY_NUMBER.WARN,
+      sourceId: 'a',
+      environment: 'prod',
+      body: 'careful now',
+    }),
   ];
 
   it('filters by minimum severity (inclusive)', () => {
-    expect(filterLogRecords(records, { minSeverityNumber: SEVERITY_NUMBER.WARN }).map((r) => r.id)).toEqual([2, 3]);
+    expect(
+      filterLogRecords(records, { minSeverityNumber: SEVERITY_NUMBER.WARN }).map((r) => r.id),
+    ).toEqual([2, 3]);
   });
   it('treats minSeverity 0 as no floor', () => {
     expect(filterLogRecords(records, { minSeverityNumber: 0 })).toHaveLength(3);
@@ -340,7 +364,11 @@ describe('recordMatchesFilter / filterLogRecords — facet + text filters', () =
   });
   it('combines facets with an AND', () => {
     expect(
-      recordMatchesFilter(records[2], { sourceId: 'a', environment: 'prod', minSeverityNumber: SEVERITY_NUMBER.WARN }),
+      recordMatchesFilter(records[2], {
+        sourceId: 'a',
+        environment: 'prod',
+        minSeverityNumber: SEVERITY_NUMBER.WARN,
+      }),
     ).toBe(true);
     expect(recordMatchesFilter(records[2], { sourceId: 'b' })).toBe(false);
   });
@@ -367,7 +395,9 @@ describe('parseAttributes / extractStackTrace — untrusted-field error handling
     expect(parseAttributes('"a string"')).toEqual([]);
   });
   it('flattens primitives and stringifies nested values', () => {
-    const rows = parseAttributes(JSON.stringify({ a: 1, b: 'x', c: true, d: null, e: { nested: 1 } }));
+    const rows = parseAttributes(
+      JSON.stringify({ a: 1, b: 'x', c: true, d: null, e: { nested: 1 } }),
+    );
     expect(rows).toEqual([
       { key: 'a', value: '1' },
       { key: 'b', value: 'x' },
@@ -377,7 +407,9 @@ describe('parseAttributes / extractStackTrace — untrusted-field error handling
     ]);
   });
   it('extracts a stack trace from known attribute aliases', () => {
-    expect(extractStackTrace(JSON.stringify({ 'exception.stacktrace': 'at foo\nat bar' }))).toBe('at foo\nat bar');
+    expect(extractStackTrace(JSON.stringify({ 'exception.stacktrace': 'at foo\nat bar' }))).toBe(
+      'at foo\nat bar',
+    );
     expect(extractStackTrace(JSON.stringify({ stack: 'trace here' }))).toBe('trace here');
     expect(extractStackTrace(JSON.stringify({ irrelevant: 'x' }))).toBeNull();
     expect(extractStackTrace('garbage')).toBeNull();

@@ -26,7 +26,9 @@ type Draft = Record<string, any>;
 
 const KNOWN_APP_TYPES = new Set(APP_TYPE_OPTIONS.map((option) => option.value));
 const KNOWN_STACKS = new Set(
-  APP_TYPE_OPTIONS.flatMap((option) => stackOptionsFor(option.value).map((stack: any) => stack.value)),
+  APP_TYPE_OPTIONS.flatMap((option) =>
+    stackOptionsFor(option.value).map((stack: any) => stack.value),
+  ),
 );
 
 /** Build a safe patch from model output; unsupported values remain idk. */
@@ -78,7 +80,11 @@ export default function AdaptiveQuestionnaire({
   const [suggesting, setSuggesting] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [suggestionAttempt, setSuggestionAttempt] = useState(0);
-  const suggestionContextRef = useRef<{ needsName: boolean; needsAppType: boolean; needsStack: boolean } | null>(null);
+  const suggestionContextRef = useRef<{
+    needsName: boolean;
+    needsAppType: boolean;
+    needsStack: boolean;
+  } | null>(null);
   const submitInFlightRef = useRef(false);
   const stepId = STEP_IDS[draft.step];
   const visible = useMemo(() => visibleSteps(draft), [draft]);

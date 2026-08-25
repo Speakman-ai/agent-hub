@@ -7,16 +7,14 @@
 // for reuse in UI state (e.g., disabling a "Copy" button).
 let defaultProviderPromise: any = null;
 async function getDefaultProvider() {
-    if (!defaultProviderPromise) {
-        defaultProviderPromise = import('expo-clipboard').then((mod: any) => ({
-            setStringAsync: (text: any) => mod.setStringAsync(text),
-            getStringAsync: () => mod.getStringAsync(),
-            hasStringAsync: typeof mod.hasStringAsync === 'function'
-                ? () => mod.hasStringAsync()
-                : null,
-        }));
-    }
-    return defaultProviderPromise;
+  if (!defaultProviderPromise) {
+    defaultProviderPromise = import('expo-clipboard').then((mod: any) => ({
+      setStringAsync: (text: any) => mod.setStringAsync(text),
+      getStringAsync: () => mod.getStringAsync(),
+      hasStringAsync: typeof mod.hasStringAsync === 'function' ? () => mod.hasStringAsync() : null,
+    }));
+  }
+  return defaultProviderPromise;
 }
 /**
  * Normalize text before writing it to the clipboard.
@@ -25,14 +23,13 @@ async function getDefaultProvider() {
  *  - Trims leading / trailing whitespace
  */
 export function sanitizeCopyPayload(text: any) {
-    if (text == null)
-        return '';
-    const str = typeof text === 'string' ? text : String(text);
-    return str.replace(/\n$/, '').trim();
+  if (text == null) return '';
+  const str = typeof text === 'string' ? text : String(text);
+  return str.replace(/\n$/, '').trim();
 }
 /** True when the value has non-empty content suitable for copying. */
 export function canCopy(text: any) {
-    return sanitizeCopyPayload(text).length > 0;
+  return sanitizeCopyPayload(text).length > 0;
 }
 /**
  * Write `text` to the system clipboard. Returns `true` on success, `false`
@@ -41,17 +38,15 @@ export function canCopy(text: any) {
  * Optional `provider` is used in tests to avoid loading expo-clipboard.
  */
 export async function copyToClipboard(text: any, { provider }: any = {}) {
-    const payload = sanitizeCopyPayload(text);
-    if (!payload)
-        return false;
-    const p = provider || (await getDefaultProvider());
-    try {
-        await p.setStringAsync(payload);
-        return true;
-    }
-    catch {
-        return false;
-    }
+  const payload = sanitizeCopyPayload(text);
+  if (!payload) return false;
+  const p = provider || (await getDefaultProvider());
+  try {
+    await p.setStringAsync(payload);
+    return true;
+  } catch {
+    return false;
+  }
 }
 /**
  * Read a string from the system clipboard. Always resolves to a string —
@@ -60,17 +55,15 @@ export async function copyToClipboard(text: any, { provider }: any = {}) {
  * Optional `provider` is used in tests.
  */
 export async function pasteFromClipboard({ provider }: any = {}) {
-    const p = provider || (await getDefaultProvider());
-    try {
-        if (typeof p.hasStringAsync === 'function') {
-            const has = await p.hasStringAsync();
-            if (!has)
-                return '';
-        }
-        const text = await p.getStringAsync();
-        return typeof text === 'string' ? text : '';
+  const p = provider || (await getDefaultProvider());
+  try {
+    if (typeof p.hasStringAsync === 'function') {
+      const has = await p.hasStringAsync();
+      if (!has) return '';
     }
-    catch {
-        return '';
-    }
+    const text = await p.getStringAsync();
+    return typeof text === 'string' ? text : '';
+  } catch {
+    return '';
+  }
 }

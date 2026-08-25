@@ -74,15 +74,15 @@ describe('issueMetaLine', () => {
   });
 
   it('drops empty segments and an unusable timestamp', () => {
-    expect(
-      issueMetaLine({ service: null, environment: null, eventCount: 3, lastSeen: 0 }),
-    ).toBe(`${(3).toLocaleString()} events`);
+    expect(issueMetaLine({ service: null, environment: null, eventCount: 3, lastSeen: 0 })).toBe(
+      `${(3).toLocaleString()} events`,
+    );
   });
 
   it('drops the label for an oversized timestamp rather than trailing a bare "last "', () => {
-    expect(
-      issueMetaLine({ service: null, environment: null, eventCount: 3, lastSeen: 1e22 }),
-    ).toBe(`${(3).toLocaleString()} events`);
+    expect(issueMetaLine({ service: null, environment: null, eventCount: 3, lastSeen: 1e22 })).toBe(
+      `${(3).toLocaleString()} events`,
+    );
   });
 });
 
@@ -98,7 +98,19 @@ describe('issueSeenLabel', () => {
     //   0 / negatives      — epoch-zero "1/1/1970"
     //   1..999_999 ns      — positive but floors to 0 ms, same 1970 output
     //   1e22 / MAX_VALUE   — past the Date range, renders "Invalid Date"
-    const bad = [0, -1, 1, 500_000, 999_999, 1e22, Number.MAX_VALUE, NaN, Infinity, null, undefined];
+    const bad = [
+      0,
+      -1,
+      1,
+      500_000,
+      999_999,
+      1e22,
+      Number.MAX_VALUE,
+      NaN,
+      Infinity,
+      null,
+      undefined,
+    ];
     for (const value of bad) {
       const label = issueSeenLabel(value as number);
       expect(label).toBeNull();
@@ -143,10 +155,7 @@ describe('applyIssueUpdate — optimistic transition apply', () => {
 });
 
 describe('applyTransitionToList / transitionRemovesFromTab — filtered-tab reconcile', () => {
-  const list = [
-    issue({ id: 'a', status: 'open' }),
-    issue({ id: 'b', status: 'open' }),
-  ];
+  const list = [issue({ id: 'a', status: 'open' }), issue({ id: 'b', status: 'open' })];
 
   it('removes a row from a filtered tab when its new status no longer matches', () => {
     // Resolving on the Open tab must drop the row, not leave it with a stale chip.

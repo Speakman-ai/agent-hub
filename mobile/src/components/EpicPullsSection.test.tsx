@@ -39,7 +39,13 @@ describe('EpicPullsSectionContent (mobile)', () => {
     const html = renderToStaticMarkup(
       <EpicPullsSectionContent
         pulls={[
-          { number: 7, title: 'Ship the branch', state: 'open', merged: false, relation: 'integration' },
+          {
+            number: 7,
+            title: 'Ship the branch',
+            state: 'open',
+            merged: false,
+            relation: 'integration',
+          },
           { number: 8, title: 'Ticket work', state: 'closed', merged: true, relation: 'targets' },
         ]}
       />,

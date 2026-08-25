@@ -11,9 +11,8 @@
  * @returns {{id: string, name: string} | undefined}
  */
 export function findAgentByName(agents: any, name: any) {
-    if (!Array.isArray(agents) || !name)
-        return undefined;
-    return agents.find((a: any) => a && a.name === name);
+  if (!Array.isArray(agents) || !name) return undefined;
+  return agents.find((a: any) => a && a.name === name);
 }
 /**
  * Returns true when the card has an active session and should show the
@@ -21,7 +20,7 @@ export function findAgentByName(agents: any, name: any) {
  * the agent picker.
  */
 export function hasActiveSession(card: any) {
-    return !!(card && card.session_id);
+  return !!(card && card.session_id);
 }
 /**
  * Extract the new session id from a `POST /board/cards/:id/assign` response,
@@ -35,9 +34,8 @@ export function hasActiveSession(card: any) {
  * @returns {string | null}
  */
 export function assignedSessionId(result: any) {
-    if (!result || typeof result !== 'object')
-        return null;
-    return result.sessionId || result.session_id || result.card?.session_id || null;
+  if (!result || typeof result !== 'object') return null;
+  return result.sessionId || result.session_id || result.card?.session_id || null;
 }
 /**
  * Scope an app-wide agent list to a single project. Agents are loaded
@@ -50,11 +48,9 @@ export function assignedSessionId(result: any) {
  * @param {string} [projectId]
  */
 export function filterAgentsByProject(agents: any, projectId: any) {
-    if (!Array.isArray(agents))
-        return [];
-    if (!projectId)
-        return agents;
-    return agents.filter((a: any) => a && a.projectId === projectId);
+  if (!Array.isArray(agents)) return [];
+  if (!projectId) return agents;
+  return agents.filter((a: any) => a && a.projectId === projectId);
 }
 /**
  * Build the dropdown option list for the assignee picker modal:
@@ -63,12 +59,11 @@ export function filterAgentsByProject(agents: any, projectId: any) {
  * @param {Array<{id: string, name: string}>} agents
  */
 export function buildAssigneeOptions(agents: any) {
-    const base = [{ id: '', name: 'Unassigned' }];
-    if (!Array.isArray(agents))
-        return base;
-    return base.concat(agents
-        .filter((a: any) => a && a.id && a.name)
-        .map((a: any) => ({ id: a.id, name: a.name })));
+  const base = [{ id: '', name: 'Unassigned' }];
+  if (!Array.isArray(agents)) return base;
+  return base.concat(
+    agents.filter((a: any) => a && a.id && a.name).map((a: any) => ({ id: a.id, name: a.name })),
+  );
 }
 /**
  * Resolve the engine the spawned session will actually run under for a given
@@ -78,11 +73,10 @@ export function buildAssigneeOptions(agents: any) {
  * deterministic key to look up.
  */
 export function effectiveAssignEngine(agents: any, agentName: any, overrideEngine: any) {
-    const trimmed = (overrideEngine || '').trim();
-    if (trimmed)
-        return trimmed;
-    const agent = findAgentByName(agents, agentName);
-    return agent?.engine || 'claude-code';
+  const trimmed = (overrideEngine || '').trim();
+  if (trimmed) return trimmed;
+  const agent = findAgentByName(agents, agentName);
+  return agent?.engine || 'claude-code';
 }
 /**
  * Models that are valid for the engine the card would spawn under. When
@@ -95,15 +89,18 @@ export function effectiveAssignEngine(agents: any, agentName: any, overrideEngin
  * @param {string} agentName
  * @param {string} [overrideEngine]
  */
-export function validModelsForAgent(agents: any, modelConfig: any, agentName: any, overrideEngine: any) {
-    if (!modelConfig?.engineValidModels)
-        return [];
-    // No agent yet → caller is mid-picker; nothing to filter on.
-    const agent = findAgentByName(agents, agentName);
-    if (!agent && !overrideEngine)
-        return [];
-    const eng = effectiveAssignEngine(agents, agentName, overrideEngine);
-    return modelConfig.engineValidModels[eng] || [];
+export function validModelsForAgent(
+  agents: any,
+  modelConfig: any,
+  agentName: any,
+  overrideEngine: any,
+) {
+  if (!modelConfig?.engineValidModels) return [];
+  // No agent yet → caller is mid-picker; nothing to filter on.
+  const agent = findAgentByName(agents, agentName);
+  if (!agent && !overrideEngine) return [];
+  const eng = effectiveAssignEngine(agents, agentName, overrideEngine);
+  return modelConfig.engineValidModels[eng] || [];
 }
 /**
  * Engines the operator may override the spawn to — every key on
@@ -115,8 +112,7 @@ export function validModelsForAgent(agents: any, modelConfig: any, agentName: an
  * @returns {string[]}
  */
 export function engineEntriesWithModels(modelConfig: any) {
-    const map = modelConfig?.engineValidModels;
-    if (!map)
-        return [];
-    return Object.keys(map).filter((eng: any) => (map[eng]?.length ?? 0) > 0);
+  const map = modelConfig?.engineValidModels;
+  if (!map) return [];
+  return Object.keys(map).filter((eng: any) => (map[eng]?.length ?? 0) > 0);
 }

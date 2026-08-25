@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react';
 import { api } from '../../utils/api';
 import LiveLogsView from './LiveLogsView';
-import type { SocketLike } from '../../hooks/useLogTail';
+import type { SocketLike } from '@shared/hooks/useLogTail';
 import { SEVERITY_NUMBER } from '../../utils/logStream';
 
 vi.mock('../../utils/connection', () => ({ getWsUrl: () => 'ws://test/ws' }));

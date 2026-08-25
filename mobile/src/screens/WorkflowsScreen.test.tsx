@@ -195,9 +195,7 @@ describe('WorkflowsScreen async behavior', () => {
       ),
     );
     apiMocks.getWorkflowRunDetail.mockImplementation((_p: string, wfId: string, runId: string) =>
-      Promise.resolve(
-        detail({ id: runId, status: wfId === 'wf-active' ? 'running' : 'success' }),
-      ),
+      Promise.resolve(detail({ id: runId, status: wfId === 'wf-active' ? 'running' : 'success' })),
     );
 
     const view = mount();

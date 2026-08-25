@@ -16,11 +16,9 @@
  *   - otherwise → first project's id
  */
 export function pickInitialProjectId(projects: any, currentId: any) {
-    if (!Array.isArray(projects) || projects.length === 0)
-        return '';
-    if (currentId && projects.find((p: any) => p && p.id === currentId))
-        return currentId;
-    return projects[0]?.id || '';
+  if (!Array.isArray(projects) || projects.length === 0) return '';
+  if (currentId && projects.find((p: any) => p && p.id === currentId)) return currentId;
+  return projects[0]?.id || '';
 }
 /**
  * Build the user-facing target description rendered after a wizard
@@ -31,13 +29,11 @@ export function pickInitialProjectId(projects: any, currentId: any) {
  *   - null / missing fields → null (caller renders nothing)
  */
 export function describeResolvedTarget(target: any) {
-    if (!target || typeof target !== 'object')
-        return null;
-    const branch = typeof target.branch === 'string' ? target.branch.trim() : '';
-    const sessionId = typeof target.sessionId === 'string' ? target.sessionId.trim() : '';
-    if (!branch || !sessionId)
-        return null;
-    return `Branch ${branch} in session ${sessionId}`;
+  if (!target || typeof target !== 'object') return null;
+  const branch = typeof target.branch === 'string' ? target.branch.trim() : '';
+  const sessionId = typeof target.sessionId === 'string' ? target.sessionId.trim() : '';
+  if (!branch || !sessionId) return null;
+  return `Branch ${branch} in session ${sessionId}`;
 }
 /**
  * Decide which transient message to show after a wizard start completes.
@@ -50,12 +46,10 @@ export function describeResolvedTarget(target: any) {
  * resolved target paragraph, "no worktree-bearing session" warning.
  */
 export function pickFinalizeStatus({ lastSessionId, target }: any) {
-    if (!lastSessionId)
-        return null;
-    const text = describeResolvedTarget(target);
-    if (text)
-        return { kind: 'target', text };
-    return { kind: 'no_worktree' };
+  if (!lastSessionId) return null;
+  const text = describeResolvedTarget(target);
+  if (text) return { kind: 'target', text };
+  return { kind: 'no_worktree' };
 }
 /**
  * Should the AppContext refresh the project list in response to a
@@ -64,11 +58,8 @@ export function pickFinalizeStatus({ lastSessionId, target }: any) {
  * currently focused on. Defensive against malformed payloads.
  */
 export function shouldRefreshOnWizardComplete(event: any, currentProjectId: any) {
-    if (!event || typeof event !== 'object')
-        return false;
-    if (event.type !== 'finalize_wizard_complete')
-        return false;
-    if (!currentProjectId)
-        return false;
-    return event.projectId === currentProjectId;
+  if (!event || typeof event !== 'object') return false;
+  if (event.type !== 'finalize_wizard_complete') return false;
+  if (!currentProjectId) return false;
+  return event.projectId === currentProjectId;
 }

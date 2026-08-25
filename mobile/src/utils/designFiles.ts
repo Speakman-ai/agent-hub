@@ -16,13 +16,9 @@
  * @returns {string|null}
  */
 export function buildDesignFileUrl(base: any, sessionId: any, p: any) {
-    if (!base)
-        return null;
-    const encoded = String(p)
-        .split('/')
-        .map(encodeURIComponent)
-        .join('/');
-    return `${base}/session-files/${sessionId}/design/${encoded}`;
+  if (!base) return null;
+  const encoded = String(p).split('/').map(encodeURIComponent).join('/');
+  return `${base}/session-files/${sessionId}/design/${encoded}`;
 }
 /**
  * The artifact treated as the design's entry point for "open in browser":
@@ -33,13 +29,11 @@ export function buildDesignFileUrl(base: any, sessionId: any, p: any) {
  * @returns {string|null}
  */
 export function pickEntryFile(files: any) {
-    if (!files?.length)
-        return null;
-    const index = files.find((f: any) => f.path === 'index.html' || f.path.endsWith('/index.html'));
-    if (index)
-        return index.path;
-    const html = files.find((f: any) => f.path.toLowerCase().endsWith('.html'));
-    return html ? html.path : null;
+  if (!files?.length) return null;
+  const index = files.find((f: any) => f.path === 'index.html' || f.path.endsWith('/index.html'));
+  if (index) return index.path;
+  const html = files.find((f: any) => f.path.toLowerCase().endsWith('.html'));
+  return html ? html.path : null;
 }
 /**
  * Human-readable file size (B / KB / MB). Returns '' for null/NaN.
@@ -47,11 +41,8 @@ export function pickEntryFile(files: any) {
  * @returns {string}
  */
 export function formatFileSize(bytes: any) {
-    if (bytes == null || Number.isNaN(bytes))
-        return '';
-    if (bytes < 1024)
-        return `${bytes} B`;
-    if (bytes < 1024 * 1024)
-        return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes == null || Number.isNaN(bytes)) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

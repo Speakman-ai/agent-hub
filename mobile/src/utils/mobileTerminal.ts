@@ -63,7 +63,10 @@ export function encodeTerminalInputBase64(value: string): string {
     const third = bytes[index + 2];
     encoded += BASE64_ALPHABET[first >> 2];
     encoded += BASE64_ALPHABET[((first & 0x03) << 4) | (second === undefined ? 0 : second >> 4)];
-    encoded += second === undefined ? '=' : BASE64_ALPHABET[((second & 0x0f) << 2) | (third === undefined ? 0 : third >> 6)];
+    encoded +=
+      second === undefined
+        ? '='
+        : BASE64_ALPHABET[((second & 0x0f) << 2) | (third === undefined ? 0 : third >> 6)];
     encoded += third === undefined ? '=' : BASE64_ALPHABET[third & 0x3f];
   }
   return encoded;

@@ -17,7 +17,9 @@ vi.mock('react-native', () => ({
   View: 'View',
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
-vi.mock('../context/AppContext', () => ({ useApp: () => ({ projects: [{ id: 'p1', name: 'Proj' }] }) }));
+vi.mock('../context/AppContext', () => ({
+  useApp: () => ({ projects: [{ id: 'p1', name: 'Proj' }] }),
+}));
 vi.mock('../context/SidebarContext', () => ({
   SidebarContext: React.createContext({ openSidebar: vi.fn() }),
 }));
@@ -160,7 +162,11 @@ describe('ReplayPlayerModal', () => {
   it('renders metadata, the in-app player, and the web-app handoff', () => {
     const html = renderToStaticMarkup(
       <ReplayPlayerModal
-        target={{ mode: 'session', title: 'ada@example.com', meta: [{ label: 'Views', value: '3' }] }}
+        target={{
+          mode: 'session',
+          title: 'ada@example.com',
+          meta: [{ label: 'Views', value: '3' }],
+        }}
         projectId="p1"
       />,
     );
@@ -183,7 +189,12 @@ describe('ReplayPlayerModal', () => {
   it('embeds the player with the replay target for a monolithic capture', () => {
     const html = renderToStaticMarkup(
       <ReplayPlayerModal
-        target={{ mode: 'replay', replayId: 'r-1', title: 'checkout', meta: [{ label: 'Events', value: '88' }] }}
+        target={{
+          mode: 'replay',
+          replayId: 'r-1',
+          title: 'checkout',
+          meta: [{ label: 'Events', value: '88' }],
+        }}
         projectId="p1"
       />,
     );

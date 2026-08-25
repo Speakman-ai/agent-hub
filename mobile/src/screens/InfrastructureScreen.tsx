@@ -465,10 +465,11 @@ export function spendServiceRows(
  * nothing bills without an explicit confirm tap has to be testable without a
  * native Alert runtime.
  */
-export function buildSpendOptInConfirm(opts: {
-  enabling: boolean;
-  onConfirm: () => void;
-}): { title: string; message: string; buttons: any[] } {
+export function buildSpendOptInConfirm(opts: { enabling: boolean; onConfirm: () => void }): {
+  title: string;
+  message: string;
+  buttons: any[];
+} {
   return {
     title: opts.enabling ? 'Turn on Cost Explorer polling?' : 'Turn off Cost Explorer polling?',
     message: opts.enabling
@@ -705,7 +706,6 @@ export interface SpendSectionState {
   error: string | null;
 }
 
-
 /**
  * How many quotas the phone lists. Lower than web's 8: the rows are taller and
  * the list is sorted tightest-first, so a shorter cut still shows everything
@@ -832,7 +832,10 @@ function QuotaSection({ projectId }: { projectId: string }) {
                     {quota.quotaName}
                   </Text>
                   <Text
-                    style={[styles.quotaPercent, { color: QUOTA_TONE_COLOR[quotaBandTone(quota.band)] }]}
+                    style={[
+                      styles.quotaPercent,
+                      { color: QUOTA_TONE_COLOR[quotaBandTone(quota.band)] },
+                    ]}
                     testID="infra-quota-utilization"
                   >
                     {formatQuotaUtilization(quota.utilizationPercent)}
@@ -1433,9 +1436,7 @@ function HealthSection({ projectId }: { projectId: string }) {
           event={event}
           nowMs={nowMs}
           expanded={Boolean(expanded[event.id])}
-          onToggle={() =>
-            setExpanded((prev) => ({ ...prev, [event.id]: !prev[event.id] }))
-          }
+          onToggle={() => setExpanded((prev) => ({ ...prev, [event.id]: !prev[event.id] }))}
         />
       ))}
       {truncation ? (
@@ -1682,7 +1683,10 @@ function OverviewTab({
         />
       ) : null}
       {rows.map((scope: any) => (
-        <View key={scope.id || `${scope.profileName}-${scope.region}-${scope.service}`} style={styles.card}>
+        <View
+          key={scope.id || `${scope.profileName}-${scope.region}-${scope.service}`}
+          style={styles.card}
+        >
           <Text style={styles.rowTitle}>
             {scope.service} · {scope.region}
           </Text>
@@ -1817,7 +1821,11 @@ function ResourcesTab({ projectId, onSelectResource, selectedResourceKey }: any)
         testID="infra-resource-search"
       />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
-        <Chip label="All services" active={filters.service === ''} onPress={() => setFilter('service', '')} />
+        <Chip
+          label="All services"
+          active={filters.service === ''}
+          onPress={() => setFilter('service', '')}
+        />
         {(facets.services || []).map((service: string) => (
           <Chip
             key={service}
@@ -1828,7 +1836,11 @@ function ResourcesTab({ projectId, onSelectResource, selectedResourceKey }: any)
         ))}
       </ScrollView>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
-        <Chip label="All regions" active={filters.region === ''} onPress={() => setFilter('region', '')} />
+        <Chip
+          label="All regions"
+          active={filters.region === ''}
+          onPress={() => setFilter('region', '')}
+        />
         {(facets.regions || []).map((region: string) => (
           <Chip
             key={region}
@@ -1874,7 +1886,9 @@ function ResourcesTab({ projectId, onSelectResource, selectedResourceKey }: any)
               <Text style={styles.mono} numberOfLines={1}>
                 {resource.resourceId}
               </Text>
-              <Text style={[styles.statePill, styles[`state_${tone}` as keyof typeof styles] as any]}>
+              <Text
+                style={[styles.statePill, styles[`state_${tone}` as keyof typeof styles] as any]}
+              >
                 {resource.state || 'unknown'}
               </Text>
             </View>
@@ -1975,8 +1989,8 @@ export function ServiceNotes({
         <View testID="infra-service-default-rules">
           <Text style={styles.notesTitle}>Recommended {pack.label} alert rules</Text>
           <Text style={styles.hint}>
-            AWS&rsquo;s own published alarm guidance. Nothing here is active until you create it as a
-            rule on the web Infrastructure module.
+            AWS&rsquo;s own published alarm guidance. Nothing here is active until you create it as
+            a rule on the web Infrastructure module.
           </Text>
           {pack.defaultAlertRules.map((rule) => (
             <View key={rule.name} style={styles.notesRow}>
@@ -2316,7 +2330,9 @@ function AlertsTab({ projectId, focusAlertId, pack }: any) {
       api
         .setInfraAlertStatus(projectId, alertId, status)
         .then(() => load())
-        .catch((err: any) => Alert.alert('Alerts', err?.message || 'The alert could not be updated.'))
+        .catch((err: any) =>
+          Alert.alert('Alerts', err?.message || 'The alert could not be updated.'),
+        )
         .finally(() => setBusyId(null));
     },
     [projectId, load],
@@ -2370,7 +2386,8 @@ function AlertsTab({ projectId, focusAlertId, pack }: any) {
             </Text>
             <Text style={styles.rowMeta}>
               {formatAlertStatus(alertRow.status)}
-              {row.severity ? ` · ${row.severity}` : ''} · seen {formatAge(alertRow.lastSeen, Date.now())}
+              {row.severity ? ` · ${row.severity}` : ''} · seen{' '}
+              {formatAge(alertRow.lastSeen, Date.now())}
               {alertRow.occurrenceCount > 1 ? ` · ×${alertRow.occurrenceCount}` : ''}
             </Text>
             {alertRow.reason ? <Text style={styles.rowMeta}>{alertRow.reason}</Text> : null}
@@ -2408,8 +2425,7 @@ function AlertsTab({ projectId, focusAlertId, pack }: any) {
 export default function InfrastructureScreen({ route, navigation }: any) {
   const { projects, lastInfraAlertEvent, setActiveAgentId, setActiveSessionId } = useApp();
   const projectId = route?.params?.projectId || projects?.[0]?.id;
-  const project =
-    route?.params?.project || projects?.find((p: any) => p.id === projectId) || null;
+  const project = route?.params?.project || projects?.find((p: any) => p.id === projectId) || null;
   const focusAlertId = route?.params?.alertId || null;
 
   const [tab, setTab] = useState<InfrastructureTab>(
@@ -2424,9 +2440,10 @@ export default function InfrastructureScreen({ route, navigation }: any) {
   // Resources, Metrics and Alerts tabs, so an unstamped response would let the
   // previous project's scope authorise this project's tabs until the new
   // request settled — showing one project's monitoring under another's header.
-  const [selected, setSelected] = useState<{ projectId: string; resource: InfraResourceWire } | null>(
-    null,
-  );
+  const [selected, setSelected] = useState<{
+    projectId: string;
+    resource: InfraResourceWire;
+  } | null>(null);
   const selectedResource = stampMatchesProject(selected, projectId)
     ? (selected as { resource: InfraResourceWire }).resource
     : null;
@@ -2690,11 +2707,23 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.gray950 },
   content: { padding: 16, paddingBottom: 32 },
   tabBar: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.gray800 },
-  tabBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  tabBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
   tabBtnActive: { borderBottomColor: colors.blue500 },
   tabText: { fontSize: 13, color: colors.gray400 },
   tabTextActive: { color: colors.white, fontWeight: '600' },
-  sectionTitle: { fontSize: 15, fontWeight: '600', color: colors.white, marginTop: 16, marginBottom: 6 },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.white,
+    marginTop: 16,
+    marginBottom: 6,
+  },
   hint: { fontSize: 12, color: colors.gray500, marginTop: 6 },
   notesCard: {
     marginTop: 16,

@@ -15,14 +15,14 @@
  * sheets can render validation errors inline.
  */
 export const REVIEW_EVENTS = [
-    { event: 'APPROVE', state: 'approved', label: 'Approve' },
-    { event: 'REQUEST_CHANGES', state: 'changes_requested', label: 'Request changes' },
-    { event: 'COMMENT', state: 'commented', label: 'Comment' },
+  { event: 'APPROVE', state: 'approved', label: 'Approve' },
+  { event: 'REQUEST_CHANGES', state: 'changes_requested', label: 'Request changes' },
+  { event: 'COMMENT', state: 'commented', label: 'Comment' },
 ];
 /** Server `state` for a UI review event, or null when unknown. */
 export function reviewStateForEvent(event: any) {
-    const found = REVIEW_EVENTS.find((e: any) => e.event === event);
-    return found ? found.state : null;
+  const found = REVIEW_EVENTS.find((e: any) => e.event === event);
+  return found ? found.state : null;
 }
 /**
  * Build the body for POST .../pulls/:n/reviews.
@@ -30,15 +30,15 @@ export function reviewStateForEvent(event: any) {
  * @param {string} [body]
  */
 export function buildReviewPayload(event: any, body: any = '') {
-    const state = reviewStateForEvent(event);
-    if (!state) {
-        return { ok: false, error: `Unknown review action: ${String(event)}` };
-    }
-    const text = typeof body === 'string' ? body.trim() : '';
-    if (state === 'commented' && !text) {
-        return { ok: false, error: 'A comment needs some text.' };
-    }
-    return { ok: true, payload: { state, body: text } };
+  const state = reviewStateForEvent(event);
+  if (!state) {
+    return { ok: false, error: `Unknown review action: ${String(event)}` };
+  }
+  const text = typeof body === 'string' ? body.trim() : '';
+  if (state === 'commented' && !text) {
+    return { ok: false, error: 'A comment needs some text.' };
+  }
+  return { ok: true, payload: { state, body: text } };
 }
 /**
  * A "general PR comment" is a review with state 'commented' — the native
@@ -46,18 +46,18 @@ export function buildReviewPayload(event: any, body: any = '') {
  * are file+line anchored). Same approach as the web review composer.
  */
 export function buildGeneralCommentPayload(body: any) {
-    return buildReviewPayload('COMMENT', body);
+  return buildReviewPayload('COMMENT', body);
 }
 /**
  * Build the body for POST .../pulls/:n/reviews/:reviewId/dismiss.
  * A dismissal reason is required (GitHub "Dismiss review" semantics).
  */
 export function buildDismissReviewPayload(reason: any) {
-    const text = typeof reason === 'string' ? reason.trim() : '';
-    if (!text) {
-        return { ok: false, error: 'A dismissal reason is required.' };
-    }
-    return { ok: true, payload: { reason: text } };
+  const text = typeof reason === 'string' ? reason.trim() : '';
+  if (!text) {
+    return { ok: false, error: 'A dismissal reason is required.' };
+  }
+  return { ok: true, payload: { reason: text } };
 }
 /**
  * Whether a given review can be dismissed. Mirrors the server + web gating:
@@ -66,36 +66,31 @@ export function buildDismissReviewPayload(reason: any) {
  * closed/merged PRs, so this does NOT gate on `isOpen`.
  */
 export function canDismissReview(detail: any, review: any) {
-    if (detail?.source !== 'agenthub')
-        return false;
-    if (!review || review.dismissed)
-        return false;
-    const state = String(review.state || '').toUpperCase();
-    return state === 'APPROVED' || state === 'CHANGES_REQUESTED';
+  if (detail?.source !== 'agenthub') return false;
+  if (!review || review.dismissed) return false;
+  const state = String(review.state || '').toUpperCase();
+  return state === 'APPROVED' || state === 'CHANGES_REQUESTED';
 }
 /** Build the body for PATCH .../pulls/:n (edit title/description). */
 export function buildEditPrPayload({ title, body }: any = {}) {
-    const t = typeof title === 'string' ? title.trim() : '';
-    if (!t)
-        return { ok: false, error: 'Title is required.' };
-    return { ok: true, payload: { title: t, body: typeof body === 'string' ? body : '' } };
+  const t = typeof title === 'string' ? title.trim() : '';
+  if (!t) return { ok: false, error: 'Title is required.' };
+  return { ok: true, payload: { title: t, body: typeof body === 'string' ? body : '' } };
 }
 /** Build the body for POST .../pulls/:n/comments (inline diff comment). */
 export function buildInlineCommentPayload({ filePath, line, side, body }: any = {}) {
-    const path = typeof filePath === 'string' ? filePath.trim() : '';
-    if (!path)
-        return { ok: false, error: 'A file path is required.' };
-    const n = Number.parseInt(String(line), 10);
-    if (!Number.isFinite(n) || n <= 0) {
-        return { ok: false, error: 'Line must be a positive number.' };
-    }
-    const text = typeof body === 'string' ? body.trim() : '';
-    if (!text)
-        return { ok: false, error: 'Comment text is required.' };
-    return {
-        ok: true,
-        payload: { filePath: path, line: n, side: side === 'old' ? 'old' : 'new', body: text },
-    };
+  const path = typeof filePath === 'string' ? filePath.trim() : '';
+  if (!path) return { ok: false, error: 'A file path is required.' };
+  const n = Number.parseInt(String(line), 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    return { ok: false, error: 'Line must be a positive number.' };
+  }
+  const text = typeof body === 'string' ? body.trim() : '';
+  if (!text) return { ok: false, error: 'Comment text is required.' };
+  return {
+    ok: true,
+    payload: { filePath: path, line: n, side: side === 'old' ? 'old' : 'new', body: text },
+  };
 }
 /**
  * What actions the detail payload supports — mirrors the web gating in
@@ -107,30 +102,30 @@ export function buildInlineCommentPayload({ filePath, line, side, body }: any = 
  * html URL.
  */
 export function prDetailCapabilities(detail: any) {
-    const pr = detail && typeof detail === 'object' ? detail.pr : null;
-    const isNative = detail?.source === 'agenthub';
-    const isOpen = String(pr?.state || '').toLowerCase() === 'open';
-    const isMerged = Boolean(pr?.merged_at);
-    const isReverted = Boolean(pr?.reverted);
-    const prUrl = typeof pr?.html_url === 'string' && pr.html_url ? pr.html_url : null;
-    return {
-        isNative,
-        isOpen,
-        isMerged,
-        isReverted,
-        prUrl,
-        canViewFiles: Boolean(prUrl),
-        canReview: isNative && isOpen,
-        canComment: isNative && isOpen,
-        canEdit: isNative && isOpen,
-        canReopen: isNative && !isOpen && !isMerged,
-        canRevert: isNative && isMerged && !isReverted,
-        // Native PR auto-merge arming (web parity). Boolean flag surfaced by the
-        // server's PR summary.
-        canAutoMerge: isNative && isOpen,
-        autoMergeEnabled: pr?.auto_merge === true || pr?.auto_merge === 1,
-        // Native html_urls are in-app client routes — only real GitHub URLs
-        // get an external "open" affordance (web parity).
-        externalUrl: prUrl && /^https?:\/\//i.test(prUrl) ? prUrl : null,
-    };
+  const pr = detail && typeof detail === 'object' ? detail.pr : null;
+  const isNative = detail?.source === 'agenthub';
+  const isOpen = String(pr?.state || '').toLowerCase() === 'open';
+  const isMerged = Boolean(pr?.merged_at);
+  const isReverted = Boolean(pr?.reverted);
+  const prUrl = typeof pr?.html_url === 'string' && pr.html_url ? pr.html_url : null;
+  return {
+    isNative,
+    isOpen,
+    isMerged,
+    isReverted,
+    prUrl,
+    canViewFiles: Boolean(prUrl),
+    canReview: isNative && isOpen,
+    canComment: isNative && isOpen,
+    canEdit: isNative && isOpen,
+    canReopen: isNative && !isOpen && !isMerged,
+    canRevert: isNative && isMerged && !isReverted,
+    // Native PR auto-merge arming (web parity). Boolean flag surfaced by the
+    // server's PR summary.
+    canAutoMerge: isNative && isOpen,
+    autoMergeEnabled: pr?.auto_merge === true || pr?.auto_merge === 1,
+    // Native html_urls are in-app client routes — only real GitHub URLs
+    // get an external "open" affordance (web parity).
+    externalUrl: prUrl && /^https?:\/\//i.test(prUrl) ? prUrl : null,
+  };
 }

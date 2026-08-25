@@ -161,14 +161,11 @@ describe('deployment state helpers', () => {
   });
 
   it('collects matching deployment detail log entries for a step', () => {
-    const text = deploymentStepLogText(
-      { id: 'step-1', step_order: 2, name: 'ship' },
-      [
-        { deployment_step_id: 'step-1', stream: 'stdout', text: 'ship started' },
-        { step_order: 2, stream: 'stderr', text: 'ship warning' },
-        { deployment_step_id: 'other', stream: 'stdout', text: 'ignore me' },
-      ],
-    );
+    const text = deploymentStepLogText({ id: 'step-1', step_order: 2, name: 'ship' }, [
+      { deployment_step_id: 'step-1', stream: 'stdout', text: 'ship started' },
+      { step_order: 2, stream: 'stderr', text: 'ship warning' },
+      { deployment_step_id: 'other', stream: 'stdout', text: 'ignore me' },
+    ]);
 
     expect(text).toContain('[stdout] ship started');
     expect(text).toContain('[stderr] ship warning');
@@ -291,8 +288,8 @@ describe('applyReleaseNotificationEvent', () => {
 
   it('defaults a missing notification list to empty', () => {
     const event = { projectId: 'proj-1', deploymentId: 'dep-1' };
-    expect(applyReleaseNotificationEvent(prev, event, 'proj-1', 'dep-1').releaseNotifications).toEqual(
-      [],
-    );
+    expect(
+      applyReleaseNotificationEvent(prev, event, 'proj-1', 'dep-1').releaseNotifications,
+    ).toEqual([]);
   });
 });

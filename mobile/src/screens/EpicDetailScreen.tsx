@@ -51,7 +51,12 @@ function ProgressBar({ pct, tone = 'emerald' }: { pct: number; tone?: 'emerald' 
   const fill = tone === 'violet' ? colors.purple500 : colors.emerald500;
   return (
     <View style={styles.progressTrack}>
-      <View style={[styles.progressFill, { width: `${Math.max(0, Math.min(100, pct))}%`, backgroundColor: fill }]} />
+      <View
+        style={[
+          styles.progressFill,
+          { width: `${Math.max(0, Math.min(100, pct))}%`, backgroundColor: fill },
+        ]}
+      />
     </View>
   );
 }
@@ -80,9 +85,7 @@ export function EpicSummary({ epic, phases, tickets, columns, specItems }: any) 
           </View>
         ) : null}
       </View>
-      {epic.description ? (
-        <Text style={styles.summaryDesc}>{epic.description}</Text>
-      ) : null}
+      {epic.description ? <Text style={styles.summaryDesc}>{epic.description}</Text> : null}
 
       <View style={styles.statsRow}>
         <View style={styles.statCell}>
@@ -213,8 +216,8 @@ export function EpicStartSection({ epic, onRunEpic, onSaveSchedule, onClearSched
   return (
     <View style={styles.formCard} testID="epic-start-section">
       <Text style={styles.mutedNote}>
-        Start the epic's phases left-to-right. The sweep stops at the first phase whose auto-dispatch
-        is off.
+        Start the epic's phases left-to-right. The sweep stops at the first phase whose
+        auto-dispatch is off.
       </Text>
       <TouchableOpacity
         style={[styles.primaryBtn, running && { opacity: 0.5 }]}
@@ -297,7 +300,10 @@ export function SpecItemRow({ item, saving, onDecideForMe, onUpdateSpecItem, onO
   const deciding = saving === item.id;
 
   return (
-    <View style={[styles.specCard, chosen && styles.specCardChosen]} testID={`spec-item-${item.id}`}>
+    <View
+      style={[styles.specCard, chosen && styles.specCardChosen]}
+      testID={`spec-item-${item.id}`}
+    >
       <View style={styles.specHead}>
         <Text style={styles.specTag}>{item.tag}</Text>
         <Text style={[styles.specStatus, chosen ? styles.specStatusChosen : styles.specStatusOpen]}>
@@ -336,7 +342,12 @@ export function SpecItemRow({ item, saving, onDecideForMe, onUpdateSpecItem, onO
         <>
           {item.decision ? <Text style={styles.specDecision}>{item.decision}</Text> : null}
           <View style={styles.specActionRow}>
-            <TouchableOpacity onPress={() => { setDraft(item.decision || ''); setEditing(true); }}>
+            <TouchableOpacity
+              onPress={() => {
+                setDraft(item.decision || '');
+                setEditing(true);
+              }}
+            >
               <Text style={styles.mutedAction}>Edit</Text>
             </TouchableOpacity>
           </View>
@@ -350,7 +361,10 @@ export function SpecItemRow({ item, saving, onDecideForMe, onUpdateSpecItem, onO
           <View style={styles.specActionRow}>
             <TouchableOpacity
               style={styles.smallBtn}
-              onPress={() => { setDraft(item.decision || ''); setEditing(true); }}
+              onPress={() => {
+                setDraft(item.decision || '');
+                setEditing(true);
+              }}
               testID={`write-decision-${item.id}`}
             >
               <Text style={styles.smallBtnText}>Write decision</Text>
@@ -361,7 +375,9 @@ export function SpecItemRow({ item, saving, onDecideForMe, onUpdateSpecItem, onO
               onPress={() => onDecideForMe?.(item.id)}
               testID={`decide-for-me-${item.id}`}
             >
-              <Text style={styles.smallIndigoBtnText}>{deciding ? 'Starting…' : 'Decide for me'}</Text>
+              <Text style={styles.smallIndigoBtnText}>
+                {deciding ? 'Starting…' : 'Decide for me'}
+              </Text>
             </TouchableOpacity>
           </View>
         </>
@@ -456,9 +472,7 @@ export function PhaseCard({
             onPress={() => onRun?.(phase.id)}
             testID={`run-phase-${phase.id}`}
           >
-            <Text style={styles.runBtnText}>
-              {specReady ? 'Run phase' : 'Lock spec to run'}
-            </Text>
+            <Text style={styles.runBtnText}>{specReady ? 'Run phase' : 'Lock spec to run'}</Text>
           </TouchableOpacity>
         ) : null}
 
@@ -486,7 +500,9 @@ export function PhaseCard({
               style={[styles.modelChip, styles.modelChipActive]}
               onPress={() => onFormChange?.(phase.id, { autonomous_model: selectedModel })}
             >
-              <Text style={[styles.modelChipText, styles.modelChipTextActive]}>{selectedModel}</Text>
+              <Text style={[styles.modelChipText, styles.modelChipTextActive]}>
+                {selectedModel}
+              </Text>
             </TouchableOpacity>
           ) : null}
           {modelOptions.map((model: string) => (
@@ -496,7 +512,10 @@ export function PhaseCard({
               onPress={() => onFormChange?.(phase.id, { autonomous_model: model })}
             >
               <Text
-                style={[styles.modelChipText, selectedModel === model && styles.modelChipTextActive]}
+                style={[
+                  styles.modelChipText,
+                  selectedModel === model && styles.modelChipTextActive,
+                ]}
               >
                 {model}
               </Text>
@@ -513,7 +532,10 @@ export function PhaseCard({
                   style={styles.stepBtn}
                   onPress={() =>
                     onFormChange?.(phase.id, {
-                      autonomous_max_concurrent: Math.max(1, (form.autonomous_max_concurrent || 1) - 1),
+                      autonomous_max_concurrent: Math.max(
+                        1,
+                        (form.autonomous_max_concurrent || 1) - 1,
+                      ),
                     })
                   }
                 >
@@ -524,7 +546,10 @@ export function PhaseCard({
                   style={styles.stepBtn}
                   onPress={() =>
                     onFormChange?.(phase.id, {
-                      autonomous_max_concurrent: Math.min(10, (form.autonomous_max_concurrent || 1) + 1),
+                      autonomous_max_concurrent: Math.min(
+                        10,
+                        (form.autonomous_max_concurrent || 1) + 1,
+                      ),
                     })
                   }
                 >
@@ -582,7 +607,10 @@ export function PhaseCard({
             placeholderTextColor={colors.gray600}
           />
           <TouchableOpacity
-            style={[styles.smallPrimaryBtn, (!ticketTitle.trim() || addingTicket) && { opacity: 0.5 }]}
+            style={[
+              styles.smallPrimaryBtn,
+              (!ticketTitle.trim() || addingTicket) && { opacity: 0.5 },
+            ]}
             disabled={!ticketTitle.trim() || addingTicket}
             onPress={() => {
               onAddTicket?.(phase.id, ticketTitle.trim());
@@ -677,7 +705,11 @@ export default function EpicDetailScreen({ route, navigation }: any) {
       const merged = { ...(phaseForms[phaseId] || phaseFormFromRow(phase)), ...patch };
       setPhaseForms((prev) => ({ ...prev, [phaseId]: merged }));
       try {
-        await api.updatePhase(projectId, phaseId, phaseFormToUpdateBody({ ...merged, name: phase.name }));
+        await api.updatePhase(
+          projectId,
+          phaseId,
+          phaseFormToUpdateBody({ ...merged, name: phase.name }),
+        );
         await loadBoard();
       } catch (err: any) {
         Alert.alert('Error', err?.message || 'Failed to update phase settings');
@@ -920,7 +952,9 @@ export default function EpicDetailScreen({ route, navigation }: any) {
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.secondaryBtn}
-              onPress={() => navigation.navigate('Epics', { projectId, project, editEpicId: epic.id })}
+              onPress={() =>
+                navigation.navigate('Epics', { projectId, project, editEpicId: epic.id })
+              }
             >
               <Text style={styles.secondaryBtnText}>Edit</Text>
             </TouchableOpacity>
@@ -1012,7 +1046,10 @@ export default function EpicDetailScreen({ route, navigation }: any) {
                 placeholderTextColor={colors.gray600}
               />
               <TouchableOpacity
-                style={[styles.smallPrimaryBtn, (!newPhaseName.trim() || creatingPhase) && { opacity: 0.5 }]}
+                style={[
+                  styles.smallPrimaryBtn,
+                  (!newPhaseName.trim() || creatingPhase) && { opacity: 0.5 },
+                ]}
                 disabled={!newPhaseName.trim() || creatingPhase}
                 onPress={handleAddPhase}
               >
@@ -1030,7 +1067,11 @@ export default function EpicDetailScreen({ route, navigation }: any) {
                     {t.title}
                   </Text>
                   {phases.length > 0 ? (
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.assignChips}>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.assignChips}
+                    >
                       {phases.map((p: any) => (
                         <TouchableOpacity
                           key={p.id}
@@ -1103,7 +1144,12 @@ const styles = StyleSheet.create({
   summaryTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   epicDot: { width: 12, height: 12, borderRadius: 4 },
   summaryName: { fontSize: 17, fontWeight: '700', color: colors.white, flex: 1 },
-  autoBadge: { backgroundColor: colors.emerald900_50, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2 },
+  autoBadge: {
+    backgroundColor: colors.emerald900_50,
+    borderRadius: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
   autoBadgeText: { fontSize: 10, fontWeight: '700', color: colors.emerald400 },
   summaryDesc: { fontSize: 13, color: colors.gray400, marginTop: 6, lineHeight: 18 },
   statsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginTop: 12 },
@@ -1114,7 +1160,12 @@ const styles = StyleSheet.create({
   progressHead: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
   progressLabel: { fontSize: 11, color: colors.gray500 },
   progressPct: { fontSize: 11, color: colors.gray500 },
-  progressTrack: { height: 6, borderRadius: 3, backgroundColor: colors.gray800, overflow: 'hidden' },
+  progressTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.gray800,
+    overflow: 'hidden',
+  },
   progressFill: { height: 6, borderRadius: 3 },
   warnText: { fontSize: 11, color: colors.amber400, marginTop: 10, lineHeight: 16 },
 
@@ -1214,9 +1265,21 @@ const styles = StyleSheet.create({
   specStatus: { fontSize: 11, fontWeight: '600' },
   specStatusChosen: { color: colors.emerald400 },
   specStatusOpen: { color: colors.amber400 },
-  specTitle: { fontSize: 14, fontWeight: '600', color: colors.gray100, marginTop: 4, lineHeight: 19 },
+  specTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.gray100,
+    marginTop: 4,
+    lineHeight: 19,
+  },
   specDecision: { fontSize: 12, color: colors.gray300, marginTop: 8, lineHeight: 18 },
-  specHint: { fontSize: 12, color: colors.gray500, fontStyle: 'italic', marginTop: 6, lineHeight: 17 },
+  specHint: {
+    fontSize: 12,
+    color: colors.gray500,
+    fontStyle: 'italic',
+    marginTop: 6,
+    lineHeight: 17,
+  },
   specEditBlock: { marginTop: 8 },
   specInput: { minHeight: 90, textAlignVertical: 'top' },
   specActionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10 },
@@ -1231,7 +1294,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.gray800,
   },
-  phaseHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  phaseHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
   phaseHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
   phaseIndex: {
     width: 22,
@@ -1286,7 +1354,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   stepBtnText: { fontSize: 16, color: colors.gray200, fontWeight: '700' },
-  stepValue: { fontSize: 14, color: colors.gray100, fontWeight: '600', minWidth: 18, textAlign: 'center' },
+  stepValue: {
+    fontSize: 14,
+    color: colors.gray100,
+    fontWeight: '600',
+    minWidth: 18,
+    textAlign: 'center',
+  },
   phaseTickets: { marginTop: 10, gap: 4 },
   noTickets: { fontSize: 12, color: colors.gray600, textAlign: 'center', paddingVertical: 10 },
   ticketRow: {

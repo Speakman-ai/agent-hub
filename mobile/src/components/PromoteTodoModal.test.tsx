@@ -72,9 +72,12 @@ describe('promoteTodo helpers', () => {
   });
 
   it('defaults the column to the first lane and priority to the todo priority', () => {
-    expect(defaultPromoteOptionId([{ id: 'c1', name: 'To Do' }, { id: 'c2', name: 'Doing' }])).toBe(
-      'c1',
-    );
+    expect(
+      defaultPromoteOptionId([
+        { id: 'c1', name: 'To Do' },
+        { id: 'c2', name: 'Doing' },
+      ]),
+    ).toBe('c1');
     expect(defaultPromoteOptionId([])).toBe('');
     expect(defaultPromotePriority({ priority: 'urgent' })).toBe('urgent');
     expect(defaultPromotePriority({ priority: null })).toBe('medium');
@@ -86,9 +89,9 @@ describe('promoteTodo helpers', () => {
       buildPromotePayload({ projectId: 'p', columnId: 'c', priority: 'low', epicId: 'e1' }),
     ).toEqual({ projectId: 'p', columnId: 'c', priority: 'low', epicId: 'e1' });
     // No epic selected -> epicId omitted entirely (not sent as '').
-    expect(buildPromotePayload({ projectId: 'p', columnId: 'c', priority: 'low', epicId: '' })).toEqual(
-      { projectId: 'p', columnId: 'c', priority: 'low' },
-    );
+    expect(
+      buildPromotePayload({ projectId: 'p', columnId: 'c', priority: 'low', epicId: '' }),
+    ).toEqual({ projectId: 'p', columnId: 'c', priority: 'low' });
     expect(
       buildPromotePayload({ projectId: 'p', columnId: 'c', priority: 'low' }),
     ).not.toHaveProperty('epicId');

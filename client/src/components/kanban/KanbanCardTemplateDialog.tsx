@@ -4,7 +4,7 @@ import {
   blankCardTemplateInput,
   type KanbanCardTemplate,
   type KanbanCardTemplateInput,
-} from '../../utils/kanbanCardTemplates';
+} from '@shared/utils/kanbanCardTemplates';
 
 const PRIORITIES = ['urgent', 'high', 'medium', 'low'] as const;
 

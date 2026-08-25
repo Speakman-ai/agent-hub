@@ -81,77 +81,78 @@ export function isAuthenticated() {
 }
 /** POST /api/auth/login. Stores the token on success. */
 export async function login({ baseUrl, username, password }: any) {
-    const email = typeof username === 'string' ? username.trim() : username;
-    const res = await fetch(`${baseUrl}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, username: email, password }),
-    });
-    if (res.status === 401) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || 'Invalid email or password');
-    }
-    if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `Login failed: ${res.status}`);
-    }
-    const data = await res.json();
-    if (data?.mfaRequired) {
-        return data;
-    }
-    await setToken(data);
+  const email = typeof username === 'string' ? username.trim() : username;
+  const res = await fetch(`${baseUrl}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, username: email, password }),
+  });
+  if (res.status === 401) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Invalid email or password');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Login failed: ${res.status}`);
+  }
+  const data = await res.json();
+  if (data?.mfaRequired) {
     return data;
+  }
+  await setToken(data);
+  return data;
 }
 export async function completeMfaLogin({ baseUrl, challengeId, code }: any) {
-    const res = await fetch(`${baseUrl}/auth/login/mfa`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ challengeId, code }),
-    });
-    if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        const message = res.status === 429
-            ? body.error || 'Too many MFA attempts. Try again later.'
-            : body.error || `MFA verification failed: ${res.status}`;
-        throw new Error(message);
-    }
-    const data = await res.json();
-    await setToken(data);
-    return data;
+  const res = await fetch(`${baseUrl}/auth/login/mfa`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challengeId, code }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const message =
+      res.status === 429
+        ? body.error || 'Too many MFA attempts. Try again later.'
+        : body.error || `MFA verification failed: ${res.status}`;
+    throw new Error(message);
+  }
+  const data = await res.json();
+  await setToken(data);
+  return data;
 }
 /** POST /api/auth/setup — first-run bootstrap. */
 export async function setup({ baseUrl, username, password }: any) {
-    const email = typeof username === 'string' ? username.trim() : username;
-    const res = await fetch(`${baseUrl}/auth/setup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, username: email, password }),
-    });
-    if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `Setup failed: ${res.status}`);
-    }
-    const data = await res.json();
-    await setToken(data);
-    return data;
+  const email = typeof username === 'string' ? username.trim() : username;
+  const res = await fetch(`${baseUrl}/auth/setup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, username: email, password }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Setup failed: ${res.status}`);
+  }
+  const data = await res.json();
+  await setToken(data);
+  return data;
 }
 export async function updateEmail({ baseUrl, email }: any) {
-    const token = getToken();
-    const res = await fetch(`${baseUrl}/auth/me/email`, {
-        method: 'PUT',
-        headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ email }),
-    });
-    if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `Email update failed: ${res.status}`);
-    }
-    const data = await res.json();
-    await setToken(data);
-    return data;
+  const token = getToken();
+  const res = await fetch(`${baseUrl}/auth/me/email`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Email update failed: ${res.status}`);
+  }
+  const data = await res.json();
+  await setToken(data);
+  return data;
 }
 /** GET /api/auth/status — public probe. Pass `timeoutMs: 0` to disable the default 15s cap. */
 export async function getAuthStatus(baseUrl: any, { timeoutMs = 15000 }: any = {}) {

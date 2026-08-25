@@ -58,27 +58,33 @@ import {
 } from '../utils/deployments';
 import { parseDate, relativeTime } from '../utils/time';
 
-const STATUS_STYLE: Record<string, { borderColor: string; backgroundColor: string; color: string }> =
-  {
-    success: {
-      borderColor: colors.emerald500,
-      backgroundColor: colors.emerald900_40,
-      color: colors.emerald300,
-    },
-    error: { borderColor: colors.red500, backgroundColor: colors.red900_50, color: colors.red400 },
-    cancelled: {
-      borderColor: colors.amber400,
-      backgroundColor: colors.amber900_40,
-      color: colors.amber400,
-    },
-    running: { borderColor: colors.blue500, backgroundColor: colors.blue900_40, color: colors.blue300 },
-    awaiting_approval: {
-      borderColor: colors.purple500,
-      backgroundColor: colors.purple900_40,
-      color: colors.purple400,
-    },
-    idle: { borderColor: colors.gray700, backgroundColor: colors.gray800, color: colors.gray300 },
-  };
+const STATUS_STYLE: Record<
+  string,
+  { borderColor: string; backgroundColor: string; color: string }
+> = {
+  success: {
+    borderColor: colors.emerald500,
+    backgroundColor: colors.emerald900_40,
+    color: colors.emerald300,
+  },
+  error: { borderColor: colors.red500, backgroundColor: colors.red900_50, color: colors.red400 },
+  cancelled: {
+    borderColor: colors.amber400,
+    backgroundColor: colors.amber900_40,
+    color: colors.amber400,
+  },
+  running: {
+    borderColor: colors.blue500,
+    backgroundColor: colors.blue900_40,
+    color: colors.blue300,
+  },
+  awaiting_approval: {
+    borderColor: colors.purple500,
+    backgroundColor: colors.purple900_40,
+    color: colors.purple400,
+  },
+  idle: { borderColor: colors.gray700, backgroundColor: colors.gray800, color: colors.gray300 },
+};
 
 function formatDate(value: any) {
   const d = parseDate(value);
@@ -527,9 +533,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                       <TouchableOpacity
                         key={branch}
                         style={[styles.branchChip, activeBranch && styles.branchChipActive]}
-                        onPress={() =>
-                          setRefByEnv((prev) => ({ ...prev, [env.name]: branch }))
-                        }
+                        onPress={() => setRefByEnv((prev) => ({ ...prev, [env.name]: branch }))}
                         disabled={busy}
                         accessibilityRole="button"
                         accessibilityLabel={`Deploy ${env.name} from ${branch}`}
@@ -556,9 +560,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                 <TextInput
                   accessibilityLabel={`Ref for ${env.name}`}
                   value={refValue}
-                  onChangeText={(value) =>
-                    setRefByEnv((prev) => ({ ...prev, [env.name]: value }))
-                  }
+                  onChangeText={(value) => setRefByEnv((prev) => ({ ...prev, [env.name]: value }))}
                   editable={!busy}
                   autoCapitalize="none"
                   autoCorrect={false}
@@ -576,7 +578,10 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                     )
                   }
                   disabled={busy || actionKey === deployKey}
-                  style={[styles.primaryButton, (busy || actionKey === deployKey) && styles.disabled]}
+                  style={[
+                    styles.primaryButton,
+                    (busy || actionKey === deployKey) && styles.disabled,
+                  ]}
                 >
                   {actionKey === deployKey ? (
                     <ActivityIndicator color={colors.white} size="small" />
@@ -821,7 +826,9 @@ export default function DeploymentsScreen({ route, navigation }: any) {
             <View style={styles.releaseSection}>
               <View style={styles.releaseHeader}>
                 <Text style={styles.releaseTitle}>Notifications</Text>
-                <Text style={styles.releaseCount}>{selectedReleaseNotifications.length} recorded</Text>
+                <Text style={styles.releaseCount}>
+                  {selectedReleaseNotifications.length} recorded
+                </Text>
               </View>
               {selectedReleaseNotifications.length === 0 ? (
                 <Text style={styles.emptyText}>
@@ -855,7 +862,10 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                         <TouchableOpacity
                           onPress={() => retryNotification(notification)}
                           disabled={actionKey === retryKey}
-                          style={[styles.secondaryButton, actionKey === retryKey && styles.disabled]}
+                          style={[
+                            styles.secondaryButton,
+                            actionKey === retryKey && styles.disabled,
+                          ]}
                         >
                           {actionKey === retryKey ? (
                             <ActivityIndicator color={colors.gray300} size="small" />
@@ -906,7 +916,9 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                       <Text style={styles.secondaryButtonText}>Show recipients</Text>
                     </TouchableOpacity>
                   ) : recipients.length === 0 ? (
-                    <Text style={styles.emptyText}>No recipients recorded for this deployment.</Text>
+                    <Text style={styles.emptyText}>
+                      No recipients recorded for this deployment.
+                    </Text>
                   ) : (
                     recipients.map((recipient: any) => (
                       <View key={recipient.id} style={styles.releaseItemCard}>
@@ -923,7 +935,9 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                             : ` · ${recipientStatusLabel(recipient)}`}
                         </Text>
                         {recipient.error_summary ? (
-                          <Text style={styles.notificationErrorText}>{recipient.error_summary}</Text>
+                          <Text style={styles.notificationErrorText}>
+                            {recipient.error_summary}
+                          </Text>
                         ) : null}
                       </View>
                     ))
@@ -1200,7 +1214,13 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   releaseItemHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  releaseItemTitle: { flex: 1, minWidth: 0, color: colors.gray200, fontSize: 13, fontWeight: '700' },
+  releaseItemTitle: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.gray200,
+    fontSize: 13,
+    fontWeight: '700',
+  },
   releaseBadge: { borderWidth: 1, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
   releaseBadgeIncluded: {
     borderColor: colors.emerald500,

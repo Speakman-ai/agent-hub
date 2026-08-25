@@ -32,14 +32,12 @@
  *     sessions list is empty.
  */
 export function selectSessionToActivate(sessions: any, targetSessionId: any) {
-    if (!Array.isArray(sessions) || sessions.length === 0)
-        return null;
-    if (targetSessionId) {
-        const match = sessions.find((s: any) => s && s.id === targetSessionId);
-        if (match)
-            return match;
-    }
-    return sessions[0];
+  if (!Array.isArray(sessions) || sessions.length === 0) return null;
+  if (targetSessionId) {
+    const match = sessions.find((s: any) => s && s.id === targetSessionId);
+    if (match) return match;
+  }
+  return sessions[0];
 }
 
 /**
@@ -56,22 +54,19 @@ export function selectSessionToActivate(sessions: any, targetSessionId: any) {
  *     is either owned (already in the list) or absent.
  */
 export function deepLinkFetchId(sessions: any, targetSessionId: any) {
-    if (!targetSessionId)
-        return null;
-    const list = Array.isArray(sessions) ? sessions : [];
-    const owned = list.some((s: any) => s && s.id === targetSessionId);
-    return owned ? null : targetSessionId;
+  if (!targetSessionId) return null;
+  const list = Array.isArray(sessions) ? sessions : [];
+  const owned = list.some((s: any) => s && s.id === targetSessionId);
+  return owned ? null : targetSessionId;
 }
 
 /** Insert or replace a session row by id, keeping list order stable. */
 export function upsertSessionRow(list: any, row: any) {
-    const arr = Array.isArray(list) ? list : [];
-    if (!row || !row.id)
-        return arr;
-    const idx = arr.findIndex((s: any) => s && s.id === row.id);
-    if (idx === -1)
-        return [row, ...arr];
-    const next = arr.slice();
-    next[idx] = row;
-    return next;
+  const arr = Array.isArray(list) ? list : [];
+  if (!row || !row.id) return arr;
+  const idx = arr.findIndex((s: any) => s && s.id === row.id);
+  if (idx === -1) return [row, ...arr];
+  const next = arr.slice();
+  next[idx] = row;
+  return next;
 }

@@ -4,7 +4,7 @@ import { filterAgentsByProject } from '../utils/kanbanAgents';
 import {
   applyCardTemplateToDetailForm,
   type KanbanCardTemplate,
-} from '../utils/kanbanCardTemplates';
+} from '@shared/utils/kanbanCardTemplates';
 
 export function buildDetailFormFromCard(card: any) {
   return {

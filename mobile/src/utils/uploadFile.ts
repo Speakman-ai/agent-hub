@@ -15,35 +15,34 @@ import { getApiBaseUrl, getAuthHeaders } from './config';
 // Injectable `deps.fileSystem` exists so tests can avoid loading the native
 // expo-file-system module in a plain-node vitest environment.
 export async function uploadFile(fileRef: any, deps: any = {}) {
-    if (!fileRef || !fileRef.uri) {
-        throw new Error('uploadFile: fileRef.uri is required');
-    }
-    const base = getApiBaseUrl();
-    if (!base)
-        throw new Error('No server configured');
-    const FileSystem = deps.fileSystem || (await import('expo-file-system'));
-    const uploadType = deps.uploadType !== undefined
-        ? deps.uploadType
-        : FileSystem.FileSystemUploadType?.BINARY_CONTENT ?? 'BINARY_CONTENT';
-    const headers = {
-        'Content-Type': fileRef.type || 'application/octet-stream',
-        // Percent-encode so Unicode filenames survive the header's Latin-1
-        // charset limit; the server decodes it (decodeFilenameHeader).
-        'X-Filename': encodeURIComponent(fileRef.name || 'upload.bin'),
-        ...getAuthHeaders(),
-    };
-    const result = await FileSystem.uploadAsync(`${base}/upload/file`, fileRef.uri, {
-        httpMethod: 'POST',
-        uploadType,
-        headers,
-    });
-    if (!result || typeof result.status !== 'number' || result.status < 200 || result.status >= 300) {
-        throw new Error(`API error: ${result?.status ?? 'unknown'}`);
-    }
-    try {
-        return JSON.parse(result.body || '{}');
-    }
-    catch {
-        throw new Error('Invalid upload response');
-    }
+  if (!fileRef || !fileRef.uri) {
+    throw new Error('uploadFile: fileRef.uri is required');
+  }
+  const base = getApiBaseUrl();
+  if (!base) throw new Error('No server configured');
+  const FileSystem = deps.fileSystem || (await import('expo-file-system'));
+  const uploadType =
+    deps.uploadType !== undefined
+      ? deps.uploadType
+      : (FileSystem.FileSystemUploadType?.BINARY_CONTENT ?? 'BINARY_CONTENT');
+  const headers = {
+    'Content-Type': fileRef.type || 'application/octet-stream',
+    // Percent-encode so Unicode filenames survive the header's Latin-1
+    // charset limit; the server decodes it (decodeFilenameHeader).
+    'X-Filename': encodeURIComponent(fileRef.name || 'upload.bin'),
+    ...getAuthHeaders(),
+  };
+  const result = await FileSystem.uploadAsync(`${base}/upload/file`, fileRef.uri, {
+    httpMethod: 'POST',
+    uploadType,
+    headers,
+  });
+  if (!result || typeof result.status !== 'number' || result.status < 200 || result.status >= 300) {
+    throw new Error(`API error: ${result?.status ?? 'unknown'}`);
+  }
+  try {
+    return JSON.parse(result.body || '{}');
+  } catch {
+    throw new Error('Invalid upload response');
+  }
 }

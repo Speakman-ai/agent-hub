@@ -18,7 +18,8 @@ const ANSWER_FENCE_RE = /```agenthub:ask:answer\s*\n([\s\S]*?)\n?```/g;
 // submits. Used to strip the raw JSON from the chat transcript — the picker
 // UI itself already provides the visual "Submitted" confirmation, so showing
 // the payload again in the message thread is pure noise.
-const ANSWER_FENCE_WITH_PREFIX_RE = /(?:Here are my answers:\s*\n+)?```agenthub:ask:answer\s*\n[\s\S]*?\n?```/g;
+const ANSWER_FENCE_WITH_PREFIX_RE =
+  /(?:Here are my answers:\s*\n+)?```agenthub:ask:answer\s*\n[\s\S]*?\n?```/g;
 /**
  * Extract every `askId` referenced by an `agenthub:ask:answer` block across a
  * list of messages. Returns a Set<string>.
@@ -27,34 +28,28 @@ const ANSWER_FENCE_WITH_PREFIX_RE = /(?:Here are my answers:\s*\n+)?```agenthub:
  * @returns {Set<string>}
  */
 export function extractSubmittedAskIds(messages: any) {
-    const out = new Set();
-    if (!Array.isArray(messages))
-        return out;
-    for (const msg of messages) {
-        if (!msg || msg.role !== 'user')
-            continue;
-        const content = typeof msg.content === 'string' ? msg.content : null;
-        if (!content || !content.includes('agenthub:ask:answer'))
-            continue;
-        // Fresh regex each call — /g state is reset.
-        ANSWER_FENCE_RE.lastIndex = 0;
-        let match;
-        while ((match = ANSWER_FENCE_RE.exec(content)) !== null) {
-            const body = match[1]?.trim();
-            if (!body)
-                continue;
-            try {
-                const parsed = JSON.parse(body);
-                const askId = parsed && typeof parsed.askId === 'string' ? parsed.askId : null;
-                if (askId)
-                    out.add(askId);
-            }
-            catch {
-                // Malformed answer block — skip.
-            }
-        }
+  const out = new Set();
+  if (!Array.isArray(messages)) return out;
+  for (const msg of messages) {
+    if (!msg || msg.role !== 'user') continue;
+    const content = typeof msg.content === 'string' ? msg.content : null;
+    if (!content || !content.includes('agenthub:ask:answer')) continue;
+    // Fresh regex each call — /g state is reset.
+    ANSWER_FENCE_RE.lastIndex = 0;
+    let match;
+    while ((match = ANSWER_FENCE_RE.exec(content)) !== null) {
+      const body = match[1]?.trim();
+      if (!body) continue;
+      try {
+        const parsed = JSON.parse(body);
+        const askId = parsed && typeof parsed.askId === 'string' ? parsed.askId : null;
+        if (askId) out.add(askId);
+      } catch {
+        // Malformed answer block — skip.
+      }
     }
-    return out;
+  }
+  return out;
 }
 /**
  * Strip any `agenthub:ask:answer` fenced blocks (and their optional
@@ -73,9 +68,7 @@ export function extractSubmittedAskIds(messages: any) {
  * @returns {string}
  */
 export function stripAskAnswerBlocks(content: any) {
-    if (typeof content !== 'string')
-        return content;
-    if (!content.includes('agenthub:ask:answer'))
-        return content;
-    return content.replace(ANSWER_FENCE_WITH_PREFIX_RE, '').trim();
+  if (typeof content !== 'string') return content;
+  if (!content.includes('agenthub:ask:answer')) return content;
+  return content.replace(ANSWER_FENCE_WITH_PREFIX_RE, '').trim();
 }

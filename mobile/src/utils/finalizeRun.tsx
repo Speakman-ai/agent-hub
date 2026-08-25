@@ -17,30 +17,30 @@
  */
 /** Terminal status codes — see `FinalizeRunStatus` in server/types.ts. */
 const TERMINAL_STATUSES = new Set([
-    'pushed',
-    'failed',
-    'timed_out',
-    'infra_error',
-    'cancelled',
-    'stalled_no_response',
+  'pushed',
+  'failed',
+  'timed_out',
+  'infra_error',
+  'cancelled',
+  'stalled_no_response',
 ]);
 /**
  * Set of statuses during which a "Finalize" affordance must be disabled.
  * Mirrors `isFinalizeBlocked` on the web side.
  */
 const FINALIZE_BLOCKED_STATUSES = new Set([
-    'queued',
-    'rebasing',
-    'reviewing',
-    'running',
-    'dispatching',
-    'pushing',
+  'queued',
+  'rebasing',
+  'reviewing',
+  'running',
+  'dispatching',
+  'pushing',
 ]);
 export function isTerminalStatus(status: any) {
-    return !!status && TERMINAL_STATUSES.has(status);
+  return !!status && TERMINAL_STATUSES.has(status);
 }
 export function isFinalizeBlocked(status: any) {
-    return !!status && FINALIZE_BLOCKED_STATUSES.has(status);
+  return !!status && FINALIZE_BLOCKED_STATUSES.has(status);
 }
 /**
  * Short human label for a phase + status pair. Used by the in-flight
@@ -50,36 +50,35 @@ export function isFinalizeBlocked(status: any) {
  * orchestrator entered the step-runner phase.
  */
 export function describeRunPhase(status: any, phase: any) {
-    if (!status)
-        return 'idle';
-    switch (status) {
-        case 'queued':
-            return 'queued';
-        case 'rebasing':
-            return 'rebasing';
-        case 'reviewing':
-            return 'reviewing';
-        case 'running':
-            return phase === 'tasks' ? 'running checks' : 'running';
-        case 'dispatching':
-            return 'awaiting fix';
-        case 'pushing':
-            return 'pushing';
-        case 'pushed':
-            return 'pushed';
-        case 'failed':
-            return 'failed';
-        case 'timed_out':
-            return 'timed out';
-        case 'infra_error':
-            return 'infra error';
-        case 'cancelled':
-            return 'cancelled';
-        case 'stalled_no_response':
-            return 'stalled';
-        default:
-            return String(status).replace(/_/g, ' ');
-    }
+  if (!status) return 'idle';
+  switch (status) {
+    case 'queued':
+      return 'queued';
+    case 'rebasing':
+      return 'rebasing';
+    case 'reviewing':
+      return 'reviewing';
+    case 'running':
+      return phase === 'tasks' ? 'running checks' : 'running';
+    case 'dispatching':
+      return 'awaiting fix';
+    case 'pushing':
+      return 'pushing';
+    case 'pushed':
+      return 'pushed';
+    case 'failed':
+      return 'failed';
+    case 'timed_out':
+      return 'timed out';
+    case 'infra_error':
+      return 'infra error';
+    case 'cancelled':
+      return 'cancelled';
+    case 'stalled_no_response':
+      return 'stalled';
+    default:
+      return String(status).replace(/_/g, ' ');
+  }
 }
 /**
  * Freshness window (ms) for the live finalize WS stream. If no
@@ -115,16 +114,18 @@ export const FINALIZE_LIVE_FRESH_MS = 15000;
  * }} args
  * @returns {boolean} true → poll (fetch); false → skip this tick.
  */
-export function shouldPollFinalizeFallback({ connected, lastEvent, sessionId, now, freshMs = FINALIZE_LIVE_FRESH_MS, }: any) {
-    if (!sessionId)
-        return false;
-    if (!connected)
-        return true;
-    if (!lastEvent || lastEvent.sessionId !== sessionId)
-        return true;
-    if (typeof lastEvent.bump !== 'number')
-        return true;
-    return now - lastEvent.bump >= freshMs;
+export function shouldPollFinalizeFallback({
+  connected,
+  lastEvent,
+  sessionId,
+  now,
+  freshMs = FINALIZE_LIVE_FRESH_MS,
+}: any) {
+  if (!sessionId) return false;
+  if (!connected) return true;
+  if (!lastEvent || lastEvent.sessionId !== sessionId) return true;
+  if (typeof lastEvent.bump !== 'number') return true;
+  return now - lastEvent.bump >= freshMs;
 }
 // Exported for tests so the membership predicates can be asserted
 // against the canonical sets rather than re-derived in the spec.

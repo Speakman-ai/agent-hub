@@ -147,7 +147,9 @@ export function ReplayPlaylistsView({ projectId, onWatch, onNotify }: any) {
                 <Text style={styles.cardTitle} numberOfLines={1}>
                   {pl.name}
                 </Text>
-                {pl.extendedRetention ? <Text style={[styles.chip, styles.chipKept]}>★ Kept</Text> : null}
+                {pl.extendedRetention ? (
+                  <Text style={[styles.chip, styles.chipKept]}>★ Kept</Text>
+                ) : null}
               </TouchableOpacity>
               <Text style={styles.cardSub}>
                 {pl.itemCount} capture{pl.itemCount === 1 ? '' : 's'}
@@ -406,7 +408,11 @@ export function AddToPlaylistModal({ projectId, replay, onClose, onAdded, onErro
           </View>
           <ScrollView style={styles.modalBody} keyboardShouldPersistTaps="handled">
             {loading ? (
-              <ActivityIndicator size="small" color={colors.gray400} style={{ marginVertical: 16 }} />
+              <ActivityIndicator
+                size="small"
+                color={colors.gray400}
+                style={{ marginVertical: 16 }}
+              />
             ) : (
               <>
                 {playlists.map((p) => (
@@ -523,7 +529,11 @@ function PlaylistFormModal({
                 testID="playlist-submit"
                 disabled={!name.trim() || submitting}
                 onPress={submit}
-                style={[styles.pill, styles.pillPrimary, (!name.trim() || submitting) && styles.pillDisabled]}
+                style={[
+                  styles.pill,
+                  styles.pillPrimary,
+                  (!name.trim() || submitting) && styles.pillDisabled,
+                ]}
               >
                 <Text style={styles.pillPrimaryText}>{submitting ? 'Saving…' : submitLabel}</Text>
               </TouchableOpacity>

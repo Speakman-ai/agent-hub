@@ -4,9 +4,11 @@ import { api } from '../utils/api';
 import {
   clearLegacyLocalCardTemplates,
   readLegacyLocalCardTemplates,
-  type KanbanCardTemplate,
-  type KanbanCardTemplateInput,
-} from '../utils/kanbanCardTemplates';
+} from '../utils/kanbanCardTemplatesLocal';
+import type {
+  KanbanCardTemplate,
+  KanbanCardTemplateInput,
+} from '@shared/utils/kanbanCardTemplates';
 import KanbanCardTemplateDialog from './kanban/KanbanCardTemplateDialog';
 
 type EpicRow = { id: string; name: string };

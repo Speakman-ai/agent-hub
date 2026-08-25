@@ -24,13 +24,15 @@ import {
   type LogFilter,
   type LogCursor,
 } from '../../utils/logStream';
-import { useLogTail, type UseLogTailOptions, type LogTailStatus } from '../../hooks/useLogTail';
+import { useLogTail, type LogTailStatus } from '@shared/hooks/useLogTail';
+import type { LogTailOverrides } from './logTailOverrides';
+import { getWsUrl } from '../../utils/connection';
 import LogRecordRow from './LogRecordRow';
 
 interface LiveLogsViewProps {
   projectId: string;
   /** Forwarded to `useLogTail` — tests inject a fake socket factory here. */
-  tailOptions?: UseLogTailOptions;
+  tailOptions?: LogTailOverrides;
   showToast?: (message: string, kind?: string) => void;
 }
 
@@ -80,7 +82,7 @@ export default function LiveLogsView({
     resume,
     reset,
     error,
-  } = useLogTail(projectId, { ...tailOptions, sinceUnixNano });
+  } = useLogTail(projectId, { getWsUrl, ...tailOptions, sinceUnixNano });
 
   const [minSeverityNumber, setMinSeverityNumber] = useState(0);
   const [sourceId, setSourceId] = useState('');

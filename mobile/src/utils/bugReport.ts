@@ -26,10 +26,8 @@ import { trimTrailingSlashes } from '@shared/utils/trimTrailingSlashes';
  * `process.env`). Do NOT refactor this to read through an alias — see the
  * regression guard in `bugReport.test.ts`.
  */
-export function resolveBugReportEndpoint(
-    raw: any = process.env.EXPO_PUBLIC_BUG_REPORT_ENDPOINT,
-) {
-    return trimTrailingSlashes(raw);
+export function resolveBugReportEndpoint(raw: any = process.env.EXPO_PUBLIC_BUG_REPORT_ENDPOINT) {
+  return trimTrailingSlashes(raw);
 }
 export const BUG_REPORT_ENDPOINT = resolveBugReportEndpoint();
 /** True when a bug-report intake endpoint is configured for this build. */
@@ -37,15 +35,14 @@ export const BUG_REPORT_ENABLED = BUG_REPORT_ENDPOINT !== '';
 export const BUG_REPORT_PROJECT_ID = 'agent-hub';
 
 function looksLikeEmail(value: any) {
-    return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+  return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
 export function defaultReporterEmail(record: any = getAuthRecord()) {
-    const email = record?.user?.email;
-    if (looksLikeEmail(email))
-        return email.trim().toLowerCase();
-    const username = record?.user?.username;
-    return looksLikeEmail(username) ? username.trim().toLowerCase() : '';
+  const email = record?.user?.email;
+  if (looksLikeEmail(email)) return email.trim().toLowerCase();
+  const username = record?.user?.username;
+  return looksLikeEmail(username) ? username.trim().toLowerCase() : '';
 }
 /**
  * Captures a PNG screenshot of the current screen and returns a local file URI.
@@ -53,12 +50,12 @@ export function defaultReporterEmail(record: any = getAuthRecord()) {
  * @returns {Promise<string>} file:// URI of the captured PNG
  */
 export async function captureScreenshot() {
-    const uri = await captureScreen({
-        format: 'png',
-        quality: 0.9,
-        result: 'tmpfile',
-    });
-    return uri;
+  const uri = await captureScreen({
+    format: 'png',
+    quality: 0.9,
+    result: 'tmpfile',
+  });
+  return uri;
 }
 /**
  * POSTs a bug report as multipart/form-data to the fixed intake endpoint.
@@ -80,57 +77,67 @@ export async function captureScreenshot() {
  * @param {string} [args.reporterEmail]
  * @returns {Promise<{ sessionId: string, status: string }>}
  */
-export async function submitBugReport({ screenshotUri, title, description = '', severity = 'medium', sourceUrl = '', userAgent = '', appVersion = '', currentProjectId: _currentProjectId = '', currentAgentId = '', reporterEmail = '', }: any) {
-    if (!title || !title.trim()) {
-        throw new Error('Title is required');
-    }
-    if (title.length > 200) {
-        throw new Error('Title must be 200 characters or fewer');
-    }
-    // Resolve at call time (honours a stubbed env in tests); unset → refuse to phone home.
-    const endpoint = resolveBugReportEndpoint();
-    if (!endpoint) {
-        throw new Error('Bug reporting is not configured for this deployment');
-    }
-    const form = new FormData();
-    if (screenshotUri) {
-        form.append('screenshot', {
-            uri: screenshotUri,
-            name: 'screenshot.png',
-            type: 'image/png',
-        } as any);
-    }
-    form.append('title', title);
-    form.append('description', description || '');
-    form.append('severity', severity || 'medium');
-    form.append('sourceUrl', sourceUrl || '');
-    form.append('userAgent', userAgent || '');
-    form.append('appVersion', appVersion || '');
-    form.append('clientType', 'mobile');
-    form.append('currentProjectId', BUG_REPORT_PROJECT_ID);
-    form.append('currentAgentId', currentAgentId || '');
-    const email = looksLikeEmail(reporterEmail)
-        ? reporterEmail.trim().toLowerCase()
-        : defaultReporterEmail();
-    if (email)
-        form.append('reporter_email', email);
-    const res = await fetch(endpoint, {
-        method: 'POST',
-        // NOTE: do NOT set Content-Type manually — RN/fetch will add the boundary
-        body: form,
-    });
-    const text = await res.text();
-    let parsed = null;
-    try {
-        parsed = text ? JSON.parse(text) : null;
-    }
-    catch {
-        parsed = null;
-    }
-    if (!res.ok) {
-        const msg = (parsed && (parsed.error || parsed.message)) ||
-            `Bug report submission failed (HTTP ${res.status})`;
-        throw new Error(msg);
-    }
-    return parsed || { sessionId: '', status: 'dispatched' };
+export async function submitBugReport({
+  screenshotUri,
+  title,
+  description = '',
+  severity = 'medium',
+  sourceUrl = '',
+  userAgent = '',
+  appVersion = '',
+  currentProjectId: _currentProjectId = '',
+  currentAgentId = '',
+  reporterEmail = '',
+}: any) {
+  if (!title || !title.trim()) {
+    throw new Error('Title is required');
+  }
+  if (title.length > 200) {
+    throw new Error('Title must be 200 characters or fewer');
+  }
+  // Resolve at call time (honours a stubbed env in tests); unset → refuse to phone home.
+  const endpoint = resolveBugReportEndpoint();
+  if (!endpoint) {
+    throw new Error('Bug reporting is not configured for this deployment');
+  }
+  const form = new FormData();
+  if (screenshotUri) {
+    form.append('screenshot', {
+      uri: screenshotUri,
+      name: 'screenshot.png',
+      type: 'image/png',
+    } as any);
+  }
+  form.append('title', title);
+  form.append('description', description || '');
+  form.append('severity', severity || 'medium');
+  form.append('sourceUrl', sourceUrl || '');
+  form.append('userAgent', userAgent || '');
+  form.append('appVersion', appVersion || '');
+  form.append('clientType', 'mobile');
+  form.append('currentProjectId', BUG_REPORT_PROJECT_ID);
+  form.append('currentAgentId', currentAgentId || '');
+  const email = looksLikeEmail(reporterEmail)
+    ? reporterEmail.trim().toLowerCase()
+    : defaultReporterEmail();
+  if (email) form.append('reporter_email', email);
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    // NOTE: do NOT set Content-Type manually — RN/fetch will add the boundary
+    body: form,
+  });
+  const text = await res.text();
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+  if (!res.ok) {
+    const msg =
+      (parsed && (parsed.error || parsed.message)) ||
+      `Bug report submission failed (HTTP ${res.status})`;
+    throw new Error(msg);
+  }
+  return parsed || { sessionId: '', status: 'dispatched' };
 }

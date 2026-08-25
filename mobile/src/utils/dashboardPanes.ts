@@ -14,21 +14,21 @@
  */
 
 export type GooglePaneState =
-    | 'not-configured'
-    | 'connect'
-    | 'reconnect'
-    | 'scope-required'
-    | 'ready';
+  | 'not-configured'
+  | 'connect'
+  | 'reconnect'
+  | 'scope-required'
+  | 'ready';
 
 export interface GooglePaneConnection {
-    configured?: boolean;
-    connected?: boolean;
-    reconnectRequired?: boolean;
+  configured?: boolean;
+  connected?: boolean;
+  reconnectRequired?: boolean;
 }
 
 export interface DashboardGoogleLike extends GooglePaneConnection {
-    calendar?: { scopeGranted?: boolean } | null;
-    mail?: { scopeGranted?: boolean } | null;
+  calendar?: { scopeGranted?: boolean } | null;
+  mail?: { scopeGranted?: boolean } | null;
 }
 
 /**
@@ -38,27 +38,27 @@ export interface DashboardGoogleLike extends GooglePaneConnection {
  * takes priority over a missing scope.
  */
 export function googlePaneState(
-    google: GooglePaneConnection | null | undefined,
-    scopeGranted: boolean,
+  google: GooglePaneConnection | null | undefined,
+  scopeGranted: boolean,
 ): GooglePaneState {
-    if (!google || !google.configured) return 'not-configured';
-    if (!google.connected) return 'connect';
-    if (google.reconnectRequired) return 'reconnect';
-    if (!scopeGranted) return 'scope-required';
-    return 'ready';
+  if (!google || !google.configured) return 'not-configured';
+  if (!google.connected) return 'connect';
+  if (google.reconnectRequired) return 'reconnect';
+  if (!scopeGranted) return 'scope-required';
+  return 'ready';
 }
 
 /** Calendar pane state: gated on the calendar scope from the dashboard payload. */
 export function calendarPaneState(google: DashboardGoogleLike | null | undefined): GooglePaneState {
-    return googlePaneState(google, !!google?.calendar?.scopeGranted);
+  return googlePaneState(google, !!google?.calendar?.scopeGranted);
 }
 
 /** Gmail pane state: gated on the mail scope from the dashboard payload. */
 export function mailPaneState(google: DashboardGoogleLike | null | undefined): GooglePaneState {
-    return googlePaneState(google, !!google?.mail?.scopeGranted);
+  return googlePaneState(google, !!google?.mail?.scopeGranted);
 }
 
 /** True only when the pane should render its live Google data. */
 export function isGooglePaneReady(state: GooglePaneState): boolean {
-    return state === 'ready';
+  return state === 'ready';
 }

@@ -22,7 +22,7 @@ import {
   READY_TIMEOUT_MAX_MS,
   type DevServerForm,
   type StoredSecret,
-} from '../../utils/devServerConfig';
+} from '@shared/utils/devServerConfig';
 
 /**
  * Minimal API surface `performDevServerSave` needs — mirrors the three
@@ -435,8 +435,8 @@ export default function DevServerSection({
         />
         <Text style={styles.hint}>
           Run via sh -c from the working directory (or worktree root). The Hub publishes a
-          per-session host port as AGENT_HUB_HOST_PORT — a compose-based server can bind
-          ${'${AGENT_HUB_HOST_PORT}'} instead of a hardcoded port so two sessions never collide.
+          per-session host port as AGENT_HUB_HOST_PORT — a compose-based server can bind $
+          {'${AGENT_HUB_HOST_PORT}'} instead of a hardcoded port so two sessions never collide.
         </Text>
       </View>
 
@@ -556,7 +556,9 @@ export default function DevServerSection({
           write-only — a stored secret is masked and never returned. Leave the value blank to keep
           the current value.
         </Text>
-        {form.secretRows.length === 0 && <Text style={styles.emptyText}>No secret references.</Text>}
+        {form.secretRows.length === 0 && (
+          <Text style={styles.emptyText}>No secret references.</Text>
+        )}
         {form.secretRows.map((row, idx) => (
           <View key={idx} style={styles.row}>
             <TextInput
@@ -654,7 +656,10 @@ export default function DevServerSection({
       <TouchableOpacity
         onPress={handleSave}
         disabled={saving || loading || !secretsLoaded}
-        style={[styles.primaryBtn, (saving || loading || !secretsLoaded) && styles.primaryBtnDisabled]}
+        style={[
+          styles.primaryBtn,
+          (saving || loading || !secretsLoaded) && styles.primaryBtnDisabled,
+        ]}
         accessibilityLabel="Save dev-server config"
       >
         {saving ? (

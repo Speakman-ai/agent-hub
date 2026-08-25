@@ -116,7 +116,11 @@ describe('markdown-it override honours the react-native-markdown-display contrac
   });
 
   it('emits the block token types the renderer maps to components', () => {
-    const types = new Set(MarkdownIt({ typographer: true }).parse(SOURCE, {}).map((t) => t.type));
+    const types = new Set(
+      MarkdownIt({ typographer: true })
+        .parse(SOURCE, {})
+        .map((t) => t.type),
+    );
     // getTokenTypeByToken strips `_open`/`_close`, so these names are the
     // renderRules keys. A rename upstream silently renders nothing.
     for (const expected of [

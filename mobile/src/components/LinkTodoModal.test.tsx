@@ -107,7 +107,13 @@ describe('linkTodo helpers (mobile parity)', () => {
 
   it('filters options by name', () => {
     expect(
-      filterLinkOptions([{ id: '1', name: 'Fix bug' }, { id: '2', name: 'Add UI' }], 'bug'),
+      filterLinkOptions(
+        [
+          { id: '1', name: 'Fix bug' },
+          { id: '2', name: 'Add UI' },
+        ],
+        'bug',
+      ),
     ).toEqual([{ id: '1', name: 'Fix bug' }]);
   });
 });

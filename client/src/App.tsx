@@ -135,7 +135,7 @@ import { createRefreshScheduler, kanbanEventTargetsProject } from '@shared/utils
 import { readCollapsedColumnIds, writeCollapsedColumnIds } from './utils/kanbanColumnCollapse';
 import { isWorkflowProject } from './utils/projectMode';
 import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate';
-import { coalescePromiseByKey } from './utils/coalesceInFlight';
+import { coalescePromiseByKey } from '@shared/utils/coalesceInFlight';
 import {
   isNearBottom,
   forcePinChatTailScroll,

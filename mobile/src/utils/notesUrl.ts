@@ -14,14 +14,13 @@
  * @returns {string} The path (without host), e.g. `/projects/foo/notes?q=hooks&limit=10`
  */
 export function buildNotesListUrl(projectId: any, query: any, limit: any) {
-    const params = new URLSearchParams();
-    if (query && String(query).trim())
-        params.set('q', String(query).trim());
-    if (limit && Number.isFinite(Number(limit)) && Number(limit) > 0) {
-        params.set('limit', String(limit));
-    }
-    const qs = params.toString();
-    return `/projects/${projectId}/notes${qs ? '?' + qs : ''}`;
+  const params = new URLSearchParams();
+  if (query && String(query).trim()) params.set('q', String(query).trim());
+  if (limit && Number.isFinite(Number(limit)) && Number(limit) > 0) {
+    params.set('limit', String(limit));
+  }
+  const qs = params.toString();
+  return `/projects/${projectId}/notes${qs ? '?' + qs : ''}`;
 }
 /**
  * Build a URL for a single Note (GET / PUT / DELETE).
@@ -30,5 +29,5 @@ export function buildNotesListUrl(projectId: any, query: any, limit: any) {
  * @returns {string}
  */
 export function buildNoteUrl(projectId: any, noteId: any) {
-    return `/projects/${projectId}/notes/${noteId}`;
+  return `/projects/${projectId}/notes/${noteId}`;
 }

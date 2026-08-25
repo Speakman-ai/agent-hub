@@ -70,6 +70,9 @@ jobs:
       - name: Run ESLint
         run: npm run lint
 
+      - name: No new mirrored client/mobile modules
+        run: npm run check:mirrored-modules
+
       - name: Check Prettier formatting
         run: npm run format:check
 

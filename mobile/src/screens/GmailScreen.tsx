@@ -16,11 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { SidebarContext } from '../context/SidebarContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
-import {
-  GMAIL_SURFACE_SCOPES,
-  hasGmailReadScope,
-  hasGmailSendScope,
-} from '../utils/googleSurface';
+import { GMAIL_SURFACE_SCOPES, hasGmailReadScope, hasGmailSendScope } from '../utils/googleSurface';
 import { buildEmailTodoDraft } from '@shared/utils/captureTodo';
 import { buildEmailCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
 import CaptureToTicketModal from '../components/CaptureToTicketModal';
@@ -566,7 +562,12 @@ const styles = StyleSheet.create({
   messageFrom: { color: colors.gray200, fontSize: 13, fontWeight: '700' },
   messageMeta: { color: colors.gray500, fontSize: 11, marginTop: 2 },
   messageBody: { color: colors.gray200, fontSize: 13, marginTop: 8, lineHeight: 18 },
-  modalBackdrop: { flex: 1, backgroundColor: colors.black60, justifyContent: 'center', padding: 16 },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: colors.black60,
+    justifyContent: 'center',
+    padding: 16,
+  },
   modalCard: {
     maxHeight: '90%',
     borderRadius: 8,

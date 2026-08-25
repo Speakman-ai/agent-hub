@@ -14,32 +14,32 @@ const here = dirname(fileURLToPath(import.meta.url));
  * `lucide-react-native`, which the Node-environment vitest can't evaluate.
  */
 function lucideMapKeys(relPath: any) {
-    const src = readFileSync(resolve(here, relPath), 'utf8');
-    const block = src.match(/HUB_LUCIDE_ICONS\s*(?::\s*Record<string,\s*any>)?\s*=\s*\{([\s\S]*?)\};/);
-    if (!block)
-        throw new Error(`HUB_LUCIDE_ICONS object not found in ${relPath}`);
-    const keys = new Set();
-    for (const line of block[1].split('\n')) {
-        const m = line.match(/^\s*([A-Za-z0-9_]+)\s*[,:]/);
-        if (m)
-            keys.add(m[1]);
-    }
-    return keys;
+  const src = readFileSync(resolve(here, relPath), 'utf8');
+  const block = src.match(
+    /HUB_LUCIDE_ICONS\s*(?::\s*Record<string,\s*any>)?\s*=\s*\{([\s\S]*?)\};/,
+  );
+  if (!block) throw new Error(`HUB_LUCIDE_ICONS object not found in ${relPath}`);
+  const keys = new Set();
+  for (const line of block[1].split('\n')) {
+    const m = line.match(/^\s*([A-Za-z0-9_]+)\s*[,:]/);
+    if (m) keys.add(m[1]);
+  }
+  return keys;
 }
 // Regression: a name added to HUB_ICON_NAMES without a matching Lucide
 // component registration makes HubIcon.{native,web}.js throw at import time
 // (the validation loop), which crashes the app on startup. These files import
 // `lucide-react-native` so they can't be imported here; assert statically.
 describe('HubIcon registry consistency', () => {
-    for (const relPath of ['../components/HubIcon.native.tsx', '../components/HubIcon.web.tsx']) {
-        it(`registers a Lucide component for every HUB_ICON_NAME in ${relPath}`, () => {
-            const keys = lucideMapKeys(relPath);
-            const missing = HUB_ICON_NAMES.filter((name: any) => !keys.has(name));
-            expect(missing, `missing Lucide mapping(s) in ${relPath}`).toEqual([]);
-        });
-    }
-    it('every HUB_ICON_NAME also has a native font-glyph fallback', () => {
-        const missing = HUB_ICON_NAMES.filter((name: any) => !HUB_NATIVE_ICONS[name]);
-        expect(missing).toEqual([]);
+  for (const relPath of ['../components/HubIcon.native.tsx', '../components/HubIcon.web.tsx']) {
+    it(`registers a Lucide component for every HUB_ICON_NAME in ${relPath}`, () => {
+      const keys = lucideMapKeys(relPath);
+      const missing = HUB_ICON_NAMES.filter((name: any) => !keys.has(name));
+      expect(missing, `missing Lucide mapping(s) in ${relPath}`).toEqual([]);
     });
+  }
+  it('every HUB_ICON_NAME also has a native font-glyph fallback', () => {
+    const missing = HUB_ICON_NAMES.filter((name: any) => !HUB_NATIVE_ICONS[name]);
+    expect(missing).toEqual([]);
+  });
 });

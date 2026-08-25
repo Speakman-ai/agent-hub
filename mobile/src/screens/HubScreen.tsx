@@ -16,11 +16,7 @@ import CalendarScreen from './CalendarScreen';
 import GmailScreen from './GmailScreen';
 import SupportOverviewScreen from './SupportOverviewScreen';
 import ChatScreen from './ChatScreen';
-import {
-  DEFAULT_HUB_PANE,
-  parseHubPane,
-  type HubWorkspacePane,
-} from '@shared/utils/hub';
+import { DEFAULT_HUB_PANE, parseHubPane, type HubWorkspacePane } from '@shared/utils/hub';
 
 type HubTab = 'assistant' | HubWorkspacePane;
 

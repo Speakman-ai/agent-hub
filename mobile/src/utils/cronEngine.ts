@@ -22,19 +22,20 @@
  */
 export const CRON_DEFAULT_ENGINE = 'claude-code';
 export function cronEngineChoices(modelConfig: any) {
-    if (!modelConfig?.engineValidModels)
-        return [];
-    return Object.keys(modelConfig.engineValidModels).filter((e: any) => (modelConfig.engineValidModels[e]?.length ?? 0) > 0);
+  if (!modelConfig?.engineValidModels) return [];
+  return Object.keys(modelConfig.engineValidModels).filter(
+    (e: any) => (modelConfig.engineValidModels[e]?.length ?? 0) > 0,
+  );
 }
 export function modelsForCronEngine(modelConfig: any, engine: any) {
-    const key = engine || CRON_DEFAULT_ENGINE;
-    return modelConfig?.engineValidModels?.[key] || [];
+  const key = engine || CRON_DEFAULT_ENGINE;
+  return modelConfig?.engineValidModels?.[key] || [];
 }
 export function defaultModelForCronEngine(modelConfig: any, engine: any) {
-    const key = engine || CRON_DEFAULT_ENGINE;
-    const models = modelConfig?.engineValidModels?.[key] || [];
-    const configuredDefault = modelConfig?.engineDefaultModels?.[key];
-    return models.includes(configuredDefault) ? configuredDefault : models[0] || '';
+  const key = engine || CRON_DEFAULT_ENGINE;
+  const models = modelConfig?.engineValidModels?.[key] || [];
+  const configuredDefault = modelConfig?.engineDefaultModels?.[key];
+  return models.includes(configuredDefault) ? configuredDefault : models[0] || '';
 }
 /**
  * Mirror `resolveCronSkillPrincipalAgentId` on the server: pick the
@@ -47,16 +48,15 @@ export function defaultModelForCronEngine(modelConfig: any, engine: any) {
  * historical claude-code default.
  */
 export function resolveCronSkillPrincipalEngine(formState: any, projects: any) {
-    const project = (projects || []).find((p: any) => p.id === formState?.project_id);
-    if (!project)
-        return null;
-    const principalId = (formState?.skill_principal_agent_id || '').trim() ||
-        (project.cronSkillPrincipalAgentId || '').trim() ||
-        (project.agents?.length === 1 ? project.agents[0].id : '');
-    if (!principalId)
-        return null;
-    const agent = (project.agents || []).find((a: any) => a.id === principalId);
-    return agent?.engine || null;
+  const project = (projects || []).find((p: any) => p.id === formState?.project_id);
+  if (!project) return null;
+  const principalId =
+    (formState?.skill_principal_agent_id || '').trim() ||
+    (project.cronSkillPrincipalAgentId || '').trim() ||
+    (project.agents?.length === 1 ? project.agents[0].id : '');
+  if (!principalId) return null;
+  const agent = (project.agents || []).find((a: any) => a.id === principalId);
+  return agent?.engine || null;
 }
 /**
  * Engine the cron will actually run under given the form state — the
@@ -66,9 +66,9 @@ export function resolveCronSkillPrincipalEngine(formState: any, projects: any) {
  * Cursor id under a cron whose project resolves to Codex.
  */
 export function effectiveCronEngine(formState: any, projects: any) {
-    return (formState?.engine ||
-        resolveCronSkillPrincipalEngine(formState, projects) ||
-        CRON_DEFAULT_ENGINE);
+  return (
+    formState?.engine || resolveCronSkillPrincipalEngine(formState, projects) || CRON_DEFAULT_ENGINE
+  );
 }
 /**
  * Helper-text version of the inherited-engine lookup: returns null when
@@ -77,8 +77,7 @@ export function effectiveCronEngine(formState: any, projects: any) {
  * already the historical default).
  */
 export function inheritedCronEngineForHelper(formState: any, projects: any) {
-    if (formState?.engine)
-        return null;
-    const eng = resolveCronSkillPrincipalEngine(formState, projects);
-    return eng && eng !== CRON_DEFAULT_ENGINE ? eng : null;
+  if (formState?.engine) return null;
+  const eng = resolveCronSkillPrincipalEngine(formState, projects);
+  return eng && eng !== CRON_DEFAULT_ENGINE ? eng : null;
 }

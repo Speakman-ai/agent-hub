@@ -78,7 +78,9 @@ function readConnectionConfig(): ConnectionConfig {
   if (cachedConnConfig) return cachedConnConfig;
   try {
     if (existsSync(CONNECTION_CONFIG_PATH)) {
-      cachedConnConfig = JSON.parse(readFileSync(CONNECTION_CONFIG_PATH, 'utf-8')) as ConnectionConfig;
+      cachedConnConfig = JSON.parse(
+        readFileSync(CONNECTION_CONFIG_PATH, 'utf-8'),
+      ) as ConnectionConfig;
       return cachedConnConfig;
     }
   } catch {}
@@ -374,9 +376,7 @@ function createWindow() {
       // on a non-app page (e.g. the GitHub App register page's form POST
       // to github.com). Only reload when necessary to avoid disrupting
       // the user's current state (scroll position, in-flight work, etc.).
-      const appUrl = isDev
-        ? 'http://localhost:3050'
-        : `http://localhost:${port}`;
+      const appUrl = isDev ? 'http://localhost:3050' : `http://localhost:${port}`;
       if (mainWindow && !mainWindow.webContents.getURL().startsWith(appUrl)) {
         mainWindow.loadURL(appUrl);
       }
@@ -486,10 +486,7 @@ ipcMain.handle('select-directory', async () => {
 // Returns a PNG data URL, or null on failure / no window.
 ipcMain.handle('bug-report:capture-page', async () => {
   try {
-    const win =
-      BrowserWindow.getFocusedWindow() ||
-      mainWindow ||
-      BrowserWindow.getAllWindows()[0];
+    const win = BrowserWindow.getFocusedWindow() || mainWindow || BrowserWindow.getAllWindows()[0];
     if (!win) return null;
     const image = await win.webContents.capturePage();
     return image.toDataURL();
@@ -504,9 +501,7 @@ ipcMain.handle('bug-report:capture-page', async () => {
 // standalone Design Studio and in-session Design-mode exports (card 1028).
 ipcMain.handle('design-pdf:save', async (event, { defaultFilename, data }) => {
   const win =
-    BrowserWindow.fromWebContents(event.sender) ||
-    BrowserWindow.getFocusedWindow() ||
-    mainWindow;
+    BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow() || mainWindow;
   if (!win) return { error: 'No browser window' };
   return saveDesignPdfWithDialog({
     showSaveDialog: (w, opts) => dialog.showSaveDialog(w as BrowserWindow, opts),
@@ -685,11 +680,7 @@ function buildMenu() {
   const template: MenuItemConstructorOptions[] = [
     {
       label: 'Agent Hub',
-      submenu: [
-        { role: 'about' },
-        { type: 'separator' },
-        { role: 'quit' },
-      ],
+      submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }],
     },
     {
       label: 'Edit',
@@ -719,11 +710,7 @@ function buildMenu() {
     },
     {
       label: 'Window',
-      submenu: [
-        { role: 'minimize' },
-        { role: 'zoom' },
-        { role: 'close' },
-      ],
+      submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'close' }],
     },
   ];
 

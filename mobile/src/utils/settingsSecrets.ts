@@ -15,16 +15,15 @@ const RESERVED_KEY_RE = /^(AGENT_HUB_|NODE_|PATH$|HOME$)/;
  * feedback instead of a 400 round-trip. Returns an error string or null.
  */
 export function validateSecretKey(key: any) {
-    const k = (key || '').trim();
-    if (!k)
-        return 'Key is required.';
-    if (!VALID_KEY_RE.test(k)) {
-        return 'Key must start with a letter or underscore and contain only letters, digits, and underscores.';
-    }
-    if (RESERVED_KEY_RE.test(k)) {
-        return 'Key is reserved (AGENT_HUB_*, NODE_*, PATH, HOME are not allowed).';
-    }
-    return null;
+  const k = (key || '').trim();
+  if (!k) return 'Key is required.';
+  if (!VALID_KEY_RE.test(k)) {
+    return 'Key must start with a letter or underscore and contain only letters, digits, and underscores.';
+  }
+  if (RESERVED_KEY_RE.test(k)) {
+    return 'Key is reserved (AGENT_HUB_*, NODE_*, PATH, HOME are not allowed).';
+  }
+  return null;
 }
 /**
  * PUT /secrets is a full replace — any row omitted from the payload is
@@ -36,21 +35,19 @@ export function validateSecretKey(key: any) {
  * @param {{key: string, value: string, kind?: 'plain'|'secret'}} entry
  */
 export function buildUpsertSecretsPayload(existing: any, entry: any) {
-    const rows = Array.isArray(existing) ? existing.filter(Boolean) : [];
-    const key = (entry.key || '').trim();
-    const next = rows
-        .filter((r: any) => r.key !== key)
-        .map((r: any) => ({ key: r.key, value: r.value, kind: r.kind }));
-    next.push({ key, value: entry.value, kind: entry.kind || 'secret' });
-    return next;
+  const rows = Array.isArray(existing) ? existing.filter(Boolean) : [];
+  const key = (entry.key || '').trim();
+  const next = rows
+    .filter((r: any) => r.key !== key)
+    .map((r: any) => ({ key: r.key, value: r.value, kind: r.kind }));
+  next.push({ key, value: entry.value, kind: entry.kind || 'secret' });
+  return next;
 }
 /** Display value for a secret row: plain rows show the value, secret rows the mask. */
 export function displaySecretValue(row: any) {
-    if (!row)
-        return '';
-    if (row.kind === 'secret')
-        return SECRET_MASK;
-    return row.value ?? '';
+  if (!row) return '';
+  if (row.kind === 'secret') return SECRET_MASK;
+  return row.value ?? '';
 }
 /**
  * Map a thrown api error (message shaped "403: detail" by fetchJSON) to a
@@ -58,11 +55,10 @@ export function displaySecretValue(row: any) {
  * GET requires Admin; PUT/DELETE require Owner.
  */
 export function describeSecretsPermissionError(err: any, action: any = 'read') {
-    const msg = err?.message || '';
-    if (!/^403\b/.test(msg))
-        return null;
-    if (action === 'read') {
-        return 'You need the Admin role on this project to view its secrets.';
-    }
-    return 'You need the Owner role on this project to change its secrets.';
+  const msg = err?.message || '';
+  if (!/^403\b/.test(msg)) return null;
+  if (action === 'read') {
+    return 'You need the Admin role on this project to view its secrets.';
+  }
+  return 'You need the Owner role on this project to change its secrets.';
 }

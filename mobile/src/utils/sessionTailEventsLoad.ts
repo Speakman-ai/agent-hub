@@ -16,15 +16,15 @@
  * @returns {Array<{ seq: number, event: unknown, timestamp: string|null }>}
  */
 export function mapRowsFromMessageEventsApi(data: any) {
-    return (data || []).map((e: any) => ({
-        seq: e.seq,
-        event: typeof e.event === 'string' ? JSON.parse(e.event) : e.event,
-        timestamp: e.timestamp ?? null,
-    }));
+  return (data || []).map((e: any) => ({
+    seq: e.seq,
+    event: typeof e.event === 'string' ? JSON.parse(e.event) : e.event,
+    timestamp: e.timestamp ?? null,
+  }));
 }
 export function notifyParentOfLoadedEvents(onEventsLoaded: any, messageId: any, data: any) {
-    const mapped = mapRowsFromMessageEventsApi(data);
-    onEventsLoaded?.(messageId, mapped);
+  const mapped = mapRowsFromMessageEventsApi(data);
+  onEventsLoaded?.(messageId, mapped);
 }
 /**
  * Single choke point for parent notification after `getMessageEvents` settles.
@@ -37,11 +37,15 @@ export function notifyParentOfLoadedEvents(onEventsLoaded: any, messageId: any, 
  * @param {(id: string, rows: ReturnType<typeof mapRowsFromMessageEventsApi>) => void} [args.onEventsLoaded]
  * @returns {{ parentNotified: boolean }}
  */
-export function applyLazyMessageEventsResult({ cancelled, ok, data, messageId, onEventsLoaded }: any) {
-    if (cancelled)
-        return { parentNotified: false };
-    if (!ok)
-        return { parentNotified: false };
-    notifyParentOfLoadedEvents(onEventsLoaded, messageId, data);
-    return { parentNotified: true };
+export function applyLazyMessageEventsResult({
+  cancelled,
+  ok,
+  data,
+  messageId,
+  onEventsLoaded,
+}: any) {
+  if (cancelled) return { parentNotified: false };
+  if (!ok) return { parentNotified: false };
+  notifyParentOfLoadedEvents(onEventsLoaded, messageId, data);
+  return { parentNotified: true };
 }

@@ -45,7 +45,10 @@ describe('SessionArtifactsPanelContent (mobile)', () => {
   it('renders a list with count badge and file metadata when artifacts exist', () => {
     const html = renderToStaticMarkup(
       <SessionArtifactsPanelContent
-        artifacts={[artifact(), artifact({ id: 'a2', filename: 'notes.txt', contentType: 'text/plain', size: 512 })]}
+        artifacts={[
+          artifact(),
+          artifact({ id: 'a2', filename: 'notes.txt', contentType: 'text/plain', size: 512 }),
+        ]}
       />,
     );
     expect(html).toContain('session-artifacts-panel');
@@ -75,9 +78,7 @@ describe('SessionArtifactsPanelContent (mobile)', () => {
   });
 
   it('renders even when empty if an error is present', () => {
-    const html = renderToStaticMarkup(
-      <SessionArtifactsPanelContent artifacts={[]} error="boom" />,
-    );
+    const html = renderToStaticMarkup(<SessionArtifactsPanelContent artifacts={[]} error="boom" />);
     expect(html).toContain('session-artifacts-error');
     expect(html).toContain('boom');
   });

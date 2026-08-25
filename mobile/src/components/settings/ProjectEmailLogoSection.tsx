@@ -139,7 +139,8 @@ export default function ProjectEmailLogoSection({ projectId }: { projectId?: str
       await api.deleteProjectEmailLogo(id);
       if (gen === requestRef.current && isActive(id)) setLogo(null);
     } catch (err: any) {
-      if (gen === requestRef.current && isActive(id)) setError(err?.message || 'Failed to remove logo.');
+      if (gen === requestRef.current && isActive(id))
+        setError(err?.message || 'Failed to remove logo.');
     } finally {
       if (gen === requestRef.current && isActive(id)) setBusy(false);
     }

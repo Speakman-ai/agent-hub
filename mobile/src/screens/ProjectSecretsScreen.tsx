@@ -11,17 +11,19 @@ import ProjectSecretsSection from '../components/settings/ProjectSecretsSection'
  * the project picker is hidden (mirrors ProjectAgentsScreen → AgentsSection).
  */
 export default function ProjectSecretsScreen({ route, navigation }: any) {
-    const { projectId, project: routeProject } = route.params || {};
-    const { projects } = useApp();
-    const project = routeProject || projects?.find((p: any) => p.id === projectId);
-    return (<SafeAreaView style={styles.screen} edges={['top']}>
-      <ProjectScreenHeader title="Secrets" project={project} onBack={() => navigation.goBack()}/>
+  const { projectId, project: routeProject } = route.params || {};
+  const { projects } = useApp();
+  const project = routeProject || projects?.find((p: any) => p.id === projectId);
+  return (
+    <SafeAreaView style={styles.screen} edges={['top']}>
+      <ProjectScreenHeader title="Secrets" project={project} onBack={() => navigation.goBack()} />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <ProjectSecretsSection projectId={projectId}/>
+        <ProjectSecretsSection projectId={projectId} />
       </ScrollView>
-    </SafeAreaView>);
+    </SafeAreaView>
+  );
 }
 const styles = StyleSheet.create({
-    screen: { flex: 1, backgroundColor: colors.gray950 },
-    content: { padding: 16, paddingBottom: 32 },
+  screen: { flex: 1, backgroundColor: colors.gray950 },
+  content: { padding: 16, paddingBottom: 32 },
 });

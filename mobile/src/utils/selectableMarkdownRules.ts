@@ -14,16 +14,36 @@ import React from 'react';
 // unit-testable in a plain-node Vitest environment (which can't resolve
 // `react-native`).
 export function trimTrailingNewline(content: any) {
-    if (typeof content === 'string' && content.charAt(content.length - 1) === '\n') {
-        return content.substring(0, content.length - 1);
-    }
-    return content;
+  if (typeof content === 'string' && content.charAt(content.length - 1) === '\n') {
+    return content.substring(0, content.length - 1);
+  }
+  return content;
 }
 export function createSelectableMarkdownRules(Text: any) {
-    return {
-        text: (node: any, children: any, parent: any, styles: any, inheritedStyles: any = {}) => React.createElement(Text, { key: node.key, style: [inheritedStyles, styles.text], selectable: true }, node.content),
-        fence: (node: any, children: any, parent: any, styles: any, inheritedStyles: any = {}) => React.createElement(Text, { key: node.key, style: [inheritedStyles, styles.fence], selectable: true }, trimTrailingNewline(node.content)),
-        code_inline: (node: any, children: any, parent: any, styles: any, inheritedStyles: any = {}) => React.createElement(Text, { key: node.key, style: [inheritedStyles, styles.code_inline], selectable: true }, node.content),
-        code_block: (node: any, children: any, parent: any, styles: any, inheritedStyles: any = {}) => React.createElement(Text, { key: node.key, style: [inheritedStyles, styles.code_block], selectable: true }, trimTrailingNewline(node.content)),
-    };
+  return {
+    text: (node: any, children: any, parent: any, styles: any, inheritedStyles: any = {}) =>
+      React.createElement(
+        Text,
+        { key: node.key, style: [inheritedStyles, styles.text], selectable: true },
+        node.content,
+      ),
+    fence: (node: any, children: any, parent: any, styles: any, inheritedStyles: any = {}) =>
+      React.createElement(
+        Text,
+        { key: node.key, style: [inheritedStyles, styles.fence], selectable: true },
+        trimTrailingNewline(node.content),
+      ),
+    code_inline: (node: any, children: any, parent: any, styles: any, inheritedStyles: any = {}) =>
+      React.createElement(
+        Text,
+        { key: node.key, style: [inheritedStyles, styles.code_inline], selectable: true },
+        node.content,
+      ),
+    code_block: (node: any, children: any, parent: any, styles: any, inheritedStyles: any = {}) =>
+      React.createElement(
+        Text,
+        { key: node.key, style: [inheritedStyles, styles.code_block], selectable: true },
+        trimTrailingNewline(node.content),
+      ),
+  };
 }

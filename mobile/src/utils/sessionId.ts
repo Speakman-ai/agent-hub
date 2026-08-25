@@ -3,7 +3,6 @@
  * client/src/components/TopBar.jsx `truncateSessionId`.
  */
 export function truncateSessionId(id: any, tailLen: any = 8) {
-    if (!id || id.length <= tailLen)
-        return id;
-    return `…${id.slice(-tailLen)}`;
+  if (!id || id.length <= tailLen) return id;
+  return `…${id.slice(-tailLen)}`;
 }

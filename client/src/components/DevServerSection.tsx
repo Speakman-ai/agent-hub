@@ -24,7 +24,7 @@ import {
   READY_TIMEOUT_MAX_MS,
   type DevServerForm,
   type StoredSecret,
-} from '../utils/devServerConfig';
+} from '@shared/utils/devServerConfig';
 
 const inputClass =
   'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600';

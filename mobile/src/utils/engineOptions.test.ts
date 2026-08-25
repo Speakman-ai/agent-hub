@@ -1,116 +1,124 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { ENGINE_OPTIONS, ENGINE_MODELS, ENGINE_DEFAULT_MODELS, modelDisplay, } from './engineOptions';
+import {
+  ENGINE_OPTIONS,
+  ENGINE_MODELS,
+  ENGINE_DEFAULT_MODELS,
+  modelDisplay,
+} from './engineOptions';
 describe('mobile engine picker constants', () => {
-    it('exposes claude-code, cursor-agent, codex-cli, and grok-cli as engine options', () => {
-        const ids = ENGINE_OPTIONS.map((e: any) => e.id);
-        expect(ids).toEqual(['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli']);
-    });
-    it('defaults grok-cli to grok-4.6 and lists it first', () => {
-        // grok-4.6 (2026-08-07) is the current Grok Build model — it must be the
-        // default and appear in the picker. Keep aligned with server/config.ts
-        // engineValidModels['grok-cli'] and client TopBar.tsx.
-        expect(ENGINE_DEFAULT_MODELS['grok-cli']).toBe('grok-4.6');
-        const allowed = ENGINE_MODELS['grok-cli'].map((m: any) => m.id);
-        expect(allowed[0]).toBe('grok-4.6');
-        expect(allowed).toContain('grok-4.5');
-        expect(allowed).toContain('grok-build');
-        expect(allowed).toContain('grok-composer-2.5-fast');
-    });
-    it('does not list gemini-cli as an engine option', () => {
-        const ids = ENGINE_OPTIONS.map((e: any) => e.id);
-        expect(ids).not.toContain('gemini-cli');
-    });
-    it('lists codex-cli with the "Codex" label', () => {
-        const codex = ENGINE_OPTIONS.find((e: any) => e.id === 'codex-cli');
-        expect(codex).toBeTruthy();
-        expect(codex.label).toBe('Codex');
-    });
-    it('defaults codex-cli to gpt-5.6-sol', () => {
-        expect(ENGINE_DEFAULT_MODELS['codex-cli']).toBe('gpt-5.6-sol');
-        const allowed = ENGINE_MODELS['codex-cli'].map((m: any) => m.id);
-        expect(allowed).toContain('gpt-5.6-sol');
-        // The bare gpt-5.6 id and deprecated gpt-5.3-codex must not be selectable.
-        expect(allowed).not.toContain('gpt-5.6');
-        expect(allowed).not.toContain('gpt-5.3-codex');
-    });
-    it('exposes only Codex models accepted under ChatGPT OAuth', () => {
-        // Regression: prior allowlist included gpt-5, gpt-5-mini, gpt-5-codex,
-        // gpt-5.2-codex, and gpt-5.1-codex-max — ALL of which the Codex backend
-        // rejects with HTTP 400 when auth_mode=chatgpt. Keep this list aligned
-        // with server/config.ts → engineValidModels['codex-cli'] and with the
-        // ChatGPT allowlist in server/codex-auth.ts.
-        const models = ENGINE_MODELS['codex-cli'].map((m: any) => m.id);
-        expect(models).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2']);
-        expect(models).not.toContain('gpt-5');
-        expect(models).not.toContain('gpt-5-mini');
-        expect(models).not.toContain('gpt-5-codex');
-        expect(models).not.toContain('gpt-5.2-codex');
-        expect(models).not.toContain('gpt-5.1-codex-max');
-    });
-    it('exposes claude-opus-5 first for claude-code with an Opus 5 label', () => {
-        // Regression: Claude Opus 5 (claude-opus-5) is the flagship Claude Code
-        // model and the default. It must appear first in the mobile picker and
-        // stay aligned with server/config.ts and client TopBar.tsx.
-        const models = ENGINE_MODELS['claude-code'];
-        const ids = models.map((m: any) => m.id);
-        expect(ids).toContain('claude-opus-5');
-        expect(ids[0]).toBe('claude-opus-5');
-        const opus5 = models.find((m: any) => m.id === 'claude-opus-5');
-        expect(opus5.label).toBe('Opus 5');
-        expect(opus5.short).toBe('Opus');
-        expect(ENGINE_DEFAULT_MODELS['claude-code']).toBe('claude-opus-5');
-    });
-    it('still exposes claude-fable-5 for claude-code with a Fable 5 label', () => {
-        const models = ENGINE_MODELS['claude-code'];
-        const ids = models.map((m: any) => m.id);
-        expect(ids).toContain('claude-fable-5');
-        const fable = models.find((m: any) => m.id === 'claude-fable-5');
-        expect(fable.label).toBe('Fable 5');
-        expect(fable.short).toBe('Fable');
-    });
-    it('exposes claude-sonnet-5 as the selectable Sonnet and drops retired claude-sonnet-4-6', () => {
-        // Regression: claude-sonnet-4-6 is retired from the server allowlist. It
-        // must NOT be selectable in the mobile picker (offline fallback source),
-        // otherwise a user could pick a model the backend rejects.
-        const ids = ENGINE_MODELS['claude-code'].map((m: any) => m.id);
-        expect(ids).toContain('claude-sonnet-5');
-        expect(ids).not.toContain('claude-sonnet-4-6');
-        const sonnet = ENGINE_MODELS['claude-code'].find((m: any) => m.id === 'claude-sonnet-5');
-        expect(sonnet.label).toBe('Sonnet');
-    });
-    it('still labels the retired claude-sonnet-4-6 cleanly for historical sessions', () => {
-        // The historical label lives in HISTORICAL_MODEL_LABELS (display metadata),
-        // not in the selectable ENGINE_MODELS array, so old sessions/crons render
-        // "Sonnet 4.6" instead of a title-cased id.
-        const d = modelDisplay('claude-sonnet-4-6');
-        expect(d.label).toBe('Sonnet 4.6');
-        expect(d.short).toBe('Sonnet 4.6');
-    });
-    it('exposes Cursor Grok 4.6, Composer 2.5 and Cursor Grok 4.5 for cursor-agent', () => {
-        const models = ENGINE_MODELS['cursor-agent'].map((m: any) => m.id);
-        expect(models).toEqual(['cursor-grok-4.6-high', 'composer-2.5', 'cursor-grok-4.5-high']);
-        const grok = ENGINE_MODELS['cursor-agent'].find((m: any) => m.id === 'cursor-grok-4.5-high');
-        expect(grok.label).toBe('Cursor Grok 4.5');
-        expect(grok.short).toBe('Grok 4.5');
-        const grok46 = ENGINE_MODELS['cursor-agent'].find((m: any) => m.id === 'cursor-grok-4.6-high');
-        expect(grok46.label).toBe('Cursor Grok 4.6');
-        expect(grok46.short).toBe('Grok 4.6');
-    });
-    it('defaults cursor-agent to cursor-grok-4.6-high (matches the TopBar list)', () => {
-        // Regression: mobile's ENGINE_DEFAULT_MODELS previously set
-        // cursor-agent → gpt-5.3-codex-high while TopBar only exposed composer-2.5,
-        // causing the stored model to diverge from the displayed label on the
-        // first engine switch. Keep the default aligned with the model list.
-        expect(ENGINE_DEFAULT_MODELS['cursor-agent']).toBe('cursor-grok-4.6-high');
-        const allowed = ENGINE_MODELS['cursor-agent'].map((m: any) => m.id);
-        expect(allowed).toContain(ENGINE_DEFAULT_MODELS['cursor-agent']);
-    });
-    it('default model for every engine is present in its model list', () => {
-        for (const engine of ENGINE_OPTIONS.map((e: any) => e.id)) {
-            const allowed = (ENGINE_MODELS[engine] || []).map((m: any) => m.id);
-            const def = ENGINE_DEFAULT_MODELS[engine];
-            expect(allowed.includes(def), `default "${def}" for engine "${engine}" must be in ENGINE_MODELS`).toBe(true);
-        }
-    });
+  it('exposes claude-code, cursor-agent, codex-cli, and grok-cli as engine options', () => {
+    const ids = ENGINE_OPTIONS.map((e: any) => e.id);
+    expect(ids).toEqual(['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli']);
+  });
+  it('defaults grok-cli to grok-4.6 and lists it first', () => {
+    // grok-4.6 (2026-08-07) is the current Grok Build model — it must be the
+    // default and appear in the picker. Keep aligned with server/config.ts
+    // engineValidModels['grok-cli'] and client TopBar.tsx.
+    expect(ENGINE_DEFAULT_MODELS['grok-cli']).toBe('grok-4.6');
+    const allowed = ENGINE_MODELS['grok-cli'].map((m: any) => m.id);
+    expect(allowed[0]).toBe('grok-4.6');
+    expect(allowed).toContain('grok-4.5');
+    expect(allowed).toContain('grok-build');
+    expect(allowed).toContain('grok-composer-2.5-fast');
+  });
+  it('does not list gemini-cli as an engine option', () => {
+    const ids = ENGINE_OPTIONS.map((e: any) => e.id);
+    expect(ids).not.toContain('gemini-cli');
+  });
+  it('lists codex-cli with the "Codex" label', () => {
+    const codex = ENGINE_OPTIONS.find((e: any) => e.id === 'codex-cli');
+    expect(codex).toBeTruthy();
+    expect(codex.label).toBe('Codex');
+  });
+  it('defaults codex-cli to gpt-5.6-sol', () => {
+    expect(ENGINE_DEFAULT_MODELS['codex-cli']).toBe('gpt-5.6-sol');
+    const allowed = ENGINE_MODELS['codex-cli'].map((m: any) => m.id);
+    expect(allowed).toContain('gpt-5.6-sol');
+    // The bare gpt-5.6 id and deprecated gpt-5.3-codex must not be selectable.
+    expect(allowed).not.toContain('gpt-5.6');
+    expect(allowed).not.toContain('gpt-5.3-codex');
+  });
+  it('exposes only Codex models accepted under ChatGPT OAuth', () => {
+    // Regression: prior allowlist included gpt-5, gpt-5-mini, gpt-5-codex,
+    // gpt-5.2-codex, and gpt-5.1-codex-max — ALL of which the Codex backend
+    // rejects with HTTP 400 when auth_mode=chatgpt. Keep this list aligned
+    // with server/config.ts → engineValidModels['codex-cli'] and with the
+    // ChatGPT allowlist in server/codex-auth.ts.
+    const models = ENGINE_MODELS['codex-cli'].map((m: any) => m.id);
+    expect(models).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2']);
+    expect(models).not.toContain('gpt-5');
+    expect(models).not.toContain('gpt-5-mini');
+    expect(models).not.toContain('gpt-5-codex');
+    expect(models).not.toContain('gpt-5.2-codex');
+    expect(models).not.toContain('gpt-5.1-codex-max');
+  });
+  it('exposes claude-opus-5 first for claude-code with an Opus 5 label', () => {
+    // Regression: Claude Opus 5 (claude-opus-5) is the flagship Claude Code
+    // model and the default. It must appear first in the mobile picker and
+    // stay aligned with server/config.ts and client TopBar.tsx.
+    const models = ENGINE_MODELS['claude-code'];
+    const ids = models.map((m: any) => m.id);
+    expect(ids).toContain('claude-opus-5');
+    expect(ids[0]).toBe('claude-opus-5');
+    const opus5 = models.find((m: any) => m.id === 'claude-opus-5');
+    expect(opus5.label).toBe('Opus 5');
+    expect(opus5.short).toBe('Opus');
+    expect(ENGINE_DEFAULT_MODELS['claude-code']).toBe('claude-opus-5');
+  });
+  it('still exposes claude-fable-5 for claude-code with a Fable 5 label', () => {
+    const models = ENGINE_MODELS['claude-code'];
+    const ids = models.map((m: any) => m.id);
+    expect(ids).toContain('claude-fable-5');
+    const fable = models.find((m: any) => m.id === 'claude-fable-5');
+    expect(fable.label).toBe('Fable 5');
+    expect(fable.short).toBe('Fable');
+  });
+  it('exposes claude-sonnet-5 as the selectable Sonnet and drops retired claude-sonnet-4-6', () => {
+    // Regression: claude-sonnet-4-6 is retired from the server allowlist. It
+    // must NOT be selectable in the mobile picker (offline fallback source),
+    // otherwise a user could pick a model the backend rejects.
+    const ids = ENGINE_MODELS['claude-code'].map((m: any) => m.id);
+    expect(ids).toContain('claude-sonnet-5');
+    expect(ids).not.toContain('claude-sonnet-4-6');
+    const sonnet = ENGINE_MODELS['claude-code'].find((m: any) => m.id === 'claude-sonnet-5');
+    expect(sonnet.label).toBe('Sonnet');
+  });
+  it('still labels the retired claude-sonnet-4-6 cleanly for historical sessions', () => {
+    // The historical label lives in HISTORICAL_MODEL_LABELS (display metadata),
+    // not in the selectable ENGINE_MODELS array, so old sessions/crons render
+    // "Sonnet 4.6" instead of a title-cased id.
+    const d = modelDisplay('claude-sonnet-4-6');
+    expect(d.label).toBe('Sonnet 4.6');
+    expect(d.short).toBe('Sonnet 4.6');
+  });
+  it('exposes Cursor Grok 4.6, Composer 2.5 and Cursor Grok 4.5 for cursor-agent', () => {
+    const models = ENGINE_MODELS['cursor-agent'].map((m: any) => m.id);
+    expect(models).toEqual(['cursor-grok-4.6-high', 'composer-2.5', 'cursor-grok-4.5-high']);
+    const grok = ENGINE_MODELS['cursor-agent'].find((m: any) => m.id === 'cursor-grok-4.5-high');
+    expect(grok.label).toBe('Cursor Grok 4.5');
+    expect(grok.short).toBe('Grok 4.5');
+    const grok46 = ENGINE_MODELS['cursor-agent'].find((m: any) => m.id === 'cursor-grok-4.6-high');
+    expect(grok46.label).toBe('Cursor Grok 4.6');
+    expect(grok46.short).toBe('Grok 4.6');
+  });
+  it('defaults cursor-agent to cursor-grok-4.6-high (matches the TopBar list)', () => {
+    // Regression: mobile's ENGINE_DEFAULT_MODELS previously set
+    // cursor-agent → gpt-5.3-codex-high while TopBar only exposed composer-2.5,
+    // causing the stored model to diverge from the displayed label on the
+    // first engine switch. Keep the default aligned with the model list.
+    expect(ENGINE_DEFAULT_MODELS['cursor-agent']).toBe('cursor-grok-4.6-high');
+    const allowed = ENGINE_MODELS['cursor-agent'].map((m: any) => m.id);
+    expect(allowed).toContain(ENGINE_DEFAULT_MODELS['cursor-agent']);
+  });
+  it('default model for every engine is present in its model list', () => {
+    for (const engine of ENGINE_OPTIONS.map((e: any) => e.id)) {
+      const allowed = (ENGINE_MODELS[engine] || []).map((m: any) => m.id);
+      const def = ENGINE_DEFAULT_MODELS[engine];
+      expect(
+        allowed.includes(def),
+        `default "${def}" for engine "${engine}" must be in ENGINE_MODELS`,
+      ).toBe(true);
+    }
+  });
 });

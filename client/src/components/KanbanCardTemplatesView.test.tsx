@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import KanbanCardTemplatesView from './KanbanCardTemplatesView';
-import { kanbanCardTemplatesKey } from '../utils/kanbanCardTemplates';
+import { kanbanCardTemplatesKey } from '../utils/kanbanCardTemplatesLocal';
 
 vi.mock('../utils/api.js', () => ({
   api: {

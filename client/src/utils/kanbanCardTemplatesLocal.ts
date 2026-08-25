@@ -1,22 +1,13 @@
-// Pure template logic (types, defaults, form-merge, API-body) lives in
-// `@shared/utils/kanbanCardTemplates` so web and mobile share one source. This
-// module re-exports it and adds the browser-only legacy-localStorage migration
-// helpers (the old client-only storage that predates the server-backed table).
+/**
+ * Browser-only migration source for kanban card templates: the client-only
+ * localStorage store that predates the server-backed table. The pure template
+ * logic (types, defaults, form-merge, API body) lives in
+ * `@shared/utils/kanbanCardTemplates` and is imported directly by both web and
+ * mobile — nothing is re-exported here, so the two never drift.
+ */
 import {
   normalizeCardTemplatePriority,
   type KanbanCardTemplate,
-} from '@shared/utils/kanbanCardTemplates';
-
-export {
-  applyCardTemplateToDetailForm,
-  blankCardTemplateInput,
-  cardTemplateApiBody,
-  normalizeCardTemplate,
-  normalizeCardTemplatePriority,
-  templateCreateCardPayload,
-  type KanbanCardTemplate,
-  type KanbanCardTemplateInput,
-  type KanbanCardTemplatePriority,
 } from '@shared/utils/kanbanCardTemplates';
 
 export function kanbanCardTemplatesKey(projectId: string): string {

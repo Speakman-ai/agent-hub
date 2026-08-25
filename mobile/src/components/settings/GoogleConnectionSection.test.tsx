@@ -28,8 +28,7 @@ import {
 // connected users can never satisfy the gate. Pins the exact scope strings the
 // server Sheets/Drive routes require so the wiring can't drift.
 describe('GOOGLE_SURFACES consent ↔ proxy-route scope contract', () => {
-  const surfaceScopes = (key: string) =>
-    GOOGLE_SURFACES.find((s) => s.key === key)?.scopes ?? [];
+  const surfaceScopes = (key: string) => GOOGLE_SURFACES.find((s) => s.key === key)?.scopes ?? [];
 
   it('offers the spreadsheets scope the Sheets proxy routes require', () => {
     expect(surfaceScopes('sheets')).toContain('https://www.googleapis.com/auth/spreadsheets');
@@ -85,9 +84,9 @@ describe('GoogleConnectionSection mobile rendering', () => {
     };
     const openURL = vi.fn().mockResolvedValue(true);
 
-    await expect(
-      openGoogleOAuth({ apiClient, openURL, scopes: ALL_SURFACE_SCOPES }),
-    ).resolves.toBe('https://accounts.google.com/o/oauth2/v2/auth?state=abc');
+    await expect(openGoogleOAuth({ apiClient, openURL, scopes: ALL_SURFACE_SCOPES })).resolves.toBe(
+      'https://accounts.google.com/o/oauth2/v2/auth?state=abc',
+    );
 
     expect(apiClient.startGoogleOAuth).toHaveBeenCalledWith({
       returnTo: '/settings?tab=account',

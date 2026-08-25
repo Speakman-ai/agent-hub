@@ -14,14 +14,13 @@
  * on which agents show up in the picker.
  */
 export function filterForwardTargets(agents: any, sourceAgent: any) {
-    if (!Array.isArray(agents) || !sourceAgent)
-        return [];
-    const sourceProjectId = sourceAgent.projectId;
-    const active = agents.filter((a: any) => a && a.active !== false);
-    const self = active.find((a: any) => a.id === sourceAgent.id);
-    const rest = active.filter((a: any) => a.id !== sourceAgent.id);
-    const sameProject = rest.filter((a: any) => a.projectId === sourceProjectId);
-    const otherProjects = rest.filter((a: any) => a.projectId !== sourceProjectId);
-    const ordered = [...sameProject, ...otherProjects];
-    return self ? [self, ...ordered] : ordered;
+  if (!Array.isArray(agents) || !sourceAgent) return [];
+  const sourceProjectId = sourceAgent.projectId;
+  const active = agents.filter((a: any) => a && a.active !== false);
+  const self = active.find((a: any) => a.id === sourceAgent.id);
+  const rest = active.filter((a: any) => a.id !== sourceAgent.id);
+  const sameProject = rest.filter((a: any) => a.projectId === sourceProjectId);
+  const otherProjects = rest.filter((a: any) => a.projectId !== sourceProjectId);
+  const ordered = [...sameProject, ...otherProjects];
+  return self ? [self, ...ordered] : ordered;
 }

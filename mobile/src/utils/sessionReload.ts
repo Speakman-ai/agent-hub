@@ -19,24 +19,22 @@
  *   response was stale).
  */
 export function createReloadMessages({ fetchMessages, getActiveSessionId, setMessages }: any) {
-    return function reloadMessages() {
-        const sid = getActiveSessionId();
-        if (!sid) {
-            setMessages([]);
-            return Promise.resolve([]);
-        }
-        return fetchMessages(sid)
-            .then((data: any) => {
-            if (getActiveSessionId() !== sid)
-                return [];
-            setMessages(data);
-            return data;
-        })
-            .catch(() => {
-            if (getActiveSessionId() !== sid)
-                return [];
-            setMessages([]);
-            return [];
-        });
-    };
+  return function reloadMessages() {
+    const sid = getActiveSessionId();
+    if (!sid) {
+      setMessages([]);
+      return Promise.resolve([]);
+    }
+    return fetchMessages(sid)
+      .then((data: any) => {
+        if (getActiveSessionId() !== sid) return [];
+        setMessages(data);
+        return data;
+      })
+      .catch(() => {
+        if (getActiveSessionId() !== sid) return [];
+        setMessages([]);
+        return [];
+      });
+  };
 }

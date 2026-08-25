@@ -6,7 +6,9 @@ import { copyToClipboard } from '../../utils/clipboard';
 import { colors } from '../../theme/colors';
 
 export function normalizeMfaCode(value: any) {
-  return String(value || '').trim().replace(/\s+/g, '');
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, '');
 }
 
 export function getMfaQrCodeProps(otpauthUri: string) {
@@ -86,7 +88,10 @@ export default function MfaSettingsSection() {
       const body = await api.regenerateMfaRecoveryCodes(normalizeMfaCode(actionCode));
       setRecoveryCodes(body.recoveryCodes || []);
       setActionCode('');
-      setStatus({ type: 'success', message: 'Recovery codes regenerated. Save the new codes now.' });
+      setStatus({
+        type: 'success',
+        message: 'Recovery codes regenerated. Save the new codes now.',
+      });
     } catch (err: any) {
       setStatus({ type: 'error', message: err.message || String(err) });
     } finally {
@@ -133,11 +138,15 @@ export default function MfaSettingsSection() {
           {enabled ? 'Enabled' : 'Not enabled'}
         </Text>
       </View>
-      <Text style={styles.sectionDesc}>App-based one-time codes plus single-use recovery codes.</Text>
+      <Text style={styles.sectionDesc}>
+        App-based one-time codes plus single-use recovery codes.
+      </Text>
 
       {!enabled && !enrollment && recoveryCodes.length === 0 ? (
         <TouchableOpacity style={styles.saveBtn} onPress={startEnrollment} disabled={busy !== null}>
-          <Text style={styles.saveBtnText}>{busy === 'start' ? 'Starting...' : 'Start enrollment'}</Text>
+          <Text style={styles.saveBtnText}>
+            {busy === 'start' ? 'Starting...' : 'Start enrollment'}
+          </Text>
         </TouchableOpacity>
       ) : null}
 
@@ -150,7 +159,10 @@ export default function MfaSettingsSection() {
           <Text selectable style={styles.secretText}>
             {enrollment.secret}
           </Text>
-          <TouchableOpacity style={styles.cancelBtn} onPress={() => copyToClipboard(enrollment.secret)}>
+          <TouchableOpacity
+            style={styles.cancelBtn}
+            onPress={() => copyToClipboard(enrollment.secret)}
+          >
             <Text style={styles.cancelBtnText}>Copy secret</Text>
           </TouchableOpacity>
           <Text style={[styles.inputLabel, { marginTop: 12 }]}>Current code</Text>
@@ -166,13 +178,22 @@ export default function MfaSettingsSection() {
             testID="mfa-confirm-code"
           />
           <View style={styles.actionRow}>
-            <TouchableOpacity style={[styles.saveBtn, !normalizeMfaCode(code) && { opacity: 0.4 }]} onPress={confirmEnrollment} disabled={!normalizeMfaCode(code) || busy !== null}>
-              <Text style={styles.saveBtnText}>{busy === 'confirm' ? 'Confirming...' : 'Confirm and enable'}</Text>
+            <TouchableOpacity
+              style={[styles.saveBtn, !normalizeMfaCode(code) && { opacity: 0.4 }]}
+              onPress={confirmEnrollment}
+              disabled={!normalizeMfaCode(code) || busy !== null}
+            >
+              <Text style={styles.saveBtnText}>
+                {busy === 'confirm' ? 'Confirming...' : 'Confirm and enable'}
+              </Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => {
-              setEnrollment(null);
-              setCode('');
-            }}>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => {
+                setEnrollment(null);
+                setCode('');
+              }}
+            >
               <Text style={styles.cancelBtnText}>Cancel</Text>
             </TouchableOpacity>
           </View>
@@ -188,7 +209,10 @@ export default function MfaSettingsSection() {
             </Text>
           ))}
           <View style={styles.actionRow}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => copyToClipboard(recoveryCodes.join('\n'))}>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => copyToClipboard(recoveryCodes.join('\n'))}
+            >
               <Text style={styles.cancelBtnText}>Copy codes</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.cancelBtn} onPress={() => setRecoveryCodes([])}>
@@ -213,18 +237,35 @@ export default function MfaSettingsSection() {
             textContentType="oneTimeCode"
           />
           <View style={styles.actionRow}>
-            <TouchableOpacity style={[styles.saveBtn, !normalizeMfaCode(actionCode) && { opacity: 0.4 }]} onPress={regenerate} disabled={!normalizeMfaCode(actionCode) || busy !== null}>
-              <Text style={styles.saveBtnText}>{busy === 'regenerate' ? 'Regenerating...' : 'Regenerate codes'}</Text>
+            <TouchableOpacity
+              style={[styles.saveBtn, !normalizeMfaCode(actionCode) && { opacity: 0.4 }]}
+              onPress={regenerate}
+              disabled={!normalizeMfaCode(actionCode) || busy !== null}
+            >
+              <Text style={styles.saveBtnText}>
+                {busy === 'regenerate' ? 'Regenerating...' : 'Regenerate codes'}
+              </Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.dangerBtn, !normalizeMfaCode(actionCode) && { opacity: 0.4 }]} onPress={disable} disabled={!normalizeMfaCode(actionCode) || busy !== null}>
-              <Text style={styles.dangerBtnText}>{busy === 'disable' ? 'Disabling...' : 'Disable MFA'}</Text>
+            <TouchableOpacity
+              style={[styles.dangerBtn, !normalizeMfaCode(actionCode) && { opacity: 0.4 }]}
+              onPress={disable}
+              disabled={!normalizeMfaCode(actionCode) || busy !== null}
+            >
+              <Text style={styles.dangerBtnText}>
+                {busy === 'disable' ? 'Disabling...' : 'Disable MFA'}
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
       ) : null}
 
       {status ? (
-        <Text style={[styles.statusText, { color: status.type === 'success' ? colors.emerald400 : colors.red400 }]}>
+        <Text
+          style={[
+            styles.statusText,
+            { color: status.type === 'success' ? colors.emerald400 : colors.red400 },
+          ]}
+        >
           {status.message}
         </Text>
       ) : null}

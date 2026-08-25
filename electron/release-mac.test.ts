@@ -43,7 +43,7 @@ describe('release-mac helpers', () => {
 
     it('honours AGENT_HUB_RELEASE_BUCKET / AGENT_HUB_RELEASE_REGION so a fork can self-publish', () => {
       expect(resolveBucket({ AGENT_HUB_RELEASE_BUCKET: '  my-fork-releases  ' })).toBe(
-        'my-fork-releases'
+        'my-fork-releases',
       );
       expect(resolveRegion({ AGENT_HUB_RELEASE_REGION: 'eu-west-1' })).toBe('eu-west-1');
     });
@@ -76,31 +76,25 @@ describe('release-mac helpers', () => {
 
   describe('s3Key', () => {
     it('prefixes with v<version>/', () => {
-      expect(s3Key('1.3.1', 'Agent Hub-1.3.1.dmg')).toBe(
-        'v1.3.1/Agent Hub-1.3.1.dmg'
-      );
+      expect(s3Key('1.3.1', 'Agent Hub-1.3.1.dmg')).toBe('v1.3.1/Agent Hub-1.3.1.dmg');
     });
   });
 
   describe('s3Uri', () => {
     it('builds an s3:// URI from bucket + key', () => {
       expect(s3Uri('agent-hub-prod-releases', 'v1.3.1/foo.dmg')).toBe(
-        's3://agent-hub-prod-releases/v1.3.1/foo.dmg'
+        's3://agent-hub-prod-releases/v1.3.1/foo.dmg',
       );
     });
   });
 
   describe('crossDarwinEsbuildPackageSpec', () => {
     it('targets darwin-x64 when the host is arm64', () => {
-      expect(crossDarwinEsbuildPackageSpec('arm64', '0.27.7')).toBe(
-        '@esbuild/darwin-x64@0.27.7'
-      );
+      expect(crossDarwinEsbuildPackageSpec('arm64', '0.27.7')).toBe('@esbuild/darwin-x64@0.27.7');
     });
 
     it('targets darwin-arm64 when the host is x64', () => {
-      expect(crossDarwinEsbuildPackageSpec('x64', '0.27.7')).toBe(
-        '@esbuild/darwin-arm64@0.27.7'
-      );
+      expect(crossDarwinEsbuildPackageSpec('x64', '0.27.7')).toBe('@esbuild/darwin-arm64@0.27.7');
     });
 
     it('returns null without a version', () => {
@@ -130,11 +124,7 @@ describe('release-mac helpers', () => {
   describe('readNativeDarwinEsbuildVersion', () => {
     it('reads version from the native darwin esbuild folder for this arch', () => {
       const native =
-        process.arch === 'arm64'
-          ? 'darwin-arm64'
-          : process.arch === 'x64'
-            ? 'darwin-x64'
-            : null;
+        process.arch === 'arm64' ? 'darwin-arm64' : process.arch === 'x64' ? 'darwin-x64' : null;
       if (!native) {
         return;
       }
@@ -169,9 +159,7 @@ describe('release-mac helpers', () => {
 
   describe('resolveAwsProfile', () => {
     it('returns the value of AWS_PROFILE when set', () => {
-      expect(resolveAwsProfile({ AWS_PROFILE: 'release-bot' })).toBe(
-        'release-bot'
-      );
+      expect(resolveAwsProfile({ AWS_PROFILE: 'release-bot' })).toBe('release-bot');
     });
 
     it('returns null when AWS_PROFILE is explicitly empty', () => {
@@ -184,7 +172,7 @@ describe('release-mac helpers', () => {
           AWS_ACCESS_KEY_ID: 'ASIA...',
           AWS_SECRET_ACCESS_KEY: 'xxx',
           AWS_SESSION_TOKEN: 'yyy',
-        })
+        }),
       ).toBeNull();
     });
 
@@ -198,7 +186,7 @@ describe('release-mac helpers', () => {
           AWS_PROFILE: '',
           AWS_ACCESS_KEY_ID: 'ASIA...',
           AWS_SECRET_ACCESS_KEY: 'xxx',
-        })
+        }),
       ).toBeNull();
     });
 
@@ -209,7 +197,7 @@ describe('release-mac helpers', () => {
         resolveAwsProfile({
           AWS_PROFILE: 'staging',
           AWS_ACCESS_KEY_ID: 'ASIA...',
-        })
+        }),
       ).toBe('staging');
     });
   });
@@ -236,12 +224,7 @@ describe('release-mac helpers', () => {
     });
 
     it('omits --profile when profile is an empty string', () => {
-      expect(awsCpArgs('a.dmg', 's3://b/c.dmg', '')).toEqual([
-        's3',
-        'cp',
-        'a.dmg',
-        's3://b/c.dmg',
-      ]);
+      expect(awsCpArgs('a.dmg', 's3://b/c.dmg', '')).toEqual(['s3', 'cp', 'a.dmg', 's3://b/c.dmg']);
     });
   });
 
@@ -272,14 +255,14 @@ describe('release-mac helpers', () => {
     it('produces a full s3:// URI for the arm64 DMG at v1.3.1', () => {
       const { arm64 } = dmgFilenames(PRODUCT_NAME, '1.3.1');
       expect(s3Uri(BUCKET, s3Key('1.3.1', arm64))).toBe(
-        's3://agent-hub-prod-releases/v1.3.1/Agent Hub-1.3.1-arm64.dmg'
+        's3://agent-hub-prod-releases/v1.3.1/Agent Hub-1.3.1-arm64.dmg',
       );
     });
 
     it('produces a full s3:// URI for the x64 DMG at v1.3.1', () => {
       const { x64 } = dmgFilenames(PRODUCT_NAME, '1.3.1');
       expect(s3Uri(BUCKET, s3Key('1.3.1', x64))).toBe(
-        's3://agent-hub-prod-releases/v1.3.1/Agent Hub-1.3.1.dmg'
+        's3://agent-hub-prod-releases/v1.3.1/Agent Hub-1.3.1.dmg',
       );
     });
   });

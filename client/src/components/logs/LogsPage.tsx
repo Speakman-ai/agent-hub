@@ -14,7 +14,7 @@ import { ScrollText, Radio, Bug, KeyRound } from 'lucide-react';
 import LiveLogsView from './LiveLogsView';
 import IssuesView from './IssuesView';
 import LogSourcesSettingsSection from '../LogSourcesSettingsSection';
-import type { UseLogTailOptions } from '../../hooks/useLogTail';
+import type { LogTailOverrides } from './logTailOverrides';
 
 type LogsTab = 'live' | 'issues' | 'sources';
 
@@ -24,7 +24,7 @@ interface LogsPageProps {
   showToast?: (message: string, kind?: string) => void;
   onOpenSession?: (target: { sessionId: string; agentId: string }) => void;
   /** Forwarded to the Live view's `useLogTail` (tests inject a socket). */
-  tailOptions?: UseLogTailOptions;
+  tailOptions?: LogTailOverrides;
   initialTab?: LogsTab;
 }
 

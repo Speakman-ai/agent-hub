@@ -153,7 +153,11 @@ export function ReplayPlayerModal({ target, projectId, onClose }: any) {
             <Text style={styles.playerTitle} numberOfLines={1}>
               {target.title || 'Session replay'}
             </Text>
-            <TouchableOpacity testID="replay-player-close" onPress={onClose} style={styles.playerClose}>
+            <TouchableOpacity
+              testID="replay-player-close"
+              onPress={onClose}
+              style={styles.playerClose}
+            >
               <Text style={styles.playerCloseText}>✕</Text>
             </TouchableOpacity>
           </View>
@@ -229,11 +233,7 @@ export function RumSessionRow({ session, onPlay }: any) {
         <Stat label="Duration" value={formatReplayDuration(s.timeSpent)} />
         <Stat label="Views" value={String(s.viewCount ?? 0)} />
         <Stat label="Actions" value={String(s.actionCount ?? 0)} />
-        <Stat
-          label="Errors"
-          value={String(s.errorCount ?? 0)}
-          danger={(s.errorCount ?? 0) > 0}
-        />
+        <Stat label="Errors" value={String(s.errorCount ?? 0)} danger={(s.errorCount ?? 0) > 0} />
         <Stat
           label="Frustrations"
           value={String(s.frustrationCount ?? 0)}
@@ -284,7 +284,11 @@ export function ReplayCaptureRow({ replay, onWatch, onLink, onUnlink, onAddToPla
         </Text>
       ) : null}
       <View style={styles.actionRow}>
-        <TouchableOpacity testID="replay-watch" onPress={() => onWatch?.(r)} style={styles.actionBtn}>
+        <TouchableOpacity
+          testID="replay-watch"
+          onPress={() => onWatch?.(r)}
+          style={styles.actionBtn}
+        >
           <Text style={styles.actionText}>▶ Watch</Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -299,7 +303,10 @@ export function ReplayCaptureRow({ replay, onWatch, onLink, onUnlink, onAddToPla
             <Text style={styles.actionText}>Unlink</Text>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity onPress={() => onLink?.(r)} style={[styles.actionBtn, styles.actionBtnPrimary]}>
+          <TouchableOpacity
+            onPress={() => onLink?.(r)}
+            style={[styles.actionBtn, styles.actionBtnPrimary]}
+          >
             <Text style={styles.actionTextPrimary}>Link</Text>
           </TouchableOpacity>
         )}
@@ -358,7 +365,17 @@ export function RumSessionsList({ sessions, loading, error, active, onPlay }: an
 }
 
 // ── Replays tab ─────────────────────────────────────────────────────
-export function ReplayCaptureList({ replays, loading, error, filter, kind, onWatch, onLink, onUnlink, onAddToPlaylist }: any) {
+export function ReplayCaptureList({
+  replays,
+  loading,
+  error,
+  filter,
+  kind,
+  onWatch,
+  onLink,
+  onUnlink,
+  onAddToPlaylist,
+}: any) {
   if (error) {
     return (
       <View style={styles.centerState}>
@@ -675,7 +692,11 @@ export default function ReplaysScreen({ route }: any) {
               <Text style={styles.filterText}>{showFilters ? 'Hide filters' : 'Filters'}</Text>
             </TouchableOpacity>
             {activeFilters ? (
-              <TouchableOpacity testID="clear-filters" onPress={clearFilters} style={styles.filterButton}>
+              <TouchableOpacity
+                testID="clear-filters"
+                onPress={clearFilters}
+                style={styles.filterButton}
+              >
                 <Text style={styles.filterText}>Clear</Text>
               </TouchableOpacity>
             ) : null}
@@ -738,7 +759,11 @@ export default function ReplaysScreen({ route }: any) {
                   style={styles.input}
                 />
               </View>
-              <TouchableOpacity testID="apply-filters" onPress={applyFilters} style={styles.applyBtn}>
+              <TouchableOpacity
+                testID="apply-filters"
+                onPress={applyFilters}
+                style={styles.applyBtn}
+              >
                 <Text style={styles.applyText}>Apply filters</Text>
               </TouchableOpacity>
             </ScrollView>

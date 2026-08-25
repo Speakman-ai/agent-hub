@@ -17,7 +17,9 @@ vi.mock('react-native', () => ({
   StyleSheet: { create: (styles: any) => styles, hairlineWidth: 1 },
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
-vi.mock('../context/AppContext', () => ({ useApp: () => ({ setActiveAgentId() {}, setActiveSessionId() {} }) }));
+vi.mock('../context/AppContext', () => ({
+  useApp: () => ({ setActiveAgentId() {}, setActiveSessionId() {} }),
+}));
 vi.mock('../utils/api', () => ({ api: {} }));
 vi.mock('../components/ProjectScreenHeader', () => ({ default: () => null }));
 vi.mock('../components/LinkedTodosPanel', () => ({ default: () => null }));
@@ -64,7 +66,13 @@ describe('EpicDetailScreen — SpecItemRow', () => {
   it('shows a locked decision with its text', () => {
     const html = renderToStaticMarkup(
       <SpecItemRow
-        item={{ id: 's1', tag: 'data-model', title: 'How to store it?', status: 'chosen', decision: 'Use SQLite' }}
+        item={{
+          id: 's1',
+          tag: 'data-model',
+          title: 'How to store it?',
+          status: 'chosen',
+          decision: 'Use SQLite',
+        }}
         saving={null}
         onDecideForMe={noop}
         onUpdateSpecItem={noop}
@@ -130,7 +138,12 @@ describe('EpicDetailScreen — PhaseCard', () => {
           { id: 'b', phase_id: 'p1', column_id: 'c1', title: 'Todo ticket' },
         ]}
         columns={columns}
-        form={{ autonomous: 1, autonomous_max_concurrent: 2, autonomous_send_it: 1, autonomous_model: '' }}
+        form={{
+          autonomous: 1,
+          autonomous_max_concurrent: 2,
+          autonomous_send_it: 1,
+          autonomous_model: '',
+        }}
         modelConfig={null}
         specReady
         running={false}
@@ -157,7 +170,12 @@ describe('EpicDetailScreen — PhaseCard', () => {
         index={1}
         tickets={[]}
         columns={columns}
-        form={{ autonomous: 1, autonomous_max_concurrent: 1, autonomous_send_it: 0, autonomous_model: '' }}
+        form={{
+          autonomous: 1,
+          autonomous_max_concurrent: 1,
+          autonomous_send_it: 0,
+          autonomous_model: '',
+        }}
         modelConfig={null}
         specReady={false}
         running={false}
@@ -181,7 +199,12 @@ describe('EpicDetailScreen — PhaseCard', () => {
         index={0}
         tickets={[]}
         columns={columns}
-        form={{ autonomous: 1, autonomous_max_concurrent: 1, autonomous_send_it: 1, autonomous_model: '' }}
+        form={{
+          autonomous: 1,
+          autonomous_max_concurrent: 1,
+          autonomous_send_it: 1,
+          autonomous_model: '',
+        }}
         modelConfig={null}
         specReady
         running
@@ -211,7 +234,12 @@ describe('EpicDetailScreen — PhaseCard', () => {
         index={0}
         tickets={[]}
         columns={columns}
-        form={{ autonomous: 0, autonomous_max_concurrent: 1, autonomous_send_it: 0, autonomous_model: 'opus' }}
+        form={{
+          autonomous: 0,
+          autonomous_max_concurrent: 1,
+          autonomous_send_it: 0,
+          autonomous_model: 'opus',
+        }}
         modelConfig={modelConfig}
         specReady
         running={false}

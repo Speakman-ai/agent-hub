@@ -6,26 +6,19 @@
  * ship as separate bundles.
  */
 export function hasUnresolvedBlockers(card: any) {
-    if (!card || !Array.isArray(card.blockers))
-        return false;
-    return card.blockers.some((b: any) => !b.done);
+  if (!card || !Array.isArray(card.blockers)) return false;
+  return card.blockers.some((b: any) => !b.done);
 }
 export function isColumnBlockerSensitive(columnName: any) {
-    if (!columnName)
-        return true;
-    const n = String(columnName).toLowerCase();
-    if (n.includes('done'))
-        return false;
-    if (n.includes('backlog'))
-        return false;
-    return true;
+  if (!columnName) return true;
+  const n = String(columnName).toLowerCase();
+  if (n.includes('done')) return false;
+  if (n.includes('backlog')) return false;
+  return true;
 }
 export function shouldConfirmMove(card: any, sourceColumnId: any, targetColumn: any) {
-    if (!card || !targetColumn)
-        return false;
-    if (sourceColumnId === targetColumn.id)
-        return false;
-    if (!hasUnresolvedBlockers(card))
-        return false;
-    return isColumnBlockerSensitive(targetColumn.name);
+  if (!card || !targetColumn) return false;
+  if (sourceColumnId === targetColumn.id) return false;
+  if (!hasUnresolvedBlockers(card)) return false;
+  return isColumnBlockerSensitive(targetColumn.name);
 }

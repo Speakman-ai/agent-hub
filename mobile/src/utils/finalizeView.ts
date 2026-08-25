@@ -15,34 +15,26 @@ import { isFinalizeBlocked } from './finalizeRun';
  *   failedName: string|null, allPassed: boolean, headline: string }}
  */
 export function summarizeChecks(steps: any) {
-    const list = Array.isArray(steps) ? steps : [];
-    const total = list.length;
-    let passed = 0;
-    let failed = 0;
-    let running = 0;
-    let failedName = null;
-    for (const s of list) {
-        if (s?.state === 'passed')
-            passed += 1;
-        else if (s?.state === 'failed') {
-            failed += 1;
-            if (!failedName)
-                failedName = s?.name || 'A step';
-        }
-        else if (s?.state === 'running' || s?.state === 'queued')
-            running += 1;
-    }
-    const allPassed = total > 0 && passed === total;
-    let headline;
-    if (total === 0)
-        headline = 'No checks yet';
-    else if (failed > 0)
-        headline = `${failedName} failed`;
-    else if (running > 0)
-        headline = `${passed}/${total} passed · running`;
-    else
-        headline = `${passed}/${total} passed`;
-    return { total, passed, failed, running, failedName, allPassed, headline };
+  const list = Array.isArray(steps) ? steps : [];
+  const total = list.length;
+  let passed = 0;
+  let failed = 0;
+  let running = 0;
+  let failedName = null;
+  for (const s of list) {
+    if (s?.state === 'passed') passed += 1;
+    else if (s?.state === 'failed') {
+      failed += 1;
+      if (!failedName) failedName = s?.name || 'A step';
+    } else if (s?.state === 'running' || s?.state === 'queued') running += 1;
+  }
+  const allPassed = total > 0 && passed === total;
+  let headline;
+  if (total === 0) headline = 'No checks yet';
+  else if (failed > 0) headline = `${failedName} failed`;
+  else if (running > 0) headline = `${passed}/${total} passed · running`;
+  else headline = `${passed}/${total} passed`;
+  return { total, passed, failed, running, failedName, allPassed, headline };
 }
 /**
  * Group reviewer threads by file path, preserving first-seen order, so the
@@ -52,18 +44,18 @@ export function summarizeChecks(steps: any) {
  * @returns {Array<{ file: string, items: Array<object> }>}
  */
 export function groupThreadsByFile(threads: any) {
-    const list = Array.isArray(threads) ? threads : [];
-    const order = [];
-    const byFile = new Map();
-    for (const t of list) {
-        const file = t?.file_path || '(general)';
-        if (!byFile.has(file)) {
-            byFile.set(file, []);
-            order.push(file);
-        }
-        byFile.get(file).push(t);
+  const list = Array.isArray(threads) ? threads : [];
+  const order = [];
+  const byFile = new Map();
+  for (const t of list) {
+    const file = t?.file_path || '(general)';
+    if (!byFile.has(file)) {
+      byFile.set(file, []);
+      order.push(file);
     }
-    return order.map((file: any) => ({ file, items: byFile.get(file) }));
+    byFile.get(file).push(t);
+  }
+  return order.map((file: any) => ({ file, items: byFile.get(file) }));
 }
 /**
  * Derive the Finalize button's label/disabled/tone from run status.
@@ -74,15 +66,19 @@ export function groupThreadsByFile(threads: any) {
  *
  * @returns {{ label: string, disabled: boolean, inFlight: boolean, tone: 'busy'|'done'|'default' }}
  */
-export function deriveFinalizeButton({ status, fullyValidated = false, hasChanges = true }: any = {}) {
-    const inFlight = isFinalizeBlocked(status);
-    if (inFlight) {
-        return { label: 'Stop', disabled: false, inFlight: true, tone: 'busy' };
-    }
-    if (fullyValidated) {
-        return { label: 'Finalized', disabled: !hasChanges, inFlight: false, tone: 'done' };
-    }
-    return { label: 'Finalize', disabled: !hasChanges, inFlight: false, tone: 'default' };
+export function deriveFinalizeButton({
+  status,
+  fullyValidated = false,
+  hasChanges = true,
+}: any = {}) {
+  const inFlight = isFinalizeBlocked(status);
+  if (inFlight) {
+    return { label: 'Stop', disabled: false, inFlight: true, tone: 'busy' };
+  }
+  if (fullyValidated) {
+    return { label: 'Finalized', disabled: !hasChanges, inFlight: false, tone: 'done' };
+  }
+  return { label: 'Finalize', disabled: !hasChanges, inFlight: false, tone: 'default' };
 }
 /**
  * Whether the Push to Agent Hub button should be enabled. Push is allowed once
@@ -92,12 +88,10 @@ export function deriveFinalizeButton({ status, fullyValidated = false, hasChange
  * @returns {boolean}
  */
 export function canPush({ status, hasChanges = false }: any = {}) {
-    if (status === 'ready_to_push')
-        return true;
-    // Never offer push mid-run; otherwise allow it when there's something to ship.
-    if (isFinalizeBlocked(status))
-        return false;
-    return !!hasChanges;
+  if (status === 'ready_to_push') return true;
+  // Never offer push mid-run; otherwise allow it when there's something to ship.
+  if (isFinalizeBlocked(status)) return false;
+  return !!hasChanges;
 }
 /**
  * Both checks and review validated on the *same* HEAD commit → the branch is
@@ -108,15 +102,16 @@ export function canPush({ status, hasChanges = false }: any = {}) {
  * @returns {boolean}
  */
 export function isFullyValidated(phases: any) {
-    const checks = phases?.checks;
-    const review = phases?.review;
-    if (!checks || !review)
-        return false;
-    const passed = (p: any) => p?.status === 'ready_to_push' || p?.status === 'pushed';
-    return (passed(checks) &&
-        passed(review) &&
-        !!checks.validated_head_sha &&
-        checks.validated_head_sha === review.validated_head_sha);
+  const checks = phases?.checks;
+  const review = phases?.review;
+  if (!checks || !review) return false;
+  const passed = (p: any) => p?.status === 'ready_to_push' || p?.status === 'pushed';
+  return (
+    passed(checks) &&
+    passed(review) &&
+    !!checks.validated_head_sha &&
+    checks.validated_head_sha === review.validated_head_sha
+  );
 }
 /**
  * Guard against out-of-order async responses in the finalize/review pollers.
@@ -139,7 +134,7 @@ export function isFullyValidated(phases: any) {
  * @returns {boolean} true iff the captured token still matches the live one
  */
 export function isFreshGeneration(capturedGen: any, currentGen: any) {
-    return capturedGen === currentGen;
+  return capturedGen === currentGen;
 }
 /**
  * The cleared poll state for {@link useFinalizeRunPoll}.
@@ -153,7 +148,7 @@ export function isFreshGeneration(capturedGen: any, currentGen: any) {
  * @returns {{ run: null, steps: Array<never>, phases: null }}
  */
 export function emptyFinalizeRunState() {
-    return { run: null, steps: [], phases: null };
+  return { run: null, steps: [], phases: null };
 }
 /**
  * Normalize a `GET /sessions/:id/finalize-runs/latest` payload into the poll
@@ -164,11 +159,11 @@ export function emptyFinalizeRunState() {
  * @returns {{ run: unknown, steps: Array<unknown>, phases: unknown }}
  */
 export function normalizeFinalizeRunResult(data: any) {
-    return {
-        run: data?.run ?? null,
-        steps: Array.isArray(data?.steps) ? data.steps : [],
-        phases: data?.phases ?? null,
-    };
+  return {
+    run: data?.run ?? null,
+    steps: Array.isArray(data?.steps) ? data.steps : [],
+    phases: data?.phases ?? null,
+  };
 }
 /**
  * The cleared state for {@link ReviewerThreadsCard}.
@@ -180,7 +175,7 @@ export function normalizeFinalizeRunResult(data: any) {
  * @returns {{ threads: Array<never>, verdict: null }}
  */
 export function emptyReviewerThreads() {
-    return { threads: [], verdict: null };
+  return { threads: [], verdict: null };
 }
 /**
  * Normalize a `GET /reviewer-threads` payload into the review-card shape.
@@ -189,8 +184,8 @@ export function emptyReviewerThreads() {
  * @returns {{ threads: Array<unknown>, verdict: unknown }}
  */
 export function normalizeReviewerThreads(resp: any) {
-    return {
-        threads: Array.isArray(resp?.threads) ? resp.threads : [],
-        verdict: resp?.reviewer_verdict ?? null,
-    };
+  return {
+    threads: Array.isArray(resp?.threads) ? resp.threads : [],
+    verdict: resp?.reviewer_verdict ?? null,
+  };
 }

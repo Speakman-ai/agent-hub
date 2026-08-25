@@ -404,10 +404,14 @@ export default function EnvironmentReleaseGatesPanel({
 
   const confirmDelete = useCallback(
     (gate: DeployReleaseGate) => {
-      Alert.alert('Delete release gate', `Delete the release gate "${describeReleaseGate(gate)}"?`, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => doDelete(gate) },
-      ]);
+      Alert.alert(
+        'Delete release gate',
+        `Delete the release gate "${describeReleaseGate(gate)}"?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete', style: 'destructive', onPress: () => doDelete(gate) },
+        ],
+      );
     },
     [doDelete],
   );
@@ -517,7 +521,13 @@ const styles = StyleSheet.create({
     padding: 4,
     gap: 2,
   },
-  pickRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4, paddingHorizontal: 4 },
+  pickRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+  },
   pickLabel: { color: colors.gray300, fontSize: 12, flex: 1 },
   addButton: {
     flexDirection: 'row',

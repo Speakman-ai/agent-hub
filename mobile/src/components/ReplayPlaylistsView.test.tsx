@@ -31,9 +31,8 @@ vi.mock('../utils/api', () => ({
   },
 }));
 
-const { ReplayPlaylistsView, AddToPlaylistModal, addToPlaylistMessage } = await import(
-  './ReplayPlaylistsView'
-);
+const { ReplayPlaylistsView, AddToPlaylistModal, addToPlaylistMessage } =
+  await import('./ReplayPlaylistsView');
 
 describe('addToPlaylistMessage', () => {
   it('reports a fresh add using the server-echoed playlist name', () => {
@@ -65,9 +64,7 @@ describe('ReplayPlaylistsView', () => {
 
 describe('AddToPlaylistModal', () => {
   it('renders the picker shell', () => {
-    const html = renderToStaticMarkup(
-      <AddToPlaylistModal projectId="p1" replay={{ id: 'r-1' }} />,
-    );
+    const html = renderToStaticMarkup(<AddToPlaylistModal projectId="p1" replay={{ id: 'r-1' }} />);
     expect(html).toContain('Add to a playlist');
   });
 });

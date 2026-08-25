@@ -46,7 +46,9 @@ export function hasGoogleScope(status: any, scope: string): boolean {
 
 /** True when the user can read/write the primary Google Calendar. */
 export function hasCalendarScope(status: any): boolean {
-  return hasGoogleScope(status, CALENDAR_EVENTS_SCOPE) || hasGoogleScope(status, CALENDAR_FULL_SCOPE);
+  return (
+    hasGoogleScope(status, CALENDAR_EVENTS_SCOPE) || hasGoogleScope(status, CALENDAR_FULL_SCOPE)
+  );
 }
 
 /**

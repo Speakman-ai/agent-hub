@@ -36,7 +36,10 @@ export default function CredentialRequestPrompt({ sessionId, request, onSubmit }
   const complete = remoteStatus === 'submitted' || remoteStatus === 'consumed';
   const expired = remoteStatus === 'expired';
   const canSubmit = useMemo(
-    () => (request.fields || []).every((field: any) => values[field.key]?.length > 0) && !complete && !expired,
+    () =>
+      (request.fields || []).every((field: any) => values[field.key]?.length > 0) &&
+      !complete &&
+      !expired,
     [request.fields, values, complete, expired],
   );
 
@@ -89,7 +92,9 @@ export default function CredentialRequestPrompt({ sessionId, request, onSubmit }
               <View style={styles.inputRow}>
                 <TextInput
                   value={values[field.key] || ''}
-                  onChangeText={(value) => setValues((prev: any) => ({ ...prev, [field.key]: value }))}
+                  onChangeText={(value) =>
+                    setValues((prev: any) => ({ ...prev, [field.key]: value }))
+                  }
                   secureTextEntry={hidden}
                   autoCapitalize="none"
                   autoCorrect={false}
@@ -99,7 +104,9 @@ export default function CredentialRequestPrompt({ sessionId, request, onSubmit }
                 {field.type === 'password' ? (
                   <TouchableOpacity
                     style={styles.showBtn}
-                    onPress={() => setVisible((prev: any) => ({ ...prev, [field.key]: !prev[field.key] }))}
+                    onPress={() =>
+                      setVisible((prev: any) => ({ ...prev, [field.key]: !prev[field.key] }))
+                    }
                     disabled={complete || expired || saving}
                   >
                     <Text style={styles.showText}>{visible[field.key] ? 'Hide' : 'Show'}</Text>

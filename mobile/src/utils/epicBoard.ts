@@ -14,11 +14,7 @@ export type EpicBoardColumn<T> = {
   epics: T[];
 };
 
-export const EPIC_BOARD_COLUMN_ORDER: EpicBoardColumnKey[] = [
-  'not_started',
-  'in_progress',
-  'done',
-];
+export const EPIC_BOARD_COLUMN_ORDER: EpicBoardColumnKey[] = ['not_started', 'in_progress', 'done'];
 
 /** Bucket an epic's raw state into one of the three board columns. */
 export function epicBoardColumnKey(state: string | null | undefined): EpicBoardColumnKey {

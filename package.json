@@ -53,7 +53,8 @@
     "check:openapi-coverage": "npx tsx scripts/check-openapi-coverage.ts",
     "check:openapi-freshness": "npx tsx scripts/check-openapi-freshness.ts",
     "check:openapi": "npm run check:openapi-coverage && npm run check:openapi-freshness",
-    "check:workflow-drift": "npx tsx scripts/check-workflow-drift.ts"
+    "check:workflow-drift": "npx tsx scripts/check-workflow-drift.ts",
+    "check:mirrored-modules": "npx tsx scripts/check-mirrored-modules.ts"
   },
   "engines": {
     "node": ">=22.14.0 <23.0.0"

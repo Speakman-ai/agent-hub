@@ -1,41 +1,57 @@
 import React, { useState, useEffect, useCallback, memo } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, StyleSheet, } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  ScrollView,
+  TextInput,
+  ActivityIndicator,
+  StyleSheet,
+} from 'react-native';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativePrTime } from '../utils/prFormatting';
-import { normalizePrFiles, summarizePrFiles, fileStatusLabel, annotatePatchLines, commentAnchorFor, commentsForFile, groupCommentThreads, } from '../utils/prDiffRender';
+import {
+  normalizePrFiles,
+  summarizePrFiles,
+  fileStatusLabel,
+  annotatePatchLines,
+  commentAnchorFor,
+  commentsForFile,
+  groupCommentThreads,
+} from '../utils/prDiffRender';
 import { buildInlineCommentPayload } from '../utils/prReviewActions';
 /** Patch lines rendered per expanded file before truncating (mobile perf). */
 const MAX_RENDER_LINES = 500;
 /** Expand every file by default when the PR is small. */
 const AUTO_EXPAND_MAX_FILES = 3;
 function statusColor(status: any) {
-    switch (String(status || '').toLowerCase()) {
-        case 'added':
-            return colors.emerald400;
-        case 'removed':
-        case 'deleted':
-            return colors.rose400;
-        case 'renamed':
-        case 'copied':
-            return colors.amber400;
-        default:
-            return colors.gray400;
-    }
+  switch (String(status || '').toLowerCase()) {
+    case 'added':
+      return colors.emerald400;
+    case 'removed':
+    case 'deleted':
+      return colors.rose400;
+    case 'renamed':
+    case 'copied':
+      return colors.amber400;
+    default:
+      return colors.gray400;
+  }
 }
 function lineStyles(kind: any) {
-    switch (kind) {
-        case 'add':
-            return { row: styles.addRow, text: styles.addText };
-        case 'del':
-            return { row: styles.delRow, text: styles.delText };
-        case 'hunk':
-            return { row: styles.hunkRow, text: styles.hunkText };
-        case 'meta':
-            return { row: null, text: styles.metaText };
-        default:
-            return { row: null, text: styles.contextText };
-    }
+  switch (kind) {
+    case 'add':
+      return { row: styles.addRow, text: styles.addText };
+    case 'del':
+      return { row: styles.delRow, text: styles.delText };
+    case 'hunk':
+      return { row: styles.hunkRow, text: styles.hunkText };
+    case 'meta':
+      return { row: null, text: styles.metaText };
+    default:
+      return { row: null, text: styles.contextText };
+  }
 }
 /**
  * One collapsible per-file diff block. Native PRs (when `onAddComment` is
@@ -49,45 +65,51 @@ function lineStyles(kind: any) {
  * on tap.
  */
 function CommentThread({ thread, filePath, onSetResolved }: any) {
-    const [expanded, setExpanded] = useState(false);
-    const [busy, setBusy] = useState(false);
-    const [error, setError] = useState<any>(null);
-    const canResolve = typeof onSetResolved === 'function';
-    const setResolved = async (next: any) => {
-        if (busy)
-            return;
-        setBusy(true);
-        setError(null);
-        try {
-            await onSetResolved({
-                filePath,
-                line: thread.line,
-                side: thread.side,
-                resolved: next,
-            });
-            setExpanded(false);
-        }
-        catch (err: any) {
-            setError(err?.message || 'Failed to update conversation');
-        }
-        finally {
-            setBusy(false);
-        }
-    };
-    if (thread.resolved && !expanded) {
-        return (<TouchableOpacity style={styles.threadResolved} onPress={() => setExpanded(true)} activeOpacity={0.7} accessibilityLabel={`Resolved conversation on ${thread.side} line ${thread.line}, ${thread.comments.length} comments. Tap to show.`}>
+  const [expanded, setExpanded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<any>(null);
+  const canResolve = typeof onSetResolved === 'function';
+  const setResolved = async (next: any) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onSetResolved({
+        filePath,
+        line: thread.line,
+        side: thread.side,
+        resolved: next,
+      });
+      setExpanded(false);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to update conversation');
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (thread.resolved && !expanded) {
+    return (
+      <TouchableOpacity
+        style={styles.threadResolved}
+        onPress={() => setExpanded(true)}
+        activeOpacity={0.7}
+        accessibilityLabel={`Resolved conversation on ${thread.side} line ${thread.line}, ${thread.comments.length} comments. Tap to show.`}
+      >
         <Text style={styles.threadResolvedText} numberOfLines={2}>
           {thread.resolvedBy
-                ? `@${thread.resolvedBy} marked this conversation as resolved`
-                : 'Conversation resolved'}
+            ? `@${thread.resolvedBy} marked this conversation as resolved`
+            : 'Conversation resolved'}
           {' · '}
           {thread.comments.length} comment{thread.comments.length === 1 ? '' : 's'}
         </Text>
         <Text style={styles.threadShowText}>Show</Text>
-      </TouchableOpacity>);
-    }
-    return (<View>
-      {thread.comments.map((c: any) => (<View key={c.id} style={styles.commentBubble}>
+      </TouchableOpacity>
+    );
+  }
+  return (
+    <View>
+      {thread.comments.map((c: any) => (
+        <View key={c.id} style={styles.commentBubble}>
           <View style={styles.commentHeader}>
             <Text style={styles.commentUser}>@{c.user || 'unknown'}</Text>
             <Text style={styles.commentAnchor}>
@@ -96,65 +118,86 @@ function CommentThread({ thread, filePath, onSetResolved }: any) {
             <Text style={styles.commentTime}>{relativePrTime(c.created_at)}</Text>
           </View>
           <Text style={styles.commentBody}>{c.body}</Text>
-        </View>))}
+        </View>
+      ))}
       {error ? <Text style={styles.composerError}>{error}</Text> : null}
-      {canResolve ? (<View style={styles.threadActions}>
-          <TouchableOpacity style={styles.threadButton} onPress={() => setResolved(!thread.resolved)} disabled={busy} accessibilityState={{ disabled: busy, busy }}>
-            {busy ? (<ActivityIndicator size="small" color={colors.gray400}/>) : (<Text style={styles.threadButtonText}>
+      {canResolve ? (
+        <View style={styles.threadActions}>
+          <TouchableOpacity
+            style={styles.threadButton}
+            onPress={() => setResolved(!thread.resolved)}
+            disabled={busy}
+            accessibilityState={{ disabled: busy, busy }}
+          >
+            {busy ? (
+              <ActivityIndicator size="small" color={colors.gray400} />
+            ) : (
+              <Text style={styles.threadButtonText}>
                 {thread.resolved ? 'Unresolve conversation' : 'Resolve conversation'}
-              </Text>)}
+              </Text>
+            )}
           </TouchableOpacity>
-          {thread.resolved ? (<TouchableOpacity onPress={() => setExpanded(false)} disabled={busy}>
+          {thread.resolved ? (
+            <TouchableOpacity onPress={() => setExpanded(false)} disabled={busy}>
               <Text style={styles.threadHideText}>Hide</Text>
-            </TouchableOpacity>) : null}
-        </View>) : null}
-    </View>);
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
 }
 function FileSection({ file, initiallyOpen, comments, onAddComment, onSetResolved }: any) {
-    const [open, setOpen] = useState(initiallyOpen);
-    const [selectedAnchor, setSelectedAnchor] = useState<any>(null);
-    const [commentText, setCommentText] = useState('');
-    const [posting, setPosting] = useState(false);
-    const [postError, setPostError] = useState<any>(null);
-    const commentable = typeof onAddComment === 'function';
-    const threads = groupCommentThreads(comments);
-    const resolvedThreadCount = threads.filter((t: any) => t.resolved).length;
-    const annotated = open && file.patch ? annotatePatchLines(file.patch) : [];
-    const truncatedCount = Math.max(0, annotated.length - MAX_RENDER_LINES);
-    const visible = truncatedCount > 0 ? annotated.slice(0, MAX_RENDER_LINES) : annotated;
-    const toggleAnchor = (anchor: any) => {
-        setPostError(null);
-        setSelectedAnchor((prev: any) => prev && anchor && prev.side === anchor.side && prev.line === anchor.line ? null : anchor);
-    };
-    const submitComment = async () => {
-        if (posting)
-            return;
-        const built = buildInlineCommentPayload({
-            filePath: file.filename,
-            line: selectedAnchor?.line,
-            side: selectedAnchor?.side,
-            body: commentText,
-        });
-        if (!built.ok) {
-            setPostError(built.error);
-            return;
-        }
-        setPosting(true);
-        setPostError(null);
-        try {
-            await onAddComment(built.payload);
-            setCommentText('');
-            setSelectedAnchor(null);
-        }
-        catch (err: any) {
-            setPostError(err?.message || 'Failed to post comment');
-        }
-        finally {
-            setPosting(false);
-        }
-    };
-    return (<View style={styles.fileSection}>
-      <TouchableOpacity style={styles.fileHeader} onPress={() => setOpen((v: any) => !v)} activeOpacity={0.7} accessibilityLabel={`${file.filename}, ${file.additions} additions, ${file.deletions} deletions`} accessibilityState={{ expanded: open }}>
+  const [open, setOpen] = useState(initiallyOpen);
+  const [selectedAnchor, setSelectedAnchor] = useState<any>(null);
+  const [commentText, setCommentText] = useState('');
+  const [posting, setPosting] = useState(false);
+  const [postError, setPostError] = useState<any>(null);
+  const commentable = typeof onAddComment === 'function';
+  const threads = groupCommentThreads(comments);
+  const resolvedThreadCount = threads.filter((t: any) => t.resolved).length;
+  const annotated = open && file.patch ? annotatePatchLines(file.patch) : [];
+  const truncatedCount = Math.max(0, annotated.length - MAX_RENDER_LINES);
+  const visible = truncatedCount > 0 ? annotated.slice(0, MAX_RENDER_LINES) : annotated;
+  const toggleAnchor = (anchor: any) => {
+    setPostError(null);
+    setSelectedAnchor((prev: any) =>
+      prev && anchor && prev.side === anchor.side && prev.line === anchor.line ? null : anchor,
+    );
+  };
+  const submitComment = async () => {
+    if (posting) return;
+    const built = buildInlineCommentPayload({
+      filePath: file.filename,
+      line: selectedAnchor?.line,
+      side: selectedAnchor?.side,
+      body: commentText,
+    });
+    if (!built.ok) {
+      setPostError(built.error);
+      return;
+    }
+    setPosting(true);
+    setPostError(null);
+    try {
+      await onAddComment(built.payload);
+      setCommentText('');
+      setSelectedAnchor(null);
+    } catch (err: any) {
+      setPostError(err?.message || 'Failed to post comment');
+    } finally {
+      setPosting(false);
+    }
+  };
+  return (
+    <View style={styles.fileSection}>
+      <TouchableOpacity
+        style={styles.fileHeader}
+        onPress={() => setOpen((v: any) => !v)}
+        activeOpacity={0.7}
+        accessibilityLabel={`${file.filename}, ${file.additions} additions, ${file.deletions} deletions`}
+        accessibilityState={{ expanded: open }}
+      >
         <Text style={styles.fileChevron}>{open ? '▾' : '▸'}</Text>
         <Text style={[styles.fileStatus, { color: statusColor(file.status) }]}>
           {fileStatusLabel(file.status)}
@@ -162,71 +205,133 @@ function FileSection({ file, initiallyOpen, comments, onAddComment, onSetResolve
         <Text style={styles.fileName} numberOfLines={1} ellipsizeMode="middle">
           {file.previousFilename ? `${file.previousFilename} → ${file.filename}` : file.filename}
         </Text>
-        {comments.length > 0 ? (<Text style={styles.fileCommentCount}>{comments.length} comments</Text>) : null}
-        {resolvedThreadCount > 0 ? (<Text style={styles.fileResolvedCount}>{resolvedThreadCount} resolved</Text>) : null}
-        {file.isBinary ? (<Text style={styles.fileBinary}>binary</Text>) : (<Text style={styles.fileCounts}>
+        {comments.length > 0 ? (
+          <Text style={styles.fileCommentCount}>{comments.length} comments</Text>
+        ) : null}
+        {resolvedThreadCount > 0 ? (
+          <Text style={styles.fileResolvedCount}>{resolvedThreadCount} resolved</Text>
+        ) : null}
+        {file.isBinary ? (
+          <Text style={styles.fileBinary}>binary</Text>
+        ) : (
+          <Text style={styles.fileCounts}>
             <Text style={styles.fileAdds}>+{file.additions}</Text>{' '}
-            <Text style={styles.fileDels}>{'−'}{file.deletions}</Text>
-          </Text>)}
+            <Text style={styles.fileDels}>
+              {'−'}
+              {file.deletions}
+            </Text>
+          </Text>
+        )}
       </TouchableOpacity>
 
-      {open && (<View style={styles.fileBody}>
-          {file.isBinary ? (<Text style={styles.binaryNote}>Binary or oversized file — no text diff.</Text>) : (<>
+      {open && (
+        <View style={styles.fileBody}>
+          {file.isBinary ? (
+            <Text style={styles.binaryNote}>Binary or oversized file — no text diff.</Text>
+          ) : (
+            <>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} nestedScrollEnabled>
                 <View>
                   {visible.map((line: any, i: any) => {
                     const anchor = commentable ? commentAnchorFor(line) : null;
-                    const selected = anchor &&
-                        selectedAnchor &&
-                        anchor.side === selectedAnchor.side &&
-                        anchor.line === selectedAnchor.line;
+                    const selected =
+                      anchor &&
+                      selectedAnchor &&
+                      anchor.side === selectedAnchor.side &&
+                      anchor.line === selectedAnchor.line;
                     const s = lineStyles(line.kind);
-                    const row = (<View key={i} style={[styles.lineRow, s.row, selected && styles.lineRowSelected]}>
+                    const row = (
+                      <View
+                        key={i}
+                        style={[styles.lineRow, s.row, selected && styles.lineRowSelected]}
+                      >
                         <Text style={[styles.lineText, s.text]}>{line.text || ' '}</Text>
-                      </View>);
-                    if (!anchor)
-                        return row;
-                    return (<TouchableOpacity key={i} onPress={() => toggleAnchor(anchor)} activeOpacity={0.6} accessibilityLabel={`Comment on ${anchor.side} line ${anchor.line}`}>
+                      </View>
+                    );
+                    if (!anchor) return row;
+                    return (
+                      <TouchableOpacity
+                        key={i}
+                        onPress={() => toggleAnchor(anchor)}
+                        activeOpacity={0.6}
+                        accessibilityLabel={`Comment on ${anchor.side} line ${anchor.line}`}
+                      >
                         {row}
-                      </TouchableOpacity>);
-                })}
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
               </ScrollView>
-              {truncatedCount > 0 && (<Text style={styles.truncatedNote}>
+              {truncatedCount > 0 && (
+                <Text style={styles.truncatedNote}>
                   {'…'} {truncatedCount} more lines — open on GitHub/desktop for the full file.
-                </Text>)}
-            </>)}
+                </Text>
+              )}
+            </>
+          )}
 
-          {threads.map((thread: any) => (<CommentThread key={thread.key} thread={thread} filePath={file.filename} onSetResolved={onSetResolved}/>))}
+          {threads.map((thread: any) => (
+            <CommentThread
+              key={thread.key}
+              thread={thread}
+              filePath={file.filename}
+              onSetResolved={onSetResolved}
+            />
+          ))}
 
-          {commentable && selectedAnchor && (<View style={styles.composer}>
+          {commentable && selectedAnchor && (
+            <View style={styles.composer}>
               <Text style={styles.composerLabel}>
                 Comment on line {selectedAnchor.line} ({selectedAnchor.side})
               </Text>
-              <TextInput style={styles.composerInput} value={commentText} onChangeText={(t: any) => {
-                    setCommentText(t);
-                    if (postError)
-                        setPostError(null);
-                }} placeholder="Comment on this line…" placeholderTextColor={colors.gray500} multiline editable={!posting}/>
+              <TextInput
+                style={styles.composerInput}
+                value={commentText}
+                onChangeText={(t: any) => {
+                  setCommentText(t);
+                  if (postError) setPostError(null);
+                }}
+                placeholder="Comment on this line…"
+                placeholderTextColor={colors.gray500}
+                multiline
+                editable={!posting}
+              />
               {postError ? <Text style={styles.composerError}>{postError}</Text> : null}
               <View style={styles.composerActions}>
-                <TouchableOpacity style={[
+                <TouchableOpacity
+                  style={[
                     styles.composerSubmit,
                     (posting || !commentText.trim()) && styles.composerSubmitDisabled,
-                ]} onPress={submitComment} disabled={posting || !commentText.trim()} accessibilityState={{ disabled: posting || !commentText.trim(), busy: posting }}>
-                  {posting ? (<ActivityIndicator size="small" color={colors.white}/>) : (<Text style={styles.composerSubmitText}>Comment</Text>)}
+                  ]}
+                  onPress={submitComment}
+                  disabled={posting || !commentText.trim()}
+                  accessibilityState={{ disabled: posting || !commentText.trim(), busy: posting }}
+                >
+                  {posting ? (
+                    <ActivityIndicator size="small" color={colors.white} />
+                  ) : (
+                    <Text style={styles.composerSubmitText}>Comment</Text>
+                  )}
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => {
+                <TouchableOpacity
+                  onPress={() => {
                     setSelectedAnchor(null);
                     setPostError(null);
-                }} disabled={posting}>
+                  }}
+                  disabled={posting}
+                >
                   <Text style={styles.composerCancelText}>Cancel</Text>
                 </TouchableOpacity>
               </View>
-            </View>)}
-          {commentable && !selectedAnchor && !file.isBinary && (<Text style={styles.commentHint}>Tap a diff line to comment on it.</Text>)}
-        </View>)}
-    </View>);
+            </View>
+          )}
+          {commentable && !selectedAnchor && !file.isBinary && (
+            <Text style={styles.commentHint}>Tap a diff line to comment on it.</Text>
+          )}
+        </View>
+      )}
+    </View>
+  );
 }
 /**
  * PR "Files changed" — mobile twin of the web `PrFilesChanged` +
@@ -235,195 +340,212 @@ function FileSection({ file, initiallyOpen, comments, onAddComment, onSetResolve
  * helper can't consume) and renders one collapsible block per file.
  */
 function PrDiffView({ prUrl, comments = [], onAddComment = null, onSetResolved = null }: any) {
-    const [files, setFiles] = useState<any>(null);
-    const [truncatedList, setTruncatedList] = useState(false);
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState<any>(null);
-    const load = useCallback(async () => {
-        if (!prUrl) {
-            setError('No PR URL available for this pull request.');
-            return;
-        }
-        setLoading(true);
-        setError(null);
-        try {
-            const data = await api.getPrFiles(prUrl);
-            setFiles(normalizePrFiles(data));
-            setTruncatedList(Boolean(data?.truncated));
-        }
-        catch (err: any) {
-            setError(err?.message || 'Failed to load diff');
-            setFiles(null);
-        }
-        finally {
-            setLoading(false);
-        }
-    }, [prUrl]);
-    useEffect(() => {
-        setFiles(null);
-        load();
-    }, [load]);
-    if (loading && files === null) {
-        return (<View style={styles.stateBox}>
-        <ActivityIndicator color={colors.gray400}/>
-        <Text style={styles.stateText}>Loading diff…</Text>
-      </View>);
+  const [files, setFiles] = useState<any>(null);
+  const [truncatedList, setTruncatedList] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<any>(null);
+  const load = useCallback(async () => {
+    if (!prUrl) {
+      setError('No PR URL available for this pull request.');
+      return;
     }
-    if (error) {
-        return (<View style={styles.stateBox}>
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await api.getPrFiles(prUrl);
+      setFiles(normalizePrFiles(data));
+      setTruncatedList(Boolean(data?.truncated));
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load diff');
+      setFiles(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [prUrl]);
+  useEffect(() => {
+    setFiles(null);
+    load();
+  }, [load]);
+  if (loading && files === null) {
+    return (
+      <View style={styles.stateBox}>
+        <ActivityIndicator color={colors.gray400} />
+        <Text style={styles.stateText}>Loading diff…</Text>
+      </View>
+    );
+  }
+  if (error) {
+    return (
+      <View style={styles.stateBox}>
         <Text style={styles.errorText}>{error}</Text>
         <TouchableOpacity style={styles.retryButton} onPress={load}>
           <Text style={styles.retryButtonText}>Retry</Text>
         </TouchableOpacity>
-      </View>);
-    }
-    if (!files)
-        return null;
-    if (files.length === 0) {
-        return <Text style={styles.stateText}>No file changes.</Text>;
-    }
-    const totals = summarizePrFiles(files);
-    return (<View>
+      </View>
+    );
+  }
+  if (!files) return null;
+  if (files.length === 0) {
+    return <Text style={styles.stateText}>No file changes.</Text>;
+  }
+  const totals = summarizePrFiles(files);
+  return (
+    <View>
       <Text style={styles.summaryLine}>
         {totals.count} {totals.count === 1 ? 'file' : 'files'} changed{'  '}
         <Text style={styles.fileAdds}>+{totals.additions}</Text>{' '}
-        <Text style={styles.fileDels}>{'−'}{totals.deletions}</Text>
+        <Text style={styles.fileDels}>
+          {'−'}
+          {totals.deletions}
+        </Text>
         {truncatedList ? '  (list truncated)' : ''}
       </Text>
-      {files.map((file: any, i: any) => (<FileSection key={`${file.filename}-${i}`} file={file} initiallyOpen={files.length <= AUTO_EXPAND_MAX_FILES ||
-                commentsForFile(comments, file.filename).length > 0} comments={commentsForFile(comments, file.filename)} onAddComment={onAddComment} onSetResolved={onSetResolved}/>))}
-    </View>);
+      {files.map((file: any, i: any) => (
+        <FileSection
+          key={`${file.filename}-${i}`}
+          file={file}
+          initiallyOpen={
+            files.length <= AUTO_EXPAND_MAX_FILES ||
+            commentsForFile(comments, file.filename).length > 0
+          }
+          comments={commentsForFile(comments, file.filename)}
+          onAddComment={onAddComment}
+          onSetResolved={onSetResolved}
+        />
+      ))}
+    </View>
+  );
 }
 const styles = StyleSheet.create({
-    stateBox: { alignItems: 'center', paddingVertical: 16, gap: 8 },
-    stateText: { color: colors.gray500, fontSize: 13, textAlign: 'center' },
-    errorText: { color: colors.red400, fontSize: 13, textAlign: 'center' },
-    retryButton: {
-        paddingHorizontal: 14,
-        paddingVertical: 8,
-        backgroundColor: colors.gray800,
-        borderRadius: 6,
-    },
-    retryButtonText: { color: colors.white, fontSize: 13 },
-    summaryLine: { color: colors.gray400, fontSize: 12, marginBottom: 8 },
-    fileSection: {
-        borderWidth: 1,
-        borderColor: colors.gray800,
-        borderRadius: 8,
-        backgroundColor: colors.gray900,
-        marginBottom: 6,
-        overflow: 'hidden',
-    },
-    fileHeader: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-    },
-    fileChevron: { color: colors.gray500, fontSize: 12, width: 12 },
-    fileStatus: { fontSize: 11, fontWeight: '700', width: 12, textAlign: 'center' },
-    fileName: { flex: 1, color: colors.gray200, fontSize: 12, fontFamily: 'monospace' },
-    fileCommentCount: { color: colors.amber400, fontSize: 10 },
-    fileResolvedCount: { color: colors.emerald400, fontSize: 10 },
-    fileBinary: { color: colors.gray500, fontSize: 10 },
-    fileCounts: { fontSize: 11, fontVariant: ['tabular-nums'] },
-    fileAdds: { color: colors.emerald400, fontSize: 11 },
-    fileDels: { color: colors.rose400, fontSize: 11 },
-    fileBody: {
-        borderTopWidth: 1,
-        borderTopColor: colors.gray800,
-        backgroundColor: colors.gray950,
-        padding: 6,
-    },
-    binaryNote: { color: colors.gray500, fontSize: 11, padding: 6 },
-    truncatedNote: { color: colors.gray500, fontSize: 10, paddingTop: 6, paddingHorizontal: 4 },
-    lineRow: { flexDirection: 'row', paddingHorizontal: 6, paddingVertical: 1 },
-    lineRowSelected: {
-        borderLeftWidth: 2,
-        borderLeftColor: colors.amber400,
-        backgroundColor: colors.amber900_40,
-    },
-    addRow: { backgroundColor: 'rgba(6, 78, 59, 0.25)' },
-    delRow: { backgroundColor: 'rgba(136, 19, 55, 0.25)' },
-    hunkRow: { backgroundColor: colors.gray700_40, marginVertical: 2 },
-    lineText: { fontFamily: 'monospace', fontSize: 11, lineHeight: 16 },
-    addText: { color: colors.emerald400 },
-    delText: { color: colors.rose400 },
-    hunkText: { color: colors.gray400 },
-    metaText: { color: colors.gray500 },
-    contextText: { color: colors.gray400 },
-    commentBubble: {
-        marginTop: 6,
-        padding: 8,
-        backgroundColor: colors.gray900,
-        borderWidth: 1,
-        borderColor: colors.gray700,
-        borderRadius: 6,
-    },
-    commentHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 3 },
-    commentUser: { color: colors.gray300, fontSize: 11, fontWeight: '600' },
-    commentAnchor: { color: colors.amber400, fontSize: 10 },
-    commentTime: { color: colors.gray500, fontSize: 10, marginLeft: 'auto' },
-    commentBody: { color: colors.gray200, fontSize: 12, lineHeight: 17 },
-    commentHint: { color: colors.gray600, fontSize: 10, paddingTop: 6, paddingHorizontal: 4 },
-    threadResolved: {
-        marginTop: 6,
-        padding: 8,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        backgroundColor: colors.gray900,
-        borderWidth: 1,
-        borderColor: colors.gray700,
-        borderRadius: 6,
-    },
-    threadResolvedText: { color: colors.gray400, fontSize: 11, flex: 1 },
-    threadShowText: { color: colors.gray300, fontSize: 11, fontWeight: '600' },
-    threadActions: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 6 },
-    threadButton: {
-        paddingHorizontal: 10,
-        paddingVertical: 5,
-        borderWidth: 1,
-        borderColor: colors.gray700,
-        borderRadius: 6,
-    },
-    threadButtonText: { color: colors.gray300, fontSize: 11 },
-    threadHideText: { color: colors.gray500, fontSize: 11 },
-    composer: {
-        marginTop: 6,
-        padding: 8,
-        backgroundColor: colors.gray900,
-        borderWidth: 1,
-        borderColor: colors.amber900_40,
-        borderRadius: 6,
-        gap: 6,
-    },
-    composerLabel: { color: colors.amber400, fontSize: 11, fontWeight: '600' },
-    composerInput: {
-        backgroundColor: colors.gray950,
-        borderWidth: 1,
-        borderColor: colors.gray700,
-        borderRadius: 6,
-        color: colors.gray200,
-        fontSize: 13,
-        paddingHorizontal: 8,
-        paddingVertical: 6,
-        minHeight: 56,
-        textAlignVertical: 'top',
-    },
-    composerError: { color: colors.red400, fontSize: 11 },
-    composerActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-    composerSubmit: {
-        backgroundColor: colors.emerald500,
-        borderRadius: 6,
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        minWidth: 88,
-        alignItems: 'center',
-    },
-    composerSubmitDisabled: { opacity: 0.5 },
-    composerSubmitText: { color: colors.white, fontSize: 12, fontWeight: '600' },
-    composerCancelText: { color: colors.gray400, fontSize: 12 },
+  stateBox: { alignItems: 'center', paddingVertical: 16, gap: 8 },
+  stateText: { color: colors.gray500, fontSize: 13, textAlign: 'center' },
+  errorText: { color: colors.red400, fontSize: 13, textAlign: 'center' },
+  retryButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: colors.gray800,
+    borderRadius: 6,
+  },
+  retryButtonText: { color: colors.white, fontSize: 13 },
+  summaryLine: { color: colors.gray400, fontSize: 12, marginBottom: 8 },
+  fileSection: {
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 8,
+    backgroundColor: colors.gray900,
+    marginBottom: 6,
+    overflow: 'hidden',
+  },
+  fileHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  fileChevron: { color: colors.gray500, fontSize: 12, width: 12 },
+  fileStatus: { fontSize: 11, fontWeight: '700', width: 12, textAlign: 'center' },
+  fileName: { flex: 1, color: colors.gray200, fontSize: 12, fontFamily: 'monospace' },
+  fileCommentCount: { color: colors.amber400, fontSize: 10 },
+  fileResolvedCount: { color: colors.emerald400, fontSize: 10 },
+  fileBinary: { color: colors.gray500, fontSize: 10 },
+  fileCounts: { fontSize: 11, fontVariant: ['tabular-nums'] },
+  fileAdds: { color: colors.emerald400, fontSize: 11 },
+  fileDels: { color: colors.rose400, fontSize: 11 },
+  fileBody: {
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+    backgroundColor: colors.gray950,
+    padding: 6,
+  },
+  binaryNote: { color: colors.gray500, fontSize: 11, padding: 6 },
+  truncatedNote: { color: colors.gray500, fontSize: 10, paddingTop: 6, paddingHorizontal: 4 },
+  lineRow: { flexDirection: 'row', paddingHorizontal: 6, paddingVertical: 1 },
+  lineRowSelected: {
+    borderLeftWidth: 2,
+    borderLeftColor: colors.amber400,
+    backgroundColor: colors.amber900_40,
+  },
+  addRow: { backgroundColor: 'rgba(6, 78, 59, 0.25)' },
+  delRow: { backgroundColor: 'rgba(136, 19, 55, 0.25)' },
+  hunkRow: { backgroundColor: colors.gray700_40, marginVertical: 2 },
+  lineText: { fontFamily: 'monospace', fontSize: 11, lineHeight: 16 },
+  addText: { color: colors.emerald400 },
+  delText: { color: colors.rose400 },
+  hunkText: { color: colors.gray400 },
+  metaText: { color: colors.gray500 },
+  contextText: { color: colors.gray400 },
+  commentBubble: {
+    marginTop: 6,
+    padding: 8,
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+  },
+  commentHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 3 },
+  commentUser: { color: colors.gray300, fontSize: 11, fontWeight: '600' },
+  commentAnchor: { color: colors.amber400, fontSize: 10 },
+  commentTime: { color: colors.gray500, fontSize: 10, marginLeft: 'auto' },
+  commentBody: { color: colors.gray200, fontSize: 12, lineHeight: 17 },
+  commentHint: { color: colors.gray600, fontSize: 10, paddingTop: 6, paddingHorizontal: 4 },
+  threadResolved: {
+    marginTop: 6,
+    padding: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+  },
+  threadResolvedText: { color: colors.gray400, fontSize: 11, flex: 1 },
+  threadShowText: { color: colors.gray300, fontSize: 11, fontWeight: '600' },
+  threadActions: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 6 },
+  threadButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+  },
+  threadButtonText: { color: colors.gray300, fontSize: 11 },
+  threadHideText: { color: colors.gray500, fontSize: 11 },
+  composer: {
+    marginTop: 6,
+    padding: 8,
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.amber900_40,
+    borderRadius: 6,
+    gap: 6,
+  },
+  composerLabel: { color: colors.amber400, fontSize: 11, fontWeight: '600' },
+  composerInput: {
+    backgroundColor: colors.gray950,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    color: colors.gray200,
+    fontSize: 13,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    minHeight: 56,
+    textAlignVertical: 'top',
+  },
+  composerError: { color: colors.red400, fontSize: 11 },
+  composerActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  composerSubmit: {
+    backgroundColor: colors.emerald500,
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    minWidth: 88,
+    alignItems: 'center',
+  },
+  composerSubmitDisabled: { opacity: 0.5 },
+  composerSubmitText: { color: colors.white, fontSize: 12, fontWeight: '600' },
+  composerCancelText: { color: colors.gray400, fontSize: 12 },
 });
 export default memo(PrDiffView);

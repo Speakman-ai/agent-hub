@@ -8,13 +8,13 @@
  * Returns `{ sessionId }` when the design has been migrated, otherwise null.
  */
 export function resolveDesignRedirect(design: any) {
-    const sid = design?.imported_session_id;
-    if (typeof sid === 'string' && sid.trim()) {
-        return { sessionId: sid.trim() };
-    }
-    return null;
+  const sid = design?.imported_session_id;
+  if (typeof sid === 'string' && sid.trim()) {
+    return { sessionId: sid.trim() };
+  }
+  return null;
 }
 /** True when a design has been migrated and is now read-only. */
 export function isDesignMigrated(design: any) {
-    return resolveDesignRedirect(design) !== null;
+  return resolveDesignRedirect(design) !== null;
 }

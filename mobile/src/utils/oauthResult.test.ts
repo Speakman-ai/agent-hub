@@ -1,15 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import {
-  interpretAuthSessionResult,
-  OAUTH_SCHEME,
-  OAUTH_REDIRECT_PATH,
-} from './oauthResult';
+import { interpretAuthSessionResult, OAUTH_SCHEME, OAUTH_REDIRECT_PATH } from './oauthResult';
 
 describe('interpretAuthSessionResult', () => {
   it('treats success as a completed redirect', () => {
-    expect(interpretAuthSessionResult({ type: 'success', url: 'agenthub://oauth-callback' })).toEqual(
-      { ok: true, cancelled: false },
-    );
+    expect(
+      interpretAuthSessionResult({ type: 'success', url: 'agenthub://oauth-callback' }),
+    ).toEqual({ ok: true, cancelled: false });
   });
 
   it('treats cancel and dismiss as benign user aborts', () => {

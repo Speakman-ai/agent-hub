@@ -107,10 +107,16 @@ export function buildCalendarEventInput(form: any) {
     description: String(form.description || '').trim() || undefined,
     start: form.allDay
       ? { date: form.startDate }
-      : { dateTime: withSeconds(form.startDateTime), timeZone: String(form.timeZone || '').trim() || 'UTC' },
+      : {
+          dateTime: withSeconds(form.startDateTime),
+          timeZone: String(form.timeZone || '').trim() || 'UTC',
+        },
     end: form.allDay
       ? { date: form.endDate }
-      : { dateTime: withSeconds(form.endDateTime), timeZone: String(form.timeZone || '').trim() || 'UTC' },
+      : {
+          dateTime: withSeconds(form.endDateTime),
+          timeZone: String(form.timeZone || '').trim() || 'UTC',
+        },
   };
 }
 
@@ -130,7 +136,10 @@ export async function openCalendarOAuth({ apiClient, openURL }: any) {
 
 function hasCalendarScope(status: any) {
   const scopes = status?.grantedScopes || [];
-  return scopes.includes(CALENDAR_EVENTS_SCOPE) || scopes.includes('https://www.googleapis.com/auth/calendar');
+  return (
+    scopes.includes(CALENDAR_EVENTS_SCOPE) ||
+    scopes.includes('https://www.googleapis.com/auth/calendar')
+  );
 }
 
 export function CalendarAgendaContent({
@@ -164,13 +173,33 @@ export function CalendarAgendaContent({
 
   let empty: any = null;
   if (!configured && !connected) {
-    empty = { title: 'Google is not configured', body: 'An Admin needs to add the Google OAuth app before Calendar can connect.', action: 'Open Account settings', onAction: onOpenSettings };
+    empty = {
+      title: 'Google is not configured',
+      body: 'An Admin needs to add the Google OAuth app before Calendar can connect.',
+      action: 'Open Account settings',
+      onAction: onOpenSettings,
+    };
   } else if (!connected) {
-    empty = { title: 'Connect Google to use Calendar', body: 'Calendar events stay server-side through the Google proxy. Connect your account to continue.', action: 'Connect Google', onAction: onConnect };
+    empty = {
+      title: 'Connect Google to use Calendar',
+      body: 'Calendar events stay server-side through the Google proxy. Connect your account to continue.',
+      action: 'Connect Google',
+      onAction: onConnect,
+    };
   } else if (!calendarEnabled) {
-    empty = { title: 'Enable Calendar access', body: `Connected as ${status?.email || 'Google account'}, but Calendar access has not been granted yet.`, action: 'Enable Calendar', onAction: onConnect };
+    empty = {
+      title: 'Enable Calendar access',
+      body: `Connected as ${status?.email || 'Google account'}, but Calendar access has not been granted yet.`,
+      action: 'Enable Calendar',
+      onAction: onConnect,
+    };
   } else if (!events?.length && !eventsLoading) {
-    empty = { title: 'No events this week', body: 'Create an event or refresh after adding one in Google Calendar.', action: 'Create event', onAction: onCreate };
+    empty = {
+      title: 'No events this week',
+      body: 'Create an event or refresh after adding one in Google Calendar.',
+      action: 'Create event',
+      onAction: onCreate,
+    };
   }
 
   return (
@@ -182,7 +211,9 @@ export function CalendarAgendaContent({
         </View>
         <View style={styles.headerActions}>
           <TouchableOpacity onPress={onRefresh} style={styles.secondaryButton}>
-            <Text style={styles.secondaryButtonText}>{eventsLoading ? 'Refreshing' : 'Refresh'}</Text>
+            <Text style={styles.secondaryButtonText}>
+              {eventsLoading ? 'Refreshing' : 'Refresh'}
+            </Text>
           </TouchableOpacity>
           {connected && calendarEnabled ? (
             <TouchableOpacity onPress={onCreate} style={styles.primaryButton}>
@@ -227,7 +258,11 @@ export function CalendarAgendaContent({
                     accessibilityLabel="Add to todos"
                   >
                     <Text style={styles.captureButtonText}>
-                      {capturingId === key ? 'Adding…' : isCaptured ? '✓ Added to todos' : '+ Add to todos'}
+                      {capturingId === key
+                        ? 'Adding…'
+                        : isCaptured
+                          ? '✓ Added to todos'
+                          : '+ Add to todos'}
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -249,8 +284,11 @@ export function CalendarAgendaContent({
 
 function EventModal({ event, saving, error, onClose, onSave }: any) {
   const [form, setForm] = useState(() => (event ? formFromEvent(event) : defaultFormState()));
-  const setField = (field: string, value: any) => setForm((current: any) => ({ ...current, [field]: value }));
-  const valid = String(form.summary || '').trim() && (form.allDay ? form.startDate && form.endDate : form.startDateTime && form.endDateTime);
+  const setField = (field: string, value: any) =>
+    setForm((current: any) => ({ ...current, [field]: value }));
+  const valid =
+    String(form.summary || '').trim() &&
+    (form.allDay ? form.startDate && form.endDate : form.startDateTime && form.endDateTime);
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.modalBackdrop}>
@@ -258,7 +296,12 @@ function EventModal({ event, saving, error, onClose, onSave }: any) {
           <ScrollView>
             <Text style={styles.modalTitle}>{event ? 'Edit event' : 'Create event'}</Text>
             <Text style={styles.inputLabel}>Title</Text>
-            <TextInput value={form.summary} onChangeText={(v: any) => setField('summary', v)} style={styles.input} placeholderTextColor={colors.gray500} />
+            <TextInput
+              value={form.summary}
+              onChangeText={(v: any) => setField('summary', v)}
+              style={styles.input}
+              placeholderTextColor={colors.gray500}
+            />
             <View style={styles.switchRow}>
               <Text style={styles.inputLabel}>All day</Text>
               <Switch value={form.allDay} onValueChange={(v: any) => setField('allDay', v)} />
@@ -266,31 +309,77 @@ function EventModal({ event, saving, error, onClose, onSave }: any) {
             {form.allDay ? (
               <>
                 <Text style={styles.inputLabel}>Start date</Text>
-                <TextInput value={form.startDate} onChangeText={(v: any) => setField('startDate', v)} style={styles.input} placeholder="YYYY-MM-DD" placeholderTextColor={colors.gray500} />
+                <TextInput
+                  value={form.startDate}
+                  onChangeText={(v: any) => setField('startDate', v)}
+                  style={styles.input}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={colors.gray500}
+                />
                 <Text style={styles.inputLabel}>End date</Text>
-                <TextInput value={form.endDate} onChangeText={(v: any) => setField('endDate', v)} style={styles.input} placeholder="YYYY-MM-DD" placeholderTextColor={colors.gray500} />
+                <TextInput
+                  value={form.endDate}
+                  onChangeText={(v: any) => setField('endDate', v)}
+                  style={styles.input}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={colors.gray500}
+                />
               </>
             ) : (
               <>
                 <Text style={styles.inputLabel}>Starts</Text>
-                <TextInput value={form.startDateTime} onChangeText={(v: any) => setField('startDateTime', v)} style={styles.input} placeholder="YYYY-MM-DDTHH:mm" placeholderTextColor={colors.gray500} />
+                <TextInput
+                  value={form.startDateTime}
+                  onChangeText={(v: any) => setField('startDateTime', v)}
+                  style={styles.input}
+                  placeholder="YYYY-MM-DDTHH:mm"
+                  placeholderTextColor={colors.gray500}
+                />
                 <Text style={styles.inputLabel}>Ends</Text>
-                <TextInput value={form.endDateTime} onChangeText={(v: any) => setField('endDateTime', v)} style={styles.input} placeholder="YYYY-MM-DDTHH:mm" placeholderTextColor={colors.gray500} />
+                <TextInput
+                  value={form.endDateTime}
+                  onChangeText={(v: any) => setField('endDateTime', v)}
+                  style={styles.input}
+                  placeholder="YYYY-MM-DDTHH:mm"
+                  placeholderTextColor={colors.gray500}
+                />
                 <Text style={styles.inputLabel}>Time zone</Text>
-                <TextInput value={form.timeZone} onChangeText={(v: any) => setField('timeZone', v)} style={styles.input} placeholderTextColor={colors.gray500} />
+                <TextInput
+                  value={form.timeZone}
+                  onChangeText={(v: any) => setField('timeZone', v)}
+                  style={styles.input}
+                  placeholderTextColor={colors.gray500}
+                />
               </>
             )}
             <Text style={styles.inputLabel}>Location</Text>
-            <TextInput value={form.location} onChangeText={(v: any) => setField('location', v)} style={styles.input} placeholderTextColor={colors.gray500} />
+            <TextInput
+              value={form.location}
+              onChangeText={(v: any) => setField('location', v)}
+              style={styles.input}
+              placeholderTextColor={colors.gray500}
+            />
             <Text style={styles.inputLabel}>Description</Text>
-            <TextInput value={form.description} onChangeText={(v: any) => setField('description', v)} style={[styles.input, styles.textArea]} multiline placeholderTextColor={colors.gray500} />
+            <TextInput
+              value={form.description}
+              onChangeText={(v: any) => setField('description', v)}
+              style={[styles.input, styles.textArea]}
+              multiline
+              placeholderTextColor={colors.gray500}
+            />
             {error ? <Text style={styles.errorText}>{error}</Text> : null}
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={onClose} style={styles.secondaryButton}>
                 <Text style={styles.secondaryButtonText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity disabled={!valid || saving} onPress={() => onSave(form)} style={[styles.primaryButton, (!valid || saving) && styles.disabledButton]}>
-                <Text style={styles.primaryButtonText}>{saving ? 'Saving' : event ? 'Save' : 'Create'}</Text>
+              <TouchableOpacity
+                disabled={!valid || saving}
+                onPress={() => onSave(form)}
+                style={[styles.primaryButton, (!valid || saving) && styles.disabledButton]}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {saving ? 'Saving' : event ? 'Save' : 'Create'}
+                </Text>
               </TouchableOpacity>
             </View>
           </ScrollView>
@@ -322,8 +411,14 @@ export default function CalendarScreen({ navigation }: any) {
       const nextStatus = await api.getGoogleStatus();
       setStatus(nextStatus);
       if (nextStatus.connected && hasCalendarScope(nextStatus)) {
-        const body = await api.listGoogleCalendarEvents({ ...range, timeZone: localTimeZone(), maxResults: 100 });
-        setEvents([...(body.events || [])].sort((a, b) => eventStartMillis(a) - eventStartMillis(b)));
+        const body = await api.listGoogleCalendarEvents({
+          ...range,
+          timeZone: localTimeZone(),
+          maxResults: 100,
+        });
+        setEvents(
+          [...(body.events || [])].sort((a, b) => eventStartMillis(a) - eventStartMillis(b)),
+        );
       } else {
         setEvents([]);
       }
@@ -406,7 +501,13 @@ export default function CalendarScreen({ navigation }: any) {
         capturedId={capturedId}
       />
       {modalEvent !== undefined ? (
-        <EventModal event={modalEvent} saving={saving} error={modalError} onClose={() => setModalEvent(undefined)} onSave={save} />
+        <EventModal
+          event={modalEvent}
+          saving={saving}
+          error={modalError}
+          onClose={() => setModalEvent(undefined)}
+          onSave={save}
+        />
       ) : null}
       {ticketDraft ? (
         <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
@@ -417,27 +518,75 @@ export default function CalendarScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.gray950 },
-  topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.gray800 },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+  },
   menuButton: { padding: 8, marginRight: 8 },
   menuButtonText: { color: colors.gray300, fontSize: 20 },
   topBarTitle: { color: colors.white, fontSize: 18, fontWeight: '700' },
   content: { flex: 1, padding: 16 },
-  centerCard: { margin: 16, padding: 18, borderWidth: 1, borderColor: colors.gray800, backgroundColor: colors.gray900, borderRadius: 8, alignItems: 'center', gap: 8 },
+  centerCard: {
+    margin: 16,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    backgroundColor: colors.gray900,
+    borderRadius: 8,
+    alignItems: 'center',
+    gap: 8,
+  },
   muted: { color: colors.gray400, fontSize: 13 },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 16,
+  },
   kicker: { color: colors.blue300, fontSize: 11, textTransform: 'uppercase', fontWeight: '700' },
   title: { color: colors.white, fontSize: 26, fontWeight: '700' },
   headerActions: { flexDirection: 'row', gap: 8 },
-  primaryButton: { backgroundColor: colors.blue600, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 8, alignSelf: 'flex-start' },
+  primaryButton: {
+    backgroundColor: colors.blue600,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
   primaryButtonText: { color: colors.white, fontSize: 13, fontWeight: '700' },
-  secondaryButton: { borderWidth: 1, borderColor: colors.gray700, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 8 },
+  secondaryButton: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 8,
+  },
   secondaryButtonText: { color: colors.gray300, fontSize: 13, fontWeight: '600' },
   disabledButton: { opacity: 0.5 },
   errorText: { color: colors.red400, fontSize: 12, marginBottom: 10 },
-  emptyCard: { borderWidth: 1, borderColor: colors.gray800, backgroundColor: colors.gray900, borderRadius: 8, padding: 18, gap: 10 },
+  emptyCard: {
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    backgroundColor: colors.gray900,
+    borderRadius: 8,
+    padding: 18,
+    gap: 10,
+  },
   emptyTitle: { color: colors.white, fontSize: 18, fontWeight: '700' },
   emptyBody: { color: colors.gray400, fontSize: 13, lineHeight: 19 },
-  eventCard: { borderWidth: 1, borderColor: colors.gray800, backgroundColor: colors.gray900, borderRadius: 8, padding: 14, marginBottom: 10 },
+  eventCard: {
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    backgroundColor: colors.gray900,
+    borderRadius: 8,
+    padding: 14,
+    marginBottom: 10,
+  },
   eventTime: { color: colors.blue300, fontSize: 12, fontWeight: '700', marginBottom: 6 },
   eventTitle: { color: colors.white, fontSize: 16, fontWeight: '700' },
   eventMeta: { color: colors.gray400, fontSize: 12, marginTop: 4 },
@@ -452,12 +601,37 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   captureButtonText: { color: colors.blue300, fontSize: 12, fontWeight: '600' },
-  modalBackdrop: { flex: 1, backgroundColor: colors.black60, justifyContent: 'center', padding: 16 },
-  modalCard: { maxHeight: '90%', borderRadius: 8, backgroundColor: colors.gray900, borderWidth: 1, borderColor: colors.gray700, padding: 16 },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: colors.black60,
+    justifyContent: 'center',
+    padding: 16,
+  },
+  modalCard: {
+    maxHeight: '90%',
+    borderRadius: 8,
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    padding: 16,
+  },
   modalTitle: { color: colors.white, fontSize: 18, fontWeight: '700', marginBottom: 14 },
   inputLabel: { color: colors.gray400, fontSize: 12, marginBottom: 6, marginTop: 8 },
-  input: { color: colors.white, borderWidth: 1, borderColor: colors.gray700, backgroundColor: colors.gray950, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 9 },
+  input: {
+    color: colors.white,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray950,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
   textArea: { minHeight: 80, textAlignVertical: 'top' },
-  switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 8 },
+  switchRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: 8,
+  },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 16 },
 });

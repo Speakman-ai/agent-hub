@@ -3,5 +3,5 @@
  * @returns {boolean}
  */
 export function isWorkflowProject(project: any) {
-    return project?.mode === 'workflow';
+  return project?.mode === 'workflow';
 }

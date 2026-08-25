@@ -111,7 +111,11 @@ export default function SessionArtifactViewerModal({ sessionId, artifact, onClos
       })
       .catch((err: any) => {
         if (!cancelled) {
-          setState({ loading: false, resource: null, error: err?.message || 'Failed to open artifact' });
+          setState({
+            loading: false,
+            resource: null,
+            error: err?.message || 'Failed to open artifact',
+          });
         }
       });
     return () => {

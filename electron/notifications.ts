@@ -124,7 +124,10 @@ export function showNotification({
  */
 export function createNotificationHandlers(getMainWindow: () => BrowserWindow | null) {
   return {
-    handleShowNotification(_event: IpcMainEvent, options: Omit<ShowNotificationOptions, 'mainWindow'>) {
+    handleShowNotification(
+      _event: IpcMainEvent,
+      options: Omit<ShowNotificationOptions, 'mainWindow'>,
+    ) {
       const mainWindow = getMainWindow();
       return showNotification({ ...options, mainWindow });
     },

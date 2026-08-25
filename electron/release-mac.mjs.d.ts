@@ -10,9 +10,5 @@ export function dmgFilenames(productName: string, version: string): { arm64: str
 export function s3Key(version: string, filename: string): string;
 export function s3Uri(bucket: string, key: string): string;
 export function resolveAwsProfile(env?: NodeJS.ProcessEnv): string | null;
-export function awsCpArgs(
-  profile: string | null,
-  source: string,
-  destination: string,
-): string[];
+export function awsCpArgs(profile: string | null, source: string, destination: string): string[];
 export function electronBuilderArgs(version: string): string[];

@@ -41,9 +41,8 @@ vi.mock('../utils/artifactContent', () => ({
   shareArtifact: testState.shareArtifact,
 }));
 
-const { default: SessionArtifactViewerModal, SessionArtifactViewerContent } = await import(
-  './SessionArtifactViewerModal'
-);
+const { default: SessionArtifactViewerModal, SessionArtifactViewerContent } =
+  await import('./SessionArtifactViewerModal');
 
 async function renderModal(artifact: any, resource: any) {
   testState.loadArtifactPreview.mockResolvedValueOnce(resource);

@@ -36,7 +36,16 @@ import {
 } from '@shared/utils/projectImportWizard';
 
 const CONTEXT_FILES = ['SOUL.md', 'AGENTS.md', 'USER.md', 'TOOLS.md', 'MEMORY.md'];
-const COLORS = ['#6366F1', '#8B5CF6', '#EC4899', '#EF4444', '#F59E0B', '#10B981', '#06B6D4', '#6B7280'];
+const COLORS = [
+  '#6366F1',
+  '#8B5CF6',
+  '#EC4899',
+  '#EF4444',
+  '#F59E0B',
+  '#10B981',
+  '#06B6D4',
+  '#6B7280',
+];
 const ANALYSIS_ENGINES = ['claude-code', 'cursor-agent', 'codex-cli'];
 const ENGINE_LABELS: Record<string, string> = {
   'claude-code': 'Claude Code',
@@ -414,7 +423,11 @@ export default function ImportProjectScreen({ navigation }: any) {
     try {
       const result = await api.testGithubConnection(draft.repoOwner.trim(), draft.repoName.trim());
       if (!result.ok) setError(result.error || 'GitHub connection test failed.');
-      else Alert.alert('GitHub connected', `${result.repoInfo?.full_name || 'Repository is accessible.'}`);
+      else
+        Alert.alert(
+          'GitHub connected',
+          `${result.repoInfo?.full_name || 'Repository is accessible.'}`,
+        );
     } catch (err: any) {
       setError(err?.message || 'GitHub connection test failed.');
     }
@@ -434,7 +447,9 @@ export default function ImportProjectScreen({ navigation }: any) {
     setError(null);
     setPendingPreviewSave(null);
     if (!canContinueImport(draft)) {
-      setError('Complete the review, including the agent and preview choices, before creating the project.');
+      setError(
+        'Complete the review, including the agent and preview choices, before creating the project.',
+      );
       setCreating(false);
       return;
     }
@@ -502,12 +517,21 @@ export default function ImportProjectScreen({ navigation }: any) {
           <Text style={styles.backText}>← Back</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Import existing project</Text>
-        <Text style={styles.counter}>Step {draft.step + 1} of {IMPORT_STEP_IDS.length}</Text>
+        <Text style={styles.counter}>
+          Step {draft.step + 1} of {IMPORT_STEP_IDS.length}
+        </Text>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.stepStrip}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.stepStrip}
+      >
         {IMPORT_STEP_IDS.map((id, index) => (
           <View key={id} style={[styles.stepPill, index === draft.step && styles.stepPillActive]}>
-            <Text style={styles.stepText}>{index < draft.step ? '✓ ' : `${index + 1} `}{id}</Text>
+            <Text style={styles.stepText}>
+              {index < draft.step ? '✓ ' : `${index + 1} `}
+              {id}
+            </Text>
           </View>
         ))}
       </ScrollView>
@@ -549,7 +573,9 @@ export default function ImportProjectScreen({ navigation }: any) {
             onTest={testGithub}
           />
         ) : null}
-        {step === 'review' ? <ReviewStep draft={draft} update={updateDraft} onIdEdited={() => setIdEdited(true)} /> : null}
+        {step === 'review' ? (
+          <ReviewStep draft={draft} update={updateDraft} onIdEdited={() => setIdEdited(true)} />
+        ) : null}
       </ScrollView>
       <View style={styles.footer}>
         {step === 'source' && draft.sourceMode === 'clone' && !cloneReady ? null : (
@@ -583,45 +609,127 @@ export default function ImportProjectScreen({ navigation }: any) {
           />
         )}
         {step === 'github' ? (
-          <Button label="Skip GitHub" secondary onPress={() => updateDraft({ skipGitHub: true, step: 3 })} />
+          <Button
+            label="Skip GitHub"
+            secondary
+            onPress={() => updateDraft({ skipGitHub: true, step: 3 })}
+          />
         ) : null}
       </View>
     </SafeAreaView>
   );
 }
 
-function SourceStep({ draft, update, onSourceModeChange, onLocalPathChange, onCloneSourceChange, cloning, cloneReady, cloneLog, onClone, onNameEdited }: any) {
+function SourceStep({
+  draft,
+  update,
+  onSourceModeChange,
+  onLocalPathChange,
+  onCloneSourceChange,
+  cloning,
+  cloneReady,
+  cloneLog,
+  onClone,
+  onNameEdited,
+}: any) {
   return (
     <View>
-      <Title title="Select a project source" subtitle="The path is resolved on the connected Agent Hub server." />
+      <Title
+        title="Select a project source"
+        subtitle="The path is resolved on the connected Agent Hub server."
+      />
       <View style={styles.segment}>
         {(['local', 'clone'] as const).map((mode) => (
-          <TouchableOpacity key={mode} testID={`import-source-${mode}`} style={[styles.segmentButton, draft.sourceMode === mode && styles.segmentSelected]} onPress={() => onSourceModeChange(mode)}>
-            <Text style={styles.segmentText}>{mode === 'local' ? 'Local directory' : 'Clone from GitHub'}</Text>
+          <TouchableOpacity
+            key={mode}
+            testID={`import-source-${mode}`}
+            style={[styles.segmentButton, draft.sourceMode === mode && styles.segmentSelected]}
+            onPress={() => onSourceModeChange(mode)}
+          >
+            <Text style={styles.segmentText}>
+              {mode === 'local' ? 'Local directory' : 'Clone from GitHub'}
+            </Text>
           </TouchableOpacity>
         ))}
       </View>
       {draft.sourceMode === 'local' ? (
         <Field label="Project path">
-          <TextInput style={styles.input} value={draft.path} onChangeText={onLocalPathChange} placeholder="/path/to/project" placeholderTextColor={colors.gray600} autoCapitalize="none" testID="import-path" />
+          <TextInput
+            style={styles.input}
+            value={draft.path}
+            onChangeText={onLocalPathChange}
+            placeholder="/path/to/project"
+            placeholderTextColor={colors.gray600}
+            autoCapitalize="none"
+            testID="import-path"
+          />
         </Field>
       ) : (
         <>
           <Field label="Repository URL">
-            <TextInput style={styles.input} value={draft.cloneUrl} onChangeText={(cloneUrl) => onCloneSourceChange({ cloneUrl, cloneTarget: draft.cloneTarget })} placeholder="https://github.com/org/repo.git" placeholderTextColor={colors.gray600} autoCapitalize="none" keyboardType="url" testID="import-clone-url" />
+            <TextInput
+              style={styles.input}
+              value={draft.cloneUrl}
+              onChangeText={(cloneUrl) =>
+                onCloneSourceChange({ cloneUrl, cloneTarget: draft.cloneTarget })
+              }
+              placeholder="https://github.com/org/repo.git"
+              placeholderTextColor={colors.gray600}
+              autoCapitalize="none"
+              keyboardType="url"
+              testID="import-clone-url"
+            />
           </Field>
           <Field label="Clone into (optional)">
-            <TextInput style={styles.input} value={draft.cloneTarget} onChangeText={(cloneTarget) => onCloneSourceChange({ cloneUrl: draft.cloneUrl, cloneTarget })} placeholder="~/projects" placeholderTextColor={colors.gray600} autoCapitalize="none" testID="import-clone-target" />
+            <TextInput
+              style={styles.input}
+              value={draft.cloneTarget}
+              onChangeText={(cloneTarget) =>
+                onCloneSourceChange({ cloneUrl: draft.cloneUrl, cloneTarget })
+              }
+              placeholder="~/projects"
+              placeholderTextColor={colors.gray600}
+              autoCapitalize="none"
+              testID="import-clone-target"
+            />
           </Field>
-          {cloneReady ? <Text style={styles.summaryTitle}>Clone complete. Tap Continue to analyze.</Text> : <Button label={cloning ? 'Cloning…' : 'Clone repository'} onPress={onClone} disabled={!draft.cloneUrl.trim() || cloning} testID="import-clone" />}
-          {cloneLog?.length ? <View style={styles.progress}>{cloneLog.slice(-6).map((line: string, index: number) => <Text key={`${line}-${index}`} style={styles.log}>{line}</Text>)}</View> : null}
+          {cloneReady ? (
+            <Text style={styles.summaryTitle}>Clone complete. Tap Continue to analyze.</Text>
+          ) : (
+            <Button
+              label={cloning ? 'Cloning…' : 'Clone repository'}
+              onPress={onClone}
+              disabled={!draft.cloneUrl.trim() || cloning}
+              testID="import-clone"
+            />
+          )}
+          {cloneLog?.length ? (
+            <View style={styles.progress}>
+              {cloneLog.slice(-6).map((line: string, index: number) => (
+                <Text key={`${line}-${index}`} style={styles.log}>
+                  {line}
+                </Text>
+              ))}
+            </View>
+          ) : null}
         </>
       )}
       <Text style={styles.sectionLabel}>Project identity</Text>
       <Field label="Name">
-        <TextInput style={styles.input} value={draft.name} onChangeText={(name) => { onNameEdited(); update({ name }); }} placeholder="Project name" placeholderTextColor={colors.gray600} />
+        <TextInput
+          style={styles.input}
+          value={draft.name}
+          onChangeText={(name) => {
+            onNameEdited();
+            update({ name });
+          }}
+          placeholder="Project name"
+          placeholderTextColor={colors.gray600}
+        />
       </Field>
-      <Text style={styles.hint}>The name is inferred from the source and can be edited before review.</Text>
+      <Text style={styles.hint}>
+        The name is inferred from the source and can be edited before review.
+      </Text>
     </View>
   );
 }
@@ -637,29 +745,154 @@ function AnalyzeStep({
   const result: ImportAnalysisResult | null = draft.analysisResult;
   return (
     <View>
-      <Title title="Analyze the repository" subtitle="Agent Hub inspects the source and suggests agents, commands, context, and starter wiki pages." />
+      <Title
+        title="Analyze the repository"
+        subtitle="Agent Hub inspects the source and suggests agents, commands, context, and starter wiki pages."
+      />
       <Field label="Analysis engine">
-        <View style={styles.choiceList}>{analysisOptions.map((option: any) => <Choice key={option.engine} testID={`import-analysis-engine-${option.engine}`} label={ENGINE_LABELS[option.engine] || option.engine} selected={draft.analysisEngine === option.engine} onPress={() => onAnalysisConfigChange({ analysisEngine: option.engine, analysisModel: option.models[0] })} />)}</View>
+        <View style={styles.choiceList}>
+          {analysisOptions.map((option: any) => (
+            <Choice
+              key={option.engine}
+              testID={`import-analysis-engine-${option.engine}`}
+              label={ENGINE_LABELS[option.engine] || option.engine}
+              selected={draft.analysisEngine === option.engine}
+              onPress={() =>
+                onAnalysisConfigChange({
+                  analysisEngine: option.engine,
+                  analysisModel: option.models[0],
+                })
+              }
+            />
+          ))}
+        </View>
       </Field>
-      {draft.analysisEngine && analysisOptions.find((option: any) => option.engine === draft.analysisEngine)?.models?.length ? (
+      {draft.analysisEngine &&
+      analysisOptions.find((option: any) => option.engine === draft.analysisEngine)?.models
+        ?.length ? (
         <Field label="Analysis model">
-          <View style={styles.choiceList}>{analysisOptions.find((option: any) => option.engine === draft.analysisEngine).models.map((model: string) => <Choice key={model} testID={`import-analysis-model-${model}`} label={model} selected={draft.analysisModel === model} onPress={() => onAnalysisConfigChange({ analysisEngine: draft.analysisEngine, analysisModel: model })} />)}</View>
+          <View style={styles.choiceList}>
+            {analysisOptions
+              .find((option: any) => option.engine === draft.analysisEngine)
+              .models.map((model: string) => (
+                <Choice
+                  key={model}
+                  testID={`import-analysis-model-${model}`}
+                  label={model}
+                  selected={draft.analysisModel === model}
+                  onPress={() =>
+                    onAnalysisConfigChange({
+                      analysisEngine: draft.analysisEngine,
+                      analysisModel: model,
+                    })
+                  }
+                />
+              ))}
+          </View>
         </Field>
       ) : null}
-      {analyzing ? <View style={styles.progress}><ActivityIndicator color={colors.emerald400} /><Text style={styles.muted}>Analyzing…</Text>{progressLog.slice(-8).map((line: string, index: number) => <Text key={`${line}-${index}`} style={styles.log}>{line}</Text>)}</View> : null}
-      {result ? <View style={styles.summary}><Text style={styles.summaryTitle}>Analysis ready</Text><Text style={styles.muted}>{result.agents?.length || 0} suggested agent(s), {Array.isArray(result.wikiPages) ? result.wikiPages.length : 0} starter wiki page(s).</Text></View> : null}
-      {!analyzing ? <Button label={result ? 'Re-analyze' : 'Start analysis'} onPress={onAnalyze} disabled={!draft.path.trim()} testID="import-analyze" /> : null}
+      {analyzing ? (
+        <View style={styles.progress}>
+          <ActivityIndicator color={colors.emerald400} />
+          <Text style={styles.muted}>Analyzing…</Text>
+          {progressLog.slice(-8).map((line: string, index: number) => (
+            <Text key={`${line}-${index}`} style={styles.log}>
+              {line}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+      {result ? (
+        <View style={styles.summary}>
+          <Text style={styles.summaryTitle}>Analysis ready</Text>
+          <Text style={styles.muted}>
+            {result.agents?.length || 0} suggested agent(s),{' '}
+            {Array.isArray(result.wikiPages) ? result.wikiPages.length : 0} starter wiki page(s).
+          </Text>
+        </View>
+      ) : null}
+      {!analyzing ? (
+        <Button
+          label={result ? 'Re-analyze' : 'Start analysis'}
+          onPress={onAnalyze}
+          disabled={!draft.path.trim()}
+          testID="import-analyze"
+        />
+      ) : null}
     </View>
   );
 }
 
-function GithubStep({ draft, update, loading, connecting, status, repoInfo, onConnect, onTest }: any) {
+function GithubStep({
+  draft,
+  update,
+  loading,
+  connecting,
+  status,
+  repoInfo,
+  onConnect,
+  onTest,
+}: any) {
   return (
     <View>
-      <Title title="Connect GitHub (optional)" subtitle="Link the imported repository so Agent Hub can manage PRs and repository automation." />
-      {loading ? <ActivityIndicator color={colors.emerald400} /> : <View style={styles.summary}><Text style={styles.summaryTitle}>{status?.authenticated ? `Connected as ${status.user || 'GitHub user'}` : 'GitHub is not connected'}</Text>{status?.source ? <Text style={styles.muted}>Source: {status.source}</Text> : null}</View>}
-      {!status?.authenticated ? <Button label={connecting ? 'Connecting…' : 'Sign in with GitHub'} onPress={onConnect} disabled={connecting || loading} /> : null}
-      {status?.authenticated ? <><Text style={styles.hint}>{repoInfo?.url ? `Detected remote: ${repoInfo.url}` : 'Enter the repository owner and name.'}</Text><Field label="Owner"><TextInput style={styles.input} value={draft.repoOwner} onChangeText={(repoOwner) => update({ repoOwner, skipGitHub: false })} placeholder="org-or-user" placeholderTextColor={colors.gray600} autoCapitalize="none" /></Field><Field label="Repository"><TextInput style={styles.input} value={draft.repoName} onChangeText={(repoName) => update({ repoName, skipGitHub: false })} placeholder="repo-name" placeholderTextColor={colors.gray600} autoCapitalize="none" /></Field><Button label="Test connection" secondary onPress={onTest} disabled={!draft.repoOwner.trim() || !draft.repoName.trim()} /></> : null}
+      <Title
+        title="Connect GitHub (optional)"
+        subtitle="Link the imported repository so Agent Hub can manage PRs and repository automation."
+      />
+      {loading ? (
+        <ActivityIndicator color={colors.emerald400} />
+      ) : (
+        <View style={styles.summary}>
+          <Text style={styles.summaryTitle}>
+            {status?.authenticated
+              ? `Connected as ${status.user || 'GitHub user'}`
+              : 'GitHub is not connected'}
+          </Text>
+          {status?.source ? <Text style={styles.muted}>Source: {status.source}</Text> : null}
+        </View>
+      )}
+      {!status?.authenticated ? (
+        <Button
+          label={connecting ? 'Connecting…' : 'Sign in with GitHub'}
+          onPress={onConnect}
+          disabled={connecting || loading}
+        />
+      ) : null}
+      {status?.authenticated ? (
+        <>
+          <Text style={styles.hint}>
+            {repoInfo?.url
+              ? `Detected remote: ${repoInfo.url}`
+              : 'Enter the repository owner and name.'}
+          </Text>
+          <Field label="Owner">
+            <TextInput
+              style={styles.input}
+              value={draft.repoOwner}
+              onChangeText={(repoOwner) => update({ repoOwner, skipGitHub: false })}
+              placeholder="org-or-user"
+              placeholderTextColor={colors.gray600}
+              autoCapitalize="none"
+            />
+          </Field>
+          <Field label="Repository">
+            <TextInput
+              style={styles.input}
+              value={draft.repoName}
+              onChangeText={(repoName) => update({ repoName, skipGitHub: false })}
+              placeholder="repo-name"
+              placeholderTextColor={colors.gray600}
+              autoCapitalize="none"
+            />
+          </Field>
+          <Button
+            label="Test connection"
+            secondary
+            onPress={onTest}
+            disabled={!draft.repoOwner.trim() || !draft.repoName.trim()}
+          />
+        </>
+      ) : null}
     </View>
   );
 }
@@ -671,31 +904,213 @@ function ReviewStep({ draft, update, onIdEdited }: any) {
   );
   return (
     <View>
-      <Title title="Review and create" subtitle="Confirm the project details and the analysis output before it is persisted." />
-      <Field label="Project name"><TextInput style={styles.input} value={draft.name} onChangeText={(name) => update({ name })} /></Field>
-      <Field label="Project id"><TextInput style={styles.input} value={draft.projectId} onChangeText={(projectId) => { onIdEdited(); update({ projectId }); }} autoCapitalize="none" /></Field>
-      <Text style={styles.fieldLabel}>Accent color</Text><View style={styles.colorRow}>{COLORS.map((color) => <TouchableOpacity key={color} onPress={() => update({ color })} style={[styles.color, { backgroundColor: color }, draft.color === color && styles.colorSelected]} />)}</View>
-      {agents.length > 0 ? <><Text style={styles.sectionLabel}>Agent team</Text>{agents.map((agent: any, index: number) => <Choice key={agent.id || index} label={agent.name || agent.id || `Agent ${index + 1}`} selected={draft.selectedAgents[String(index)] !== false} onPress={() => update({ selectedAgents: { ...draft.selectedAgents, [String(index)]: draft.selectedAgents[String(index)] === false } })} />)}{!hasSelectedAgent ? <Text style={styles.error}>Select at least one agent before creating the project.</Text> : null}</> : <Text style={styles.error}>Analysis returned no agents. Go back and retry analysis.</Text>}
-      <Text style={styles.sectionLabel}>Context files</Text><ScrollView horizontal showsHorizontalScrollIndicator={false}>{CONTEXT_FILES.map((file) => <TouchableOpacity key={file} onPress={() => update({ activeContextFile: file })} style={[styles.fileTab, draft.activeContextFile === file && styles.fileTabActive]}><Text style={styles.fileTabText}>{file}</Text></TouchableOpacity>)}</ScrollView><TextInput style={[styles.input, styles.multiline]} multiline value={draft.contextFiles[draft.activeContextFile] || ''} onChangeText={(content) => update({ contextFiles: { ...draft.contextFiles, [draft.activeContextFile]: content } })} placeholder={`Suggested ${draft.activeContextFile} content`} placeholderTextColor={colors.gray600} />
-      <Text style={styles.sectionLabel}>Starter wiki pages</Text>{draft.wikiPages.map((page: any, index: number) => <View key={`${page.title}-${index}`} style={styles.wikiCard}><TextInput style={styles.input} value={page.title} onChangeText={(title) => update({ wikiPages: draft.wikiPages.map((current: any, i: number) => i === index ? { ...current, title } : current) })} /><TextInput style={[styles.input, styles.multiline]} multiline value={page.content} onChangeText={(content) => update({ wikiPages: draft.wikiPages.map((current: any, i: number) => i === index ? { ...current, content } : current) })} /></View>)}
-      {draft.detectedPreview && !draft.previewDecision ? <View style={styles.preview}><Text style={styles.summaryTitle}>Detected preview defaults</Text><Text style={styles.muted}>{draft.detectedPreview.stack as string || 'Web'} · {draft.detectedPreview.startScript as string || 'npm run dev'}</Text><View style={styles.inlineButtons}><Button label="Use defaults" onPress={() => update({ previewDecision: { enabled: true, startScript: draft.detectedPreview?.startScript as string, port: draft.detectedPreview?.port as number, captureRoutes: draft.detectedPreview?.captureRoutes as string[], idleTTL: draft.detectedPreview?.idleTTL as number } })} /><Button label="Skip preview" secondary onPress={() => update({ previewDecision: { enabled: false } })} /></View></View> : null}
+      <Title
+        title="Review and create"
+        subtitle="Confirm the project details and the analysis output before it is persisted."
+      />
+      <Field label="Project name">
+        <TextInput
+          style={styles.input}
+          value={draft.name}
+          onChangeText={(name) => update({ name })}
+        />
+      </Field>
+      <Field label="Project id">
+        <TextInput
+          style={styles.input}
+          value={draft.projectId}
+          onChangeText={(projectId) => {
+            onIdEdited();
+            update({ projectId });
+          }}
+          autoCapitalize="none"
+        />
+      </Field>
+      <Text style={styles.fieldLabel}>Accent color</Text>
+      <View style={styles.colorRow}>
+        {COLORS.map((color) => (
+          <TouchableOpacity
+            key={color}
+            onPress={() => update({ color })}
+            style={[
+              styles.color,
+              { backgroundColor: color },
+              draft.color === color && styles.colorSelected,
+            ]}
+          />
+        ))}
+      </View>
+      {agents.length > 0 ? (
+        <>
+          <Text style={styles.sectionLabel}>Agent team</Text>
+          {agents.map((agent: any, index: number) => (
+            <Choice
+              key={agent.id || index}
+              label={agent.name || agent.id || `Agent ${index + 1}`}
+              selected={draft.selectedAgents[String(index)] !== false}
+              onPress={() =>
+                update({
+                  selectedAgents: {
+                    ...draft.selectedAgents,
+                    [String(index)]: draft.selectedAgents[String(index)] === false,
+                  },
+                })
+              }
+            />
+          ))}
+          {!hasSelectedAgent ? (
+            <Text style={styles.error}>Select at least one agent before creating the project.</Text>
+          ) : null}
+        </>
+      ) : (
+        <Text style={styles.error}>Analysis returned no agents. Go back and retry analysis.</Text>
+      )}
+      <Text style={styles.sectionLabel}>Context files</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        {CONTEXT_FILES.map((file) => (
+          <TouchableOpacity
+            key={file}
+            onPress={() => update({ activeContextFile: file })}
+            style={[styles.fileTab, draft.activeContextFile === file && styles.fileTabActive]}
+          >
+            <Text style={styles.fileTabText}>{file}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+      <TextInput
+        style={[styles.input, styles.multiline]}
+        multiline
+        value={draft.contextFiles[draft.activeContextFile] || ''}
+        onChangeText={(content) =>
+          update({ contextFiles: { ...draft.contextFiles, [draft.activeContextFile]: content } })
+        }
+        placeholder={`Suggested ${draft.activeContextFile} content`}
+        placeholderTextColor={colors.gray600}
+      />
+      <Text style={styles.sectionLabel}>Starter wiki pages</Text>
+      {draft.wikiPages.map((page: any, index: number) => (
+        <View key={`${page.title}-${index}`} style={styles.wikiCard}>
+          <TextInput
+            style={styles.input}
+            value={page.title}
+            onChangeText={(title) =>
+              update({
+                wikiPages: draft.wikiPages.map((current: any, i: number) =>
+                  i === index ? { ...current, title } : current,
+                ),
+              })
+            }
+          />
+          <TextInput
+            style={[styles.input, styles.multiline]}
+            multiline
+            value={page.content}
+            onChangeText={(content) =>
+              update({
+                wikiPages: draft.wikiPages.map((current: any, i: number) =>
+                  i === index ? { ...current, content } : current,
+                ),
+              })
+            }
+          />
+        </View>
+      ))}
+      {draft.detectedPreview && !draft.previewDecision ? (
+        <View style={styles.preview}>
+          <Text style={styles.summaryTitle}>Detected preview defaults</Text>
+          <Text style={styles.muted}>
+            {(draft.detectedPreview.stack as string) || 'Web'} ·{' '}
+            {(draft.detectedPreview.startScript as string) || 'npm run dev'}
+          </Text>
+          <View style={styles.inlineButtons}>
+            <Button
+              label="Use defaults"
+              onPress={() =>
+                update({
+                  previewDecision: {
+                    enabled: true,
+                    startScript: draft.detectedPreview?.startScript as string,
+                    port: draft.detectedPreview?.port as number,
+                    captureRoutes: draft.detectedPreview?.captureRoutes as string[],
+                    idleTTL: draft.detectedPreview?.idleTTL as number,
+                  },
+                })
+              }
+            />
+            <Button
+              label="Skip preview"
+              secondary
+              onPress={() => update({ previewDecision: { enabled: false } })}
+            />
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
 
-function Title({ title, subtitle }: { title: string; subtitle: string }) { return <View style={styles.titleBlock}><Text style={styles.title}>{title}</Text><Text style={styles.subtitle}>{subtitle}</Text></View>; }
-function Field({ label, children }: { label: string; children: React.ReactNode }) { return <View style={styles.field}><Text style={styles.fieldLabel}>{label}</Text>{children}</View>; }
-function Choice({ label, selected, onPress, testID }: { label: string; selected: boolean; onPress: () => void; testID?: string }) { return <TouchableOpacity onPress={onPress} testID={testID} style={[styles.choice, selected && styles.choiceSelected]}><Text style={styles.choiceText}>{label}</Text><Text style={styles.check}>{selected ? '✓' : ''}</Text></TouchableOpacity>; }
+function Title({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <View style={styles.titleBlock}>
+      <Text style={styles.title}>{title}</Text>
+      <Text style={styles.subtitle}>{subtitle}</Text>
+    </View>
+  );
+}
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      {children}
+    </View>
+  );
+}
+function Choice({
+  label,
+  selected,
+  onPress,
+  testID,
+}: {
+  label: string;
+  selected: boolean;
+  onPress: () => void;
+  testID?: string;
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      testID={testID}
+      style={[styles.choice, selected && styles.choiceSelected]}
+    >
+      <Text style={styles.choiceText}>{label}</Text>
+      <Text style={styles.check}>{selected ? '✓' : ''}</Text>
+    </TouchableOpacity>
+  );
+}
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.gray950 },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.gray800, gap: 8 },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+    gap: 8,
+  },
   backButton: { paddingVertical: 4, paddingRight: 4 },
   backText: { color: colors.gray300, fontSize: 14 },
   headerTitle: { flex: 1, color: colors.white, fontSize: 17, fontWeight: '600' },
   counter: { color: colors.gray500, fontSize: 11 },
   stepStrip: { gap: 6, paddingHorizontal: 12, paddingVertical: 10 },
-  stepPill: { borderRadius: 14, borderWidth: 1, borderColor: colors.gray700, paddingHorizontal: 10, paddingVertical: 6 },
+  stepPill: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
   stepPillActive: { borderColor: colors.emerald500, backgroundColor: colors.emerald900_40 },
   stepText: { color: colors.gray400, fontSize: 11 },
   body: { padding: 16, paddingBottom: 30 },
@@ -704,38 +1119,106 @@ const styles = StyleSheet.create({
   title: { color: colors.white, fontSize: 22, fontWeight: '700', marginBottom: 6 },
   subtitle: { color: colors.gray400, fontSize: 13, lineHeight: 19 },
   segment: { flexDirection: 'row', gap: 6, marginBottom: 18 },
-  segmentButton: { flex: 1, borderRadius: 8, borderWidth: 1, borderColor: colors.gray700, padding: 11 },
+  segmentButton: {
+    flex: 1,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    padding: 11,
+  },
   segmentSelected: { borderColor: colors.emerald500, backgroundColor: colors.emerald900_40 },
   segmentText: { color: colors.gray200, textAlign: 'center', fontSize: 12 },
   field: { marginBottom: 14 },
   fieldLabel: { color: colors.gray300, fontSize: 12, marginBottom: 6 },
-  input: { color: colors.white, backgroundColor: colors.gray900, borderWidth: 1, borderColor: colors.gray700, borderRadius: 8, paddingHorizontal: 11, paddingVertical: 10, fontSize: 14 },
+  input: {
+    color: colors.white,
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+    fontSize: 14,
+  },
   multiline: { minHeight: 110, textAlignVertical: 'top', marginTop: 10 },
   hint: { color: colors.gray500, fontSize: 11, lineHeight: 16, marginBottom: 12 },
-  sectionLabel: { color: colors.gray300, fontWeight: '600', fontSize: 14, marginTop: 18, marginBottom: 9 },
-  button: { backgroundColor: colors.emerald600, borderRadius: 8, paddingVertical: 12, alignItems: 'center' },
+  sectionLabel: {
+    color: colors.gray300,
+    fontWeight: '600',
+    fontSize: 14,
+    marginTop: 18,
+    marginBottom: 9,
+  },
+  button: {
+    backgroundColor: colors.emerald600,
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
   secondaryButton: { backgroundColor: colors.gray700 },
   buttonText: { color: colors.white, fontSize: 14, fontWeight: '600' },
   secondaryButtonText: { color: colors.gray200 },
   disabled: { opacity: 0.45 },
-  error: { color: colors.red400, backgroundColor: colors.red900_50, borderRadius: 7, padding: 10, marginBottom: 12, fontSize: 12 },
-  progress: { backgroundColor: colors.gray900, borderRadius: 8, padding: 12, gap: 7, marginTop: 12 },
+  error: {
+    color: colors.red400,
+    backgroundColor: colors.red900_50,
+    borderRadius: 7,
+    padding: 10,
+    marginBottom: 12,
+    fontSize: 12,
+  },
+  progress: {
+    backgroundColor: colors.gray900,
+    borderRadius: 8,
+    padding: 12,
+    gap: 7,
+    marginTop: 12,
+  },
   muted: { color: colors.gray400, fontSize: 12 },
   log: { color: colors.gray500, fontFamily: 'monospace', fontSize: 11 },
-  summary: { backgroundColor: colors.gray900, borderWidth: 1, borderColor: colors.gray800, borderRadius: 8, padding: 12, marginTop: 12 },
+  summary: {
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 12,
+  },
   summaryTitle: { color: colors.emerald400, fontSize: 14, fontWeight: '600', marginBottom: 5 },
   choiceList: { gap: 6 },
-  choice: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: colors.gray700, borderRadius: 8, padding: 11, marginBottom: 7 },
+  choice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    padding: 11,
+    marginBottom: 7,
+  },
   choiceSelected: { borderColor: colors.emerald500, backgroundColor: colors.emerald900_40 },
   choiceText: { color: colors.gray200, fontSize: 13 },
   check: { color: colors.emerald400, fontWeight: '700', width: 18, textAlign: 'center' },
   colorRow: { flexDirection: 'row', gap: 10, flexWrap: 'wrap' },
   color: { width: 28, height: 28, borderRadius: 14 },
   colorSelected: { borderWidth: 3, borderColor: colors.white },
-  fileTab: { backgroundColor: colors.gray800, borderRadius: 6, paddingHorizontal: 9, paddingVertical: 7, marginRight: 6 },
+  fileTab: {
+    backgroundColor: colors.gray800,
+    borderRadius: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    marginRight: 6,
+  },
   fileTabActive: { backgroundColor: colors.indigo700 },
   fileTabText: { color: colors.gray300, fontSize: 11 },
   wikiCard: { gap: 4, marginBottom: 10 },
-  preview: { backgroundColor: colors.sky500_15, borderColor: colors.sky400, borderWidth: 1, borderRadius: 8, padding: 12, marginTop: 16 },
+  preview: {
+    backgroundColor: colors.sky500_15,
+    borderColor: colors.sky400,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 16,
+  },
   inlineButtons: { gap: 8, marginTop: 10 },
 });

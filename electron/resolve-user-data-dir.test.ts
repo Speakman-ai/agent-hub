@@ -4,10 +4,7 @@ import { resolveElectronDevUserDataDir } from './resolve-user-data-dir.js';
 
 describe('resolveElectronDevUserDataDir', () => {
   it('uses ~/.agent-hub/data when AGENT_HUB_DATA_DIR is unset', () => {
-    const dir = resolveElectronDevUserDataDir(
-      {},
-      () => '/home/tester',
-    );
+    const dir = resolveElectronDevUserDataDir({}, () => '/home/tester');
     expect(dir).toBe(path.join('/home/tester', '.agent-hub', 'data'));
   });
 

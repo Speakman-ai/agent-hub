@@ -32,7 +32,8 @@ import { colors } from '../theme/colors';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import { useApp } from '../context/AppContext';
 import { LogSourcesPanel } from './LogSourcesScreen';
-import { useLogTail, type LogTailStatus } from '../hooks/useLogTail';
+import { getWsUrl } from '../utils/config';
+import { useLogTail, type LogTailStatus } from '@shared/hooks/useLogTail';
 import {
   SEVERITY_BUCKETS,
   TIME_RANGES,
@@ -284,9 +285,7 @@ export function LogRecordRow({ record }: { record: LogRecord }) {
             </View>
           ) : null}
 
-          {attributes.length > 0 ? (
-            <KeyValueBlock title="Attributes" rows={attributes} />
-          ) : null}
+          {attributes.length > 0 ? <KeyValueBlock title="Attributes" rows={attributes} /> : null}
           {resource.length > 0 ? <KeyValueBlock title="Resource" rows={resource} /> : null}
         </View>
       ) : null}
@@ -294,7 +293,13 @@ export function LogRecordRow({ record }: { record: LogRecord }) {
   );
 }
 
-function KeyValueBlock({ title, rows }: { title: string; rows: Array<{ key: string; value: string }> }) {
+function KeyValueBlock({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: Array<{ key: string; value: string }>;
+}) {
   return (
     <View>
       <Text style={styles.detailLabel}>{title}</Text>
@@ -387,7 +392,7 @@ export function LiveLogsView({
     resume,
     reset,
     error,
-  } = useLogTail(projectId, { sinceUnixNano });
+  } = useLogTail(projectId, { getWsUrl, sinceUnixNano });
 
   const [minSeverityNumber, setMinSeverityNumber] = useState(0);
   const [sourceId, setSourceId] = useState('');
@@ -555,10 +560,20 @@ export function LiveLogsView({
           testID="logs-severity-chips"
         />
         {sourceOptions.length > 1 ? (
-          <ChipRow options={sourceOptions} value={sourceId} onChange={setSourceId} testID="logs-source-chips" />
+          <ChipRow
+            options={sourceOptions}
+            value={sourceId}
+            onChange={setSourceId}
+            testID="logs-source-chips"
+          />
         ) : null}
         {envOptions.length > 1 ? (
-          <ChipRow options={envOptions} value={environment} onChange={setEnvironment} testID="logs-env-chips" />
+          <ChipRow
+            options={envOptions}
+            value={environment}
+            onChange={setEnvironment}
+            testID="logs-env-chips"
+          />
         ) : null}
         <TextInput
           style={styles.search}
@@ -800,7 +815,9 @@ export function IssuesView({
     setActionEvents((prev) => ({ ...prev, [key]: data }));
     if (data.status === 'failed') {
       setActionErrors((prev) => ({ ...prev, [key]: data.error || 'Action failed' }));
-      setIssues((prev) => prev.map((issue) => (issue.id === data.issueId ? reconcile(issue) : issue)));
+      setIssues((prev) =>
+        prev.map((issue) => (issue.id === data.issueId ? reconcile(issue) : issue)),
+      );
       setDetail((prev) => (prev?.id === data.issueId ? reconcile(prev) : prev));
     } else if (data.status === 'in_flight') {
       setActionErrors((prev) => {
@@ -824,7 +841,9 @@ export function IssuesView({
     }
     if (data.status === 'completed') {
       delete actionFallbackLinksRef.current[key];
-      setIssues((prev) => prev.map((issue) => (issue.id === data.issueId ? reconcile(issue) : issue)));
+      setIssues((prev) =>
+        prev.map((issue) => (issue.id === data.issueId ? reconcile(issue) : issue)),
+      );
       setDetail((prev) => (prev?.id === data.issueId ? reconcile(prev) : prev));
     }
   }, [actionEvent, projectId]);
@@ -1056,7 +1075,8 @@ export function IssuesView({
         {isOpen ? (
           <View style={styles.issueDetail}>
             <Text style={styles.actionHint}>
-              Analyze is read-only and makes no edits. Fix inherits your project Finalize automation default.
+              Analyze is read-only and makes no edits. Fix inherits your project Finalize automation
+              default.
             </Text>
             <View style={styles.issueActions}>
               {(() => {
@@ -1064,36 +1084,80 @@ export function IssuesView({
                 const fixKey = logIssueActionKey(issue.id, 'fix');
                 const analyzeLinks = logIssueActionLinks(issue, 'analyze');
                 const fixLinks = logIssueActionLinks(issue, 'fix');
-                const analyzeBusy = analyzingId === issue.id || actionEvents[analyzeKey]?.status === 'in_flight';
-                const fixBusy = fixingId === issue.id || actionEvents[fixKey]?.status === 'in_flight';
+                const analyzeBusy =
+                  analyzingId === issue.id || actionEvents[analyzeKey]?.status === 'in_flight';
+                const fixBusy =
+                  fixingId === issue.id || actionEvents[fixKey]?.status === 'in_flight';
                 const fixCompleted = actionEvents[fixKey]?.status === 'completed';
                 const analyzeCompleted = actionEvents[analyzeKey]?.status === 'completed';
                 return (
                   <>
-              <TouchableOpacity
-                disabled={fixBusy}
-                onPress={() => void runAction('fix', detail ?? issue)}
-                style={[styles.issueActionBtn, fixBusy && styles.btnDisabled]}
-                testID="log-issue-fix"
-              >
-                {fixBusy ? <ActivityIndicator size="small" color={colors.amber400} /> : null}
-                <Text style={styles.issueActionText}>{fixBusy ? 'Starting Fix…' : fixLinks.sessionId ? 'Open fix' : 'Fix'}</Text>
-              </TouchableOpacity>
-              {fixLinks.sessionId ? <TouchableOpacity onPress={() => void runAction('fix', detail ?? issue, true)} style={styles.issueActionBtn} testID="log-issue-start-another-fix"><Text style={styles.issueActionText}>Start another fix</Text></TouchableOpacity> : null}
-              <TouchableOpacity
-                disabled={analyzeBusy}
-                onPress={() => void runAction('analyze', detail ?? issue)}
-                style={[styles.issueActionBtn, analyzeBusy && styles.btnDisabled]}
-                testID="log-issue-analyze"
-              >
-                {analyzeBusy ? <ActivityIndicator size="small" color={colors.purple400} /> : null}
-                <Text style={styles.issueActionText}>{analyzeBusy ? 'Starting Analyze…' : analyzeLinks.sessionId ? 'Open analysis' : 'Analyze'}</Text>
-              </TouchableOpacity>
-              {analyzeLinks.sessionId ? <TouchableOpacity onPress={() => void runAction('analyze', detail ?? issue, true)} style={styles.issueActionBtn} testID="log-issue-start-another-analysis"><Text style={styles.issueActionText}>Start another analysis</Text></TouchableOpacity> : null}
-              {actionErrors[fixKey] ? <Text style={styles.actionError}>Fix failed: {actionErrors[fixKey]}</Text> : null}
-              {actionErrors[analyzeKey] ? <Text style={styles.actionError}>Analyze failed: {actionErrors[analyzeKey]}</Text> : null}
-              {fixLinks.cardId ? <Text style={styles.actionLinked}>{fixCompleted ? 'Fix completed · ' : 'Fix card linked · '}{fixLinks.cardId.slice(0, 8)}</Text> : null}
-              {analyzeLinks.sessionId ? <Text style={styles.actionLinked}>{analyzeCompleted ? 'Analyze completed · ' : 'Analysis session linked · '}{analyzeLinks.sessionId.slice(0, 8)}</Text> : null}
+                    <TouchableOpacity
+                      disabled={fixBusy}
+                      onPress={() => void runAction('fix', detail ?? issue)}
+                      style={[styles.issueActionBtn, fixBusy && styles.btnDisabled]}
+                      testID="log-issue-fix"
+                    >
+                      {fixBusy ? <ActivityIndicator size="small" color={colors.amber400} /> : null}
+                      <Text style={styles.issueActionText}>
+                        {fixBusy ? 'Starting Fix…' : fixLinks.sessionId ? 'Open fix' : 'Fix'}
+                      </Text>
+                    </TouchableOpacity>
+                    {fixLinks.sessionId ? (
+                      <TouchableOpacity
+                        onPress={() => void runAction('fix', detail ?? issue, true)}
+                        style={styles.issueActionBtn}
+                        testID="log-issue-start-another-fix"
+                      >
+                        <Text style={styles.issueActionText}>Start another fix</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    <TouchableOpacity
+                      disabled={analyzeBusy}
+                      onPress={() => void runAction('analyze', detail ?? issue)}
+                      style={[styles.issueActionBtn, analyzeBusy && styles.btnDisabled]}
+                      testID="log-issue-analyze"
+                    >
+                      {analyzeBusy ? (
+                        <ActivityIndicator size="small" color={colors.purple400} />
+                      ) : null}
+                      <Text style={styles.issueActionText}>
+                        {analyzeBusy
+                          ? 'Starting Analyze…'
+                          : analyzeLinks.sessionId
+                            ? 'Open analysis'
+                            : 'Analyze'}
+                      </Text>
+                    </TouchableOpacity>
+                    {analyzeLinks.sessionId ? (
+                      <TouchableOpacity
+                        onPress={() => void runAction('analyze', detail ?? issue, true)}
+                        style={styles.issueActionBtn}
+                        testID="log-issue-start-another-analysis"
+                      >
+                        <Text style={styles.issueActionText}>Start another analysis</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    {actionErrors[fixKey] ? (
+                      <Text style={styles.actionError}>Fix failed: {actionErrors[fixKey]}</Text>
+                    ) : null}
+                    {actionErrors[analyzeKey] ? (
+                      <Text style={styles.actionError}>
+                        Analyze failed: {actionErrors[analyzeKey]}
+                      </Text>
+                    ) : null}
+                    {fixLinks.cardId ? (
+                      <Text style={styles.actionLinked}>
+                        {fixCompleted ? 'Fix completed · ' : 'Fix card linked · '}
+                        {fixLinks.cardId.slice(0, 8)}
+                      </Text>
+                    ) : null}
+                    {analyzeLinks.sessionId ? (
+                      <Text style={styles.actionLinked}>
+                        {analyzeCompleted ? 'Analyze completed · ' : 'Analysis session linked · '}
+                        {analyzeLinks.sessionId.slice(0, 8)}
+                      </Text>
+                    ) : null}
                   </>
                 );
               })()}
@@ -1343,7 +1407,12 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.gray800,
     paddingHorizontal: 8,
   },
-  tabBtn: { paddingVertical: 10, paddingHorizontal: 14, borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  tabBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
   tabBtnActive: { borderBottomColor: colors.blue500 },
   tabText: { fontSize: 14, color: colors.gray400 },
   tabTextActive: { color: colors.white, fontWeight: '600' },
@@ -1367,7 +1436,12 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   pauseBtnText: { fontSize: 12, color: colors.gray200 },
-  pendingBtn: { backgroundColor: colors.blue600, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
+  pendingBtn: {
+    backgroundColor: colors.blue600,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
   pendingBtnText: { fontSize: 12, color: colors.white },
   clearBtn: {
     flexDirection: 'row',
@@ -1431,7 +1505,13 @@ const styles = StyleSheet.create({
   },
   errorText: { fontSize: 12, color: colors.red400 },
 
-  olderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 8 },
+  olderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
   olderBtn: {
     flexDirection: 'row',
     alignItems: 'center',

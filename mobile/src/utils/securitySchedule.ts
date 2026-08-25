@@ -37,7 +37,9 @@ export function readSecurityScheduleConfig(project: unknown): SecurityScheduleCo
     | { schedule?: unknown; onPush?: unknown }
     | null
     | undefined;
-  const schedule = isSecurityScanSchedule(raw?.schedule) ? (raw!.schedule as SecurityScanSchedule) : '';
+  const schedule = isSecurityScanSchedule(raw?.schedule)
+    ? (raw!.schedule as SecurityScanSchedule)
+    : '';
   return { schedule, onPush: raw?.onPush === true };
 }
 

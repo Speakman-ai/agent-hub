@@ -52,7 +52,10 @@ export function sortTriggers<T extends { event: string; branchPattern: string }>
  * when the draft is acceptable. Mirrors the store's normalizeBranchPattern /
  * normalizeEvent guards so the UI fails fast without a server round-trip.
  */
-export function validateTriggerDraft(draft: { event: string; branchPattern: string }): string | null {
+export function validateTriggerDraft(draft: {
+  event: string;
+  branchPattern: string;
+}): string | null {
   if (draft.event !== 'push' && draft.event !== 'merge') {
     return 'Event must be push or merge.';
   }

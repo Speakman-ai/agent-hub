@@ -21,14 +21,13 @@
  * `session.use_worktree !== 0` check.
  */
 export function resolveSessionWorktree(session: any) {
-    if (!session)
-        return { enabled: true, detected: null };
-    const enabled = session.use_worktree !== 0;
-    let detected = null;
-    if (session.git_worktree_detected != null) {
-        detected = session.git_worktree_detected === 1 || session.git_worktree_detected === true;
-    }
-    return { enabled, detected };
+  if (!session) return { enabled: true, detected: null };
+  const enabled = session.use_worktree !== 0;
+  let detected = null;
+  if (session.git_worktree_detected != null) {
+    detected = session.git_worktree_detected === 1 || session.git_worktree_detected === true;
+  }
+  return { enabled, detected };
 }
 /**
  * Produce a new sessions array with the `git_worktree_detected` flag updated
@@ -40,11 +39,11 @@ export function resolveSessionWorktree(session: any) {
  * same way after a page refresh.
  */
 export function applyDetectedFlag(sessions: any, sessionId: any, gitWorktree: any) {
-    if (!Array.isArray(sessions))
-        return [];
-    if (!sessionId)
-        return sessions;
-    return sessions.map((s: any) => s && s.id === sessionId ? { ...s, git_worktree_detected: gitWorktree ? 1 : 0 } : s);
+  if (!Array.isArray(sessions)) return [];
+  if (!sessionId) return sessions;
+  return sessions.map((s: any) =>
+    s && s.id === sessionId ? { ...s, git_worktree_detected: gitWorktree ? 1 : 0 } : s,
+  );
 }
 /**
  * Badge descriptor for the detection pill. Returns null when the flag is
@@ -53,28 +52,27 @@ export function applyDetectedFlag(sessions: any, sessionId: any, gitWorktree: an
  * pick emerald / amber / neutral styling.
  */
 export function describeDetectionBadge({ enabled, detected }: any) {
-    if (detected == null)
-        return null;
-    if (detected) {
-        return {
-            tone: 'ok',
-            symbol: '✓',
-            label: 'WT',
-            hint: 'CLI confirmed: running inside a git worktree',
-        };
-    }
-    if (enabled) {
-        return {
-            tone: 'warn',
-            symbol: '!',
-            label: '!',
-            hint: 'Warning: worktree mode is ON but CLI is not in a git worktree',
-        };
-    }
+  if (detected == null) return null;
+  if (detected) {
     return {
-        tone: 'off',
-        symbol: '—',
-        label: '—',
-        hint: 'CLI confirmed: not in a git worktree',
+      tone: 'ok',
+      symbol: '✓',
+      label: 'WT',
+      hint: 'CLI confirmed: running inside a git worktree',
     };
+  }
+  if (enabled) {
+    return {
+      tone: 'warn',
+      symbol: '!',
+      label: '!',
+      hint: 'Warning: worktree mode is ON but CLI is not in a git worktree',
+    };
+  }
+  return {
+    tone: 'off',
+    symbol: '—',
+    label: '—',
+    hint: 'CLI confirmed: not in a git worktree',
+  };
 }

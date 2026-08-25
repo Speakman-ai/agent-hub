@@ -222,7 +222,10 @@ describe('MobileBrowserAuthCard', () => {
 
   it('logs out, refreshes status, and returns to the sign-in action', async () => {
     const logout = vi.fn().mockResolvedValue({ output: 'Claude session removed.' });
-    const getStatus = vi.fn().mockResolvedValueOnce(signedInStatus).mockResolvedValueOnce(idleStatus);
+    const getStatus = vi
+      .fn()
+      .mockResolvedValueOnce(signedInStatus)
+      .mockResolvedValueOnce(idleStatus);
     mount({ logout, getStatus });
     await settle();
     await press('Sign out');

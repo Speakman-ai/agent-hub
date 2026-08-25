@@ -56,7 +56,12 @@ describe('sortReleaseGates', () => {
       { status: 'armed', createdAt: '2026-01-02' },
       { status: 'failed', createdAt: '2026-01-01' },
     ]).map((g) => `${g.status}:${g.createdAt}`);
-    expect(order).toEqual(['armed:2026-01-02', 'armed:2026-01-01', 'failed:2026-01-01', 'fired:2026-01-01']);
+    expect(order).toEqual([
+      'armed:2026-01-02',
+      'armed:2026-01-01',
+      'failed:2026-01-01',
+      'fired:2026-01-01',
+    ]);
   });
 });
 

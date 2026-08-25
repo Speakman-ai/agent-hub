@@ -82,9 +82,16 @@ describe('retention option sets', () => {
 
 describe('RumSettingsScreen retention section', () => {
   it('renders the retention config with the persisted windows preselected', () => {
-    const project = { id: 'demo', name: 'Demo', replay: { retentionDays: 14, extendedRetentionMonths: 6 } };
+    const project = {
+      id: 'demo',
+      name: 'Demo',
+      replay: { retentionDays: 14, extendedRetentionMonths: 6 },
+    };
     const html = renderToStaticMarkup(
-      <RumSettingsScreen route={{ params: { projectId: 'demo', project } }} navigation={{ goBack: vi.fn() }} />,
+      <RumSettingsScreen
+        route={{ params: { projectId: 'demo', project } }}
+        navigation={{ goBack: vi.fn() }}
+      />,
     );
     expect(html).toContain('Retention (this project)');
     expect(html).toContain('Base-retention window');
@@ -98,7 +105,10 @@ describe('RumSettingsScreen retention section', () => {
   it('defaults to platform-default base + 15-month extended when unconfigured', () => {
     const project = { id: 'demo', name: 'Demo' };
     const html = renderToStaticMarkup(
-      <RumSettingsScreen route={{ params: { projectId: 'demo', project } }} navigation={{ goBack: vi.fn() }} />,
+      <RumSettingsScreen
+        route={{ params: { projectId: 'demo', project } }}
+        navigation={{ goBack: vi.fn() }}
+      />,
     );
     expect(html).toContain('Retention (this project)');
     expect(html).toContain('Default');

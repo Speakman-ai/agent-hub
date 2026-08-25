@@ -13,12 +13,8 @@ vi.mock('./auth', () => ({
   getAuthRecord: () => state.authRecord,
 }));
 
-const {
-  submitBugReport,
-  BUG_REPORT_PROJECT_ID,
-  defaultReporterEmail,
-  resolveBugReportEndpoint,
-} = await import('./bugReport');
+const { submitBugReport, BUG_REPORT_PROJECT_ID, defaultReporterEmail, resolveBugReportEndpoint } =
+  await import('./bugReport');
 
 // Configured endpoint the POST tests opt into. The default (unset env) is empty
 // so a self-hosted build never phones home.

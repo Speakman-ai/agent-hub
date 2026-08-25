@@ -18,7 +18,15 @@
  * `artifact_deleted` WS event for this session so the list stays live.
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet, ScrollView, Alert } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  ActivityIndicator,
+  StyleSheet,
+  ScrollView,
+  Alert,
+} from 'react-native';
 import AppIcon from './AppIcon';
 import { api } from '../utils/api';
 import { shareArtifact } from '../utils/artifactContent';

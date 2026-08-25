@@ -264,7 +264,11 @@ export default function MobileTerminalPane({
         onMessage={onMessage}
         style={styles.webview}
       />
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.keyBar}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.keyBar}
+      >
         {SPECIAL_KEYS.map((key) => (
           <TouchableOpacity
             key={key.label}
@@ -281,13 +285,38 @@ export default function MobileTerminalPane({
 }
 
 const styles = StyleSheet.create({
-  container: { height: 340, backgroundColor: colors.gray950, borderTopWidth: 1, borderColor: colors.gray800 },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.gray900 },
+  container: {
+    height: 340,
+    backgroundColor: colors.gray950,
+    borderTopWidth: 1,
+    borderColor: colors.gray800,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: colors.gray900,
+  },
   title: { color: colors.gray100, fontSize: 13, fontWeight: '600' },
   status: { flex: 1, color: colors.gray500, fontSize: 11 },
-  error: { color: colors.red400, backgroundColor: colors.red900_50, fontSize: 11, paddingHorizontal: 12, paddingVertical: 5 },
+  error: {
+    color: colors.red400,
+    backgroundColor: colors.red900_50,
+    fontSize: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+  },
   webview: { flex: 1, backgroundColor: colors.gray950 },
   keyBar: { gap: 6, paddingHorizontal: 10, paddingVertical: 8, backgroundColor: colors.gray900 },
-  key: { borderWidth: 1, borderColor: colors.gray700, borderRadius: 5, backgroundColor: colors.gray800, paddingHorizontal: 10, paddingVertical: 6 },
+  key: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 5,
+    backgroundColor: colors.gray800,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
   keyText: { color: colors.gray200, fontSize: 11, fontFamily: 'monospace' },
 });

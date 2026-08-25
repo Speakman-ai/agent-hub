@@ -66,7 +66,7 @@ export default function KanbanColumnsModal({
   }, [visible, creating, editing, columns.length]);
 
   const sorted = [...columns].sort((a, b) => a.position - b.position);
-  const cardCount = editing ? columnCounts[editing.id] ?? 0 : 0;
+  const cardCount = editing ? (columnCounts[editing.id] ?? 0) : 0;
   const locked = editing ? isSystemLockedColumnName(editing.name) : false;
   const deleteBlocked = locked || cardCount > 0 || sorted.length <= 1;
 
@@ -131,7 +131,10 @@ export default function KanbanColumnsModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <KeyboardAvoidingView style={styles.overlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView
+        style={styles.overlay}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
         <View style={styles.content}>
           <Text style={styles.title}>Board columns</Text>
 
@@ -172,8 +175,8 @@ export default function KanbanColumnsModal({
                   {locked
                     ? 'System columns cannot be deleted.'
                     : cardCount > 0
-                    ? `Move or delete ${cardCount} card${cardCount === 1 ? '' : 's'} before deleting this column.`
-                    : 'A board must have at least one column.'}
+                      ? `Move or delete ${cardCount} card${cardCount === 1 ? '' : 's'} before deleting this column.`
+                      : 'A board must have at least one column.'}
                 </Text>
               ) : null}
               <View style={styles.actions}>

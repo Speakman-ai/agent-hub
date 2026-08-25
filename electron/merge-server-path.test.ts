@@ -49,7 +49,11 @@ describe('mergeElectronServerPath', () => {
   });
 
   it('deduplicates repeated segments', () => {
-    const merged = mergeElectronServerPath('/opt/homebrew/bin:/usr/bin', { HOME: '/home/u' }, 'linux');
+    const merged = mergeElectronServerPath(
+      '/opt/homebrew/bin:/usr/bin',
+      { HOME: '/home/u' },
+      'linux',
+    );
     const parts = merged.split(':');
     const optCount = parts.filter((p) => p === '/opt/homebrew/bin').length;
     expect(optCount).toBe(1);

@@ -268,7 +268,7 @@ describe('runLoadMorePage', () => {
     expect(calls.loadingMore).toEqual([false]);
   });
 
-  it('does not clear a newer page request\'s in-flight flag', async () => {
+  it("does not clear a newer page request's in-flight flag", async () => {
     // Regression 2: releasing unconditionally let a superseded request clear the
     // flag out from under the request that had taken over — re-enabling Load
     // more mid-load, so a second tap fired a duplicate concurrent request and
@@ -278,7 +278,7 @@ describe('runLoadMorePage', () => {
     expect(calls.loadingMore).toEqual([]);
   });
 
-  it('does not clear a newer request\'s flag when the taken-over request rejects', async () => {
+  it("does not clear a newer request's flag when the taken-over request rejects", async () => {
     const { calls, deps } = harness({ isCurrent: false, ownsInFlight: false });
     await runLoadMorePage({ ...deps, fetchPage: () => Promise.reject(new Error('boom')) });
     expect(calls.loadingMore).toEqual([]);
@@ -363,7 +363,9 @@ describe('hasConfiguredScope', () => {
 
   it('counts only enabled scopes as configured', () => {
     expect(hasConfiguredScope({ scopes: [{ enabled: false }] }, null)).toBe(false);
-    expect(hasConfiguredScope({ scopes: [{ enabled: false }, { enabled: true }] }, null)).toBe(true);
+    expect(hasConfiguredScope({ scopes: [{ enabled: false }, { enabled: true }] }, null)).toBe(
+      true,
+    );
   });
 
   it('treats a scope with no enabled field as enabled', () => {
@@ -764,7 +766,11 @@ describe('spendStateAfterFailure', () => {
   });
 
   it('does not carry another project’s bill forward as if it were stale', () => {
-    const next = spendStateAfterFailure({ projectId: 'other', data: trend, error: null }, 'p1', 'x');
+    const next = spendStateAfterFailure(
+      { projectId: 'other', data: trend, error: null },
+      'p1',
+      'x',
+    );
     expect(next.data).toBeNull();
     expect(next.projectId).toBe('p1');
   });

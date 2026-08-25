@@ -1,5 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, ActivityIndicator, ScrollView, StyleSheet } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+} from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { colors } from '../theme/colors';
 import { api } from '../utils/api';
@@ -61,10 +68,7 @@ export default function ReplayWebViewPlayer({
 
   // Build the opaque-origin player document once. Stable across renders so the
   // WebView isn't torn down and rebuilt for the SAME target mid-stream.
-  const playerUri = useMemo(
-    () => buildReplayPlayerDataUrl(RRWEB_PLAYER_JS, RRWEB_PLAYER_CSS),
-    [],
-  );
+  const playerUri = useMemo(() => buildReplayPlayerDataUrl(RRWEB_PLAYER_JS, RRWEB_PLAYER_CSS), []);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -200,7 +204,11 @@ export default function ReplayWebViewPlayer({
       {showChapters ? (
         <View style={styles.chapterBar} testID="replay-view-chapters">
           <Text style={styles.chapterHeader}>{views.length} views</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chapterRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chapterRow}
+          >
             {views.map((v) => (
               <TouchableOpacity
                 key={v.viewId}

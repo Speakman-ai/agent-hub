@@ -151,10 +151,7 @@ describe('healthEventClock / sortHealthEvents', () => {
   });
 
   it('does not mutate the response array', () => {
-    const events = [
-      makeEvent({ id: 'a', startTime: 1 }),
-      makeEvent({ id: 'b', startTime: 2 }),
-    ];
+    const events = [makeEvent({ id: 'a', startTime: 1 }), makeEvent({ id: 'b', startTime: 2 })];
     sortHealthEvents(events);
     expect(events.map((e) => e.id)).toEqual(['a', 'b']);
   });

@@ -15,13 +15,13 @@ export type TodoPriority = 'urgent' | 'high' | 'medium' | 'low';
 export type TodoLinkType = 'card' | 'epic' | 'session';
 
 export interface TodoLike {
-    id: string;
-    status: 'open' | 'done';
-    /** Day the user plans to work the task. Falls back to the deprecated dueAt. */
-    doDate?: string | null;
-    dueAt: string | null;
-    priority?: TodoPriority | null;
-    position: number;
+  id: string;
+  status: 'open' | 'done';
+  /** Day the user plans to work the task. Falls back to the deprecated dueAt. */
+  doDate?: string | null;
+  dueAt: string | null;
+  priority?: TodoPriority | null;
+  position: number;
 }
 
 /**
@@ -30,13 +30,13 @@ export interface TodoLike {
  * unchanged (so the caller can skip a no-op reorder request).
  */
 export function moveTodoId(ids: string[], id: string, dir: 'up' | 'down'): string[] {
-    const index = ids.indexOf(id);
-    if (index === -1) return ids;
-    const target = dir === 'up' ? index - 1 : index + 1;
-    if (target < 0 || target >= ids.length) return ids;
-    const next = ids.slice();
-    [next[index], next[target]] = [next[target], next[index]];
-    return next;
+  const index = ids.indexOf(id);
+  if (index === -1) return ids;
+  const target = dir === 'up' ? index - 1 : index + 1;
+  if (target < 0 || target >= ids.length) return ids;
+  const next = ids.slice();
+  [next[index], next[target]] = [next[target], next[index]];
+  return next;
 }
 
 /**
@@ -44,36 +44,36 @@ export function moveTodoId(ids: string[], id: string, dir: 'up' | 'down'): strin
  * priority band, or null when the move would cross a priority boundary.
  */
 export function moveTodoIdWithinPriorityBand<T extends TodoLike>(
-    todos: T[],
-    id: string,
-    dir: 'up' | 'down',
+  todos: T[],
+  id: string,
+  dir: 'up' | 'down',
 ): string[] | null {
-    const targetTodo = todos.find((t) => t.id === id);
-    if (!targetTodo) return null;
+  const targetTodo = todos.find((t) => t.id === id);
+  if (!targetTodo) return null;
 
-    const targetRank = priorityRank(targetTodo.priority);
-    const bandIds = todos.filter((t) => priorityRank(t.priority) === targetRank).map((t) => t.id);
-    const nextBandIds = moveTodoId(bandIds, id, dir);
-    if (nextBandIds === bandIds) return null;
+  const targetRank = priorityRank(targetTodo.priority);
+  const bandIds = todos.filter((t) => priorityRank(t.priority) === targetRank).map((t) => t.id);
+  const nextBandIds = moveTodoId(bandIds, id, dir);
+  if (nextBandIds === bandIds) return null;
 
-    let bandIndex = 0;
-    return todos.map((t) =>
-        priorityRank(t.priority) === targetRank ? nextBandIds[bandIndex++] : t.id,
-    );
+  let bandIndex = 0;
+  return todos.map((t) =>
+    priorityRank(t.priority) === targetRank ? nextBandIds[bandIndex++] : t.id,
+  );
 }
 
 /** True when `todo` has no same-priority neighbor in `dir`. */
 export function isPriorityBandEdge<T extends TodoLike>(
-    todos: T[],
-    todo: T,
-    dir: 'up' | 'down',
+  todos: T[],
+  todo: T,
+  dir: 'up' | 'down',
 ): boolean {
-    const targetRank = priorityRank(todo.priority);
-    const index = todos.findIndex((t) => t.id === todo.id);
-    if (index === -1) return true;
+  const targetRank = priorityRank(todo.priority);
+  const index = todos.findIndex((t) => t.id === todo.id);
+  if (index === -1) return true;
 
-    const slice = dir === 'up' ? todos.slice(0, index) : todos.slice(index + 1);
-    return !slice.some((t) => priorityRank(t.priority) === targetRank);
+  const slice = dir === 'up' ? todos.slice(0, index) : todos.slice(index + 1);
+  return !slice.some((t) => priorityRank(t.priority) === targetRank);
 }
 
 /**
@@ -82,10 +82,10 @@ export function isPriorityBandEdge<T extends TodoLike>(
  * collapsed section below.
  */
 export function splitTodos<T extends TodoLike>(todos: T[]): { open: T[]; done: T[] } {
-    const open: T[] = [];
-    const done: T[] = [];
-    for (const t of todos) (t.status === 'done' ? done : open).push(t);
-    return { open, done };
+  const open: T[] = [];
+  const done: T[] = [];
+  for (const t of todos) (t.status === 'done' ? done : open).push(t);
+  return { open, done };
 }
 
 /**
@@ -93,14 +93,14 @@ export function splitTodos<T extends TodoLike>(todos: T[]): { open: T[]; done: T
  * `urgent` floats to the top and an unset/unknown priority sorts as `medium`.
  */
 const PRIORITY_RANK: Record<TodoPriority, number> = {
-    urgent: 0,
-    high: 1,
-    medium: 2,
-    low: 3,
+  urgent: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
 };
 
 export function priorityRank(priority: TodoPriority | null | undefined): number {
-    return PRIORITY_RANK[(priority as TodoPriority) ?? 'medium'] ?? PRIORITY_RANK.medium;
+  return PRIORITY_RANK[(priority as TodoPriority) ?? 'medium'] ?? PRIORITY_RANK.medium;
 }
 
 /**
@@ -108,18 +108,18 @@ export function priorityRank(priority: TodoPriority | null | undefined): number 
  * position so a manual reorder still decides ties within a priority band.
  */
 export function comparePriority<T extends TodoLike>(a: T, b: T): number {
-    const byPriority = priorityRank(a.priority) - priorityRank(b.priority);
-    return byPriority !== 0 ? byPriority : a.position - b.position;
+  const byPriority = priorityRank(a.priority) - priorityRank(b.priority);
+  return byPriority !== 0 ? byPriority : a.position - b.position;
 }
 
 /** Order open todos urgent→low, breaking ties by position. Pure (no mutation). */
 export function sortOpenTodos<T extends TodoLike>(todos: T[]): T[] {
-    return todos.slice().sort(comparePriority);
+  return todos.slice().sort(comparePriority);
 }
 
 /** The scheduling "do" date, falling back to the deprecated dueAt for old rows. */
 export function todoDoDate(todo: { doDate?: string | null; dueAt?: string | null }): string | null {
-    return todo.doDate ?? todo.dueAt ?? null;
+  return todo.doDate ?? todo.dueAt ?? null;
 }
 
 /**
@@ -127,20 +127,20 @@ export function todoDoDate(todo: { doDate?: string | null; dueAt?: string | null
  * '2:00 PM', or '' when neither bound is set). Rendered next to the do-date.
  */
 export function timeWindowLabel(
-    startAt: string | null | undefined,
-    endAt: string | null | undefined,
+  startAt: string | null | undefined,
+  endAt: string | null | undefined,
 ): string {
-    const start = formatClock(startAt);
-    const end = formatClock(endAt);
-    if (start && end) return `${start} – ${end}`;
-    return start || end || '';
+  const start = formatClock(startAt);
+  const end = formatClock(endAt);
+  if (start && end) return `${start} – ${end}`;
+  return start || end || '';
 }
 
 function formatClock(iso: string | null | undefined): string {
-    if (!iso) return '';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return '';
-    return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
 /**
@@ -148,24 +148,24 @@ function formatClock(iso: string | null | undefined): string {
  * new `linkedType`, falling back to the deprecated `linkedCardId` ('Ticket').
  */
 export function todoLinkLabel(todo: {
-    linkedType?: TodoLinkType | null;
-    linkedCardId?: string | null;
+  linkedType?: TodoLinkType | null;
+  linkedCardId?: string | null;
 }): string {
-    switch (todo.linkedType) {
-        case 'card':
-            return 'Ticket';
-        case 'epic':
-            return 'Epic';
-        case 'session':
-            return 'Session';
-        default:
-            return todo.linkedCardId ? 'Ticket' : '';
-    }
+  switch (todo.linkedType) {
+    case 'card':
+      return 'Ticket';
+    case 'epic':
+      return 'Epic';
+    case 'session':
+      return 'Session';
+    default:
+      return todo.linkedCardId ? 'Ticket' : '';
+  }
 }
 
 /** Local-midnight start of the given date, for whole-day due comparisons. */
 function startOfDay(d: Date): number {
-    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
 
 export type DueState = 'overdue' | 'today' | 'tomorrow' | 'upcoming' | 'none';
@@ -175,27 +175,27 @@ export type DueState = 'overdue' | 'today' | 'tomorrow' | 'upcoming' | 'none';
  * time), so "today" means any time today regardless of the stored clock.
  */
 export function dueState(dueAt: string | null | undefined, now: Date = new Date()): DueState {
-    if (!dueAt) return 'none';
-    const due = new Date(dueAt);
-    if (Number.isNaN(due.getTime())) return 'none';
-    const dueDay = startOfDay(due);
-    const today = startOfDay(now);
-    const oneDay = 24 * 60 * 60 * 1000;
-    if (dueDay < today) return 'overdue';
-    if (dueDay === today) return 'today';
-    if (dueDay === today + oneDay) return 'tomorrow';
-    return 'upcoming';
+  if (!dueAt) return 'none';
+  const due = new Date(dueAt);
+  if (Number.isNaN(due.getTime())) return 'none';
+  const dueDay = startOfDay(due);
+  const today = startOfDay(now);
+  const oneDay = 24 * 60 * 60 * 1000;
+  if (dueDay < today) return 'overdue';
+  if (dueDay === today) return 'today';
+  if (dueDay === today + oneDay) return 'tomorrow';
+  return 'upcoming';
 }
 
 /** Short human label for a due date ('Today', 'Overdue', 'Jul 12', …). */
 export function dueLabel(dueAt: string | null | undefined, now: Date = new Date()): string {
-    const state = dueState(dueAt, now);
-    if (state === 'none') return '';
-    if (state === 'today') return 'Today';
-    if (state === 'tomorrow') return 'Tomorrow';
-    const due = new Date(dueAt as string);
-    const dateLabel = due.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    return state === 'overdue' ? `Overdue · ${dateLabel}` : dateLabel;
+  const state = dueState(dueAt, now);
+  if (state === 'none') return '';
+  if (state === 'today') return 'Today';
+  if (state === 'tomorrow') return 'Tomorrow';
+  const due = new Date(dueAt as string);
+  const dateLabel = due.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return state === 'overdue' ? `Overdue · ${dateLabel}` : dateLabel;
 }
 
 /**
@@ -203,11 +203,11 @@ export function dueLabel(dueAt: string | null | undefined, now: Date = new Date(
  * or null to clear. An empty string clears the due date.
  */
 export function dateInputToIso(value: string): string | null {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    const parsed = new Date(`${trimmed}T00:00:00`);
-    if (Number.isNaN(parsed.getTime())) return null;
-    return parsed.toISOString();
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = new Date(`${trimmed}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
 }
 
 /**
@@ -215,16 +215,16 @@ export function dateInputToIso(value: string): string | null {
  * legacy fallback dates do not reappear after a user blanks the new doDate.
  */
 export function dateInputToTodoDatePatch(value: string): { doDate: string | null; dueAt: null } {
-    return { doDate: dateInputToIso(value), dueAt: null };
+  return { doDate: dateInputToIso(value), dueAt: null };
 }
 
 /** Convert a stored ISO due date back into a YYYY-MM-DD picker value. */
 export function isoToDateInput(dueAt: string | null | undefined): string {
-    if (!dueAt) return '';
-    const d = new Date(dueAt);
-    if (Number.isNaN(d.getTime())) return '';
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
+  if (!dueAt) return '';
+  const d = new Date(dueAt);
+  if (Number.isNaN(d.getTime())) return '';
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
 }

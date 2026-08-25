@@ -27,7 +27,12 @@ function localTimeZone(): string | undefined {
 function formatGeneratedAt(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return d.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 /**
@@ -285,7 +290,13 @@ function ScheduleEditor() {
 
 const markdownStyles = {
   body: { color: colors.gray200, fontSize: 14, lineHeight: 20 },
-  heading2: { color: colors.white, fontSize: 16, fontWeight: '600', marginTop: 12, marginBottom: 6 },
+  heading2: {
+    color: colors.white,
+    fontSize: 16,
+    fontWeight: '600',
+    marginTop: 12,
+    marginBottom: 6,
+  },
   bullet_list: { marginBottom: 8 },
   list_item: { marginBottom: 4 },
   link: { color: colors.sky400, textDecorationLine: 'underline' },

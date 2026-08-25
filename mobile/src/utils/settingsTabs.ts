@@ -19,14 +19,13 @@
  * @returns {string} a valid current tab id
  */
 export function normalizeSettingsTab(rawTab: any, validIds: any, legacyIds: any) {
-    if (!rawTab)
-        return 'general';
-    const isValid = validIds instanceof Set ? validIds.has(rawTab) : Array.isArray(validIds) && validIds.includes(rawTab);
-    if (isValid)
-        return rawTab;
-    if (rawTab === 'orgs')
-        return 'servers';
-    if (legacyIds instanceof Set && legacyIds.has(rawTab))
-        return 'general';
-    return 'general';
+  if (!rawTab) return 'general';
+  const isValid =
+    validIds instanceof Set
+      ? validIds.has(rawTab)
+      : Array.isArray(validIds) && validIds.includes(rawTab);
+  if (isValid) return rawTab;
+  if (rawTab === 'orgs') return 'servers';
+  if (legacyIds instanceof Set && legacyIds.has(rawTab)) return 'general';
+  return 'general';
 }

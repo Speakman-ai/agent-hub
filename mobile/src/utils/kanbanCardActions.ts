@@ -12,13 +12,7 @@
  * mapping (what's offered, what's checked, which leaves exist) is
  * unit-testable without rendering anything.
  */
-import {
-    PRIORITIES,
-    priorityMeta,
-    cardLabelList,
-    cardMetaModel,
-    cardShareUrl,
-} from './kanbanCard';
+import { PRIORITIES, priorityMeta, cardLabelList, cardMetaModel, cardShareUrl } from './kanbanCard';
 const cap = (s: any) => (s ? `${s[0].toUpperCase()}${s.slice(1)}` : s);
 
 /**
@@ -31,18 +25,18 @@ const cap = (s: any) => (s ? `${s[0].toUpperCase()}${s.slice(1)}` : s);
  * legacy-card behavior.
  */
 export function cardCopyPayload(
-    card: any,
-    type: any,
-    { board, epics = [], baseUrl = '', projectId }: any = {},
+  card: any,
+  type: any,
+  { board, epics = [], baseUrl = '', projectId }: any = {},
 ) {
-    if (type === 'copyId') {
-        const meta = cardMetaModel(card, { board, epics });
-        return meta.shortLabel || String(card?.id ?? '');
-    }
-    if (type === 'copyLink') {
-        return cardShareUrl(baseUrl, projectId, card?.id) || String(card?.id ?? '');
-    }
-    return '';
+  if (type === 'copyId') {
+    const meta = cardMetaModel(card, { board, epics });
+    return meta.shortLabel || String(card?.id ?? '');
+  }
+  if (type === 'copyLink') {
+    return cardShareUrl(baseUrl, projectId, card?.id) || String(card?.id ?? '');
+  }
+  return '';
 }
 /**
  * @param {object} card - the long-pressed card row.
@@ -53,104 +47,107 @@ export function cardCopyPayload(
  * @param {Array}  ctx.labels  - distinct label strings across the board.
  * @returns {Array} top-level action rows.
  */
-export function buildCardActions(card: any, { columns = [], epics = [], agents = [], labels = [] }: any = {}) {
-    const cardLabels = new Set(cardLabelList(card?.labels));
-    const assigneeOptions = agents.map((a: any) => ({
-        key: `agent-${a.id}`,
-        label: a.name,
-        checked: card?.assignee === a.name,
-        action: { type: 'assign', agentId: a.id, name: a.name },
-    }));
-    if (card?.assignee || card?.session_id) {
-        assigneeOptions.push({
-            key: '__unassign',
-            label: 'Unassign',
-            action: { type: 'unassign' },
-        });
-    }
-    const labelOptions = labels.length
-        ? labels.map((l: any) => ({
-            key: `label-${l}`,
-            label: l,
-            checked: cardLabels.has(l),
-            keepOpen: true,
-            action: { type: 'toggleLabel', label: l },
-        }))
-        : [{ key: '__nolabels', label: 'No labels yet', disabled: true }];
-    return [
+export function buildCardActions(
+  card: any,
+  { columns = [], epics = [], agents = [], labels = [] }: any = {},
+) {
+  const cardLabels = new Set(cardLabelList(card?.labels));
+  const assigneeOptions = agents.map((a: any) => ({
+    key: `agent-${a.id}`,
+    label: a.name,
+    checked: card?.assignee === a.name,
+    action: { type: 'assign', agentId: a.id, name: a.name },
+  }));
+  if (card?.assignee || card?.session_id) {
+    assigneeOptions.push({
+      key: '__unassign',
+      label: 'Unassign',
+      action: { type: 'unassign' },
+    });
+  }
+  const labelOptions = labels.length
+    ? labels.map((l: any) => ({
+        key: `label-${l}`,
+        label: l,
+        checked: cardLabels.has(l),
+        keepOpen: true,
+        action: { type: 'toggleLabel', label: l },
+      }))
+    : [{ key: '__nolabels', label: 'No labels yet', disabled: true }];
+  return [
+    {
+      key: 'status',
+      label: 'Status',
+      title: 'Move to column',
+      options: columns.map((col: any) => ({
+        key: `col-${col.id}`,
+        label: col.name,
+        color: col.color,
+        checked: col.id === card?.column_id,
+        action: { type: 'move', columnId: col.id },
+      })),
+    },
+    {
+      key: 'priority',
+      label: 'Priority',
+      title: 'Set priority',
+      options: PRIORITIES.map((p: any) => ({
+        key: `pri-${p}`,
+        label: cap(p),
+        color: priorityMeta(p).color,
+        checked: (card?.priority || 'medium') === p,
+        action: { type: 'setPriority', priority: p },
+      })),
+    },
+    {
+      key: 'assignee',
+      label: 'Assignee',
+      title: 'Assign agent',
+      options: assigneeOptions.length
+        ? assigneeOptions
+        : [{ key: '__noagents', label: 'No agents', disabled: true }],
+    },
+    {
+      key: 'labels',
+      label: 'Labels',
+      title: 'Toggle labels',
+      options: labelOptions,
+    },
+    {
+      key: 'epic',
+      label: 'Epic',
+      title: 'Link to epic',
+      options: [
         {
-            key: 'status',
-            label: 'Status',
-            title: 'Move to column',
-            options: columns.map((col: any) => ({
-                key: `col-${col.id}`,
-                label: col.name,
-                color: col.color,
-                checked: col.id === card?.column_id,
-                action: { type: 'move', columnId: col.id },
-            })),
+          key: '__noepic',
+          label: 'No epic',
+          checked: !card?.epic_id,
+          action: { type: 'linkEpic', epicId: null },
         },
-        {
-            key: 'priority',
-            label: 'Priority',
-            title: 'Set priority',
-            options: PRIORITIES.map((p: any) => ({
-                key: `pri-${p}`,
-                label: cap(p),
-                color: priorityMeta(p).color,
-                checked: (card?.priority || 'medium') === p,
-                action: { type: 'setPriority', priority: p },
-            })),
-        },
-        {
-            key: 'assignee',
-            label: 'Assignee',
-            title: 'Assign agent',
-            options: assigneeOptions.length
-                ? assigneeOptions
-                : [{ key: '__noagents', label: 'No agents', disabled: true }],
-        },
-        {
-            key: 'labels',
-            label: 'Labels',
-            title: 'Toggle labels',
-            options: labelOptions,
-        },
-        {
-            key: 'epic',
-            label: 'Epic',
-            title: 'Link to epic',
-            options: [
-                {
-                    key: '__noepic',
-                    label: 'No epic',
-                    checked: !card?.epic_id,
-                    action: { type: 'linkEpic', epicId: null },
-                },
-                ...epics.map((e: any) => ({
-                    key: `epic-${e.id}`,
-                    label: e.name,
-                    color: e.color,
-                    checked: card?.epic_id === e.id,
-                    action: { type: 'linkEpic', epicId: e.id },
-                })),
-            ],
-        },
-        {
-            key: 'copy',
-            label: 'Copy',
-            title: 'Copy',
-            options: [
-                { key: 'copy-id', label: 'Copy ID', action: { type: 'copyId' } },
-                { key: 'copy-link', label: 'Copy link', action: { type: 'copyLink' } },
-            ],
-        },
-        {
-            key: 'delete',
-            label: 'Delete',
-            danger: true,
-            leaf: true,
-            action: { type: 'delete' },
-        },
-    ];
+        ...epics.map((e: any) => ({
+          key: `epic-${e.id}`,
+          label: e.name,
+          color: e.color,
+          checked: card?.epic_id === e.id,
+          action: { type: 'linkEpic', epicId: e.id },
+        })),
+      ],
+    },
+    {
+      key: 'copy',
+      label: 'Copy',
+      title: 'Copy',
+      options: [
+        { key: 'copy-id', label: 'Copy ID', action: { type: 'copyId' } },
+        { key: 'copy-link', label: 'Copy link', action: { type: 'copyLink' } },
+      ],
+    },
+    {
+      key: 'delete',
+      label: 'Delete',
+      danger: true,
+      leaf: true,
+      action: { type: 'delete' },
+    },
+  ];
 }

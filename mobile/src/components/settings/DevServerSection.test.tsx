@@ -20,7 +20,7 @@ import {
   loadDevServerSecrets,
   type DevServerSaveApi,
 } from './DevServerSection';
-import { emptyDevServerForm, SECRET_MASK, type DevServerForm } from '../../utils/devServerConfig';
+import { emptyDevServerForm, SECRET_MASK, type DevServerForm } from '@shared/utils/devServerConfig';
 
 /** A promise plus its resolve/reject, so a test can control settle timing. */
 function deferred<T>() {
@@ -116,13 +116,9 @@ describe('performDevServerSave', () => {
   it('skips the secrets PUT when no fresh value was typed', async () => {
     const { api } = makeApi();
     const form = baseForm({ secretRows: [{ key: 'TOKEN', value: '', hadSecret: true }] });
-    await performDevServerSave(
-      api,
-      'proj-1',
-      { id: 'proj-1' },
-      form,
-      [{ key: 'TOKEN', kind: 'secret' }],
-    );
+    await performDevServerSave(api, 'proj-1', { id: 'proj-1' }, form, [
+      { key: 'TOKEN', kind: 'secret' },
+    ]);
     expect(api.putProjectSecrets).not.toHaveBeenCalled();
     expect(api.updateProject).toHaveBeenCalledTimes(1);
   });

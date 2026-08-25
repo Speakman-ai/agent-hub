@@ -29,7 +29,7 @@
  * @returns {boolean}
  */
 export function canReceivePush(Device: any) {
-    return !!Device && Device.isDevice === true;
+  return !!Device && Device.isDevice === true;
 }
 /**
  * Extract the project ID that `getExpoPushTokenAsync` requires. Expo v49+
@@ -40,17 +40,14 @@ export function canReceivePush(Device: any) {
  * @returns {string | undefined}
  */
 export function resolveExpoProjectId(Constants: any) {
-    if (!Constants)
-        return undefined;
-    const expoConfig = Constants.expoConfig;
-    const cfgProjectId = expoConfig?.extra?.eas?.projectId;
-    if (cfgProjectId)
-        return cfgProjectId;
-    const manifest = Constants.manifest || Constants.manifest2;
-    const legacy = manifest?.extra?.eas?.projectId ||
-        manifest?.data?.extra?.eas?.projectId ||
-        undefined;
-    return legacy;
+  if (!Constants) return undefined;
+  const expoConfig = Constants.expoConfig;
+  const cfgProjectId = expoConfig?.extra?.eas?.projectId;
+  if (cfgProjectId) return cfgProjectId;
+  const manifest = Constants.manifest || Constants.manifest2;
+  const legacy =
+    manifest?.extra?.eas?.projectId || manifest?.data?.extra?.eas?.projectId || undefined;
+  return legacy;
 }
 /**
  * Build the payload body for `POST /api/devices`.
@@ -61,7 +58,7 @@ export function resolveExpoProjectId(Constants: any) {
  * @returns {{ token: string, platform: string }}
  */
 export function buildDeviceRegistrationBody(token: any, platform: any) {
-    return { token, platform };
+  return { token, platform };
 }
 /**
  * Run the full registration flow:
@@ -86,40 +83,44 @@ export function buildDeviceRegistrationBody(token: any, platform: any) {
  * }} args
  * @returns {Promise<{ token: string | null, permissionStatus: string }>}
  */
-export async function registerForPushNotifications({ api, Notifications, Device, Constants, Platform, log = console.warn, }: any) {
-    if (!canReceivePush(Device)) {
-        return { token: null, permissionStatus: 'unsupported' };
-    }
-    let perm = await Notifications.getPermissionsAsync();
-    if (perm.status !== 'granted') {
-        perm = await Notifications.requestPermissionsAsync();
-    }
-    if (perm.status !== 'granted') {
-        return { token: null, permissionStatus: perm.status };
-    }
-    const projectId = resolveExpoProjectId(Constants);
-    let tokenResp;
-    try {
-        tokenResp = projectId
-            ? await Notifications.getExpoPushTokenAsync({ projectId })
-            : await Notifications.getExpoPushTokenAsync();
-    }
-    catch (err: any) {
-        log('[push] getExpoPushTokenAsync failed', err);
-        return { token: null, permissionStatus: perm.status };
-    }
-    const token = tokenResp?.data;
-    if (!token)
-        return { token: null, permissionStatus: perm.status };
-    const platform = Platform?.OS === 'android' ? 'android' : 'ios';
-    try {
-        await api.registerDeviceToken(token, platform);
-    }
-    catch (err: any) {
-        log('[push] registerDeviceToken failed', err);
-        return { token, permissionStatus: perm.status };
-    }
+export async function registerForPushNotifications({
+  api,
+  Notifications,
+  Device,
+  Constants,
+  Platform,
+  log = console.warn,
+}: any) {
+  if (!canReceivePush(Device)) {
+    return { token: null, permissionStatus: 'unsupported' };
+  }
+  let perm = await Notifications.getPermissionsAsync();
+  if (perm.status !== 'granted') {
+    perm = await Notifications.requestPermissionsAsync();
+  }
+  if (perm.status !== 'granted') {
+    return { token: null, permissionStatus: perm.status };
+  }
+  const projectId = resolveExpoProjectId(Constants);
+  let tokenResp;
+  try {
+    tokenResp = projectId
+      ? await Notifications.getExpoPushTokenAsync({ projectId })
+      : await Notifications.getExpoPushTokenAsync();
+  } catch (err: any) {
+    log('[push] getExpoPushTokenAsync failed', err);
+    return { token: null, permissionStatus: perm.status };
+  }
+  const token = tokenResp?.data;
+  if (!token) return { token: null, permissionStatus: perm.status };
+  const platform = Platform?.OS === 'android' ? 'android' : 'ios';
+  try {
+    await api.registerDeviceToken(token, platform);
+  } catch (err: any) {
+    log('[push] registerDeviceToken failed', err);
     return { token, permissionStatus: perm.status };
+  }
+  return { token, permissionStatus: perm.status };
 }
 /**
  * Show a local notification (foreground banner) — typically used for events
@@ -131,16 +132,14 @@ export async function registerForPushNotifications({ api, Notifications, Device,
  * @returns {Promise<string | null>} scheduler-returned id, or null on failure
  */
 export async function presentLocalNotification({ Notifications }: any, { title, body, data }: any) {
-    if (!Notifications?.scheduleNotificationAsync)
-        return null;
-    try {
-        return await Notifications.scheduleNotificationAsync({
-            content: { title, body, data },
-            trigger: null,
-        });
-    }
-    catch (err: any) {
-        console.warn('[push] scheduleNotificationAsync failed', err);
-        return null;
-    }
+  if (!Notifications?.scheduleNotificationAsync) return null;
+  try {
+    return await Notifications.scheduleNotificationAsync({
+      content: { title, body, data },
+      trigger: null,
+    });
+  } catch (err: any) {
+    console.warn('[push] scheduleNotificationAsync failed', err);
+    return null;
+  }
 }

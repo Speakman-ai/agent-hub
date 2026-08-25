@@ -24,9 +24,8 @@ vi.mock('../utils/api', () => ({
   api: { suggestProjectSetup: vi.fn(() => Promise.resolve({})) },
 }));
 
-const { default: AdaptiveQuestionnaire, buildSuggestionPatch } = await import(
-  './AdaptiveQuestionnaire'
-);
+const { default: AdaptiveQuestionnaire, buildSuggestionPatch } =
+  await import('./AdaptiveQuestionnaire');
 const { api } = await import('../utils/api');
 
 const suggestProjectSetup = vi.mocked(api.suggestProjectSetup);

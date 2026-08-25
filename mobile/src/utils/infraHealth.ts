@@ -177,7 +177,9 @@ export function formatHealthStatus(statusCode: unknown): string | null {
 }
 
 /** Newest first, on the event's own clock, falling back to when we received it. */
-export function healthEventClock(event: Pick<InfraHealthEventWire, 'startTime' | 'receivedAt'>): number {
+export function healthEventClock(
+  event: Pick<InfraHealthEventWire, 'startTime' | 'receivedAt'>,
+): number {
   return event.startTime ?? event.receivedAt;
 }
 
@@ -322,12 +324,16 @@ export function healthTruncationNote(shown: number, total: number): string | nul
 }
 
 /** True while a mintable credential exists and has not been revoked. */
-export function isIngestTokenLive(token: InfraHealthIngestTokenInfoWire | null | undefined): boolean {
+export function isIngestTokenLive(
+  token: InfraHealthIngestTokenInfoWire | null | undefined,
+): boolean {
   return Boolean(token && !token.revokedAt);
 }
 
 /** Label for the mint button. Rotating and creating are the same call. */
-export function ingestActionLabel(token: InfraHealthIngestTokenInfoWire | null | undefined): string {
+export function ingestActionLabel(
+  token: InfraHealthIngestTokenInfoWire | null | undefined,
+): string {
   return isIngestTokenLive(token) ? 'Rotate ingest token' : 'Create ingest token';
 }
 
@@ -364,7 +370,9 @@ export function healthIngestUrl(serverBase: string | null | undefined, ingestPat
 }
 
 /** The rule pattern, pretty-printed for the copy button. */
-export function formatEventPattern(pattern: Record<string, readonly string[]> | null | undefined): string {
+export function formatEventPattern(
+  pattern: Record<string, readonly string[]> | null | undefined,
+): string {
   if (!pattern) return '';
   return JSON.stringify(pattern, null, 2);
 }

@@ -41,7 +41,10 @@ export default function MobileBrowserAuthCard({
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [loginUrl, setLoginUrl] = useState<string | null>(null);
   const [userCode, setUserCode] = useState<string | null>(null);
-  const timers = useRef<{ interval: ReturnType<typeof setInterval> | null; timeout: ReturnType<typeof setTimeout> | null }>({
+  const timers = useRef<{
+    interval: ReturnType<typeof setInterval> | null;
+    timeout: ReturnType<typeof setTimeout> | null;
+  }>({
     interval: null,
     timeout: null,
   });
@@ -55,22 +58,25 @@ export default function MobileBrowserAuthCard({
     statusGeneration.current += 1;
   }, []);
 
-  const refresh = useCallback(async (requestGeneration = statusGeneration.current) => {
-    const isCurrent = () => statusGeneration.current === requestGeneration;
-    try {
-      const next = await getStatus();
-      if (!isCurrent()) return null;
-      setStatus(next);
-      setError(null);
-      return next;
-    } catch (err: any) {
-      if (!isCurrent()) return null;
-      setError(err?.message || `Failed to load ${label} sign-in status.`);
-      return null;
-    } finally {
-      if (isCurrent()) setLoading(false);
-    }
-  }, [getStatus, label]);
+  const refresh = useCallback(
+    async (requestGeneration = statusGeneration.current) => {
+      const isCurrent = () => statusGeneration.current === requestGeneration;
+      try {
+        const next = await getStatus();
+        if (!isCurrent()) return null;
+        setStatus(next);
+        setError(null);
+        return next;
+      } catch (err: any) {
+        if (!isCurrent()) return null;
+        setError(err?.message || `Failed to load ${label} sign-in status.`);
+        return null;
+      } finally {
+        if (isCurrent()) setLoading(false);
+      }
+    },
+    [getStatus, label],
+  );
 
   useEffect(() => {
     void refresh();
@@ -81,7 +87,10 @@ export default function MobileBrowserAuthCard({
     clearTimers();
     const generation = statusGeneration.current;
     const poll = async () => {
-      if (statusGeneration.current !== generation || pollInFlightGeneration.current === generation) {
+      if (
+        statusGeneration.current !== generation ||
+        pollInFlightGeneration.current === generation
+      ) {
         return;
       }
       pollInFlightGeneration.current = generation;
@@ -89,10 +98,7 @@ export default function MobileBrowserAuthCard({
         const next = await refresh(generation);
         if (!next || statusGeneration.current !== generation) return;
         const loginFinished = next.loginInProgress === false;
-        if (
-          loginFinished &&
-          (next.oauth?.loggedIn === true || next.uiStatus === 'authenticated')
-        ) {
+        if (loginFinished && (next.oauth?.loggedIn === true || next.uiStatus === 'authenticated')) {
           clearTimers();
           setBusy(false);
           setLoginUrl(null);
@@ -205,22 +211,34 @@ export default function MobileBrowserAuthCard({
         {signedIn && <Text style={styles.signedIn}>Signed in</Text>}
       </View>
 
-      {binaryMissing && <Text style={styles.warning}>CLI binary not found at {status?.binary?.path}.</Text>}
+      {binaryMissing && (
+        <Text style={styles.warning}>CLI binary not found at {status?.binary?.path}.</Text>
+      )}
       {error && <Text style={styles.error}>{error}</Text>}
-      {status?.statusError && !binaryMissing && <Text style={styles.error}>{status.statusError}</Text>}
+      {status?.statusError && !binaryMissing && (
+        <Text style={styles.error}>{status.statusError}</Text>
+      )}
 
       {loginUrl && (
         <View style={styles.loginBox}>
           <Text style={styles.loginHint}>
-            {loginMode === 'device' ? 'Complete sign-in in the browser, then return here.' : 'Complete sign-in in the browser; this screen checks for completion.'}
+            {loginMode === 'device'
+              ? 'Complete sign-in in the browser, then return here.'
+              : 'Complete sign-in in the browser; this screen checks for completion.'}
           </Text>
           {userCode && <Text style={styles.code}>{userCode}</Text>}
           <View style={styles.actionRow}>
-            <TouchableOpacity style={styles.secondaryButton} onPress={() => void copyToClipboard(loginUrl)}>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={() => void copyToClipboard(loginUrl)}
+            >
               <Text style={styles.secondaryText}>Copy link</Text>
             </TouchableOpacity>
             {userCode && (
-              <TouchableOpacity style={styles.secondaryButton} onPress={() => void copyToClipboard(userCode)}>
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={() => void copyToClipboard(userCode)}
+              >
                 <Text style={styles.secondaryText}>Copy code</Text>
               </TouchableOpacity>
             )}
@@ -232,7 +250,11 @@ export default function MobileBrowserAuthCard({
 
       <View style={styles.actionRow}>
         {signedIn ? (
-          <TouchableOpacity style={styles.dangerButton} onPress={() => void handleLogout()} disabled={busy}>
+          <TouchableOpacity
+            style={styles.dangerButton}
+            onPress={() => void handleLogout()}
+            disabled={busy}
+          >
             <Text style={styles.dangerText}>{busy ? 'Signing out…' : 'Sign out'}</Text>
           </TouchableOpacity>
         ) : busy ? (
@@ -240,7 +262,11 @@ export default function MobileBrowserAuthCard({
             <Text style={styles.dangerText}>Cancel sign-in</Text>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity style={[styles.primaryButton, binaryMissing && styles.disabled]} onPress={() => void handleLogin()} disabled={binaryMissing}>
+          <TouchableOpacity
+            style={[styles.primaryButton, binaryMissing && styles.disabled]}
+            onPress={() => void handleLogin()}
+            disabled={binaryMissing}
+          >
             <Text style={styles.primaryText}>Sign in with browser</Text>
           </TouchableOpacity>
         )}
@@ -262,13 +288,35 @@ const styles = StyleSheet.create({
   message: { color: colors.gray400, fontSize: 11, marginTop: 8 },
   loginBox: { backgroundColor: colors.gray900, borderRadius: 8, padding: 10, marginTop: 10 },
   loginHint: { color: colors.gray400, fontSize: 11, lineHeight: 16 },
-  code: { color: colors.white, fontFamily: 'monospace', fontSize: 17, fontWeight: '600', marginTop: 8 },
+  code: {
+    color: colors.white,
+    fontFamily: 'monospace',
+    fontSize: 17,
+    fontWeight: '600',
+    marginTop: 8,
+  },
   actionRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
-  primaryButton: { backgroundColor: colors.blue600, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 9 },
+  primaryButton: {
+    backgroundColor: colors.blue600,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
   primaryText: { color: colors.white, fontSize: 12, fontWeight: '600' },
-  secondaryButton: { borderColor: colors.gray700, borderRadius: 8, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 7 },
+  secondaryButton: {
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
   secondaryText: { color: colors.gray300, fontSize: 11 },
-  dangerButton: { backgroundColor: colors.red900_50, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 9 },
+  dangerButton: {
+    backgroundColor: colors.red900_50,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
   dangerText: { color: colors.red400, fontSize: 12, fontWeight: '600' },
   disabled: { opacity: 0.4 },
 });

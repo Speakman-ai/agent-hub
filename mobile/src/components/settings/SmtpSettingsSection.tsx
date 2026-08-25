@@ -144,10 +144,8 @@ export default function SmtpSettingsSection() {
         </View>
         {!loading ? (
           <Text
-            style={[
-              styles.statusText,
-              { color: configured ? colors.emerald400 : colors.gray500 },
-            ]}>
+            style={[styles.statusText, { color: configured ? colors.emerald400 : colors.gray500 }]}
+          >
             {smtpStatusText(settings)}
           </Text>
         ) : null}
@@ -200,8 +198,7 @@ export default function SmtpSettingsSection() {
                 style={[styles.segmentBtn, form.tlsMode === id && styles.segmentBtnActive]}
                 onPress={() => setField('tlsMode', id)}
               >
-                <Text
-                  style={[styles.segmentText, form.tlsMode === id && styles.segmentTextActive]}>
+                <Text style={[styles.segmentText, form.tlsMode === id && styles.segmentTextActive]}>
                   {label}
                 </Text>
               </TouchableOpacity>
@@ -295,7 +292,8 @@ export default function SmtpSettingsSection() {
           style={[
             styles.note,
             { color: status.type === 'success' ? colors.emerald400 : colors.red400 },
-          ]}>
+          ]}
+        >
           {status.message}
         </Text>
       ) : null}

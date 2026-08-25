@@ -8,14 +8,14 @@ import { Platform } from 'react-native';
  * @param {import('react-native').StyleProp<import('react-native').TextStyle>} [extra]
  */
 export function iconTextStyle(size: any, extra: any) {
-    return [
-        {
-            width: size,
-            height: size,
-            lineHeight: size,
-            textAlign: 'center',
-            ...(Platform.OS === 'android' ? { includeFontPadding: false } : null),
-        },
-        extra,
-    ];
+  return [
+    {
+      width: size,
+      height: size,
+      lineHeight: size,
+      textAlign: 'center',
+      ...(Platform.OS === 'android' ? { includeFontPadding: false } : null),
+    },
+    extra,
+  ];
 }

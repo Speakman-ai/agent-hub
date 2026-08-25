@@ -25,14 +25,13 @@ export const SETUP_DISMISSED_KEY = 'agent-hub-setup-dismissed';
  * @returns {boolean}
  */
 export function needsFirstRunSetup(state: any) {
-    if (!state || !Array.isArray(state.orgs) || state.orgs.length === 0) {
-        return true;
-    }
-    const active = state.orgs.find((o: any) => o && o.id === state.activeOrgId) || state.orgs[0];
-    if (!active)
-        return true;
-    const url = typeof active.remoteUrl === 'string' ? active.remoteUrl.trim() : '';
-    return url.length === 0;
+  if (!state || !Array.isArray(state.orgs) || state.orgs.length === 0) {
+    return true;
+  }
+  const active = state.orgs.find((o: any) => o && o.id === state.activeOrgId) || state.orgs[0];
+  if (!active) return true;
+  const url = typeof active.remoteUrl === 'string' ? active.remoteUrl.trim() : '';
+  return url.length === 0;
 }
 /**
  * Returns true when the wizard should be presented to the user — i.e.
@@ -43,9 +42,8 @@ export function needsFirstRunSetup(state: any) {
  * @returns {boolean}
  */
 export function shouldShowWizard(state: any, dismissed: any) {
-    if (dismissed)
-        return false;
-    return needsFirstRunSetup(state);
+  if (dismissed) return false;
+  return needsFirstRunSetup(state);
 }
 /**
  * After the first-run server address is saved, decide whether to raise the
@@ -58,7 +56,7 @@ export function shouldShowWizard(state: any, dismissed: any) {
  * @returns {boolean} true when the LoginScreen should be shown next
  */
 export function shouldGateLoginAfterSetup({ hasServerUrl, isAuthenticated }: any = {}) {
-    return Boolean(hasServerUrl) && !isAuthenticated;
+  return Boolean(hasServerUrl) && !isAuthenticated;
 }
 /**
  * Decide whether the app-level auth gate should be raised from
@@ -67,30 +65,26 @@ export function shouldGateLoginAfterSetup({ hasServerUrl, isAuthenticated }: any
  * enforce login/email-update state.
  */
 export function shouldGateAuthFromStatus({ status, isAuthenticated, needsEmailUpdate }: any = {}) {
-    if (!status?.authConfigured)
-        return false;
-    if (status.activeOrgIsLocal && !isAuthenticated && !status.needsEmailUpdate)
-        return false;
-    return !isAuthenticated || Boolean(needsEmailUpdate) || Boolean(status.needsEmailUpdate);
+  if (!status?.authConfigured) return false;
+  if (status.activeOrgIsLocal && !isAuthenticated && !status.needsEmailUpdate) return false;
+  return !isAuthenticated || Boolean(needsEmailUpdate) || Boolean(status.needsEmailUpdate);
 }
 /** Read the persisted dismissed flag. Defaults to `false` on error. */
 export async function loadSetupDismissed() {
-    try {
-        const raw = await AsyncStorage.getItem(SETUP_DISMISSED_KEY);
-        return raw === '1' || raw === 'true';
-    }
-    catch {
-        return false;
-    }
+  try {
+    const raw = await AsyncStorage.getItem(SETUP_DISMISSED_KEY);
+    return raw === '1' || raw === 'true';
+  } catch {
+    return false;
+  }
 }
 /** Persist the dismissed flag so the wizard won't reappear after completion. */
 export async function saveSetupDismissed(value: any) {
-    try {
-        await AsyncStorage.setItem(SETUP_DISMISSED_KEY, value ? '1' : '0');
-    }
-    catch {
-        /* best-effort — wizard will simply re-prompt next launch */
-    }
+  try {
+    await AsyncStorage.setItem(SETUP_DISMISSED_KEY, value ? '1' : '0');
+  } catch {
+    /* best-effort — wizard will simply re-prompt next launch */
+  }
 }
 /**
  * Normalize a user-entered server URL. Trims whitespace, strips trailing
@@ -102,15 +96,12 @@ export async function saveSetupDismissed(value: any) {
  * @returns {string}
  */
 export function normalizeServerUrl(input: any) {
-    if (typeof input !== 'string')
-        return '';
-    const trimmed = input.trim();
-    if (!trimmed)
-        return '';
-    const stripped = trimmed.replace(/\/+$/, '');
-    if (/^https?:\/\//i.test(stripped))
-        return stripped;
-    return `https://${stripped}`;
+  if (typeof input !== 'string') return '';
+  const trimmed = input.trim();
+  if (!trimmed) return '';
+  const stripped = trimmed.replace(/\/+$/, '');
+  if (/^https?:\/\//i.test(stripped)) return stripped;
+  return `https://${stripped}`;
 }
 /**
  * Lightweight validation for the URL field before hitting the network.
@@ -121,17 +112,15 @@ export function normalizeServerUrl(input: any) {
  * @returns {string|null}
  */
 export function validateServerUrl(input: any) {
-    if (typeof input !== 'string' || !input.trim()) {
-        return 'Server URL is required.';
-    }
-    const normalized = normalizeServerUrl(input);
-    try {
-        const u = new URL(normalized);
-        if (!u.hostname)
-            return 'Server URL must include a hostname.';
-        return null;
-    }
-    catch {
-        return 'Server URL is not valid.';
-    }
+  if (typeof input !== 'string' || !input.trim()) {
+    return 'Server URL is required.';
+  }
+  const normalized = normalizeServerUrl(input);
+  try {
+    const u = new URL(normalized);
+    if (!u.hostname) return 'Server URL must include a hostname.';
+    return null;
+  } catch {
+    return 'Server URL is not valid.';
+  }
 }

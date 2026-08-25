@@ -142,9 +142,7 @@ export default function StatsScreen({ route, navigation }: any) {
               onPress={() => setGranularity(g.value)}
               style={[styles.granBtn, granularity === g.value && styles.granBtnActive]}
             >
-              <Text
-                style={[styles.granText, granularity === g.value && styles.granTextActive]}
-              >
+              <Text style={[styles.granText, granularity === g.value && styles.granTextActive]}>
                 {g.label}
               </Text>
             </TouchableOpacity>
@@ -152,7 +150,9 @@ export default function StatsScreen({ route, navigation }: any) {
         </View>
 
         {error && <Text style={styles.error}>{error}</Text>}
-        {loading && !stats && <ActivityIndicator color={colors.indigo400} style={{ marginTop: 24 }} />}
+        {loading && !stats && (
+          <ActivityIndicator color={colors.indigo400} style={{ marginTop: 24 }} />
+        )}
 
         {stats && (
           <>

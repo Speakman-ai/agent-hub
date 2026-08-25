@@ -93,21 +93,23 @@ describe('shareArtifact', () => {
 
   it('throws on a non-2xx download and does not share', async () => {
     deps.fileSystem.downloadAsync = vi.fn().mockResolvedValue({ status: 404 });
-    await expect(
-      shareArtifact('s1', { id: 'a1', filename: 'x' }, {}, deps),
-    ).rejects.toThrow('Failed to fetch artifact (404)');
+    await expect(shareArtifact('s1', { id: 'a1', filename: 'x' }, {}, deps)).rejects.toThrow(
+      'Failed to fetch artifact (404)',
+    );
     expect(deps._spies.shareAsync).not.toHaveBeenCalled();
   });
 
   it('throws when sharing is unavailable', async () => {
     deps.sharing.isAvailableAsync = vi.fn().mockResolvedValue(false);
-    await expect(
-      shareArtifact('s1', { id: 'a1', filename: 'x' }, {}, deps),
-    ).rejects.toThrow('Sharing is not available');
+    await expect(shareArtifact('s1', { id: 'a1', filename: 'x' }, {}, deps)).rejects.toThrow(
+      'Sharing is not available',
+    );
   });
 
   it('requires sessionId and artifact id', async () => {
-    await expect(shareArtifact('', { id: 'a1' }, {}, deps)).rejects.toThrow('sessionId is required');
+    await expect(shareArtifact('', { id: 'a1' }, {}, deps)).rejects.toThrow(
+      'sessionId is required',
+    );
     await expect(shareArtifact('s1', {}, {}, deps)).rejects.toThrow('artifact.id is required');
   });
 });

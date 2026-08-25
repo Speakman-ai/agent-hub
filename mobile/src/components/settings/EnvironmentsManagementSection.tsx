@@ -1,6 +1,18 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { CalendarClock, ChevronDown, ChevronRight, Mail, Pause, Play, RefreshCw, Rocket, ShieldCheck, Trash2, Zap } from 'lucide-react-native';
+import {
+  CalendarClock,
+  ChevronDown,
+  ChevronRight,
+  Mail,
+  Pause,
+  Play,
+  RefreshCw,
+  Rocket,
+  ShieldCheck,
+  Trash2,
+  Zap,
+} from 'lucide-react-native';
 import { colors } from '../../theme/colors';
 import { api } from '../../utils/api';
 import EnvironmentTriggersPanel from './EnvironmentTriggersPanel';
@@ -16,24 +28,26 @@ import {
   type EnvironmentStatus,
 } from '../../utils/deployments';
 
-const STATUS_STYLE: Record<EnvironmentStatus, { borderColor: string; backgroundColor: string; color: string }> =
-  {
-    deployable: {
-      borderColor: colors.emerald500,
-      backgroundColor: colors.emerald900_40,
-      color: colors.emerald300,
-    },
-    paused: {
-      borderColor: colors.amber400,
-      backgroundColor: colors.amber900_40,
-      color: colors.amber400,
-    },
-    orphaned: {
-      borderColor: colors.gray600,
-      backgroundColor: colors.gray700_40,
-      color: colors.gray300,
-    },
-  };
+const STATUS_STYLE: Record<
+  EnvironmentStatus,
+  { borderColor: string; backgroundColor: string; color: string }
+> = {
+  deployable: {
+    borderColor: colors.emerald500,
+    backgroundColor: colors.emerald900_40,
+    color: colors.emerald300,
+  },
+  paused: {
+    borderColor: colors.amber400,
+    backgroundColor: colors.amber900_40,
+    color: colors.amber400,
+  },
+  orphaned: {
+    borderColor: colors.gray600,
+    backgroundColor: colors.gray700_40,
+    color: colors.gray300,
+  },
+};
 
 export default function EnvironmentsManagementSection({
   projectId,
@@ -143,7 +157,11 @@ export default function EnvironmentsManagementSection({
         : `Remove the stale config for ${env.name}?`;
       Alert.alert('Environment config', message, [
         { text: 'Cancel', style: 'cancel' },
-        { text: env.active ? 'Reset' : 'Remove', style: 'destructive', onPress: () => doRemove(env) },
+        {
+          text: env.active ? 'Reset' : 'Remove',
+          style: 'destructive',
+          onPress: () => doRemove(env),
+        },
       ]);
     },
     [doRemove],
@@ -221,7 +239,9 @@ export default function EnvironmentsManagementSection({
                   onPress={() => toggleTriggers(env.name)}
                   style={[
                     styles.actionButton,
-                    expandedTriggers[env.name] ? styles.triggersButtonActive : styles.triggersButton,
+                    expandedTriggers[env.name]
+                      ? styles.triggersButtonActive
+                      : styles.triggersButton,
                   ]}
                   accessibilityLabel={`Manage triggers for ${env.name}`}
                   accessibilityState={{ expanded: !!expandedTriggers[env.name] }}
@@ -231,7 +251,10 @@ export default function EnvironmentsManagementSection({
                   ) : (
                     <ChevronRight size={13} color={colors.gray300} />
                   )}
-                  <Zap size={13} color={expandedTriggers[env.name] ? colors.amber400 : colors.gray300} />
+                  <Zap
+                    size={13}
+                    color={expandedTriggers[env.name] ? colors.amber400 : colors.gray300}
+                  />
                   <Text
                     style={[
                       styles.actionText,
@@ -245,7 +268,9 @@ export default function EnvironmentsManagementSection({
                   onPress={() => toggleSchedules(env.name)}
                   style={[
                     styles.actionButton,
-                    expandedSchedules[env.name] ? styles.schedulesButtonActive : styles.schedulesButton,
+                    expandedSchedules[env.name]
+                      ? styles.schedulesButtonActive
+                      : styles.schedulesButton,
                   ]}
                   accessibilityLabel={`Manage schedules for ${env.name}`}
                   accessibilityState={{ expanded: !!expandedSchedules[env.name] }}
@@ -255,7 +280,10 @@ export default function EnvironmentsManagementSection({
                   ) : (
                     <ChevronRight size={13} color={colors.gray300} />
                   )}
-                  <CalendarClock size={13} color={expandedSchedules[env.name] ? colors.blue300 : colors.gray300} />
+                  <CalendarClock
+                    size={13}
+                    color={expandedSchedules[env.name] ? colors.blue300 : colors.gray300}
+                  />
                   <Text
                     style={[
                       styles.actionText,
@@ -279,7 +307,10 @@ export default function EnvironmentsManagementSection({
                   ) : (
                     <ChevronRight size={13} color={colors.gray300} />
                   )}
-                  <Rocket size={13} color={expandedGates[env.name] ? colors.purple400 : colors.gray300} />
+                  <Rocket
+                    size={13}
+                    color={expandedGates[env.name] ? colors.purple400 : colors.gray300}
+                  />
                   <Text
                     style={[
                       styles.actionText,
@@ -303,7 +334,10 @@ export default function EnvironmentsManagementSection({
                   ) : (
                     <ChevronRight size={13} color={colors.gray300} />
                   )}
-                  <Mail size={13} color={expandedRouting[env.name] ? colors.purple400 : colors.gray300} />
+                  <Mail
+                    size={13}
+                    color={expandedRouting[env.name] ? colors.purple400 : colors.gray300}
+                  />
                   <Text
                     style={[
                       styles.actionText,
@@ -345,7 +379,11 @@ export default function EnvironmentsManagementSection({
                   <TouchableOpacity
                     onPress={() => confirmRemove(env)}
                     disabled={actionKey === deleteKey}
-                    style={[styles.actionButton, styles.removeButton, actionKey === deleteKey && styles.disabled]}
+                    style={[
+                      styles.actionButton,
+                      styles.removeButton,
+                      actionKey === deleteKey && styles.disabled,
+                    ]}
                     accessibilityLabel={`${env.active ? 'Reset' : 'Remove'} ${env.name} config`}
                   >
                     {actionKey === deleteKey ? (

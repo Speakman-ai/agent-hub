@@ -24,7 +24,11 @@ const wakeupUse = (input: any, id = 'w1') => ({
 describe('eventsToBlocks — ScheduleWakeup routing (mobile)', () => {
   it('routes a ScheduleWakeup call to a wakeup block carrying its timestamp', () => {
     const blocks = eventsToBlocks([
-      { seq: 0, event: wakeupUse({ delaySeconds: 1200, reason: 'watching CI' }), timestamp: ANCHOR },
+      {
+        seq: 0,
+        event: wakeupUse({ delaySeconds: 1200, reason: 'watching CI' }),
+        timestamp: ANCHOR,
+      },
     ]);
     expect(blocks).toHaveLength(1);
     expect(blocks[0].kind).toBe('wakeup');
