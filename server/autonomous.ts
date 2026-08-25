@@ -1296,22 +1296,33 @@ async function runAutonomousLoopInner(
         // its original column by the other loop or a manual move).
         //
         // This MUST mirror the `getEligibleAutonomousCards` SQL predicate
-        // (To Do column + no assignee), plus the in-run `dispatched_by_autonomous`
-        // flag. Do NOT gate on `session_id`: a card can carry a *stale*
+        // (To Do column + no assignee). The concurrency case the guard exists
+        // for — a sibling loop claiming the SAME To Do card first — is caught
+        // by the column move alone: the winning loop runs
+        // `markCardDispatchedByAutonomous` + `moveKanbanCard(inProgress)`
+        // together inside this same BEGIN IMMEDIATE, so the loser's re-read
+        // always sees `fresh.column_id !== card.column_id` (To Do → In
+        // Progress) and bails. The move and the flag are written atomically, so
+        // the flag is never observable without the move.
+        //
+        // Do NOT gate on `dispatched_by_autonomous` here. Unlike the column, it
+        // is a *sticky* marker (set on first dispatch, backfilled from
+        // `autonomous_iterations`, read later by auto-ship). A card that was
+        // dispatched once and then legitimately returned to To Do keeps the
+        // flag: `reconcileOrphanedTasks` (server restart) and the dispatch
+        // `rollbackCard` (session spawn failed after the claim) both requeue to
+        // To Do WITHOUT clearing it. Gating on the flag rejected those cards at
+        // claim on every subsequent tick while the candidate SQL (which ignores
+        // the flag) kept re-selecting them — "already claimed by a concurrent
+        // dispatch loop or moved" forever, and the epic/phase never resumes.
+        //
+        // Do NOT gate on `session_id` either: a card can carry a stale
         // session_id from a dead/cancelled prior link while still sitting
-        // unassigned in To Do. Because the candidate SQL ignores session_id,
-        // such a card is selected as a candidate every tick — and if the claim
-        // rejected it on `session_id`, it would be skipped forever ("already
-        // claimed by a concurrent dispatch loop or moved") and never dispatch:
-        // a permanent livelock. The concurrency case the guard exists for is
-        // fully covered by `dispatched_by_autonomous` + the column move, which
-        // the claiming loop writes together inside this same BEGIN IMMEDIATE
-        // *before* any session_id is stamped (that happens later, after the
-        // session exists), so session_id was never the signal that mattered.
+        // unassigned in To Do, for the same "selected-then-rejected forever"
+        // reason. Column + assignee are the only re-verification signals.
         const fresh = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
         if (
           !fresh ||
-          fresh.dispatched_by_autonomous ||
           (fresh.assignee != null && String(fresh.assignee).trim() !== '') ||
           fresh.column_id !== card.column_id
         ) {

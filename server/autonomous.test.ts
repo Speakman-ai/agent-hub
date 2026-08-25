@@ -1460,6 +1460,57 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(deps.handleChat).toHaveBeenCalledTimes(1);
   });
 
+  it('dispatches a To Do card that still carries dispatched_by_autonomous=1 (requeue livelock)', async () => {
+    // Regression: `reconcileOrphanedTasks` (server restart) and the dispatch
+    // `rollbackCard` (session spawn failed after the slot claim) both requeue a
+    // card to To Do but leave `dispatched_by_autonomous = 1` — the flag is
+    // never cleared. The candidate SQL (`getEligibleAutonomousCards`) ignores
+    // the flag, so the card is re-selected every tick; the BEGIN IMMEDIATE
+    // claim used to reject any row with the flag set, so it logged "already
+    // claimed by a concurrent dispatch loop or moved" forever and the
+    // epic/phase never resumed. The claim must ignore the sticky flag and
+    // re-dispatch a card that is genuinely back in To Do and unassigned.
+    const card = makeCard({
+      id: 'requeued-card',
+      column_id: 'col-todo',
+      assignee: null,
+      dispatched_by_autonomous: 1,
+    });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getKanbanEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+      // The claim re-read returns the SAME requeued row: To Do, unassigned,
+      // but with the sticky flag still set from the prior dispatch.
+      getKanbanCard: {
+        get: vi.fn(() =>
+          makeCard({
+            id: 'requeued-card',
+            column_id: 'col-todo',
+            assignee: null,
+            dispatched_by_autonomous: 1,
+          }),
+        ),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    const ownership = await import('./session-ownership.js');
+    (ownership.resolveAutonomousOwnerUserId as Mock).mockReturnValue('operator-user');
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // The claim succeeds: the requeued card is re-dispatched, not livelocked.
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('requeued-card');
+    expect(stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-progress', 0, 'requeued-card');
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+  });
+
   it('does not claim a To Do card that was assigned out-of-band (mirror of SQL predicate)', async () => {
     // The claim must treat an assignee stamped between candidate selection and
     // the BEGIN IMMEDIATE re-read as "already taken" — mirrors the
