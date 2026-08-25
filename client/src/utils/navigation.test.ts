@@ -209,6 +209,32 @@ describe('path deep links', () => {
     });
   });
 
+  it('resolves the board card deep link to the kanban view with the card focused', () => {
+    expect(parseNavigationPath('/projects/surveytracker/board', '?card=card-abc')).toEqual({
+      state: {
+        view: 'kanban:surveytracker',
+        projectId: 'surveytracker',
+        cardId: 'card-abc',
+      },
+      basePath: '',
+    });
+  });
+
+  it('resolves a board path with no card query to the kanban view', () => {
+    expect(parseNavigationPath('/projects/surveytracker/board')?.state).toEqual({
+      view: 'kanban:surveytracker',
+      projectId: 'surveytracker',
+      cardId: null,
+    });
+  });
+
+  it('keeps a deployment prefix as basePath for a board card link', () => {
+    expect(parseNavigationPath('/hub/projects/agent-hub/board', '?card=xyz')).toEqual({
+      state: { view: 'kanban:agent-hub', projectId: 'agent-hub', cardId: 'xyz' },
+      basePath: '/hub',
+    });
+  });
+
   it('ignores paths that are not project-scoped view deep links', () => {
     expect(parseNavigationPath('/')).toBeNull();
     expect(parseNavigationPath('/projects/agent-hub')).toBeNull();
@@ -229,6 +255,26 @@ describe('path deep links', () => {
       view: 'pulls',
       projectId: 'surveytracker',
       prNumber: 306,
+    });
+  });
+
+  it('routes a pasted board card link (no hash) to the kanban view with the card', () => {
+    window.history.replaceState(null, '', '/projects/surveytracker/board?card=card-abc');
+
+    expect(getInitialNavigation()).toEqual({
+      view: 'kanban:surveytracker',
+      projectId: 'surveytracker',
+      cardId: 'card-abc',
+    });
+  });
+
+  it('reads the board card id from location', () => {
+    window.history.replaceState(null, '', '/projects/surveytracker/board?card=card-abc');
+
+    expect(readNavigationStateFromLocation()).toMatchObject({
+      view: 'kanban:surveytracker',
+      projectId: 'surveytracker',
+      cardId: 'card-abc',
     });
   });
 

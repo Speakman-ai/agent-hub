@@ -37,6 +37,8 @@ export type NavigationState = {
   designId?: string | null;
   /** Support view only: deep-link a specific ticket to focus on open. */
   ticketId?: string | null;
+  /** Kanban board only: deep-link a specific card to open on load. */
+  cardId?: string | null;
   /** Hub workspace pane when `view` is `hub`. */
   hubPane?: HubWorkspacePane | null;
 };
@@ -157,9 +159,14 @@ export function buildNavigationHash(state: NavigationState) {
  * `basePath` is whatever precedes `/projects` (a deployment path prefix, if
  * any) so the caller can rewrite the URL to the canonical hash form without
  * losing the prefix.
+ *
+ * `search` is the URL query string (`?card=<id>`), needed because the board's
+ * "Copy link" builds `/projects/<id>/board?card=<cardId>` and the card id
+ * lives in the query, not the path.
  */
 export function parseNavigationPath(
   pathname?: any,
+  search?: any,
 ): { state: NavigationState; basePath: string } | null {
   const raw = typeof pathname === 'string' ? pathname.trim() : '';
   if (!raw) return null;
@@ -179,9 +186,28 @@ export function parseNavigationPath(
     })
     .filter(Boolean);
   const [projectId, view, extra] = segments;
-  if (!projectId || !view || !PROJECT_SCOPED_VIEWS.has(view)) return null;
+  if (!projectId || !view) return null;
 
   const basePath = parts.slice(0, anchor).join('/');
+
+  // The board deep link (`/projects/<id>/board?card=<cardId>`) maps to the
+  // internal composite `kanban:<projectId>` view, with the card id pulled from
+  // the query so the board opens that card on load instead of dropping the user
+  // on the home view.
+  if (view === 'board') {
+    const params = new URLSearchParams(typeof search === 'string' ? search : '');
+    return {
+      state: {
+        view: `kanban:${projectId}`,
+        projectId,
+        cardId: cleanSegment(params.get('card')),
+      },
+      basePath,
+    };
+  }
+
+  if (!PROJECT_SCOPED_VIEWS.has(view)) return null;
+
   return {
     state: {
       view,
@@ -198,7 +224,7 @@ export function readNavigationStateFromLocation(locationLike?: any): NavigationS
     (typeof window !== 'undefined' && window.location ? window.location : undefined);
   if (!loc) return null;
   const fromHash = parseNavigationHash(loc.hash);
-  const fromPath = parseNavigationPath(loc.pathname)?.state ?? null;
+  const fromPath = parseNavigationPath(loc.pathname, loc.search)?.state ?? null;
   if (!fromHash) return fromPath;
   // The hash is canonical, but a path deep-link can still supply a PR number
   // the hash lacks — that is exactly the `/projects/x/pulls/306#/pulls/x` URL

@@ -677,8 +677,13 @@ export default function App({ initialView }: any = {}) {
   );
   const [kanbanPendingCreateTemplate, setKanbanPendingCreateTemplate] = useState<any>(null);
   // A card another surface asked the board to open (e.g. the card a support
-  // ticket was converted into). Cleared once the board consumes it.
-  const [kanbanFocusCardId, setKanbanFocusCardId] = useState<string | null>(null);
+  // ticket was converted into, or a pasted `/projects/<id>/board?card=<id>`
+  // deep link). Cleared once the board consumes it.
+  const [kanbanFocusCardId, setKanbanFocusCardId] = useState<string | null>(
+    typeof initialNavigation.view === 'string' && initialNavigation.view.startsWith('kanban:')
+      ? initialNavigation.cardId || null
+      : null,
+  );
   const kanbanProjectId = currentView.startsWith('kanban:') ? currentView.slice(7) : null;
   const kanbanContextProjectId =
     kanbanProjectId ??
@@ -935,6 +940,9 @@ export default function App({ initialView }: any = {}) {
   const applyNavigationState = useCallback((route: any) => {
     const view = route?.view || 'hub';
     setCurrentView(view);
+    if (typeof view === 'string' && view.startsWith('kanban:')) {
+      setKanbanFocusCardId(route?.cardId || null);
+    }
     if (view === 'hub' || hubPaneFromLegacyView(view)) {
       const pane = parseHubPane(route?.hubPane || hubPaneFromLegacyView(view));
       setHubPane(pane);
@@ -982,13 +990,19 @@ export default function App({ initialView }: any = {}) {
   useEffect(() => {
     if (initialView) return;
     if (typeof window === 'undefined' || !window.history) return;
-    const parsed = parseNavigationPath(window.location.pathname);
+    const parsed = parseNavigationPath(window.location.pathname, window.location.search);
     if (!parsed) return;
     const base = parsed.basePath || '';
+    // The board deep link's `?card=<id>` has already been folded into the
+    // initial navigation state, so drop it here rather than leaving a stale
+    // query dangling in front of the canonical hash.
+    const search = new URLSearchParams(window.location.search);
+    search.delete('card');
+    const query = search.toString();
     window.history.replaceState(
       null,
       '',
-      `${base}/${window.location.search}${window.location.hash}`,
+      `${base}/${query ? `?${query}` : ''}${window.location.hash}`,
     );
   }, [initialView]);
 
