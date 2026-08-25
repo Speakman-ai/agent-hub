@@ -437,6 +437,25 @@ describe('SessionPreviewPane', () => {
     expect(screen.getByTestId('session-preview-pane-iframe')).toBeInTheDocument();
   });
 
+  it('wraps the embedded terminal in a full-height box so its h-full root can resolve', async () => {
+    // Regression: the embedded SessionTerminalPane root is `h-full`. If the
+    // wrapper here is auto-height, that percentage collapses and the xterm
+    // (absolutely positioned) renders into a ~zero-height box — the "strange"
+    // one-row terminal reported on the preview pane. The wrapper must forward
+    // the footer panel's definite height.
+    await renderReady({
+      event: { ...readyEvent, logTail: ['boot'] },
+      terminal: <div data-testid="embedded-terminal">pty</div>,
+      footerTab: 'terminal',
+    });
+    const embedded = screen.getByTestId('embedded-terminal');
+    const wrapper = embedded.parentElement;
+    expect(wrapper).not.toBeNull();
+    expect(wrapper).toHaveClass('h-full');
+    // And that wrapper must sit directly inside the fixed-height footer panel.
+    expect(wrapper?.parentElement).toBe(screen.getByTestId('session-preview-pane-terminal'));
+  });
+
   it('selects the terminal tab when footerTab is controlled', async () => {
     await renderReady({
       event: { ...readyEvent, logTail: ['boot'] },

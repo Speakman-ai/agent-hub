@@ -989,7 +989,16 @@ export default function SessionPreviewPane({
               className="relative h-[min(40vh,22rem)] min-h-[12rem]"
               data-testid="session-preview-pane-terminal"
             >
-              {terminalEverOpened ? <div key={sessionId}>{terminal}</div> : null}
+              {terminalEverOpened ? (
+                // The embedded terminal's root is `h-full`; without a
+                // definite-height wrapper here that percentage resolves
+                // against an auto-height box and collapses the xterm to a
+                // sliver (the "strange" one-row terminal). Pass the panel's
+                // fixed height straight through.
+                <div key={sessionId} className="h-full w-full">
+                  {terminal}
+                </div>
+              ) : null}
             </div>
           )}
         </div>
