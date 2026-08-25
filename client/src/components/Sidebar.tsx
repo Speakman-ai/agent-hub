@@ -578,7 +578,7 @@ export default function Sidebar({
                 : 'hover:bg-gray-800/50'
             }`}
           >
-            <BrandLogo size="sm" />
+            <BrandLogo size="md" />
           </button>
 
           <div className="flex items-center gap-2 mb-3">

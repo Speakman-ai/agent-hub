@@ -116,9 +116,10 @@ describe('Sidebar — Hub nav (global home)', () => {
       <Sidebar {...buildProps({ googleGmailNavVisible: true, googleCalendarNavVisible: true })} />,
     );
     expect(screen.getByTestId('sidebar-global-hub')).toBeInTheDocument();
-    expect(
-      within(screen.getByTestId('sidebar-global-hub')).getByTestId('brand-logo'),
-    ).toBeInTheDocument();
+    const brandLogo = within(screen.getByTestId('sidebar-global-hub')).getByTestId('brand-logo');
+    expect(brandLogo).toBeInTheDocument();
+    // Top-left logo renders at the md size (h-7), not the smaller h-6.
+    expect(brandLogo).toHaveClass('h-7');
     expect(
       within(screen.getByTestId('sidebar-global-hub')).queryByText('Hub'),
     ).not.toBeInTheDocument();
