@@ -1382,6 +1382,23 @@ The submitted secret stays retrievable until the request's TTL expires, so you c
   // follow-up and gets a report. Ship the compact reminder instead of nothing.
   if (!isFirstMessage) {
     prompt += `\n\n${WRITING_STYLE_FOLLOW_UP_BLOCK}`;
+
+    // The full "Requesting Secrets & Credentials Securely" section is gated
+    // behind `isFirstMessage`, and the `agenthub:credential-request` block name
+    // appears nowhere else. So from turn two onward the model had zero evidence
+    // the secure-input card existed and reverted to asking for passwords in
+    // plain prose — the recurring "credential session box not showing" report,
+    // which only ever reproduced mid-session. Same class as the ReAct
+    // capability-refusal trim (see prompt-trimming-vs-capability-advertisement
+    // wiki page): a trim may compress a capability's docs, not erase its name.
+    prompt += `\n\n## Requesting Secrets Securely (still available)
+Need a password, API key, or one-off login from the user mid-session? Do **not** ask for it in plain chat prose, and do **not** claim there is no secure input — the masked card is live on every turn. Emit a **fenced** \`agenthub:credential-request\` block (triple backticks, not an XML tag); web/mobile/Electron replace it with a secure masked card that posts straight to the REST API and never enters \`messages\`. Minimal shape:
+
+\`\`\`agenthub:credential-request
+{"requestId":"survey-tracker-login","service":"Survey Tracker","purpose":"Sign in on dev.","ttlSeconds":900,"fields":[{"key":"username","label":"Username","type":"username"},{"key":"password","label":"Password","type":"password"}]}
+\`\`\`
+
+After the user submits, retrieve with \`ah-api.sh POST "/api/sessions/$AGENT_HUB_SESSION_ID/credential-requests/<requestId>/consume"\` — re-consume the same \`requestId\` if you lost the value rather than re-asking.`;
   }
 
   // Agents are flat ("full-stack" or otherwise dedicated) and coordinate via

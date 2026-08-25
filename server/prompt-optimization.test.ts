@@ -349,6 +349,50 @@ describe('buildEnrichedPrompt — first message gating', () => {
     });
   });
 
+  // The full "Requesting Secrets & Credentials Securely" section is
+  // first-message-only, and the `agenthub:credential-request` block name is
+  // named nowhere else. Same capability-refusal class as the ReAct trim: from
+  // turn two on the model had no evidence the secure-input card existed and
+  // asked for passwords in prose, so the card never rendered ("credential
+  // session box not showing", only reproducible mid-session).
+  describe('credential-request capability survives the follow-up trim', () => {
+    it('names the credential-request block on the first message', () => {
+      const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
+      expect(prompt).toContain('agenthub:credential-request');
+    });
+
+    it('keeps a compact credential-request reminder on subsequent messages', () => {
+      const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: false });
+      expect(prompt).toContain('## Requesting Secrets Securely (still available)');
+      // The block name must survive — that is the capability the trim erased.
+      expect(prompt).toContain('agenthub:credential-request');
+      // Anti-refusal phrasing, mirroring the browser reminder's guardrail.
+      expect(prompt).toMatch(/claim there is no secure input/i);
+      // Consume path so an agent that lost the value re-reads instead of re-asking.
+      expect(prompt).toContain('credential-requests/<requestId>/consume');
+    });
+
+    it('keeps the follow-up credential reminder far smaller than the full section', () => {
+      const first = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
+      const subsequent = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: false });
+      const section = (prompt: string, heading: string) => {
+        const start = prompt.indexOf(heading);
+        const end = prompt.indexOf('\n\n## ', start + heading.length);
+        return prompt.slice(start, end === -1 ? undefined : end);
+      };
+      const fullBytes = Buffer.byteLength(
+        section(first, '## Requesting Secrets & Credentials Securely'),
+        'utf-8',
+      );
+      const compactBytes = Buffer.byteLength(
+        section(subsequent, '## Requesting Secrets Securely (still available)'),
+        'utf-8',
+      );
+      expect(compactBytes).toBeGreaterThan(0);
+      expect(compactBytes).toBeLessThan(fullBytes / 3);
+    });
+  });
+
   it('omits browser from ReAct instructions when browserToolsEnabled is false', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent({ browserToolsEnabled: false }), {
       isFirstMessage: true,
