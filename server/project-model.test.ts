@@ -12,6 +12,7 @@ import {
   migrateStaleMcpConfigFiles,
   migrateWebhookRepoToProject,
   migrateWorkflowProjectWorkspaces,
+  reloadProjects,
   getProjectDataDir,
   ensureReviewerAgents,
   ensureSkillBuilderAgents,
@@ -200,6 +201,53 @@ describe('migrateWebhookRepoToProject', () => {
 
     // Second boot: table already gone, migration returns early without throwing.
     expect(() => migrateWebhookRepoToProject()).not.toThrow();
+  });
+});
+
+describe('saveProjects — emailLogo persistence', () => {
+  it('serializes project.emailLogo to projects.json so it survives a reload', async () => {
+    const request = await getRequest();
+    const projId = `logo-persist-${Date.now()}`;
+    createdProjectIds.push(projId);
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: projId, name: 'Logo Persist', cwd: '/tmp', color: '#333' })
+      .expect(201);
+
+    const project = findProject(projId)!;
+    const emailLogo = {
+      filename: 'email-logo-abc.png',
+      contentType: 'image/png',
+      size: 1234,
+      updatedAt: '2026-08-25T00:00:00.000Z',
+    };
+    project.emailLogo = emailLogo;
+    saveProjects();
+
+    // Read the on-disk JSON directly: this is exactly what a reload/restart
+    // parses back, so it proves the logo metadata is not dropped on save.
+    const onDisk = JSON.parse(readFileSync(getProjectsPath(), 'utf-8')) as Array<
+      Record<string, unknown>
+    >;
+    const row = onDisk.find((p) => p.id === projId);
+    expect(row).toBeTruthy();
+    expect(row!.emailLogo).toEqual(emailLogo);
+    // The computed `ahw` field must NOT leak into the persisted file.
+    expect(row!.ahw).toBeUndefined();
+
+    // Now exercise the ACTUAL reload path (restart / org-switch): drop the
+    // in-memory copy and re-read from disk, then assert the metadata survived
+    // parsing + hydration — a regression in either would slip past a raw-JSON
+    // check alone.
+    project.emailLogo = undefined;
+    reloadProjects(path.dirname(getProjectsPath()));
+    expect(findProject(projId)?.emailLogo).toEqual(emailLogo);
   });
 });
 

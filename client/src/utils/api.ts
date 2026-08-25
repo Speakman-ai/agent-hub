@@ -618,6 +618,11 @@ export const api = {
     }),
   deleteProjectEmailLogo: (projectId: string) =>
     fetchJSON(`/projects/${projectId}/email-logo`, { method: 'DELETE' }),
+  // Rendered branded-email preview (logo + representative digest body).
+  getReleaseEmailPreview: (projectId: string) =>
+    fetchJSON<{ html: string; subject: string; usingProjectLogo: boolean }>(
+      `/projects/${projectId}/release-email-preview`,
+    ),
   // Fetch the stored logo bytes (auth-gated route) as an object URL for preview.
   // An <img src> can't attach the auth header, so we fetch + blob it. Returns
   // null when the project has no override. Caller must revoke the URL.

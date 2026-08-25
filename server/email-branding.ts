@@ -61,6 +61,51 @@ export function resolveBrandLogoAttachment(): EmailAttachment | null {
   };
 }
 
+/** Encode raw image bytes as a `data:` URL for inline browser rendering. */
+export function toImageDataUrl(buffer: Buffer, contentType: string): string {
+  return `data:${contentType};base64,${buffer.toString('base64')}`;
+}
+
+/**
+ * The global default logo as a `data:` URL for the browser email preview, or
+ * `null` when branding is disabled or the asset can't be read (the preview then
+ * shows the text-wordmark header, matching what recipients would receive).
+ */
+export function resolveBrandLogoDataUrl(): string | null {
+  if (!config.emailLogoEnabled) return null;
+  const content = loadLogoBuffer();
+  if (!content) return null;
+  return toImageDataUrl(content, 'image/png');
+}
+
+/**
+ * A representative release-digest body used by the Settings email preview so an
+ * admin can see the logo + messaging together before a real deployment ships.
+ * Intentionally static (no LLM call): it mirrors the shape a generated digest
+ * takes without depending on any queued/sent notification existing yet.
+ */
+export function buildSampleReleaseDigestBody(projectName?: string): string {
+  const name = (projectName ?? '').trim() || 'your project';
+  return [
+    `# What's new in ${name}`,
+    '',
+    'This is a preview of how your release and deployment notification emails will look with the branding above.',
+    '',
+    '## Highlights',
+    '',
+    '- **Faster dashboards** — pages that used to take seconds now load instantly.',
+    '- **Fixed a sign-in edge case** that could log some users out early.',
+    '- Polished a handful of rough edges across settings and reports.',
+    '',
+    '## Fixes',
+    '',
+    '- Resolved a support-reported issue where exports occasionally omitted the last row.',
+    '- Corrected a timezone display bug on scheduled items.',
+    '',
+    'Thanks for using the product — reply to this email if anything looks off.',
+  ].join('\n');
+}
+
 /**
  * Allowlist for the rendered body. `marked` preserves raw HTML and does NOT
  * escape it, so its output must be sanitized before it lands in an email — the
@@ -113,6 +158,34 @@ export function renderSanitizedBodyHtml(bodyText: string): string {
   return sanitizeHtml(marked.parse(bodyText ?? '', { async: false }), BODY_SANITIZE_OPTIONS);
 }
 
+/** Header markup for the logo: an `<img>` at `logoSrc`, or a text wordmark. */
+function renderHeaderHtml(logoSrc: string | null): string {
+  return logoSrc
+    ? `<img src="${logoSrc}" alt="Agent Hub" width="180" style="display:block;border:0;outline:none;text-decoration:none;height:auto;max-width:180px;" />`
+    : `<span style="font-size:20px;font-weight:600;color:#0f172a;">Agent Hub</span>`;
+}
+
+/** The shared table-based email shell. `bodyHtml` must already be sanitized. */
+function renderEmailShell(headerHtml: string, bodyHtml: string): string {
+  return [
+    '<!doctype html>',
+    '<html>',
+    '<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /></head>',
+    '<body style="margin:0;padding:0;background:#f1f5f9;">',
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:24px 0;">',
+    '<tr><td align="center">',
+    '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;">',
+    `<tr><td style="padding:24px 32px;border-bottom:1px solid #e2e8f0;">${headerHtml}</td></tr>`,
+    `<tr><td style="padding:24px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#0f172a;">${bodyHtml}</td></tr>`,
+    '<tr><td style="padding:16px 32px;border-top:1px solid #e2e8f0;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:#64748b;">Sent by Agent Hub.</td></tr>',
+    '</table>',
+    '</td></tr>',
+    '</table>',
+    '</body>',
+    '</html>',
+  ].join('');
+}
+
 /**
  * Render a markdown/plain-text body into a branded HTML email. Both the
  * release digest (markdown) and ticket-release (plain text) bodies render
@@ -122,27 +195,24 @@ export function renderSanitizedBodyHtml(bodyText: string): string {
  * otherwise the header falls back to a text wordmark.
  */
 export function renderBrandedEmailHtml(bodyText: string, logoCid: string | null): string {
-  const bodyHtml = renderSanitizedBodyHtml(bodyText);
-  const header = logoCid
-    ? `<img src="cid:${logoCid}" alt="Agent Hub" width="180" style="display:block;border:0;outline:none;text-decoration:none;height:auto;max-width:180px;" />`
-    : `<span style="font-size:20px;font-weight:600;color:#0f172a;">Agent Hub</span>`;
-  return [
-    '<!doctype html>',
-    '<html>',
-    '<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /></head>',
-    '<body style="margin:0;padding:0;background:#f1f5f9;">',
-    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:24px 0;">',
-    '<tr><td align="center">',
-    '<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;">',
-    `<tr><td style="padding:24px 32px;border-bottom:1px solid #e2e8f0;">${header}</td></tr>`,
-    `<tr><td style="padding:24px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#0f172a;">${bodyHtml}</td></tr>`,
-    '<tr><td style="padding:16px 32px;border-top:1px solid #e2e8f0;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:#64748b;">Sent by Agent Hub.</td></tr>',
-    '</table>',
-    '</td></tr>',
-    '</table>',
-    '</body>',
-    '</html>',
-  ].join('');
+  return renderEmailShell(
+    renderHeaderHtml(logoCid ? `cid:${logoCid}` : null),
+    renderSanitizedBodyHtml(bodyText),
+  );
+}
+
+/**
+ * Browser-facing twin of {@link renderBrandedEmailHtml} for the Settings email
+ * preview. Real emails embed the logo as an inline `cid:` attachment, which a
+ * browser can't resolve — so the preview inlines the same bytes as a `data:`
+ * URL instead. `null` renders the text-wordmark fallback (branding disabled or
+ * asset unreadable), exactly matching the sent email's header for that state.
+ */
+export function renderBrandedEmailPreviewHtml(
+  bodyText: string,
+  logoDataUrl: string | null,
+): string {
+  return renderEmailShell(renderHeaderHtml(logoDataUrl), renderSanitizedBodyHtml(bodyText));
 }
 
 export interface BrandedEmailParts {

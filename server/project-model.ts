@@ -13,6 +13,7 @@ import config from './config.js';
 import { getDb, getStmts } from './db.js';
 import { removeStaleMcpConfigFiles } from './hooks.js';
 import { resolveProjectSkillsDir, setProjectSkillsDataDir } from './project-skill-paths.js';
+import { resolveProjectBrandingDir, setProjectBrandingDataDir } from './project-branding.js';
 import {
   getProjectMode,
   getWorkflowWorkspaceDir,
@@ -35,6 +36,7 @@ let projects: Project[] = [];
 function initProjects(dataDir?: string): void {
   if (dataDir) {
     setProjectSkillsDataDir(dataDir);
+    setProjectBrandingDataDir(dataDir);
     PROJECTS_PATH = path.join(dataDir, 'projects.json');
   }
   if (!existsSync(PROJECTS_PATH)) {
@@ -45,6 +47,7 @@ function initProjects(dataDir?: string): void {
   hydrateProjects();
   migrateWorkflowProjectWorkspaces();
   migrateProjectSkillDirectories();
+  migrateProjectBrandingDirectories();
   migrateWebhookRepoToProject();
   migrateAgentMcpServers();
   migrateStaleMcpConfigFiles();
@@ -220,6 +223,35 @@ function migrateProjectSkillDirectories(): void {
   }
 }
 
+/**
+ * Move per-project email-logo branding files out of the ephemeral workspace
+ * dir (`config.projectsDir/<id>/branding`, i.e. legacy `project.ahw/branding`)
+ * into the durable data dir (`<dataDir>/project-branding/<id>`). The workspace
+ * tree is separately bind-mounted and recreated by hosted restart/redeploy
+ * flows, which wiped every project's logo bytes on restart while the
+ * `projects.json` metadata (durable) kept dangling at the missing files —
+ * emails then silently fell back to the global logo. Mirrors
+ * `migrateProjectSkillDirectories`; idempotent (copies only missing entries).
+ */
+function migrateProjectBrandingDirectories(): void {
+  for (const project of projects) {
+    const canonicalDir = resolveProjectBrandingDir(project.id);
+    const legacyDir = path.join(getProjectDataDir(project.id), 'branding');
+    if (!canonicalDir || canonicalDir === legacyDir) continue;
+    try {
+      if (copyMissingDirectoryEntries(legacyDir, canonicalDir)) {
+        console.log(
+          `[branding] Migrated project email logo for "${project.id}" from ${legacyDir} to ${canonicalDir}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[branding] Failed to migrate project branding for "${project.id}": ${(err as Error).message}`,
+      );
+    }
+  }
+}
+
 function hydrateProjects(): void {
   for (const p of projects) {
     p.ahw = getProjectDataDir(p.id);
@@ -256,6 +288,7 @@ function saveProjects(): void {
 
 function reloadProjects(dataDir: string): void {
   setProjectSkillsDataDir(dataDir);
+  setProjectBrandingDataDir(dataDir);
   PROJECTS_PATH = path.join(dataDir, 'projects.json');
   if (!existsSync(PROJECTS_PATH)) {
     mkdirSync(dataDir, { recursive: true });
@@ -265,6 +298,7 @@ function reloadProjects(dataDir: string): void {
   hydrateProjects();
   migrateWorkflowProjectWorkspaces();
   migrateProjectSkillDirectories();
+  migrateProjectBrandingDirectories();
   // Also run on reload, not just initProjects: an org that never happens to be
   // the boot-active one only ever reaches this path (performOrgSwitch calls
   // initDb then reloadProjects). Without it, that org's DB would keep a legacy

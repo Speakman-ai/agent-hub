@@ -6,10 +6,14 @@ vi.mock('./config.js', () => ({ default: mockConfig }));
 import {
   BRAND_LOGO_CID,
   buildBrandedReleaseEmail,
+  buildSampleReleaseDigestBody,
   renderBrandedEmailHtml,
+  renderBrandedEmailPreviewHtml,
   renderSanitizedBodyHtml,
   resolveBrandLogoAttachment,
+  resolveBrandLogoDataUrl,
   resetBrandLogoCacheForTest,
+  toImageDataUrl,
 } from './email-branding.js';
 
 beforeEach(() => {
@@ -160,5 +164,61 @@ describe('buildBrandedReleaseEmail — per-project logo override', () => {
     expect(parts.attachments).toEqual([]);
     expect(parts.html).not.toContain('cid:');
     expect(parts.html).toContain('<html>');
+  });
+});
+
+describe('toImageDataUrl', () => {
+  it('encodes bytes as a base64 data URL with the given content type', () => {
+    const url = toImageDataUrl(Buffer.from('abc'), 'image/gif');
+    expect(url).toBe(`data:image/gif;base64,${Buffer.from('abc').toString('base64')}`);
+  });
+});
+
+describe('resolveBrandLogoDataUrl', () => {
+  it('returns the global asset as an image/png data URL when enabled', () => {
+    const url = resolveBrandLogoDataUrl();
+    expect(url).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it('returns null when branding is disabled', () => {
+    mockConfig.emailLogoEnabled = false;
+    expect(resolveBrandLogoDataUrl()).toBeNull();
+  });
+});
+
+describe('renderBrandedEmailPreviewHtml', () => {
+  it('inlines the logo as an <img src> data URL (not a cid) and renders the body', () => {
+    const dataUrl = toImageDataUrl(Buffer.from('logo'), 'image/png');
+    const html = renderBrandedEmailPreviewHtml('# Hi\n\nbody text', dataUrl);
+    expect(html).toContain(`<img src="${dataUrl}"`);
+    expect(html).not.toContain('cid:');
+    expect(html).toContain('<h1>Hi</h1>');
+    expect(html).toContain('<p>body text</p>');
+  });
+
+  it('falls back to the text wordmark when no logo data URL is supplied', () => {
+    const html = renderBrandedEmailPreviewHtml('body', null);
+    expect(html).not.toContain('<img');
+    expect(html).toContain('Agent Hub');
+  });
+
+  it('sanitizes malicious body markup while keeping the trusted shell', () => {
+    const html = renderBrandedEmailPreviewHtml(
+      'x <script>steal()</script> <img src="https://evil.example/p.gif">',
+      null,
+    );
+    expect(html).not.toContain('<script');
+    expect(html).not.toContain('evil.example');
+    expect(html).toContain('<html>');
+  });
+});
+
+describe('buildSampleReleaseDigestBody', () => {
+  it('includes the project name in the heading', () => {
+    expect(buildSampleReleaseDigestBody('Acme')).toContain("What's new in Acme");
+  });
+
+  it('falls back to a generic subject when no name is given', () => {
+    expect(buildSampleReleaseDigestBody('  ')).toContain("What's new in your project");
   });
 });

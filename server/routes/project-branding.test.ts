@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from 'fs';
 import path from 'path';
 import { tmpdir } from 'os';
 import createProjectBrandingRoutes from './project-branding.js';
+import { setProjectBrandingDataDir } from '../project-branding.js';
 import type { Project, RouteDeps } from '../types.js';
 
 const PNG_1X1 =
@@ -15,9 +16,16 @@ let rootDir: string;
 let project: Project;
 let saveProjects: ReturnType<typeof vi.fn>;
 
+// Branding is stored under the durable data dir (`<dataDir>/project-branding/
+// <id>`), resolved from the module-level active data dir — not the injected
+// getProjectDataDir. Point it at the per-test tmp root.
 function brandingFiles(): string[] {
-  const dir = path.join(rootDir, 'proj1', 'branding');
+  const dir = path.join(rootDir, 'project-branding', 'proj1');
   return existsSync(dir) ? readdirSync(dir) : [];
+}
+
+function brandingFilePath(filename: string): string {
+  return path.join(rootDir, 'project-branding', 'proj1', filename);
 }
 
 function buildApp(role = 'Admin') {
@@ -41,6 +49,7 @@ function buildApp(role = 'Admin') {
 
 beforeEach(() => {
   rootDir = mkdtempSync(path.join(tmpdir(), 'proj-branding-route-'));
+  setProjectBrandingDataDir(rootDir);
   project = { id: 'proj1', name: 'Proj 1', cwd: '/tmp/p1', ahw: '/tmp/p1', agents: [] };
 });
 
@@ -59,9 +68,7 @@ describe('project email logo routes', () => {
     expect(put.body.emailLogo.contentType).toBe('image/png');
     expect(project.emailLogo?.filename).toBe(put.body.emailLogo.filename);
     expect(saveProjects).toHaveBeenCalledTimes(1);
-    expect(existsSync(path.join(rootDir, 'proj1', 'branding', put.body.emailLogo.filename))).toBe(
-      true,
-    );
+    expect(existsSync(brandingFilePath(put.body.emailLogo.filename))).toBe(true);
 
     const meta = await request(app).get('/api/projects/proj1/email-logo');
     expect(meta.status).toBe(200);
@@ -104,7 +111,7 @@ describe('project email logo routes', () => {
     expect(second.status).toBe(500);
     // Metadata still points at the first logo, whose file still exists...
     expect(project.emailLogo?.filename).toBe(firstLogo.filename);
-    expect(existsSync(path.join(rootDir, 'proj1', 'branding', firstLogo.filename))).toBe(true);
+    expect(existsSync(brandingFilePath(firstLogo.filename))).toBe(true);
     // ...and the orphaned second file was cleaned up (only the first remains).
     expect(brandingFiles()).toEqual([firstLogo.filename]);
   });
@@ -118,9 +125,7 @@ describe('project email logo routes', () => {
     expect(del.status).toBe(200);
     expect(del.body).toEqual({ ok: true, emailLogo: null });
     expect(project.emailLogo).toBeUndefined();
-    expect(existsSync(path.join(rootDir, 'proj1', 'branding', put.body.emailLogo.filename))).toBe(
-      false,
-    );
+    expect(existsSync(brandingFilePath(put.body.emailLogo.filename))).toBe(false);
   });
 
   it('DELETE rollback keeps the file + metadata when persistence fails', async () => {
@@ -137,7 +142,7 @@ describe('project email logo routes', () => {
     expect(del.status).toBe(500);
     // Metadata restored and the bytes are NOT deleted.
     expect(project.emailLogo?.filename).toBe(logo.filename);
-    expect(existsSync(path.join(rootDir, 'proj1', 'branding', logo.filename))).toBe(true);
+    expect(existsSync(brandingFilePath(logo.filename))).toBe(true);
   });
 
   it('serves 404 for raw bytes when no logo is set', async () => {
@@ -179,5 +184,54 @@ describe('project email logo routes', () => {
       .put('/api/projects/nope/email-logo')
       .send({ dataUrl: PNG_DATA_URL });
     expect(put.status).toBe(404);
+  });
+});
+
+describe('release email preview route', () => {
+  it('inlines the uploaded project logo as a data URL and reports usingProjectLogo', async () => {
+    const app = buildApp();
+    await request(app).put('/api/projects/proj1/email-logo').send({ dataUrl: PNG_DATA_URL });
+
+    const res = await request(app).get('/api/projects/proj1/release-email-preview');
+    expect(res.status).toBe(200);
+    expect(res.body.usingProjectLogo).toBe(true);
+    // The stored PNG bytes are inlined into the preview shell (not a cid ref).
+    expect(res.body.html).toContain(`data:image/png;base64,${PNG_1X1}`);
+    expect(res.body.html).not.toContain('cid:');
+    // Representative messaging + subject reflect the project.
+    expect(res.body.html).toContain("What's new in Proj 1");
+    expect(res.body.subject).toBe("What's new in Proj 1");
+  });
+
+  it('reports usingProjectLogo=false and falls back when the stored file is missing', async () => {
+    const app = buildApp();
+    await request(app).put('/api/projects/proj1/email-logo').send({ dataUrl: PNG_DATA_URL });
+    // Metadata still points at a logo, but the bytes are gone (the exact
+    // restart/redeploy failure this feature must not misreport as "using the
+    // project logo").
+    rmSync(path.join(rootDir, 'project-branding', 'proj1'), { recursive: true, force: true });
+
+    const res = await request(app).get('/api/projects/proj1/release-email-preview');
+    expect(res.status).toBe(200);
+    expect(res.body.usingProjectLogo).toBe(false);
+    // The missing project bytes are NOT inlined; the global default is used.
+    expect(res.body.html).not.toContain(`data:image/png;base64,${PNG_1X1}`);
+    expect(res.body.html).toMatch(/data:image\/png;base64,/);
+  });
+
+  it('falls back to the global default logo when the project has no override', async () => {
+    const app = buildApp();
+    const res = await request(app).get('/api/projects/proj1/release-email-preview');
+    expect(res.status).toBe(200);
+    expect(res.body.usingProjectLogo).toBe(false);
+    // Global asset still inlines as a png data URL.
+    expect(res.body.html).toMatch(/data:image\/png;base64,/);
+    expect(res.body.html).toContain('<html>');
+  });
+
+  it('404s for an unknown project', async () => {
+    const app = buildApp();
+    const res = await request(app).get('/api/projects/nope/release-email-preview');
+    expect(res.status).toBe(404);
   });
 });

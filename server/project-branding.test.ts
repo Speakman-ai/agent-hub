@@ -5,12 +5,15 @@ import { tmpdir } from 'os';
 import {
   ProjectEmailLogoError,
   PROJECT_EMAIL_LOGO_MAX_BYTES,
+  deleteProjectBrandingDir,
   deleteProjectEmailLogoFile,
   deleteProjectEmailLogoFiles,
   isAllowedEmailLogoType,
   parseImageDataUrl,
   projectEmailLogoPath,
+  resolveProjectBrandingDir,
   resolveProjectEmailLogoAttachment,
+  setProjectBrandingDataDir,
   writeProjectEmailLogo,
 } from './project-branding.js';
 import { BRAND_LOGO_CID } from './email-branding.js';
@@ -21,10 +24,12 @@ const PNG_1X1 = Buffer.from(
   'base64',
 );
 
+const PROJECT_ID = 'proj1';
 let dataDir: string;
 
 beforeEach(() => {
   dataDir = mkdtempSync(path.join(tmpdir(), 'proj-branding-'));
+  setProjectBrandingDataDir(dataDir);
 });
 
 afterEach(() => {
@@ -57,44 +62,44 @@ describe('isAllowedEmailLogoType', () => {
 
 describe('writeProjectEmailLogo', () => {
   it('writes the image to a unique file and returns metadata', () => {
-    const logo = writeProjectEmailLogo(dataDir, PNG_1X1, 'image/png');
+    const logo = writeProjectEmailLogo(PROJECT_ID, PNG_1X1, 'image/png');
     expect(logo.filename).toMatch(/^email-logo-.+\.png$/);
     expect(logo.contentType).toBe('image/png');
     expect(logo.size).toBe(PNG_1X1.length);
     expect(logo.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    expect(existsSync(projectEmailLogoPath(dataDir, logo))).toBe(true);
+    expect(existsSync(projectEmailLogoPath(PROJECT_ID, logo))).toBe(true);
   });
 
   it('never overwrites a prior logo — each write is a distinct file', () => {
-    const a = writeProjectEmailLogo(dataDir, PNG_1X1, 'image/png');
-    const b = writeProjectEmailLogo(dataDir, Buffer.from('GIF89a-fake'), 'image/gif');
+    const a = writeProjectEmailLogo(PROJECT_ID, PNG_1X1, 'image/png');
+    const b = writeProjectEmailLogo(PROJECT_ID, Buffer.from('GIF89a-fake'), 'image/gif');
     expect(a.filename).not.toBe(b.filename);
     // Both files coexist; the route (not the writer) is responsible for
     // deleting the superseded one after metadata is persisted.
-    expect(existsSync(projectEmailLogoPath(dataDir, a))).toBe(true);
-    expect(existsSync(projectEmailLogoPath(dataDir, b))).toBe(true);
+    expect(existsSync(projectEmailLogoPath(PROJECT_ID, a))).toBe(true);
+    expect(existsSync(projectEmailLogoPath(PROJECT_ID, b))).toBe(true);
     // No staging temp file is left behind.
-    const temps = readdirSync(path.join(dataDir, 'branding')).filter((f) =>
+    const temps = readdirSync(resolveProjectBrandingDir(PROJECT_ID)).filter((f) =>
       f.startsWith('email-logo.tmp-'),
     );
     expect(temps).toEqual([]);
   });
 
   it('rejects a disallowed image type', () => {
-    expect(() => writeProjectEmailLogo(dataDir, PNG_1X1, 'image/svg+xml')).toThrow(
+    expect(() => writeProjectEmailLogo(PROJECT_ID, PNG_1X1, 'image/svg+xml')).toThrow(
       ProjectEmailLogoError,
     );
   });
 
   it('rejects an empty body', () => {
-    expect(() => writeProjectEmailLogo(dataDir, Buffer.alloc(0), 'image/png')).toThrow(
+    expect(() => writeProjectEmailLogo(PROJECT_ID, Buffer.alloc(0), 'image/png')).toThrow(
       ProjectEmailLogoError,
     );
   });
 
   it('rejects an oversized image', () => {
     const tooBig = Buffer.alloc(PROJECT_EMAIL_LOGO_MAX_BYTES + 1, 0x01);
-    expect(() => writeProjectEmailLogo(dataDir, tooBig, 'image/png')).toThrow(
+    expect(() => writeProjectEmailLogo(PROJECT_ID, tooBig, 'image/png')).toThrow(
       ProjectEmailLogoError,
     );
   });
@@ -102,30 +107,51 @@ describe('writeProjectEmailLogo', () => {
 
 describe('deleteProjectEmailLogoFile', () => {
   it('removes only the given logo file and is a no-op for null', () => {
-    const a = writeProjectEmailLogo(dataDir, PNG_1X1, 'image/png');
-    const b = writeProjectEmailLogo(dataDir, PNG_1X1, 'image/png');
-    deleteProjectEmailLogoFile(dataDir, a);
-    expect(existsSync(projectEmailLogoPath(dataDir, a))).toBe(false);
-    expect(existsSync(projectEmailLogoPath(dataDir, b))).toBe(true);
-    expect(() => deleteProjectEmailLogoFile(dataDir, null)).not.toThrow();
+    const a = writeProjectEmailLogo(PROJECT_ID, PNG_1X1, 'image/png');
+    const b = writeProjectEmailLogo(PROJECT_ID, PNG_1X1, 'image/png');
+    deleteProjectEmailLogoFile(PROJECT_ID, a);
+    expect(existsSync(projectEmailLogoPath(PROJECT_ID, a))).toBe(false);
+    expect(existsSync(projectEmailLogoPath(PROJECT_ID, b))).toBe(true);
+    expect(() => deleteProjectEmailLogoFile(PROJECT_ID, null)).not.toThrow();
   });
 });
 
 describe('deleteProjectEmailLogoFiles', () => {
   it('removes every stored logo file and is a no-op when none exist', () => {
-    const a = writeProjectEmailLogo(dataDir, PNG_1X1, 'image/png');
-    const b = writeProjectEmailLogo(dataDir, PNG_1X1, 'image/png');
-    deleteProjectEmailLogoFiles(dataDir);
-    expect(existsSync(projectEmailLogoPath(dataDir, a))).toBe(false);
-    expect(existsSync(projectEmailLogoPath(dataDir, b))).toBe(false);
-    expect(() => deleteProjectEmailLogoFiles(dataDir)).not.toThrow();
+    const a = writeProjectEmailLogo(PROJECT_ID, PNG_1X1, 'image/png');
+    const b = writeProjectEmailLogo(PROJECT_ID, PNG_1X1, 'image/png');
+    deleteProjectEmailLogoFiles(PROJECT_ID);
+    expect(existsSync(projectEmailLogoPath(PROJECT_ID, a))).toBe(false);
+    expect(existsSync(projectEmailLogoPath(PROJECT_ID, b))).toBe(false);
+    expect(() => deleteProjectEmailLogoFiles(PROJECT_ID)).not.toThrow();
+  });
+});
+
+describe('durable storage location', () => {
+  it('stores branding under the durable data dir, not the project workspace dir', () => {
+    // Regression: branding used to live under the ephemeral workspace tree
+    // (config.projectsDir/<id>/branding), which restart/redeploy recreates —
+    // wiping every project's logo bytes at once. It must resolve under the
+    // active data dir instead.
+    const dir = resolveProjectBrandingDir(PROJECT_ID);
+    expect(dir).toBe(path.join(dataDir, 'project-branding', PROJECT_ID));
+    const logo = writeProjectEmailLogo(PROJECT_ID, PNG_1X1, 'image/png');
+    expect(existsSync(path.join(dir, logo.filename))).toBe(true);
+  });
+
+  it('deleteProjectBrandingDir removes the whole branding directory', () => {
+    writeProjectEmailLogo(PROJECT_ID, PNG_1X1, 'image/png');
+    expect(existsSync(resolveProjectBrandingDir(PROJECT_ID))).toBe(true);
+    deleteProjectBrandingDir(PROJECT_ID);
+    expect(existsSync(resolveProjectBrandingDir(PROJECT_ID))).toBe(false);
+    expect(() => deleteProjectBrandingDir(PROJECT_ID)).not.toThrow();
   });
 });
 
 describe('resolveProjectEmailLogoAttachment', () => {
   it('returns an inline attachment using the shared brand CID', () => {
-    const logo = writeProjectEmailLogo(dataDir, PNG_1X1, 'image/png');
-    const att = resolveProjectEmailLogoAttachment(logo, dataDir);
+    const logo = writeProjectEmailLogo(PROJECT_ID, PNG_1X1, 'image/png');
+    const att = resolveProjectEmailLogoAttachment(logo, PROJECT_ID);
     expect(att).not.toBeNull();
     expect(att?.cid).toBe(BRAND_LOGO_CID);
     expect(att?.contentType).toBe('image/png');
@@ -133,13 +159,13 @@ describe('resolveProjectEmailLogoAttachment', () => {
   });
 
   it('returns null when the logo is unset', () => {
-    expect(resolveProjectEmailLogoAttachment(null, dataDir)).toBeNull();
-    expect(resolveProjectEmailLogoAttachment(undefined, dataDir)).toBeNull();
+    expect(resolveProjectEmailLogoAttachment(null, PROJECT_ID)).toBeNull();
+    expect(resolveProjectEmailLogoAttachment(undefined, PROJECT_ID)).toBeNull();
   });
 
   it('returns null when the stored file is missing', () => {
-    const logo = writeProjectEmailLogo(dataDir, PNG_1X1, 'image/png');
-    deleteProjectEmailLogoFiles(dataDir);
-    expect(resolveProjectEmailLogoAttachment(logo, dataDir)).toBeNull();
+    const logo = writeProjectEmailLogo(PROJECT_ID, PNG_1X1, 'image/png');
+    deleteProjectEmailLogoFiles(PROJECT_ID);
+    expect(resolveProjectEmailLogoAttachment(logo, PROJECT_ID)).toBeNull();
   });
 });

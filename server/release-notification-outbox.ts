@@ -3,7 +3,7 @@ import { getStmts } from './db.js';
 import { sendEmailResult } from './email-sender.js';
 import { buildBrandedReleaseEmail } from './email-branding.js';
 import { resolveProjectEmailLogoAttachment } from './project-branding.js';
-import { findProject, getProjectDataDir } from './project-model.js';
+import { findProject } from './project-model.js';
 import { listDeploymentReleaseItemsWithContext } from './deploy/deployment-store.js';
 import { deploymentReleaseLabel } from './deploy/release-label.js';
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from './release-digest.js';
@@ -503,7 +503,7 @@ export async function deliverReleaseNotificationOutboxBatch(
     try {
       const project = findProject(claimed.project_id);
       const projectLogo = project?.emailLogo
-        ? resolveProjectEmailLogoAttachment(project.emailLogo, getProjectDataDir(project.id))
+        ? resolveProjectEmailLogoAttachment(project.emailLogo, project.id)
         : null;
       const branded = buildBrandedReleaseEmail(claimed.body_text, projectLogo);
       const result = await sendEmailResult({

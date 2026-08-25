@@ -11633,6 +11633,21 @@ components:
           type: string
       required:
         - error
+    ReleaseEmailPreviewResponse:
+      type: object
+      properties:
+        html:
+          type: string
+          description: Fully rendered branded email HTML for preview.
+        subject:
+          type: string
+        usingProjectLogo:
+          type: boolean
+          description: True when the preview used the per-project logo override.
+      required:
+        - html
+        - subject
+        - usingProjectLogo
     ProjectOrderResponse:
       type: object
       properties:
@@ -37376,6 +37391,33 @@ paths:
                 format: binary
         "404":
           description: No logo set or file missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectBrandingErrorResponse"
+  /api/projects/{projectId}/release-email-preview:
+    get:
+      tags:
+        - Projects
+      summary: Render a branded release/deployment email preview
+      description: Returns the exact branded email shell a release/deployment notification uses, with the project logo (or global default, or wordmark fallback) inlined and a representative digest body, so an admin can preview logo + messaging before a real deployment ships.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Rendered email preview.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseEmailPreviewResponse"
+        "404":
+          description: Project not found.
           content:
             application/json:
               schema:

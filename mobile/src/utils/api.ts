@@ -257,6 +257,10 @@ export const api = {
     getProjectEmailLogo: (projectId: string) => fetchJSON(`/projects/${projectId}/email-logo`),
     updateProjectEmailLogo: (projectId: string, dataUrl: string) => fetchJSON(`/projects/${projectId}/email-logo`, { method: 'PUT', body: JSON.stringify({ dataUrl }) }),
     deleteProjectEmailLogo: (projectId: string) => fetchJSON(`/projects/${projectId}/email-logo`, { method: 'DELETE' }),
+    getReleaseEmailPreview: (
+      projectId: string,
+    ): Promise<{ html: string; subject: string; usingProjectLogo: boolean }> =>
+      fetchJSON(`/projects/${projectId}/release-email-preview`),
     // Per-user, project-scoped settings (e.g. default Finalize automation level).
     getProjectUserSettings: (projectId: any) => fetchJSON(`/projects/${projectId}/user-settings`),
     updateProjectUserSettings: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}/user-settings`, {

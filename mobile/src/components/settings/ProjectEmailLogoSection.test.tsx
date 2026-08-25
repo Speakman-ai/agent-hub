@@ -14,10 +14,17 @@ function nativeHost(name: string) {
 vi.mock('react-native', () => ({
   ActivityIndicator: nativeHost('ActivityIndicator'),
   Image: nativeHost('Image'),
+  Modal: nativeHost('Modal'),
   StyleSheet: { create: (styles: any) => styles },
   Text: nativeHost('Text'),
   TouchableOpacity: nativeHost('TouchableOpacity'),
   View: nativeHost('View'),
+}));
+
+// react-native-webview ships untranspiled — mock it to a plain host element so
+// the component (and this suite) don't try to transform the native module.
+vi.mock('react-native-webview', () => ({
+  WebView: nativeHost('WebView'),
 }));
 
 vi.mock('expo-image-picker', () => ({
@@ -31,6 +38,7 @@ vi.mock('../../utils/api', () => ({
     getProjectEmailLogo: vi.fn(),
     updateProjectEmailLogo: vi.fn(),
     deleteProjectEmailLogo: vi.fn(),
+    getReleaseEmailPreview: vi.fn(),
   },
 }));
 
@@ -53,6 +61,7 @@ const permMock = vi.mocked(ImagePicker.requestMediaLibraryPermissionsAsync);
 const launchMock = vi.mocked(ImagePicker.launchImageLibraryAsync);
 const getLogo = vi.mocked(api.getProjectEmailLogo);
 const updateLogo = vi.mocked(api.updateProjectEmailLogo);
+const getPreview = vi.mocked(api.getReleaseEmailPreview);
 
 async function flush() {
   await TestRenderer.act(async () => {
@@ -90,6 +99,11 @@ beforeEach(() => {
   getLogo.mockResolvedValue({ emailLogo: null } as any);
   permMock.mockResolvedValue({ granted: true } as any);
   updateLogo.mockResolvedValue({ emailLogo: { filename: 'x', contentType: 'image/png' } } as any);
+  getPreview.mockResolvedValue({
+    html: '<html><body><h1>Preview body</h1></body></html>',
+    subject: "What's new",
+    usingProjectLogo: false,
+  } as any);
 });
 
 describe('mobile ProjectEmailLogoSection stale-project guards', () => {
@@ -117,6 +131,18 @@ describe('mobile ProjectEmailLogoSection stale-project guards', () => {
     });
 
     expect(updateLogo).not.toHaveBeenCalled();
+  });
+
+  it('opens the email preview WebView with the rendered HTML', async () => {
+    const renderer = await renderAt('p1');
+    const btn = renderer.root.findByProps({ testID: 'project-email-logo-preview' });
+    await TestRenderer.act(async () => {
+      btn.props.onPress();
+    });
+    await flush();
+    expect(getPreview).toHaveBeenCalledWith('p1');
+    const webview = renderer.root.findByType('WebView' as any);
+    expect(webview.props.source.html).toContain('Preview body');
   });
 
   it('uploads normally when the project does not change', async () => {

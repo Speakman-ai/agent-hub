@@ -10,6 +10,7 @@ import { hasRole, isLocalBundledDeployment } from '../utils/auth';
     updateProjectEmailLogo: vi.fn(),
     deleteProjectEmailLogo: vi.fn(),
     fetchProjectEmailLogoObjectUrl: vi.fn(),
+    getReleaseEmailPreview: vi.fn(),
   },
 }));
 
@@ -33,6 +34,11 @@ beforeEach(() => {
   (isLocalBundledDeployment as any).mockReturnValue(false);
   (api.getProjectEmailLogo as any).mockResolvedValue({ emailLogo: null });
   (api.fetchProjectEmailLogoObjectUrl as any).mockResolvedValue('blob:fake');
+  (api.getReleaseEmailPreview as any).mockResolvedValue({
+    html: '<html><body><h1>Preview body</h1></body></html>',
+    subject: "What's new",
+    usingProjectLogo: false,
+  });
 });
 
 describe('ProjectEmailLogoSection', () => {
@@ -42,6 +48,20 @@ describe('ProjectEmailLogoSection', () => {
     expect(screen.getByText('Default logo')).toBeTruthy();
     expect(screen.getByRole('button', { name: /Upload/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Remove/i })).toBeNull();
+  });
+
+  it('opens an email preview modal with the rendered HTML in an iframe', async () => {
+    render(<ProjectEmailLogoSection projectId="p1" />);
+    const previewBtn = await screen.findByRole('button', { name: /Preview email/i });
+    fireEvent.click(previewBtn);
+    await waitFor(() => expect(api.getReleaseEmailPreview).toHaveBeenCalledWith('p1'));
+    const modal = await screen.findByTestId('email-preview-modal');
+    const iframe = modal.querySelector('iframe') as HTMLIFrameElement;
+    expect(iframe).toBeTruthy();
+    expect(iframe.getAttribute('srcdoc')).toContain('Preview body');
+    // Clicking the backdrop closes the modal.
+    fireEvent.click(modal);
+    await waitFor(() => expect(screen.queryByTestId('email-preview-modal')).toBeNull());
   });
 
   it('renders an existing logo preview and a Remove button', async () => {

@@ -22,6 +22,7 @@ import type { Project } from './types.js';
 import type { Stmts } from './types.js';
 import { deleteAllPreviewSecretsForProject } from './preview/preview-secrets-store.js';
 import { deleteProjectSkillsDir } from './project-skill-paths.js';
+import { deleteProjectBrandingDir } from './project-branding.js';
 import { removeAllProjectMembers } from './project-members-store.js';
 
 export interface CascadeDeps {
@@ -58,6 +59,7 @@ export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
   // otherwise a future project with the same id could inherit stale members.
   removeAllProjectMembers(project.id);
   deleteProjectSkillsDir(project);
+  deleteProjectBrandingDir(project.id);
   stmts.deleteEscalationsByProject.run(project.id);
   stmts.deleteSupportTicketsByProject.run(project.id);
   stmts.deleteNotesByProject.run(project.id);

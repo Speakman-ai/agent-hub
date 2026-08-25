@@ -9,6 +9,7 @@ import {
 } from 'fs';
 import { randomUUID } from 'crypto';
 import path from 'path';
+import config from './config.js';
 import { extensionForContentType } from './mime-extensions.js';
 import { validateUploadContent } from './upload-validation.js';
 import { BRAND_LOGO_CID } from './email-branding.js';
@@ -19,10 +20,18 @@ import type { ProjectEmailLogo } from './types.js';
  * Per-project override for the branded release/deployment email logo.
  *
  * The global logo lives in `server/email-branding.ts` as a single asset. This
- * module lets each project store its own raster image on disk (under the
- * project data dir) and resolves it into the same inline `cid:` attachment the
- * email shell already references, so a project's notification emails brand with
- * their own logo while keeping the exact email layout.
+ * module lets each project store its own raster image on disk and resolves it
+ * into the same inline `cid:` attachment the email shell already references, so
+ * a project's notification emails brand with their own logo while keeping the
+ * exact email layout.
+ *
+ * Storage lives under the **durable** data dir (`<dataDir>/project-branding/
+ * <projectId>/`), NOT the project workspace dir (`config.projectsDir/<id>`).
+ * The workspace tree is separately bind-mounted and hosted restart/redeploy
+ * flows recreate it — storing branding there wiped every project's logo bytes
+ * on restart while the `projects.json` metadata (durable) kept dangling at the
+ * missing files, so emails silently fell back to the global logo. This mirrors
+ * the same fix already applied to project skills (see project-skill-paths.ts).
  *
  * Each upload is stored under a **unique** filename (`email-logo-<uuid>.<ext>`)
  * and written via a temp file + atomic rename. Nothing here deletes a prior
@@ -34,6 +43,21 @@ import type { ProjectEmailLogo } from './types.js';
  * serving attacker-supplied SVG from our own origin for the settings preview
  * would be an XSS vector. Only raster formats are accepted.
  */
+
+// The active org's durable data dir. Tracks `reloadProjects(dataDir)` the same
+// way `setProjectSkillsDataDir` does, so an org switch repoints branding
+// storage without leaking one org's logos into another.
+let activeDataDir: string = config.dataDir;
+
+/** Point branding storage at a specific durable data dir (per-org). */
+export function setProjectBrandingDataDir(dataDir: string): void {
+  activeDataDir = dataDir;
+}
+
+/** Durable directory holding a project's branding files. */
+export function resolveProjectBrandingDir(projectId: string): string {
+  return path.join(activeDataDir, 'project-branding', projectId);
+}
 
 /** Raster image types accepted for a project email logo. */
 export const PROJECT_EMAIL_LOGO_ALLOWED_TYPES = [
@@ -59,13 +83,13 @@ export function isAllowedEmailLogoType(contentType: string): boolean {
   );
 }
 
-function brandingDir(projectDataDir: string): string {
-  return path.join(projectDataDir, 'branding');
+function brandingDir(projectId: string): string {
+  return resolveProjectBrandingDir(projectId);
 }
 
 /** Absolute path to a stored project logo. */
-export function projectEmailLogoPath(projectDataDir: string, logo: ProjectEmailLogo): string {
-  return path.join(brandingDir(projectDataDir), logo.filename);
+export function projectEmailLogoPath(projectId: string, logo: ProjectEmailLogo): string {
+  return path.join(brandingDir(projectId), logo.filename);
 }
 
 /** Parsed `data:` URL for an inline image upload. */
@@ -102,7 +126,7 @@ export class ProjectEmailLogoError extends Error {
  * caller removes the prior file only after persistence succeeds.
  */
 export function writeProjectEmailLogo(
-  projectDataDir: string,
+  projectId: string,
   buffer: Buffer,
   contentType: string,
 ): ProjectEmailLogo {
@@ -125,7 +149,7 @@ export function writeProjectEmailLogo(
     throw new ProjectEmailLogoError(rejectReason);
   }
 
-  const dir = brandingDir(projectDataDir);
+  const dir = brandingDir(projectId);
   mkdirSync(dir, { recursive: true });
 
   const ext = extensionForContentType(type);
@@ -155,24 +179,24 @@ export function writeProjectEmailLogo(
 
 /** Best-effort removal of a single stored logo's file. */
 export function deleteProjectEmailLogoFile(
-  projectDataDir: string,
+  projectId: string,
   logo: ProjectEmailLogo | null | undefined,
 ): void {
   if (!logo) return;
   try {
-    rmSync(projectEmailLogoPath(projectDataDir, logo), { force: true });
+    rmSync(projectEmailLogoPath(projectId, logo), { force: true });
   } catch {
     /* best-effort cleanup */
   }
 }
 
 /**
- * Remove ALL stored logo files (and stale staging temps) for a project. Used
- * for full teardown (e.g. project deletion). Routine upload/remove uses
- * `deleteProjectEmailLogoFile` on the specific prior file instead.
+ * Remove a project's entire branding directory. Used for full teardown (e.g.
+ * project deletion). Routine upload/remove uses `deleteProjectEmailLogoFile` on
+ * the specific prior file instead.
  */
-export function deleteProjectEmailLogoFiles(projectDataDir: string): void {
-  const dir = brandingDir(projectDataDir);
+export function deleteProjectEmailLogoFiles(projectId: string): void {
+  const dir = brandingDir(projectId);
   if (!existsSync(dir)) return;
   for (const entry of readdirSync(dir)) {
     if (entry === LOGO_PREFIX || entry.startsWith(LOGO_PREFIX)) {
@@ -185,13 +209,19 @@ export function deleteProjectEmailLogoFiles(projectDataDir: string): void {
   }
 }
 
-/** Read a stored project logo's bytes, or `null` if it can't be read. */
-export function readProjectEmailLogo(
-  projectDataDir: string,
-  logo: ProjectEmailLogo,
-): Buffer | null {
+/** Remove a project's entire durable branding directory (project teardown). */
+export function deleteProjectBrandingDir(projectId: string): void {
   try {
-    return readFileSync(projectEmailLogoPath(projectDataDir, logo));
+    rmSync(brandingDir(projectId), { recursive: true, force: true });
+  } catch {
+    /* best-effort cleanup */
+  }
+}
+
+/** Read a stored project logo's bytes, or `null` if it can't be read. */
+export function readProjectEmailLogo(projectId: string, logo: ProjectEmailLogo): Buffer | null {
+  try {
+    return readFileSync(projectEmailLogoPath(projectId, logo));
   } catch {
     return null;
   }
@@ -204,10 +234,10 @@ export function readProjectEmailLogo(
  */
 export function resolveProjectEmailLogoAttachment(
   logo: ProjectEmailLogo | null | undefined,
-  projectDataDir: string,
+  projectId: string,
 ): EmailAttachment | null {
   if (!logo) return null;
-  const content = readProjectEmailLogo(projectDataDir, logo);
+  const content = readProjectEmailLogo(projectId, logo);
   if (!content) return null;
   return {
     filename: logo.filename,

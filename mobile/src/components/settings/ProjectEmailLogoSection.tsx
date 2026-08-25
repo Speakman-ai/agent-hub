@@ -1,5 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Image, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import {
+  View,
+  Text,
+  Image,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  Modal,
+} from 'react-native';
+import { WebView } from 'react-native-webview';
 import * as ImagePicker from 'expo-image-picker';
 import { api } from '../../utils/api';
 import { colors } from '../../theme/colors';
@@ -23,6 +32,8 @@ export default function ProjectEmailLogoSection({ projectId }: { projectId?: str
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const canEdit = hasRole('Admin');
   // Monotonic request generation. Every intent that changes the displayed logo
   // (project switch, load, upload, remove) claims a new value; async results
@@ -48,6 +59,8 @@ export default function ProjectEmailLogoSection({ projectId }: { projectId?: str
     setBusy(false);
     setError(null);
     setLoading(false);
+    setPreviewHtml(null);
+    setPreviewLoading(false);
     requestRef.current += 1; // invalidate any in-flight load for the old project
   }
 
@@ -132,6 +145,21 @@ export default function ProjectEmailLogoSection({ projectId }: { projectId?: str
     }
   }, [projectId, busy, isActive]);
 
+  const handlePreview = useCallback(async () => {
+    const id = projectId;
+    if (!id || previewLoading) return;
+    setPreviewLoading(true);
+    setError(null);
+    try {
+      const res = await api.getReleaseEmailPreview(id);
+      if (isActive(id)) setPreviewHtml(res.html);
+    } catch (err: any) {
+      if (isActive(id)) setError(err?.message || 'Failed to load email preview.');
+    } finally {
+      if (isActive(id)) setPreviewLoading(false);
+    }
+  }, [projectId, previewLoading, isActive]);
+
   const previewUri = logo
     ? `${getApiBaseUrl()}/projects/${projectId}/email-logo/raw?v=${encodeURIComponent(logo.updatedAt)}`
     : null;
@@ -184,7 +212,45 @@ export default function ProjectEmailLogoSection({ projectId }: { projectId?: str
         <Text style={styles.note}>Admin role required to change the email logo.</Text>
       )}
 
+      <TouchableOpacity
+        testID="project-email-logo-preview"
+        style={[styles.secondaryBtn, styles.previewBtn]}
+        onPress={handlePreview}
+        disabled={previewLoading || !projectId}
+      >
+        {previewLoading ? (
+          <ActivityIndicator color={colors.gray300} size="small" />
+        ) : (
+          <Text style={styles.secondaryBtnText}>Preview email</Text>
+        )}
+      </TouchableOpacity>
+
       {error && <Text style={styles.error}>{error}</Text>}
+
+      <Modal
+        visible={previewHtml !== null}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setPreviewHtml(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Email preview</Text>
+              <TouchableOpacity onPress={() => setPreviewHtml(null)}>
+                <Text style={styles.modalClose}>Close</Text>
+              </TouchableOpacity>
+            </View>
+            {previewHtml !== null && (
+              <WebView
+                originWhitelist={['*']}
+                source={{ html: previewHtml }}
+                style={styles.webview}
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -223,6 +289,34 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   secondaryBtnText: { color: colors.gray300, fontSize: 13 },
+  previewBtn: { alignSelf: 'flex-start', marginTop: 10 },
   note: { fontSize: 12, color: colors.gray600, marginTop: 8 },
   error: { fontSize: 12, color: '#fca5a5', marginTop: 8 },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  modalCard: {
+    flex: 1,
+    marginVertical: 40,
+    backgroundColor: colors.gray900,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray700,
+  },
+  modalTitle: { fontSize: 14, color: colors.gray200, fontWeight: '600' },
+  modalClose: { fontSize: 14, color: colors.blue400 },
+  webview: { flex: 1, backgroundColor: '#fff' },
 });

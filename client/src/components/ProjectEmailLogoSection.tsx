@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertCircle, Image as ImageIcon, Loader2, Trash2, Upload } from 'lucide-react';
+import { AlertCircle, Eye, Image as ImageIcon, Loader2, Trash2, Upload, X } from 'lucide-react';
 import { api } from '../utils/api';
 import { hasRole, isLocalBundledDeployment } from '../utils/auth';
 
@@ -38,6 +38,8 @@ export default function ProjectEmailLogoSection({
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Monotonic request generation. Every intent that changes the displayed
   // logo/preview (project switch, load, upload, remove) claims a new value;
@@ -64,6 +66,8 @@ export default function ProjectEmailLogoSection({
     setBusy(false);
     setError(null);
     setLoading(false);
+    setPreviewHtml(null);
+    setPreviewLoading(false);
     requestRef.current += 1; // invalidate any in-flight load/preview for the old project
   }
 
@@ -182,6 +186,22 @@ export default function ProjectEmailLogoSection({
     }
   }, [projectId, showToast, isActive]);
 
+  const handlePreview = useCallback(async () => {
+    const id = projectId;
+    if (!id) return;
+    setPreviewLoading(true);
+    setError(null);
+    try {
+      const res = await api.getReleaseEmailPreview(id);
+      if (!isActive(id)) return;
+      setPreviewHtml(res.html);
+    } catch (err: any) {
+      if (isActive(id)) setError(err?.message || 'Failed to load email preview.');
+    } finally {
+      if (isActive(id)) setPreviewLoading(false);
+    }
+  }, [projectId, isActive]);
+
   return (
     <div
       className="bg-gray-800/30 border border-gray-700 rounded-xl p-4"
@@ -244,6 +264,17 @@ export default function ProjectEmailLogoSection({
             )}
           </div>
         )}
+
+        <button
+          type="button"
+          onClick={handlePreview}
+          disabled={previewLoading || !projectId}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-gray-700 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Preview the branded release/deployment email"
+        >
+          {previewLoading ? <Loader2 size={13} className="animate-spin" /> : <Eye size={13} />}
+          Preview email
+        </button>
       </div>
 
       {!canEdit && (
@@ -254,6 +285,40 @@ export default function ProjectEmailLogoSection({
         <div className="mt-3 flex items-start gap-2 text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
           <AlertCircle size={14} className="mt-0.5 shrink-0" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {previewHtml !== null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Email preview"
+          onClick={() => setPreviewHtml(null)}
+          data-testid="email-preview-modal"
+        >
+          <div
+            className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+              <h4 className="text-sm font-semibold text-gray-200">Email preview</h4>
+              <button
+                type="button"
+                onClick={() => setPreviewHtml(null)}
+                className="p-1 rounded-md text-gray-400 hover:text-gray-200 hover:bg-gray-800"
+                aria-label="Close preview"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <iframe
+              title="Branded email preview"
+              sandbox=""
+              srcDoc={previewHtml}
+              className="w-full flex-1 min-h-[420px] bg-white"
+            />
+          </div>
         </div>
       )}
     </div>

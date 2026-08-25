@@ -26,6 +26,17 @@ const ErrorResponse = registerComponent(
   z.object({ error: z.string() }),
 );
 
+const ReleaseEmailPreviewResponse = registerComponent(
+  'ReleaseEmailPreviewResponse',
+  z.object({
+    html: z.string().openapi({ description: 'Fully rendered branded email HTML for preview.' }),
+    subject: z.string(),
+    usingProjectLogo: z
+      .boolean()
+      .openapi({ description: 'True when the preview used the per-project logo override.' }),
+  }),
+);
+
 export const UpdateProjectEmailLogoRequestSchema = z.object({
   dataUrl: z
     .string()
@@ -79,6 +90,23 @@ registerPath({
       description: 'No logo set or file missing.',
       content: jsonContent(ErrorResponse),
     },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/release-email-preview',
+  tags: ['Projects'],
+  summary: 'Render a branded release/deployment email preview',
+  description:
+    'Returns the exact branded email shell a release/deployment notification uses, with the project logo (or global default, or wordmark fallback) inlined and a representative digest body, so an admin can preview logo + messaging before a real deployment ships.',
+  request: { params: projectParams },
+  responses: {
+    200: {
+      description: 'Rendered email preview.',
+      content: jsonContent(ReleaseEmailPreviewResponse),
+    },
+    404: { description: 'Project not found.', content: jsonContent(ErrorResponse) },
   },
 });
 
