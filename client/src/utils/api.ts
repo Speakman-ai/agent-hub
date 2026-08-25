@@ -609,6 +609,26 @@ export const api = {
     }),
   getReleaseNotificationSettings: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/release-notification-settings`),
+  // Per-project email/deployment logo override.
+  getProjectEmailLogo: (projectId: string) => fetchJSON(`/projects/${projectId}/email-logo`),
+  updateProjectEmailLogo: (projectId: string, dataUrl: string) =>
+    fetchJSON(`/projects/${projectId}/email-logo`, {
+      method: 'PUT',
+      body: JSON.stringify({ dataUrl }),
+    }),
+  deleteProjectEmailLogo: (projectId: string) =>
+    fetchJSON(`/projects/${projectId}/email-logo`, { method: 'DELETE' }),
+  // Fetch the stored logo bytes (auth-gated route) as an object URL for preview.
+  // An <img src> can't attach the auth header, so we fetch + blob it. Returns
+  // null when the project has no override. Caller must revoke the URL.
+  fetchProjectEmailLogoObjectUrl: async (projectId: string): Promise<string | null> => {
+    const res = await fetch(`${getApiBase()}/projects/${projectId}/email-logo/raw`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  },
   updateReleaseNotificationSettings: (projectId: any, data: any) =>
     fetchJSON(`/projects/${projectId}/release-notification-settings`, {
       method: 'PUT',

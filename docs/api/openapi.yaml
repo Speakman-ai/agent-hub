@@ -11591,6 +11591,48 @@ components:
             - profile
             - error
       description: Outcome of the browser-less `aws sso login` spawn. Only one login proc runs per server at a time; if a second request arrives while a previous one is still running the previous proc is killed and a new one is spawned.
+    ProjectEmailLogo:
+      type: object
+      properties:
+        filename:
+          type: string
+        contentType:
+          type: string
+        size:
+          type: integer
+        updatedAt:
+          type: string
+      required:
+        - filename
+        - contentType
+        - size
+        - updatedAt
+    ProjectEmailLogoResponse:
+      type: object
+      properties:
+        emailLogo:
+          allOf:
+            - $ref: "#/components/schemas/ProjectEmailLogo"
+            - nullable: true
+      required:
+        - emailLogo
+    ProjectEmailLogoDeleteResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        emailLogo:
+          nullable: true
+      required:
+        - ok
+        - emailLogo
+    ProjectBrandingErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
     ProjectOrderResponse:
       type: object
       properties:
@@ -37201,6 +37243,143 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProjectAwsSsoLoginResponse"
+  /api/projects/{projectId}/email-logo:
+    get:
+      tags:
+        - Projects
+      summary: Read the project email logo metadata
+      description: Returns the project's per-project release/deployment email logo override metadata, or null when the project uses the global Agent Hub logo.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Project email logo metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectEmailLogoResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectBrandingErrorResponse"
+    put:
+      tags:
+        - Projects
+      summary: Upload a project email logo
+      description: Admin+ only. Stores a per-project override for the branded release/deployment email logo. Replaces any prior logo. The global `emailLogoEnabled` switch still disables branding entirely.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dataUrl:
+                  type: string
+                  minLength: 1
+                  description: "Base64 `data:` URL of the image. Allowed types: image/png, image/jpeg, image/gif, image/webp. Max 2MB."
+              required:
+                - dataUrl
+      responses:
+        "200":
+          description: Stored project email logo metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectEmailLogoResponse"
+        "400":
+          description: Malformed data URL, unsupported type, or too large.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectBrandingErrorResponse"
+        "403":
+          description: Caller is below Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectBrandingErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectBrandingErrorResponse"
+    delete:
+      tags:
+        - Projects
+      summary: Remove the project email logo
+      description: Admin+ only. Clears the per-project override so the project falls back to the global Agent Hub email logo.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Override removed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectEmailLogoDeleteResponse"
+        "403":
+          description: Caller is below Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectBrandingErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectBrandingErrorResponse"
+  /api/projects/{projectId}/email-logo/raw:
+    get:
+      tags:
+        - Projects
+      summary: Fetch the project email logo image bytes
+      description: Streams the stored project email logo image (for settings preview). 404 when the project has no override.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Image bytes.
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: No logo set or file missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectBrandingErrorResponse"
   /api/projects/{projectId}/stats:
     get:
       tags:

@@ -771,3 +771,75 @@ describe('MCP removal migrations', () => {
     }
   });
 });
+
+describe('Project.emailLogo persistence', () => {
+  it('survives a saveProjects → projects.json → reload round trip', async () => {
+    const request = await getRequest();
+    const projId = `email-logo-persist-${Date.now()}`;
+    createdProjectIds.push(projId);
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: projId, name: 'Email Logo Persist', cwd: '/tmp', color: '#444' })
+      .expect(201);
+
+    const emailLogo = {
+      filename: 'email-logo.png',
+      contentType: 'image/png',
+      size: 1234,
+      updatedAt: '2026-08-25T00:00:00.000Z',
+    };
+    const project = findProject(projId)!;
+    project.emailLogo = emailLogo;
+    saveProjects();
+
+    // The persisted file is exactly what the next boot (initProjects /
+    // reloadProjects) reads back — assert the metadata serialized intact and
+    // the derived `ahw` field was stripped as usual.
+    const persisted = JSON.parse(readFileSync(getProjectsPath(), 'utf-8')) as Array<
+      Project & { ahw?: string }
+    >;
+    const saved = persisted.find((p) => p.id === projId)!;
+    expect(saved.emailLogo).toEqual(emailLogo);
+    expect(saved.ahw).toBeUndefined();
+
+    // And it is still resolvable through the in-memory model.
+    expect(findProject(projId)!.emailLogo).toEqual(emailLogo);
+  });
+
+  it('drops the override when cleared (delete emailLogo) and persists the absence', async () => {
+    const request = await getRequest();
+    const projId = `email-logo-clear-${Date.now()}`;
+    createdProjectIds.push(projId);
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: projId, name: 'Email Logo Clear', cwd: '/tmp', color: '#555' })
+      .expect(201);
+
+    const project = findProject(projId)!;
+    project.emailLogo = {
+      filename: 'email-logo.gif',
+      contentType: 'image/gif',
+      size: 9,
+      updatedAt: '2026-08-25T00:00:00.000Z',
+    };
+    saveProjects();
+    delete project.emailLogo;
+    saveProjects();
+
+    const persisted = JSON.parse(readFileSync(getProjectsPath(), 'utf-8')) as Array<Project>;
+    const saved = persisted.find((p) => p.id === projId)!;
+    expect(saved.emailLogo).toBeUndefined();
+  });
+});

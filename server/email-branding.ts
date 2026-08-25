@@ -154,9 +154,17 @@ export interface BrandedEmailParts {
  * Build the HTML part + inline attachments for a release/ticket notification
  * body. The caller keeps sending the original `bodyText` as the plain-text
  * part; this adds the branded HTML alternative.
+ *
+ * `projectLogo` is an optional per-project override attachment (see
+ * `server/project-branding.ts`). When provided it replaces the global logo,
+ * but the global `config.emailLogoEnabled` kill switch still wins: with
+ * branding disabled, no logo ships regardless of project settings.
  */
-export function buildBrandedReleaseEmail(bodyText: string): BrandedEmailParts {
-  const logo = resolveBrandLogoAttachment();
+export function buildBrandedReleaseEmail(
+  bodyText: string,
+  projectLogo?: EmailAttachment | null,
+): BrandedEmailParts {
+  const logo = config.emailLogoEnabled ? (projectLogo ?? resolveBrandLogoAttachment()) : null;
   const html = renderBrandedEmailHtml(bodyText, logo ? BRAND_LOGO_CID : null);
   return { html, attachments: logo ? [logo] : [] };
 }

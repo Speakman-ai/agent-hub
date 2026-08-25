@@ -131,3 +131,34 @@ describe('buildBrandedReleaseEmail', () => {
     expect(parts.html).toContain('<html>');
   });
 });
+
+describe('buildBrandedReleaseEmail — per-project logo override', () => {
+  const projectLogo = {
+    filename: 'email-logo.png',
+    content: Buffer.from('project-logo-bytes'),
+    cid: BRAND_LOGO_CID,
+    contentType: 'image/png',
+  };
+
+  it('uses the project logo attachment when one is provided', () => {
+    const parts = buildBrandedReleaseEmail('Body', projectLogo);
+    expect(parts.attachments).toHaveLength(1);
+    expect(parts.attachments[0]).toBe(projectLogo);
+    expect(parts.html).toContain(`cid:${BRAND_LOGO_CID}`);
+  });
+
+  it('falls back to the global logo when no project logo is given', () => {
+    const parts = buildBrandedReleaseEmail('Body', null);
+    expect(parts.attachments).toHaveLength(1);
+    // The global asset ships under its own filename, not the project one.
+    expect(parts.attachments[0]?.filename).toBe('agent-hub-logo.png');
+  });
+
+  it('ships no logo when branding is globally disabled, even with a project logo', () => {
+    mockConfig.emailLogoEnabled = false;
+    const parts = buildBrandedReleaseEmail('Body', projectLogo);
+    expect(parts.attachments).toEqual([]);
+    expect(parts.html).not.toContain('cid:');
+    expect(parts.html).toContain('<html>');
+  });
+});

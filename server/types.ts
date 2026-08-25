@@ -3203,12 +3203,37 @@ export interface BackgroundWikiAgentConfig {
   limit?: number;
 }
 
+/**
+ * Per-project branding logo shown in this project's release/deployment
+ * notification emails, overriding the global Agent Hub email logo. The image
+ * bytes live on disk under `<projectDataDir>/branding/<filename>`; only this
+ * metadata is persisted to `projects.json`. Absent/null means the project uses
+ * the global logo.
+ */
+export interface ProjectEmailLogo {
+  /** Stored file name under `<projectDataDir>/branding/`. */
+  filename: string;
+  /** MIME type of the stored image, e.g. `image/png`. */
+  contentType: string;
+  /** Byte length of the stored image. */
+  size: number;
+  /** ISO timestamp of the last upload. */
+  updatedAt: string;
+}
+
 export interface Project {
   id: string;
   name: string;
   cwd: string;
   ahw: string;
   color?: string;
+  /**
+   * Optional per-project override for the branded release/deployment email
+   * logo. When set, this project's notification emails use it in place of the
+   * global asset (see `server/project-branding.ts`). The global
+   * `config.emailLogoEnabled` switch still disables branding entirely.
+   */
+  emailLogo?: ProjectEmailLogo | null;
   /** Defaults to dev when omitted (see `getProjectMode` in `project-mode.ts`). */
   mode?: ProjectMode;
   /**

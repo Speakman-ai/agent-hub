@@ -28,6 +28,7 @@ import {
 import { buildNavigationHash } from '../utils/navigation';
 import EnvironmentsManagementSection from './EnvironmentsManagementSection';
 import ReleaseNotificationSettingsSection from './ReleaseNotificationSettingsSection';
+import ProjectEmailLogoSection from './ProjectEmailLogoSection';
 import { deploymentReleaseLabel } from '@shared/utils/deploymentReleaseLabel';
 
 const DEPLOYMENT_WS = 'agenthub-deployment-ws';
@@ -570,8 +571,9 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
         )}
 
         {showSettings && (
-          <div className="mb-4" data-testid="deployments-settings-panel">
+          <div className="mb-4 space-y-4" data-testid="deployments-settings-panel">
             <ReleaseNotificationSettingsSection projectId={projectId} showToast={onNotify} />
+            <ProjectEmailLogoSection projectId={projectId} showToast={onNotify} />
           </div>
         )}
 

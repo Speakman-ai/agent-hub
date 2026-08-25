@@ -30,6 +30,10 @@ import { hasRole } from '../utils/auth';
     getReleaseNotificationSettings: vi.fn(),
     updateReleaseNotificationSettings: vi.fn(),
     resetReleaseNotificationSettings: vi.fn(),
+    getProjectEmailLogo: vi.fn(),
+    updateProjectEmailLogo: vi.fn(),
+    deleteProjectEmailLogo: vi.fn(),
+    fetchProjectEmailLogoObjectUrl: vi.fn(),
   },
 }));
 
@@ -215,6 +219,8 @@ beforeEach(() => {
     updatedAt: null,
     releaseDigestRecipients: [],
   });
+  (api.getProjectEmailLogo as any).mockResolvedValue({ emailLogo: null });
+  (api.fetchProjectEmailLogoObjectUrl as any).mockResolvedValue(null);
 });
 
 describe('DeploymentsPage', () => {

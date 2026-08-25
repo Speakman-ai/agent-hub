@@ -253,6 +253,10 @@ export const api = {
     suggestProjectSetup: (data: any) => fetchJSON('/projects/provision/suggest', { method: 'POST', body: JSON.stringify(data) }),
     provisionProject: (data: any) => fetchJSON('/projects/provision', { method: 'POST', body: JSON.stringify(data) }),
     updateProject: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    // Per-project email/deployment logo override (web parity).
+    getProjectEmailLogo: (projectId: string) => fetchJSON(`/projects/${projectId}/email-logo`),
+    updateProjectEmailLogo: (projectId: string, dataUrl: string) => fetchJSON(`/projects/${projectId}/email-logo`, { method: 'PUT', body: JSON.stringify({ dataUrl }) }),
+    deleteProjectEmailLogo: (projectId: string) => fetchJSON(`/projects/${projectId}/email-logo`, { method: 'DELETE' }),
     // Per-user, project-scoped settings (e.g. default Finalize automation level).
     getProjectUserSettings: (projectId: any) => fetchJSON(`/projects/${projectId}/user-settings`),
     updateProjectUserSettings: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}/user-settings`, {
