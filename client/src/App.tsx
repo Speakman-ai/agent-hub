@@ -140,6 +140,7 @@ import {
   isNearBottom,
   forcePinChatTailScroll,
   shouldFollowTailAfterScroll,
+  pinChatToBottom,
 } from './utils/chatScroll';
 import {
   MESSAGES_PAGE_SIZE,
@@ -1472,15 +1473,20 @@ export default function App({ initialView }: any = {}) {
 
   /** Snap to the tail. Always instant — smooth scroll cannot keep up with streaming tokens. */
   const scrollToBottom = useCallback(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    programmaticScrollRef.current = true;
-    el.scrollTop = el.scrollHeight;
-    lastScrollTopRef.current = el.scrollTop;
-    requestAnimationFrame(() => {
-      programmaticScrollRef.current = false;
-      isNearBottomRef.current = true;
-      setShowScrollBtn(false);
+    pinChatToBottom(scrollContainerRef.current, {
+      beginProgrammatic: () => {
+        programmaticScrollRef.current = true;
+      },
+      // Re-arm follow synchronously so a streaming token arriving on the next
+      // tick keeps pinning instead of pushing the viewport back below the fold.
+      armFollow: (scrollTop: number) => {
+        lastScrollTopRef.current = scrollTop;
+        isNearBottomRef.current = true;
+        setShowScrollBtn(false);
+      },
+      endProgrammatic: () => {
+        programmaticScrollRef.current = false;
+      },
     });
   }, []);
 

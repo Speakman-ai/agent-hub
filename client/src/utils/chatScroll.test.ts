@@ -4,6 +4,7 @@ import {
   CHAT_STICK_TO_BOTTOM_THRESHOLD_PX,
   forcePinChatTailScroll,
   shouldFollowTailAfterScroll,
+  pinChatToBottom,
 } from './chatScroll';
 
 describe('isNearBottom', () => {
@@ -38,6 +39,59 @@ describe('forcePinChatTailScroll', () => {
     const el = { scrollHeight: 500, scrollTop: 0, clientHeight: 100, isConnected: true };
     const cancel = forcePinChatTailScroll(el, vi.fn());
     expect(typeof cancel).toBe('function');
+  });
+});
+
+describe('pinChatToBottom', () => {
+  it('snaps to the tail and re-arms follow synchronously, before the next frame', () => {
+    // Regression: clicking "Scroll to bottom" while a response streams must
+    // re-arm follow immediately. When the flag was set inside requestAnimationFrame,
+    // a token arriving in the one-frame gap fired the auto-scroll effect with
+    // follow still off, pushing the viewport back below the fold.
+    const el = { scrollHeight: 1000, scrollTop: 200, clientHeight: 100 };
+    const order: string[] = [];
+    let rafCb: (() => void) | null = null;
+    pinChatToBottom(el, {
+      beginProgrammatic: () => order.push('begin'),
+      armFollow: () => order.push('arm'),
+      endProgrammatic: () => order.push('end'),
+      raf: (cb: () => void) => {
+        rafCb = cb;
+      },
+    });
+    // Scroll snapped and follow armed before any rAF has run.
+    expect(el.scrollTop).toBe(1000);
+    expect(order).toEqual(['begin', 'arm']);
+    // The programmatic guard only clears once the deferred frame fires.
+    rafCb!();
+    expect(order).toEqual(['begin', 'arm', 'end']);
+  });
+
+  it('passes the snapped scrollTop to armFollow', () => {
+    const el = { scrollHeight: 750, scrollTop: 0, clientHeight: 100 };
+    let armedWith = -1;
+    pinChatToBottom(el, {
+      beginProgrammatic: () => {},
+      armFollow: (scrollTop: number) => {
+        armedWith = scrollTop;
+      },
+      endProgrammatic: () => {},
+      raf: () => {},
+    });
+    expect(armedWith).toBe(750);
+  });
+
+  it('no-ops on a null element (no container yet)', () => {
+    const begin = vi.fn();
+    const arm = vi.fn();
+    pinChatToBottom(null, {
+      beginProgrammatic: begin,
+      armFollow: arm,
+      endProgrammatic: vi.fn(),
+      raf: vi.fn(),
+    });
+    expect(begin).not.toHaveBeenCalled();
+    expect(arm).not.toHaveBeenCalled();
   });
 });
 

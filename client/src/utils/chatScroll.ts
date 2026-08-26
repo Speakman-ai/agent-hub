@@ -34,6 +34,47 @@ export function shouldFollowTailAfterScroll({ prevScrollTop, scrollTop, nearBott
 }
 
 /**
+ * Snap the scroll container to the tail and re-arm tail-follow.
+ *
+ * Ordering matters while a response is actively streaming: the follow flag must
+ * be re-armed **synchronously** (in `armFollow`), not deferred to the next frame.
+ * `scrollToBottom` used to set the flag inside a requestAnimationFrame, which
+ * left a one-frame gap: a streaming token arriving between the click and the rAF
+ * fired the auto-scroll effect while follow was still off, so the fresh content
+ * pushed the viewport back below the fold and the button never really "stuck".
+ * Re-arming synchronously closes that gap — the next streamed delta already sees
+ * follow=true and keeps pinning.
+ *
+ * Only `endProgrammatic` is deferred: the `el.scrollTop = …` write queues a
+ * scroll event that must be ignored, so the programmatic guard is cleared on the
+ * next frame, after the browser has dispatched it.
+ *
+ * @param {HTMLElement | null} el
+ * @param {{
+ *   beginProgrammatic: () => void,
+ *   armFollow: (scrollTop: number) => void,
+ *   endProgrammatic: () => void,
+ *   raf?: (cb: () => void) => void,
+ * }} hooks
+ */
+export function pinChatToBottom(
+  el: any,
+  { beginProgrammatic, armFollow, endProgrammatic, raf }: any,
+) {
+  if (!el) return;
+  const schedule =
+    raf ||
+    (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb: any) => cb());
+  beginProgrammatic();
+  el.scrollTop = el.scrollHeight;
+  // Synchronous — a streaming delta on the very next tick must see follow armed.
+  armFollow(el.scrollTop);
+  schedule(() => {
+    endProgrammatic();
+  });
+}
+
+/**
  * Snap the scroll container to the tail several times so late layout (SessionTail
  * blocks, images, syntax highlight) does not leave the viewport anchored at the
  * top of a tall interrupted bubble.
