@@ -22,6 +22,10 @@ import {
   isSecretCredential,
   validateCredentialValue,
 } from '@shared/utils/skillCredentialForm';
+import {
+  buildSkillAuthenticationPreset,
+  type SkillAuthenticationPreset,
+} from '@shared/utils/skillAuthentication';
 import { colors } from '../theme/colors';
 
 /**
@@ -458,7 +462,7 @@ export function SkillOptionsSection({ skillId, agentId }: any) {
     </View>
   );
 }
-function SkillCard({
+export function SkillCard({
   skill,
   agentId,
   projectId,
@@ -469,16 +473,21 @@ function SkillCard({
   pendingCount = 0,
   isDefaultOn,
   onToggleDefault,
+  canManageCredentials = false,
 }: any) {
   const [expanded, setExpanded] = useState(false);
   const [fullContent, setFullContent] = useState(skill.content || null);
   const [loading, setLoading] = useState(false);
-  const [schemaLoaded, setSchemaLoaded] = useState(false);
-  const [credentialSchema, setCredentialSchema] = useState<any[]>([]);
+  const [schemaLoaded, setSchemaLoaded] = useState(Array.isArray(skill.credentials));
+  const [credentialSchema, setCredentialSchema] = useState<any[]>(
+    Array.isArray(skill.credentials) ? skill.credentials : [],
+  );
   const [credentialRows, setCredentialRows] = useState<any[]>([]);
   const [credLoading, setCredLoading] = useState(false);
   const [credError, setCredError] = useState<any>(null);
   const [credSaving, setCredSaving] = useState<any>(null);
+  const [authSetupSaving, setAuthSetupSaving] = useState<SkillAuthenticationPreset | null>(null);
+  const [authSetupError, setAuthSetupError] = useState<any>(null);
   const [credentialInputs, setCredentialInputs] = useState<Record<string, any>>({});
   const override = overrides?.find((o: any) => o.skill_id === skill.id);
   const isEnabled = override ? !!override.enabled : true;
@@ -486,6 +495,11 @@ function SkillCard({
     () => JSON.stringify(credentialSchema ?? []),
     [credentialSchema],
   );
+  useEffect(() => {
+    if (!Array.isArray(skill.credentials)) return;
+    setCredentialSchema(skill.credentials);
+    setSchemaLoaded(true);
+  }, [skill.id, skill.credentials]);
   // Load the per-user saved credential rows once the schema is known, the card
   // is expanded, and an agent is in focus (credentials are per-user but keyed
   // through the agent-scoped save). Keyed on the schema so it refetches if the
@@ -561,6 +575,38 @@ function SkillCard({
     },
     [credentialRows, skill.id],
   );
+  const setupAuthentication = useCallback(
+    async (preset: SkillAuthenticationPreset) => {
+      if (!projectId || skill.source !== 'project' || !canManageCredentials) return;
+      setAuthSetupSaving(preset);
+      setAuthSetupError(null);
+      try {
+        const latest = await api.getProjectSkill(projectId, skill.id);
+        const latestCredentials = Array.isArray(latest.credentials) ? latest.credentials : [];
+        if (latestCredentials.length > 0) {
+          setFullContent(latest.content);
+          setCredentialSchema(latestCredentials);
+          setSchemaLoaded(true);
+          return;
+        }
+        const credentials = buildSkillAuthenticationPreset(skill.id, preset);
+        await api.updateProjectSkill(projectId, skill.id, {
+          name: skill.id,
+          content: latest.content,
+          credentials,
+          expectedCredentials: [],
+        });
+        setFullContent(latest.content);
+        setCredentialSchema(credentials);
+        setSchemaLoaded(true);
+      } catch (err: any) {
+        setAuthSetupError(err?.message || String(err));
+      } finally {
+        setAuthSetupSaving(null);
+      }
+    },
+    [projectId, skill.id, skill.source, canManageCredentials],
+  );
   const handleExpand = async () => {
     if (expanded) {
       setExpanded(false);
@@ -630,6 +676,20 @@ function SkillCard({
               {skill.description}
             </Text>
           )}
+          {skill.source === 'project' ? (
+            <TouchableOpacity
+              style={styles.authLink}
+              onPress={(event: any) => {
+                event.stopPropagation?.();
+                if (!expanded) void handleExpand();
+              }}
+              testID={`skill-auth-toggle-${skill.id}`}
+            >
+              <Text style={styles.authLinkText}>
+                🔐 {credentialSchema.length > 0 ? 'Authentication' : 'Add authentication'}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
         <View style={styles.cardHeaderActions}>
           {onToggle && (
@@ -686,6 +746,49 @@ function SkillCard({
                   </Text>
                   <Text style={styles.defaultToggleLabel}>On by default for this project</Text>
                 </TouchableOpacity>
+              ) : null}
+              {skill.source === 'project' && credentialSchema.length === 0 ? (
+                <View style={styles.authSetup} testID={`skill-auth-setup-${skill.id}`}>
+                  <Text style={styles.authSetupTitle}>🔐 Authentication is not configured</Text>
+                  <Text style={styles.authSetupHint}>
+                    Choose the login shape. Agent Hub adds field definitions to the skill and keeps
+                    each user&apos;s values encrypted outside SKILL.md.
+                  </Text>
+                  {authSetupError ? <Text style={styles.credError}>{authSetupError}</Text> : null}
+                  {canManageCredentials ? (
+                    <View style={styles.authSetupActions}>
+                      <TouchableOpacity
+                        disabled={!!authSetupSaving}
+                        onPress={() => setupAuthentication('api-key')}
+                        style={[styles.authSetupButton, !!authSetupSaving && styles.buttonDisabled]}
+                        testID={`skill-auth-api-key-${skill.id}`}
+                      >
+                        <Text style={styles.authSetupButtonText}>
+                          {authSetupSaving === 'api-key' ? 'Adding…' : 'API key'}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        disabled={!!authSetupSaving}
+                        onPress={() => setupAuthentication('username-password')}
+                        style={[
+                          styles.authSetupButtonSecondary,
+                          !!authSetupSaving && styles.buttonDisabled,
+                        ]}
+                        testID={`skill-auth-username-password-${skill.id}`}
+                      >
+                        <Text style={styles.authSetupButtonSecondaryText}>
+                          {authSetupSaving === 'username-password'
+                            ? 'Adding…'
+                            : 'Username & password'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <Text style={styles.authSetupHint}>
+                      An Admin can add authentication fields for this project skill.
+                    </Text>
+                  )}
+                </View>
               ) : null}
               {credentialSchema.length > 0 && agentId ? (
                 <SkillCredentialSection
@@ -1148,6 +1251,7 @@ export default function SkillsScreen() {
                     pendingCount={pendingCountBySkill[skill.id] || 0}
                     isDefaultOn={defaultSkillIds.includes(skill.id)}
                     onToggleDefault={canEditDefaults ? handleToggleDefault : undefined}
+                    canManageCredentials={canEditDefaults}
                   />
                 ))}
               </View>
@@ -1376,6 +1480,15 @@ const styles = StyleSheet.create({
     color: colors.gray400,
     marginTop: 4,
   },
+  authLink: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    paddingVertical: 2,
+  },
+  authLinkText: {
+    fontSize: 11,
+    color: colors.amber400,
+  },
   expandIcon: {
     fontSize: 12,
     color: colors.gray500,
@@ -1414,6 +1527,56 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   // Per-user skill credential entry
+  authSetup: {
+    marginTop: 16,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: 'rgba(69, 26, 3, 0.15)',
+    borderRadius: 10,
+    padding: 12,
+  },
+  authSetupTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.gray200,
+  },
+  authSetupHint: {
+    marginTop: 6,
+    fontSize: 11,
+    lineHeight: 16,
+    color: colors.gray400,
+  },
+  authSetupActions: {
+    marginTop: 12,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  authSetupButton: {
+    backgroundColor: colors.indigo600,
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  authSetupButtonText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.white,
+  },
+  authSetupButtonSecondary: {
+    borderWidth: 1,
+    borderColor: colors.gray600,
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  authSetupButtonSecondaryText: {
+    fontSize: 11,
+    color: colors.gray200,
+  },
+  buttonDisabled: {
+    opacity: 0.4,
+  },
   credSection: {
     marginTop: 16,
     borderWidth: 1,

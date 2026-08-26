@@ -139,6 +139,24 @@ const UpdateSkillBodySchema = registerComponent(
   }),
 );
 
+const expectedCredentialsField = z.array(SkillCredentialSpecSchema).optional().openapi({
+  description:
+    'Optimistic concurrency precondition for project skill updates. The write returns 409 unless the current credential declaration exactly matches this value.',
+});
+
+const ProjectUpdateSkillBodySchema = registerComponent(
+  'ProjectUpdateSkillBody',
+  z
+    .union([
+      StructuredUpdateVariant.extend({ expectedCredentials: expectedCredentialsField }),
+      RawContentVariant.extend({ expectedCredentials: expectedCredentialsField }),
+    ])
+    .openapi({
+      description:
+        'Update a project skill, optionally requiring its current credential declaration to match `expectedCredentials` before the write is applied.',
+    }),
+);
+
 const SkillWriteResultSchema = registerComponent(
   'SkillWriteResult',
   z
@@ -174,6 +192,7 @@ const ProjectSkillListItemSchema = registerComponent(
       name: z.string(),
       description: z.string(),
       category: z.string().optional(),
+      credentials: z.array(SkillCredentialSpecSchema).optional(),
       source: z.enum(['project', 'global', 'default']),
     })
     .openapi({
@@ -395,18 +414,20 @@ registerPath({
   tags: ['Skills'],
   summary: 'Update a project skill',
   description:
-    "Rewrites an existing project skill's `SKILL.md` (frontmatter + body). Accepts EITHER structured fields (`description` required; `name` optional, resolved from the path) OR a raw `content` SKILL.md. A body `name` (or `content` frontmatter name) must equal the `:skillId` path segment — rename is not supported. Rejects bundled-default ids (409) and unknown project skills (404). Invalid frontmatter returns 400.",
+    "Rewrites an existing project skill's `SKILL.md` (frontmatter + body). Accepts EITHER structured fields (`description` required; `name` optional, resolved from the path) OR a raw `content` SKILL.md. A body `name` (or `content` frontmatter name) must equal the `:skillId` path segment — rename is not supported. `expectedCredentials` enables an optimistic concurrency check and returns 409 when authentication changed after the caller loaded the skill. Rejects bundled-default ids (409) and unknown project skills (404). Invalid frontmatter returns 400.",
   request: {
     params: projectIdParam.extend({
       skillId: z.string().openapi({ description: 'Project skill slug (folder id).' }),
     }),
-    body: { content: jsonContent(UpdateSkillBodySchema) },
+    body: { content: jsonContent(ProjectUpdateSkillBodySchema) },
   },
   responses: {
     200: { description: 'Skill updated.', content: jsonContent(SkillWriteResultSchema) },
     400: errorResponse('Request body validation failed.'),
     404: errorResponse('Project or project skill not found.'),
-    409: errorResponse('Slug is a bundled default skill.'),
+    409: errorResponse(
+      'Slug is a bundled default skill or the expected credential declaration no longer matches.',
+    ),
     500: errorResponse('Filesystem write error.'),
   },
 });

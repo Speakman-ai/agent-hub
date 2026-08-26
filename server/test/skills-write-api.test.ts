@@ -93,15 +93,32 @@ describe('Project skills — write API (POST/PUT)', () => {
     const proj = await newProject();
     await request
       .post(`/api/projects/${proj.id}/skills`)
-      .send({ name: 'listed-skill', description: 'List me on the project page.' })
+      .send({
+        name: 'listed-skill',
+        description: 'List me on the project page.',
+        category: 'integration',
+        credentials: [
+          { name: 'LISTED_SKILL_TOKEN', label: 'Access token', type: 'secret', required: true },
+        ],
+      })
       .expect(201);
     created.push(path.join(skillsDirFor(proj), 'listed-skill'));
 
     const list = await request.get(`/api/projects/${proj.id}/skills`).expect(200);
-    const rows = list.body as Array<{ id: string; source?: string }>;
+    const rows = list.body as Array<{
+      id: string;
+      source?: string;
+      category?: string;
+      credentials?: Array<{ name: string }>;
+    }>;
     const found = rows.find((s) => s.id === 'listed-skill');
     expect(found).toBeTruthy();
     expect(found?.source).toBe('project');
+    // Regression: the list used to drop both fields, so SkillsPage rendered an
+    // integration as "general" and could not surface authentication until the
+    // user guessed that the whole card was expandable.
+    expect(found?.category).toBe('integration');
+    expect(found?.credentials).toEqual([expect.objectContaining({ name: 'LISTED_SKILL_TOKEN' })]);
   });
 
   it('migrates legacy workspace skills into the persistent project skill store', async () => {
@@ -339,12 +356,56 @@ describe('Project skills — write API (POST/PUT)', () => {
 
     await request
       .put(`/api/projects/${proj.id}/skills/edit-me`)
-      .send({ name: 'edit-me', description: 'updated description', body: '# v2\n' })
+      .send({
+        name: 'edit-me',
+        description: 'updated description',
+        body: '# v2\n',
+        expectedCredentials: [],
+      })
       .expect(200);
 
     const parsed = matter(readFileSync(path.join(dir, 'SKILL.md'), 'utf-8'));
     expect(parsed.data.description).toBe('updated description');
     expect(parsed.content).toContain('# v2');
+  });
+
+  it('PUT rejects a stale credential precondition without replacing newer authentication', async () => {
+    const proj = await newProject();
+    const existingCredentials = [
+      {
+        name: 'CURRENT_SESSION_TOKEN',
+        label: 'Current session token',
+        type: 'secret',
+        required: true,
+      },
+    ];
+    await request
+      .post(`/api/projects/${proj.id}/skills`)
+      .send({
+        name: 'credential-conflict',
+        description: 'Keep the latest authentication.',
+        credentials: existingCredentials,
+      })
+      .expect(201);
+    const dir = path.join(skillsDirFor(proj), 'credential-conflict');
+    created.push(dir);
+    const skillMd = path.join(dir, 'SKILL.md');
+    const staleContent = readFileSync(skillMd, 'utf-8');
+
+    const res = await request
+      .put(`/api/projects/${proj.id}/skills/credential-conflict`)
+      .send({
+        name: 'credential-conflict',
+        content: staleContent,
+        credentials: [{ name: 'REPLACEMENT_API_KEY', type: 'secret', required: true }],
+        expectedCredentials: [],
+      })
+      .expect(409);
+
+    expect((res.body as { error: string }).error).toContain('authentication changed');
+    expect(readFileSync(skillMd, 'utf-8')).toBe(staleContent);
+    const parsed = matter(readFileSync(skillMd, 'utf-8'));
+    expect(parsed.data.credentials).toEqual([expect.objectContaining(existingCredentials[0])]);
   });
 
   it('PUT rejects a rename (name must match the path id) with 400', async () => {

@@ -8,17 +8,17 @@ frontmatter contract, the rationale behind a rule, or a skeleton to start from.
 A skill is not documentation a human reads top to bottom. It is **context
 injected into a model**, gated by progressive disclosure:
 
-| Level | What loads | When |
-| --- | --- | --- |
-| Metadata | `name` + `description` (~60 tokens) | always in context |
-| Body | the full `SKILL.md` instructions | when the skill triggers |
-| Depth | `references/`, `scripts/`, `assets/` | only when explicitly read |
+| Level    | What loads                           | When                      |
+| -------- | ------------------------------------ | ------------------------- |
+| Metadata | `name` + `description` (~60 tokens)  | always in context         |
+| Body     | the full `SKILL.md` instructions     | when the skill triggers   |
+| Depth    | `references/`, `scripts/`, `assets/` | only when explicitly read |
 
 Two consequences drive everything:
 
 1. **The `description` is the trigger.** If it does not match the user's intent,
    the body never loads, so a perfect body behind a weak description is dead
-   weight. Models *under*-trigger by default, so descriptions must be "pushy".
+   weight. Models _under_-trigger by default, so descriptions must be "pushy".
 2. **Body length is a tax.** Every line of the body competes for attention once
    loaded. Lean bodies keep the model focused; depth belongs in `references/`
    that load on demand.
@@ -27,14 +27,18 @@ Two consequences drive everything:
 
 ```yaml
 ---
-name: my-skill            # required. lowercase, hyphenated slug. matches the folder id.
-description: >-           # required. THE trigger. what + when, pushy, with phrases.
+name: my-skill # required. lowercase, hyphenated slug. matches the folder id.
+description: >- # required. THE trigger. what + when, pushy, with phrases.
   One-to-three sentences: what the skill does AND when to use it. Include
   concrete trigger phrases and an explicit "DO NOT TRIGGER on…" clause.
-category: general         # optional. general | integration | platform | conventions | troubleshooting | …
-version: 1.0.0            # optional. semver string.
-keep-coding-instructions: true   # optional. keep host coding instructions in-prompt when loaded.
-credentials: []           # optional. declared secrets injected at spawn (advanced).
+category: general # optional. general | integration | platform | conventions | troubleshooting | …
+version: 1.0.0 # optional. semver string.
+keep-coding-instructions: true # optional. keep host coding instructions in-prompt when loaded.
+credentials: # optional. reusable per-user values injected at spawn.
+  - name: SERVICE_API_KEY # POSIX env-var name; never put the real value here.
+    label: API key
+    type: secret # string | secret | file | json
+    required: true
 ---
 ```
 
@@ -42,14 +46,18 @@ credentials: []           # optional. declared secrets injected at spawn (advanc
   default — the write API returns 409 on a shadowing name.
 - `description` carries **all** the "when to use" signal. Do not bury triggering
   conditions in the body; the body is not in context at trigger time.
+- External-service skills should declare every reusable API key, token,
+  username, or password in `credentials:`. This declaration makes the secure
+  per-user authentication form appear on web and mobile; values remain encrypted
+  outside the skill and are injected as the declared env vars on spawn.
 
 ## Writing a "pushy" description
 
-A weak description states only *what*:
+A weak description states only _what_:
 
 > Extracts text from PDF files.
 
-A strong one states *what* + *when* + concrete phrases + a negative guard:
+A strong one states _what_ + _when_ + concrete phrases + a negative guard:
 
 > Extracts text and tables from PDF files into structured Markdown. TRIGGER when
 > the user uploads or references a `.pdf`, asks to "pull text/tables out of this
@@ -67,8 +75,8 @@ so the model generalizes:
 
 - Weak: `NEVER commit secrets.`
 - Strong: `Do not write secrets into the skill body — skills are shared context
-  and may be read by other agents, so anything here leaks. Declare secrets in
-  the credentials frontmatter instead, which the host injects at spawn.`
+and may be read by other agents, so anything here leaks. Declare secrets in
+the credentials frontmatter instead, which the host injects at spawn.`
 
 ## Body skeleton
 
@@ -78,16 +86,20 @@ so the model generalizes:
 <One paragraph: what this skill makes the agent good at, and the mental model.>
 
 ## When this applies
+
 <Restate the trigger in the body too, briefly — useful once loaded.>
 
 ## Steps
+
 1. <imperative step, with the why where it is non-obvious>
 2. <…>
 
 ## Example
+
 <One concrete worked input → output. Examples outperform prose.>
 
 ## Edge cases / limits
+
 <What it does not handle; when to fall back or ask the user.>
 ```
 

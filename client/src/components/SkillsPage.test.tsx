@@ -434,6 +434,108 @@ describe('SkillsPage — skill credential configuration', () => {
       agent_id: 'a1',
     });
   });
+
+  it('lets an admin add username/password authentication to an integration skill', async () => {
+    // Regression: project integrations with no credentials declaration showed
+    // no authentication affordance at all, even when their instructions said
+    // to ask for username/password.
+    (api.getProjectSkill as any).mockResolvedValue({
+      content:
+        '---\nname: surveytracker-api-data\ndescription: Query Survey Tracker.\ncategory: integration\n---\n# API',
+      credentials: [],
+    });
+    (api.updateProjectSkill as any).mockResolvedValue({ id: 'surveytracker-api-data' });
+
+    render(
+      <SkillCard
+        skill={{
+          id: 'surveytracker-api-data',
+          name: 'Survey Tracker API',
+          description: 'Query the live API.',
+          category: 'integration',
+          source: 'project',
+          credentials: [],
+        }}
+        agentId="a1"
+        projectId="agent-hub"
+        overrides={[]}
+        isInstalled
+        canManageCredentials
+      />,
+    );
+
+    const authButton = screen.getByRole('button', { name: /Add authentication/i });
+    fireEvent.click(authButton);
+    await flush();
+    expect(screen.getByText('Authentication is not configured')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Username & password/i }));
+    await flush();
+
+    expect(api.updateProjectSkill).toHaveBeenCalledWith(
+      'agent-hub',
+      'surveytracker-api-data',
+      expect.objectContaining({
+        expectedCredentials: [],
+        credentials: [
+          expect.objectContaining({
+            name: 'SURVEYTRACKER_API_DATA_USERNAME',
+            type: 'string',
+          }),
+          expect.objectContaining({
+            name: 'SURVEYTRACKER_API_DATA_PASSWORD',
+            type: 'secret',
+          }),
+        ],
+      }),
+    );
+    expect(screen.getByText('Username')).toBeInTheDocument();
+    expect(screen.getByText('Password')).toBeInTheDocument();
+  });
+
+  it('keeps authentication added after the card loaded instead of replacing it', async () => {
+    const content =
+      '---\nname: surveytracker-api-data\ndescription: Query Survey Tracker.\ncategory: integration\n---\n# API';
+    (api.getProjectSkill as any)
+      .mockResolvedValueOnce({ content, credentials: [] })
+      .mockResolvedValueOnce({
+        content,
+        credentials: [
+          {
+            name: 'SURVEYTRACKER_SESSION_TOKEN',
+            label: 'Session token',
+            type: 'secret',
+            required: true,
+          },
+        ],
+      });
+
+    render(
+      <SkillCard
+        skill={{
+          id: 'surveytracker-api-data',
+          name: 'Survey Tracker API',
+          description: 'Query the live API.',
+          category: 'integration',
+          source: 'project',
+          credentials: [],
+        }}
+        agentId="a1"
+        projectId="agent-hub"
+        overrides={[]}
+        isInstalled
+        canManageCredentials
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Add authentication/i }));
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: /API key/i }));
+    await flush();
+
+    expect(api.updateProjectSkill).not.toHaveBeenCalled();
+    expect(screen.getByText('Session token')).toBeInTheDocument();
+  });
 });
 
 describe('SkillsPage — per-user skill options', () => {

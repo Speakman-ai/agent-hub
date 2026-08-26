@@ -901,6 +901,11 @@ export const api = {
   getProjectSkills: (projectId: any) => fetchJSON(`/projects/${projectId}/skills`),
   getProjectSkill: (projectId: any, skillId: any) =>
     fetchJSON(`/projects/${projectId}/skills/${encodeURIComponent(skillId)}`),
+  updateProjectSkill: (projectId: any, skillId: any, body: any) =>
+    fetchJSON(`/projects/${projectId}/skills/${encodeURIComponent(skillId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   getSkills: (agentId: any) => fetchJSON(`/agents/${agentId}/skills`),
   getSkill: (agentId: any, skillId: any) => fetchJSON(`/agents/${agentId}/skills/${skillId}`),
   getContext: (agentId: any) => fetchJSON(`/agents/${agentId}/context`),

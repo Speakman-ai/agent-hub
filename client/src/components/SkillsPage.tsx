@@ -7,6 +7,10 @@ import { safeHttpHref } from '../utils/safeHttpUrl';
 import { formatDateTime } from '../utils/time';
 import { hasRole, isLocalBundledDeployment } from '../utils/auth';
 import {
+  buildSkillAuthenticationPreset,
+  type SkillAuthenticationPreset,
+} from '@shared/utils/skillAuthentication';
+import {
   BookOpen,
   Loader2,
   Save,
@@ -506,12 +510,15 @@ export function SkillCard({
   isDefaultOn = false,
   onToggleDefault,
   canManageDefaults = false,
+  canManageCredentials = false,
 }: any) {
   const [expanded, setExpanded] = useState(false);
   const [fullContent, setFullContent] = useState(skill.content || null);
   const [loading, setLoading] = useState(false);
-  const [schemaLoaded, setSchemaLoaded] = useState(false);
-  const [credentialSchema, setCredentialSchema] = useState<any[]>([]);
+  const [schemaLoaded, setSchemaLoaded] = useState(Array.isArray(skill.credentials));
+  const [credentialSchema, setCredentialSchema] = useState<any[]>(
+    Array.isArray(skill.credentials) ? skill.credentials : [],
+  );
   // Tagged with the owning card key + derived on identity match (like options /
   // project defaults), so a switched card never renders the previous identity's
   // saved-credential rows (whose ids back the Revoke button) in a committed frame.
@@ -522,6 +529,8 @@ export function SkillCard({
   const [credLoading, setCredLoading] = useState(false);
   const [credError, setCredError] = useState<any>(null);
   const [credSaving, setCredSaving] = useState<any>(null);
+  const [authSetupSaving, setAuthSetupSaving] = useState<SkillAuthenticationPreset | null>(null);
+  const [authSetupError, setAuthSetupError] = useState<any>(null);
   const [credentialInputs, setCredentialInputs] = useState<Record<string, any>>({});
   // Per-user skill options (owner-declared enums the user selects). Loaded on
   // expand. Tagged with the owning card key and DERIVED on identity match (see
@@ -557,6 +566,12 @@ export function SkillCard({
     () => JSON.stringify(credentialSchema ?? []),
     [credentialSchema],
   );
+
+  useEffect(() => {
+    if (!Array.isArray(skill.credentials)) return;
+    setCredentialSchema(skill.credentials);
+    setSchemaLoaded(true);
+  }, [skill.id, skill.credentials]);
 
   // Load the per-user saved credential rows once the schema is known and the
   // card is expanded. Keyed on the schema so it refetches if the schema changes.
@@ -643,6 +658,41 @@ export function SkillCard({
       }
     },
     [rowForKey, skill.id, cardKey, cardKeyRef],
+  );
+
+  const setupAuthentication = useCallback(
+    async (preset: SkillAuthenticationPreset) => {
+      if (!projectId || skill.source !== 'project' || !canManageCredentials) return;
+      setAuthSetupSaving(preset);
+      setAuthSetupError(null);
+      try {
+        // Read immediately before the write so adding credential declarations
+        // never overwrites a newer body edit with the card's cached content.
+        const latest = await api.getProjectSkill(projectId, skill.id);
+        const latestCredentials = Array.isArray(latest.credentials) ? latest.credentials : [];
+        if (latestCredentials.length > 0) {
+          setFullContent(latest.content);
+          setCredentialSchema(latestCredentials);
+          setSchemaLoaded(true);
+          return;
+        }
+        const credentials = buildSkillAuthenticationPreset(skill.id, preset);
+        await api.updateProjectSkill(projectId, skill.id, {
+          name: skill.id,
+          content: latest.content,
+          credentials,
+          expectedCredentials: [],
+        });
+        setFullContent(latest.content);
+        setCredentialSchema(credentials);
+        setSchemaLoaded(true);
+      } catch (err: any) {
+        setAuthSetupError(err?.message || String(err));
+      } finally {
+        setAuthSetupSaving(null);
+      }
+    },
+    [projectId, skill.id, skill.source, canManageCredentials],
   );
 
   // Load the owner-declared per-user options once the card is expanded and a
@@ -800,6 +850,21 @@ export function SkillCard({
                 On by default for this project
               </label>
             )}
+            {skill.source === 'project' && (
+              <button
+                type="button"
+                onClick={(e: any) => {
+                  e.stopPropagation();
+                  if (!expanded) void handleExpand();
+                }}
+                className="mt-2 ml-3 inline-flex items-center gap-1.5 text-[11px] text-amber-300 hover:text-amber-200"
+                data-testid={`skill-auth-toggle-${skill.id}`}
+                title="Open secure per-user authentication settings"
+              >
+                <Shield size={12} />
+                {credentialSchema.length > 0 ? 'Authentication' : 'Add authentication'}
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             {onToggle && (
@@ -859,6 +924,55 @@ export function SkillCard({
                   {fullContent || ''}
                 </ReactMarkdown>
               </div>
+              {skill.source === 'project' && credentialSchema.length === 0 && (
+                <div
+                  className="mt-5 rounded-lg border border-amber-800/50 bg-amber-950/15 p-3"
+                  data-testid={`skill-auth-setup-${skill.id}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Shield size={14} className="text-amber-400" />
+                    <span className="text-xs font-medium text-gray-200">
+                      Authentication is not configured
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-gray-400">
+                    This integration does not declare secure credential fields yet. Choose its login
+                    shape; Agent Hub will add field definitions to the skill and keep each
+                    user&apos;s values encrypted outside SKILL.md.
+                  </p>
+                  {authSetupError ? (
+                    <p role="alert" className="mt-2 text-[11px] text-red-300">
+                      {authSetupError}
+                    </p>
+                  ) : null}
+                  {canManageCredentials ? (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={!!authSetupSaving}
+                        onClick={() => setupAuthentication('api-key')}
+                        className="rounded-md bg-indigo-600 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                      >
+                        {authSetupSaving === 'api-key' ? 'Adding…' : 'API key'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!!authSetupSaving}
+                        onClick={() => setupAuthentication('username-password')}
+                        className="rounded-md border border-gray-600 px-2.5 py-1.5 text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-40"
+                      >
+                        {authSetupSaving === 'username-password'
+                          ? 'Adding…'
+                          : 'Username & password'}
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-[10px] text-gray-500">
+                      An Admin can add authentication fields for this project skill.
+                    </p>
+                  )}
+                </div>
+              )}
               {credentialSchema.length > 0 && agentId && (
                 <div className="mt-5 rounded-lg border border-gray-700/80 bg-gray-900/35 p-3">
                   <div className="mb-3 space-y-1.5">
@@ -1573,6 +1687,7 @@ export default function SkillsPage({
                       isDefaultOn={defaultSkillIds.includes(skill.id)}
                       onToggleDefault={handleToggleDefault}
                       canManageDefaults={canManageDefaults}
+                      canManageCredentials={canManageDefaults}
                     />
                   ))}
                 </div>

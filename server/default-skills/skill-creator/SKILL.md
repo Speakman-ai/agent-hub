@@ -31,7 +31,7 @@ Markdown body of instructions. Loading is **progressive** — only the
 `name` + `description` (~60 tokens) are always in context; the body loads when
 the skill triggers; `references/` and `scripts/` load only when explicitly
 read. So the `description` is the single most important field: it is the
-trigger. Models *under*-trigger skills, so descriptions must be "pushy" — state
+trigger. Models _under_-trigger skills, so descriptions must be "pushy" — state
 both **what** the skill does and **when** to use it, with concrete trigger
 phrases.
 
@@ -55,11 +55,11 @@ of a blank interview. Mine the repeated context and procedures out of that real
 work, reconstruct most of the interview from what you read, and only ask the
 user what the transcript leaves ambiguous. Read
 `references/extract-from-session.md` for the full procedure (what to mine for,
-when *not* to make a skill, handling truncated transcripts).
+when _not_ to make a skill, handling truncated transcripts).
 
 ### 2. Interview (only what changes the result)
 
-Gather these four things. Use an `agenthub:ask` picker for the structured
+Gather these five things. Use an `agenthub:ask` picker for the structured
 choices where it speeds the user up (see "Structured interview" below);
 otherwise just ask in prose.
 
@@ -71,6 +71,13 @@ otherwise just ask in prose.
 4. **Success criteria** — how do you know the skill did its job? (Used later
    for Phase 3 eval tests; capture it now even though this skill does not run
    evals.)
+5. **Authentication / standing configuration** — when the skill calls an
+   external service, ask what reusable login shape it needs (API key, token,
+   username/password, or none). Declare each reusable secret as a POSIX env-var
+   field under `credentials:` frontmatter so Agent Hub can render encrypted
+   per-user inputs on the Skills page and inject them on future spawns. Do not
+   put real values in the draft. One-off interactive secrets still belong in a
+   secure `agenthub:credential-request`, not in standing skill credentials.
 
 Also settle two metadata choices: a **slug name** (lowercase, hyphenated, e.g.
 `pdf-extractor`) and a **category** (`general` is the safe default; other common
@@ -87,6 +94,25 @@ writes `SKILL.md` only — see "Scope & limits").
 
 Show the draft to the user before saving. Walk them through the `description`
 specifically, because that is what makes the skill fire.
+
+For an authenticated external integration, include the concrete declaration in
+the draft rather than merely telling the agent to ask for credentials. Example:
+
+```yaml
+credentials:
+  - name: SURVEY_TRACKER_USERNAME
+    label: Username
+    type: string
+    required: true
+  - name: SURVEY_TRACKER_PASSWORD
+    label: Password
+    type: secret
+    required: true
+```
+
+The body should name those environment variables and use them before asking the
+user again. The declarations are shared instructions; the encrypted values are
+stored separately per signed-in user.
 
 ### 4. Save via the skills write API
 
@@ -186,7 +212,7 @@ the running and grading; you author the prompts and read the results.
 3. **Iterate.** If a prompt failed with-skill, or didn't improve over baseline,
    the skill text is the problem, not the eval. Tighten the SKILL.md body (or the
    description), PUT the updated skill, and re-run. Repeat until the prompts pass
-   with-skill *and* improve over baseline — or until two rounds make no progress,
+   with-skill _and_ improve over baseline — or until two rounds make no progress,
    in which case tell the user the skill plateaued and show them the diff.
 
 Acceptance for a good skill: the objective evals pass with-skill, and at least
@@ -199,7 +225,7 @@ the difference). The full eval/assertion format and run options are in
 Apply these to every skill you draft. They exist because skills are loaded into
 a model's context, not read by a human — clarity and triggering beat polish.
 
-- **Pushy description, what + when.** Put *all* the "when to use" signal in the
+- **Pushy description, what + when.** Put _all_ the "when to use" signal in the
   `description`, not the body — the body is not in context until the skill has
   already triggered. Include real trigger phrases and an explicit "DO NOT
   TRIGGER on…" clause to stop false fires. This is the highest-leverage line in
@@ -221,7 +247,7 @@ skeleton, read `references/authoring-best-practices.md`.
 ## Structured interview (agenthub:ask)
 
 When a choice is cleanly enumerable, render a picker instead of free text. Emit
-a **fenced** ```` ```agenthub:ask ```` block (not an XML tag). Keep it to the
+a **fenced** ` ```agenthub:ask ` block (not an XML tag). Keep it to the
 few decisions that matter — usually category and whether the skill needs
 trigger-phrase tightening. Example:
 

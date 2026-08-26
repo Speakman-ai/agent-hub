@@ -14,6 +14,7 @@ import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
 import type { RouteDeps, AgentSkillOverrideRow } from '../types.js';
 import { extractCredentialsFromSkillContent } from '../skill-credentials-resolve.js';
+import { parseCredentialsDeclaration } from '../skill-credentials-declaration.js';
 import { extractOptionsFromSkillContent } from '../skill-options-resolve.js';
 import {
   listProjectDefaultSkillIds,
@@ -71,6 +72,7 @@ interface SkillFrontmatter {
   category: string;
   version: string | null;
   keepCodingInstructions: boolean;
+  credentials: ReturnType<typeof extractCredentialsFromSkillContent>['credentials'];
   content: string;
 }
 
@@ -79,6 +81,8 @@ export interface SkillInfo {
   name: string;
   description: string;
   path: string;
+  category?: string;
+  credentials?: ReturnType<typeof extractCredentialsFromSkillContent>['credentials'];
 }
 
 export interface SkillWithSource extends SkillInfo {
@@ -164,12 +168,14 @@ function readSkillFrontmatter(skillDir: string): SkillFrontmatter | null {
   try {
     const raw = readFileSync(skillMd, 'utf-8');
     const { data, content: _content } = matter(raw);
+    const credentialPack = extractCredentialsFromSkillContent(raw);
     return {
       name: (data.name as string) || path.basename(skillDir),
       description: (data.description as string) || '',
       category: (data.category as string) || 'general',
       version: (data.version as string) || null,
       keepCodingInstructions: (data['keep-coding-instructions'] as boolean) || false,
+      credentials: credentialPack.error ? [] : credentialPack.credentials,
       content: raw,
     };
   } catch {
@@ -179,6 +185,7 @@ function readSkillFrontmatter(skillDir: string): SkillFrontmatter | null {
       category: 'general',
       version: null,
       keepCodingInstructions: false,
+      credentials: [],
       content: '',
     };
   }
@@ -205,6 +212,8 @@ function collectSkillsFromDir(dir: string): SkillInfo[] {
             name: fm.name,
             description: fm.description,
             path: fullPath,
+            category: fm.category,
+            credentials: fm.credentials,
           });
       } else if (entry.endsWith('.md')) {
         // Flat skill: the id is the slug WITHOUT the `.md` extension so discovery
@@ -215,14 +224,20 @@ function collectSkillsFromDir(dir: string): SkillInfo[] {
         const id = entry.slice(0, -3);
         let name = id;
         let description = '';
+        let category = 'general';
+        let credentials: SkillInfo['credentials'] = [];
         try {
-          const { data } = matter(readFileSync(fullPath, 'utf-8'));
+          const raw = readFileSync(fullPath, 'utf-8');
+          const { data } = matter(raw);
           if (typeof data.name === 'string' && data.name.trim()) name = data.name;
           if (typeof data.description === 'string') description = data.description;
+          if (typeof data.category === 'string' && data.category.trim()) category = data.category;
+          const credentialPack = extractCredentialsFromSkillContent(raw);
+          if (!credentialPack.error) credentials = credentialPack.credentials;
         } catch {
           /* keep slug fallback */
         }
-        flats.push({ id, name, description, path: fullPath });
+        flats.push({ id, name, description, path: fullPath, category, credentials });
       }
     }
   } catch {
@@ -569,6 +584,26 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     if (!composed.ok) return res.status(400).json({ error: composed.error });
 
     try {
+      if (Object.prototype.hasOwnProperty.call(req.body ?? {}, 'expectedCredentials')) {
+        const expected = parseCredentialsDeclaration(req.body.expectedCredentials);
+        if (expected.error) {
+          return res.status(400).json({
+            error: `invalid expectedCredentials: ${expected.error}`,
+          });
+        }
+
+        const current = extractCredentialsFromSkillContent(readFileSync(resolved.mdPath, 'utf-8'));
+        if (
+          current.error ||
+          JSON.stringify(current.credentials) !== JSON.stringify(expected.credentials)
+        ) {
+          return res.status(409).json({
+            error:
+              'Skill authentication changed since it was loaded. Reload the skill before saving authentication.',
+          });
+        }
+      }
+
       writeFileSync(resolved.mdPath, composed.content);
       broadcast({
         type: 'skills_update',
