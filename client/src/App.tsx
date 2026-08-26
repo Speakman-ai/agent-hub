@@ -7780,6 +7780,12 @@ export default function App({ initialView }: any = {}) {
                         sessionEngine={sessionEngine}
                         sessionModel={sessionModel}
                         onLinkEpic={handleLinkScopingEpic}
+                        onOpenEpic={(epicId: any) => {
+                          const projectId = activeChatProject?.id;
+                          if (projectId && epicId) {
+                            setCurrentView(`epic:${projectId}:${epicId}`);
+                          }
+                        }}
                         reloadToken={kanbanRefreshKey}
                       />
                     )}

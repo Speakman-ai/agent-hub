@@ -358,6 +358,43 @@ describe('SessionScopingModePane', () => {
     expect(onLinkEpic).toHaveBeenCalledTimes(1);
   });
 
+  it('links to the epic main page from the scoping header', async () => {
+    (api.getBoard as any).mockResolvedValue(boardWith());
+
+    const onOpenEpic = vi.fn();
+    render(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId="e1"
+        onLinkEpic={vi.fn()}
+        onOpenEpic={onOpenEpic}
+      />,
+    );
+
+    const link = await screen.findByTestId('scoping-open-epic' as any);
+    fireEvent.click(link);
+
+    expect(onOpenEpic).toHaveBeenCalledWith('e1');
+  });
+
+  it('hides the epic link when no epic is linked', async () => {
+    (api.getBoard as any).mockResolvedValue(boardWith());
+
+    render(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId={null}
+        onLinkEpic={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    await screen.findByTestId('scoping-epic-select' as any);
+    expect(screen.queryByTestId('scoping-open-epic' as any)).not.toBeInTheDocument();
+  });
+
   it('creates phases with the current session owner agent default model', async () => {
     (api.getBoard as any).mockResolvedValue(boardWith({ autonomous_running: 0 }));
 

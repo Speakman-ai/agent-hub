@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { GitBranch, GripVertical } from 'lucide-react';
+import { GitBranch, GripVertical, ExternalLink } from 'lucide-react';
 import { api } from '../utils/api';
 import {
   autonomousFormFromRow,
@@ -41,6 +41,7 @@ export default function SessionScopingModePane({
   sessionEngine,
   sessionModel,
   onLinkEpic,
+  onOpenEpic,
   reloadToken = 0,
 }: any) {
   const [board, setBoard] = useState<any>(null);
@@ -376,6 +377,19 @@ export default function SessionScopingModePane({
       <div className="border-b border-gray-800 px-3 py-2 flex items-center gap-2 flex-shrink-0">
         <GitBranch size={15} className="text-cyan-400 flex-shrink-0" />
         <span className="text-xs font-semibold text-gray-200 truncate">Scope</span>
+        {linkedEpicId && typeof onOpenEpic === 'function' && (
+          <button
+            type="button"
+            onClick={() => onOpenEpic(linkedEpicId)}
+            className="flex items-center gap-1 text-[11px] text-cyan-400 hover:text-cyan-300 focus:outline-none flex-shrink-0"
+            title="Open the epic's main page"
+            aria-label="Open the epic's main page"
+            data-testid="scoping-open-epic"
+          >
+            <ExternalLink size={12} className="flex-shrink-0" />
+            <span>Open epic</span>
+          </button>
+        )}
         <select
           value={linkedEpicId || ''}
           onChange={(e: any) => onLinkEpic?.(e.target.value || null)}
