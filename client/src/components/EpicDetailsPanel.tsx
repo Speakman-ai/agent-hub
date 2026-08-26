@@ -33,7 +33,7 @@ function FieldLabel({ htmlFor, children }: any) {
 }
 
 /** Inline epic metadata fields for the epic screen. */
-export default function EpicDetailsPanel({ form, onChange, autoFocusName = false }: any) {
+export default function EpicDetailsPanel({ form, onChange, onBlur, autoFocusName = false }: any) {
   return (
     <div className="space-y-5" data-testid="epic-details-panel">
       <div>
@@ -43,6 +43,7 @@ export default function EpicDetailsPanel({ form, onChange, autoFocusName = false
           type="text"
           value={form.name}
           onChange={(e: any) => onChange({ name: e.target.value })}
+          onBlur={onBlur}
           placeholder="e.g. Platform reliability"
           autoFocus={autoFocusName}
           data-testid="epic-name-input"
@@ -56,6 +57,7 @@ export default function EpicDetailsPanel({ form, onChange, autoFocusName = false
           id="epic-description"
           value={form.description}
           onChange={(e: any) => onChange({ description: e.target.value })}
+          onBlur={onBlur}
           placeholder="Optional summary or goals for this epic"
           rows={3}
           data-testid="epic-description-input"
@@ -70,6 +72,7 @@ export default function EpicDetailsPanel({ form, onChange, autoFocusName = false
           type="text"
           value={form.labels ?? ''}
           onChange={(e: any) => onChange({ labels: e.target.value })}
+          onBlur={onBlur}
           placeholder="platform, q1, infra"
           data-testid="epic-labels-input"
           className={FIELD_CLASS}
@@ -85,7 +88,7 @@ export default function EpicDetailsPanel({ form, onChange, autoFocusName = false
               type="button"
               aria-label={`Select color ${color}`}
               aria-pressed={form.color === color}
-              onClick={() => onChange({ color })}
+              onClick={() => onChange({ color }, { immediate: true })}
               className={`h-7 w-7 rounded-full transition-all ${
                 form.color === color
                   ? 'ring-2 ring-white ring-offset-2 ring-offset-gray-950 scale-110'

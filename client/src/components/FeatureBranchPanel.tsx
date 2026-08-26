@@ -21,7 +21,7 @@ function ToggleSwitch({ checked, onChange }: any) {
   );
 }
 
-export default function FeatureBranchPanel({ form, onChange }: any) {
+export default function FeatureBranchPanel({ form, onChange, onBlur }: any) {
   const enabled = !!form.pr_base_branch?.trim();
 
   return (
@@ -36,7 +36,7 @@ export default function FeatureBranchPanel({ form, onChange }: any) {
         </div>
         <ToggleSwitch
           checked={enabled}
-          onChange={(on: boolean) => onChange(epicBranchTogglePatch(form, on))}
+          onChange={(on: boolean) => onChange(epicBranchTogglePatch(form, on), { immediate: true })}
         />
       </div>
 
@@ -53,6 +53,7 @@ export default function FeatureBranchPanel({ form, onChange }: any) {
             type="text"
             value={form.pr_base_branch ?? ''}
             onChange={(event) => onChange({ pr_base_branch: event.target.value })}
+            onBlur={onBlur}
             placeholder="feature/platform-reliability"
             data-testid="feature-pr-base-input"
             className="w-full rounded-lg border border-white/[0.08] bg-white/[0.04] px-3 py-2.5 font-mono text-xs text-gray-100 placeholder-gray-500 transition-colors focus:border-emerald-500/40 focus:outline-none focus:ring-1 focus:ring-emerald-500/40"

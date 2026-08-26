@@ -72,6 +72,7 @@ import {
   templateCreateCardPayload,
   type KanbanCardTemplate,
 } from '@shared/utils/kanbanCardTemplates';
+import { epicAutosaveLabel, useEpicAutosave } from '../hooks/useEpicAutosave';
 const DEFAULT_COLUMNS = [
   { id: 'todo', name: 'To Do', color: '#3B82F6' },
   { id: 'in-progress', name: 'In Progress', color: '#F59E0B' },
@@ -212,6 +213,35 @@ export default function KanbanScreen({ route, navigation }: any) {
   const [editingEpic, setEditingEpic] = useState<any>(null); // null = creating new
   const [epicForm, setEpicForm] = useState(DEFAULT_EPIC_FORM);
   const [epicSaving, setEpicSaving] = useState(false);
+  const handleEpicAutosaved = useCallback((updated: any) => {
+    setBoard((current: any) =>
+      current
+        ? {
+            ...current,
+            epics: (current.epics || []).map((row: any) =>
+              row.id === updated?.id ? { ...row, ...updated } : row,
+            ),
+          }
+        : current,
+    );
+    setEditingEpic((current: any) =>
+      current?.id === updated?.id ? { ...current, ...updated } : current,
+    );
+  }, []);
+  const epicAutosave = useEpicAutosave({
+    projectId,
+    epic: editingEpic,
+    form: epicForm,
+    onSaved: handleEpicAutosaved,
+  });
+  const changeEpicForm = useCallback(
+    (patch: any, immediate = false) => {
+      const next = { ...epicForm, ...patch };
+      setEpicForm(next);
+      epicAutosave.schedule(next, immediate);
+    },
+    [epicAutosave, epicForm],
+  );
   const columns = board?.columns || DEFAULT_COLUMNS;
   const epics = board?.epics || [];
   const templateOptions: KanbanCardTemplate[] = (board?.cardTemplates || []).map(
@@ -570,6 +600,12 @@ export default function KanbanScreen({ route, navigation }: any) {
     setEditingEpic(epic);
     setEpicForm(epicFormFromRow(epic));
     setShowEpicManager(true);
+  };
+  const closeEpicManager = () => {
+    if (editingEpic) epicAutosave.flush();
+    setShowEpicManager(false);
+    setEditingEpic(null);
+    setEpicForm(DEFAULT_EPIC_FORM);
   };
   const handleSaveEpic = async () => {
     if (!epicForm.name.trim()) {
@@ -2247,7 +2283,7 @@ export default function KanbanScreen({ route, navigation }: any) {
         visible={showEpicManager}
         transparent
         animationType="fade"
-        onRequestClose={() => setShowEpicManager(false)}
+        onRequestClose={closeEpicManager}
       >
         <KeyboardAvoidingView
           style={styles.modalOverlay}
@@ -2261,7 +2297,8 @@ export default function KanbanScreen({ route, navigation }: any) {
               <TextInput
                 style={styles.fieldInput}
                 value={epicForm.name}
-                onChangeText={(v: any) => setEpicForm((f: any) => ({ ...f, name: v }))}
+                onChangeText={(v: any) => changeEpicForm({ name: v })}
+                onBlur={epicAutosave.flush}
                 placeholder="Epic name..."
                 placeholderTextColor={colors.gray600}
                 autoFocus
@@ -2285,7 +2322,7 @@ export default function KanbanScreen({ route, navigation }: any) {
                 <Switch
                   value={!!epicForm.pr_base_branch?.trim()}
                   onValueChange={(on: any) =>
-                    setEpicForm((form: any) => ({ ...form, ...epicBranchTogglePatch(form, on) }))
+                    changeEpicForm(epicBranchTogglePatch(epicForm, on), true)
                   }
                   trackColor={{ false: colors.gray700, true: colors.blue600 }}
                   thumbColor={epicForm.pr_base_branch?.trim() ? colors.blue400 : colors.gray500}
@@ -2297,9 +2334,8 @@ export default function KanbanScreen({ route, navigation }: any) {
                   <TextInput
                     style={styles.fieldInput}
                     value={epicForm.pr_base_branch ?? ''}
-                    onChangeText={(v: any) =>
-                      setEpicForm((f: any) => ({ ...f, pr_base_branch: v }))
-                    }
+                    onChangeText={(v: any) => changeEpicForm({ pr_base_branch: v })}
+                    onBlur={epicAutosave.flush}
                     placeholder="feature/platform-reliability"
                     placeholderTextColor={colors.gray600}
                     autoCapitalize="none"
@@ -2312,7 +2348,8 @@ export default function KanbanScreen({ route, navigation }: any) {
               <TextInput
                 style={[styles.fieldInput, { minHeight: 60, textAlignVertical: 'top' }]}
                 value={epicForm.description}
-                onChangeText={(v: any) => setEpicForm((f: any) => ({ ...f, description: v }))}
+                onChangeText={(v: any) => changeEpicForm({ description: v })}
+                onBlur={epicAutosave.flush}
                 placeholder="Short description (optional)"
                 placeholderTextColor={colors.gray600}
                 multiline
@@ -2323,7 +2360,7 @@ export default function KanbanScreen({ route, navigation }: any) {
                 {EPIC_COLORS.map((c: any) => (
                   <TouchableOpacity
                     key={c}
-                    onPress={() => setEpicForm((f: any) => ({ ...f, color: c }))}
+                    onPress={() => changeEpicForm({ color: c }, true)}
                     style={[
                       styles.colorSwatch,
                       { backgroundColor: c },
@@ -2334,28 +2371,33 @@ export default function KanbanScreen({ route, navigation }: any) {
               </View>
 
               <View style={styles.epicModalActions}>
-                <TouchableOpacity
-                  style={styles.addCardCancel}
-                  onPress={() => {
-                    setShowEpicManager(false);
-                    setEditingEpic(null);
-                    setEpicForm(DEFAULT_EPIC_FORM);
-                  }}
-                >
-                  <Text style={styles.addCardCancelText}>Cancel</Text>
+                <TouchableOpacity style={styles.addCardCancel} onPress={closeEpicManager}>
+                  <Text style={styles.addCardCancelText}>{editingEpic ? 'Close' : 'Cancel'}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.addCardCreate,
-                    (epicSaving || !epicForm.name.trim()) && styles.addCardCreateDisabled,
-                  ]}
-                  onPress={handleSaveEpic}
-                  disabled={epicSaving || !epicForm.name.trim()}
-                >
-                  <Text style={styles.addCardCreateText}>
-                    {epicSaving ? 'Saving...' : editingEpic ? 'Save' : 'Create'}
+                {editingEpic ? (
+                  <Text
+                    style={[
+                      styles.epicAutosaveStatus,
+                      epicAutosave.state === 'error' && styles.epicAutosaveError,
+                    ]}
+                    testID="epic-autosave-status"
+                  >
+                    {epicAutosaveLabel(epicAutosave.state)}
                   </Text>
-                </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    style={[
+                      styles.addCardCreate,
+                      (epicSaving || !epicForm.name.trim()) && styles.addCardCreateDisabled,
+                    ]}
+                    onPress={handleSaveEpic}
+                    disabled={epicSaving || !epicForm.name.trim()}
+                  >
+                    <Text style={styles.addCardCreateText}>
+                      {epicSaving ? 'Saving...' : 'Create'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
 
               {editingEpic && (
@@ -2850,6 +2892,13 @@ const styles = StyleSheet.create({
     gap: 8,
     marginTop: 16,
   },
+  epicAutosaveStatus: {
+    color: colors.gray500,
+    fontSize: 11,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  epicAutosaveError: { color: colors.red400 },
   deleteEpicBtn: {
     marginTop: 12,
     paddingVertical: 10,

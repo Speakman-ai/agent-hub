@@ -653,7 +653,7 @@ describe('EpicView', () => {
     expect(screen.queryByText('Save phase settings')).not.toBeInTheDocument();
   });
 
-  it('shows branch controls at the top and preserves stored feature automation fields', async () => {
+  it('autosaves branch controls and preserves stored feature automation fields', async () => {
     const boardWithUnsetAutoMerge = {
       ...board,
       epics: [
@@ -694,7 +694,6 @@ describe('EpicView', () => {
     await waitFor(() =>
       expect(screen.getByTestId('feature-pr-base-input' as any)).toHaveValue('feature/platform'),
     );
-    fireEvent.click(screen.getByTestId('feature-branch-save-button' as any));
 
     await waitFor(() =>
       expect(api.updateEpic).toHaveBeenCalledWith(
@@ -705,6 +704,132 @@ describe('EpicView', () => {
           autonomousSendIt: 1,
           prBaseBranch: 'feature/platform',
         }),
+      ),
+    );
+    expect(screen.queryByTestId('feature-branch-save-button' as any)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('epic-save-button' as any)).not.toBeInTheDocument();
+  });
+
+  it('autosaves epic details when editing finishes without a Save button', async () => {
+    vi.clearAllMocks();
+    (api.getBoard as any).mockResolvedValue(board);
+    (api.updateEpic as any).mockResolvedValue({ id: 'e1', name: 'Platform reliability' });
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId="e1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    const nameInput = await screen.findByTestId('epic-name-input' as any);
+    fireEvent.change(nameInput, { target: { value: 'Platform reliability' } });
+    fireEvent.blur(nameInput);
+
+    await waitFor(() =>
+      expect(api.updateEpic).toHaveBeenCalledWith(
+        'p1',
+        'e1',
+        expect.objectContaining({
+          name: 'Platform reliability',
+          description: 'Core work',
+          prBaseBranch: null,
+        }),
+      ),
+    );
+    expect(screen.queryByTestId('epic-save-button' as any)).not.toBeInTheDocument();
+    expect(screen.getByTestId('epic-autosave-status' as any)).toHaveTextContent('Saved');
+  });
+
+  it('flushes a pending epic edit on unmount so navigating away within the debounce window does not lose it', async () => {
+    vi.clearAllMocks();
+    (api.getBoard as any).mockResolvedValue(board);
+    (api.updateEpic as any).mockResolvedValue({ id: 'e1', name: 'Platform reliability' });
+
+    const { unmount } = render(
+      <EpicView
+        projectId="p1"
+        epicId="e1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    const nameInput = await screen.findByTestId('epic-name-input' as any);
+    // Edit without blurring: the 500ms debounce is still pending. Unmounting
+    // (navigating away) must flush it rather than drop it.
+    fireEvent.change(nameInput, { target: { value: 'Platform reliability' } });
+    unmount();
+
+    await waitFor(() =>
+      expect(api.updateEpic).toHaveBeenCalledWith(
+        'p1',
+        'e1',
+        expect.objectContaining({ name: 'Platform reliability' }),
+      ),
+    );
+  });
+
+  it('flushes the outgoing epic when the epic id changes within the debounce window', async () => {
+    vi.clearAllMocks();
+    const twoEpicBoard = {
+      ...board,
+      epics: [
+        ...board.epics,
+        {
+          id: 'e2',
+          name: 'Second epic',
+          color: '#22C55E',
+          description: 'Other work',
+          autonomous: 0,
+          state: 'in_progress',
+        },
+      ],
+    };
+    (api.getBoard as any).mockResolvedValue(twoEpicBoard);
+    (api.updateEpic as any).mockResolvedValue({ id: 'e1', name: 'Platform reliability' });
+
+    const { rerender } = render(
+      <EpicView
+        projectId="p1"
+        epicId="e1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    const nameInput = await screen.findByTestId('epic-name-input' as any);
+    // Edit epic e1 (debounce pending), then switch to e2 before it fires.
+    fireEvent.change(nameInput, { target: { value: 'Platform reliability' } });
+    rerender(
+      <EpicView
+        projectId="p1"
+        epicId="e2"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    // The outgoing edit is persisted against e1, not misattributed or lost.
+    await waitFor(() =>
+      expect(api.updateEpic).toHaveBeenCalledWith(
+        'p1',
+        'e1',
+        expect.objectContaining({ name: 'Platform reliability' }),
       ),
     );
   });

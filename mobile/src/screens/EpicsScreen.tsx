@@ -35,6 +35,7 @@ import { groupEpicsByState } from '../utils/epicBoard';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import LinkedTodosPanel from '../components/LinkedTodosPanel';
 import EpicPullsSection from '../components/EpicPullsSection';
+import { epicAutosaveLabel, useEpicAutosave } from '../hooks/useEpicAutosave';
 export default function EpicsScreen({ route, navigation }: any) {
   const { projectId, project: routeProject, editEpicId } = route.params || {};
   const project = routeProject;
@@ -50,6 +51,35 @@ export default function EpicsScreen({ route, navigation }: any) {
   );
   const [viewMode, setViewMode] = useState<'list' | 'board'>('list');
   const { setActiveAgentId, setActiveSessionId } = useApp();
+  const handleEpicAutosaved = useCallback((updated: any) => {
+    setBoard((current: any) =>
+      current
+        ? {
+            ...current,
+            epics: (current.epics || []).map((row: any) =>
+              row.id === updated?.id ? { ...row, ...updated } : row,
+            ),
+          }
+        : current,
+    );
+    setEditingEpic((current: any) =>
+      current?.id === updated?.id ? { ...current, ...updated } : current,
+    );
+  }, []);
+  const epicAutosave = useEpicAutosave({
+    projectId,
+    epic: editingEpic,
+    form: epicForm,
+    onSaved: handleEpicAutosaved,
+  });
+  const changeEpicForm = useCallback(
+    (patch: any, immediate = false) => {
+      const next = { ...epicForm, ...patch };
+      setEpicForm(next);
+      epicAutosave.schedule(next, immediate);
+    },
+    [epicAutosave, epicForm],
+  );
   const openScopingSession = useCallback(
     async (epicId: any) => {
       if (!epicId || scopingId) return false;
@@ -130,6 +160,10 @@ export default function EpicsScreen({ route, navigation }: any) {
     setEditingEpic(epic);
     setEpicForm(epicFormFromRow(epic));
     setShowForm(true);
+  };
+  const closeForm = () => {
+    if (editingEpic) epicAutosave.flush();
+    setShowForm(false);
   };
   // The EpicDetail screen's "Edit" button routes back here with `editEpicId`;
   // open that epic's form once the board has loaded it, then consume the
@@ -259,8 +293,10 @@ export default function EpicsScreen({ route, navigation }: any) {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.headerRow}>
           <Text style={styles.desc}>Group kanban cards into epics for this project.</Text>
-          <TouchableOpacity onPress={() => (showForm ? setShowForm(false) : openCreate())}>
-            <Text style={styles.link}>{showForm ? 'Cancel' : '+ New'}</Text>
+          <TouchableOpacity onPress={() => (showForm ? closeForm() : openCreate())}>
+            <Text style={styles.link}>
+              {showForm ? (editingEpic ? 'Close' : 'Cancel') : '+ New'}
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -270,9 +306,7 @@ export default function EpicsScreen({ route, navigation }: any) {
               <Text style={styles.label}>Keep on feature branch</Text>
               <Switch
                 value={!!epicForm.pr_base_branch?.trim()}
-                onValueChange={(v: any) =>
-                  setEpicForm({ ...epicForm, ...epicBranchTogglePatch(epicForm, v) })
-                }
+                onValueChange={(v: any) => changeEpicForm(epicBranchTogglePatch(epicForm, v), true)}
                 trackColor={{ false: colors.gray700, true: colors.blue600 }}
                 thumbColor={epicForm.pr_base_branch?.trim() ? colors.blue400 : colors.gray500}
               />
@@ -283,7 +317,8 @@ export default function EpicsScreen({ route, navigation }: any) {
                 <TextInput
                   style={styles.input}
                   value={epicForm.pr_base_branch}
-                  onChangeText={(v: any) => setEpicForm({ ...epicForm, pr_base_branch: v })}
+                  onChangeText={(v: any) => changeEpicForm({ pr_base_branch: v })}
+                  onBlur={epicAutosave.flush}
                   placeholder="feature/platform-reliability"
                   placeholderTextColor={colors.gray600}
                   autoCapitalize="none"
@@ -299,14 +334,16 @@ export default function EpicsScreen({ route, navigation }: any) {
             <TextInput
               style={styles.input}
               value={epicForm.name}
-              onChangeText={(v: any) => setEpicForm({ ...epicForm, name: v })}
+              onChangeText={(v: any) => changeEpicForm({ name: v })}
+              onBlur={epicAutosave.flush}
               placeholderTextColor={colors.gray600}
             />
             <Text style={styles.label}>Description</Text>
             <TextInput
               style={[styles.input, { minHeight: 60 }]}
               value={epicForm.description}
-              onChangeText={(v: any) => setEpicForm({ ...epicForm, description: v })}
+              onChangeText={(v: any) => changeEpicForm({ description: v })}
+              onBlur={epicAutosave.flush}
               multiline
               placeholderTextColor={colors.gray600}
             />
@@ -320,7 +357,7 @@ export default function EpicsScreen({ route, navigation }: any) {
                     { backgroundColor: c },
                     epicForm.color === c && styles.colorBtnActive,
                   ]}
-                  onPress={() => setEpicForm({ ...epicForm, color: c })}
+                  onPress={() => changeEpicForm({ color: c }, true)}
                 />
               ))}
             </View>
@@ -328,7 +365,8 @@ export default function EpicsScreen({ route, navigation }: any) {
             <TextInput
               style={styles.input}
               value={epicForm.labels}
-              onChangeText={(v: any) => setEpicForm({ ...epicForm, labels: v })}
+              onChangeText={(v: any) => changeEpicForm({ labels: v })}
+              onBlur={epicAutosave.flush}
               placeholder="platform, reliability"
               placeholderTextColor={colors.gray600}
               autoCapitalize="none"
@@ -345,7 +383,7 @@ export default function EpicsScreen({ route, navigation }: any) {
                       <TouchableOpacity
                         key={u.id || 'unassigned'}
                         style={[styles.filterChip, active && styles.filterChipActive]}
-                        onPress={() => setEpicForm({ ...epicForm, assigned_user_id: u.id })}
+                        onPress={() => changeEpicForm({ assigned_user_id: u.id }, true)}
                       >
                         <Text
                           style={[styles.filterChipText, active && styles.filterChipTextActive]}
@@ -358,15 +396,25 @@ export default function EpicsScreen({ route, navigation }: any) {
                 </View>
               </>
             )}
-            <TouchableOpacity
-              style={[styles.primaryBtn, saving && { opacity: 0.5 }]}
-              onPress={handleSave}
-              disabled={saving}
-            >
-              <Text style={styles.primaryBtnText}>
-                {saving ? 'Saving…' : editingEpic ? 'Update' : 'Create'}
+            {editingEpic ? (
+              <Text
+                style={[
+                  styles.autosaveStatus,
+                  epicAutosave.state === 'error' && styles.autosaveError,
+                ]}
+                testID="epic-autosave-status"
+              >
+                {epicAutosaveLabel(epicAutosave.state)}
               </Text>
-            </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[styles.primaryBtn, saving && { opacity: 0.5 }]}
+                onPress={handleSave}
+                disabled={saving}
+              >
+                <Text style={styles.primaryBtnText}>{saving ? 'Saving…' : 'Create'}</Text>
+              </TouchableOpacity>
+            )}
             {!editingEpic && (
               <TouchableOpacity
                 style={[styles.scopeBtn, (saving || !!scopingId) && { opacity: 0.5 }]}
@@ -630,6 +678,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   primaryBtnText: { color: colors.emerald400, fontWeight: '600' },
+  autosaveStatus: {
+    color: colors.gray500,
+    fontSize: 11,
+    marginTop: 12,
+    textAlign: 'right',
+  },
+  autosaveError: { color: colors.red400 },
   deleteBtn: { marginTop: 8, alignItems: 'center', paddingVertical: 8 },
   deleteBtnText: { color: colors.red400, fontSize: 13 },
   epicCard: {

@@ -80,8 +80,19 @@ export default function EpicView({
 
   const [detailsForm, setDetailsForm] = useState({ ...EMPTY_EPIC_FORM });
   const [branchForm, setBranchForm] = useState({ name: '', pr_base_branch: '' });
-  const [detailsSaving, setDetailsSaving] = useState(false);
-  const [branchSaving, setBranchSaving] = useState(false);
+  const [epicSaveState, setEpicSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [deletingEpic, setDeletingEpic] = useState(false);
+  const detailsFormRef = useRef({ ...EMPTY_EPIC_FORM });
+  const branchFormRef = useRef({ name: '', pr_base_branch: '' });
+  const savedEpicRef = useRef<any>(null);
+  const savedLeadByEpicRef = useRef<Record<string, string | null>>({});
+  const epicSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const epicSaveQueueRef = useRef(Promise.resolve());
+  const epicSavePendingRef = useRef(false);
+  const epicSaveBusyRef = useRef(false);
+  const epicSaveRevisionRef = useRef(0);
+  const activeEpicIdRef = useRef<string | null>(null);
+  const epicSavedStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [creatingEpic, setCreatingEpic] = useState(false);
   const [scopingEpic, setScopingEpic] = useState(false);
   const [newEpicForm, setNewEpicForm] = useState({ ...EMPTY_EPIC_FORM });
@@ -179,21 +190,66 @@ export default function EpicView({
 
   useEffect(() => {
     if (!epicRowId) {
-      setDetailsForm({ ...EMPTY_EPIC_FORM });
-      setBranchForm({ name: '', pr_base_branch: '' });
+      const emptyDetails = { ...EMPTY_EPIC_FORM };
+      const emptyBranch = { name: '', pr_base_branch: '' };
+      detailsFormRef.current = emptyDetails;
+      branchFormRef.current = emptyBranch;
+      savedEpicRef.current = null;
+      activeEpicIdRef.current = null;
+      setDetailsForm(emptyDetails);
+      setBranchForm(emptyBranch);
       return;
     }
-    setDetailsForm({
+    const epicChanged = activeEpicIdRef.current !== epicRowId;
+    if (epicChanged) {
+      // Switching epics tears down the debounce timer. Persist the outgoing
+      // epic's pending edit first (using its still-current snapshots) so an
+      // edit made inside the 500ms window is not silently dropped. Skip the
+      // lead-assignment prompt here — surfacing a modal mid-navigation is
+      // jarring; the field value is still saved.
+      const outgoingEpicId = activeEpicIdRef.current;
+      if (outgoingEpicId && epicSavePendingRef.current) {
+        if (epicSaveTimerRef.current) {
+          clearTimeout(epicSaveTimerRef.current);
+          epicSaveTimerRef.current = null;
+        }
+        enqueueEpicSaveRef.current(
+          outgoingEpicId,
+          detailsFormRef.current,
+          branchFormRef.current,
+          savedEpicRef.current || { name: detailsFormRef.current.name },
+          { promptLead: false },
+        );
+      }
+      activeEpicIdRef.current = epicRowId;
+      epicSaveRevisionRef.current += 1;
+      epicSavePendingRef.current = false;
+      epicSaveBusyRef.current = false;
+      if (epicSaveTimerRef.current) clearTimeout(epicSaveTimerRef.current);
+      epicSaveTimerRef.current = null;
+      setEpicSaveState('idle');
+    }
+    // A kanban_update is broadcast for our own write. Do not let the resulting
+    // board refresh replace a newer local keystroke while its debounced save is
+    // still pending.
+    if (!epicChanged && (epicSavePendingRef.current || epicSaveBusyRef.current)) return;
+    savedEpicRef.current = epic;
+    savedLeadByEpicRef.current[epicRowId] = epicRowAssignedUserId || null;
+    const nextDetails = {
       name: epicRowName,
       description: epicRowDescription || '',
       labels: labelsFieldFromInput(epicRowLabels),
       assigned_user_id: epicRowAssignedUserId || '',
       color: epicRowColor || EMPTY_EPIC_FORM.color,
-    });
-    setBranchForm({
+    };
+    const nextBranch = {
       name: epicRowName,
       pr_base_branch: epicRowPrBaseBranch || '',
-    });
+    };
+    detailsFormRef.current = nextDetails;
+    branchFormRef.current = nextBranch;
+    setDetailsForm(nextDetails);
+    setBranchForm(nextBranch);
   }, [
     epicRowId,
     epicRowName,
@@ -202,6 +258,7 @@ export default function EpicView({
     epicRowAssignedUserId,
     epicRowColor,
     epicRowPrBaseBranch,
+    epic,
   ]);
 
   const defaultColumnId = useMemo(() => {
@@ -322,66 +379,143 @@ export default function EpicView({
     }
   };
 
-  const handleSaveDetails = async () => {
-    if (!epic || !detailsForm.name.trim() || detailsSaving) return;
-    setDetailsSaving(true);
-    try {
-      const previousLeadUserId = epic.assigned_user_id;
-      const nextLeadUserId = detailsForm.assigned_user_id || null;
-      const epicCardCount = cards.filter((c: any) => c.epic_id === epic.id).length;
-      await api.updateEpic(
-        projectId,
-        epic.id,
-        epicFormToUpdateBody({
-          ...detailsForm,
-          ...autonomousFormFromRow(epic),
-        }),
-      );
-      await maybePromptAssignLeadToEpicCards({
-        projectId,
-        epicId: epic.id,
-        previousUserId: previousLeadUserId,
-        nextUserId: nextLeadUserId,
-        cardCount: epicCardCount,
-        assignableUsers,
+  // Persist a specific epic from captured snapshots. Kept independent of the
+  // live `epic`/refs so teardown paths (epic switch, unmount) can flush the
+  // *outgoing* edit even after the visible refs have advanced to a new epic.
+  const enqueueEpicSave = useCallback(
+    (
+      targetEpicId: string,
+      detailsSnapshot: any,
+      branchSnapshot: any,
+      savedEpic: any,
+      options: { promptLead?: boolean } = {},
+    ) => {
+      const { promptLead = true } = options;
+      const revision = epicSaveRevisionRef.current;
+      const nextLeadUserId = detailsSnapshot.assigned_user_id || null;
+      const payload = epicFormToUpdateBody({
+        ...detailsSnapshot,
+        // A temporarily empty name is a valid editing state but not a valid
+        // server value. Other settings should still autosave while the name
+        // field waits for a valid value.
+        name: detailsSnapshot.name.trim() || savedEpic.name,
+        ...autonomousFormFromRow(savedEpic),
+        pr_base_branch: branchSnapshot.pr_base_branch,
       });
-      await fetchBoard();
-    } catch (err: any) {
-      console.error('Failed to save epic:', err);
-    } finally {
-      setDetailsSaving(false);
+
+      epicSavePendingRef.current = false;
+      epicSaveBusyRef.current = true;
+      setEpicSaveState('saving');
+      if (epicSavedStatusTimerRef.current) clearTimeout(epicSavedStatusTimerRef.current);
+      epicSaveQueueRef.current = epicSaveQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const previousLeadUserId = savedLeadByEpicRef.current[targetEpicId] ?? null;
+          const updated = await api.updateEpic(projectId, targetEpicId, payload);
+          savedLeadByEpicRef.current[targetEpicId] = nextLeadUserId;
+          if (activeEpicIdRef.current === targetEpicId) {
+            savedEpicRef.current = { ...savedEpicRef.current, ...updated };
+          }
+          if (promptLead && previousLeadUserId !== nextLeadUserId) {
+            await maybePromptAssignLeadToEpicCards({
+              projectId,
+              epicId: targetEpicId,
+              previousUserId: previousLeadUserId,
+              nextUserId: nextLeadUserId,
+              cardCount: cards.filter((card: any) => card.epic_id === targetEpicId).length,
+              assignableUsers,
+            });
+          }
+          if (revision === epicSaveRevisionRef.current && !epicSavePendingRef.current) {
+            epicSaveBusyRef.current = false;
+            setEpics((rows) =>
+              rows.map((row) => (row.id === targetEpicId ? { ...row, ...updated } : row)),
+            );
+            setEpicSaveState('saved');
+            epicSavedStatusTimerRef.current = setTimeout(() => setEpicSaveState('idle'), 1600);
+          }
+        })
+        .catch((err: any) => {
+          console.error('Failed to autosave epic:', err);
+          if (revision === epicSaveRevisionRef.current && !epicSavePendingRef.current) {
+            epicSaveBusyRef.current = false;
+            setEpicSaveState('error');
+          }
+        });
+    },
+    [assignableUsers, cards, projectId],
+  );
+
+  const flushEpicSave = useCallback(() => {
+    if (epicSaveTimerRef.current) {
+      clearTimeout(epicSaveTimerRef.current);
+      epicSaveTimerRef.current = null;
     }
+    if (!epic || !epicSavePendingRef.current) return;
+    enqueueEpicSave(
+      epic.id,
+      detailsFormRef.current,
+      branchFormRef.current,
+      savedEpicRef.current || epic,
+    );
+  }, [enqueueEpicSave, epic]);
+
+  // Latest flush / enqueue, callable from teardown effects (unmount, epic
+  // switch) without adding them to those effects' dependency arrays — which
+  // would re-run the effects, and prematurely flush, on every keystroke.
+  const flushEpicSaveRef = useRef(flushEpicSave);
+  flushEpicSaveRef.current = flushEpicSave;
+  const enqueueEpicSaveRef = useRef(enqueueEpicSave);
+  enqueueEpicSaveRef.current = enqueueEpicSave;
+
+  const scheduleEpicSave = useCallback(
+    (immediate = false) => {
+      if (!epic) return;
+      epicSavePendingRef.current = true;
+      epicSaveRevisionRef.current += 1;
+      if (epicSaveTimerRef.current) clearTimeout(epicSaveTimerRef.current);
+      if (immediate) {
+        // Let React finish the current event before reading the refs and
+        // enqueueing the write.
+        epicSaveTimerRef.current = setTimeout(flushEpicSave, 0);
+      } else {
+        epicSaveTimerRef.current = setTimeout(flushEpicSave, 500);
+      }
+    },
+    [epic, flushEpicSave],
+  );
+
+  const handleDetailsChange = (patch: any, options: { immediate?: boolean } = {}) => {
+    const next = { ...detailsFormRef.current, ...patch };
+    detailsFormRef.current = next;
+    branchFormRef.current = { ...branchFormRef.current, name: next.name };
+    setDetailsForm(next);
+    setBranchForm((current) => ({ ...current, name: next.name }));
+    scheduleEpicSave(!!options.immediate);
   };
 
-  const handleSaveFeatureBranch = async () => {
-    if (!epic || branchSaving) return;
-    setBranchSaving(true);
-    try {
-      await api.updateEpic(
-        projectId,
-        epic.id,
-        epicFormToUpdateBody({
-          name: epic.name,
-          description: epic.description || '',
-          color: epic.color || EMPTY_EPIC_FORM.color,
-          labels: epic.labels,
-          assigned_user_id: epic.assigned_user_id,
-          ...autonomousFormFromRow(epic),
-          pr_base_branch: branchForm.pr_base_branch,
-        }),
-      );
-      await fetchBoard();
-    } catch (err: any) {
-      console.error('Failed to save feature branch:', err);
-    } finally {
-      setBranchSaving(false);
-    }
+  const handleBranchChange = (patch: any, options: { immediate?: boolean } = {}) => {
+    const next = { ...branchFormRef.current, ...patch };
+    branchFormRef.current = next;
+    setBranchForm(next);
+    scheduleEpicSave(!!options.immediate);
   };
+
+  useEffect(
+    () => () => {
+      // Unmounting (e.g. navigating away) within the debounce window must not
+      // drop a pending edit — there is no explicit Save button to recover it.
+      flushEpicSaveRef.current();
+      if (epicSaveTimerRef.current) clearTimeout(epicSaveTimerRef.current);
+      if (epicSavedStatusTimerRef.current) clearTimeout(epicSavedStatusTimerRef.current);
+    },
+    [],
+  );
 
   const handleDeleteEpic = async () => {
-    if (!epic || detailsSaving || branchSaving) return;
+    if (!epic || deletingEpic) return;
     if (!window.confirm(`Delete epic "${epic.name}"? Cards will be unlinked.`)) return;
-    setDetailsSaving(true);
+    setDeletingEpic(true);
     try {
       await api.deleteEpic(projectId, epic.id);
       onOpenEpicsList();
@@ -389,7 +523,7 @@ export default function EpicView({
     } catch (err: any) {
       console.error('Failed to delete epic:', err);
     } finally {
-      setDetailsSaving(false);
+      setDeletingEpic(false);
     }
   };
 
@@ -1001,25 +1135,30 @@ export default function EpicView({
                   {phaseRunError}
                 </div>
               )}
+              <div
+                className={`flex h-5 max-w-6xl items-center justify-end text-[11px] ${
+                  epicSaveState === 'error' ? 'text-red-400' : 'text-gray-500'
+                }`}
+                data-testid="epic-autosave-status"
+                aria-live="polite"
+              >
+                {epicSaveState === 'saving'
+                  ? 'Saving changes…'
+                  : epicSaveState === 'saved'
+                    ? 'Saved'
+                    : epicSaveState === 'error'
+                      ? 'Could not save changes. Edit a field to retry.'
+                      : 'Changes save automatically'}
+              </div>
               <div className="grid max-w-6xl gap-5 lg:grid-cols-2" data-testid="feature-controls">
                 <SectionCard
                   title="Feature branch"
                   description="Control where ticket pull requests merge before the epic ships."
-                  action={
-                    <button
-                      type="button"
-                      onClick={handleSaveFeatureBranch}
-                      disabled={branchSaving}
-                      data-testid="feature-branch-save-button"
-                      className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:bg-emerald-600/40"
-                    >
-                      {branchSaving ? 'Saving…' : 'Save'}
-                    </button>
-                  }
                 >
                   <FeatureBranchPanel
                     form={branchForm}
-                    onChange={(patch: any) => setBranchForm((form) => ({ ...form, ...patch }))}
+                    onChange={handleBranchChange}
+                    onBlur={flushEpicSave}
                   />
                 </SectionCard>
 
@@ -1031,28 +1170,20 @@ export default function EpicView({
                       <button
                         type="button"
                         onClick={handleDeleteEpic}
-                        disabled={detailsSaving || branchSaving}
+                        disabled={deletingEpic || epicSaveState === 'saving'}
                         data-testid="epic-delete-button"
                         className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-50"
                       >
                         <Trash2 size={12} />
-                        Delete
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleSaveDetails}
-                        disabled={!detailsForm.name.trim() || detailsSaving}
-                        data-testid="epic-save-button"
-                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-500 disabled:bg-indigo-600/40"
-                      >
-                        {detailsSaving ? 'Saving…' : 'Save'}
+                        {deletingEpic ? 'Deleting…' : 'Delete'}
                       </button>
                     </div>
                   }
                 >
                   <EpicDetailsPanel
                     form={detailsForm}
-                    onChange={(patch: any) => setDetailsForm((form) => ({ ...form, ...patch }))}
+                    onChange={handleDetailsChange}
+                    onBlur={flushEpicSave}
                   />
                   {assignableUsers.length > 0 ? (
                     <div className="mt-5">
@@ -1060,7 +1191,7 @@ export default function EpicView({
                         users={assignableUsers}
                         value={detailsForm.assigned_user_id || ''}
                         onChange={(assigned_user_id) =>
-                          setDetailsForm((form: any) => ({ ...form, assigned_user_id }))
+                          handleDetailsChange({ assigned_user_id }, { immediate: true })
                         }
                       />
                     </div>

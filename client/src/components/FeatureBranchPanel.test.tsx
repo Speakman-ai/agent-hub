@@ -14,6 +14,9 @@ describe('FeatureBranchPanel', () => {
 
     expect(screen.getByText('Keep on feature branch')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('switch', { name: 'Keep on feature branch' }));
-    expect(onChange).toHaveBeenCalledWith({ pr_base_branch: 'feature/platform-reliability' });
+    expect(onChange).toHaveBeenCalledWith(
+      { pr_base_branch: 'feature/platform-reliability' },
+      { immediate: true },
+    );
   });
 });
