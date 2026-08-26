@@ -24,9 +24,15 @@ type Props = {
   detail: KanbanCardDetailState;
   agents: any[];
   assignableUsers?: AssignableUser[];
+  onOpenEpic?: (epicId: string) => void;
 };
 
-export default function KanbanCardDetailModal({ detail, agents, assignableUsers = [] }: Props) {
+export default function KanbanCardDetailModal({
+  detail,
+  agents,
+  assignableUsers = [],
+  onOpenEpic,
+}: Props) {
   const {
     selectedCard,
     setSelectedCard,
@@ -739,9 +745,21 @@ export default function KanbanCardDetailModal({ detail, agents, assignableUsers 
                   ) : null}
                   {/* Epic */}
                   <div>
-                    <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
-                      Epic
-                    </label>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Epic
+                      </label>
+                      {detailForm.epic_id && onOpenEpic ? (
+                        <button
+                          type="button"
+                          onClick={() => onOpenEpic(detailForm.epic_id)}
+                          className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
+                        >
+                          Open epic
+                          <ExternalLink size={12} />
+                        </button>
+                      ) : null}
+                    </div>
                     <select
                       value={detailForm.epic_id}
                       onChange={(e: any) => handleLinkCardEpic(e.target.value)}

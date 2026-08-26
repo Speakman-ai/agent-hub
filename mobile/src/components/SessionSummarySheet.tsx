@@ -11,6 +11,7 @@ import {
   Linking,
   Alert,
 } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 import { api } from '../utils/api';
@@ -40,9 +41,18 @@ export default function SessionSummarySheet({
   sessionId,
   sessionAgents = [],
 }: any) {
+  const navigation = useNavigation<any>();
   const [summary, setSummary] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<any>(null);
+  const openTicket = () => {
+    if (!summary?.projectId || !summary?.linkedCardId) return;
+    onClose?.();
+    navigation.navigate('Kanban', {
+      projectId: summary.projectId,
+      cardId: summary.linkedCardId,
+    });
+  };
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
   useEffect(() => {
@@ -130,21 +140,44 @@ export default function SessionSummarySheet({
                 {summary.linkedCardTitle ? (
                   <>
                     <Text style={styles.sectionLabel}>TICKET</Text>
-                    <View style={styles.prCard}>
-                      <View style={styles.prTitleRow}>
-                        <AppIcon name="pricetag-outline" size={14} color={colors.gray400} />
-                        <Text style={styles.prTitle} numberOfLines={2}>
-                          {summary.linkedCardTitle}
-                        </Text>
-                        {summary.linkedCardColumn ? (
-                          <View style={[styles.badge, { backgroundColor: colors.gray800 }]}>
-                            <Text style={[styles.badgeText, { color: colors.gray200 }]}>
-                              {summary.linkedCardColumn}
-                            </Text>
-                          </View>
-                        ) : null}
+                    {summary.linkedCardId && summary.projectId ? (
+                      <TouchableOpacity
+                        style={styles.prCard}
+                        onPress={openTicket}
+                        accessibilityRole="link"
+                        accessibilityLabel={`Open ticket ${summary.linkedCardTitle}`}
+                      >
+                        <View style={styles.prTitleRow}>
+                          <AppIcon name="pricetag-outline" size={14} color={colors.gray400} />
+                          <Text style={styles.prTitle} numberOfLines={2}>
+                            {summary.linkedCardTitle}
+                          </Text>
+                          {summary.linkedCardColumn ? (
+                            <View style={[styles.badge, { backgroundColor: colors.gray800 }]}>
+                              <Text style={[styles.badgeText, { color: colors.gray200 }]}>
+                                {summary.linkedCardColumn}
+                              </Text>
+                            </View>
+                          ) : null}
+                        </View>
+                      </TouchableOpacity>
+                    ) : (
+                      <View style={styles.prCard}>
+                        <View style={styles.prTitleRow}>
+                          <AppIcon name="pricetag-outline" size={14} color={colors.gray400} />
+                          <Text style={styles.prTitle} numberOfLines={2}>
+                            {summary.linkedCardTitle}
+                          </Text>
+                          {summary.linkedCardColumn ? (
+                            <View style={[styles.badge, { backgroundColor: colors.gray800 }]}>
+                              <Text style={[styles.badgeText, { color: colors.gray200 }]}>
+                                {summary.linkedCardColumn}
+                              </Text>
+                            </View>
+                          ) : null}
+                        </View>
                       </View>
-                    </View>
+                    )}
                   </>
                 ) : null}
 

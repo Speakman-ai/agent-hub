@@ -6439,8 +6439,9 @@ export default function App({ initialView }: any = {}) {
                     isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
                     variant="top"
                     onOpenPrDetail={handleOpenPrDetail}
-                    onOpenCard={(projectId: any) => {
+                    onOpenCard={(projectId: any, cardId: any) => {
                       if (!projectId) return;
+                      if (cardId) setKanbanFocusCardId(cardId);
                       setCurrentView(`kanban:${projectId}`);
                       setSidebarOpen(false);
                     }}
@@ -6495,6 +6496,11 @@ export default function App({ initialView }: any = {}) {
                   onOpenEpics={() => {
                     const projectId = currentView.split(':')[1];
                     setCurrentView(`epics:${projectId}`);
+                  }}
+                  onOpenEpic={(epicId: any) => {
+                    if (!epicId) return;
+                    const projectId = currentView.split(':')[1];
+                    setCurrentView(`epic:${projectId}:${epicId}`);
                   }}
                   onOpenTemplates={() => {
                     const projectId = currentView.split(':')[1];
@@ -6953,7 +6959,10 @@ export default function App({ initialView }: any = {}) {
                   onPrNumberChange={(prNumber: any) => setPullsOpenPrNumber(prNumber ?? null)}
                   onOpenSession={handleOpenHandoffSession}
                   onToast={showToast}
-                  onOpenCard={() => setCurrentView(`kanban:${pullsProjectId}`)}
+                  onOpenCard={(cardId: any) => {
+                    if (cardId) setKanbanFocusCardId(cardId);
+                    setCurrentView(`kanban:${pullsProjectId}`);
+                  }}
                   onOpenEpic={(epicId: any) => setCurrentView(`epic:${pullsProjectId}:${epicId}`)}
                 />
               ) : currentView.startsWith('repo:') ? (

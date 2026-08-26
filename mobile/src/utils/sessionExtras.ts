@@ -104,6 +104,7 @@ export function normalizeSessionSummary(data: any) {
     linkedPrUrl,
     prNumber: linkedPrUrl ? prNumberFromUrl(linkedPrUrl) : null,
     prBadge: linkedPrBadge(data),
+    projectId: data?.projectId || '',
     linkedCardId: data?.linkedCard?.id || '',
     linkedCardTitle: data?.linkedCard?.title || '',
     linkedCardColumn: data?.linkedCard?.columnName || '',

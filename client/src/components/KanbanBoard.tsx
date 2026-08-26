@@ -803,6 +803,7 @@ export default function KanbanBoard({
   collapsedColumnIds: collapsedColumnIdsProp,
   onCollapsedColumnIdsChange,
   onOpenEpics,
+  onOpenEpic,
   onOpenTemplates,
   focusCardId = null,
   onFocusCardConsumed,
@@ -2300,6 +2301,7 @@ export default function KanbanBoard({
         detail={cardDetail}
         agents={agents}
         assignableUsers={assignableUsers}
+        onOpenEpic={onOpenEpic}
       />
 
       {/* Confirm move — blocked-card → blocker-sensitive column */}

@@ -110,6 +110,7 @@ describe('normalizeSessionSummary', () => {
   it('flattens a full payload', () => {
     const data = {
       session: { id: 's1', name: 'Fix bug', engine: 'claude-code', model: 'claude-fable-5' },
+      projectId: 'proj-1',
       linkedCard: {
         id: 'c1',
         title: 'Bug card',
@@ -136,6 +137,9 @@ describe('normalizeSessionSummary', () => {
     expect(out.linkedPrUrl).toBe('https://github.com/o/r/pull/42');
     expect(out.prNumber).toBe('42');
     expect(out.prBadge.key).toBe('approved');
+    // projectId is required so the mobile summary sheet can deep-link the
+    // linked ticket into the Kanban screen (navigate('Kanban', { projectId, cardId })).
+    expect(out.projectId).toBe('proj-1');
     expect(out.linkedCardId).toBe('c1');
     expect(out.linkedCardTitle).toBe('Bug card');
     expect(out.linkedCardColumn).toBe('Review');
@@ -157,6 +161,7 @@ describe('normalizeSessionSummary', () => {
       linkedPrUrl: null,
       prNumber: null,
       prBadge: null,
+      projectId: '',
       linkedCardId: '',
       linkedCardTitle: '',
       linkedCardColumn: '',
