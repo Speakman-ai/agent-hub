@@ -5,6 +5,7 @@ import type { RouteDeps, SupportTicketSeverity } from '../types.js';
 import { intakeSupportTicket } from '../support-ticket-intake.js';
 import { pickMainDevAgent } from '../routing.js';
 import { resolveUploadsDir } from '../uploads-dir.js';
+import { createUploadStore } from '../upload-store.js';
 import { resolveOwnerUserId } from '../session-ownership.js';
 import { normalizeReporterEmail } from '../support-tickets-store.js';
 import {
@@ -24,9 +25,9 @@ import {
  *
  * Visual context comes from an attached session replay (rrweb) when the reporter
  * has the recorder, and/or a `screenshot` image part: the screenshot is persisted
- * under `/uploads` and stored as the ticket's `screenshot_ref` so the Customer
- * Support queue renders it inline (the same column the authenticated support-ticket
- * route fills). A reporter widget that can only grab a screenshot (no rrweb) still
+ * through the configured upload store and exposed under `/uploads`, then stored
+ * as the ticket's `screenshot_ref` so the Customer Support queue renders it
+ * inline. A reporter widget that can only grab a screenshot (no rrweb) still
  * gets its photo through.
  *
  * The endpoint is intentionally unauthenticated (it's a cross-hub feedback
@@ -322,6 +323,7 @@ export function buildBugReportTicketBody(input: BugReportInput): string {
 export default function createBugReportRoutes(deps: RouteDeps): Router {
   const { stmts, broadcast, findProject, config, serverDir } = deps;
   const uploadsDir = resolveUploadsDir(config, serverDir);
+  const uploadStore = createUploadStore(config, uploadsDir);
   const router = Router();
 
   function applyCors(_req: Request, res: Response, next: NextFunction): void {
@@ -431,7 +433,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         if (screenshotFile && screenshotFile.data.length > 0) {
           try {
             screenshotRef = await persistSupportTicketScreenshotBuffer(
-              uploadsDir,
+              uploadStore,
               screenshotFile.data,
             );
             screenshotMissReason = null;
@@ -510,8 +512,8 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         return res.status(201).json({ ticketId: ticket.id, status: 'received' });
       } catch (err) {
         // The ticket didn't land — remove a screenshot we may have written so it
-        // isn't orphaned under /uploads.
-        await deleteSupportTicketScreenshot(uploadsDir, screenshotRef);
+        // isn't orphaned in the configured upload store.
+        await deleteSupportTicketScreenshot(uploadStore, screenshotRef);
         const message = err instanceof Error ? err.message : String(err);
         console.error('[Bug Reports] Unexpected failure:', message);
         return res.status(500).json({ error: message });

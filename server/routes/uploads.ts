@@ -1,12 +1,12 @@
 import { Router, Request, Response } from 'express';
-import path from 'path';
-import { writeFileSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import express from 'express';
 import type { RouteDeps } from '../types.js';
 import { validateUploadContent } from '../upload-validation.js';
 import { resolveUploadsDir } from '../uploads-dir.js';
 import { extensionForContentType as pickSavedExtension } from '../mime-extensions.js';
+import { createUploadStore } from '../upload-store.js';
+import { UploadFileHeadersSchema, UploadRequestSchema } from './uploads.openapi.js';
 
 const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100 MB
 
@@ -14,13 +14,15 @@ export default function createUploadRoutes(deps: RouteDeps): Router {
   const { serverDir, config } = deps;
   const router = Router();
   const UPLOADS_DIR = resolveUploadsDir(config, serverDir);
+  const uploadStore = createUploadStore(config, UPLOADS_DIR);
 
-  router.post('/api/upload', (req: Request, res: Response) => {
+  router.post('/api/upload', async (req: Request, res: Response) => {
     try {
-      const { dataUrl, filename } = req.body as { dataUrl?: string; filename?: string };
-      if (!dataUrl || !filename) {
+      const parsedBody = UploadRequestSchema.safeParse(req.body);
+      if (!parsedBody.success) {
         return res.status(400).json({ error: 'dataUrl and filename are required' });
       }
+      const { dataUrl, filename } = parsedBody.data;
 
       const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
       if (!match) {
@@ -39,9 +41,8 @@ export default function createUploadRoutes(deps: RouteDeps): Router {
       const ext = pickSavedExtension(contentType, filename);
       const id = uuidv4();
       const savedFilename = `${id}.${ext}`;
-      const filePath = path.join(UPLOADS_DIR, savedFilename);
 
-      writeFileSync(filePath, buf);
+      await uploadStore.put(savedFilename, buf, contentType);
 
       res.json({
         id,
@@ -60,11 +61,14 @@ export default function createUploadRoutes(deps: RouteDeps): Router {
   router.post(
     '/api/upload/file',
     express.raw({ type: '*/*', limit: '100mb' }),
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       try {
-        const originalName = (req.headers['x-filename'] as string | undefined) || 'upload';
-        const contentType =
-          (req.headers['content-type'] as string | undefined) || 'application/octet-stream';
+        const parsedHeaders = UploadFileHeadersSchema.safeParse(req.headers);
+        if (!parsedHeaders.success) {
+          return res.status(400).json({ error: 'Invalid upload headers' });
+        }
+        const originalName = parsedHeaders.data['x-filename'] || 'upload';
+        const contentType = parsedHeaders.data['content-type'] || 'application/octet-stream';
 
         const buf = req.body as Buffer;
         if (!buf || buf.length === 0) {
@@ -84,9 +88,8 @@ export default function createUploadRoutes(deps: RouteDeps): Router {
         const ext = pickSavedExtension(contentType, originalName);
         const id = uuidv4();
         const savedFilename = `${id}.${ext}`;
-        const filePath = path.join(UPLOADS_DIR, savedFilename);
 
-        writeFileSync(filePath, buf);
+        await uploadStore.put(savedFilename, buf, contentType);
 
         res.json({
           id,

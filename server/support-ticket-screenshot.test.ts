@@ -13,6 +13,7 @@ import {
   validateScreenshotBuffer,
   MAX_SCREENSHOT_BYTES,
 } from './support-ticket-screenshot.js';
+import { LocalUploadStore, type UploadStore } from './upload-store.js';
 
 // 1x1 transparent PNG.
 const PNG_B64 =
@@ -29,6 +30,8 @@ const WEBP_SIG = Buffer.concat([
 ]);
 const dataUrl = (mime: string, buf: Buffer): string =>
   `data:${mime};base64,${buf.toString('base64')}`;
+const localStore = (serverDir: string): LocalUploadStore =>
+  new LocalUploadStore(path.join(serverDir, 'uploads'));
 
 describe('parseScreenshotDataUrl', () => {
   it('parses a valid PNG data URL into mime/ext/buffer', () => {
@@ -170,7 +173,7 @@ describe('persistSupportTicketScreenshotBuffer', () => {
     tmpDirs.push(serverDir);
 
     const png = Buffer.from(PNG_B64, 'base64');
-    const ref = await persistSupportTicketScreenshotBuffer(path.join(serverDir, 'uploads'), png);
+    const ref = await persistSupportTicketScreenshotBuffer(localStore(serverDir), png);
     expect(ref).toMatch(/^\/uploads\/support-screenshot-[\w-]+\.png$/);
 
     const onDisk = await readFile(path.join(serverDir, ref.replace(/^\//, '')));
@@ -181,10 +184,7 @@ describe('persistSupportTicketScreenshotBuffer', () => {
     const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-buf-'));
     tmpDirs.push(serverDir);
     await expect(
-      persistSupportTicketScreenshotBuffer(
-        path.join(serverDir, 'uploads'),
-        Buffer.from('nope', 'utf8'),
-      ),
+      persistSupportTicketScreenshotBuffer(localStore(serverDir), Buffer.from('nope', 'utf8')),
     ).rejects.toThrow(/not a recognized image/);
   });
 });
@@ -199,7 +199,7 @@ describe('persistSupportTicketScreenshot', () => {
     const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-'));
     tmpDirs.push(serverDir);
 
-    const ref = await persistSupportTicketScreenshot(path.join(serverDir, 'uploads'), PNG_DATA_URL);
+    const ref = await persistSupportTicketScreenshot(localStore(serverDir), PNG_DATA_URL);
     expect(ref).toMatch(/^\/uploads\/support-screenshot-[\w-]+\.png$/);
 
     const onDisk = await readFile(path.join(serverDir, ref.replace(/^\//, '')));
@@ -210,8 +210,28 @@ describe('persistSupportTicketScreenshot', () => {
     const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-'));
     tmpDirs.push(serverDir);
     await expect(
-      persistSupportTicketScreenshot(path.join(serverDir, 'uploads'), 'garbage'),
+      persistSupportTicketScreenshot(localStore(serverDir), 'garbage'),
     ).rejects.toThrow();
+  });
+
+  it('persists through the configured upload adapter instead of writing local-only bytes', async () => {
+    const put = vi.fn<UploadStore['put']>().mockResolvedValue(undefined);
+    const uploadStore: UploadStore = {
+      kind: 's3',
+      put,
+      delete: vi.fn().mockResolvedValue(undefined),
+      presignGet: vi.fn().mockResolvedValue('https://storage.test/signed'),
+    };
+
+    const ref = await persistSupportTicketScreenshot(uploadStore, PNG_DATA_URL);
+
+    expect(ref).toMatch(/^\/uploads\/support-screenshot-[\w-]+\.png$/);
+    expect(put).toHaveBeenCalledOnce();
+    expect(put).toHaveBeenCalledWith(
+      ref.replace('/uploads/', ''),
+      parseScreenshotDataUrl(PNG_DATA_URL).buffer,
+      'image/png',
+    );
   });
 });
 
@@ -235,7 +255,7 @@ describe('deleteSupportTicketScreenshot', () => {
     expect(existsSync(filePath)).toBe(true);
 
     await deleteSupportTicketScreenshot(
-      path.join(serverDir, 'uploads'),
+      localStore(serverDir),
       '/uploads/support-screenshot-xyz.png',
     );
     expect(existsSync(filePath)).toBe(false);
@@ -244,9 +264,9 @@ describe('deleteSupportTicketScreenshot', () => {
   it('no-ops on a null/empty ref', async () => {
     const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-'));
     tmpDirs.push(serverDir);
-    const uploadsDir = path.join(serverDir, 'uploads');
-    await expect(deleteSupportTicketScreenshot(uploadsDir, null)).resolves.toBeUndefined();
-    await expect(deleteSupportTicketScreenshot(uploadsDir, '')).resolves.toBeUndefined();
+    const uploadStore = localStore(serverDir);
+    await expect(deleteSupportTicketScreenshot(uploadStore, null)).resolves.toBeUndefined();
+    await expect(deleteSupportTicketScreenshot(uploadStore, '')).resolves.toBeUndefined();
   });
 
   it('refuses to touch refs outside the support-screenshot naming (no traversal)', async () => {
@@ -254,10 +274,10 @@ describe('deleteSupportTicketScreenshot', () => {
     tmpDirs.push(serverDir);
     // A replay upload and a traversal attempt must both be ignored.
     const replay = await seedFile(serverDir, 'replay-abc.json');
-    const uploadsDir = path.join(serverDir, 'uploads');
-    await deleteSupportTicketScreenshot(uploadsDir, '/uploads/replay-abc.json');
-    await deleteSupportTicketScreenshot(uploadsDir, '/uploads/../secret.txt');
-    await deleteSupportTicketScreenshot(uploadsDir, '/uploads/support-screenshot-../escape.png');
+    const uploadStore = localStore(serverDir);
+    await deleteSupportTicketScreenshot(uploadStore, '/uploads/replay-abc.json');
+    await deleteSupportTicketScreenshot(uploadStore, '/uploads/../secret.txt');
+    await deleteSupportTicketScreenshot(uploadStore, '/uploads/support-screenshot-../escape.png');
     expect(existsSync(replay)).toBe(true);
   });
 
@@ -265,10 +285,7 @@ describe('deleteSupportTicketScreenshot', () => {
     const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-'));
     tmpDirs.push(serverDir);
     await expect(
-      deleteSupportTicketScreenshot(
-        path.join(serverDir, 'uploads'),
-        '/uploads/support-screenshot-gone.png',
-      ),
+      deleteSupportTicketScreenshot(localStore(serverDir), '/uploads/support-screenshot-gone.png'),
     ).resolves.toBeUndefined();
   });
 });

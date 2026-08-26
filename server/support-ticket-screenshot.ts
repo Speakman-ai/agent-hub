@@ -3,19 +3,16 @@
  *
  * The project-scoped support-ticket intake (and PATCH) accepts an optional
  * screenshot as a base64 `data:` URL in the JSON body. This module is the one
- * place that validates that payload (mime + decoded size) and persists it to
- * the server's `/uploads` directory, returning the server-relative ref stored
- * on the ticket's `screenshot_ref` column.
+ * place that validates that payload (mime + decoded size) and persists it
+ * through the upload-store adapter, returning the server-relative ref stored on
+ * the ticket's `screenshot_ref` column.
  *
  * Keeping parse/validate/persist here (instead of inline in the route) means the
- * size/mime guard and the on-disk naming convention can't drift between the POST
- * and PATCH entry points, and the pure parser is unit-testable without touching
- * the filesystem.
+ * size/mime guard and storage naming convention can't drift between the POST
+ * and PATCH entry points, and the pure parser remains independently testable.
  */
-import path from 'path';
-import { mkdirSync } from 'fs';
-import { writeFile, unlink } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
+import type { UploadStore } from './upload-store.js';
 
 /** Max decoded screenshot size. Comfortably fits a full-page PNG screenshot
  *  while staying well under the 20 MB global JSON body limit (a base64 payload
@@ -169,44 +166,45 @@ export function validateScreenshotBuffer(buffer: Buffer): { mime: string; ext: s
   return { mime, ext: EXT_BY_MIME[mime]! };
 }
 
-/** Write validated image bytes under the configured uploads directory, returning the
- *  server-relative `screenshot_ref` to store on the ticket. */
-async function writeScreenshot(uploadsDir: string, buffer: Buffer, ext: string): Promise<string> {
-  mkdirSync(uploadsDir, { recursive: true });
+/** Write validated image bytes through the configured upload store. */
+async function writeScreenshot(
+  uploadStore: UploadStore,
+  buffer: Buffer,
+  mime: string,
+  ext: string,
+): Promise<string> {
   const filename = `support-screenshot-${uuidv4()}.${ext}`;
-  // Async write: a screenshot can be several MB and this runs on a public
-  // intake path; persisting it must not block the event loop.
-  await writeFile(path.join(uploadsDir, filename), buffer);
+  await uploadStore.put(filename, buffer, mime);
   return `/uploads/${filename}`;
 }
 
 /**
- * Validate + persist a screenshot data URL under the configured uploads directory.
+ * Validate + persist a screenshot data URL through the configured upload store.
  * Returns the server-relative ref (`/uploads/support-screenshot-<id>.<ext>`)
  * to store on the ticket. Throws (via {@link parseScreenshotDataUrl}) on
  * invalid input so the caller can map it to a 4xx.
  */
 export async function persistSupportTicketScreenshot(
-  uploadsDir: string,
+  uploadStore: UploadStore,
   dataUrl: string,
 ): Promise<string> {
-  const { ext, buffer } = parseScreenshotDataUrl(dataUrl);
-  return writeScreenshot(uploadsDir, buffer, ext);
+  const { mime, ext, buffer } = parseScreenshotDataUrl(dataUrl);
+  return writeScreenshot(uploadStore, buffer, mime, ext);
 }
 
 /**
  * Validate + persist raw image bytes (e.g. a `multipart/form-data` file part)
- * under the configured uploads directory, returning the server-relative ref. Unlike
+ * through the configured upload store, returning the server-relative ref. Unlike
  * {@link persistSupportTicketScreenshot} the input is the decoded buffer, not a
  * base64 data URL — used by the public bug-report intake, which parses multipart
  * bytes directly. Throws (via {@link validateScreenshotBuffer}) on invalid input.
  */
 export async function persistSupportTicketScreenshotBuffer(
-  uploadsDir: string,
+  uploadStore: UploadStore,
   buffer: Buffer,
 ): Promise<string> {
-  const { ext } = validateScreenshotBuffer(buffer);
-  return writeScreenshot(uploadsDir, buffer, ext);
+  const { mime, ext } = validateScreenshotBuffer(buffer);
+  return writeScreenshot(uploadStore, buffer, mime, ext);
 }
 
 /**
@@ -217,15 +215,15 @@ export async function persistSupportTicketScreenshotBuffer(
 const SCREENSHOT_REF_RE = /^\/uploads\/(support-screenshot-[A-Za-z0-9._-]+)$/;
 
 /**
- * Best-effort removal of a previously-persisted screenshot file. Used to roll
- * back an orphaned upload when a ticket create/patch fails after the file was
- * written, and to clean up the prior file when a ticket's screenshot is
+ * Best-effort removal of a previously-persisted screenshot object. Used to roll
+ * back an orphaned upload when a ticket create/patch fails after the object was
+ * written, and to clean up the prior object when a ticket's screenshot is
  * replaced or cleared. No-ops on a null/empty ref, a ref that doesn't match the
  * support-screenshot naming, or a missing file — it never throws, so it can't
  * mask the original outcome of the request.
  */
 export async function deleteSupportTicketScreenshot(
-  uploadsDir: string,
+  uploadStore: UploadStore,
   ref: string | null | undefined,
 ): Promise<void> {
   if (!ref) return;
@@ -234,8 +232,8 @@ export async function deleteSupportTicketScreenshot(
   const filename = match[1]!;
   if (filename.includes('..')) return;
   try {
-    await unlink(path.join(uploadsDir, filename));
+    await uploadStore.delete(filename);
   } catch {
-    // File already gone / never written — nothing to roll back.
+    // File already gone / never written, or best-effort object cleanup failed.
   }
 }

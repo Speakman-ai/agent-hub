@@ -84,6 +84,7 @@ import {
 import config, { refreshShellPath } from './config.js';
 import { resolveUploadsDir } from './uploads-dir.js';
 import { migrateLegacyUploads } from './uploads-migration.js';
+import { createObjectUploadFallback, createUploadStore } from './upload-store.js';
 import {
   beginSessionEnvSelection,
   initSessionEnvSelection,
@@ -1037,6 +1038,10 @@ migrateLegacyUploads({
 });
 mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use('/uploads', express.static(UPLOADS_DIR));
+// AWS deployments persist new uploads in the same private S3 bucket used for
+// artifacts/replays. Keep local static first so files written before S3 was
+// enabled remain readable; missing local files fall through to a signed S3 GET.
+app.use('/uploads', createObjectUploadFallback(createUploadStore(config, UPLOADS_DIR)));
 
 // Design artifact files: `<dataDir>/designs/<designId>/*` → `/design-files/<designId>/*`.
 // Each design's directory is its own mount root so path traversal (../..) can't

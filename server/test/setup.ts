@@ -99,10 +99,10 @@ delete process.env.AGENT_HUB_HOST_MAC_PROJECTS_DIR;
 delete process.env.AGENT_HUB_CONTAINER_PROJECTS_DIR;
 delete process.env.AGENT_HUB_CONTAINER_WORKSPACES_DIR;
 delete process.env.AGENT_HUB_CONTAINER_MAC_PROJECTS_DIR;
-// Session-artifact / session-replay storage must resolve to the local
+// Session-artifact / session-replay / upload storage must resolve to the local
 // filesystem in tests. When the host (e.g. the Finalize CI runner) exports
-// AGENT_HUB_ARTIFACTS_BUCKET, artifact + replay uploads route to real S3 and
-// the runner's IAM role — which has no s3:PutObject grant — makes every
+// AGENT_HUB_ARTIFACTS_BUCKET, artifact + replay + attachment uploads route to
+// real S3 and the runner's IAM role — which has no s3:PutObject grant — makes every
 // POST /api/replays and POST /api/sessions/:id/artifacts 500. The artifacts /
 // replays / rum tests all assert on local storage (`storageKind: 'local'`,
 // 201), so clear these so no host env can silently flip storage to S3. A test

@@ -14621,6 +14621,33 @@ components:
         - tickets
         - projects
       description: Cross-project support tickets plus project filter options.
+    UploadResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        originalName:
+          type: string
+        contentType:
+          type: string
+        url:
+          type: string
+          description: Stable server-relative `/uploads/<filename>` ref.
+      required:
+        - id
+        - filename
+        - originalName
+        - contentType
+        - url
+    UploadErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
     WikiPage:
       type: object
       properties:
@@ -43408,6 +43435,95 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadsErrorResponse"
+  /api/upload:
+    post:
+      tags:
+        - Uploads
+      summary: Upload a data-URL attachment
+      description: Validates and stores a base64 data URL. AWS deployments use the configured artifact S3 bucket; local installs use the uploads directory. The returned `/uploads` ref is backend-independent.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dataUrl:
+                  type: string
+                  minLength: 1
+                filename:
+                  type: string
+                  minLength: 1
+              required:
+                - dataUrl
+                - filename
+      responses:
+        "200":
+          description: Attachment stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+        "400":
+          description: Invalid or unsafe attachment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadErrorResponse"
+        "500":
+          description: Storage write failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadErrorResponse"
+  /api/upload/file:
+    post:
+      tags:
+        - Uploads
+      summary: Upload a raw binary attachment
+      description: Stores a raw attachment body up to 100 MB. AWS deployments use the configured artifact S3 bucket; local installs use the uploads directory.
+      parameters:
+        - schema:
+            type: string
+          required: false
+          name: x-filename
+          in: header
+        - schema:
+            type: string
+          required: false
+          name: content-type
+          in: header
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw attachment bytes.
+      responses:
+        "200":
+          description: Attachment stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+        "400":
+          description: Empty, invalid, or unsafe attachment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadErrorResponse"
+        "413":
+          description: Attachment exceeds 100 MB.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadErrorResponse"
+        "500":
+          description: Storage write failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadErrorResponse"
   /api/projects/{projectId}/wiki:
     get:
       tags:

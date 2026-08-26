@@ -1,5 +1,5 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# S3 storage for session artifacts + RUM session-replay segments.
+# S3 storage for session artifacts, uploads, and RUM session-replay segments.
 #
 # When enable_artifacts_bucket = true (and a bucket name is set) this creates the
 # bucket, grants the Hub EC2 instance role object read/write/delete plus the
@@ -9,8 +9,8 @@
 # getArtifactStore() selects the S3 backend instead of the local data dir.
 #
 # Existing local replays/artifacts are NOT migrated: reads resolve each row's
-# ORIGINAL backend from its recorded storage_kind, so pre-existing rows stay on
-# the hub-data volume and only NEW segments land in S3.
+# ORIGINAL backend from its recorded storage_kind. Existing local uploads stay
+# readable through the static fallback; only new uploads land in S3.
 # ──────────────────────────────────────────────────────────────────────────────
 
 locals {
@@ -23,8 +23,8 @@ locals {
   # (locals-agent-hub.tf — both the PM2 and Docker bootstrap env) on this single
   # condition so the three can never diverge into a half-configured state: an S3
   # backend selected at runtime with no IAM policy attached would 500 every
-  # replay/artifact PutObject on AccessDenied. A requested-but-not-wired config
-  # (enable_artifacts_bucket = true, enable_instance_ssm = false) is surfaced
+  # replay/artifact/upload PutObject on AccessDenied. A requested-but-not-wired
+  # config (enable_artifacts_bucket = true, enable_instance_ssm = false) is surfaced
   # loudly by check "artifacts_bucket_requires_ssm" in checks.tf and otherwise
   # degrades safely to the local data dir.
   artifacts_bucket_enabled = local.artifacts_bucket_requested && var.enable_instance_ssm

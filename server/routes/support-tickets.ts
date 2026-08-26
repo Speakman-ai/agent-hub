@@ -48,6 +48,7 @@ import { resolveOwnerUserId } from '../session-ownership.js';
 import { triggerSupportTicketInvestigation } from '../support-ticket-investigation.js';
 import { pickMainDevAgent } from '../routing.js';
 import { resolveUploadsDir } from '../uploads-dir.js';
+import { createUploadStore } from '../upload-store.js';
 
 import {
   defaultReporterEmail,
@@ -119,6 +120,7 @@ function screenshotReferencedByConvertedCard(
 export default function createSupportTicketRoutes(deps: RouteDeps): Router {
   const { broadcast, findProject, stmts } = deps;
   const uploadsDir = resolveUploadsDir(deps.config, deps.serverDir);
+  const uploadStore = createUploadStore(deps.config, uploadsDir);
   const router = Router();
 
   /**
@@ -307,11 +309,11 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     // Persist the optional screenshot (a base64 data URL) before landing the
     // ticket. The file is written first because the ref must be stored with the
     // row; if the ticket then fails to land we roll the file back below so a
-    // rejected request never leaves an orphan under /uploads.
+    // rejected request never leaves an orphan in the configured upload store.
     let screenshotRef: string | null = null;
     if (screenshot) {
       try {
-        screenshotRef = await persistSupportTicketScreenshot(uploadsDir, screenshot);
+        screenshotRef = await persistSupportTicketScreenshot(uploadStore, screenshot);
       } catch (err) {
         return res.status(400).json({ error: (err as Error).message });
       }
@@ -344,7 +346,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     } catch (err) {
       // The ticket didn't land — remove the screenshot we just wrote so it
       // isn't orphaned (intake validates body/type/severity and can throw).
-      await deleteSupportTicketScreenshot(uploadsDir, screenshotRef);
+      await deleteSupportTicketScreenshot(uploadStore, screenshotRef);
       res.status(400).json({ error: (err as Error).message });
     }
   });
@@ -420,7 +422,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           screenshotRef = null;
         } else {
           try {
-            screenshotRef = await persistSupportTicketScreenshot(uploadsDir, screenshot);
+            screenshotRef = await persistSupportTicketScreenshot(uploadStore, screenshot);
           } catch (err) {
             return res.status(400).json({ error: (err as Error).message });
           }
@@ -476,7 +478,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
             previousRef !== screenshotRef &&
             !screenshotReferencedByConvertedCard(stmts, ticket, previousRef)
           ) {
-            await deleteSupportTicketScreenshot(uploadsDir, previousRef);
+            await deleteSupportTicketScreenshot(uploadStore, previousRef);
           }
         }
         broadcastTicket('support_ticket_updated', ticket.project_id, { ticket });
@@ -488,7 +490,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         // (null = clear, undefined = untouched), so this never deletes the
         // ticket's existing attachment.
         if (typeof screenshotRef === 'string') {
-          await deleteSupportTicketScreenshot(uploadsDir, screenshotRef);
+          await deleteSupportTicketScreenshot(uploadStore, screenshotRef);
         }
         res.status(400).json({ error: (err as Error).message });
       }
@@ -856,7 +858,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         ticket.screenshot_ref &&
         !screenshotReferencedByConvertedCard(stmts, ticket, ticket.screenshot_ref)
       ) {
-        await deleteSupportTicketScreenshot(uploadsDir, ticket.screenshot_ref);
+        await deleteSupportTicketScreenshot(uploadStore, ticket.screenshot_ref);
       }
       broadcastTicket('support_ticket_deleted', project.id, { ticketId: ticket.id });
       res.json({ ok: true });

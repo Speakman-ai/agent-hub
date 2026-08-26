@@ -3858,11 +3858,11 @@ export interface AppConfig {
   /** Block common ad/tracker third-party hosts at route level when true. */
   browserBlockAdsTrackers: boolean;
   /**
-   * S3 bucket for session artifacts (agent-generated documents/scripts/PDFs).
-   * When set, artifacts upload to this bucket and downloads stream from it.
-   * When null, the Hub falls back to a local directory under `dataDir/artifacts`
-   * (dev / single-host). Env: `AGENT_HUB_ARTIFACTS_BUCKET`; config.json:
-   * `artifactsBucket`.
+   * S3 bucket for session artifacts, replays, and `/uploads` attachments.
+   * When set, those blobs upload to this bucket and downloads stream from it.
+   * When null, artifacts/replays fall back under `dataDir/artifacts` and
+   * attachments use `uploadsDir` (dev / single-host). Env:
+   * `AGENT_HUB_ARTIFACTS_BUCKET`; config.json: `artifactsBucket`.
    */
   artifactsBucket: string | null;
   /**

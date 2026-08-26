@@ -623,13 +623,13 @@ variable "finalize_worktree_bucket_name" {
 variable "enable_artifacts_bucket" {
   type        = bool
   default     = false
-  description = "Create the S3 bucket for session artifacts + RUM session-replay segments, grant the Hub EC2 instance role object + lifecycle access, and inject AGENT_HUB_ARTIFACTS_BUCKET into the Hub env. When off (default), getArtifactStore() falls back to the local data dir (<dataDir>/artifacts) and replays persist on the hub-data volume."
+  description = "Create the S3 bucket for session artifacts, uploads, and RUM session-replay segments; grant the Hub EC2 instance role object + lifecycle access; and inject AGENT_HUB_ARTIFACTS_BUCKET into the Hub env. When off (default), blobs persist in their local directories on the hub-data volume."
 }
 
 variable "artifacts_bucket_name" {
   type        = string
   default     = ""
-  description = "S3 bucket name for session artifacts + RUM replay segments. Required when enable_artifacts_bucket = true; injected as AGENT_HUB_ARTIFACTS_BUCKET (region = aws_region)."
+  description = "S3 bucket name for session artifacts, uploads, and RUM replay segments. Required when enable_artifacts_bucket = true; injected as AGENT_HUB_ARTIFACTS_BUCKET (region = aws_region)."
 }
 
 # ── Session replay policy ────────────────────────────────────────────────────
