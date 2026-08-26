@@ -70,7 +70,10 @@ import ReactLoopObservabilityPanel from './components/ReactLoopObservabilityPane
 import OrchestrationTimelinePanel from './components/OrchestrationTimelinePanel';
 import OpenProjectWizard from './components/OpenProjectWizard';
 import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow';
-import SetupWizard, { stepIndexForKey } from './components/SetupWizard';
+import SetupWizard, {
+  resolveSetupWizardPresentation,
+  stepIndexForKey,
+} from './components/SetupWizard';
 import KanbanBoard from './components/KanbanBoard';
 import EpicView from './components/EpicView';
 import KanbanCardTemplatesView from './components/KanbanCardTemplatesView';
@@ -131,6 +134,7 @@ import {
   pendingLessonCountsSnapshot,
 } from '@shared/utils/pendingLessonCounts';
 import { api } from './utils/api';
+import { canCompleteInstanceOnboarding } from './utils/auth';
 import { createRefreshScheduler, kanbanEventTargetsProject } from '@shared/utils/kanbanRefresh';
 import { readCollapsedColumnIds, writeCollapsedColumnIds } from './utils/kanbanColumnCollapse';
 import { isWorkflowProject } from './utils/projectMode';
@@ -644,6 +648,10 @@ export default function App({ initialView }: any = {}) {
   // jump straight to the AI-credentials step and hide Back below it. Org +
   // Welcome are skipped because the org already exists. See App init below.
   const [setupInitialStep, setSetupInitialStep] = useState(1);
+  // Owner-only ending: persist `onboardingComplete` and open the first-project
+  // picker. Invited User/Admin walkthroughs omit this so they never hit the
+  // 403 from POST /api/setup/complete.
+  const [setupIncludeFirstProject, setSetupIncludeFirstProject] = useState(true);
   // Full-screen "Connecting…" only until org migration + org list + setup probe.
   // Project/session data loads in the main layout (sidebar shows its own spinner).
   const [initializing, setInitializing] = useState(true);
@@ -3664,14 +3672,17 @@ export default function App({ initialView }: any = {}) {
       //
       // SetupWizard triggers, in priority order:
       //
-      //   1. **Onboarding incomplete.** `onboardingComplete: false` (or
-      //      `authConfigured: false` on legacy servers that omit the new
-      //      field). Owner creation alone is not enough — password managers
-      //      can interrupt after `/api/auth/setup` and leave the user in the
-      //      main chrome stuck on WebSocket "Reconnecting…". Resume the
-      //      wizard from the Hub-account step (or Welcome if Owner exists).
-      //   2. **No AI credentials.** Owner finished onboarding but the current
-      //      user has zero usable AI engines — land on the credentials step.
+      //   1. **Onboarding incomplete** (Owner / local-bundled / first Owner
+      //      only). `onboardingComplete: false` (or `authConfigured: false`
+      //      on legacy servers that omit the new field). Owner creation
+      //      alone is not enough — password managers can interrupt after
+      //      `/api/auth/setup` and leave the user in the main chrome stuck
+      //      on WebSocket "Reconnecting…". Resume the wizard from the
+      //      Hub-account step (or Welcome if Owner exists). Invited
+      //      Admin/User members skip this — POST /api/setup/complete is
+      //      Owner-only and 403s for them.
+      //   2. **No AI credentials.** Anyone with zero usable AI engines —
+      //      land on the credentials step. Non-Owners omit First Project.
       //   3. **First run.** Brand-new install with no projects yet after
       //      onboarding — open the adaptive project wizard.
       try {
@@ -3681,28 +3692,20 @@ export default function App({ initialView }: any = {}) {
         });
         const status = await statusRes.json();
         setSetupStatus(status);
-        const onboardingComplete =
-          typeof status.onboardingComplete === 'boolean'
-            ? status.onboardingComplete
-            : status.authConfigured !== false;
-        if (status.authConfigured === false || onboardingComplete === false) {
-          // Fresh install or interrupted first-run — always walk the wizard.
-          // If Owner already exists, skip the account step and land on Welcome.
+        const presentation = resolveSetupWizardPresentation(status, {
+          canCompleteOnboarding: canCompleteInstanceOnboarding(),
+          hasOrgs: !!getOrgs(),
+        });
+        if (presentation.show) {
           setSetupInitialStep(
-            status.authConfigured === false ? 1 : stepIndexForKey(status, 'welcome'),
+            presentation.initialStepKey ? stepIndexForKey(status, presentation.initialStepKey) : 1,
           );
+          setSetupIncludeFirstProject(presentation.includeFirstProject);
           setShowSetup(true);
           // A leftover `#/new-project-adaptive` hash (common after an
           // interrupted first-run that briefly opened the project picker)
           // must not render on top of the SetupWizard.
           setCurrentView('chat');
-        } else if (status.hasAnyAiCredentials === false) {
-          // If an org already exists, skip Welcome and land on AI credentials.
-          // With no orgs (true greenfield) we still want the full wizard.
-          setSetupInitialStep(
-            getOrgs() ? stepIndexForKey(status, 'credentials') : stepIndexForKey(status, 'welcome'),
-          );
-          setShowSetup(true);
         } else if (status.firstRun) {
           if (!getOrgs()) {
             setSetupInitialStep(1);
@@ -7847,16 +7850,20 @@ export default function App({ initialView }: any = {}) {
           <SetupWizard
             setupStatus={setupStatus}
             initialStep={setupInitialStep}
+            includeFirstProject={setupIncludeFirstProject}
             onComplete={async () => {
-              // Deliberately un-caught: if the flag doesn't persist,
-              // `onboardingComplete` stays false and closing the wizard
-              // would strand the user outside a setup they haven't
-              // finished. Let it reject so SetupWizard keeps the final
-              // step mounted and offers a retry.
-              await api.completeSetup();
+              // Owner instance onboarding: persist the flag before tearing
+              // the wizard down. If the write fails, leave the step mounted
+              // so the button becomes Retry. Invited User/Admin walkthroughs
+              // skip this call — they cannot mark instance onboarding done.
+              if (setupIncludeFirstProject) {
+                await api.completeSetup();
+              }
               setShowSetup(false);
               setSetupInitialStep(1);
-              openAdaptiveProjectWizard();
+              if (setupIncludeFirstProject) {
+                openAdaptiveProjectWizard();
+              }
             }}
           />
         )}
@@ -7897,6 +7904,10 @@ export default function App({ initialView }: any = {}) {
                   return;
                 }
                 refreshAgents();
+                if (payload?.action === 'session' && payload.sessionId) {
+                  focusAgentSession(payload.agentId, payload.sessionId);
+                  return;
+                }
                 if (payload?.action === 'task' && payload.projectId) {
                   setCurrentView(`kanban:${payload.projectId}`);
                   setSidebarOpen(false);

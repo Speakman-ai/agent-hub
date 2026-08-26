@@ -17,15 +17,73 @@ function isValidEmail(value: string) {
 }
 
 /** Step keys and labels when Hub owner auth is not configured yet. */
-export function getSetupWizardStepPlan(setupStatus: any) {
+export function getSetupWizardStepPlan(
+  setupStatus: any,
+  opts: { includeFirstProject?: boolean } = {},
+) {
   const needsHubAccount = setupStatus?.authConfigured === false;
+  const includeFirstProject = opts.includeFirstProject !== false;
   const stepKeys = needsHubAccount
-    ? ['account', 'welcome', 'credentials', 'github', 'project']
-    : ['welcome', 'credentials', 'github', 'project'];
+    ? ['account', 'welcome', 'credentials', 'github']
+    : ['welcome', 'credentials', 'github'];
   const stepLabels = needsHubAccount
-    ? ['Hub account', 'Welcome', 'AI engines', 'GitHub (optional)', 'First Project']
-    : ['Welcome', 'AI engines', 'GitHub (optional)', 'First Project'];
+    ? ['Hub account', 'Welcome', 'AI engines', 'GitHub (optional)']
+    : ['Welcome', 'AI engines', 'GitHub (optional)'];
+  if (includeFirstProject) {
+    stepKeys.push('project');
+    stepLabels.push('First Project');
+  }
   return { stepKeys, stepLabels, needsHubAccount };
+}
+
+/**
+ * Decide whether to mount SetupWizard, which step to land on, and whether
+ * the Owner-only "First Project" / `POST /api/setup/complete` ending is
+ * included. Invited Admin/User members must not be forced through instance
+ * onboarding — that endpoint 403s for them, and a refresh already shows home.
+ *
+ * The Owner-only ending is gated on the CURRENT role, not the one cached in
+ * localStorage at login. `/api/setup/status` returns a server-authoritative
+ * `canCompleteOnboarding` resolved from live org membership (same gate as
+ * `POST /api/setup/complete`); we prefer it and fall back to the client hint
+ * (`opts.canCompleteOnboarding`) only for legacy servers that omit the field.
+ * Without this, a role change after login (promotion/demotion) would either
+ * strand a demoted-Owner in the 403 setup trap this guards against, or skip
+ * onboarding for a freshly promoted Owner.
+ */
+export function resolveSetupWizardPresentation(
+  status: any,
+  opts: { canCompleteOnboarding: boolean; hasOrgs: boolean },
+) {
+  const onboardingComplete =
+    typeof status?.onboardingComplete === 'boolean'
+      ? status.onboardingComplete
+      : status?.authConfigured !== false;
+  const instanceOnboardingPending =
+    status?.authConfigured === false || onboardingComplete === false;
+
+  const canCompleteOnboarding =
+    typeof status?.canCompleteOnboarding === 'boolean'
+      ? status.canCompleteOnboarding
+      : opts.canCompleteOnboarding;
+
+  if (instanceOnboardingPending && canCompleteOnboarding) {
+    return {
+      show: true,
+      initialStepKey: status?.authConfigured === false ? 'account' : 'welcome',
+      includeFirstProject: true,
+    };
+  }
+
+  if (status?.hasAnyAiCredentials === false) {
+    return {
+      show: true,
+      initialStepKey: opts.hasOrgs ? 'credentials' : 'welcome',
+      includeFirstProject: false,
+    };
+  }
+
+  return { show: false, initialStepKey: null, includeFirstProject: false };
 }
 
 /** 1-based step index for a logical step key (used by App.jsx initialStep). */
@@ -114,13 +172,18 @@ function ToggleSwitch({ enabled, onChange, label }: any) {
   );
 }
 
-export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }: any) {
+export default function SetupWizard({
+  onComplete,
+  setupStatus,
+  initialStep = 1,
+  includeFirstProject = true,
+}: any) {
   // `initialStep` lets the host (App.jsx) jump the wizard to AI engines
   // when an org already exists but the user has no usable AI engine enabled
   // (e.g. fresh sandbox reset). The minimum back-target stays pinned to
   // `initialStep` so users can't navigate to earlier steps that were
   // intentionally skipped.
-  const { stepKeys, stepLabels } = getSetupWizardStepPlan(setupStatus);
+  const { stepKeys, stepLabels } = getSetupWizardStepPlan(setupStatus, { includeFirstProject });
   const stepIndex = (key: any) => {
     const idx = stepKeys.indexOf(key);
     return idx >= 0 ? idx + 1 : 1;
@@ -767,10 +830,17 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                 Back
               </button>
               <button
-                onClick={() => setStep(stepIndex('project'))}
-                className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors"
+                onClick={() => {
+                  if (stepKeys.includes('project')) {
+                    setStep(stepIndex('project'));
+                    return;
+                  }
+                  void handleFinish();
+                }}
+                disabled={saving}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors"
               >
-                Continue
+                {saving ? 'Finishing…' : includeFirstProject ? 'Continue' : 'Get started'}
               </button>
             </div>
           </div>

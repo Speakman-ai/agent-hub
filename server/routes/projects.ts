@@ -1385,10 +1385,23 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       onboardingComplete = authConfigured;
     }
 
+    // Server-authoritative capability: may THIS caller finish instance
+    // onboarding (POST /api/setup/complete)? Resolved from the caller's
+    // CURRENT org membership, using the exact gate /api/setup/complete
+    // enforces. The client must key the Owner-only wizard ending off this,
+    // not off the role cached in localStorage at login — a promotion or
+    // demotion after login makes the cached role stale, which would either
+    // strand a demoted-Owner in a 403 setup trap or skip onboarding for a
+    // freshly promoted Owner.
+    const setupCaller = resolveVisibilityCaller(req);
+    const canCompleteOnboarding =
+      (req as AuthenticatedRequest).authRole === 'Owner' || setupCaller.localBypass;
+
     res.json({
       firstRun: projects.length === 0,
       authConfigured,
       onboardingComplete,
+      canCompleteOnboarding,
       hasAnyAiCredentials: engineAuth.any,
       engineAuth: {
         'claude-code': engineAuth.claude,

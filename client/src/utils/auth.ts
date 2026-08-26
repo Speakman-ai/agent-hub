@@ -129,6 +129,24 @@ export function hasRole(minRole: any) {
   return actual >= needed;
 }
 
+/**
+ * Legacy client-side fallback for whether this identity may finish
+ * instance-level SetupWizard (`POST /api/setup/complete` is Owner-only).
+ * Derived from the role cached in localStorage at login, so it can go stale
+ * if the caller is promoted/demoted after login. The authoritative signal is
+ * `canCompleteOnboarding` on `GET /api/setup/status`, resolved from live org
+ * membership; `resolveSetupWizardPresentation` prefers it and only falls back
+ * to this when talking to an older server that omits the field.
+ *
+ * True for an Owner JWT, the local-bundled bypass (no JWT, synthetic Owner on
+ * the server), or a missing role (fresh install / first Owner creation, before
+ * a token exists). Admin and User callers must not be sent through that ending
+ * — they 403, and a reload already drops them into the main chrome.
+ */
+export function canCompleteInstanceOnboarding() {
+  return hasRole('Owner') || isLocalBundledDeployment() || getUserRole() == null;
+}
+
 /** Persist a new token record. */
 export function setToken({ token, expiresAt, user }: any) {
   const record = { token, expiresAt: expiresAt || null, user: user || null };

@@ -14,6 +14,8 @@ import {
   logout,
   getUserRole,
   hasRole,
+  canCompleteInstanceOnboarding,
+  setActiveOrgIsLocal,
 } from './auth';
 
 function mockLocalStorage() {
@@ -286,6 +288,7 @@ describe('role helpers (Phase 2)', () => {
   beforeEach(() => {
     (globalThis as any).localStorage = mockLocalStorage() as any;
     (globalThis as any).window = { electronAPI: undefined };
+    setActiveOrgIsLocal(false);
   });
 
   it('getUserRole returns null when no token stored', () => {
@@ -328,5 +331,26 @@ describe('role helpers (Phase 2)', () => {
       user: { username: 'owner' }, // no role field (legacy token)
     });
     expect(hasRole('User')).toBe(false);
+  });
+
+  it('canCompleteInstanceOnboarding allows Owner, local-bundled, and missing role', () => {
+    const future = new Date(Date.now() + 60_000).toISOString();
+    setActiveOrgIsLocal(false);
+
+    expect(canCompleteInstanceOnboarding()).toBe(true);
+
+    setToken({ token: 't', expiresAt: future, user: { username: 'c', role: 'User' } });
+    expect(canCompleteInstanceOnboarding()).toBe(false);
+
+    setToken({ token: 't', expiresAt: future, user: { username: 'b', role: 'Admin' } });
+    expect(canCompleteInstanceOnboarding()).toBe(false);
+
+    setToken({ token: 't', expiresAt: future, user: { username: 'a', role: 'Owner' } });
+    expect(canCompleteInstanceOnboarding()).toBe(true);
+
+    clearToken();
+    setActiveOrgIsLocal(true);
+    expect(canCompleteInstanceOnboarding()).toBe(true);
+    setActiveOrgIsLocal(false);
   });
 });

@@ -60,8 +60,11 @@ import { setup as setupHubAuth, login as loginHubAuth } from '../utils/auth';
 (vi as any).mock('./MyGrokAuthSection', () => ({
   default: () => <div data-testid="grok-auth-panel">grok login</div>,
 }));
+(vi as any).mock('./GithubConnectionSection', () => ({
+  default: () => <div data-testid="github-connection-panel">github</div>,
+}));
 
-import SetupWizard from './SetupWizard';
+import SetupWizard, { getSetupWizardStepPlan, resolveSetupWizardPresentation } from './SetupWizard';
 import { api } from '../utils/api';
 import { saveConnectionConfig, testConnection } from '../utils/connection';
 import { createOrg, switchOrg, updateOrg, getActiveOrg } from '../utils/orgs';
@@ -411,5 +414,139 @@ describe('SetupWizard — finish step failure handling', () => {
 
     expect(onComplete).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(/not marked complete/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('getSetupWizardStepPlan', () => {
+  it('includes First Project by default', () => {
+    expect(getSetupWizardStepPlan({ engines: {} }).stepKeys).toEqual([
+      'welcome',
+      'credentials',
+      'github',
+      'project',
+    ]);
+  });
+
+  it('omits First Project when includeFirstProject is false', () => {
+    expect(
+      getSetupWizardStepPlan({ engines: {} }, { includeFirstProject: false }).stepKeys,
+    ).toEqual(['welcome', 'credentials', 'github']);
+    expect(
+      getSetupWizardStepPlan({ engines: {} }, { includeFirstProject: false }).stepLabels,
+    ).not.toContain('First Project');
+  });
+});
+
+describe('resolveSetupWizardPresentation', () => {
+  const ownerOpts = { canCompleteOnboarding: true, hasOrgs: true };
+  const memberOpts = { canCompleteOnboarding: false, hasOrgs: true };
+
+  it('sends Owners through instance onboarding when the flag is still false', () => {
+    expect(
+      resolveSetupWizardPresentation(
+        { authConfigured: true, onboardingComplete: false, hasAnyAiCredentials: true },
+        ownerOpts,
+      ),
+    ).toEqual({ show: true, initialStepKey: 'welcome', includeFirstProject: true });
+  });
+
+  it('does not trap invited members in instance onboarding', () => {
+    expect(
+      resolveSetupWizardPresentation(
+        { authConfigured: true, onboardingComplete: false, hasAnyAiCredentials: true },
+        memberOpts,
+      ),
+    ).toEqual({ show: false, initialStepKey: null, includeFirstProject: false });
+  });
+
+  it('shows a credentials walkthrough without First Project for members with no AI engines', () => {
+    expect(
+      resolveSetupWizardPresentation(
+        { authConfigured: true, onboardingComplete: true, hasAnyAiCredentials: false },
+        memberOpts,
+      ),
+    ).toEqual({ show: true, initialStepKey: 'credentials', includeFirstProject: false });
+  });
+
+  it('still shows credentials walkthrough when instance onboarding is pending but the caller cannot complete it', () => {
+    expect(
+      resolveSetupWizardPresentation(
+        { authConfigured: true, onboardingComplete: false, hasAnyAiCredentials: false },
+        memberOpts,
+      ),
+    ).toEqual({ show: true, initialStepKey: 'credentials', includeFirstProject: false });
+  });
+
+  // Regression: the Owner-only ending must key off the server-authoritative
+  // canCompleteOnboarding (current org role), not the role cached at login.
+  it('does not send a demoted Owner through the Owner-only ending when the server says they cannot complete it', () => {
+    // Cached role is still Owner (ownerOpts) after a demotion, but the fresh
+    // /api/setup/status resolved the current membership to non-Owner.
+    expect(
+      resolveSetupWizardPresentation(
+        {
+          authConfigured: true,
+          onboardingComplete: false,
+          hasAnyAiCredentials: true,
+          canCompleteOnboarding: false,
+        },
+        ownerOpts,
+      ),
+    ).toEqual({ show: false, initialStepKey: null, includeFirstProject: false });
+  });
+
+  it('sends a freshly promoted Owner through instance onboarding even when the cached role is stale', () => {
+    // Cached role is still a non-Owner member (memberOpts) after a promotion,
+    // but the server now reports the caller may complete onboarding.
+    expect(
+      resolveSetupWizardPresentation(
+        {
+          authConfigured: true,
+          onboardingComplete: false,
+          hasAnyAiCredentials: true,
+          canCompleteOnboarding: true,
+        },
+        memberOpts,
+      ),
+    ).toEqual({ show: true, initialStepKey: 'welcome', includeFirstProject: true });
+  });
+
+  it('falls back to the client hint when a legacy server omits canCompleteOnboarding', () => {
+    expect(
+      resolveSetupWizardPresentation(
+        { authConfigured: true, onboardingComplete: false, hasAnyAiCredentials: true },
+        ownerOpts,
+      ),
+    ).toEqual({ show: true, initialStepKey: 'welcome', includeFirstProject: true });
+    expect(
+      resolveSetupWizardPresentation(
+        { authConfigured: true, onboardingComplete: false, hasAnyAiCredentials: true },
+        memberOpts,
+      ),
+    ).toEqual({ show: false, initialStepKey: null, includeFirstProject: false });
+  });
+});
+
+describe('SetupWizard — no First Project ending', () => {
+  it('finishes from GitHub via Get started instead of calling Open Project', async () => {
+    const onComplete = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SetupWizard
+        setupStatus={{ engines: {} }}
+        includeFirstProject={false}
+        initialStep={3}
+        onComplete={onComplete}
+      />,
+    );
+
+    expect(screen.queryByText(/First Project/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Open Your First Project/i)).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /get started/i }));
+    });
+
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Owner role required/i)).not.toBeInTheDocument();
   });
 });

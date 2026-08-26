@@ -44,6 +44,19 @@ vi.mock('../orgs.js', async (importOriginal) => {
   return { ...actual, getActiveOrgId: vi.fn(() => 'default') };
 });
 
+// GET /api/setup/status probes engine auth, which shells out to
+// `cursor-agent status`. The CLI-spawn guard forbids that binary, so leaving
+// it real hangs the route. This suite only exercises the role-derived
+// `canCompleteOnboarding` field, which is independent of engine auth.
+vi.mock('../engine-auth-status.js', () => ({
+  getEngineAuthStatus: vi.fn(async () => ({
+    claude: false,
+    cursor: false,
+    codex: false,
+    any: false,
+  })),
+}));
+
 const { default: createProjectRoutes } = await import('./projects.js');
 
 interface Claims {
@@ -72,6 +85,14 @@ function buildApp(claims: Claims) {
     saveProjects: vi.fn(),
     config: { defaultCwd: '/tmp', dataDir: dataRoot, projectsDir: '/tmp' },
     getProjectDataDir: (id: string) => path.join(dataRoot, id),
+    // GET /api/setup/status probes `<bin> --version`. Point every engine at a
+    // path that does not exist so the probe rejects fast (false) instead of
+    // hitting the CLI-spawn guard or a real binary. The bin name must not
+    // match the forbidden-binary regex the test guard enforces.
+    getClaudeBin: () => '/nonexistent/agent-hub-test-bin',
+    getCursorBin: () => '/nonexistent/agent-hub-test-bin',
+    getCodexBin: () => '/nonexistent/agent-hub-test-bin',
+    getGrokBin: () => '/nonexistent/agent-hub-test-bin',
   };
   app.use(createProjectRoutes(deps as unknown as Parameters<typeof createProjectRoutes>[0]));
   return { app, dataRoot };
@@ -169,5 +190,65 @@ describe('POST /api/setup/complete — Owner gate', () => {
 
     expect(res.status).toBe(200);
     expect(persistedFlag(dataRoot)).toBe(true);
+  });
+});
+
+/**
+ * Regression coverage for `canCompleteOnboarding` on GET /api/setup/status.
+ *
+ * The client must decide whether to include the Owner-only wizard ending from
+ * a server-authoritative signal resolved from the caller's CURRENT org role —
+ * not the role cached in localStorage at login. Otherwise a promotion/demotion
+ * after login makes the cached role stale: a demoted Owner is walked into the
+ * First Project ending, POST /api/setup/complete 403s, and the setup trap this
+ * whole change removes comes right back. The field mirrors the exact gate the
+ * complete endpoint enforces, so status and complete can never disagree.
+ */
+describe('GET /api/setup/status — canCompleteOnboarding capability', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('reports false for a current non-Owner (the demoted-Owner stale-cache case)', async () => {
+    const { app } = buildApp({ authUserId: 'ada', authUser: 'ada', authRole: 'User' });
+
+    const res = await supertest(app).get('/api/setup/status');
+
+    expect(res.status).toBe(200);
+    expect(res.body.canCompleteOnboarding).toBe(false);
+  });
+
+  it('reports false for a current Admin — onboarding is Owner-only', async () => {
+    const { app } = buildApp({ authUserId: 'admin-1', authUser: 'admin-1', authRole: 'Admin' });
+
+    const res = await supertest(app).get('/api/setup/status');
+
+    expect(res.status).toBe(200);
+    expect(res.body.canCompleteOnboarding).toBe(false);
+  });
+
+  it('reports true for a current Owner (the promoted-Owner stale-cache case)', async () => {
+    const { app } = buildApp({ authUserId: 'boss', authUser: 'boss', authRole: 'Owner' });
+
+    const res = await supertest(app).get('/api/setup/status');
+
+    expect(res.status).toBe(200);
+    expect(res.body.canCompleteOnboarding).toBe(true);
+  });
+
+  it('reports true for the local-bundled bypass identity', async () => {
+    const { app } = buildApp({ authUser: 'local', authRole: 'Owner', authLocalOrgBypass: true });
+
+    const res = await supertest(app).get('/api/setup/status');
+
+    expect(res.status).toBe(200);
+    expect(res.body.canCompleteOnboarding).toBe(true);
+  });
+
+  it('reports true for a fresh install with no auth configured', async () => {
+    const { app } = buildApp({ authRole: 'Owner' });
+
+    const res = await supertest(app).get('/api/setup/status');
+
+    expect(res.status).toBe(200);
+    expect(res.body.canCompleteOnboarding).toBe(true);
   });
 });

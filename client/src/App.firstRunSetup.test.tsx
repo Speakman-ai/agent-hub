@@ -67,7 +67,13 @@ import { render, waitFor, cleanup, screen } from '@testing-library/react';
       if (typeof globalThis !== 'undefined') {
         (globalThis as any).__ahSetupWizardProps = p;
       }
-      return <div data-testid="setup-wizard-mock" data-initial-step={String(p.initialStep)} />;
+      return (
+        <div
+          data-testid="setup-wizard-mock"
+          data-initial-step={String(p.initialStep)}
+          data-include-first-project={p.includeFirstProject === false ? 'false' : 'true'}
+        />
+      );
     },
   };
 });
@@ -119,6 +125,7 @@ import { render, waitFor, cleanup, screen } from '@testing-library/react';
 });
 
 import App from './App';
+import { setActiveOrgIsLocal, setToken } from './utils/auth';
 
 function mockFetchWithSetupStatus(status: any) {
   return vi.fn((url: any) => {
@@ -136,6 +143,7 @@ describe('App — first-run SetupWizard gating', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    setActiveOrgIsLocal(false);
     delete (globalThis as any).__ahSetupWizardProps;
     if (globalThis.window) {
       globalThis.window.electronAPI = undefined;
@@ -247,5 +255,48 @@ describe('App — first-run SetupWizard gating', () => {
     await waitFor(() => {
       expect(screen.getByTestId('setup-wizard-mock')).toBeInTheDocument();
     });
+  });
+
+  function seedRole(role: 'Owner' | 'Admin' | 'User') {
+    setToken({
+      token: 'test-jwt',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      user: { username: 'member@example.com', role },
+    });
+  }
+
+  it('does not trap an invited User in instance onboarding when the Owner has not finished setup', async () => {
+    seedRole('User');
+    (globalThis as any).fetch = mockFetchWithSetupStatus({
+      firstRun: false,
+      authConfigured: true,
+      onboardingComplete: false,
+      hasAnyAiCredentials: true,
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('sidebar-mock')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('setup-wizard-mock')).not.toBeInTheDocument();
+  });
+
+  it('shows a credentials walkthrough without First Project for a User with no AI engines', async () => {
+    seedRole('User');
+    (globalThis as any).fetch = mockFetchWithSetupStatus({
+      firstRun: false,
+      authConfigured: true,
+      onboardingComplete: true,
+      hasAnyAiCredentials: false,
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('setup-wizard-mock')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('setup-wizard-mock').dataset.includeFirstProject).toBe('false');
+    expect(screen.getByTestId('setup-wizard-mock').dataset.initialStep).toBe('2');
   });
 });
