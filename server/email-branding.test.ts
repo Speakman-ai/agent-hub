@@ -1,3 +1,7 @@
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { inflateSync } from 'zlib';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const mockConfig = vi.hoisted(() => ({ emailLogoEnabled: true }));
@@ -220,5 +224,117 @@ describe('buildSampleReleaseDigestBody', () => {
 
   it('falls back to a generic subject when no name is given', () => {
     expect(buildSampleReleaseDigestBody('  ')).toContain("What's new in your project");
+  });
+});
+
+// Minimal decoder for 8-bit RGBA, non-interlaced PNGs (color type 6). Both the
+// email logo and the app brand logo are saved in that form; a decoder lets us
+// assert on pixels without pulling an image dependency into the test suite.
+function decodePngRgba(buf: Buffer): { width: number; height: number; data: Buffer } {
+  const width = buf.readUInt32BE(16);
+  const height = buf.readUInt32BE(20);
+  const bitDepth = buf[24];
+  const colorType = buf[25];
+  const interlace = buf[28];
+  if (bitDepth !== 8 || colorType !== 6 || interlace !== 0) {
+    throw new Error(
+      `unsupported PNG (bitDepth=${bitDepth} colorType=${colorType} interlace=${interlace})`,
+    );
+  }
+  const idat: Buffer[] = [];
+  let off = 8;
+  while (off < buf.length) {
+    const len = buf.readUInt32BE(off);
+    const type = buf.toString('ascii', off + 4, off + 8);
+    if (type === 'IDAT') idat.push(buf.subarray(off + 8, off + 8 + len));
+    if (type === 'IEND') break;
+    off += 12 + len;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  const bpp = 4;
+  const stride = width * bpp;
+  const out = Buffer.alloc(height * stride);
+  let pos = 0;
+  for (let y = 0; y < height; y++) {
+    const filter = raw[pos++];
+    const rowStart = y * stride;
+    for (let x = 0; x < stride; x++) {
+      const rawByte = raw[pos++];
+      const left = x >= bpp ? out[rowStart + x - bpp] : 0;
+      const up = y > 0 ? out[rowStart - stride + x] : 0;
+      const upLeft = x >= bpp && y > 0 ? out[rowStart - stride + x - bpp] : 0;
+      let val: number;
+      switch (filter) {
+        case 0:
+          val = rawByte;
+          break;
+        case 1:
+          val = rawByte + left;
+          break;
+        case 2:
+          val = rawByte + up;
+          break;
+        case 3:
+          val = rawByte + ((left + up) >> 1);
+          break;
+        case 4: {
+          const p = left + up - upLeft;
+          const pa = Math.abs(p - left);
+          const pb = Math.abs(p - up);
+          const pc = Math.abs(p - upLeft);
+          const pred = pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+          val = rawByte + pred;
+          break;
+        }
+        default:
+          throw new Error(`bad PNG filter byte ${filter}`);
+      }
+      out[rowStart + x] = val & 0xff;
+    }
+  }
+  return { width, height, data: out };
+}
+
+describe('email logo asset carries the current brand mark', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  // The mark (blue hexagon + tool glyph) lives left of this column; the wordmark
+  // text sits to the right. The email asset recolors only the wordmark for
+  // legibility on the white shell, so the mark must stay pixel-identical.
+  const MARK_MAX_X = 146;
+
+  it('mark region is pixel-identical to the app brand logo (guards against a stale email logo)', () => {
+    const email = decodePngRgba(readFileSync(join(here, 'assets', 'email-logo.png')));
+    const brand = decodePngRgba(readFileSync(join(here, '..', 'client', 'public', 'logo.png')));
+    expect({ w: email.width, h: email.height }).toEqual({ w: brand.width, h: brand.height });
+
+    let markDiffs = 0;
+    for (let y = 0; y < email.height; y++) {
+      for (let x = 0; x < MARK_MAX_X; x++) {
+        const i = (y * email.width + x) * 4;
+        for (let c = 0; c < 4; c++) {
+          if (email.data[i + c] !== brand.data[i + c]) markDiffs++;
+        }
+      }
+    }
+    expect(markDiffs).toBe(0);
+  });
+
+  it('recolors the wordmark to a dark, legible ink for the white email header', () => {
+    const email = decodePngRgba(readFileSync(join(here, 'assets', 'email-logo.png')));
+    // Every opaque pixel in the wordmark region must be dark (not the near-white
+    // ink the on-dark app logo uses), otherwise the wordmark vanishes on white.
+    let opaqueInk = 0;
+    for (let y = 0; y < email.height; y++) {
+      for (let x = 160; x < email.width; x++) {
+        const i = (y * email.width + x) * 4;
+        const alpha = email.data[i + 3];
+        if (alpha < 200) continue;
+        opaqueInk++;
+        const luminance = (email.data[i] + email.data[i + 1] + email.data[i + 2]) / 3;
+        expect(luminance).toBeLessThan(96);
+      }
+    }
+    // Sanity: the region actually contains wordmark pixels.
+    expect(opaqueInk).toBeGreaterThan(500);
   });
 });
