@@ -28,14 +28,13 @@ import {
 import { createTemplateExecutor } from '../provisioning/template-executor.js';
 import { createGithubExecutor } from '../provisioning/github.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
-import { bootstrapHostedGit } from '../provisioning/hosted-git-bootstrap.js';
+import {
+  bootstrapHostedGit,
+  persistScaffoldCheckout,
+} from '../provisioning/hosted-git-bootstrap.js';
 import { kickoffInitialBuild } from '../provisioning/initial-build.js';
 import { resolveProjectSkillsDir } from '../project-model.js';
-import {
-  resolveTemplateId,
-  isKnownTemplateId,
-  KNOWN_TEMPLATE_IDS,
-} from '../provisioning/stack-defaults.js';
+import { resolveTemplateId, isKnownTemplateId } from '../provisioning/stack-defaults.js';
 import { getTemplate } from '../provisioning/templates.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { z, registerPath } from '../openapi/registry.js';
@@ -44,9 +43,9 @@ registerPath({
   method: 'post',
   path: '/api/projects/provision/suggest',
   tags: ['Projects'],
-  summary: 'AI-suggest a project name / app type / stack from a description',
+  summary: 'AI-suggest a project name from a description',
   description:
-    'Fills "idk" questionnaire answers using the requesting user\'s connected Claude account. Already-chosen appType/stack are echoed back unchanged; suggestions are clamped to known option ids.',
+    "Fills a blank project name using the requesting user's connected Claude account. Stack and app type are chosen later by the first build session.",
   request: {
     body: {
       content: {
@@ -335,10 +334,8 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
   const { stmts, broadcast, findProject, getProjects, saveProjects, getProjectDataDir } = deps;
   const router = Router();
 
-  // AI-fill for "idk" questionnaire answers: given the project
-  // description (plus any concrete answers), suggest a name, app type,
-  // and stack. Runs the requesting user's connected Claude account; the
-  // wizard shows the suggestions as editable values before provisioning.
+  // AI-fill for a blank project name. Stack and app type are chosen by
+  // the first build session, not the wizard.
   router.post('/api/projects/provision/suggest', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const description = typeof body.description === 'string' ? body.description.trim() : '';
@@ -349,14 +346,9 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
     const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : null;
 
     const systemPrompt =
-      'You name and classify software projects. Respond with ONLY a JSON object, no prose:\n' +
-      `{"name": "<short memorable project name, 2-4 words>", "appType": <one of ${JSON.stringify(
-        SUGGEST_APP_TYPES,
-      )}>, "stack": <one of ${JSON.stringify([...KNOWN_TEMPLATE_IDS])}>}`;
-    const prompt =
-      `Project description: ${description.slice(0, 2000)}\n` +
-      (knownAppType ? `App type (already chosen, echo it back): ${knownAppType}\n` : '') +
-      (knownStack ? `Stack (already chosen, echo it back): ${knownStack}\n` : '');
+      'You name software projects. Respond with ONLY a JSON object, no prose:\n' +
+      '{"name": "<short memorable project name, 2-4 words>"}';
+    const prompt = `Project description: ${description.slice(0, 2000)}\n`;
 
     const userId = (req as AuthenticatedRequest).authUserId ?? null;
     try {
@@ -491,7 +483,10 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
     const requestingUserId = (req as AuthenticatedRequest).authUserId ?? null;
     let manifest: { setup: string[]; test: string; lint: string } | null = null;
     try {
-      manifest = getTemplate(resolveTemplateId(payload.appType, payload.stack)).manifest;
+      const templateId = resolveTemplateId(payload.appType, payload.stack);
+      // Blank scaffold has no toolchain yet — seed the placeholder ci.yaml
+      // so the first build session rewrites it with real commands.
+      manifest = templateId === 'blank' ? null : getTemplate(templateId).manifest;
     } catch {
       manifest = null; // unknown stack — placeholder ci.yaml
     }
@@ -504,9 +499,10 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
       // `partial` means the LOCAL scaffold succeeded and only an optional
       // gh-* phase failed — the local project is fully usable. Only a
       // fatal (non-partial) failure skips post-scaffold work.
-      const d = ev as { error?: unknown; partial?: boolean };
+      const d = ev as { error?: unknown; partial?: boolean; repoUrl?: string };
       if (d.error && !d.partial) return;
       completed = true;
+      const repoUrl = typeof d.repoUrl === 'string' ? d.repoUrl : null;
       void (async () => {
         if (hostOnAgentHub) {
           await bootstrapHostedGit({
@@ -516,6 +512,17 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
             saveProjects,
             broadcast,
             requestingUserId,
+            repoUrl,
+          });
+        } else {
+          // GitHub-only: adopt the pushed scaffold checkout and persist the
+          // remote so the first build session's worktree has a valid source.
+          await persistScaffoldCheckout({
+            project,
+            workspaceDir: path.join(dataDir, 'workspace'),
+            repoUrl,
+            saveProjects,
+            broadcast,
           });
         }
         // The description is the BASELINE: dispatch the first build

@@ -162,30 +162,32 @@ export function kickoffInitialBuild(opts: InitialBuildOpts): void {
     // config together.
     const prompt =
       `## Build the initial version\n\n` +
-      `This project was just scaffolded from a template; the repo in your worktree is the baseline skeleton. ` +
-      `Work through the phases below IN ORDER. This is the BASELINE — follow-up features and fixes come later ` +
-      `as separate cards.\n\n` +
+      `This project was created as a blank git repo. There is no language starter — YOU choose the stack ` +
+      `from the product description below (Python, Node, Go, Rust, or whatever fits). Work through the ` +
+      `phases IN ORDER. This is the BASELINE — follow-up features and fixes come later as separate cards.\n\n` +
       `### Product description\n${description.trim()}\n\n` +
       (cardId
         ? `### Tracking\nKanban card: ${cardId} (move it forward as you progress).\n\n`
         : '') +
       `### Phase 1 — Implement\n` +
-      `Build the described product so it works end to end. Add tests for what you build; keep the scaffold's ` +
-      `checks passing. Commit as you go on the current session branch.\n\n` +
+      `Build the described product so it works end to end. Pick language, framework, and layout from the ` +
+      `description — do not assume Node, npm, or \`package.json\`. Add tests and a linter for what you ` +
+      `build. Prefer running the app (and any backing services such as a database) via Docker Compose so ` +
+      `local preview is one command. Commit as you go on the current session branch.\n\n` +
       `### Phase 2 — CI\n` +
-      `The scaffold seeded \`.agent-hub/ci.yaml\` (version 2). Update it so the jobs run the REAL test/lint ` +
-      `commands your implementation ended up with, and make sure they pass locally. Commit the result.\n\n` +
+      `The repo may have a placeholder \`.agent-hub/ci.yaml\` (version 2). Rewrite it so the jobs run the ` +
+      `REAL test/lint commands your implementation uses, and make sure they pass locally. Commit the result.\n\n` +
       `### Phase 3 — Preview\n` +
       `Configure the web preview so a human can try the app from the browser: persist a dev-server config via ` +
       `\`POST $AGENT_HUB_URL/api/projects/${project.id}/dev-server/setup-apply\` with \`session_id\` set to ` +
-      `YOUR session id and \`devServer\` (startCommand, portMap, healthPath). Run backing services such as a ` +
-      `database from \`devServer.startCommand\` (e.g. \`docker compose up -d --wait db && npm run dev\`). ` +
-      `Then start the preview and report pass/fail.\n\n` +
+      `YOUR session id and \`devServer\` (startCommand, portMap, healthPath). \`startCommand\` should boot ` +
+      `the real stack — typically \`docker compose up --build\` (or the equivalent for a CLI/library with ` +
+      `no HTTP server). Do not assume a Node start command. Then start the preview and report pass/fail.\n\n` +
       `### Phase 4 — Pause for verification\n` +
       `STOP after Phase 3 with a clean committed tree. Do NOT push and do NOT open a PR. Post a short summary ` +
-      `of what was built and how to verify it in the preview. The operator will verify and click ` +
-      `**Finalize Code Changes** — review, checks, push, and the PR all happen there, so the first merge ` +
-      `contains the app, its CI, and its preview together.`;
+      `of what was built, which stack you chose, how to run it in Docker, and how to verify it in the preview. ` +
+      `The operator will verify and click **Finalize Code Changes** — review, checks, push, and the PR all ` +
+      `happen there, so the first merge contains the app, its CI, and its preview together.`;
 
     deps.stmts.insertBackgroundTask.run(taskId, sessionId, agent.id, prompt);
     deps.handleChat(null, {
@@ -198,6 +200,7 @@ export function kickoffInitialBuild(opts: InitialBuildOpts): void {
       type: 'initial_build_started',
       projectId: project.id,
       sessionId,
+      agentId: agent.id,
       cardId,
     });
     console.log(`[provisioning] ${project.id}: initial build session ${sessionId} dispatched`);

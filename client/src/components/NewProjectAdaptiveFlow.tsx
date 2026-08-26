@@ -2,9 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Check, Code2, FolderGit2, Kanban, X } from 'lucide-react';
 import AdaptiveQuestionnaire from './AdaptiveQuestionnaire';
 import ProvisioningStatus from './ProvisioningStatus';
-import ProjectLandingHandoff from './ProjectLandingHandoff';
-import PreviewConfirm, { buildPreviewPatch } from './PreviewConfirm';
-import { getApiBase, getAuthHeaders } from '../utils/connection';
 import {
   provisionProject as defaultProvision,
   subscribeProvisioningEvents as defaultSubscribe,
@@ -16,8 +13,8 @@ import {
 
 /**
  * NewProjectAdaptiveFlow — stitches the project-type picker, the
- * questionnaire, the live provisioning status view, the landing handoff,
- * and the workflow (non-code) form.
+ * questionnaire, the live provisioning status view, and the workflow
+ * (non-code) form.
  *
  * Sub-views driven by local state:
  *   0. `type-picker` — render <ProjectTypePicker /> so the user chooses
@@ -30,17 +27,10 @@ import {
  *      POST the payload to the provisioning endpoint, open the event
  *      stream, and transition to...
  *   2. `provisioning` — render <ProvisioningStatus /> with the event
- *      buffer reduced in real time. When a terminal success event lands
- *      and the user clicks "Continue", we transition to...
- *   3. `landing` — render <ProjectLandingHandoff />: summary card (repo /
- *      stack / integrations), the detected-preview confirmation when the
- *      server broadcast one, and a starter-task next-steps panel. Every
- *      outbound action funnels through `onProjectCreated` so the host app
- *      can decide how to route (open kanban, browse skills, etc.).
- *      Provisioning already seeds the project's lead dev and reviewer
- *      agents (see server/provisioning/initial-build.ts), so there is no
- *      roster step between provisioning and the landing.
- *   4. `workflow-form` — render <WorkflowProjectForm /> for non-code
+ *      buffer reduced in real time. When the first build session starts,
+ *      we signal `onProjectCreated({ action: 'session', sessionId, … })`
+ *      so the host opens that chat — no landing / next-steps picker.
+ *   3. `workflow-form` — render <WorkflowProjectForm /> for non-code
  *      projects. On submit we POST `/api/projects` with `mode:'workflow'`
  *      and signal `onProjectCreated({projectId, action:'task'})` so the
  *      host lands on the new project's kanban view.
@@ -49,11 +39,8 @@ import {
  * injectable so tests can drive the flow without a real server.
  *
  * GitHub-integration detection:
- *   If the questionnaire payload's `integrations` array includes 'github'
- *   (or is the idk sentinel — defer to agent default), the ProvisioningStatus
- *   renders the full phase list with gh-* phases. If the user explicitly
- *   omitted GitHub, the gh-* phases are skipped and the UI surfaces a
- *   local-only scaffold.
+ *   The hosting answer is the source of truth. Agent Hub-hosted projects
+ *   skip the gh-* phases. Explicit GitHub-only hosting shows them.
  */
 export default function NewProjectAdaptiveFlow({
   onClose,
@@ -65,27 +52,29 @@ export default function NewProjectAdaptiveFlow({
    * silent before we synthesize a terminal failure. Override via prop for
    * E2E tests; subscribe() also honours VITE_PROVISIONING_WATCHDOG_MS. */
   watchdogMs,
+  /** How long to wait after a terminal (non-failed) provisioning `done`
+   * for the `initial_build_started` handoff before revealing a manual
+   * escape. Guards against a missed/dropped broadcast or a first-build
+   * creation that failed after `done`. Override via prop for tests. */
+  buildHandoffTimeoutMs = 20000,
   /** Test hook: skip the type picker and start at the named view. */
   initialView = 'type-picker',
 }: any) {
   const [view, setView] = useState(initialView);
   const [events, setEvents] = useState<any[]>([]);
   const [withGithub, setWithGithub] = useState(true);
+  const [withToolchain, setWithToolchain] = useState(false);
   const [launchError, setLaunchError] = useState<any>(null);
   const [createdProjectId, setCreatedProjectId] = useState<any>(null);
-  const [questionnairePayload, setQuestionnairePayload] = useState<any>(null);
-  // Detected preview defaults for the new scaffold (from the server's
-  // `preview-defaults-detected` WebSocket broadcast). The server already
-  // auto-applies these to `project.prEnv.devServer` server-side after the
-  // copy-template phase, but we expose them here so the user can confirm
-  // or override before they land on the project. Null when detection
-  // hasn't run yet or returned `detected: null` (unknown stack — silent).
-  const [detectedPreview, setDetectedPreview] = useState<any>(null);
-  // User decision for the preview. null = not yet acted; { enabled: false }
-  // = skip; { enabled: true, ... } = accept or edit (form payload).
-  const [previewDecision, setPreviewDecision] = useState<any>(null);
+  // Flips true when the first-build handoff hasn't arrived within
+  // `buildHandoffTimeoutMs` of a terminal (non-failed) `done`, so the
+  // success/partial card can offer a manual "Open project" escape instead
+  // of hanging forever on "Opening the first build session…".
+  const [buildHandoffTimedOut, setBuildHandoffTimedOut] = useState(false);
   const streamHandleRef = useRef<any>(null);
   const currentPayloadRef = useRef<any>(null);
+  const createdProjectIdRef = useRef<any>(null);
+  const openedBuildSessionRef = useRef(false);
 
   // Tear down the event stream on unmount so we don't leak sockets.
   useEffect(() => {
@@ -94,79 +83,57 @@ export default function NewProjectAdaptiveFlow({
     };
   }, []);
 
-  // Subscribe to the server's preview-defaults broadcast scoped to the
-  // freshly-created project. Routed through App.jsx as a `preview-defaults-ws`
-  // CustomEvent (see client/src/App.jsx WebSocket switch). The event payload
-  // is `{ type, projectId, jobId, detected: DetectedPreviewDefaults | null }`.
+  const openBuildSession = useCallback(
+    (detail: any) => {
+      if (openedBuildSessionRef.current) return;
+      const sessionId = typeof detail?.sessionId === 'string' ? detail.sessionId : '';
+      if (!sessionId) return;
+      const projectId = createdProjectIdRef.current;
+      if (!projectId || detail?.projectId !== projectId) return;
+      openedBuildSessionRef.current = true;
+      streamHandleRef.current?.close?.();
+      onProjectCreated?.({
+        action: 'session',
+        projectId: projectId || detail.projectId || null,
+        sessionId,
+        agentId: detail.agentId || null,
+      });
+    },
+    [onProjectCreated],
+  );
+
+  // First-build kickoff broadcasts on the main app WebSocket after the
+  // provisioning job's `done` event. App.jsx re-dispatches it as
+  // `initial-build-ws` so this overlay can open the session without a
+  // landing / next-steps picker.
   useEffect(() => {
     const handler = (e: any) => {
       const data = e.detail;
-      if (!data || data.type !== 'preview-defaults-detected') return;
-      if (!createdProjectId || data.projectId !== createdProjectId) return;
-      setDetectedPreview(data.detected || null);
-      setPreviewDecision(null);
+      if (!data || data.type !== 'initial_build_started') return;
+      openBuildSession(data);
     };
-    window.addEventListener('preview-defaults-ws', handler);
-    return () => window.removeEventListener('preview-defaults-ws', handler);
-  }, [createdProjectId]);
-
-  // PATCH the project's prEnv.devServer when the user makes an explicit
-  // accept / edit / skip decision. The server already pre-baked the
-  // detected defaults during provisioning, so the user's "Looks good"
-  // path is effectively a no-op — but we still send the patch to make the
-  // wizard self-contained and so an edit/skip actually persists.
-  // Best-effort: failures are swallowed (the scaffold already succeeded).
-  const persistPreviewDecision = useCallback(
-    async (decision: any) => {
-      if (!createdProjectId || !decision) return;
-      const patch = buildPreviewPatch(decision);
-      if (!patch) return;
-      try {
-        const res = await fetch(`${getApiBase()}/projects/${createdProjectId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify(patch),
-        });
-        if (!res.ok) {
-          console.warn(
-            '[NewProjectAdaptiveFlow] preview PATCH failed:',
-            res.status,
-            await res.text().catch(() => ''),
-          );
-        }
-      } catch (err: any) {
-        console.warn('[NewProjectAdaptiveFlow] preview PATCH error:', err);
-      }
-    },
-    [createdProjectId],
-  );
-
-  const handlePreviewConfirm = useCallback(
-    (form: any) => {
-      setPreviewDecision(form);
-      persistPreviewDecision(form);
-    },
-    [persistPreviewDecision],
-  );
-
-  const handlePreviewSkip = useCallback(() => {
-    const decision = { enabled: false };
-    setPreviewDecision(decision);
-    persistPreviewDecision(decision);
-  }, [persistPreviewDecision]);
+    window.addEventListener('initial-build-ws', handler);
+    return () => window.removeEventListener('initial-build-ws', handler);
+  }, [openBuildSession]);
 
   const start = useCallback(
     async (payload: any) => {
       setLaunchError(null);
       setEvents([]);
       setCreatedProjectId(null);
+      createdProjectIdRef.current = null;
+      openedBuildSessionRef.current = false;
+      setBuildHandoffTimedOut(false);
       setWithGithub(inferWithGithub(payload));
+      setWithToolchain(inferWithToolchain(payload));
       setView('provisioning');
       currentPayloadRef.current = payload;
-      setQuestionnairePayload(payload);
       try {
         const { wsUrl, projectId } = await provision(payload);
-        if (projectId) setCreatedProjectId(projectId);
+        if (projectId) {
+          createdProjectIdRef.current = projectId;
+          setCreatedProjectId(projectId);
+        }
         const handle = subscribe(wsUrl, {
           onEvent: (ev: any) => setEvents((prev: any) => [...prev, ev]),
           onClose: () => {
@@ -221,50 +188,36 @@ export default function NewProjectAdaptiveFlow({
     [onProjectCreated, createdProjectId],
   );
 
-  // After a successful provisioning run, the success card's primary action
-  // transitions the flow into the landing handoff. We extract the terminal
-  // `done` event so we only advance on clean completion — the partial /
-  // failed paths keep the user on the provisioning view with their
-  // respective recovery affordances.
-  const terminalDone = useMemo(() => events.find((e: any) => e && e.type === 'done'), [events]);
-  const provisioningSucceeded = terminalDone && !terminalDone.error;
-  const repoUrl = terminalDone && !terminalDone.error ? terminalDone.repoUrl || null : null;
-
-  const handleContinueToLanding = useCallback(() => {
-    // The provisioning socket has already emitted its terminal `done`
-    // event — tear it down eagerly so the landing doesn't inherit an open
-    // socket the server will reap anyway.
+  // Manual escape when the first-build handoff never arrives: land the user
+  // on the created project's board (a guaranteed target — the build session
+  // shows up there once it starts), or just close if the id is unknown.
+  const handleOpenProject = useCallback(() => {
     streamHandleRef.current?.close?.();
-    setView('landing');
-  }, []);
+    const projectId = createdProjectIdRef.current;
+    if (projectId) {
+      onProjectCreated?.({ action: 'task', projectId });
+    } else {
+      onClose?.();
+    }
+  }, [onProjectCreated, onClose]);
 
-  // Landing action handlers — every path funnels through `onProjectCreated`
-  // with a payload the host can route on (e.g. open a chat, open the
-  // kanban). `onProjectCreated` is the terminal signal; we intentionally
-  // do NOT call `onClose` here because the host's `onProjectCreated`
-  // handler already manages the view transition, and calling both in the
-  // same tick would let `onClose`'s setState clobber the routing.
-  const handleLandingOpenProject = useCallback(
-    ({ projectId, repoUrl: outRepoUrl }: any) => {
-      onProjectCreated?.({
-        projectId: projectId || createdProjectId,
-        repoUrl: outRepoUrl || null,
-        action: 'open',
-      });
-    },
-    [onProjectCreated, createdProjectId],
-  );
+  const terminalDone = useMemo(() => events.find((e: any) => e && e.type === 'done'), [events]);
+  const provisioningFailed = terminalDone && terminalDone.error && !terminalDone.partial;
 
-  const handleLandingStarterTask = useCallback(
-    ({ projectId, task }: any) => {
-      onProjectCreated?.({
-        projectId: projectId || createdProjectId,
-        action: 'task',
-        task: task || null,
-      });
-    },
-    [onProjectCreated, createdProjectId],
-  );
+  // Once provisioning reaches a terminal (non-failed) `done`, the flow waits
+  // for the `initial_build_started` broadcast to open the first build chat.
+  // If that never arrives — first-build creation failed after `done`, the
+  // main WebSocket reconnected and dropped the transient event, or it was
+  // otherwise missed — reveal a manual escape so the user is never stuck on
+  // "Opening the first build session…".
+  useEffect(() => {
+    if (!terminalDone || provisioningFailed) return;
+    if (openedBuildSessionRef.current) return;
+    const timer = setTimeout(() => {
+      if (!openedBuildSessionRef.current) setBuildHandoffTimedOut(true);
+    }, buildHandoffTimeoutMs);
+    return () => clearTimeout(timer);
+  }, [terminalDone, provisioningFailed, buildHandoffTimeoutMs]);
 
   const handlePickType = useCallback(
     (type: any) => {
@@ -320,35 +273,6 @@ export default function NewProjectAdaptiveFlow({
     return <AdaptiveQuestionnaire onSubmit={start} onClose={() => setView('type-picker')} />;
   }
 
-  if (view === 'landing') {
-    return (
-      <div className="flex flex-col w-full h-full" data-testid="new-project-landing-view">
-        {detectedPreview && (
-          <div className="shrink-0 border-b border-gray-800 bg-gray-950 px-4 py-3 sm:px-8">
-            <div className="mx-auto w-full max-w-5xl">
-              <PreviewConfirm
-                detected={detectedPreview}
-                onConfirm={handlePreviewConfirm}
-                onSkip={handlePreviewSkip}
-              />
-            </div>
-          </div>
-        )}
-        <div className="flex-1 min-h-0">
-          <ProjectLandingHandoff
-            projectId={createdProjectId}
-            projectName={questionnairePayload?.name}
-            repoUrl={repoUrl}
-            payload={questionnairePayload}
-            onOpenProject={handleLandingOpenProject}
-            onOpenStarterTask={handleLandingStarterTask}
-            onClose={handleClose}
-          />
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-col w-full h-full" data-testid="new-project-adaptive-flow">
       {launchError && !events.some((e: any) => e.type === 'done') && (
@@ -363,13 +287,33 @@ export default function NewProjectAdaptiveFlow({
         <ProvisioningStatus
           events={events}
           withGithub={withGithub}
+          withToolchain={withToolchain}
           onRetry={handleRetry}
-          onClose={provisioningSucceeded ? handleContinueToLanding : handleClose}
+          onClose={provisioningFailed ? handleClose : undefined}
           onOpenRepo={handleOpenRepo}
+          onOpenProject={handleOpenProject}
+          buildHandoffTimedOut={buildHandoffTimedOut}
         />
       </div>
     </div>
   );
+}
+
+/** Language starters that still run wire-tests / wire-lint. Keep in
+ *  sync with `KNOWN_TEMPLATE_IDS` minus `blank` in stack-defaults.ts. */
+const LANGUAGE_STARTER_STACKS = new Set([
+  'python-fastapi-uv',
+  'typescript-node-tsx',
+  'go-cobra',
+  'rust-axum',
+]);
+
+/** True when the payload asked for a concrete language template so the
+ *  checklist should show Wire tests / Wire lint. Description-first
+ *  (blank / idk) hides them — they were skipped, not run. */
+export function inferWithToolchain(payload: any) {
+  if (!payload || typeof payload.stack !== 'string') return false;
+  return LANGUAGE_STARTER_STACKS.has(payload.stack);
 }
 
 /**
@@ -444,8 +388,8 @@ export function ProjectTypePicker({ onPick, onClose }: any) {
               <div className="flex-1">
                 <div className="text-sm font-semibold text-white">Create new code project</div>
                 <p className="mt-1 text-xs text-gray-400">
-                  Scaffold a new repo: pick a stack, integrations, auth, and (optionally) push to
-                  GitHub. Worktrees + PR flow are on.
+                  Describe the product. The first build session chooses the stack, writes the code,
+                  tests, Docker setup, and preview. Optionally host on GitHub.
                 </p>
               </div>
             </button>

@@ -36,20 +36,32 @@ import {
  *       reducer on each render (cheap: O(events) per render, and the
  *       caller typically batches events).
  *   - withGithub: bool — whether GitHub phases should be rendered.
+ *   - withToolchain: bool — whether wire-tests / wire-lint should be
+ *     rendered. Off for the blank (description-first) scaffold.
  *   - onRetry: optional callback — shown on the error card.
  *   - onClose: optional callback — shown on success and error cards.
  *   - onOpenRepo: optional callback fired when the user clicks the repo URL.
+ *   - onOpenProject: optional callback — the manual escape shown on the
+ *     success/partial card once the first-build handoff times out, so the
+ *     user is never stranded on "Opening the first build session…".
+ *   - buildHandoffTimedOut: bool — reveals that escape when true.
  */
 export default function ProvisioningStatus({
   events = [],
   withGithub = true,
+  withToolchain = false,
   onRetry,
   onClose,
   onOpenRepo,
+  onOpenProject,
+  buildHandoffTimedOut = false,
 }: any) {
   const state = useMemo(() => {
-    return events.reduce((acc: any, ev: any) => reduceEvent(acc, ev), initialState({ withGithub }));
-  }, [events, withGithub]);
+    return events.reduce(
+      (acc: any, ev: any) => reduceEvent(acc, ev),
+      initialState({ withGithub, withToolchain }),
+    );
+  }, [events, withGithub, withToolchain]);
 
   return (
     <div
@@ -62,10 +74,22 @@ export default function ProvisioningStatus({
           <PhaseChecklist state={state} />
           <LogTail logs={state.logs} />
           {state.overall === 'success' && (
-            <SuccessCard state={state} onClose={onClose} onOpenRepo={onOpenRepo} />
+            <SuccessCard
+              state={state}
+              onClose={onClose}
+              onOpenRepo={onOpenRepo}
+              onOpenProject={onOpenProject}
+              buildHandoffTimedOut={buildHandoffTimedOut}
+            />
           )}
           {state.overall === 'partial' && (
-            <PartialCard state={state} onClose={onClose} onOpenRepo={onOpenRepo} />
+            <PartialCard
+              state={state}
+              onClose={onClose}
+              onOpenRepo={onOpenRepo}
+              onOpenProject={onOpenProject}
+              buildHandoffTimedOut={buildHandoffTimedOut}
+            />
           )}
           {state.overall === 'failed' && (
             <FailureCard state={state} onRetry={onRetry} onClose={onClose} />
@@ -269,7 +293,7 @@ function LogTail({ logs }: any) {
 /* Terminal-state cards                                                */
 /* ------------------------------------------------------------------ */
 
-function SuccessCard({ state, onClose, onOpenRepo }: any) {
+function SuccessCard({ state, onClose, onOpenRepo, onOpenProject, buildHandoffTimedOut }: any) {
   return (
     <section
       className="rounded-lg border border-emerald-700 bg-emerald-950/40 px-4 py-4 text-sm"
@@ -294,7 +318,7 @@ function SuccessCard({ state, onClose, onOpenRepo }: any) {
         </div>
       )}
       <div className="mt-3">
-        {onClose && (
+        {onClose ? (
           <button
             type="button"
             onClick={onClose}
@@ -303,13 +327,32 @@ function SuccessCard({ state, onClose, onOpenRepo }: any) {
           >
             Done
           </button>
+        ) : buildHandoffTimedOut ? (
+          <div className="space-y-2" data-testid="ps-handoff-timeout">
+            <p className="text-emerald-200/80 text-[13px]">
+              Still preparing the first build session. You can open the project now — the build chat
+              will appear as soon as it starts.
+            </p>
+            <button
+              type="button"
+              onClick={onOpenProject}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg text-sm transition-colors"
+              data-testid="ps-open-project"
+            >
+              Open project
+            </button>
+          </div>
+        ) : (
+          <p className="text-emerald-200/80 text-[13px]" data-testid="ps-opening-build">
+            Opening the first build session…
+          </p>
         )}
       </div>
     </section>
   );
 }
 
-function PartialCard({ state, onClose, onOpenRepo }: any) {
+function PartialCard({ state, onClose, onOpenRepo, onOpenProject, buildHandoffTimedOut }: any) {
   const cls = classifyError(state.error);
   return (
     <section
@@ -350,6 +393,18 @@ function PartialCard({ state, onClose, onOpenRepo }: any) {
             data-testid="ps-partial-close"
           >
             Keep local scaffold
+          </button>
+        )}
+        {/* No onClose during the first-build handoff — reveal a manual escape
+            once it times out so the user isn't stranded on this card. */}
+        {!onClose && buildHandoffTimedOut && (
+          <button
+            type="button"
+            onClick={onOpenProject}
+            className="bg-amber-600 hover:bg-amber-500 text-white font-medium px-4 py-2 rounded-lg text-sm transition-colors"
+            data-testid="ps-open-project"
+          >
+            Open project
           </button>
         )}
       </div>

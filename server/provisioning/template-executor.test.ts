@@ -337,7 +337,7 @@ describe('template executor — copy-template phase', () => {
     expect(result.error?.hint).toBeUndefined();
   });
 
-  it('honours stack:"idk" by falling back to the appType default (cli → go-cobra)', async () => {
+  it('honours stack:"idk" by copying the blank scaffold', async () => {
     let copied: { src: string; dest: string } | null = null;
     const executor = createTemplateExecutor({
       resolveWorkspace: () => workspace,
@@ -355,10 +355,10 @@ describe('template executor — copy-template phase', () => {
 
     expect(result.status).toBe('ok');
     expect(copied).not.toBeNull();
-    expect(copied!.src).toBe(getTemplate('go-cobra').filesDir);
+    expect(copied!.src).toBe(getTemplate('blank').filesDir);
   });
 
-  it('honours an unrecognised stack by falling back through appType', async () => {
+  it('honours an unrecognised stack by copying the blank scaffold', async () => {
     let copied: string | null = null;
     const executor = createTemplateExecutor({
       resolveWorkspace: () => workspace,
@@ -368,7 +368,7 @@ describe('template executor — copy-template phase', () => {
     });
 
     // `fastapi-postgres` is a questionnaire value that has no matching template;
-    // appType `api` routes it to python-fastapi-uv.
+    // description-first provisioning copies the blank scaffold.
     await executor.runPhase('copy-template', {
       jobId: 'j3',
       projectId: 'p3',
@@ -376,7 +376,7 @@ describe('template executor — copy-template phase', () => {
       log: () => {},
     });
 
-    expect(copied).toBe(getTemplate('python-fastapi-uv').filesDir);
+    expect(copied).toBe(getTemplate('blank').filesDir);
   });
 });
 

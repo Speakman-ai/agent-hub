@@ -55,6 +55,12 @@ export const GITHUB_PHASE_IDS: ReadonlySet<ProvisioningPhaseId> = new Set([
   'gh-push',
 ]);
 
+/** Toolchain phases that only make sense on a language starter, not blank. */
+export const LANGUAGE_TOOLCHAIN_PHASE_IDS: ReadonlySet<ProvisioningPhaseId> = new Set([
+  'wire-tests',
+  'wire-lint',
+]);
+
 export type PhaseStatus = 'started' | 'ok' | 'failed' | 'skipped';
 
 export interface PhaseEvent {
@@ -244,9 +250,12 @@ export function plannedPhases(payload: ProvisioningPayload): {
   skip: boolean;
 }[] {
   const withGithub = hasGithubIntegration(payload);
+  const blank = resolveTemplateForPayload(payload) === 'blank';
   return PROVISIONING_PHASE_IDS.map((phase) => ({
     phase,
-    skip: !withGithub && GITHUB_PHASE_IDS.has(phase),
+    skip:
+      (!withGithub && GITHUB_PHASE_IDS.has(phase)) ||
+      (blank && LANGUAGE_TOOLCHAIN_PHASE_IDS.has(phase)),
   }));
 }
 

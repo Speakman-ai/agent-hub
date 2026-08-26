@@ -28,22 +28,33 @@ export const PROVISIONING_PHASES = [
   { id: 'mint-token', label: 'Authorize GitHub', gh: true },
   { id: 'copy-template', label: 'Copy starter template' },
   { id: 'rewrite-pkg', label: 'Configure package metadata' },
-  { id: 'wire-tests', label: 'Wire tests' },
-  { id: 'wire-lint', label: 'Wire lint' },
+  { id: 'wire-tests', label: 'Wire tests', toolchain: true },
+  { id: 'wire-lint', label: 'Wire lint', toolchain: true },
   { id: 'git-init', label: 'Initialize git repo' },
   { id: 'gh-create', label: 'Create GitHub repo', gh: true },
   { id: 'gh-push', label: 'Push initial commit', gh: true },
 ];
 
-/** Phases we skip entirely when the user opted out of GitHub integration. */
-export function phasesForRequest({ withGithub }: any = { withGithub: true }) {
-  if (withGithub) return PROVISIONING_PHASES;
-  return PROVISIONING_PHASES.filter((p: any) => !p.gh);
+/** Phases we skip entirely when GitHub hosting or a language starter is off.
+ *  Description-first (blank) scaffolds hide wire-tests / wire-lint so they
+ *  don't flash as skipped — the first build session writes tests and lint. */
+export function phasesForRequest({
+  withGithub = true,
+  withToolchain = false,
+}: { withGithub?: boolean; withToolchain?: boolean } = {}) {
+  return PROVISIONING_PHASES.filter((p: any) => {
+    if (p.gh && !withGithub) return false;
+    if (p.toolchain && !withToolchain) return false;
+    return true;
+  });
 }
 
 /** Fresh state — used on mount and on Retry. */
-export function initialState({ withGithub }: any = { withGithub: true }) {
-  const phases = phasesForRequest({ withGithub });
+export function initialState({
+  withGithub = true,
+  withToolchain = false,
+}: { withGithub?: boolean; withToolchain?: boolean } = {}) {
+  const phases = phasesForRequest({ withGithub, withToolchain });
   return {
     phases: phases.map((p: any) => ({
       ...p,

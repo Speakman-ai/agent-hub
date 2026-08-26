@@ -306,6 +306,16 @@ export function AppProvider({ children }: any) {
   const registerNavigator = useCallback((fn: any) => {
     navigatorRef.current = typeof fn === 'function' ? fn : null;
   }, []);
+  // Subscribers to the `initial_build_started` broadcast. The new-project
+  // flow registers a one-shot callback so it can open the first build
+  // session's chat when provisioning dispatches it (web parity).
+  const initialBuildListenersRef = useRef<Set<(data: any) => void>>(new Set());
+  const subscribeInitialBuild = useCallback((cb: (data: any) => void) => {
+    initialBuildListenersRef.current.add(cb);
+    return () => {
+      initialBuildListenersRef.current.delete(cb);
+    };
+  }, []);
   // Keep the latest sessions list reachable from the notification listener
   // without re-running the subscription on every sessions change.
   const sessionsRef = useRef<any>([]);
@@ -1084,6 +1094,19 @@ export function AppProvider({ children }: any) {
           reloadActiveAgentSkills();
           break;
         }
+        case 'initial_build_started':
+          // The provisioning job dispatched the first build session. Fan out
+          // to any subscriber (the new-project flow) so it can open that chat
+          // instead of stopping at "provisioning started" — mobile parity
+          // with the web adaptive flow's session handoff.
+          initialBuildListenersRef.current.forEach((cb) => {
+            try {
+              cb(data);
+            } catch {
+              /* a listener throwing must not wedge the WS handler */
+            }
+          });
+          break;
       }
     },
     [kanbanRefreshScheduler, presentForegroundFor, reloadActiveAgentSkills],
@@ -2539,6 +2562,7 @@ export function AppProvider({ children }: any) {
     // Navigation bridge — App.js calls this once the NavigationContainer
     // ref is mounted so the notification-tap listener can open screens.
     registerNavigator,
+    subscribeInitialBuild,
   };
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

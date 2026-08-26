@@ -2,40 +2,29 @@
  * Adaptive Questionnaire — state model and pure helpers.
  *
  * Drives the "What are you building?" wizard that scaffolds a brand-new
- * project. The first step is required (no idk); every later step exposes an
- * "idk" escape hatch that records "defer to agent/default" semantics so the
- * provisioning job can fall back to opinionated defaults without losing the
- * user's intent.
+ * project. The description is the product spec: the first build session
+ * chooses the stack, writes the code/tests/CI/Docker, and wires preview.
+ * The wizard only collects platform plumbing (hosting, name, visibility).
+ *
+ * The first step is required (no idk); hosting / name / visibility expose
+ * an "idk" escape hatch that records "defer to agent/default" semantics.
  */
 
 /** Sentinel value stored in the draft when the user picks "idk". */
 export const IDK = 'idk';
 
 /** Ordered step identifiers — used for both progress strip + navigation. */
-export const STEP_IDS = [
-  'description',
-  'appType',
-  'stack',
-  'integrations',
-  'auth',
-  'hosting',
-  'identity',
-  'review',
-];
+export const STEP_IDS = ['description', 'hosting', 'identity', 'review'];
 
 /** Human labels for the journey strip / step indicator. */
 export const STEP_LABELS = {
   description: 'What',
-  appType: 'Type',
-  stack: 'Stack',
-  integrations: 'Integrations',
-  auth: 'Auth',
   hosting: 'Hosting',
   identity: 'Name',
   review: 'Review',
 } as Record<string, any>;
 
-/** App type options offered in step 2. */
+/** App type options — retained for docs / older payloads; not shown in the wizard. */
 export const APP_TYPE_OPTIONS = [
   {
     value: 'web-app',
@@ -58,7 +47,7 @@ export const APP_TYPE_OPTIONS = [
   },
 ];
 
-/** Integration multi-select options for step 4. */
+/** Integration multi-select options — retained for older payloads; not shown in the wizard. */
 export const INTEGRATION_OPTIONS = [
   { value: 'github', label: 'GitHub', description: 'Source control, PRs, issues' },
   { value: 'aws', label: 'AWS', description: 'Compute, storage, managed services' },
@@ -74,7 +63,7 @@ export const INTEGRATION_OPTIONS = [
   { value: 'analytics', label: 'Analytics', description: 'Product or marketing analytics' },
 ];
 
-/** Auth-provider options surfaced when the user selects the Auth integration. */
+/** Auth-provider options — retained for older payloads; not shown in the wizard. */
 export const AUTH_PROVIDER_OPTIONS = [
   {
     value: 'email-password',
@@ -87,8 +76,6 @@ export const AUTH_PROVIDER_OPTIONS = [
   { value: 'clerk', label: 'Clerk / Auth0 / WorkOS', description: 'Managed auth provider' },
 ];
 
-/** Optional per-app-type stack recommendations. `stack` in step 3 defaults
- *  to the first entry. Users may edit freely or pick "idk". */
 /** Hosting options (step: hosting). Agent Hub is the recommended default. */
 export const HOSTING_OPTIONS = [
   {
@@ -104,6 +91,7 @@ export const HOSTING_OPTIONS = [
   },
 ];
 
+/** Optional per-app-type stack recommendations. Kept for older payloads and tests. */
 export const STACK_RECOMMENDATIONS = {
   'web-app': [
     {
@@ -166,14 +154,10 @@ export function stackOptionsFor(appType: any) {
 /** Fresh draft state. `step` is always an index into STEP_IDS. */
 export function initialDraft() {
   return {
-    v: 1,
+    v: 2,
     step: 0,
     description: '',
-    appType: null,
-    stack: null,
-    integrations: null,
-    authDetail: null,
-    hosting: null,
+    hosting: 'agenthub',
     name: '',
     generationModel: null,
     visibility: null,
@@ -199,26 +183,11 @@ export function isIdk(value: any) {
 }
 
 /**
- * Returns true when the `auth` step should be shown for the given integration
- * selection. The step is skipped when:
- *  - integrations is idk (defer everything to the agent)
- *  - integrations is an explicit array that does not include 'auth'
- */
-export function shouldShowAuthStep(integrations: any) {
-  if (integrations === IDK) return false;
-  if (!Array.isArray(integrations)) return false;
-  return integrations.includes('auth');
-}
-
-/**
  * Returns the ordered list of step IDs that are *actually* shown for a given
- * draft. The auth step is conditionally skipped.
+ * draft. The description-first wizard has no conditional skips.
  */
-export function visibleSteps(draft: any) {
-  return STEP_IDS.filter((id: any) => {
-    if (id === 'auth') return shouldShowAuthStep(draft.integrations);
-    return true;
-  });
+export function visibleSteps(_draft?: any) {
+  return STEP_IDS.slice();
 }
 
 /** Compute the (0-based) visible step index from the raw draft.step pointer. */
@@ -239,17 +208,6 @@ export function canContinue(draft: any) {
   switch (stepId) {
     case 'description':
       return isDescriptionValid(draft.description);
-    case 'appType':
-      return draft.appType !== null;
-    case 'stack':
-      return draft.stack !== null;
-    case 'integrations':
-      return (
-        draft.integrations === IDK ||
-        (Array.isArray(draft.integrations) && draft.integrations.length > 0)
-      );
-    case 'auth':
-      return draft.authDetail !== null;
     case 'hosting':
       return draft.hosting !== null;
     case 'identity':
@@ -287,12 +245,15 @@ export function goBack(draft: any) {
 /** Serialize the draft for the provisioning job. */
 export function toProvisioningPayload(draft: any) {
   return {
-    version: 1,
+    version: 2,
     description: draft.description.trim(),
-    appType: draft.appType,
-    stack: draft.stack,
-    integrations: draft.integrations,
-    authDetail: draft.authDetail,
+    // Stack / app type / integrations are the first build session's job.
+    // Keep the idk sentinel so older provisioners still default instead of
+    // copying a language-specific template.
+    appType: IDK,
+    stack: IDK,
+    integrations: IDK,
+    authDetail: null,
     name: draft.name === IDK ? IDK : String(draft.name || '').trim(),
     visibility: draft.visibility,
     // idk → Hub hosting (the recommended default).

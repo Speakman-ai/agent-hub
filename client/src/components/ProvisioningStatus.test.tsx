@@ -27,6 +27,33 @@ describe('ProvisioningStatus', () => {
       // Non-gh phases still render
       expect(screen.getByTestId('ps-phase-copy-template')).toBeInTheDocument();
     });
+
+    it('hides Wire tests / Wire lint unless withToolchain is on', () => {
+      render(<ProvisioningStatus events={[]} />);
+      expect(screen.queryByTestId('ps-phase-wire-tests')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('ps-phase-wire-lint')).not.toBeInTheDocument();
+      expect(screen.queryByText('Wire tests')).not.toBeInTheDocument();
+      expect(screen.queryByText('Wire lint')).not.toBeInTheDocument();
+    });
+
+    it('shows Wire tests / Wire lint when withToolchain is true', () => {
+      render(<ProvisioningStatus events={[]} withToolchain />);
+      expect(screen.getByTestId('ps-phase-wire-tests')).toBeInTheDocument();
+      expect(screen.getByTestId('ps-phase-wire-lint')).toBeInTheDocument();
+    });
+
+    it('does not surface skipped toolchain events as grey rows', () => {
+      render(
+        <ProvisioningStatus
+          events={[
+            { type: 'phase', phase: 'wire-tests', status: 'skipped' },
+            { type: 'phase', phase: 'wire-lint', status: 'skipped' },
+          ]}
+        />,
+      );
+      expect(screen.queryByTestId('ps-phase-wire-tests')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('ps-phase-wire-lint')).not.toBeInTheDocument();
+    });
   });
 
   describe('running state', () => {
@@ -130,6 +157,16 @@ describe('ProvisioningStatus', () => {
       fireEvent.click(screen.getByTestId('ps-repo-link' as any) as any);
       expect(onClose!).toHaveBeenCalledTimes(1);
       expect(onOpenRepo!).toHaveBeenCalledWith('https://github.com/acme/x');
+    });
+
+    it('success without onClose shows the opening-build hint instead of Done', () => {
+      render(
+        <ProvisioningStatus events={[{ type: 'done', repoUrl: 'https://github.com/acme/x' }]} />,
+      );
+      expect(screen.getByTestId('ps-opening-build')).toHaveTextContent(
+        /Opening the first build session/,
+      );
+      expect(screen.queryByTestId('ps-success-close')).not.toBeInTheDocument();
     });
   });
 

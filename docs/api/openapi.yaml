@@ -38516,8 +38516,8 @@ paths:
     post:
       tags:
         - Projects
-      summary: AI-suggest a project name / app type / stack from a description
-      description: Fills "idk" questionnaire answers using the requesting user's connected Claude account. Already-chosen appType/stack are echoed back unchanged; suggestions are clamped to known option ids.
+      summary: AI-suggest a project name from a description
+      description: Fills a blank project name using the requesting user's connected Claude account. Stack and app type are chosen later by the first build session.
       requestBody:
         required: true
         content:

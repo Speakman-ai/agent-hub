@@ -4,9 +4,6 @@ import {
   IDK,
   STEP_IDS,
   STEP_LABELS,
-  APP_TYPE_OPTIONS,
-  INTEGRATION_OPTIONS,
-  AUTH_PROVIDER_OPTIONS,
   HOSTING_OPTIONS,
   ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY,
   initialDraft,
@@ -16,8 +13,6 @@ import {
   goBack,
   visibleSteps,
   currentVisibleStep,
-  stackOptionsFor,
-  recommendedStack,
   toProvisioningPayload,
 } from '@shared/utils/adaptiveQuestionnaire';
 import { api } from '../utils/api';
@@ -25,10 +20,11 @@ import { api } from '../utils/api';
 /**
  * Adaptive Questionnaire.
  *
- * Collects just enough context to scaffold a real repo. Only the first
- * step (What are you building?) is mandatory; every later step exposes an
- * **idk** escape hatch that records "defer to agent/default" semantics. The
- * draft is persisted to sessionStorage so it survives navigation.
+ * Collects just enough context to start a real repo. The description is
+ * the product spec — the first build session chooses the stack and writes
+ * the code. Only the first step is mandatory; hosting / name / visibility
+ * expose an **idk** escape hatch. The draft is persisted to sessionStorage
+ * so it survives navigation.
  *
  * @param {object} props
  * @param {(payload: object) => void} [props.onSubmit]
@@ -51,7 +47,7 @@ export default function AdaptiveQuestionnaire({ onSubmit, onClose, initial }: an
       const raw = sessionStorage.getItem(ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw);
-      if (parsed && parsed.v === 1) {
+      if (parsed && parsed.v === 2) {
         setDraft({ ...initialDraft(), ...parsed });
       }
     } catch {
@@ -104,37 +100,30 @@ export default function AdaptiveQuestionnaire({ onSubmit, onClose, initial }: an
     setDraft((d: any) => ({ ...d, [field]: IDK }));
   }, []);
 
-  // ---- AI fill for idk answers ----
-  // Entering the review step with any idk (or blank-name) answers kicks a
-  // one-shot suggestion call; results land in the draft as ordinary,
-  // editable values (Back still works to change them by hand).
+  // ---- AI fill for idk name ----
+  // Entering the review step with a blank / idk name kicks a one-shot
+  // suggestion call; results land in the draft as ordinary, editable values.
   const [suggesting, setSuggesting] = useState(false);
   const suggestedRef = useRef(false);
   useEffect(() => {
     if (stepId !== 'review' || suggestedRef.current) return;
     const needsName = draft.name === IDK || !String(draft.name || '').trim();
-    const needsAppType = draft.appType === IDK;
-    const needsStack = draft.stack === IDK;
-    if (!needsName && !needsAppType && !needsStack) return;
+    if (!needsName) return;
     suggestedRef.current = true;
     setSuggesting(true);
     api
       .suggestProjectSetup({
         description: draft.description,
-        appType: needsAppType ? undefined : draft.appType,
-        stack: needsStack ? undefined : draft.stack,
         model: draft.generationModel || undefined,
       })
       .then((r: any) => {
         setDraft((d: any) => ({
           ...d,
           ...(needsName && r?.name ? { name: r.name } : {}),
-          ...(needsAppType && r?.appType ? { appType: r.appType } : {}),
-          ...(needsStack && r?.stack ? { stack: r.stack } : {}),
         }));
       })
       .catch(() => {
-        /* fall back to idk semantics — provisioning has its own defaults */
+        /* fall back to idk semantics — provisioning derives a slug from the description */
       })
       .finally(() => setSuggesting(false));
   }, [stepId, draft]);
@@ -171,22 +160,6 @@ export default function AdaptiveQuestionnaire({ onSubmit, onClose, initial }: an
       <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
         <div className="mx-auto w-full max-w-2xl">
           {stepId === 'description' && <DescriptionStep draft={draft} setDraft={setDraft} />}
-          {stepId === 'appType' && (
-            <AppTypeStep draft={draft} setDraft={setDraft} onIdk={() => pickIdk('appType')} />
-          )}
-          {stepId === 'stack' && (
-            <StackStep draft={draft} setDraft={setDraft} onIdk={() => pickIdk('stack')} />
-          )}
-          {stepId === 'integrations' && (
-            <IntegrationsStep
-              draft={draft}
-              setDraft={setDraft}
-              onIdk={() => pickIdk('integrations')}
-            />
-          )}
-          {stepId === 'auth' && (
-            <AuthStep draft={draft} setDraft={setDraft} onIdk={() => pickIdk('authDetail')} />
-          )}
           {stepId === 'hosting' && (
             <HostingStep draft={draft} setDraft={setDraft} onIdk={() => pickIdk('hosting')} />
           )}
@@ -336,7 +309,7 @@ function DescriptionStep({ draft, setDraft }: any) {
     <div>
       <StepTitle
         title="What are you building?"
-        subtitle="One or two sentences is plenty. This is the only required question — everything else has an idk escape hatch."
+        subtitle="This is the spec the first build session implements — stack, tests, Docker, and preview included. One or two sentences is plenty."
       />
       <textarea
         value={draft.description}
@@ -379,244 +352,8 @@ function DescriptionStep({ draft, setDraft }: any) {
         </select>
       </div>
       <p className="mt-1 text-xs text-gray-600">
-        Used when you answer &ldquo;idk&rdquo; — the AI fills those in for you at the review step.
+        Used when you answer &ldquo;idk&rdquo; for the project name — the AI fills it in at review.
       </p>
-    </div>
-  );
-}
-
-function AppTypeStep({ draft, setDraft, onIdk }: any) {
-  return (
-    <div>
-      <StepTitle
-        title="What kind of app?"
-        subtitle="Pick one — we&rsquo;ll use it to recommend a stack."
-      />
-      <div className="space-y-2">
-        {APP_TYPE_OPTIONS.map((opt: any) => {
-          const selected = draft.appType === opt.value;
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() =>
-                setDraft((d: any) => ({
-                  ...d,
-                  appType: opt.value,
-                  // Reset stack to the recommended default when app type changes
-                  stack: recommendedStack(opt.value),
-                }))
-              }
-              data-testid={`aq-apptype-${opt.value}`}
-              className={`w-full flex items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
-                selected
-                  ? 'border-emerald-500 bg-emerald-500/10'
-                  : 'border-gray-700 bg-gray-800/60 hover:border-gray-600 hover:bg-gray-800'
-              }`}
-            >
-              <div className="flex-1">
-                <div className="text-sm font-medium text-white">{opt.label}</div>
-                <div className="text-xs text-gray-400 mt-0.5">{opt.description}</div>
-              </div>
-              {selected && <Check size={16} className="text-emerald-400" aria-hidden="true" />}
-            </button>
-          );
-        })}
-        <IdkButton onClick={onIdk} selected={draft.appType === IDK} />
-      </div>
-    </div>
-  );
-}
-
-function StackStep({ draft, setDraft, onIdk }: any) {
-  const options = stackOptionsFor(draft.appType);
-  return (
-    <div>
-      <StepTitle
-        title="Which stack?"
-        subtitle={
-          options.length
-            ? 'The recommended default for your app type is pre-selected.'
-            : 'No app-type-specific recommendation — pick idk and we\u2019ll use an opinionated default.'
-        }
-      />
-      <div className="space-y-2">
-        {options.map((opt: any) => {
-          const selected = draft.stack === opt.value;
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => setDraft((d: any) => ({ ...d, stack: opt.value }))}
-              data-testid={`aq-stack-${opt.value}`}
-              className={`w-full flex items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
-                selected
-                  ? 'border-emerald-500 bg-emerald-500/10'
-                  : 'border-gray-700 bg-gray-800/60 hover:border-gray-600 hover:bg-gray-800'
-              }`}
-            >
-              <div className="flex-1">
-                <div className="flex items-center gap-2 text-sm font-medium text-white">
-                  {opt.label}
-                  {opt.recommended && (
-                    <span className="text-[10px] uppercase tracking-wide bg-emerald-900/40 text-emerald-300 px-1.5 py-0.5 rounded">
-                      Recommended
-                    </span>
-                  )}
-                </div>
-              </div>
-              {selected && <Check size={16} className="text-emerald-400" aria-hidden="true" />}
-            </button>
-          );
-        })}
-        <IdkButton onClick={onIdk} selected={draft.stack === IDK} />
-      </div>
-    </div>
-  );
-}
-
-function IntegrationsStep({ draft, setDraft, onIdk }: any) {
-  const current = Array.isArray(draft.integrations) ? draft.integrations : [];
-  const toggle = (value: any) => {
-    setDraft((d: any) => {
-      const prev = Array.isArray(d.integrations) ? d.integrations : [];
-      const next = prev.includes(value) ? prev.filter((v: any) => v !== value) : [...prev, value];
-      // If user removes 'auth' after previously selecting it, clear authDetail
-      const patch: Record<string, any> = { integrations: next };
-      if (!next.includes('auth')) patch.authDetail = null;
-      return { ...d, ...patch };
-    });
-  };
-  return (
-    <div>
-      <StepTitle
-        title="Which integrations?"
-        subtitle="Multi-select. Anything you skip here can still be added later."
-      />
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        {INTEGRATION_OPTIONS.map((opt: any) => {
-          const selected = current.includes(opt.value);
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => toggle(opt.value)}
-              aria-pressed={selected}
-              data-testid={`aq-integration-${opt.value}`}
-              className={`flex items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
-                selected
-                  ? 'border-emerald-500 bg-emerald-500/10'
-                  : 'border-gray-700 bg-gray-800/60 hover:border-gray-600 hover:bg-gray-800'
-              }`}
-            >
-              <div className="flex-1">
-                <div className="text-sm font-medium text-white">{opt.label}</div>
-                <div className="text-xs text-gray-400 mt-0.5">{opt.description}</div>
-              </div>
-              {selected && <Check size={16} className="text-emerald-400" aria-hidden="true" />}
-            </button>
-          );
-        })}
-      </div>
-      <div className="mt-3">
-        <IdkButton onClick={onIdk} selected={draft.integrations === IDK} />
-      </div>
-    </div>
-  );
-}
-
-function AuthStep({ draft, setDraft, onIdk }: any) {
-  const detail = draft.authDetail && draft.authDetail !== IDK ? draft.authDetail : null;
-  const provider = detail?.provider ?? null;
-  return (
-    <div>
-      <StepTitle
-        title="How should users sign in?"
-        subtitle="You selected the Auth integration — tell us a bit more, or punt on individual fields with idk."
-      />
-      <div className="space-y-3">
-        <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1">Provider</label>
-          <div className="space-y-2">
-            {AUTH_PROVIDER_OPTIONS.map((opt: any) => {
-              const selected = provider === opt.value;
-              return (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() =>
-                    setDraft((d: any) => ({
-                      ...d,
-                      authDetail: {
-                        provider: opt.value,
-                        userModel:
-                          d.authDetail && d.authDetail !== IDK ? d.authDetail.userModel : IDK,
-                      },
-                    }))
-                  }
-                  data-testid={`aq-auth-provider-${opt.value}`}
-                  className={`w-full flex items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
-                    selected
-                      ? 'border-emerald-500 bg-emerald-500/10'
-                      : 'border-gray-700 bg-gray-800/60 hover:border-gray-600 hover:bg-gray-800'
-                  }`}
-                >
-                  <div className="flex-1">
-                    <div className="text-sm font-medium text-white">{opt.label}</div>
-                    <div className="text-xs text-gray-400 mt-0.5">{opt.description}</div>
-                  </div>
-                  {selected && <Check size={16} className="text-emerald-400" aria-hidden="true" />}
-                </button>
-              );
-            })}
-            <button
-              type="button"
-              onClick={() =>
-                setDraft((d: any) => ({
-                  ...d,
-                  authDetail: {
-                    provider: IDK,
-                    userModel: d.authDetail && d.authDetail !== IDK ? d.authDetail.userModel : IDK,
-                  },
-                }))
-              }
-              data-testid="aq-auth-provider-idk"
-              className={`w-full flex items-center gap-3 rounded-lg border p-3 text-left transition-colors ${
-                provider === IDK
-                  ? 'border-indigo-500 bg-indigo-500/10 text-indigo-200'
-                  : 'border-gray-700 bg-gray-800/60 text-gray-300 hover:border-gray-600 hover:bg-gray-800'
-              }`}
-            >
-              <HelpCircle size={16} className="text-gray-500" aria-hidden="true" />
-              <span className="text-sm">idk — pick for me</span>
-            </button>
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1">
-            User model extras (optional)
-          </label>
-          <input
-            type="text"
-            value={detail && detail.userModel !== IDK ? detail.userModel : ''}
-            placeholder="e.g. teams, orgs, roles (leave blank for defaults)"
-            onChange={(e: any) =>
-              setDraft((d: any) => ({
-                ...d,
-                authDetail: {
-                  provider: d.authDetail && d.authDetail !== IDK ? d.authDetail.provider : IDK,
-                  userModel: e.target.value,
-                },
-              }))
-            }
-            data-testid="aq-auth-usermodel"
-            className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
-          />
-        </div>
-
-        <IdkButton onClick={onIdk} selected={draft.authDetail === IDK} />
-      </div>
     </div>
   );
 }
@@ -736,10 +473,6 @@ function ReviewStep({ draft, suggesting = false }: any) {
   const payload = toProvisioningPayload(draft);
   const rows = [
     ['What', payload.description],
-    ['App type', formatValue(payload.appType)],
-    ['Stack', formatValue(payload.stack)],
-    ['Integrations', formatValue(payload.integrations)],
-    ['Auth', payload.authDetail == null ? '—' : formatAuth(payload.authDetail)],
     ['Hosting', payload.hostOnAgentHub ? 'Agent Hub' : 'GitHub only'],
     ['Name', formatValue(payload.name)],
     ['Visibility', formatValue(payload.visibility)],
@@ -748,7 +481,7 @@ function ReviewStep({ draft, suggesting = false }: any) {
     <div>
       <StepTitle
         title="Review & confirm"
-        subtitle="Anything marked idk will be filled in by the provisioning agent with a sensible default."
+        subtitle="The first build session will choose the stack, write the app, tests, Docker setup, and preview from the description."
       />
       {suggesting && (
         <p className="mb-3 text-xs text-indigo-300" data-testid="aq-suggesting">
@@ -776,11 +509,4 @@ function formatValue(v: any) {
   if (v === IDK) return <span className="italic text-indigo-300">idk — defer to agent</span>;
   if (Array.isArray(v)) return v.length ? v.join(', ') : '—';
   return String(v);
-}
-
-function formatAuth(detail: any) {
-  if (detail === IDK) return <span className="italic text-indigo-300">idk — defer to agent</span>;
-  const provider = detail.provider === IDK ? 'idk' : detail.provider;
-  const userModel = detail.userModel === IDK ? 'idk' : detail.userModel || '—';
-  return `${provider} · user model: ${userModel}`;
 }

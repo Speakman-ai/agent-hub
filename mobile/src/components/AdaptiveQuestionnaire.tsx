@@ -1,11 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import {
-  APP_TYPE_OPTIONS,
-  AUTH_PROVIDER_OPTIONS,
   HOSTING_OPTIONS,
   IDK,
-  INTEGRATION_OPTIONS,
   STEP_IDS,
   STEP_LABELS,
   advance,
@@ -14,8 +11,6 @@ import {
   goBack,
   initialDraft,
   isDescriptionValid,
-  recommendedStack,
-  stackOptionsFor,
   toProvisioningPayload,
   visibleSteps,
 } from '@shared/utils/adaptiveQuestionnaire';
@@ -24,21 +19,8 @@ import { colors } from '../theme/colors';
 
 type Draft = Record<string, any>;
 
-const KNOWN_APP_TYPES = new Set(APP_TYPE_OPTIONS.map((option) => option.value));
-const KNOWN_STACKS = new Set(
-  APP_TYPE_OPTIONS.flatMap((option) =>
-    stackOptionsFor(option.value).map((stack: any) => stack.value),
-  ),
-);
-
 /** Build a safe patch from model output; unsupported values remain idk. */
-export function buildSuggestionPatch(
-  suggestion: any,
-  draft: Draft,
-  needsName: boolean,
-  needsAppType: boolean,
-  needsStack: boolean,
-): Draft {
+export function buildSuggestionPatch(suggestion: any, _draft: Draft, needsName: boolean): Draft {
   const patch: Draft = {};
   if (
     needsName &&
@@ -47,18 +29,6 @@ export function buildSuggestionPatch(
     suggestion.name.trim() !== IDK
   ) {
     patch.name = suggestion.name.trim();
-  }
-
-  const suggestedAppType =
-    needsAppType && KNOWN_APP_TYPES.has(suggestion?.appType) ? suggestion.appType : null;
-  if (suggestedAppType) patch.appType = suggestedAppType;
-
-  if (needsStack && typeof suggestion?.stack === 'string') {
-    const effectiveAppType = suggestedAppType || draft.appType;
-    const stackSet = KNOWN_APP_TYPES.has(effectiveAppType)
-      ? new Set(stackOptionsFor(effectiveAppType).map((stack: any) => stack.value))
-      : KNOWN_STACKS;
-    if (stackSet.has(suggestion.stack)) patch.stack = suggestion.stack;
   }
   return patch;
 }
@@ -82,8 +52,6 @@ export default function AdaptiveQuestionnaire({
   const [suggestionAttempt, setSuggestionAttempt] = useState(0);
   const suggestionContextRef = useRef<{
     needsName: boolean;
-    needsAppType: boolean;
-    needsStack: boolean;
   } | null>(null);
   const submitInFlightRef = useRef(false);
   const stepId = STEP_IDS[draft.step];
@@ -101,10 +69,8 @@ export default function AdaptiveQuestionnaire({
     // request the same suggestion again just because `draft` changed.
     if (suggestionContextRef.current) return;
     const needsName = draft.name === IDK || !String(draft.name || '').trim();
-    const needsAppType = draft.appType === IDK;
-    const needsStack = draft.stack === IDK;
-    if (!needsName && !needsAppType && !needsStack) return;
-    suggestionContextRef.current = { needsName, needsAppType, needsStack };
+    if (!needsName) return;
+    suggestionContextRef.current = { needsName };
 
     setSuggesting(true);
     setSuggestionError(null);
@@ -112,13 +78,11 @@ export default function AdaptiveQuestionnaire({
     api
       .suggestProjectSetup({
         description: draft.description,
-        appType: needsAppType ? undefined : draft.appType,
-        stack: needsStack ? undefined : draft.stack,
         model: draft.generationModel || undefined,
       })
       .then((suggestion: any) => {
         if (cancelled) return;
-        const patch = buildSuggestionPatch(suggestion, draft, needsName, needsAppType, needsStack);
+        const patch = buildSuggestionPatch(suggestion, draft, needsName);
         if (Object.keys(patch).length === 0) {
           setSuggestionError(
             'AI suggestions returned no usable answers. You can retry or continue with idk defaults.',
@@ -126,11 +90,7 @@ export default function AdaptiveQuestionnaire({
           return;
         }
         setDraft((current: Draft) => ({ ...current, ...patch }));
-        if (
-          (needsName && !patch.name) ||
-          (needsAppType && !patch.appType) ||
-          (needsStack && !patch.stack)
-        ) {
+        if (needsName && !patch.name) {
           setSuggestionError(
             'Some answers could not be suggested. You can retry or continue with idk defaults.',
           );
@@ -214,18 +174,6 @@ export default function AdaptiveQuestionnaire({
 
       <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
         {stepId === 'description' && <DescriptionStep draft={draft} update={update} />}
-        {stepId === 'appType' && (
-          <AppTypeStep draft={draft} update={update} onIdk={() => pickIdk('appType')} />
-        )}
-        {stepId === 'stack' && (
-          <StackStep draft={draft} update={update} onIdk={() => pickIdk('stack')} />
-        )}
-        {stepId === 'integrations' && (
-          <IntegrationsStep draft={draft} update={update} onIdk={() => pickIdk('integrations')} />
-        )}
-        {stepId === 'auth' && (
-          <AuthStep draft={draft} update={update} onIdk={() => pickIdk('authDetail')} />
-        )}
         {stepId === 'hosting' && (
           <HostingStep draft={draft} update={update} onIdk={() => pickIdk('hosting')} />
         )}
@@ -314,7 +262,7 @@ function DescriptionStep({ draft, update }: { draft: Draft; update: (patch: Draf
     <View>
       <StepTitle
         title="What are you building?"
-        subtitle="One or two sentences is plenty. This is the only required question."
+        subtitle="This is the spec the first build session implements. One or two sentences is plenty."
       />
       <TextInput
         value={draft.description}
@@ -346,155 +294,6 @@ function DescriptionStep({ draft, update }: { draft: Draft; update: (patch: Draf
         testID="aq-generation-model"
       />
       <Text style={styles.fieldHint}>Used when you answer idk at the review step.</Text>
-    </View>
-  );
-}
-
-function AppTypeStep({
-  draft,
-  update,
-  onIdk,
-}: {
-  draft: Draft;
-  update: (patch: Draft) => void;
-  onIdk: () => void;
-}) {
-  return (
-    <View>
-      <StepTitle title="What kind of app?" subtitle="Pick one to get a stack recommendation." />
-      {APP_TYPE_OPTIONS.map((option) => (
-        <Choice
-          key={option.value}
-          label={option.label}
-          description={option.description}
-          selected={draft.appType === option.value}
-          onPress={() => update({ appType: option.value, stack: recommendedStack(option.value) })}
-          testID={`aq-apptype-${option.value}`}
-        />
-      ))}
-      <IdkButton onPress={onIdk} selected={draft.appType === IDK} />
-    </View>
-  );
-}
-
-function StackStep({
-  draft,
-  update,
-  onIdk,
-}: {
-  draft: Draft;
-  update: (patch: Draft) => void;
-  onIdk: () => void;
-}) {
-  const options = stackOptionsFor(draft.appType);
-  return (
-    <View>
-      <StepTitle
-        title="Which stack?"
-        subtitle={
-          options.length
-            ? 'The recommended stack is pre-selected.'
-            : 'Pick idk for an opinionated default.'
-        }
-      />
-      {options.map((option: any) => (
-        <Choice
-          key={option.value}
-          label={`${option.label}${option.recommended ? ' · Recommended' : ''}`}
-          selected={draft.stack === option.value}
-          onPress={() => update({ stack: option.value })}
-          testID={`aq-stack-${option.value}`}
-        />
-      ))}
-      <IdkButton onPress={onIdk} selected={draft.stack === IDK} />
-    </View>
-  );
-}
-
-function IntegrationsStep({
-  draft,
-  update,
-  onIdk,
-}: {
-  draft: Draft;
-  update: (patch: Draft) => void;
-  onIdk: () => void;
-}) {
-  const current = Array.isArray(draft.integrations) ? draft.integrations : [];
-  const toggle = (value: string) => {
-    const next = current.includes(value)
-      ? current.filter((item: string) => item !== value)
-      : [...current, value];
-    update({ integrations: next, ...(!next.includes('auth') ? { authDetail: null } : {}) });
-  };
-  return (
-    <View>
-      <StepTitle title="Which integrations?" subtitle="Select everything you expect to use." />
-      {INTEGRATION_OPTIONS.map((option) => (
-        <Choice
-          key={option.value}
-          label={option.label}
-          description={option.description}
-          selected={current.includes(option.value)}
-          onPress={() => toggle(option.value)}
-          testID={`aq-integration-${option.value}`}
-        />
-      ))}
-      <IdkButton onPress={onIdk} selected={draft.integrations === IDK} />
-    </View>
-  );
-}
-
-function AuthStep({
-  draft,
-  update,
-  onIdk,
-}: {
-  draft: Draft;
-  update: (patch: Draft) => void;
-  onIdk: () => void;
-}) {
-  const detail = draft.authDetail && draft.authDetail !== IDK ? draft.authDetail : null;
-  const provider = detail?.provider ?? null;
-  return (
-    <View>
-      <StepTitle
-        title="How should users sign in?"
-        subtitle="Choose a provider or defer the details."
-      />
-      <Text style={styles.fieldLabel}>Provider</Text>
-      {AUTH_PROVIDER_OPTIONS.map((option) => (
-        <Choice
-          key={option.value}
-          label={option.label}
-          description={option.description}
-          selected={provider === option.value}
-          onPress={() =>
-            update({ authDetail: { provider: option.value, userModel: detail?.userModel ?? IDK } })
-          }
-          testID={`aq-auth-provider-${option.value}`}
-        />
-      ))}
-      <Choice
-        label="idk — pick for me"
-        selected={provider === IDK}
-        onPress={() =>
-          update({ authDetail: { provider: IDK, userModel: detail?.userModel ?? IDK } })
-        }
-        testID="aq-auth-provider-idk"
-      />
-      <Text style={styles.fieldLabel}>User model extras (optional)</Text>
-      <TextInput
-        value={detail && detail.userModel !== IDK ? detail.userModel : ''}
-        onChangeText={(userModel: string) =>
-          update({ authDetail: { provider: detail?.provider ?? IDK, userModel } })
-        }
-        placeholder="e.g. teams, orgs, roles"
-        placeholderTextColor={colors.gray600}
-        style={styles.textInput}
-        testID="aq-auth-usermodel"
-      />
-      <IdkButton onPress={onIdk} selected={draft.authDetail === IDK} />
     </View>
   );
 }
@@ -591,10 +390,6 @@ function ReviewStep({
   const payload = toProvisioningPayload(draft);
   const rows = [
     ['What', payload.description],
-    ['App type', formatValue(payload.appType)],
-    ['Stack', formatValue(payload.stack)],
-    ['Integrations', formatValue(payload.integrations)],
-    ['Auth', payload.authDetail == null ? '—' : formatAuth(payload.authDetail)],
     ['Hosting', payload.hostOnAgentHub ? 'Agent Hub' : 'GitHub only'],
     ['Name', formatValue(payload.name)],
     ['Visibility', formatValue(payload.visibility)],
@@ -603,7 +398,7 @@ function ReviewStep({
     <View>
       <StepTitle
         title="Review & confirm"
-        subtitle="Anything marked idk gets a sensible provisioning default."
+        subtitle="The first build session will choose the stack and write the app from the description."
       />
       {suggesting ? (
         <Text style={styles.suggestionText}>Filling in your idk answers with AI…</Text>
@@ -636,12 +431,6 @@ function formatValue(value: any): string {
   if (value === IDK) return 'idk — agent decides';
   if (Array.isArray(value)) return value.length ? value.join(', ') : '—';
   return value == null || value === '' ? '—' : String(value);
-}
-
-function formatAuth(value: any): string {
-  if (value === IDK) return 'idk — agent decides';
-  if (!value || typeof value !== 'object') return formatValue(value);
-  return `${formatValue(value.provider)}${value.userModel && value.userModel !== IDK ? ` (${value.userModel})` : ''}`;
 }
 
 const styles = StyleSheet.create({

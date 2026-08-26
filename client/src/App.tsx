@@ -2811,6 +2811,9 @@ export default function App({ initialView }: any = {}) {
         case 'preview-defaults-detected':
           window.dispatchEvent(new CustomEvent('preview-defaults-ws', { detail: data }));
           break;
+        case 'initial_build_started':
+          window.dispatchEvent(new CustomEvent('initial-build-ws', { detail: data }));
+          break;
         // AI-assisted Dev Server (prEnv.devServer) setup wizard. The route
         // spawns a session (`dev_server_wizard_started`) and the skill pings
         // the completion endpoint after persisting config + secrets
@@ -7927,6 +7930,12 @@ export default function App({ initialView }: any = {}) {
                 if (payload?.action === 'task' && payload.projectId) {
                   setCurrentView(`kanban:${payload.projectId}`);
                   setSidebarOpen(false);
+                  return;
+                }
+                if (payload?.action === 'session' && payload.sessionId) {
+                  // First build kicked off — open its chat instead of
+                  // bouncing back to whatever view launched the wizard.
+                  focusAgentSession(payload.agentId, payload.sessionId);
                   return;
                 }
                 // Default: open/landed — return to the prior view.

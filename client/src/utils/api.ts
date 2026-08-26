@@ -1551,7 +1551,7 @@ export const api = {
       body: JSON.stringify(body),
       timeout: null,
     }),
-  // AI-suggest name/appType/stack from a description (wizard idk-fill).
+  // AI-suggest a project name from a description (wizard idk-fill).
   suggestProjectSetup: (data: any) =>
     fetchJSON('/projects/provision/suggest', {
       method: 'POST',

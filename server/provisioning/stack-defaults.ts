@@ -8,26 +8,20 @@
  *
  * Contract:
  *   - If `stack` is a string that matches a known template id, return it
- *     verbatim (the user's explicit choice wins).
- *   - If `stack` is `'idk'`, null, undefined, or any non-matching string,
- *     fall back to the per-`appType` default.
- *   - If `appType` is also unknown, fall back to a universal default
- *     (`typescript-node-tsx`) — the safest generalist when we have
- *     no signal about what the user is building.
+ *     verbatim (an explicit legacy/API choice still wins).
+ *   - Otherwise return the blank scaffold. The first build session
+ *     chooses language/framework from the project description; copying
+ *     a Node/Python/Go/Rust starter locked the stack too early.
  *
  * New templates go in two places:
  *   1. `server/provisioning/templates/<id>/` on disk.
  *   2. `KNOWN_TEMPLATE_IDS` below (narrows the union type).
- *
- * App-type → default mapping lines up with the storyboard (Act II
- * Frame 4): Bot / ML / API-ish flows lean Python, CLIs lean Go, and
- * everything else defaults to TypeScript + Node so the web/desktop/
- * mobile/library flows land in a familiar toolchain.
  */
 
 /** Concrete template ids shipped with the server. Keep in sync with the
  *  subdirectories under `server/provisioning/templates/`. */
 export const KNOWN_TEMPLATE_IDS = [
+  'blank',
   'python-fastapi-uv',
   'typescript-node-tsx',
   'go-cobra',
@@ -36,16 +30,13 @@ export const KNOWN_TEMPLATE_IDS = [
 
 export type TemplateId = (typeof KNOWN_TEMPLATE_IDS)[number];
 
-/** Universal fallback when we have no signal at all. */
-export const UNIVERSAL_DEFAULT_TEMPLATE_ID: TemplateId = 'typescript-node-tsx';
+/** Universal fallback when we have no explicit template id. */
+export const UNIVERSAL_DEFAULT_TEMPLATE_ID: TemplateId = 'blank';
 
 /**
- * Per-appType default template. Unknown app types fall through to
- * `UNIVERSAL_DEFAULT_TEMPLATE_ID`. The keys match values from
- * `shared/utils/adaptiveQuestionnaire.ts` `APP_TYPE_OPTIONS`.
- *
- * "Bot" isn't in APP_TYPE_OPTIONS today but the storyboard mentions it,
- * so we accept it as an alias for the API / service flavour.
+ * Per-appType default template. Unused by resolveTemplateId (description-
+ * first provisioning always lands on `blank` unless `stack` is a known
+ * id) but kept so older callers / docs can still name a language starter.
  */
 export const APP_TYPE_DEFAULTS: Record<string, TemplateId> = {
   'web-app': 'typescript-node-tsx',
@@ -55,8 +46,6 @@ export const APP_TYPE_DEFAULTS: Record<string, TemplateId> = {
   desktop: 'typescript-node-tsx',
   ml: 'python-fastapi-uv',
   library: 'typescript-node-tsx',
-  // Storyboard-era aliases / synonyms. Kept permissive so an upstream
-  // rename of the questionnaire doesn't silently break defaulting.
   bot: 'python-fastapi-uv',
   service: 'rust-axum',
   backend: 'python-fastapi-uv',
@@ -71,25 +60,22 @@ export function isKnownTemplateId(value: unknown): value is TemplateId {
  *
  * The returned id is ALWAYS one of `KNOWN_TEMPLATE_IDS` — callers can
  * look it up directly in the templates registry without a second null
- * check.
+ * check. App-type is ignored: only an explicit known `stack` id copies
+ * a language starter; everything else is the blank scaffold.
  */
 export function resolveTemplateId(
-  appType: string | null | undefined,
+  _appType: string | null | undefined,
   stack: string | null | undefined,
 ): TemplateId {
-  if (isKnownTemplateId(stack)) return stack;
-  if (appType != null && appType !== 'idk') {
-    const viaAppType = APP_TYPE_DEFAULTS[appType];
-    if (viaAppType) return viaAppType;
-  }
+  if (isKnownTemplateId(stack) && stack !== 'blank') return stack;
+  if (stack === 'blank') return 'blank';
   return UNIVERSAL_DEFAULT_TEMPLATE_ID;
 }
 
 /**
- * True when the caller explicitly asked for a known template
- * (vs. we defaulted them into one). Useful for log messages like
- * "defaulted to python-fastapi-uv because you picked Bot".
+ * True when the caller explicitly asked for a known language template
+ * (vs. we defaulted them onto the blank scaffold).
  */
 export function stackWasExplicit(stack: string | null | undefined): boolean {
-  return isKnownTemplateId(stack);
+  return isKnownTemplateId(stack) && stack !== 'blank';
 }

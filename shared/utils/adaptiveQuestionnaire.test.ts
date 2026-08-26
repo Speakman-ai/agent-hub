@@ -5,7 +5,6 @@ import {
   initialDraft,
   isDescriptionValid,
   isIdk,
-  shouldShowAuthStep,
   visibleSteps,
   currentVisibleStep,
   canContinue,
@@ -50,23 +49,14 @@ describe('adaptiveQuestionnaire — pure helpers', () => {
     });
   });
 
-  describe('shouldShowAuthStep / visibleSteps', () => {
-    it('skips auth when user picks idk for integrations', () => {
-      expect(shouldShowAuthStep(IDK)).toBe(false);
-      const d = { ...initialDraft(), integrations: IDK };
-      expect(visibleSteps(d)).not.toContain('auth');
-    });
-
-    it('skips auth when integrations is an explicit list without auth', () => {
-      expect(shouldShowAuthStep(['github', 'db'])).toBe(false);
-      const d = { ...initialDraft(), integrations: ['github', 'db'] };
-      expect(visibleSteps(d)).not.toContain('auth');
-    });
-
-    it('shows auth when integrations explicitly includes auth', () => {
-      expect(shouldShowAuthStep(['auth', 'db'])).toBe(true);
-      const d = { ...initialDraft(), integrations: ['auth', 'db'] };
-      expect(visibleSteps(d)).toContain('auth');
+  describe('visibleSteps', () => {
+    it('is the fixed description → hosting → name → review sequence', () => {
+      expect(visibleSteps(initialDraft())).toEqual([
+        'description',
+        'hosting',
+        'identity',
+        'review',
+      ]);
     });
   });
 
@@ -78,34 +68,29 @@ describe('adaptiveQuestionnaire — pure helpers', () => {
       expect(canContinue({ ...d, description: 'a thing' })).toBe(true);
     });
 
-    it('allows idk on every step past step 1', () => {
-      // appType
-      const atStep = (stepId: any, patch: any) => ({
+    it('allows continue on hosting because Agent Hub is pre-selected', () => {
+      const d = {
         ...initialDraft(),
-        step: STEP_IDS.indexOf(stepId),
+        step: STEP_IDS.indexOf('hosting'),
+        description: 'a thing',
+      };
+      expect(d.hosting).toBe('agenthub');
+      expect(canContinue(d)).toBe(true);
+      expect(canContinue({ ...d, hosting: IDK })).toBe(true);
+      expect(canContinue({ ...d, hosting: null })).toBe(false);
+    });
+
+    it('requires a name (or idk) and a visibility on identity', () => {
+      const atIdentity = (patch: any) => ({
+        ...initialDraft(),
+        step: STEP_IDS.indexOf('identity'),
         description: 'a thing',
         ...patch,
       });
-      expect(canContinue(atStep('appType', { appType: IDK }))).toBe(true);
-      expect(canContinue(atStep('appType', {}))).toBe(false);
-
-      expect(canContinue(atStep('stack', { stack: IDK }))).toBe(true);
-      expect(canContinue(atStep('stack', {}))).toBe(false);
-
-      expect(canContinue(atStep('integrations', { integrations: IDK }))).toBe(true);
-      expect(canContinue(atStep('integrations', { integrations: ['github'] }))).toBe(true);
-      expect(canContinue(atStep('integrations', { integrations: [] }))).toBe(false);
-
-      expect(canContinue(atStep('auth', { authDetail: IDK }))).toBe(true);
-      expect(
-        canContinue(atStep('auth', { authDetail: { provider: 'oauth', userModel: IDK } })),
-      ).toBe(true);
-      expect(canContinue(atStep('auth', {}))).toBe(false);
-
-      expect(canContinue(atStep('identity', { name: 'acme', visibility: 'private' }))).toBe(true);
-      expect(canContinue(atStep('identity', { name: IDK, visibility: IDK }))).toBe(true);
-      expect(canContinue(atStep('identity', { name: '', visibility: 'private' }))).toBe(false);
-      expect(canContinue(atStep('identity', { name: 'x', visibility: null }))).toBe(false);
+      expect(canContinue(atIdentity({ name: 'acme', visibility: 'private' }))).toBe(true);
+      expect(canContinue(atIdentity({ name: IDK, visibility: IDK }))).toBe(true);
+      expect(canContinue(atIdentity({ name: '', visibility: 'private' }))).toBe(false);
+      expect(canContinue(atIdentity({ name: 'x', visibility: null }))).toBe(false);
     });
 
     it('always allows continue on the review step', () => {
@@ -115,58 +100,27 @@ describe('adaptiveQuestionnaire — pure helpers', () => {
   });
 
   describe('advance / goBack', () => {
-    it('advances through the visible sequence and skips auth when not selected', () => {
+    it('advances description → hosting → identity → review', () => {
       let d = { ...initialDraft(), description: 'thing' };
-      // desc -> appType
       d = advance(d);
-      expect(STEP_IDS[d.step]).toBe('appType');
-      // appType idk -> stack
-      d = advance({ ...d, appType: IDK });
-      expect(STEP_IDS[d.step]).toBe('stack');
-      // stack idk -> integrations
-      d = advance({ ...d, stack: IDK });
-      expect(STEP_IDS[d.step]).toBe('integrations');
-      // integrations without auth -> skip to hosting
-      d = advance({ ...d, integrations: ['github'] });
       expect(STEP_IDS[d.step]).toBe('hosting');
-      // hosting -> identity
       d = advance({ ...d, hosting: 'agenthub' });
       expect(STEP_IDS[d.step]).toBe('identity');
-      // identity -> review
       d = advance({ ...d, name: 'acme', visibility: 'private' });
       expect(STEP_IDS[d.step]).toBe('review');
-      // review is terminal
       const same = advance(d);
       expect(same!).toEqual(d);
     });
 
-    it('visits auth step when integrations includes auth', () => {
-      let d = {
-        ...initialDraft(),
-        description: 'thing',
-        step: STEP_IDS.indexOf('integrations'),
-        integrations: ['auth', 'db'],
-      };
-      d = advance(d);
-      expect(STEP_IDS[d.step]).toBe('auth');
-      d = advance({ ...d, authDetail: IDK });
-      expect(STEP_IDS[d.step]).toBe('hosting');
-      d = advance({ ...d, hosting: IDK });
-      expect(STEP_IDS[d.step]).toBe('identity');
-    });
-
-    it('goBack honors conditional skip', () => {
-      // Sitting on identity after skipping auth — Back should return to integrations
+    it('goBack walks the same sequence in reverse', () => {
       const d = {
         ...initialDraft(),
         description: 'thing',
-        integrations: ['github'],
         step: STEP_IDS.indexOf('identity'),
       };
       const prev = goBack(d);
       expect(STEP_IDS[prev.step]).toBe('hosting');
-      // hosting -> back -> integrations (auth still skipped)
-      expect(STEP_IDS[goBack(prev).step]).toBe('integrations');
+      expect(STEP_IDS[goBack(prev).step]).toBe('description');
     });
 
     it('goBack is a no-op on step 0', () => {
@@ -176,15 +130,12 @@ describe('adaptiveQuestionnaire — pure helpers', () => {
   });
 
   describe('currentVisibleStep', () => {
-    it('maps raw step pointer through the skip rules', () => {
+    it('maps the raw step pointer onto the visible sequence', () => {
       const d = {
         ...initialDraft(),
-        integrations: ['github'],
         step: STEP_IDS.indexOf('identity'),
       };
-      // identity is the 6th visible step (0-based index 5 when auth skipped):
-      // description, appType, stack, integrations, hosting, identity, review
-      expect(currentVisibleStep(d)).toBe(5);
+      expect(currentVisibleStep(d)).toBe(2);
     });
   });
 
@@ -206,27 +157,23 @@ describe('adaptiveQuestionnaire — pure helpers', () => {
   });
 
   describe('toProvisioningPayload', () => {
-    it('trims description and preserves idk markers', () => {
+    it('trims description, defers stack to the first build session, and defaults hosting to Hub', () => {
       const draft = {
         ...initialDraft(),
-        description: '  a tool  ',
-        appType: 'web-app',
-        stack: 'react-vite-express-sqlite',
-        integrations: ['github', 'auth'],
-        authDetail: { provider: 'oauth', userModel: IDK },
+        description: '  a python CLI  ',
         name: IDK,
         visibility: 'private',
       };
       expect(toProvisioningPayload(draft)).toEqual({
-        version: 1,
-        description: 'a tool',
-        appType: 'web-app',
-        stack: 'react-vite-express-sqlite',
-        integrations: ['github', 'auth'],
-        authDetail: { provider: 'oauth', userModel: IDK },
+        version: 2,
+        description: 'a python CLI',
+        appType: IDK,
+        stack: IDK,
+        integrations: IDK,
+        authDetail: null,
         name: IDK,
         visibility: 'private',
-        hostOnAgentHub: true, // idk/unset hosting defaults to Agent Hub
+        hostOnAgentHub: true,
         generationModel: null,
       });
     });

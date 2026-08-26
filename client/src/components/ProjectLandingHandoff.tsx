@@ -7,7 +7,7 @@ import { Compass, ExternalLink, KanbanSquare, Sparkles } from 'lucide-react';
  * "you just created this" screen with:
  *
  *   • Header summary   — project name + repo link
- *   • Summary chips    — app type, stack, integrations
+ *   • Summary          — description + hosting
  *   • Next steps       — starter CTAs (open kanban, browse skills, etc.)
  *
  * The component is deliberately **presentational** — all outbound routing
@@ -31,9 +31,8 @@ export default function ProjectLandingHandoff({
   onOpenStarterTask,
   onClose,
 }: any) {
-  const integrations = normalizeIntegrations(payload?.integrations);
-  const stackChips = summarizeStack(payload);
-  const appTypeLabel = payload?.appType && humanizeAppType(payload.appType);
+  const hostingLabel = payload?.hostOnAgentHub === false ? 'GitHub only' : 'Agent Hub';
+  const description = typeof payload?.description === 'string' ? payload.description.trim() : '';
 
   return (
     <div
@@ -62,12 +61,7 @@ export default function ProjectLandingHandoff({
 
       <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
         <div className="mx-auto w-full max-w-2xl space-y-4">
-          <SummarySection
-            repoUrl={repoUrl}
-            appTypeLabel={appTypeLabel}
-            stackChips={stackChips}
-            integrations={integrations}
-          />
+          <SummarySection repoUrl={repoUrl} description={description} hostingLabel={hostingLabel} />
 
           <NextStepsPanel
             onOpenProject={() => onOpenProject?.({ projectId, repoUrl })}
@@ -83,7 +77,7 @@ export default function ProjectLandingHandoff({
 /* Summary                                                             */
 /* ------------------------------------------------------------------ */
 
-function SummarySection({ repoUrl, appTypeLabel, stackChips, integrations }: any) {
+function SummarySection({ repoUrl, description, hostingLabel }: any) {
   return (
     <section
       aria-label="Project summary"
@@ -115,26 +109,17 @@ function SummarySection({ repoUrl, appTypeLabel, stackChips, integrations }: any
             </span>
           </SummaryRow>
         )}
-        {appTypeLabel && (
-          <SummaryRow label="Type">
-            <span className="text-gray-100" data-testid="pl-apptype">
-              {appTypeLabel}
+        {description ? (
+          <SummaryRow label="Building">
+            <span className="text-gray-100" data-testid="pl-description">
+              {description}
             </span>
           </SummaryRow>
-        )}
-        {stackChips.length > 0 && (
-          <SummaryRow label="Stack">
-            <ChipList chips={stackChips} testId="pl-stack" />
-          </SummaryRow>
-        )}
-        <SummaryRow label="Integrations">
-          {integrations.length > 0 ? (
-            <ChipList chips={integrations} testId="pl-integrations" />
-          ) : (
-            <span className="text-gray-500" data-testid="pl-integrations-none">
-              None selected
-            </span>
-          )}
+        ) : null}
+        <SummaryRow label="Hosting">
+          <span className="text-gray-100" data-testid="pl-hosting">
+            {hostingLabel}
+          </span>
         </SummaryRow>
       </dl>
     </section>
@@ -147,21 +132,6 @@ function SummaryRow({ label, children }: any) {
       <dt className="w-24 shrink-0 text-xs uppercase tracking-wide text-gray-500">{label}</dt>
       <dd className="min-w-0 flex-1 text-[13px]">{children}</dd>
     </div>
-  );
-}
-
-function ChipList({ chips, testId }: any) {
-  return (
-    <ul className="flex flex-wrap gap-1.5" data-testid={testId}>
-      {chips.map((c: any) => (
-        <li
-          key={c}
-          className="rounded-full border border-gray-700 bg-gray-950 px-2 py-0.5 text-[11px] text-gray-200"
-        >
-          {c}
-        </li>
-      ))}
-    </ul>
   );
 }
 
@@ -260,27 +230,6 @@ function humanizeIntegration(id: any) {
       return 'Analytics';
     default:
       return id;
-  }
-}
-
-function humanizeAppType(t: any) {
-  switch (t) {
-    case 'web-app':
-      return 'Web app';
-    case 'api':
-      return 'API / Backend';
-    case 'cli':
-      return 'CLI tool';
-    case 'mobile':
-      return 'Mobile app';
-    case 'desktop':
-      return 'Desktop app';
-    case 'ml':
-      return 'ML / Data pipeline';
-    case 'library':
-      return 'Library / SDK';
-    default:
-      return t;
   }
 }
 

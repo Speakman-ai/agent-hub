@@ -37,6 +37,8 @@ import { render, act, waitFor, cleanup, screen } from '@testing-library/react';
       <div
         data-testid="sidebar-mock"
         data-current-view={p.currentView || ''}
+        data-active-session-id={p.activeSessionId || ''}
+        data-active-agent-id={p.activeAgentId || ''}
         data-has-cta={p.onOpenProject ? 'true' : 'false'}
       />
     );
@@ -108,7 +110,13 @@ import { render, act, waitFor, cleanup, screen } from '@testing-library/react';
       ...mod.api,
       getModelConfig: vi.fn().mockResolvedValue(empty),
       getProjects: vi.fn().mockResolvedValue([]),
-      getSessions: vi.fn().mockResolvedValue([]),
+      // The first-build session is owned by the caller, so it shows up in the
+      // agent's session list once focusAgentSession switches to that agent.
+      getSessions: vi.fn(async (agentId: string) =>
+        agentId === 'proj-3-dev'
+          ? [{ id: 'sess-build-1', agent_id: 'proj-3-dev', engine: 'claude-code' }]
+          : [],
+      ),
       getArchivedSessions: vi.fn().mockResolvedValue([]),
       getSkills: vi.fn().mockResolvedValue([]),
       getDesigns: vi.fn().mockResolvedValue([]),
@@ -216,6 +224,42 @@ describe('App — "+ New Project" CTA routes to adaptive flow', () => {
     // Sidebar should reflect the kanban view
     expect(screen.getByTestId('sidebar-mock').dataset.currentView).toBe('kanban:proj-2');
     expect(window.location.hash).toBe('#/kanban%3Aproj-2');
+  });
+
+  it('routes to chat when onProjectCreated fires with action:"session"', async () => {
+    render(<App />);
+
+    await waitFor(() => expect(typeof (globalThis as any).__ahNewProjectCTA).toBe('function'), {
+      timeout: 3000,
+    });
+
+    await act(async () => {
+      (globalThis as any).__ahNewProjectCTA();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('adaptive-flow-mock')).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      (globalThis as any).__ahAdaptiveOnProjectCreated({
+        action: 'session',
+        projectId: 'proj-3',
+        sessionId: 'sess-build-1',
+        agentId: 'proj-3-dev',
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('adaptive-flow-mock')).not.toBeInTheDocument();
+    });
+    // The view must be chat AND the freshly provisioned session must be the
+    // active one — a bare view check is a false positive because the default
+    // view is already 'chat'. focusAgentSession must set the session + agent.
+    await waitFor(() => {
+      expect(screen.getByTestId('sidebar-mock').dataset.activeSessionId).toBe('sess-build-1');
+    });
+    expect(screen.getByTestId('sidebar-mock').dataset.currentView).toBe('chat');
+    expect(screen.getByTestId('sidebar-mock').dataset.activeAgentId).toBe('proj-3-dev');
   });
 
   it('mounts the URL hash view on cold load instead of falling back to dashboard', async () => {

@@ -36,29 +36,39 @@ describe('hasGithubIntegration', () => {
 });
 
 describe('resolveTemplateForPayload', () => {
-  it('routes stack:"idk" via the appType default (CLI → go-cobra)', () => {
-    expect(resolveTemplateForPayload({ appType: 'cli', stack: 'idk' })).toBe('go-cobra');
+  it('routes stack:"idk" to the blank scaffold', () => {
+    expect(resolveTemplateForPayload({ appType: 'cli', stack: 'idk' })).toBe('blank');
   });
 
   it('honours an explicit known template id regardless of appType', () => {
     expect(resolveTemplateForPayload({ appType: 'api', stack: 'rust-axum' })).toBe('rust-axum');
   });
 
-  it('falls back to the universal default when both fields are missing', () => {
-    expect(resolveTemplateForPayload({})).toBe('typescript-node-tsx');
+  it('falls back to blank when both fields are missing', () => {
+    expect(resolveTemplateForPayload({})).toBe('blank');
   });
 });
 
 describe('plannedPhases', () => {
   it('marks gh-* phases as skip when the user opted out of GitHub', () => {
-    const plan = plannedPhases({ integrations: ['db'] });
+    const plan = plannedPhases({ integrations: ['db'], stack: 'typescript-node-tsx' });
     const skipped = plan.filter((p) => p.skip).map((p) => p.phase);
     expect(skipped).toEqual(['mint-token', 'gh-create', 'gh-push']);
   });
 
-  it('marks nothing as skipped when the user kept GitHub in', () => {
-    const plan = plannedPhases({ integrations: ['github', 'db'], hostOnAgentHub: false });
+  it('marks nothing as skipped when the user kept GitHub in on a language starter', () => {
+    const plan = plannedPhases({
+      integrations: ['github', 'db'],
+      hostOnAgentHub: false,
+      stack: 'typescript-node-tsx',
+    });
     expect(plan.every((p) => !p.skip)).toBe(true);
+  });
+
+  it('skips wire-tests/wire-lint on the blank scaffold', () => {
+    const plan = plannedPhases({ description: 'a python CLI' });
+    const skipped = plan.filter((p) => p.skip).map((p) => p.phase);
+    expect(skipped).toEqual(['mint-token', 'wire-tests', 'wire-lint', 'gh-create', 'gh-push']);
   });
 });
 
@@ -103,7 +113,12 @@ describe('orchestrator', () => {
 
     startProvisioningJob({
       jobId: 'job-1',
-      payload: { description: 'a new thing', integrations: ['github'], hostOnAgentHub: false },
+      payload: {
+        description: 'a new thing',
+        integrations: ['github'],
+        hostOnAgentHub: false,
+        stack: 'typescript-node-tsx',
+      },
       projectId: 'proj-1',
       executor,
     });
@@ -160,7 +175,7 @@ describe('orchestrator', () => {
       (e) => e.type === 'phase' && (e as { status?: string }).status === 'skipped',
     );
     expect(skipped.map((s) => (s as { phase?: string }).phase).sort()).toEqual(
-      ['gh-create', 'gh-push', 'mint-token'].sort(),
+      ['gh-create', 'gh-push', 'mint-token', 'wire-lint', 'wire-tests'].sort(),
     );
 
     const done = c.events.find((e) => e.type === 'done')!;

@@ -158,8 +158,12 @@ describe('POST /api/projects/provision', () => {
     const skipped = events.filter(
       (e) => e.type === 'phase' && (e as { status: string }).status === 'skipped',
     );
+    // The gh-* phases skip because GitHub was opted out; wire-tests/wire-lint
+    // skip because a payload with no explicit stack is now a description-first
+    // blank scaffold (the first build session picks the toolchain), so those
+    // language-toolchain phases don't run either.
     expect(skipped.map((s) => (s as { phase: string }).phase).sort()).toEqual(
-      ['gh-create', 'gh-push', 'mint-token'].sort(),
+      ['gh-create', 'gh-push', 'mint-token', 'wire-lint', 'wire-tests'].sort(),
     );
   });
 });

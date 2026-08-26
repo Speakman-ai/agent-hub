@@ -86,10 +86,17 @@ describe('kickoffInitialBuild', () => {
     // The four-phase contract: implement → CI → preview → pause.
     expect(msg.content).toContain('Phase 2 — CI');
     expect(msg.content).toContain('dev-server/setup-apply');
+    expect(msg.content).toContain('docker compose');
+    expect(msg.content).not.toContain('npm run dev');
     expect(msg.content).toContain('Phase 4 — Pause for verification');
     expect(msg.content).toContain('Finalize Code Changes');
     expect(broadcast).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'initial_build_started', projectId: id }),
+      expect.objectContaining({
+        type: 'initial_build_started',
+        projectId: id,
+        agentId: `${id}-dev`,
+        sessionId: expect.any(String),
+      }),
     );
   });
 

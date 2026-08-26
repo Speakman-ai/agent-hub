@@ -12,18 +12,27 @@ import {
 
 describe('provisioningStatus pure model', () => {
   describe('phasesForRequest', () => {
-    it('returns the full phase list when GitHub integration is on', () => {
-      expect(phasesForRequest({ withGithub: true })).toEqual(PROVISIONING_PHASES);
+    it('returns the full phase list when GitHub and toolchain are on', () => {
+      expect(phasesForRequest({ withGithub: true, withToolchain: true })).toEqual(
+        PROVISIONING_PHASES,
+      );
     });
 
     it('strips gh:true phases when GitHub integration is off', () => {
-      const phases = phasesForRequest({ withGithub: false });
+      const phases = phasesForRequest({ withGithub: false, withToolchain: true });
       expect(phases.some((p: any) => p.gh)).toBe(false);
       expect(phases.length).toBe(PROVISIONING_PHASES.filter((p: any) => !p.gh).length);
     });
 
-    it('defaults withGithub to true', () => {
-      expect(phasesForRequest()).toEqual(PROVISIONING_PHASES);
+    it('strips toolchain phases by default (blank / description-first scaffold)', () => {
+      const phases = phasesForRequest({ withGithub: true });
+      expect(phases.some((p: any) => p.toolchain)).toBe(false);
+      expect(phases.map((p: any) => p.id)).not.toContain('wire-tests');
+      expect(phases.map((p: any) => p.id)).not.toContain('wire-lint');
+    });
+
+    it('defaults withGithub to true and withToolchain to false', () => {
+      expect(phasesForRequest()).toEqual(PROVISIONING_PHASES.filter((p: any) => !p.toolchain));
     });
   });
 

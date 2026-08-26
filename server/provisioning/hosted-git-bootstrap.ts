@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import type { Project } from '../types.js';
 import { enableGitHost, type EnableGitHostDeps } from '../git-host/lifecycle.js';
+import { parseGithubRemote } from '../github-remote-owner.js';
 import type { TemplateManifest } from './templates.js';
 
 const execFileP = promisify(execFile);
@@ -37,6 +38,46 @@ const GIT_TIMEOUT_MS = 60_000;
 async function git(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFileP('git', ['-C', cwd, ...args], { timeout: GIT_TIMEOUT_MS });
   return stdout;
+}
+
+/** Commit any pending/unborn tree so the checkout has a HEAD to branch from. */
+async function commitScaffoldIfNeeded(workspaceDir: string): Promise<void> {
+  let hasHead = true;
+  try {
+    await git(workspaceDir, ['rev-parse', '--verify', 'HEAD']);
+  } catch {
+    hasHead = false;
+  }
+  const dirty = (await git(workspaceDir, ['status', '--porcelain'])).trim();
+  if (hasHead && !dirty) return;
+  await git(workspaceDir, ['add', '-A']);
+  await git(workspaceDir, [
+    '-c',
+    'user.name=Agent Hub',
+    '-c',
+    'user.email=scaffold@agent-hub.local',
+    'commit',
+    '-m',
+    'chore: initial scaffold (Agent Hub)',
+  ]);
+}
+
+/** Record the GitHub remote (repoUrl + owner/repo) on the project when known. */
+function persistRemoteMetadata(project: Project, repoUrl: string | null | undefined): void {
+  if (!repoUrl) return;
+  project.repoUrl = repoUrl;
+  const parsed = parseGithubRemote(repoUrl);
+  if (parsed) project.githubRepo = `${parsed.owner}/${parsed.repo}`;
+}
+
+/** Resolve the workspace's `origin` remote URL, or null when unset/failed. */
+async function resolveOriginUrl(workspaceDir: string): Promise<string | null> {
+  try {
+    const url = (await git(workspaceDir, ['remote', 'get-url', 'origin'])).trim();
+    return url || null;
+  } catch {
+    return null;
+  }
 }
 
 function yamlQuote(cmd: string): string {
@@ -92,6 +133,12 @@ export interface HostedGitBootstrapOpts {
   saveProjects: () => void;
   broadcast: (data: Record<string, unknown>) => void;
   requestingUserId?: string | null;
+  /**
+   * GitHub remote URL from the provisioning `done` event (present when the
+   * wizard's GitHub integration ran). Recorded so the mirror + webhook
+   * config have `repoUrl` / `githubRepo` without a later remote probe.
+   */
+  repoUrl?: string | null;
   /** Test seams forwarded to enableGitHost. */
   enableDeps?: Partial<EnableGitHostDeps>;
 }
@@ -114,27 +161,18 @@ export async function bootstrapHostedGit(opts: HostedGitBootstrapOpts): Promise<
       writeFileSync(ciPath, buildStarterCiYaml(manifest));
     }
 
-    // 2. Commit the scaffold. The pipeline `git init`s but only the
-    // optional GitHub phase commits; without it the tree is unborn.
-    const dirty = (await git(workspaceDir, ['status', '--porcelain'])).trim();
-    if (dirty) {
-      await git(workspaceDir, ['add', '-A']);
-      await git(workspaceDir, [
-        '-c',
-        'user.name=Agent Hub',
-        '-c',
-        'user.email=scaffold@agent-hub.local',
-        'commit',
-        '-m',
-        'chore: initial scaffold (Agent Hub)',
-      ]);
-    }
+    // 2. Commit the scaffold (incl. the ci.yaml just seeded). The pipeline
+    // `git init`s but only the optional GitHub phase commits; without it
+    // the tree is unborn.
+    await commitScaffoldIfNeeded(workspaceDir);
 
     // 3. Point the project at the scaffolded repo — sessions, worktrees,
-    // and the hosted import all key off cwd.
+    // and the hosted import all key off cwd — and record the GitHub remote
+    // when the integration produced one.
     if (project.cwd !== workspaceDir) {
       project.cwd = workspaceDir;
     }
+    persistRemoteMetadata(project, opts.repoUrl ?? (await resolveOriginUrl(workspaceDir)));
 
     // 4. CI on push + Hub hosting (background import from cwd).
     project.ciOnPush = { enabled: true };
@@ -153,5 +191,56 @@ export async function bootstrapHostedGit(opts: HostedGitBootstrapOpts): Promise<
         err instanceof Error ? err.message : String(err)
       }`,
     );
+  }
+}
+
+export interface ScaffoldCheckoutOpts {
+  project: Project;
+  /** The scaffolded repo tree (`<projectDataDir>/workspace`). */
+  workspaceDir: string;
+  /** GitHub remote URL from the provisioning `done` event, if the gh phases ran. */
+  repoUrl?: string | null;
+  saveProjects: () => void;
+  broadcast?: (data: Record<string, unknown>) => void;
+}
+
+/**
+ * GitHub-only (non-Hub-hosted) provisioning path. The scaffold was pushed
+ * to GitHub by the gh-push phase, but nothing repointed the project at the
+ * git checkout or recorded the remote — so the project still points at the
+ * non-git data dir and neither `repoUrl` nor `githubRepo` is persisted.
+ * `ensureWorktree` would then have no valid checkout or clone source and
+ * the first build could not start.
+ *
+ * This adopts the scaffold checkout (commit any pending/unborn tree,
+ * repoint `cwd`) and persists the GitHub remote metadata so the first
+ * build session's worktree can branch/clone from it. Never throws — a
+ * failure leaves a usable (if not build-ready) scaffolded project.
+ */
+export async function persistScaffoldCheckout(opts: ScaffoldCheckoutOpts): Promise<boolean> {
+  const { project, workspaceDir, saveProjects } = opts;
+  try {
+    if (!existsSync(path.join(workspaceDir, '.git'))) {
+      console.warn(
+        `[provisioning] ${project.id}: workspace is not a git repo — cannot adopt scaffold checkout`,
+      );
+      return false;
+    }
+    await commitScaffoldIfNeeded(workspaceDir);
+    if (project.cwd !== workspaceDir) {
+      project.cwd = workspaceDir;
+    }
+    persistRemoteMetadata(project, opts.repoUrl ?? (await resolveOriginUrl(workspaceDir)));
+    saveProjects();
+    opts.broadcast?.({ type: 'projects_updated', reason: 'provisioning-github-checkout' });
+    console.log(`[provisioning] ${project.id}: scaffold checkout adopted (GitHub-hosted)`);
+    return true;
+  } catch (err: unknown) {
+    console.warn(
+      `[provisioning] ${project.id}: scaffold checkout adoption failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return false;
   }
 }

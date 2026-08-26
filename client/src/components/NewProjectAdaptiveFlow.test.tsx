@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
-import NewProjectAdaptiveFlow, { inferWithGithub } from './NewProjectAdaptiveFlow';
+import NewProjectAdaptiveFlow, {
+  inferWithGithub,
+  inferWithToolchain,
+} from './NewProjectAdaptiveFlow';
 import { ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY } from '@shared/utils/adaptiveQuestionnaire';
 
 describe('inferWithGithub', () => {
@@ -22,6 +25,22 @@ describe('inferWithGithub', () => {
 
   it('defaults to true for a missing payload (legacy caller safety)', () => {
     expect(inferWithGithub(null)).toBe(true);
+  });
+});
+
+describe('inferWithToolchain', () => {
+  it('is false for description-first / blank / idk stacks', () => {
+    expect(inferWithToolchain(null)).toBe(false);
+    expect(inferWithToolchain({})).toBe(false);
+    expect(inferWithToolchain({ stack: 'idk' })).toBe(false);
+    expect(inferWithToolchain({ stack: 'blank' })).toBe(false);
+  });
+
+  it('is true only for a known language starter id', () => {
+    expect(inferWithToolchain({ stack: 'python-fastapi-uv' })).toBe(true);
+    expect(inferWithToolchain({ stack: 'typescript-node-tsx' })).toBe(true);
+    expect(inferWithToolchain({ stack: 'go-cobra' })).toBe(true);
+    expect(inferWithToolchain({ stack: 'rust-axum' })).toBe(true);
   });
 });
 
@@ -67,26 +86,18 @@ describe('NewProjectAdaptiveFlow', () => {
       target: { value: 'a cool thing' },
     });
     fireEvent.click(screen.getByTestId('aq-continue' as any) as any);
-    // step 2 — app type
-    fireEvent.click(screen.getByTestId('aq-apptype-web-app' as any) as any);
-    fireEvent.click(screen.getByTestId('aq-continue' as any) as any);
-    // step 3 — stack (recommended auto-selected)
-    fireEvent.click(screen.getByTestId('aq-continue' as any) as any);
-    // step 4 — integrations
-    if (opts.withGithub !== false) {
-      fireEvent.click(screen.getByTestId('aq-integration-github' as any) as any);
+    // step 2 — hosting
+    if (opts.withGithub === true) {
+      fireEvent.click(screen.getByTestId('aq-hosting-github' as any) as any);
     } else {
-      fireEvent.click(screen.getByTestId('aq-integration-db' as any) as any);
+      fireEvent.click(screen.getByTestId('aq-hosting-agenthub' as any) as any);
     }
     fireEvent.click(screen.getByTestId('aq-continue' as any) as any);
-    // step 5 — hosting (Agent Hub default)
-    fireEvent.click(screen.getByTestId('aq-hosting-agenthub' as any) as any);
-    fireEvent.click(screen.getByTestId('aq-continue' as any) as any);
-    // step 6 — identity (auth not selected → step skipped)
+    // step 3 — identity
     fireEvent.change(screen.getByTestId('aq-name-input' as any), { target: { value: 'my-proj' } });
     fireEvent.click(screen.getByTestId('aq-visibility-private' as any) as any);
     fireEvent.click(screen.getByTestId('aq-continue' as any) as any);
-    // step 6 — review → submit
+    // step 4 — review → submit
     await act(async () => {
       fireEvent.click(screen.getByTestId('aq-submit' as any) as any);
     });
@@ -137,30 +148,124 @@ describe('NewProjectAdaptiveFlow', () => {
     expect(screen.getByTestId('ps-failure')).toHaveTextContent(/401 unauthorized/);
   });
 
-  it('transitions straight to the landing view after a successful provisioning run', async () => {
-    const { onClose } = await runThroughQuestionnaire();
+  function fireInitialBuild(detail: any = {}) {
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('initial-build-ws', {
+          detail: {
+            type: 'initial_build_started',
+            projectId: 'proj-1',
+            sessionId: 'sess-build-1',
+            agentId: 'proj-1-dev',
+            ...detail,
+          },
+        }),
+      );
+    });
+  }
+
+  it('auto-opens the first build session instead of a landing picker', async () => {
+    const { onClose, onProjectCreated } = await runThroughQuestionnaire();
     act(() => {
       subscribeHandlers.onEvent({
         type: 'done',
         repoUrl: 'https://github.com/acme/my-proj',
       });
     });
-    // The success "Done" button advances to the landing handoff rather than
-    // closing the wizard outright. The provisioning socket is torn down
-    // eagerly since its terminal event has already landed.
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('ps-success-close' as any) as any);
+    expect(screen.getByTestId('ps-opening-build')).toBeInTheDocument();
+    expect(screen.queryByTestId('ps-success-close')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('project-landing')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pl-next-kanban')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pl-next-skills')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pl-next-open')).not.toBeInTheDocument();
+
+    fireInitialBuild();
+    expect(onProjectCreated!).toHaveBeenCalledWith({
+      action: 'session',
+      projectId: 'proj-1',
+      sessionId: 'sess-build-1',
+      agentId: 'proj-1-dev',
     });
-    expect(screen.getByTestId('project-landing')).toBeInTheDocument();
     expect(streamClose!).toHaveBeenCalled();
     expect(onClose!).not.toHaveBeenCalled();
   });
 
+  it('ignores first-build events for a different project', async () => {
+    const { onProjectCreated } = await runThroughQuestionnaire();
+    fireInitialBuild({ projectId: 'someone-else', sessionId: 'sess-other' });
+    expect(onProjectCreated!).not.toHaveBeenCalled();
+  });
+
+  it('reveals a manual "Open project" escape if the first-build handoff never arrives', async () => {
+    const { onClose, onProjectCreated } = await runThroughQuestionnaire({
+      extraProps: { buildHandoffTimeoutMs: 20 },
+    });
+    act(() => {
+      subscribeHandlers.onEvent({
+        type: 'done',
+        repoUrl: 'https://github.com/acme/my-proj',
+      });
+    });
+    // Initially the flow waits for the broadcast — no escape yet.
+    expect(screen.getByTestId('ps-opening-build')).toBeInTheDocument();
+    expect(screen.queryByTestId('ps-open-project')).not.toBeInTheDocument();
+
+    // The broadcast never arrives (creation failed / WS reconnect dropped it);
+    // after the timeout the escape appears.
+    const openBtn = await screen.findByTestId('ps-open-project');
+    expect(screen.queryByTestId('ps-opening-build')).not.toBeInTheDocument();
+
+    fireEvent.click(openBtn);
+    expect(onProjectCreated!).toHaveBeenCalledWith({ action: 'task', projectId: 'proj-1' });
+    expect(streamClose!).toHaveBeenCalled();
+    expect(onClose!).not.toHaveBeenCalled();
+  });
+
+  it('does not reveal the escape when the handoff arrives before the timeout', async () => {
+    const { onProjectCreated } = await runThroughQuestionnaire({
+      extraProps: { buildHandoffTimeoutMs: 10000 },
+    });
+    act(() => {
+      subscribeHandlers.onEvent({
+        type: 'done',
+        repoUrl: 'https://github.com/acme/my-proj',
+      });
+    });
+    fireInitialBuild();
+    expect(onProjectCreated!).toHaveBeenCalledWith({
+      action: 'session',
+      projectId: 'proj-1',
+      sessionId: 'sess-build-1',
+      agentId: 'proj-1-dev',
+    });
+    expect(screen.queryByTestId('ps-open-project')).not.toBeInTheDocument();
+  });
+
+  it('reveals the escape on a partial done when the handoff never arrives', async () => {
+    const { onProjectCreated } = await runThroughQuestionnaire({
+      withGithub: true,
+      extraProps: { buildHandoffTimeoutMs: 20 },
+    });
+    act(() => {
+      // Partial: local scaffold ready, GitHub step failed — the server still
+      // dispatches the first build, so the client also waits for the handoff.
+      subscribeHandlers.onEvent({
+        type: 'done',
+        partial: true,
+        error: { code: 5, message: 'gh push failed' },
+      });
+    });
+    expect(screen.getByTestId('ps-partial')).toBeInTheDocument();
+    const openBtn = await screen.findByTestId('ps-open-project');
+    fireEvent.click(openBtn);
+    expect(onProjectCreated!).toHaveBeenCalledWith({ action: 'task', projectId: 'proj-1' });
+  });
+
   // Regression: the readiness/roster step used to sit between provisioning
-  // and the landing, blocking the user behind a 404 audit card and a
+  // and the next view, blocking the user behind a 404 audit card and a
   // duplicate agent-roster picker. Provisioning already seeds the lead dev
   // and reviewer agents, so nothing may render that step again.
-  it('never renders a readiness/roster step between provisioning and landing', async () => {
+  it('never renders a readiness/roster step after provisioning', async () => {
     await runThroughQuestionnaire();
     act(() => {
       subscribeHandlers.onEvent({
@@ -168,17 +273,15 @@ describe('NewProjectAdaptiveFlow', () => {
         repoUrl: 'https://github.com/acme/my-proj',
       });
     });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('ps-success-close' as any) as any);
-    });
+    fireInitialBuild();
     expect(screen.queryByTestId('post-scaffold-audit')).not.toBeInTheDocument();
     expect(screen.queryByTestId('psa-confirm')).not.toBeInTheDocument();
     expect(screen.queryByTestId('psa-skip')).not.toBeInTheDocument();
     expect(screen.queryByText(/Readiness & roster/i)).not.toBeInTheDocument();
-    // The landing itself carries no audit or roster surface either.
     expect(screen.queryByTestId('pl-roster')).not.toBeInTheDocument();
     expect(screen.queryByTestId('pl-audit-unavailable')).not.toBeInTheDocument();
     expect(screen.queryByTestId('pl-summary-band')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('project-landing')).not.toBeInTheDocument();
   });
 
   it('still routes the close button to onClose when provisioning failed', async () => {
@@ -194,48 +297,18 @@ describe('NewProjectAdaptiveFlow', () => {
     expect(onClose!).toHaveBeenCalledTimes(1);
   });
 
-  it('passes withGithub=false when the user omits GitHub in integrations', async () => {
+  it('passes withGithub=false when the user picks Agent Hub hosting', async () => {
     await runThroughQuestionnaire({ withGithub: false });
-    // Without github in integrations the gh-* phases should be absent
     expect(screen.queryByTestId('ps-phase-gh-create')).not.toBeInTheDocument();
     expect(screen.queryByTestId('ps-phase-gh-push')).not.toBeInTheDocument();
   });
 
-  it('renders the landing summary and routes next-step CTAs through onProjectCreated', async () => {
-    const { onProjectCreated, onClose } = await runThroughQuestionnaire();
-    // Finish provisioning with a repoUrl so the landing can display it.
-    act(() => {
-      subscribeHandlers.onEvent({
-        type: 'done',
-        repoUrl: 'https://github.com/acme/my-proj',
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('ps-success-close' as any) as any);
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('project-landing')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('pl-repo-link')).toHaveAttribute(
-      'href',
-      'https://github.com/acme/my-proj',
-    );
-
-    // onProjectCreated / onClose are NOT fired yet — the user has to click
-    // a next-step CTA to leave the landing.
-    expect(onProjectCreated!).not.toHaveBeenCalled();
-    expect(onClose!).not.toHaveBeenCalled();
-
-    // The primary CTA routes through onProjectCreated with `action: 'task'`
-    // so the host lands on the new project's kanban board. onClose is NOT
-    // called — the host's onProjectCreated handler owns the view transition
-    // to avoid a setState race where onClose would clobber the routing.
-    fireEvent.click(screen.getByTestId('pl-next-kanban' as any) as any);
-    expect(onProjectCreated!).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: 'proj-1', action: 'task' }),
-    );
-    expect(onClose!).not.toHaveBeenCalled();
+  it('does not list Wire tests / Wire lint for the description-first scaffold', async () => {
+    await runThroughQuestionnaire();
+    expect(screen.queryByTestId('ps-phase-wire-tests')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ps-phase-wire-lint')).not.toBeInTheDocument();
+    expect(screen.queryByText('Wire tests')).not.toBeInTheDocument();
+    expect(screen.queryByText('Wire lint')).not.toBeInTheDocument();
   });
 
   it('retry re-invokes provision and wipes previous events', async () => {

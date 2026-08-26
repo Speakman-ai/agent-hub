@@ -58,11 +58,8 @@ function changeText(renderer: ReactTestRenderer, testID: string, value: string) 
 }
 
 const reviewDraft = {
-  step: 7,
+  step: 3,
   description: 'a tool',
-  appType: 'web-app',
-  stack: 'react-vite-express-sqlite',
-  integrations: ['github'],
   hosting: 'agenthub',
   name: 'tool',
   visibility: 'private',
@@ -79,42 +76,11 @@ describe('mobile AdaptiveQuestionnaire', () => {
 
     changeText(renderer, 'aq-description-input', 'a survey tool');
     press(renderer, 'aq-continue');
-    expect(renderer.root.findByProps({ testID: 'aq-step-appType' })).toBeTruthy();
-
-    press(renderer, 'aq-apptype-web-app');
-    press(renderer, 'aq-continue');
-    expect(renderer.root.findByProps({ testID: 'aq-step-stack' })).toBeTruthy();
-
-    press(renderer, 'aq-continue');
-    expect(renderer.root.findByProps({ testID: 'aq-step-integrations' })).toBeTruthy();
-
-    press(renderer, 'aq-integration-github');
-    press(renderer, 'aq-continue');
     expect(renderer.root.findByProps({ testID: 'aq-step-hosting' })).toBeTruthy();
 
     press(renderer, 'aq-hosting-agenthub');
     press(renderer, 'aq-continue');
     expect(renderer.root.findByProps({ testID: 'aq-step-identity' })).toBeTruthy();
-  });
-
-  it('shows the conditional auth step and continues after choosing a provider', async () => {
-    const renderer = await renderQuestionnaire({
-      initial: {
-        step: 3,
-        description: 'a tool',
-        appType: 'web-app',
-        stack: 'react-vite-express-sqlite',
-        integrations: [],
-      },
-    });
-
-    press(renderer, 'aq-integration-auth');
-    press(renderer, 'aq-continue');
-    expect(renderer.root.findByProps({ testID: 'aq-step-auth' })).toBeTruthy();
-
-    press(renderer, 'aq-auth-provider-oauth');
-    press(renderer, 'aq-continue');
-    expect(renderer.root.findByProps({ testID: 'aq-step-hosting' })).toBeTruthy();
   });
 
   it('does not loop after an empty suggestion response and exposes retry', async () => {
@@ -128,46 +94,23 @@ describe('mobile AdaptiveQuestionnaire', () => {
     expect(suggestProjectSetup).toHaveBeenCalledTimes(1);
   });
 
-  it('applies a partial suggestion once and retries the unresolved fields on demand', async () => {
+  it('applies a name suggestion once', async () => {
     suggestProjectSetup.mockResolvedValueOnce({ name: 'Suggested Tool' });
     const renderer = await renderQuestionnaire({
-      initial: { ...reviewDraft, name: 'idk', appType: 'idk', stack: 'idk' },
+      initial: { ...reviewDraft, name: 'idk' },
     });
     await flushEffects();
 
     expect(suggestProjectSetup).toHaveBeenCalledTimes(1);
-    expect(renderer.root.findByProps({ testID: 'aq-suggest-retry' })).toBeTruthy();
-
-    suggestProjectSetup.mockResolvedValueOnce({
-      appType: 'web-app',
-      stack: 'react-vite-express-sqlite',
-    });
-    press(renderer, 'aq-suggest-retry');
-    await flushEffects();
-    expect(suggestProjectSetup).toHaveBeenCalledTimes(2);
     expect(renderer.root.findAllByProps({ testID: 'aq-suggest-retry' })).toHaveLength(0);
   });
 
   it('rejects unsupported model values instead of putting them in the provisioning draft', () => {
-    expect(
-      buildSuggestionPatch(
-        { name: 'idk', appType: 'not-a-type', stack: 'not-a-stack' },
-        { appType: 'idk' },
-        true,
-        true,
-        true,
-      ),
-    ).toEqual({});
+    expect(buildSuggestionPatch({ name: 'idk' }, {}, true)).toEqual({});
 
-    expect(
-      buildSuggestionPatch(
-        { name: '  Safe Tool ', appType: 'web-app', stack: 'fastapi-postgres' },
-        { appType: 'idk' },
-        true,
-        true,
-        true,
-      ),
-    ).toEqual({ name: 'Safe Tool', appType: 'web-app' });
+    expect(buildSuggestionPatch({ name: '  Safe Tool ' }, {}, true)).toEqual({
+      name: 'Safe Tool',
+    });
   });
 
   it('submits at most once when the final action is double-tapped', async () => {

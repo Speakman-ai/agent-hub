@@ -1,0 +1,9 @@
+{
+  "id": "blank",
+  "label": "Blank repo — first build session writes the app",
+  "appTypes": ["web-app", "api", "cli", "mobile", "desktop", "ml", "library"],
+  "setup": ["true"],
+  "test": "true",
+  "lint": "true",
+  "recommendedFor": ["web-app", "api", "cli", "mobile", "desktop", "ml", "library"]
+}

@@ -450,7 +450,7 @@ describe('orchestrator integration — GitHub phases wired through the executor'
       (e) => e.type === 'phase' && (e as { status?: string }).status === 'skipped',
     ) as Array<{ phase: string }>;
     expect(skipped.map((s) => s.phase).sort()).toEqual(
-      ['gh-create', 'gh-push', 'mint-token'].sort(),
+      ['gh-create', 'gh-push', 'mint-token', 'wire-lint', 'wire-tests'].sort(),
     );
 
     const done = events.find((e) => e.type === 'done')!;

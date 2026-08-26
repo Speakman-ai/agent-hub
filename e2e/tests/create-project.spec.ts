@@ -11,12 +11,10 @@
  * Coverage:
  *   • CTA → adaptive wizard mounts
  *   • Description is required (Continue disabled until filled)
- *   • Every subsequent step exposes an `aq-*-idk` button (covered:
- *     appType, stack, integrations, identity{name,visibility})
+ *   • Hosting / name / visibility expose an idk escape hatch
  *   • Submit → provisioning view streams phase events
  *   • ps-phase-* rows reach status=ok (the "green dots" assertion)
- *   • "Done" advances straight to ProjectLandingHandoff
- *   • Landing shows the project summary + "Open project" CTA
+ *   • First-build kickoff auto-opens the session (wizard unmounts; no landing picker)
  *
  * Network guard:
  *   Any 404 on an /api/* URL fails the test — catches the missing-route
@@ -64,29 +62,18 @@ test.describe('Create project — happy path', () => {
     await expect(continueBtn).toBeEnabled();
     await continueBtn.click();
 
-    // ── Step 2 (appType): idk present ─────────────────────────────────
+    // ── Step 2 (hosting): idk present; Agent Hub is pre-selected ──────
     await expect(page.getByTestId('aq-idk')).toBeVisible();
-    await page.getByTestId('aq-idk').click();
     await page.getByTestId('aq-continue').click();
 
-    // ── Step 3 (stack): idk present ───────────────────────────────────
-    await expect(page.getByTestId('aq-idk')).toBeVisible();
-    await page.getByTestId('aq-idk').click();
-    await page.getByTestId('aq-continue').click();
-
-    // ── Step 4 (integrations): idk present; choosing idk skips auth ──
-    await expect(page.getByTestId('aq-idk')).toBeVisible();
-    await page.getByTestId('aq-idk').click();
-    await page.getByTestId('aq-continue').click();
-
-    // ── Step 5 (identity): idk present for both name and visibility ──
+    // ── Step 3 (identity): idk present for both name and visibility ──
     await expect(page.getByTestId('aq-name-idk')).toBeVisible();
     await expect(page.getByTestId('aq-visibility-idk')).toBeVisible();
     await page.getByTestId('aq-name-idk').click();
     await page.getByTestId('aq-visibility-idk').click();
     await page.getByTestId('aq-continue').click();
 
-    // ── Step 6 (review): submit ───────────────────────────────────────
+    // ── Step 4 (review): submit ───────────────────────────────────────
     const submitBtn = page.getByTestId('aq-submit');
     await expect(submitBtn).toBeVisible();
     await submitBtn.click();
@@ -108,16 +95,13 @@ test.describe('Create project — happy path', () => {
     await expect(okPhases.first()).toBeVisible();
     expect(await okPhases.count()).toBeGreaterThanOrEqual(2);
 
-    // Continue to the landing handoff.
-    await page.getByTestId('ps-success-close').click();
-
-    // ── Landing handoff ──────────────────────────────────────────────
-    await expect(page.getByTestId('project-landing')).toBeVisible();
-    await expect(page.getByTestId('pl-summary')).toBeVisible();
-    // "Open project" CTA — the Next-Steps "Open the project home" row.
-    await expect(page.getByTestId('pl-next-open')).toBeVisible();
-
-    // No readiness/roster step sits between provisioning and the landing.
+    // First-build kickoff auto-opens the session — the wizard unmounts
+    // instead of showing a landing / next-steps picker.
+    await expect(page.getByTestId('new-project-adaptive-mount')).toHaveCount(0, {
+      timeout: 15_000,
+    });
+    await expect(page.getByTestId('project-landing')).toHaveCount(0);
+    await expect(page.getByTestId('pl-next-open')).toHaveCount(0);
     await expect(page.getByTestId('post-scaffold-audit')).toHaveCount(0);
     await expect(page.getByTestId('pl-roster')).toHaveCount(0);
 

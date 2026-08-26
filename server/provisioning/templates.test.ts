@@ -27,6 +27,7 @@ import { KNOWN_TEMPLATE_IDS, type TemplateId } from './stack-defaults.js';
  * `KNOWN_TEMPLATE_IDS`.
  */
 const EXPECTED_TREES: Record<TemplateId, string[]> = {
+  blank: ['.gitignore', 'README.md'],
   'typescript-node-tsx': [
     '.gitignore',
     '.prettierrc.json',

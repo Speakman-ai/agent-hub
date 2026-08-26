@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AdaptiveQuestionnaire from '../components/AdaptiveQuestionnaire';
@@ -8,10 +8,45 @@ import { isCompleteProject } from '../utils/newProjectProvisioning';
 import { colors } from '../theme/colors';
 
 export default function NewProjectScreen({ navigation }: any) {
-  const { refreshProjects, refreshAgents } = useApp();
+  const {
+    refreshProjects,
+    refreshAgents,
+    setActiveAgentId,
+    setActiveSessionId,
+    subscribeInitialBuild,
+  } = useApp();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdProject, setCreatedProject] = useState<any>(null);
+  // The project id we're awaiting a first-build session for, plus a guard so
+  // the handoff fires once. Refs (not state) so the WS subscription reads the
+  // latest without re-registering.
+  const awaitingBuildProjectIdRef = useRef<string | null>(null);
+  const openedBuildRef = useRef(false);
+
+  // Open the first build session's chat as soon as provisioning dispatches it
+  // — mobile parity with the web adaptive flow, which opens the build chat
+  // rather than stopping at a "provisioning started" screen.
+  const openBuildSession = useCallback(
+    (data: any) => {
+      if (openedBuildRef.current) return;
+      const projectId = awaitingBuildProjectIdRef.current;
+      if (!projectId || data?.projectId !== projectId) return;
+      const sessionId = typeof data?.sessionId === 'string' ? data.sessionId : '';
+      if (!sessionId) return;
+      openedBuildRef.current = true;
+      if (data.agentId) setActiveAgentId(data.agentId);
+      setActiveSessionId(sessionId);
+      navigation?.navigate?.('Chat');
+    },
+    [navigation, setActiveAgentId, setActiveSessionId],
+  );
+
+  useEffect(() => {
+    if (!subscribeInitialBuild) return;
+    const unsubscribe = subscribeInitialBuild(openBuildSession);
+    return () => unsubscribe?.();
+  }, [subscribeInitialBuild, openBuildSession]);
 
   const loadProjectDetails = async (projectId: string, hostOnAgentHub = true) => {
     let lastError: unknown = null;
@@ -42,6 +77,9 @@ export default function NewProjectScreen({ navigation }: any) {
       const result = await api.provisionProject(payload);
       const projectId = result?.projectId || result?.project?.id;
       if (!projectId) throw new Error('Provisioning did not return a project id.');
+      // Arm the first-build handoff for this project.
+      openedBuildRef.current = false;
+      awaitingBuildProjectIdRef.current = projectId;
       const provisioning = {
         jobId: result.jobId,
         wsUrl: result.wsUrl,
@@ -114,7 +152,8 @@ export default function NewProjectScreen({ navigation }: any) {
           <Text style={styles.successName}>{createdProject.name}</Text>
           <Text style={styles.successMeta}>ID: {createdProject.id}</Text>
           <Text style={styles.successHint}>
-            Agent Hub is preparing the repository. You can open the project board while it runs.
+            Agent Hub is preparing the repository and will open the first build chat automatically
+            once it starts. You can open the project board while it runs.
           </Text>
           {createdProject.jobId ? (
             <Text style={styles.jobText}>Job: {createdProject.jobId}</Text>

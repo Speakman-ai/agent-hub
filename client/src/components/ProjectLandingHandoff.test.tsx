@@ -47,13 +47,22 @@ describe('ProjectLandingHandoff — rendering', () => {
     expect((repo as any).textContent).toContain('github.com/acme/my-cool-app');
   });
 
-  it('shows stack and integrations as chips', () => {
-    render(<ProjectLandingHandoff {...defaultProps()} />);
-    expect((screen.getByTestId('pl-stack') as any).textContent).toMatch(/React/);
-    expect((screen.getByTestId('pl-stack') as any).textContent).toMatch(/Node\.js/);
-    expect((screen.getByTestId('pl-integrations') as any).textContent).toMatch(/GitHub/);
-    expect((screen.getByTestId('pl-integrations') as any).textContent).toMatch(/Database/);
-    expect((screen.getByTestId('pl-apptype') as any).textContent).toBe('Web app');
+  it('shows description and hosting instead of stack chips', () => {
+    render(
+      <ProjectLandingHandoff
+        {...defaultProps({
+          payload: {
+            name: 'My Cool App',
+            description: 'a python CLI that greets people',
+            hostOnAgentHub: true,
+          },
+        })}
+      />,
+    );
+    expect(screen.getByTestId('pl-description')).toHaveTextContent(/python CLI/);
+    expect(screen.getByTestId('pl-hosting')).toHaveTextContent('Agent Hub');
+    expect(screen.queryByTestId('pl-stack')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pl-integrations')).not.toBeInTheDocument();
   });
 
   it('handles a missing repo URL with a muted placeholder', () => {

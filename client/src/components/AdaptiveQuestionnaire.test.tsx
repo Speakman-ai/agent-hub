@@ -49,83 +49,16 @@ describe('AdaptiveQuestionnaire', () => {
     });
   });
 
-  describe('later steps — idk escape hatch', () => {
-    it('renders idk buttons on each step after the first', () => {
+  describe('hosting step', () => {
+    it('renders idk and pre-selects Agent Hub', () => {
       render(
         <AdaptiveQuestionnaire
-          initial={{ step: STEP_IDS.indexOf('appType'), description: 'thing' }}
+          initial={{ step: STEP_IDS.indexOf('hosting'), description: 'thing' }}
         />,
       );
       expect(screen.getByTestId('aq-idk')).toBeInTheDocument();
-    });
-
-    it('allows picking idk to advance the app-type step', () => {
-      render(
-        <AdaptiveQuestionnaire
-          initial={{ step: STEP_IDS.indexOf('appType'), description: 'thing' }}
-        />,
-      );
-      expect(screen.getByTestId('aq-continue')).toBeDisabled();
-      fireEvent.click(screen.getByTestId('aq-idk' as any) as any);
       expect(screen.getByTestId('aq-continue')).not.toBeDisabled();
-    });
-  });
-
-  describe('stack recommendation', () => {
-    it('pre-selects the recommended stack when app type is chosen', () => {
-      render(
-        <AdaptiveQuestionnaire
-          initial={{ step: STEP_IDS.indexOf('appType'), description: 'thing' }}
-        />,
-      );
-      fireEvent.click(screen.getByTestId('aq-apptype-web-app' as any) as any);
-      fireEvent.click(screen.getByTestId('aq-continue' as any) as any);
-      // Now on stack step — the recommended option should be selected (visible Check marker)
-      const rec = screen.getByTestId('aq-stack-react-vite-express-sqlite');
-      expect(rec!).toHaveClass(/border-emerald-500/);
-    });
-  });
-
-  describe('conditional auth step', () => {
-    it('skips auth when integrations does not include auth', () => {
-      render(
-        <AdaptiveQuestionnaire
-          initial={{
-            step: STEP_IDS.indexOf('integrations'),
-            description: 'thing',
-            appType: 'web-app',
-            stack: 'react-vite-express-sqlite',
-          }}
-        />,
-      );
-      fireEvent.click(screen.getByTestId('aq-integration-github' as any) as any);
-      fireEvent.click(screen.getByTestId('aq-continue' as any) as any);
-      // Should land on hosting, not auth
-      expect(
-        screen.getByRole('heading', { name: /where should your code live/i }),
-      ).toBeInTheDocument();
-      // …and hosting → identity.
-      fireEvent.click(screen.getByTestId('aq-hosting-agenthub' as any) as any);
-      fireEvent.click(screen.getByTestId('aq-continue' as any) as any);
-      expect(screen.getByRole('heading', { name: /name & visibility/i })).toBeInTheDocument();
-    });
-
-    it('shows auth step when auth integration is selected', () => {
-      render(
-        <AdaptiveQuestionnaire
-          initial={{
-            step: STEP_IDS.indexOf('integrations'),
-            description: 'thing',
-            appType: 'web-app',
-            stack: 'react-vite-express-sqlite',
-          }}
-        />,
-      );
-      fireEvent.click(screen.getByTestId('aq-integration-auth' as any) as any);
-      fireEvent.click(screen.getByTestId('aq-continue' as any) as any);
-      expect(
-        screen.getByRole('heading', { name: /how should users sign in/i }),
-      ).toBeInTheDocument();
+      expect(screen.getByTestId('aq-hosting-agenthub')).toHaveClass(/border-emerald-500/);
     });
   });
 
@@ -145,17 +78,14 @@ describe('AdaptiveQuestionnaire', () => {
       }
     });
 
-    it('restores a persisted draft when mounted fresh', () => {
+    it('restores a persisted v2 draft when mounted fresh', () => {
       sessionStorage.setItem(
         ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY,
         JSON.stringify({
-          v: 1,
+          v: 2,
           step: 0,
           description: 'restored value',
-          appType: null,
-          stack: null,
-          integrations: null,
-          authDetail: null,
+          hosting: 'agenthub',
           name: '',
           visibility: null,
         }),
@@ -166,18 +96,15 @@ describe('AdaptiveQuestionnaire', () => {
   });
 
   describe('final submit', () => {
-    it('submits a provisioning payload on the review step', () => {
+    it('submits a description-first provisioning payload on the review step', () => {
       const onSubmit = vi.fn();
       render(
         <AdaptiveQuestionnaire
           onSubmit={onSubmit}
           initial={{
             step: STEP_IDS.indexOf('review'),
-            description: 'a thing',
-            appType: 'web-app',
-            stack: 'react-vite-express-sqlite',
-            integrations: ['github'],
-            authDetail: null,
+            description: 'a python CLI that greets people',
+            hosting: 'agenthub',
             name: 'acme',
             visibility: 'private',
           }}
@@ -187,14 +114,14 @@ describe('AdaptiveQuestionnaire', () => {
       expect(onSubmit!).toHaveBeenCalledTimes(1);
       const payload = (onSubmit as any).mock.calls[0][0];
       expect(payload!).toMatchObject({
-        version: 1,
-        description: 'a thing',
-        appType: 'web-app',
-        integrations: ['github'],
+        version: 2,
+        description: 'a python CLI that greets people',
+        appType: 'idk',
+        stack: 'idk',
         name: 'acme',
         visibility: 'private',
+        hostOnAgentHub: true,
       });
-      // And the draft should be cleared so the next wizard open is fresh
       expect(sessionStorage.getItem(ADAPTIVE_QUESTIONNAIRE_DRAFT_KEY)).toBeNull();
     });
   });
