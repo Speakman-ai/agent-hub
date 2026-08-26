@@ -438,6 +438,52 @@ describe('parseReActBlock — terminal tool', () => {
   });
 });
 
+describe('parseReActBlock — design tool', () => {
+  it('parses a design render action and keeps html + title', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"design","op":"render","html":"<h1>Hi</h1>","title":"Chart"}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(false);
+    if (!('error' in r)) {
+      expect(r.actions[0]).toMatchObject({
+        tool: 'design',
+        op: 'render',
+        html: '<h1>Hi</h1>',
+        title: 'Chart',
+      });
+    }
+  });
+
+  it('normalizes op casing / whitespace', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"design","op":" RENDER ","html":"<p>x</p>"}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(false);
+    if (!('error' in r)) expect(r.actions[0].op).toBe('render');
+  });
+
+  it('rejects an unknown design op', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"design","op":"clear","html":"<p>x</p>"}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(true);
+  });
+
+  it('rejects render without html', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"design","op":"render"}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(true);
+  });
+
+  it('rejects render with blank html', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"design","op":"render","html":"   "}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(true);
+  });
+});
+
 // ─── stripFencedCodeBlockBodies ─────────────────────────────────────────
 
 describe('stripFencedCodeBlockBodies', () => {

@@ -133,6 +133,16 @@ import {
   ensureRealArtifactDir,
 } from './design-mode-prompt.js';
 import { resolveDesignArtifactLocation } from './design-artifact-store.js';
+import {
+  DESIGN_REACT_OP_SET,
+  MAX_DESIGN_HTML_BYTES,
+  runDesignReActStep,
+  renderDesignHtmlScreenshot,
+  resolveDesignRenderLocation,
+  DESIGN_RENDER_FILENAME,
+  type DesignRenderResult,
+} from './design-react.js';
+import type { BrowserSessionOptions } from './browser.js';
 import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
@@ -524,6 +534,17 @@ export interface ChatHandlerDeps {
    * of going silent. Null-when-unwired, matching the sibling accessors.
    */
   listWatchedBackgroundShells?: (sessionId: string) => WatchedShellSummary[];
+  /**
+   * Render an HTML/CSS/JS document to a screenshot for the ReAct `design`
+   * tool. Injected so tests exercise the dispatch + broadcast wiring without
+   * launching real Chromium. Defaults to the bundled Playwright renderer
+   * (`renderDesignHtmlScreenshot`).
+   */
+  renderDesign?: (
+    sessionId: string,
+    html: string,
+    launchOpts?: BrowserSessionOptions,
+  ) => Promise<DesignRenderResult>;
   autoCommitAndPR: (
     sessionId: string,
     agentId: string,
@@ -648,7 +669,15 @@ function persistLegacyWikiHybridGateIfNeeded(session: SessionRow, sessionId: str
   }
 }
 
-type ReActTool = 'wiki' | 'skill' | 'web' | 'browser' | 'preview' | 'terminal' | 'google';
+type ReActTool =
+  | 'wiki'
+  | 'skill'
+  | 'web'
+  | 'browser'
+  | 'preview'
+  | 'terminal'
+  | 'google'
+  | 'design';
 
 interface ReActAction {
   tool: ReActTool;
@@ -671,6 +700,10 @@ interface ReActAction {
   tail?: number;
   /** terminal inject — single command line to run at an idle prompt. */
   command?: string;
+  /** design render — the HTML/CSS/JS document to render (full page or fragment). */
+  html?: string;
+  /** design render — optional <title> when `html` is a fragment. */
+  title?: string;
   /** google — read-only inline context; see server/google-react.ts */
   surface?: string;
   from?: string;
@@ -1006,6 +1039,7 @@ Supported tools:
 - \`wiki\` — hybrid project wiki retrieval (field: \`query\`).
 - \`skill\` — load a registered Agent Hub skill (field: \`name\`).
 - \`web\` — live web search via DuckDuckGo (field: \`query\`). Keyless; no server configuration required.
+- \`design\` — render HTML/CSS/JS (a chart, graph, mockup, diagram, or small self-contained app) inline: \`{"tool":"design","op":"render","html":"<the document — full page or a body fragment>","title":"optional"}\`. The host renders it in a headless browser and streams the image straight into the chat, and saves it as a viewable artifact. **You always have this ability on every engine and every session** — when a user says "show me a chart of this" / "mock up a page" / "draw a diagram", emit a \`design\` render (a chart library from a public CDN works). No design mode required.
 ${browserToolLines}${previewToolLines}${terminalToolLines}
 The host executes actions, appends a compact observation + loaded context, and may auto-continue the same turn within budget caps.`;
   } else {
@@ -1020,7 +1054,7 @@ The host executes actions, appends a compact observation + loaded context, and m
     // `terminal` is not — it ships unconditionally because its availability is a
     // *runtime* fact (has the human opened a shell), which the host reports as a
     // `no_terminal` / `runtime_unwired` observation rather than a rejection.
-    const toolNames = ['`wiki`', '`skill`', '`web`'];
+    const toolNames = ['`wiki`', '`skill`', '`web`', '`design`'];
     if (browserToolsOn) toolNames.push('`browser`');
     if (previewEnabledForPrompt) toolNames.push('`preview`');
     toolNames.push('`terminal`');
@@ -1037,8 +1071,9 @@ The host executes actions, appends a compact observation + loaded context, and m
     const humanStartedLine = previewEnabledForPrompt
       ? `\n\`preview\` can boot via \`{"tool":"preview","op":"start"}\` (same as toolbar **Start preview**), then observe/drive; stop stays human-only. \`terminal\` acts on a shell the human opened (the **Terminal** tab) — you cannot open one yourself.`
       : `\n\`terminal\` acts on a shell the human has already opened (the **Terminal** tab) — you cannot open one yourself, and you'll get a "not running" observation when none is up.`;
+    const designReminder = `\n\`design\` renders HTML/CSS/JS inline — \`{"tool":"design","op":"render","html":"…"}\` — whenever the user asks for a chart/graph/mockup/diagram. Always available, no design mode needed.`;
     prompt += `\n\n## ReAct Loop (host tools)
-Still available mid-answer: emit a naked \`<agenthub:react>{"actions":[${exampleAction}]}</agenthub:react>\` block (valid JSON, never inside a code fence). Tools: ${toolNames.join(', ')}.${browserReminder}${humanStartedLine}`;
+Still available mid-answer: emit a naked \`<agenthub:react>{"actions":[${exampleAction}]}</agenthub:react>\` block (valid JSON, never inside a code fence). Tools: ${toolNames.join(', ')}.${browserReminder}${humanStartedLine}${designReminder}`;
   }
 
   {
@@ -1745,6 +1780,22 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       actions.push({ tool: 'terminal', op, command });
       continue;
     }
+    if (a.tool === 'design') {
+      const op = typeof a.op === 'string' ? a.op.trim().toLowerCase() : '';
+      if (!op || !DESIGN_REACT_OP_SET.has(op)) {
+        return { error: 'malformed', detail: 'design action requires op "render"' };
+      }
+      const html = typeof a.html === 'string' ? a.html : '';
+      if (!html.trim()) {
+        return { error: 'malformed', detail: 'design render requires a non-empty html field' };
+      }
+      if (Buffer.byteLength(html, 'utf8') > MAX_DESIGN_HTML_BYTES) {
+        return { error: 'malformed', detail: 'design render html exceeds the size limit' };
+      }
+      const title = typeof a.title === 'string' ? a.title : undefined;
+      actions.push({ tool: 'design', op, html, title });
+      continue;
+    }
     if (a.tool === 'google') {
       const surface = typeof a.surface === 'string' ? a.surface.trim().toLowerCase() : '';
       if (surface !== 'calendar' && surface !== 'gmail' && surface !== 'sheets') {
@@ -1773,7 +1824,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
     return {
       error: 'malformed',
       detail:
-        'Unsupported action.tool; expected "wiki", "skill", "web", "browser", "preview", "terminal", or "google"',
+        'Unsupported action.tool; expected "wiki", "skill", "web", "browser", "preview", "terminal", "google", or "design"',
     };
   }
   return { actions };
@@ -2123,6 +2174,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     getDevServerRuntime,
     getPtyHost,
     listWatchedBackgroundShells,
+    renderDesign,
     autoCommitAndPR,
     tryAutonomousDispatch,
   } = deps;
@@ -5894,6 +5946,83 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 }
                 hostExit = p.hostExit;
                 hostDetail = p.hostDetail || opName;
+                continue;
+              }
+              if (action.tool === 'design') {
+                const actionId = uuidv4();
+                const opName = action.op ?? '';
+                const startLabel = `Design: ${opName || 'render'}…`;
+                const startedAtMs = Date.now();
+                const designOpStartMs = Date.now();
+                emitBrowserActivityEvent(
+                  buildBrowserActivityStartedEvent({
+                    actionId,
+                    op: `design:${opName || 'render'}`,
+                    label: startLabel,
+                    startedAtMs,
+                  }),
+                );
+                let d: Awaited<ReturnType<typeof runDesignReActStep>>;
+                try {
+                  const location = resolveDesignRenderLocation({
+                    worktreePath: session!.worktree_path,
+                    sessionId,
+                    dataDir: config.dataDir,
+                  });
+                  d = await runDesignReActStep(
+                    { op: opName, html: action.html, title: action.title },
+                    {
+                      location,
+                      sessionId,
+                      servedPath: `/session-files/${sessionId}/design/${DESIGN_RENDER_FILENAME}`,
+                      render: (html) =>
+                        (renderDesign ?? renderDesignHtmlScreenshot)(
+                          sessionId,
+                          html,
+                          browserLaunchOpts,
+                        ),
+                    },
+                  );
+                } catch (err: unknown) {
+                  emitBrowserActivityEvent(
+                    buildBrowserActivityEndedThrowEvent({
+                      actionId,
+                      op: `design:${opName || 'render'}`,
+                      label: startLabel,
+                      startedAtMs,
+                      durationMs: Date.now() - designOpStartMs,
+                      err,
+                    }),
+                  );
+                  throw err;
+                }
+                emitBrowserActivityEvent(
+                  buildBrowserActivityEndedEvent({
+                    actionId,
+                    op: `design:${opName || 'render'}`,
+                    label: startLabel,
+                    startedAtMs,
+                    durationMs: Date.now() - designOpStartMs,
+                    b: d,
+                  }),
+                );
+                const designShot = buildBrowserActivityScreenshotBroadcast({
+                  sessionId,
+                  messageId: assistantMsgId,
+                  actionId,
+                  screenshotWsUrl: d.ui?.screenshotWsUrl,
+                });
+                if (designShot) broadcast(designShot);
+                if (d.markdown.trim()) {
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${d.markdown.trim()}`
+                    : d.markdown.trim();
+                  reactObservations.push(
+                    `- design(${opName}) host step finished (exit ${d.hostExit}).`,
+                  );
+                }
+                hostExit = d.hostExit;
+                hostDetail = d.hostDetail || opName;
                 continue;
               }
               if (action.tool === 'terminal') {

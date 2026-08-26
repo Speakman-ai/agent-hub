@@ -1358,3 +1358,37 @@ describe('buildEnrichedPrompt — wiki context cap', () => {
     expect(prompt).toContain('## Project Wiki (2 pages)');
   });
 });
+
+describe('buildEnrichedPrompt — always-on design tool advertising', () => {
+  beforeEach(() => {
+    mkdirSync(tmpBase, { recursive: true });
+    mkdirSync(path.join(tmpBase, 'skills'), { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(tmpBase, { recursive: true, force: true });
+  });
+
+  it('advertises the design render tool on the first message', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
+    expect(prompt).toContain('`design`');
+    expect(prompt).toContain('You always have this ability');
+    expect(prompt).toContain('"tool":"design"');
+  });
+
+  it('keeps advertising design on follow-up turns', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: false });
+    expect(prompt).toContain('`design`');
+    expect(prompt).toContain('"tool":"design"');
+  });
+
+  it('advertises design even when browser tools are off and no dev server is configured', () => {
+    const first = buildEnrichedPrompt(makeProject(), makeAgent({ browserToolsEnabled: false }), {
+      isFirstMessage: true,
+    });
+    const followUp = buildEnrichedPrompt(makeProject(), makeAgent({ browserToolsEnabled: false }), {
+      isFirstMessage: false,
+    });
+    expect(first).toContain('`design`');
+    expect(followUp).toContain('`design`');
+  });
+});
