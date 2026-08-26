@@ -15,6 +15,15 @@ import { render, screen, act, fireEvent } from '@testing-library/react';
     getSkillCredentials: vi.fn(),
     putSkillCredential: vi.fn(),
     deleteSkillCredential: vi.fn(),
+    // Per-user skill options + project default-on skills. Default impls set here
+    // (not in a beforeEach) so `vi.clearAllMocks()` keeps the empty resolves,
+    // which every card expand / project load depends on to not reject.
+    getSkillOptions: vi.fn().mockResolvedValue({ options: [] }),
+    putSkillOption: vi.fn().mockResolvedValue({ option: {} }),
+    deleteSkillOption: vi.fn().mockResolvedValue({ ok: true }),
+    getProjectDefaultSkills: vi.fn().mockResolvedValue({ skillIds: [] }),
+    addProjectDefaultSkill: vi.fn().mockResolvedValue({ ok: true, skillIds: [] }),
+    removeProjectDefaultSkill: vi.fn().mockResolvedValue({ ok: true, skillIds: [] }),
     createProjectSkill: vi.fn(),
     createGlobalSkill: vi.fn(),
     updateProjectSkill: vi.fn(),
@@ -424,6 +433,307 @@ describe('SkillsPage — skill credential configuration', () => {
       value: 'ghp_secret',
       agent_id: 'a1',
     });
+  });
+});
+
+describe('SkillsPage — per-user skill options', () => {
+  const AGENT = {
+    id: 'a1',
+    name: 'A1',
+    projectId: 'agent-hub',
+    color: '#22d3ee',
+    workspace: '/tmp/ws',
+  } as Record<string, any>;
+  const PROPS = {
+    agents: [AGENT],
+    projects: [{ id: 'agent-hub', name: 'Agent Hub' }],
+    initialProjectId: 'agent-hub',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (api.getSkillOverrides as any).mockResolvedValue([]);
+    (api.getContext as any).mockResolvedValue({});
+    (api.getSkillCredentials as any).mockResolvedValue({ credentials: [] });
+    (api.getProjectSkills as any).mockResolvedValue([
+      { id: 'deploy', name: 'Deploy', description: 'd', category: 'ops', source: 'project' },
+    ]);
+    (api.getProjectSkill as any).mockResolvedValue({ content: '# Deploy', credentials: [] });
+    (api.getSkillOptions as any).mockResolvedValue({
+      options: [
+        {
+          name: 'ENVIRONMENT',
+          label: 'Environment',
+          description: 'Which target to deploy to',
+          choices: [
+            { value: 'dev', label: 'Development' },
+            { value: 'prod', label: 'Production' },
+          ],
+          default: 'dev',
+          required: true,
+          selected: 'prod',
+        },
+      ],
+    });
+    (api.putSkillOption as any).mockResolvedValue({ option: {} });
+  });
+
+  afterEach(() => vi.clearAllMocks());
+
+  async function flush() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it('renders a select for a declared option with the effective selected value', async () => {
+    render(<SkillsPage {...PROPS} />);
+    await flush();
+
+    fireEvent.click(screen.getByText('Deploy'));
+    await flush();
+
+    expect(api.getSkillOptions).toHaveBeenCalledWith('deploy', 'a1');
+    const select = screen.getByLabelText('Environment') as HTMLSelectElement;
+    expect(select).toBeInTheDocument();
+    // Effective value is the stored choice (`selected`), not the default.
+    expect(select.value).toBe('prod');
+    // Both declared choices render as options.
+    expect(screen.getByRole('option', { name: 'Development' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Production' })).toBeInTheDocument();
+  });
+
+  it('changing the select persists the choice via putSkillOption', async () => {
+    render(<SkillsPage {...PROPS} />);
+    await flush();
+
+    fireEvent.click(screen.getByText('Deploy'));
+    await flush();
+
+    const select = screen.getByLabelText('Environment');
+    fireEvent.change(select, { target: { value: 'dev' } });
+    await flush();
+
+    expect(api.putSkillOption).toHaveBeenCalledWith({
+      skill_id: 'deploy',
+      option_name: 'ENVIRONMENT',
+      value: 'dev',
+      agent_id: 'a1',
+    });
+  });
+
+  it('drops a stale option save-refetch after the card switches agent (no cross-agent leak)', async () => {
+    // Root-cause regression: saveOption on agent a1 must not apply its refetch
+    // once the card is rendering agent a2. Render SkillCard directly so we can
+    // swap the agentId prop while the refetch is pending.
+    const skill = {
+      id: 'deploy',
+      name: 'Deploy',
+      description: 'd',
+      category: 'ops',
+      source: 'project',
+      content: '# Deploy',
+    };
+    const commonProps = {
+      skill,
+      projectId: 'agent-hub',
+      overrides: [],
+      onToggle: vi.fn(),
+      onUninstall: vi.fn(),
+      onEdit: vi.fn(),
+      isInstalled: true,
+    };
+    const ENV_OPTION = {
+      name: 'ENVIRONMENT',
+      label: 'Environment',
+      description: '',
+      choices: [
+        { value: 'dev', label: 'Development' },
+        { value: 'prod', label: 'Production' },
+      ],
+      default: 'dev',
+      required: false,
+      selected: 'dev',
+    };
+    const REGION_OPTION = {
+      name: 'REGION',
+      label: 'Region',
+      description: '',
+      choices: [{ value: 'us', label: 'US' }],
+      default: 'us',
+      required: false,
+      selected: 'us',
+    };
+    // Sequence: a1 load → a2 load (after switch) → a1 stale save-refetch.
+    (api.getSkillOptions as any)
+      .mockResolvedValueOnce({ options: [ENV_OPTION] }) // #1 a1 initial load
+      .mockResolvedValueOnce({ options: [REGION_OPTION] }) // #2 a2 load on rerender
+      .mockResolvedValueOnce({ options: [ENV_OPTION] }); // #3 a1 stale save-refetch
+    // Make the save hang until released, so we can switch agent mid-flight.
+    let releaseSave!: () => void;
+    (api.putSkillOption as any).mockReturnValue(
+      new Promise<void>((r) => {
+        releaseSave = () => r();
+      }),
+    );
+
+    const { rerender } = render(<SkillCard {...commonProps} agentId="a1" />);
+    await flush();
+    fireEvent.click(screen.getByText('Deploy'));
+    await flush();
+
+    // Kick off a save on a1 (its putSkillOption promise is pending).
+    fireEvent.change(screen.getByLabelText('Environment'), { target: { value: 'prod' } });
+    await flush();
+
+    // Switch the card to agent a2 (fresh load = REGION), THEN let a1's save
+    // resolve so its refetch (ENVIRONMENT) races in last.
+    rerender(<SkillCard {...commonProps} agentId="a2" />);
+    await flush();
+    releaseSave();
+    await flush();
+
+    // a2's REGION is shown; a1's stale save-refetch did NOT overwrite it.
+    expect(screen.getByLabelText('Region')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Environment')).not.toBeInTheDocument();
+  });
+
+  it('clears the previous skill/agent options immediately on switch (no stale select before the new load)', async () => {
+    // Root-cause regression: switching identity must drop the old options
+    // synchronously, so a stale select can't drive a save against the new
+    // skill/agent while the new load is still pending.
+    const skill = {
+      id: 'deploy',
+      name: 'Deploy',
+      description: 'd',
+      category: 'ops',
+      source: 'project',
+      content: '# Deploy',
+    };
+    const commonProps = {
+      skill,
+      projectId: 'agent-hub',
+      overrides: [],
+      onToggle: vi.fn(),
+      onUninstall: vi.fn(),
+      onEdit: vi.fn(),
+      isInstalled: true,
+    };
+    (api.getSkillOptions as any)
+      .mockResolvedValueOnce({
+        options: [
+          {
+            name: 'ENVIRONMENT',
+            label: 'Environment',
+            description: '',
+            choices: [{ value: 'dev', label: 'Development' }],
+            default: 'dev',
+            required: false,
+            selected: 'dev',
+          },
+        ],
+      })
+      // a2 load never resolves during the assertion window.
+      .mockReturnValueOnce(new Promise(() => {}));
+
+    const { rerender } = render(<SkillCard {...commonProps} agentId="a1" />);
+    await flush();
+    fireEvent.click(screen.getByText('Deploy'));
+    await flush();
+    expect(screen.getByLabelText('Environment')).toBeInTheDocument();
+
+    // Switch agent; a2's load is pending. The a1 option must be gone already.
+    rerender(<SkillCard {...commonProps} agentId="a2" />);
+    await flush();
+    expect(screen.queryByLabelText('Environment')).not.toBeInTheDocument();
+  });
+
+  it('never renders the previous project default-toggle state after a project switch (synchronous, not effect-clear)', async () => {
+    // Root-cause regression: the rendered default-toggle state is DERIVED from a
+    // project-identity match, so switching to project B shows no stale "on"
+    // toggle even before B's own load resolves (a passive effect-clear would
+    // leave one stale render, during which a tap applies the wrong intent to B).
+    const projectSkill = {
+      id: 'deploy',
+      name: 'Deploy',
+      description: 'd',
+      category: 'ops',
+      source: 'project',
+    };
+    (api.getProjectSkills as any).mockResolvedValue([projectSkill]);
+    // A: deploy is a project default. B: request stays pending during assertion.
+    (api.getProjectDefaultSkills as any)
+      .mockResolvedValueOnce({ skillIds: ['deploy'] })
+      .mockReturnValueOnce(new Promise(() => {}));
+    const props = {
+      agents: [AGENT],
+      projects: [
+        { id: 'agent-hub', name: 'A' },
+        { id: 'proj-b', name: 'B' },
+      ],
+      initialProjectId: 'agent-hub',
+    };
+
+    const { rerender } = render(<SkillsPage {...props} />);
+    await flush();
+    const toggleA = screen.getByTestId('skill-default-toggle-deploy') as HTMLInputElement;
+    expect(toggleA.checked).toBe(true);
+
+    // Switch to project B; its defaults request is still pending.
+    rerender(<SkillsPage {...props} initialProjectId="proj-b" />);
+    await flush();
+    const toggleB = screen.getByTestId('skill-default-toggle-deploy') as HTMLInputElement;
+    // Derived off for B — project A's ['deploy'] is not applied to B.
+    expect(toggleB.checked).toBe(false);
+  });
+
+  it('renders the default-on toggle only for project-sourced skills', async () => {
+    const base = {
+      agentId: 'a1',
+      projectId: 'agent-hub',
+      overrides: [],
+      onToggle: vi.fn(),
+      onUninstall: vi.fn(),
+      onEdit: vi.fn(),
+      isInstalled: true,
+      onToggleDefault: vi.fn(),
+      canManageDefaults: true,
+    };
+    const { rerender } = render(
+      <SkillCard
+        {...base}
+        skill={{ id: 'deploy', name: 'Deploy', description: 'd', source: 'project' }}
+      />,
+    );
+    await flush();
+    expect(screen.getByTestId('skill-default-toggle-deploy')).toBeInTheDocument();
+
+    // A global skill must NOT expose the project-default toggle (capability is
+    // project-scoped; mobile shares this gate).
+    rerender(
+      <SkillCard
+        {...base}
+        skill={{ id: 'gcloud', name: 'gcloud', description: 'd', source: 'global' }}
+      />,
+    );
+    await flush();
+    expect(screen.queryByTestId('skill-default-toggle-gcloud')).not.toBeInTheDocument();
+  });
+
+  it('surfaces the error when the initial options fetch fails (not silently hidden)', async () => {
+    // Regression: the Options section used to render only when
+    // `skillOptions.length > 0`, so a failed fetch cleared the array and the
+    // error/loading UI never showed — the user saw nothing.
+    (api.getSkillOptions as any).mockRejectedValue(new Error('boom-options'));
+    render(<SkillsPage {...PROPS} />);
+    await flush();
+
+    fireEvent.click(screen.getByText('Deploy'));
+    await flush();
+
+    expect(screen.getByText('boom-options')).toBeInTheDocument();
   });
 });
 

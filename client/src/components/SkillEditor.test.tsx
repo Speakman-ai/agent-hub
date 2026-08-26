@@ -13,6 +13,15 @@ import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
     uninstallSkill: vi.fn(),
     saveContext: vi.fn(),
     getSkillCredentials: vi.fn(),
+    // Per-user skill options + per-project default-on skills. Defaults set at
+    // definition so `vi.clearAllMocks()` (clears calls, not impls) keeps the
+    // empty resolves the SkillsPage/SkillCard mount effects depend on.
+    getSkillOptions: vi.fn().mockResolvedValue({ options: [] }),
+    putSkillOption: vi.fn().mockResolvedValue({ option: {} }),
+    deleteSkillOption: vi.fn().mockResolvedValue({ ok: true }),
+    getProjectDefaultSkills: vi.fn().mockResolvedValue({ skillIds: [] }),
+    addProjectDefaultSkill: vi.fn().mockResolvedValue({ ok: true, skillIds: [] }),
+    removeProjectDefaultSkill: vi.fn().mockResolvedValue({ ok: true, skillIds: [] }),
     createProjectSkill: vi.fn(),
     createGlobalSkill: vi.fn(),
     updateProjectSkill: vi.fn(),

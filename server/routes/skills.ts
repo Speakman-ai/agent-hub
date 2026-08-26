@@ -14,6 +14,12 @@ import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
 import type { RouteDeps, AgentSkillOverrideRow } from '../types.js';
 import { extractCredentialsFromSkillContent } from '../skill-credentials-resolve.js';
+import { extractOptionsFromSkillContent } from '../skill-options-resolve.js';
+import {
+  listProjectDefaultSkillIds,
+  addProjectDefaultSkill,
+  removeProjectDefaultSkill,
+} from '../project-default-skills-store.js';
 import { validateAndComposeSkill, validateSkillSlug } from '../skill-write.js';
 // The unfiltered options list used by the Settings allowlist editor lives in
 // agent-skills-list (built on collectSkillsFromDir below). Importing it here
@@ -457,6 +463,12 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
           .status(400)
           .json({ error: `invalid credentials in SKILL.md frontmatter: ${credPack.error}` });
       }
+      const optPack = extractOptionsFromSkillContent(raw);
+      if (optPack.error) {
+        return res
+          .status(400)
+          .json({ error: `invalid options in SKILL.md frontmatter: ${optPack.error}` });
+      }
       res.json({
         id: slugRes.slug,
         name: (data.name as string) || slugRes.slug,
@@ -464,6 +476,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
         content: raw,
         path: resolved.kind === 'dir' ? resolved.dir : resolved.mdPath,
         credentials: credPack.credentials,
+        options: optPack.options,
         source: 'project',
       });
     } catch (err) {
@@ -902,6 +915,60 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     '/api/projects/:projectId/skills/:skillId/improvements/:improvementId/reject',
     requireRole('Admin'),
     reviewImprovementHandler('reject'),
+  );
+
+  // ── Per-project default-on skills (auto-loaded into every session) ──
+  router.get('/api/projects/:projectId/default-skills', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    try {
+      // A DB failure must surface as a 500, not a misleading empty list — a
+      // genuinely-empty config and an operational failure are different states.
+      res.json({ skillIds: listProjectDefaultSkillIds(project.id) });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.post(
+    '/api/projects/:projectId/default-skills',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const skillId = typeof req.body?.skillId === 'string' ? req.body.skillId.trim() : '';
+      if (!skillId) return res.status(400).json({ error: 'skillId is required' });
+      try {
+        addProjectDefaultSkill(project.id, skillId);
+        broadcast({
+          type: 'skills_update',
+          payload: { action: 'default-added', projectId: project.id, skillId },
+        });
+        res.json({ ok: true, skillIds: listProjectDefaultSkillIds(project.id) });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    },
+  );
+
+  router.delete(
+    '/api/projects/:projectId/default-skills/:skillId',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const skillId = req.params.skillId as string;
+      try {
+        const result = removeProjectDefaultSkill(project.id, skillId);
+        broadcast({
+          type: 'skills_update',
+          payload: { action: 'default-removed', projectId: project.id, skillId },
+        });
+        res.json({ ok: result.ok, skillIds: listProjectDefaultSkillIds(project.id) });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    },
   );
 
   router.put('/api/agents/:agentId/skills/:skillId/toggle', (req: Request, res: Response) => {

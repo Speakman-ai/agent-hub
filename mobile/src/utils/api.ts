@@ -947,6 +947,35 @@ export const api = {
     fetchJSON('/auth/me/skill-credentials', { method: 'PUT', body: JSON.stringify(body) }),
   deleteSkillCredential: (id: any) =>
     fetchJSON(`/auth/me/skill-credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  // Per-user skill options — owner-defined enums (e.g. dev/prod) the signed-in
+  // user selects; the effective value is merged into CLI spawns for enabled
+  // skills. Mirrors the web SkillsPage options block.
+  getSkillOptions: (skillId: any, agentId?: any) =>
+    fetchJSON(
+      `/auth/me/skill-options?skillId=${encodeURIComponent(skillId)}${
+        agentId ? `&agentId=${encodeURIComponent(agentId)}` : ''
+      }`,
+    ),
+  putSkillOption: (body: any) =>
+    fetchJSON('/auth/me/skill-options', { method: 'PUT', body: JSON.stringify(body) }),
+  deleteSkillOption: (skillId: any, optionName: any) =>
+    fetchJSON(
+      `/auth/me/skill-options/${encodeURIComponent(skillId)}/${encodeURIComponent(optionName)}`,
+      { method: 'DELETE' },
+    ),
+  // Per-project default-on skills — auto-loaded into every session for the
+  // project. Admin-only writes (server-enforced). Mirrors the web SkillsPage
+  // "on by default" toggle.
+  getProjectDefaultSkills: (projectId: any) => fetchJSON(`/projects/${projectId}/default-skills`),
+  addProjectDefaultSkill: (projectId: any, skillId: any) =>
+    fetchJSON(`/projects/${projectId}/default-skills`, {
+      method: 'POST',
+      body: JSON.stringify({ skillId }),
+    }),
+  removeProjectDefaultSkill: (projectId: any, skillId: any) =>
+    fetchJSON(`/projects/${projectId}/default-skills/${encodeURIComponent(skillId)}`, {
+      method: 'DELETE',
+    }),
   // Sidebar/drawer project collapse state — persisted per user so the same
   // account sees the same collapsed projects on web, mobile, and Electron.
   // The PUT merges one project server-side so concurrent surfaces can't

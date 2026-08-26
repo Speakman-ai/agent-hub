@@ -30,6 +30,15 @@ interface SkillRouteInput {
    * `chat` and never spuriously enable the design gate.
    */
   sessionMode?: string | null;
+  /**
+   * Skill ids the project owner marked "on by default for every session"
+   * (per-project default-skills list). Each is appended as an autoloaded match
+   * — same mechanism as the always-on `agent-hub` default — so its SKILL.md is
+   * injected without the user's message needing a tell. Only appended when the
+   * id is actually present in `skills` (i.e. enabled/allowed for this agent)
+   * and no higher-intent candidate for it already exists.
+   */
+  projectDefaultSkillIds?: string[];
 }
 
 export interface SkillRouteMatch {
@@ -244,6 +253,19 @@ export function routeSkillsFromMessage(input: SkillRouteInput): SkillRouteMatch[
       reason: 'agent-hub project default',
       score: 30,
     });
+  }
+
+  // Per-project default-on skills: append each configured id as an autoloaded
+  // match (same intent-tier score as the agent-hub default) when it is enabled
+  // for this agent and not already a stronger candidate. This is what makes a
+  // skill "on by default for every session in the project".
+  if (Array.isArray(input.projectDefaultSkillIds) && input.projectDefaultSkillIds.length > 0) {
+    const availableIds = new Set(input.skills.map((s) => s?.id).filter(Boolean));
+    for (const skillId of input.projectDefaultSkillIds) {
+      if (!skillId || seen.has(skillId) || !availableIds.has(skillId)) continue;
+      candidates.push({ skillId, reason: 'project default skill', score: 30 });
+      seen.add(skillId);
+    }
   }
 
   candidates.sort((a, b) => b.score - a.score || a.skillId.localeCompare(b.skillId));

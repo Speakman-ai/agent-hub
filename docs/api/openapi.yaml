@@ -619,6 +619,22 @@ components:
         - skill_id
         - key_name
       description: "Upsert a per-user skill credential. `agent_id` is optional: omit it when setting a personal credential for a bundled default skill from the Account page."
+    UpsertSkillOptionBody:
+      type: object
+      properties:
+        skill_id:
+          type: string
+        option_name:
+          type: string
+        agent_id:
+          type: string
+        value:
+          type: string
+      required:
+        - skill_id
+        - option_name
+        - value
+      description: Select a per-user, non-secret skill option (owner-curated enum, e.g. dev/prod). `value` must be one of the option's declared choices.
     AgentEngineOverrideEntry:
       type: object
       properties:
@@ -17147,6 +17163,163 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Credential not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/skill-options:
+    get:
+      tags:
+        - Auth
+      summary: List a skill's option schema plus the caller's current selections.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: skillId
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: agentId
+          in: query
+      responses:
+        "200":
+          description: Option specs with the caller's effective selection.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  options:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        label:
+                          type: string
+                        description:
+                          type: string
+                        choices:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              value:
+                                type: string
+                              label:
+                                type: string
+                            required:
+                              - value
+                              - label
+                        default:
+                          type: string
+                        required:
+                          type: boolean
+                        selected:
+                          type: string
+                      required:
+                        - name
+                        - label
+                        - description
+                        - choices
+                        - default
+                        - required
+                        - selected
+                required:
+                  - options
+        "400":
+          description: Missing skillId or invalid option schema.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Lookup failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags:
+        - Auth
+      summary: Select a per-user skill option value.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertSkillOptionBody"
+      responses:
+        "200":
+          description: Selection stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  nullable: true
+        "400":
+          description: Validation failure (unknown option or value not a declared choice).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Caller is not a member of the org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Agent / workspace not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/skill-options/{skillId}/{optionName}:
+    delete:
+      tags:
+        - Auth
+      summary: Reset a per-user skill option to its default.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: skillId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: optionName
+          in: path
+      responses:
+        "200":
+          description: Reset (row deleted or already absent).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "401":
+          description: Not authenticated.
           content:
             application/json:
               schema:
@@ -42391,6 +42564,148 @@ paths:
                 $ref: "#/components/schemas/SkillWriteError"
         "500":
           description: Filesystem write error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+  /api/projects/{projectId}/default-skills:
+    get:
+      tags:
+        - Skills
+      summary: List the project default-on skills
+      description: The skill ids the project owner marked "on by default for every session". Each is auto-loaded (its SKILL.md injected) into every session of the project.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Default skill ids.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skillIds:
+                    type: array
+                    items:
+                      type: string
+                    description: Skill ids auto-loaded into every session of the project.
+                required:
+                  - skillIds
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+    post:
+      tags:
+        - Skills
+      summary: Mark a skill on-by-default for the project (Admin+)
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                skillId:
+                  type: string
+                  description: Skill id to enable by default.
+              required:
+                - skillId
+      responses:
+        "200":
+          description: Added.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skillIds:
+                    type: array
+                    items:
+                      type: string
+                    description: Skill ids auto-loaded into every session of the project.
+                required:
+                  - skillIds
+        "400":
+          description: skillId is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "403":
+          description: Caller is below Admin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Write error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+  /api/projects/{projectId}/default-skills/{skillId}:
+    delete:
+      tags:
+        - Skills
+      summary: Remove a skill from the project default-on list (Admin+)
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: skillId
+          in: path
+      responses:
+        "200":
+          description: Removed (or already absent).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skillIds:
+                    type: array
+                    items:
+                      type: string
+                    description: Skill ids auto-loaded into every session of the project.
+                required:
+                  - skillIds
+        "403":
+          description: Caller is below Admin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "404":
+          description: Project not found.
           content:
             application/json:
               schema:

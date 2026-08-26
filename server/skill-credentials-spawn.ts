@@ -2,6 +2,7 @@ import type { Project } from './types.js';
 import { listEnabledSkills } from './agent-skills-list.js';
 import { mergeDecryptedSkillCredentialsIntoEnv } from './skill-credentials-store.js';
 import { readCredentialsSchemaForSkill } from './skill-credentials-resolve.js';
+import { mergeSkillOptionSpawnEnv } from './skill-options-spawn.js';
 import { resolveProjectSkillsDir } from './project-model.js';
 
 /**
@@ -66,4 +67,9 @@ export function mergeSkillCredentialSpawnEnv(
       `TOOL_ERROR | ${new Date().toISOString()} | skill-credentials | spawn merge | error | ${summary} | ${meta}`,
     );
   }
+  // Umbrella parity: every spawn path that injects per-user skill credentials
+  // also injects per-user skill OPTION env vars (owner-curated enums like
+  // dev/prod). Kept as its own try/catch so an options failure never masks a
+  // successful credential merge and vice-versa.
+  mergeSkillOptionSpawnEnv(base, opts);
 }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -23,6 +23,26 @@ import {
   validateCredentialValue,
 } from '@shared/utils/skillCredentialForm';
 import { colors } from '../theme/colors';
+
+/**
+ * Ref that always holds the latest rendered `value` (set during render). Root-
+ * cause guard for the "stale async overwrites live state" race on this screen:
+ * an async request captures the identity it was issued for (active project, or
+ * a card's skill+agent key) and, on completion, compares it against
+ * `ref.current`; if they differ, the active project/skill/agent changed while
+ * the request was pending and the result is dropped instead of clobbering the
+ * current view. Effects can cancel via cleanup; callbacks/late refetches cannot,
+ * so they rely on this.
+ */
+function useLiveRef<T>(value: T) {
+  const ref = useRef(value);
+  ref.current = value;
+  return ref;
+}
+
+// Stable empty array so identity-mismatched reads stay referentially constant.
+const EMPTY_STRING_ARRAY: string[] = [];
+
 const CATEGORY_STYLES: Record<string, any> = {
   platform: { bg: colors.indigo900_40, fg: colors.indigo400 },
   development: { bg: colors.blue900_40, fg: colors.blue400 },
@@ -314,6 +334,130 @@ export function SkillCredentialSection({
     </View>
   );
 }
+/**
+ * Per-user skill options (mobile parity with the web SkillsPage options block).
+ * Owner-declared enums (e.g. dev/prod) the signed-in user selects; the effective
+ * value merges into CLI spawns for enabled skills. Self-contained: fetches the
+ * option declarations + current selection on mount and persists a pick via
+ * `putSkillOption`, refetching to reflect the new effective value. Renders
+ * nothing until at least one option is declared.
+ */
+export function SkillOptionsSection({ skillId, agentId }: any) {
+  // Options tagged with the owning identity key + DERIVED on match, so the first
+  // committed render after a skill/agent switch shows no stale chips (a passive
+  // effect-clear would leave that render, whose chips are wired to the freshly
+  // created selectOption and could save a stale option against the new identity).
+  const [optionsState, setOptionsState] = useState<{ key: string; options: any[] }>({
+    key: '',
+    options: [],
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<any>(null);
+  const [saving, setSaving] = useState<any>(null);
+  // Identity these requests belong to. A late fetch/save-refetch must not apply
+  // once the section is rendering a different skill/agent (props change without
+  // a remount, and the post-save `load()` is fired from a stale callback).
+  const optKey = `${skillId ?? ''}::${agentId ?? ''}`;
+  const optKeyRef = useLiveRef(optKey);
+  const options = optionsState.key === optKey ? optionsState.options : EMPTY_STRING_ARRAY;
+  const load = useCallback(async () => {
+    if (!skillId) return;
+    const reqKey = `${skillId ?? ''}::${agentId ?? ''}`;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.getSkillOptions(skillId, agentId);
+      if (optKeyRef.current !== reqKey) return;
+      setOptionsState({ key: reqKey, options: Array.isArray(res?.options) ? res.options : [] });
+    } catch (err: any) {
+      if (optKeyRef.current !== reqKey) return;
+      setError(err?.message || String(err));
+      setOptionsState({ key: reqKey, options: [] });
+    } finally {
+      if (optKeyRef.current === reqKey) setLoading(false);
+    }
+  }, [skillId, agentId, optKeyRef]);
+  useEffect(() => {
+    // No imperative clear: `options` is derived from an identity match, so a
+    // skill/agent switch shows an empty list synchronously until this load
+    // stores a value tagged with the new key. The post-save refetch calls
+    // load() directly (same key), so it does not flicker.
+    setError(null);
+    load();
+  }, [load]);
+  const selectOption = useCallback(
+    async (optionName: string, value: string) => {
+      const reqKey = optKey;
+      setSaving(optionName);
+      setError(null);
+      try {
+        await api.putSkillOption({
+          skill_id: skillId,
+          option_name: optionName,
+          value,
+          agent_id: agentId,
+        });
+        if (optKeyRef.current !== reqKey) return;
+        await load();
+      } catch (err: any) {
+        if (optKeyRef.current !== reqKey) return;
+        setError(err?.message || String(err));
+      } finally {
+        if (optKeyRef.current === reqKey) setSaving(null);
+      }
+    },
+    [skillId, agentId, load, optKey, optKeyRef],
+  );
+  // Render nothing only when there is genuinely nothing to show. Keep the
+  // section mounted while loading or when an error was recorded so a failed
+  // initial fetch is distinguishable from a skill that declares no options.
+  if (!options.length && !loading && !error) return null;
+  return (
+    <View style={styles.optSection} testID="skill-options-section">
+      <View style={styles.optHeaderRow}>
+        <Text style={styles.optHeaderIcon}>⚙️</Text>
+        <Text style={styles.optHeaderTitle}>Options</Text>
+        {loading ? <Text style={styles.optHint}> · Loading…</Text> : null}
+      </View>
+      <Text style={styles.optHint}>
+        Stored per signed-in user, merged into CLI spawns for enabled skills.
+      </Text>
+      {error ? <Text style={styles.optError}>{error}</Text> : null}
+      {options.map((option: any) => {
+        const current = option.selected ?? option.default;
+        return (
+          <View key={option.name} style={styles.optRow}>
+            <Text style={styles.optLabel}>
+              {option.label || option.name}
+              {option.required ? <Text style={styles.optRequired}> *</Text> : null}
+            </Text>
+            {option.description ? (
+              <Text style={styles.optDescription}>{option.description}</Text>
+            ) : null}
+            <View style={styles.optChipRow}>
+              {(option.choices || []).map((choice: any) => {
+                const active = choice.value === current;
+                return (
+                  <TouchableOpacity
+                    key={choice.value}
+                    disabled={saving === option.name}
+                    onPress={() => selectOption(option.name, choice.value)}
+                    style={[styles.optChip, active && styles.optChipActive]}
+                    testID={`skill-option-choice-${option.name}-${choice.value}`}
+                  >
+                    <Text style={[styles.optChipText, active && styles.optChipTextActive]}>
+                      {choice.label || choice.value}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
 function SkillCard({
   skill,
   agentId,
@@ -323,6 +467,8 @@ function SkillCard({
   onUninstall,
   isInstalled,
   pendingCount = 0,
+  isDefaultOn,
+  onToggleDefault,
 }: any) {
   const [expanded, setExpanded] = useState(false);
   const [fullContent, setFullContent] = useState(skill.content || null);
@@ -524,6 +670,23 @@ function SkillCard({
               <ScrollView style={styles.cardScroll} nestedScrollEnabled>
                 <Markdown style={markdownStyles as any}>{fullContent || ''}</Markdown>
               </ScrollView>
+              {onToggleDefault && skill.source === 'project' ? (
+                <TouchableOpacity
+                  style={styles.defaultToggleRow}
+                  onPress={() => onToggleDefault(skill.id, !isDefaultOn)}
+                  testID={`skill-default-toggle-${skill.id}`}
+                >
+                  <Text
+                    style={[
+                      styles.defaultToggleText,
+                      isDefaultOn && styles.defaultToggleTextActive,
+                    ]}
+                  >
+                    {isDefaultOn ? '● ' : '○ '}
+                  </Text>
+                  <Text style={styles.defaultToggleLabel}>On by default for this project</Text>
+                </TouchableOpacity>
+              ) : null}
               {credentialSchema.length > 0 && agentId ? (
                 <SkillCredentialSection
                   schema={credentialSchema}
@@ -537,6 +700,7 @@ function SkillCard({
                   saving={credSaving}
                 />
               ) : null}
+              {agentId ? <SkillOptionsSection skillId={skill.id} agentId={agentId} /> : null}
             </>
           )}
         </View>
@@ -617,6 +781,9 @@ export default function SkillsScreen() {
   const navigation = useNavigation<any>();
   const visibleProjects = useMemo(() => (projects || []).filter((p: any) => p?.id), [projects]);
   const [activeProjectId, setActiveProjectId] = useState(visibleProjects[0]?.id || null);
+  // Live ref so async completions (read effect AND the toggle callback) can drop
+  // their result when the active project changed while the request was pending.
+  const activeProjectIdRef = useLiveRef(activeProjectId);
   // null = follow the default reference agent; otherwise the user-picked agent
   // whose overrides + context this screen is inspecting.
   const [selectedAgentId, setSelectedAgentId] = useState<any>(null);
@@ -631,6 +798,23 @@ export default function SkillsScreen() {
   const [improvements, setImprovements] = useState<any[]>([]);
   const [loadingSkills, setLoadingSkills] = useState(false);
   const [loadingContext, setLoadingContext] = useState(false);
+  // Per-project default-on skills (auto-loaded into every session). Admin-only
+  // writes; when the role is unknown we still render the toggle and let the
+  // server surface a 403 (matches the PendingLessonsSection gating pattern).
+  //
+  // Tag the loaded ids with their project and DERIVE the rendered ids from an
+  // identity match, so a project switch is stale-safe at render time (not via a
+  // passive effect that only clears after the first render commits). During the
+  // render for a newly-selected project — before its own load resolves — the
+  // ids don't match and every toggle reads off, so a tap can't apply the
+  // previous project's on/off intent to the new project.
+  const [defaultSkills, setDefaultSkills] = useState<{
+    projectId: string | null;
+    ids: string[];
+  }>({ projectId: null, ids: [] });
+  const defaultSkillIds =
+    defaultSkills.projectId === activeProjectId ? defaultSkills.ids : EMPTY_STRING_ARRAY;
+  const canEditDefaults = hasRole('Admin') || !getUserRole();
   useEffect(() => {
     if (!activeProjectId && visibleProjects[0]?.id) setActiveProjectId(visibleProjects[0].id);
   }, [activeProjectId, visibleProjects]);
@@ -684,34 +868,74 @@ export default function SkillsScreen() {
   }, [activeProjectId, handleStartSkillBuilderMode, navigation]);
   useEffect(() => {
     if (!activeProjectId) return;
+    // The rendered ids are derived from `defaultSkills.projectId === activeProjectId`,
+    // so a project switch is stale-safe at render time without a passive clear.
+    // Still guard the async responses so a losing race can't overwrite state.
+    const requestedProjectId = activeProjectId;
+    let cancelled = false;
     setLoadingSkills(true);
     api
       .getProjectSkills(activeProjectId)
-      .then(setSkills)
-      .catch(() => setSkills([]))
-      .finally(() => setLoadingSkills(false));
+      .then((rows: any) => {
+        if (!cancelled) setSkills(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setSkills([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSkills(false);
+      });
     // The global catalog (built-in + shared) is project-independent.
     api
       .getGlobalSkills()
       .then((rows: any) => setGlobalSkills(Array.isArray(rows) ? rows : []))
       .catch(() => setGlobalSkills([]));
+    // Per-project default-on skill ids (drives the "On by default" toggle).
+    api
+      .getProjectDefaultSkills(requestedProjectId)
+      .then((res: any) => {
+        if (cancelled || requestedProjectId !== activeProjectIdRef.current) return;
+        setDefaultSkills({
+          projectId: requestedProjectId,
+          ids: Array.isArray(res?.skillIds) ? res.skillIds : [],
+        });
+      })
+      .catch(() => {
+        if (cancelled || requestedProjectId !== activeProjectIdRef.current) return;
+        setDefaultSkills({ projectId: requestedProjectId, ids: [] });
+      });
     if (!referenceAgentId) {
       setOverrides([]);
       setContext({});
       setLoadingContext(false);
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
     setLoadingContext(true);
     api
       .getContext(referenceAgentId)
-      .then(setContext)
-      .catch(() => setContext({}))
-      .finally(() => setLoadingContext(false));
+      .then((ctx: any) => {
+        if (!cancelled) setContext(ctx);
+      })
+      .catch(() => {
+        if (!cancelled) setContext({});
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingContext(false);
+      });
     api
       .getSkillOverrides(referenceAgentId)
-      .then(setOverrides)
-      .catch(() => setOverrides([]));
-  }, [activeProjectId, referenceAgentId]);
+      .then((rows: any) => {
+        if (!cancelled) setOverrides(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setOverrides([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectId, referenceAgentId, activeProjectIdRef]);
   const handleToggle = useCallback(
     async (skillId: any, enabled: any) => {
       if (!referenceAgentId) return;
@@ -751,6 +975,32 @@ export default function SkillsScreen() {
   const handleContextSaved = (filename: any, newContent: any) => {
     setContext((prev: any) => ({ ...prev, [filename]: newContent }));
   };
+  const handleToggleDefault = useCallback(
+    async (skillId: any, on: any) => {
+      if (!activeProjectId) return;
+      const requestedProjectId = activeProjectId;
+      try {
+        const res = on
+          ? await api.addProjectDefaultSkill(requestedProjectId, skillId)
+          : await api.removeProjectDefaultSkill(requestedProjectId, skillId);
+        // Drop the result if the user switched projects mid-flight — otherwise
+        // this project's ids would overwrite the now-active project's toggles.
+        if (requestedProjectId !== activeProjectIdRef.current) return;
+        if (Array.isArray(res?.skillIds)) {
+          setDefaultSkills({ projectId: requestedProjectId, ids: res.skillIds });
+        } else {
+          setDefaultSkills((prev) => {
+            const base = prev.projectId === requestedProjectId ? prev.ids : [];
+            const ids = on ? [...new Set([...base, skillId])] : base.filter((id) => id !== skillId);
+            return { projectId: requestedProjectId, ids };
+          });
+        }
+      } catch (err: any) {
+        console.error('Failed to toggle project default skill:', err);
+      }
+    },
+    [activeProjectId, activeProjectIdRef],
+  );
   // Load the pending-lessons queue; refetch when the server broadcasts
   // `skill_improvement_update` (AppContext bumps skillImprovementRefreshKey).
   const loadImprovements = useCallback(() => {
@@ -896,6 +1146,8 @@ export default function SkillsScreen() {
                     onUninstall={handleUninstall}
                     isInstalled
                     pendingCount={pendingCountBySkill[skill.id] || 0}
+                    isDefaultOn={defaultSkillIds.includes(skill.id)}
+                    onToggleDefault={canEditDefaults ? handleToggleDefault : undefined}
                   />
                 ))}
               </View>
@@ -956,6 +1208,8 @@ export default function SkillsScreen() {
                   overrides={overrides}
                   onToggle={referenceAgentId ? handleToggle : undefined}
                   isInstalled
+                  isDefaultOn={defaultSkillIds.includes(skill.id)}
+                  onToggleDefault={canEditDefaults ? handleToggleDefault : undefined}
                 />
               ))}
             </View>
@@ -1285,6 +1539,103 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: colors.gray600,
     marginTop: 6,
+  },
+  // Per-project default-on toggle
+  defaultToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingVertical: 4,
+  },
+  defaultToggleText: {
+    fontSize: 13,
+    color: colors.gray500,
+  },
+  defaultToggleTextActive: {
+    color: colors.emerald400,
+  },
+  defaultToggleLabel: {
+    fontSize: 12,
+    color: colors.gray300,
+  },
+  // Per-user skill options (owner-declared enums)
+  optSection: {
+    marginTop: 16,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: 'rgba(17, 24, 39, 0.35)',
+    borderRadius: 10,
+    padding: 12,
+  },
+  optHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  optHeaderIcon: {
+    fontSize: 13,
+  },
+  optHeaderTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.gray200,
+  },
+  optHint: {
+    fontSize: 10,
+    color: colors.gray500,
+    lineHeight: 14,
+    marginBottom: 10,
+  },
+  optError: {
+    fontSize: 12,
+    color: colors.amber400,
+    marginBottom: 6,
+  },
+  optRow: {
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+    paddingTop: 12,
+    marginTop: 12,
+  },
+  optLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: colors.gray200,
+  },
+  optRequired: {
+    color: colors.amber400,
+  },
+  optDescription: {
+    fontSize: 11,
+    color: colors.gray400,
+    marginTop: 2,
+  },
+  optChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
+  },
+  optChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    backgroundColor: colors.gray800,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+  },
+  optChipActive: {
+    backgroundColor: colors.indigo600,
+    borderColor: colors.indigo600,
+  },
+  optChipText: {
+    fontSize: 12,
+    color: colors.gray400,
+    fontWeight: '500',
+  },
+  optChipTextActive: {
+    color: colors.white,
   },
   // Pending-lessons review queue (skill improvements)
   lessonsSection: {

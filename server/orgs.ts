@@ -4,6 +4,7 @@ import { mkdirSync, existsSync, readFileSync, readdirSync, unlinkSync } from 'fs
 import config from './config.js';
 import type { OrgRow } from './types.js';
 import { USER_SKILL_CREDENTIALS_SCHEMA } from './skill-credentials-schema.js';
+import { USER_SKILL_OPTIONS_SCHEMA } from './skill-options-schema.js';
 import { GOOGLE_CONNECTIONS_SCHEMA } from './google-connections-schema.js';
 import { AUTH_CREDENTIAL_AUDIT_SCHEMA } from './auth-credential-audit-schema.js';
 import { RUNNER_QUEUE_SCHEMA } from './finalize/runner-queue-schema.js';
@@ -160,6 +161,7 @@ export function initOrgsDb(): void {
   `);
 
   orgsDb.exec(USER_SKILL_CREDENTIALS_SCHEMA);
+  orgsDb.exec(USER_SKILL_OPTIONS_SCHEMA);
   // Per-user Google OAuth connection (tokens encrypted at rest). Separate
   // table rather than columns on `users` — keeps the encrypted token blobs
   // off the hot identity row. See google-connections-store.ts.

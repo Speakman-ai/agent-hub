@@ -541,3 +541,66 @@ registerPath({
     500: errorResponse('Filesystem write error.'),
   },
 });
+
+// ── Per-project default-on skills ──
+const DefaultSkillsResponse = z.object({
+  skillIds: z
+    .array(z.string())
+    .openapi({ description: 'Skill ids auto-loaded into every session of the project.' }),
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/default-skills',
+  tags: ['Skills'],
+  summary: 'List the project default-on skills',
+  description:
+    'The skill ids the project owner marked "on by default for every session". Each is auto-loaded (its SKILL.md injected) into every session of the project.',
+  request: { params: projectIdParam },
+  responses: {
+    200: { description: 'Default skill ids.', content: jsonContent(DefaultSkillsResponse) },
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/default-skills',
+  tags: ['Skills'],
+  summary: 'Mark a skill on-by-default for the project (Admin+)',
+  request: {
+    params: projectIdParam,
+    body: {
+      content: jsonContent(
+        z.object({
+          skillId: z.string().openapi({ description: 'Skill id to enable by default.' }),
+        }),
+      ),
+    },
+  },
+  responses: {
+    200: { description: 'Added.', content: jsonContent(DefaultSkillsResponse) },
+    400: errorResponse('skillId is required.'),
+    403: errorResponse('Caller is below Admin.'),
+    404: errorResponse('Project not found.'),
+    500: errorResponse('Write error.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/default-skills/{skillId}',
+  tags: ['Skills'],
+  summary: 'Remove a skill from the project default-on list (Admin+)',
+  request: {
+    params: projectIdParam.extend({ skillId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: 'Removed (or already absent).',
+      content: jsonContent(DefaultSkillsResponse),
+    },
+    403: errorResponse('Caller is below Admin.'),
+    404: errorResponse('Project not found.'),
+  },
+});

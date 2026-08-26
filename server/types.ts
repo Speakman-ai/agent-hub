@@ -2470,6 +2470,9 @@ export interface Stmts {
   getAgentSkillOverrides: Stmt;
   upsertAgentSkillOverride: Stmt;
   deleteAgentSkillOverride: Stmt;
+  getProjectDefaultSkills: Stmt;
+  addProjectDefaultSkill: Stmt;
+  deleteProjectDefaultSkill: Stmt;
 
   // Escalations
   getEscalationsByProject: Stmt;

@@ -23,6 +23,14 @@ const authMock = vi.hoisted(() => ({ admin: true, local: false }));
     getSkillCredentials: vi.fn(),
     putSkillCredential: vi.fn(),
     deleteSkillCredential: vi.fn(),
+    // Per-user skill options + per-project default-on skills. Defaults set at
+    // definition so the SkillsPage/SkillCard mount effects resolve cleanly.
+    getSkillOptions: vi.fn().mockResolvedValue({ options: [] }),
+    putSkillOption: vi.fn().mockResolvedValue({ option: {} }),
+    deleteSkillOption: vi.fn().mockResolvedValue({ ok: true }),
+    getProjectDefaultSkills: vi.fn().mockResolvedValue({ skillIds: [] }),
+    addProjectDefaultSkill: vi.fn().mockResolvedValue({ ok: true, skillIds: [] }),
+    removeProjectDefaultSkill: vi.fn().mockResolvedValue({ ok: true, skillIds: [] }),
     createProjectSkill: vi.fn(),
     createGlobalSkill: vi.fn(),
     updateProjectSkill: vi.fn(),

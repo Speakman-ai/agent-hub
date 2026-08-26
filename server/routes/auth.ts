@@ -137,6 +137,13 @@ import {
   listUserSkillCredentialAudit,
 } from '../skill-credentials-store.js';
 import { readCredentialsSchemaForSkill } from '../skill-credentials-resolve.js';
+import { readOptionsSchemaForSkill } from '../skill-options-resolve.js';
+import { isValidOptionValue } from '../skill-options-declaration.js';
+import {
+  listUserSkillOptions,
+  upsertUserSkillOption,
+  deleteUserSkillOption,
+} from '../skill-options-store.js';
 import { findAgent, resolveProjectSkillsDir } from '../project-model.js';
 import { registerPath, z } from '../openapi/registry.js';
 import {
@@ -159,6 +166,7 @@ import {
   UpdateSingleKeyAuthBody,
   UpdateUserRoleBody,
   UpsertSkillCredentialBody,
+  UpsertSkillOptionBody,
   PutAgentEngineOverridesBody,
   PutAgentModelOverridesBody,
   PutAgentModelOverrideEntryBody,
@@ -1156,6 +1164,98 @@ registerPath({
     },
     404: {
       description: 'Credential not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/me/skill-options',
+  tags: ['Auth'],
+  summary: "List a skill's option schema plus the caller's current selections.",
+  request: {
+    query: z.object({ skillId: z.string(), agentId: z.string().optional() }),
+  },
+  responses: {
+    200: {
+      description: "Option specs with the caller's effective selection.",
+      content: {
+        'application/json': {
+          schema: z.object({
+            options: z.array(
+              z.object({
+                name: z.string(),
+                label: z.string(),
+                description: z.string(),
+                choices: z.array(z.object({ value: z.string(), label: z.string() })),
+                default: z.string(),
+                required: z.boolean(),
+                selected: z.string(),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Missing skillId or invalid option schema.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    500: {
+      description: 'Lookup failed.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/auth/me/skill-options',
+  tags: ['Auth'],
+  summary: 'Select a per-user skill option value.',
+  request: { body: { content: { 'application/json': { schema: UpsertSkillOptionBody } } } },
+  responses: {
+    200: {
+      description: 'Selection stored.',
+      content: { 'application/json': { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: {
+      description: 'Validation failure (unknown option or value not a declared choice).',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'Caller is not a member of the org.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'Agent / workspace not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/auth/me/skill-options/{skillId}/{optionName}',
+  tags: ['Auth'],
+  summary: 'Reset a per-user skill option to its default.',
+  request: { params: z.object({ skillId: z.string(), optionName: z.string() }) },
+  responses: {
+    200: {
+      description: 'Reset (row deleted or already absent).',
+      content: { 'application/json': { schema: z.object({ ok: z.boolean() }) } },
+    },
+    401: {
+      description: 'Not authenticated.',
       content: { 'application/json': { schema: ErrorResponse } },
     },
   },
@@ -3633,6 +3733,136 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     }
     res.json({ ok: true });
   });
+
+  // ── Per-user skill options (non-secret enums; merged into spawn env) ──
+  // Resolve the option-schema source dir for an optional agent_id, applying the
+  // same org-membership RBAC gate as the credential PUT flow. Returns either a
+  // list of project skills dirs or an HTTP error to emit.
+  function resolveOptionSchemaSource(
+    authedReq: AuthenticatedRequest,
+    agentIdRaw: unknown,
+  ): { projectSkillsDirs: string[] } | { status: number; error: string } {
+    const agent_id = typeof agentIdRaw === 'string' ? agentIdRaw.trim() : '';
+    if (!agent_id) return { projectSkillsDirs: [] };
+    const foundAgent = findAgent(agent_id);
+    if (!foundAgent) return { status: 404, error: 'Agent not found' };
+    if (!authedReq.authViaApiKey && !authedReq.authLocalOrgBypass) {
+      const orgId = getActiveOrgId();
+      const role = orgId ? getMembershipRole(authedReq.authUserId!, orgId) : null;
+      if (!role) return { status: 403, error: 'You are not a member of this org.' };
+    }
+    const skillsDir = resolveProjectSkillsDir(foundAgent.project);
+    if (!skillsDir)
+      return { status: 404, error: 'No project skill store configured for this agent' };
+    return { projectSkillsDirs: [skillsDir] };
+  }
+
+  router.get('/api/auth/me/skill-options', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const skillIdRaw = req.query.skillId;
+    const skillId = typeof skillIdRaw === 'string' && skillIdRaw.trim() ? skillIdRaw.trim() : '';
+    if (!skillId) {
+      res.status(400).json({ error: 'skillId is required' });
+      return;
+    }
+    const source = resolveOptionSchemaSource(authedReq, req.query.agentId);
+    if ('status' in source) {
+      res.status(source.status).json({ error: source.error });
+      return;
+    }
+    try {
+      const parsed = readOptionsSchemaForSkill(skillId, {
+        projectSkillsDirs: source.projectSkillsDirs,
+      });
+      if (parsed.error) {
+        res.status(400).json({ error: `invalid option schema for skill: ${parsed.error}` });
+        return;
+      }
+      const selections = new Map(
+        listUserSkillOptions(authedReq.authUserId, skillId).map((r) => [r.option_name, r.value]),
+      );
+      const options = parsed.options.map((spec) => {
+        const stored = selections.get(spec.name);
+        const selected = isValidOptionValue(spec, stored) ? (stored as string) : spec.default;
+        return { ...spec, selected };
+      });
+      res.json({ options });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  router.put('/api/auth/me/skill-options', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const parsedBody = UpsertSkillOptionBody.safeParse(req.body ?? {});
+    if (!parsedBody.success) {
+      res.status(400).json({ error: 'skill_id, option_name and value are required' });
+      return;
+    }
+    const skill_id = parsedBody.data.skill_id.trim();
+    const option_name = parsedBody.data.option_name.trim();
+    const value = parsedBody.data.value;
+    if (!skill_id || !option_name) {
+      res.status(400).json({ error: 'skill_id and option_name are required' });
+      return;
+    }
+    const source = resolveOptionSchemaSource(authedReq, parsedBody.data.agent_id);
+    if ('status' in source) {
+      res.status(source.status).json({ error: source.error });
+      return;
+    }
+    const parsed = readOptionsSchemaForSkill(skill_id, {
+      projectSkillsDirs: source.projectSkillsDirs,
+    });
+    if (parsed.error) {
+      res.status(400).json({ error: `invalid option schema for skill: ${parsed.error}` });
+      return;
+    }
+    const spec = parsed.options.find((o) => o.name === option_name);
+    if (!spec) {
+      res.status(400).json({ error: `Unknown option "${option_name}" for skill "${skill_id}"` });
+      return;
+    }
+    if (!isValidOptionValue(spec, value)) {
+      res
+        .status(400)
+        .json({ error: `Value "${value}" is not a declared choice for option "${option_name}"` });
+      return;
+    }
+    try {
+      const row = upsertUserSkillOption({
+        userId: authedReq.authUserId,
+        skillId: skill_id,
+        optionName: option_name,
+        value,
+      });
+      res.json({ option: row });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  router.delete(
+    '/api/auth/me/skill-options/:skillId/:optionName',
+    (req: Request, res: Response) => {
+      const authedReq = req as AuthenticatedRequest;
+      if (!authedReq.authUserId) {
+        res.status(401).json({ error: 'Authentication required' });
+        return;
+      }
+      const { skillId, optionName } = req.params as { skillId: string; optionName: string };
+      const result = deleteUserSkillOption(authedReq.authUserId, skillId, optionName);
+      res.json({ ok: result.ok });
+    },
+  );
 
   // ──────────────────────────────────────────────────────────────
   //  Per-user API keys

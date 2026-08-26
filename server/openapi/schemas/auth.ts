@@ -270,6 +270,26 @@ export const UpsertSkillCredentialBody = registerComponent(
     }),
 );
 
+export const UpsertSkillOptionBody = registerComponent(
+  'UpsertSkillOptionBody',
+  z
+    .object({
+      skill_id: z.string(),
+      option_name: z.string(),
+      // Must be one of the option's declared `choices` values. Same optional
+      // `agent_id` schema-source semantics as UpsertSkillCredentialBody:
+      // provided → read the option schema from that agent's project skill
+      // store first; omitted → bundled default-skills / registry only.
+      agent_id: z.string().optional(),
+      value: z.string(),
+    })
+    .openapi({
+      description:
+        'Select a per-user, non-secret skill option (owner-curated enum, e.g. dev/prod). ' +
+        "`value` must be one of the option's declared choices.",
+    }),
+);
+
 export const AgentEngineOverrideEntry = registerComponent(
   'AgentEngineOverrideEntry',
   z

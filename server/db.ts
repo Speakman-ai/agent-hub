@@ -885,6 +885,15 @@ function initDb(dataDir: string): void {
       PRIMARY KEY (agent_id, skill_id)
     );
 
+    -- Per-project default-on skills: skills auto-loaded into every session of
+    -- the project (see skill-router projectDefaultSkillIds). Owner-curated.
+    CREATE TABLE IF NOT EXISTS project_default_skills (
+      project_id TEXT NOT NULL,
+      skill_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (project_id, skill_id)
+    );
+
     -- Notes: per-project rich markdown notes
     CREATE TABLE IF NOT EXISTS notes (
       id TEXT PRIMARY KEY,
@@ -5812,6 +5821,18 @@ function initDb(dataDir: string): void {
     ),
     deleteAgentSkillOverride: db.prepare(
       'DELETE FROM agent_skill_overrides WHERE agent_id = ? AND skill_id = ?',
+    ),
+
+    // Per-project default-on skills
+    getProjectDefaultSkills: db.prepare(
+      'SELECT skill_id FROM project_default_skills WHERE project_id = ? ORDER BY skill_id',
+    ),
+    addProjectDefaultSkill: db.prepare(
+      `INSERT INTO project_default_skills (project_id, skill_id) VALUES (?, ?)
+       ON CONFLICT(project_id, skill_id) DO NOTHING`,
+    ),
+    deleteProjectDefaultSkill: db.prepare(
+      'DELETE FROM project_default_skills WHERE project_id = ? AND skill_id = ?',
     ),
 
     // Escalations

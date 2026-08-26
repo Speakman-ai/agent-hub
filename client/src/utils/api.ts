@@ -2078,6 +2078,19 @@ export const api = {
   uninstallSkill: (projectId: any, skillId: any) =>
     fetchJSON(`/projects/${projectId}/skills/${skillId}`, { method: 'DELETE' }),
 
+  // Per-project default-on skills — auto-loaded into every session in the
+  // project. Reads are open; writes (POST/DELETE) require Admin+ server-side.
+  getProjectDefaultSkills: (projectId: any) => fetchJSON(`/projects/${projectId}/default-skills`),
+  addProjectDefaultSkill: (projectId: any, skillId: any) =>
+    fetchJSON(`/projects/${projectId}/default-skills`, {
+      method: 'POST',
+      body: JSON.stringify({ skillId }),
+    }),
+  removeProjectDefaultSkill: (projectId: any, skillId: any) =>
+    fetchJSON(`/projects/${projectId}/default-skills/${encodeURIComponent(skillId)}`, {
+      method: 'DELETE',
+    }),
+
   // Skill improvement review — agent-suggested lessons pending human review.
   // Approve promotes into the skill's `## Learned Lessons`; reject discards
   // (with optional audit reason). Approve/reject require Admin+.
@@ -2278,6 +2291,23 @@ export const api = {
     fetchJSON('/auth/me/skill-credentials', { method: 'PUT', body: JSON.stringify(body) }),
   deleteSkillCredential: (id: any) =>
     fetchJSON(`/auth/me/skill-credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // Per-user skill options — owner-declared enums (e.g. dev/prod) the signed-in
+  // user selects. `selected` in each returned option is the effective value
+  // (stored choice or declared default). DELETE resets a choice to its default.
+  getSkillOptions: (skillId: any, agentId: any) =>
+    fetchJSON(
+      `/auth/me/skill-options?skillId=${encodeURIComponent(skillId)}${
+        agentId ? `&agentId=${encodeURIComponent(agentId)}` : ''
+      }`,
+    ),
+  putSkillOption: (body: any) =>
+    fetchJSON('/auth/me/skill-options', { method: 'PUT', body: JSON.stringify(body) }),
+  deleteSkillOption: (skillId: any, optionName: any) =>
+    fetchJSON(
+      `/auth/me/skill-options/${encodeURIComponent(skillId)}/${encodeURIComponent(optionName)}`,
+      { method: 'DELETE' },
+    ),
   startMfaEnrollment: () =>
     fetchJSON('/auth/me/mfa/enrollment/start', { method: 'POST', body: JSON.stringify({}) }),
   confirmMfaEnrollment: (code: any) =>

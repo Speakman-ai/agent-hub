@@ -120,6 +120,7 @@ import {
 } from './skill-invoke.js';
 import { detectSkillImprovementBlock, handleSkillImprovement } from './skill-improvement.js';
 import { routeSkillsFromMessage } from './skill-router.js';
+import { listProjectDefaultSkillIds } from './project-default-skills-store.js';
 import {
   isDesignModeActive,
   isConsultModeActive,
@@ -2817,6 +2818,26 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           const m = pendingRaw.match(/^## Loaded Skill:\s*([\w.-]+)/m);
           if (m) loadedRoutedSkillIds.add(m[1]!);
         }
+        // Per-turn skill routing must not fail hard on a DB hiccup, but the
+        // failure must be visible (not silently disable every project-default
+        // skill). Report it, then fall back to no project defaults for this turn.
+        let projectDefaultSkillIds: string[] = [];
+        try {
+          projectDefaultSkillIds = listProjectDefaultSkillIds(project.id);
+        } catch (err) {
+          console.error(
+            `TOOL_ERROR | ${new Date().toISOString()} | skill-router | project default skills | error | ${String(
+              (err as Error).message || err,
+            )
+              .replace(/[\r\n|]+/g, ' ')
+              .slice(0, 200)} | ${JSON.stringify({
+              v: 2,
+              sev: 'soft',
+              resolution: 'recovered',
+              tags: ['project-default-skills', 'routing'],
+            })}`,
+          );
+        }
         const routedMatches = routeSkillsFromMessage({
           message: content,
           skills: availableSkills,
@@ -2825,6 +2846,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           cwd: session!.worktree_path || project.cwd,
           projectSlug: project.id,
           sessionMode: session!.session_mode ?? undefined,
+          projectDefaultSkillIds,
         });
         const injections: string[] = [];
         for (const routed of routedMatches) {

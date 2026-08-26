@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -29,6 +29,27 @@ import {
   Check,
   MessageSquare,
 } from 'lucide-react';
+
+/**
+ * Returns a ref that always holds the latest rendered `value` (updated during
+ * render, so it is current synchronously). This is the root-cause fix for the
+ * whole class of "stale async overwrites live state" races on this page: any
+ * async request captures the identity it was issued for (project id, or a
+ * card's agent+skill key) at call time, then — when it resolves — compares that
+ * captured identity against `ref.current`. If they differ, the active
+ * project/agent/skill changed while the request was in flight and the result is
+ * dropped instead of clobbering the current view. Effects use their cleanup to
+ * cancel; callbacks (save/toggle) have no cleanup, so they rely on this guard.
+ */
+function useLiveRef<T>(value: T) {
+  const ref = useRef(value);
+  ref.current = value;
+  return ref;
+}
+
+// Stable empty array so identity-mismatched reads return a referentially
+// constant value (avoids needless re-renders / effect churn downstream).
+const EMPTY_STRING_ARRAY: string[] = [];
 
 function SkillsLoadError({ section, message, onRetry }: any) {
   return (
@@ -482,20 +503,55 @@ export function SkillCard({
   onEdit,
   isInstalled,
   pendingCount = 0,
+  isDefaultOn = false,
+  onToggleDefault,
+  canManageDefaults = false,
 }: any) {
   const [expanded, setExpanded] = useState(false);
   const [fullContent, setFullContent] = useState(skill.content || null);
   const [loading, setLoading] = useState(false);
   const [schemaLoaded, setSchemaLoaded] = useState(false);
   const [credentialSchema, setCredentialSchema] = useState<any[]>([]);
-  const [credentialRows, setCredentialRows] = useState<any[]>([]);
+  // Tagged with the owning card key + derived on identity match (like options /
+  // project defaults), so a switched card never renders the previous identity's
+  // saved-credential rows (whose ids back the Revoke button) in a committed frame.
+  const [credentialRowsState, setCredentialRowsState] = useState<{ key: string; rows: any[] }>({
+    key: '',
+    rows: [],
+  });
   const [credLoading, setCredLoading] = useState(false);
   const [credError, setCredError] = useState<any>(null);
   const [credSaving, setCredSaving] = useState<any>(null);
   const [credentialInputs, setCredentialInputs] = useState<Record<string, any>>({});
+  // Per-user skill options (owner-declared enums the user selects). Loaded on
+  // expand. Tagged with the owning card key and DERIVED on identity match (see
+  // below) so no committed render ever exposes another skill/agent's select.
+  const [optionsState, setOptionsState] = useState<{ key: string; options: any[] }>({
+    key: '',
+    options: [],
+  });
+  const [optionsLoading, setOptionsLoading] = useState(false);
+  const [optionsError, setOptionsError] = useState<any>(null);
+  const [optionSaving, setOptionSaving] = useState<any>(null);
 
   const override = overrides?.find((o: any) => o.skill_id === skill.id);
   const isEnabled = override ? !!override.enabled : true;
+
+  // Identity this card's async requests belong to. A late credential/option
+  // read or save must not apply once the card is rendering a different
+  // agent+skill (props change without a remount). Captured at request time and
+  // compared against the live ref on completion.
+  const cardKey = `${agentId ?? ''}::${skill.id}`;
+  const cardKeyRef = useLiveRef(cardKey);
+
+  // Rendered options are DERIVED from an identity match, exactly like project
+  // defaults. On the first render after agentId/skill.id change the key differs,
+  // so the list is empty synchronously — the previous skill/agent's select is
+  // never present in a committed render, so it can't drive a save against the
+  // newly-active identity (a passive effect-clear would leave that window open).
+  const skillOptions = optionsState.key === cardKey ? optionsState.options : EMPTY_STRING_ARRAY;
+  const credentialRows =
+    credentialRowsState.key === cardKey ? credentialRowsState.rows : EMPTY_STRING_ARRAY;
 
   const credentialSchemaKey = useMemo(
     () => JSON.stringify(credentialSchema ?? []),
@@ -505,27 +561,31 @@ export function SkillCard({
   // Load the per-user saved credential rows once the schema is known and the
   // card is expanded. Keyed on the schema so it refetches if the schema changes.
   useEffect(() => {
+    // No imperative clear: credentialRows is derived from an identity match, so
+    // a switched card renders no stale rows synchronously until this load stores
+    // a value tagged with the new card key.
     if (!expanded || credentialSchemaKey === '[]' || !agentId) return;
+    const reqKey = cardKey;
     let cancelled = false;
     (async () => {
       setCredLoading(true);
       setCredError(null);
       try {
         const pack = await api.getSkillCredentials(skill.id);
-        if (!cancelled) setCredentialRows(pack.credentials || []);
+        if (cancelled || cardKeyRef.current !== reqKey) return;
+        setCredentialRowsState({ key: reqKey, rows: pack.credentials || [] });
       } catch (err: any) {
-        if (!cancelled) {
-          setCredError(err?.message || String(err));
-          setCredentialRows([]);
-        }
+        if (cancelled || cardKeyRef.current !== reqKey) return;
+        setCredError(err?.message || String(err));
+        setCredentialRowsState({ key: reqKey, rows: [] });
       } finally {
-        if (!cancelled) setCredLoading(false);
+        if (!cancelled && cardKeyRef.current === reqKey) setCredLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [expanded, skill.id, agentId, credentialSchemaKey]);
+  }, [expanded, skill.id, agentId, credentialSchemaKey, cardKey, cardKeyRef]);
 
   const rowForKey = useCallback(
     (keyName: any) => credentialRows.find((r: any) => r.key_name === keyName),
@@ -539,6 +599,7 @@ export function SkillCard({
         setCredError('This credential is required — enter a value before saving.');
         return;
       }
+      const reqKey = cardKey;
       setCredSaving(spec.name);
       setCredError(null);
       try {
@@ -549,34 +610,94 @@ export function SkillCard({
           agent_id: agentId,
         });
         const pack = await api.getSkillCredentials(skill.id);
-        setCredentialRows(pack.credentials || []);
+        if (cardKeyRef.current !== reqKey) return;
+        setCredentialRowsState({ key: reqKey, rows: pack.credentials || [] });
         setCredentialInputs((prev: any) => ({ ...prev, [spec.name]: '' }));
       } catch (err: any) {
+        if (cardKeyRef.current !== reqKey) return;
         setCredError(err?.message || String(err));
       } finally {
-        setCredSaving(null);
+        if (cardKeyRef.current === reqKey) setCredSaving(null);
       }
     },
-    [credentialInputs, skill.id, agentId],
+    [credentialInputs, skill.id, agentId, cardKey, cardKeyRef],
   );
 
   const deleteCredential = useCallback(
     async (spec: any) => {
       const row = rowForKey(spec.name);
       if (!row?.id) return;
+      const reqKey = cardKey;
       setCredSaving(spec.name);
       setCredError(null);
       try {
         await api.deleteSkillCredential(row.id);
         const pack = await api.getSkillCredentials(skill.id);
-        setCredentialRows(pack.credentials || []);
+        if (cardKeyRef.current !== reqKey) return;
+        setCredentialRowsState({ key: reqKey, rows: pack.credentials || [] });
       } catch (err: any) {
+        if (cardKeyRef.current !== reqKey) return;
         setCredError(err?.message || String(err));
       } finally {
-        setCredSaving(null);
+        if (cardKeyRef.current === reqKey) setCredSaving(null);
       }
     },
-    [rowForKey, skill.id],
+    [rowForKey, skill.id, cardKey, cardKeyRef],
+  );
+
+  // Load the owner-declared per-user options once the card is expanded and a
+  // reference agent is known. Empty list → the Options section stays hidden.
+  useEffect(() => {
+    // No imperative clear needed: the rendered list is derived from
+    // `optionsState.key === cardKey`, so a card that switches identity shows an
+    // empty list synchronously until this load stores a value tagged with the
+    // new key.
+    if (!expanded || !agentId) return;
+    const reqKey = cardKey;
+    let cancelled = false;
+    (async () => {
+      setOptionsLoading(true);
+      setOptionsError(null);
+      try {
+        const pack = await api.getSkillOptions(skill.id, agentId);
+        if (cancelled || cardKeyRef.current !== reqKey) return;
+        setOptionsState({ key: reqKey, options: Array.isArray(pack?.options) ? pack.options : [] });
+      } catch (err: any) {
+        if (cancelled || cardKeyRef.current !== reqKey) return;
+        setOptionsError(err?.message || String(err));
+        setOptionsState({ key: reqKey, options: [] });
+      } finally {
+        if (!cancelled && cardKeyRef.current === reqKey) setOptionsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, skill.id, agentId, cardKey, cardKeyRef]);
+
+  const saveOption = useCallback(
+    async (optionName: any, value: any) => {
+      const reqKey = cardKey;
+      setOptionSaving(optionName);
+      setOptionsError(null);
+      try {
+        await api.putSkillOption({
+          skill_id: skill.id,
+          option_name: optionName,
+          value,
+          agent_id: agentId,
+        });
+        const pack = await api.getSkillOptions(skill.id, agentId);
+        if (cardKeyRef.current !== reqKey) return;
+        setOptionsState({ key: reqKey, options: Array.isArray(pack?.options) ? pack.options : [] });
+      } catch (err: any) {
+        if (cardKeyRef.current !== reqKey) return;
+        setOptionsError(err?.message || String(err));
+      } finally {
+        if (cardKeyRef.current === reqKey) setOptionSaving(null);
+      }
+    },
+    [skill.id, agentId, cardKey, cardKeyRef],
   );
 
   const handleExpand = async () => {
@@ -655,6 +776,29 @@ export function SkillCard({
             </div>
             {skill.description && (
               <p className="text-xs text-gray-400 mt-1 line-clamp-2">{skill.description}</p>
+            )}
+            {onToggleDefault && skill.source === 'project' && (
+              <label
+                className={`mt-2 inline-flex items-center gap-1.5 text-[11px] ${
+                  canManageDefaults ? 'text-gray-400 cursor-pointer' : 'text-gray-600'
+                }`}
+                onClick={(e: any) => e.stopPropagation()}
+                title={
+                  canManageDefaults
+                    ? 'Auto-load this skill into every session in this project'
+                    : 'Only Admins can change project default skills'
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={!!isDefaultOn}
+                  disabled={!canManageDefaults}
+                  onChange={(e: any) => onToggleDefault(skill.id, e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-900 text-indigo-500 focus:ring-indigo-500 disabled:opacity-40"
+                  data-testid={`skill-default-toggle-${skill.id}`}
+                />
+                On by default for this project
+              </label>
             )}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -826,6 +970,61 @@ export function SkillCard({
                   )}
                 </div>
               )}
+              {agentId && (skillOptions.length > 0 || optionsLoading || optionsError) && (
+                <div className="mt-5 rounded-lg border border-gray-700/80 bg-gray-900/35 p-3">
+                  <div className="mb-3 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Puzzle size={14} className="flex-shrink-0 text-indigo-400" />
+                      <span className="text-xs font-medium text-gray-200">Options</span>
+                    </div>
+                    <p className="text-[10px] text-gray-500 leading-relaxed pl-0 sm:pl-6">
+                      Owner-defined choices stored per signed-in user and applied to this
+                      skill&apos;s CLI spawns. Pick a value; it takes effect on the next session.
+                    </p>
+                  </div>
+                  {optionsLoading ? (
+                    <p className="text-xs text-gray-500">Loading options…</p>
+                  ) : optionsError ? (
+                    <p className="text-xs text-amber-300/95">{optionsError}</p>
+                  ) : (
+                    skillOptions.map((opt: any) => (
+                      <div
+                        key={opt.name}
+                        className="mb-4 border-b border-gray-800 pb-4 last:mb-0 last:border-b-0 last:pb-0"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium text-gray-200">
+                            {opt.label || opt.name}
+                            {opt.required ? <span className="ml-1 text-amber-400">*</span> : null}
+                          </div>
+                          <div className="font-mono text-[10px] text-gray-500">{opt.name}</div>
+                          {opt.description ? (
+                            <p className="mt-1 text-[11px] text-gray-400">{opt.description}</p>
+                          ) : null}
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <select
+                            aria-label={opt.label || opt.name}
+                            disabled={optionSaving === opt.name}
+                            value={opt.selected ?? ''}
+                            onChange={(e: any) => saveOption(opt.name, e.target.value)}
+                            className="min-w-[160px] flex-1 rounded-md border border-gray-600 bg-gray-900 px-2 py-1.5 text-xs text-gray-100 focus:border-indigo-500 focus:outline-none disabled:opacity-40"
+                          >
+                            {(opt.choices || []).map((choice: any) => (
+                              <option key={choice.value} value={choice.value}>
+                                {choice.label || choice.value}
+                              </option>
+                            ))}
+                          </select>
+                          {optionSaving === opt.name ? (
+                            <span className="text-[10px] text-gray-500">Saving…</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -946,6 +1145,9 @@ export default function SkillsPage({
   onOpenSession,
 }: any) {
   const activeProjectId = initialProjectId;
+  // Live ref so async completions (read effect AND the toggle callback) can drop
+  // their result when the active project changed while the request was pending.
+  const activeProjectIdRef = useLiveRef(activeProjectId);
   const [skills, setSkills] = useState<any[]>([]);
   const [improvements, setImprovements] = useState<any[]>([]);
   const [context, setContext] = useState<Record<string, any>>({});
@@ -955,6 +1157,23 @@ export default function SkillsPage({
   const [skillsError, setSkillsError] = useState<any>(null);
   const [contextError, setContextError] = useState<any>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  // Project default-on skills (auto-loaded into every session). Writes are
+  // Admin-only server-side; `canManageDefaults` gates the UI affordance.
+  //
+  // Tag the loaded ids with the project they belong to and DERIVE the rendered
+  // ids from an identity match. This is what makes the render synchronously
+  // correct across a project switch: a passive effect that clears after commit
+  // still leaves one render showing the previous project's toggles, and a tap
+  // in that window would apply stale intent to the new project. By gating on
+  // `loadedProjectId === activeProjectId` during render, the new project shows
+  // no stale "on" state before its own load resolves.
+  const [defaultSkills, setDefaultSkills] = useState<{
+    projectId: string | null;
+    ids: string[];
+  }>({ projectId: null, ids: [] });
+  const defaultSkillIds =
+    defaultSkills.projectId === activeProjectId ? defaultSkills.ids : EMPTY_STRING_ARRAY;
+  const canManageDefaults = useMemo(() => hasRole('Admin'), []);
   // null = follow the default reference agent; otherwise the user-picked agent
   // whose overrides + context this page is currently inspecting.
   const [selectedAgentId, setSelectedAgentId] = useState<any>(null);
@@ -1063,6 +1282,68 @@ export default function SkillsPage({
 
   const retryInstalledLoad = useCallback(() => setReloadKey((k: any) => k + 1), []);
 
+  const [actionError, setActionError] = useState<any>(null);
+  useEffect(() => {
+    if (!actionError) return undefined;
+    const t = setTimeout(() => setActionError(null), 6000);
+    return () => clearTimeout(t);
+  }, [actionError]);
+
+  // Project default-on skills — the set auto-loaded into every session. Reads
+  // are open to any member; non-fatal on error (the toggle just stays off).
+  useEffect(() => {
+    if (!activeProjectId) return;
+    // The rendered ids are derived from `defaultSkills.projectId === activeProjectId`,
+    // so a project switch is already stale-safe at render time without a passive
+    // clear. Capture the project this request was for and store the result
+    // tagged with it; the ref guard also drops a response that lost the race.
+    let cancelled = false;
+    const requestedProjectId = activeProjectId;
+    api
+      .getProjectDefaultSkills(requestedProjectId)
+      .then((data: any) => {
+        if (cancelled || requestedProjectId !== activeProjectIdRef.current) return;
+        setDefaultSkills({
+          projectId: requestedProjectId,
+          ids: Array.isArray(data?.skillIds) ? data.skillIds : [],
+        });
+      })
+      .catch((err: any) => {
+        if (cancelled || requestedProjectId !== activeProjectIdRef.current) return;
+        setDefaultSkills({ projectId: requestedProjectId, ids: [] });
+        console.error('Failed to load project default skills:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectId, reloadKey, activeProjectIdRef]);
+
+  const handleToggleDefault = useCallback(
+    async (skillId: any, on: any) => {
+      if (!activeProjectId) return;
+      const requestedProjectId = activeProjectId;
+      try {
+        const data = on
+          ? await api.addProjectDefaultSkill(requestedProjectId, skillId)
+          : await api.removeProjectDefaultSkill(requestedProjectId, skillId);
+        // Drop the result if the user switched projects mid-flight — otherwise
+        // this project's returned ids would overwrite the now-active project.
+        if (requestedProjectId !== activeProjectIdRef.current) return;
+        setDefaultSkills({
+          projectId: requestedProjectId,
+          ids: Array.isArray(data?.skillIds) ? data.skillIds : [],
+        });
+      } catch (err: any) {
+        if (requestedProjectId !== activeProjectIdRef.current) return;
+        console.error('Failed to update project default skill:', err);
+        setActionError(
+          `Failed to update default skill ${skillId}: ${err?.message || 'unknown error'}`,
+        );
+      }
+    },
+    [activeProjectId, activeProjectIdRef],
+  );
+
   // Pending skill-improvement suggestions (agent-proposed Learned Lessons).
   // Non-fatal on error: the review queue is an overlay on the skills page,
   // not a prerequisite for it.
@@ -1099,13 +1380,6 @@ export default function SkillsPage({
     }
     return counts;
   }, [improvements]);
-
-  const [actionError, setActionError] = useState<any>(null);
-  useEffect(() => {
-    if (!actionError) return undefined;
-    const t = setTimeout(() => setActionError(null), 6000);
-    return () => clearTimeout(t);
-  }, [actionError]);
 
   const handleToggle = useCallback(
     async (skillId: any, enabled: any) => {
@@ -1296,6 +1570,9 @@ export default function SkillsPage({
                       onEdit={(s: any) => setEditorState({ skill: s })}
                       isInstalled
                       pendingCount={pendingCountBySkill[skill.id] || 0}
+                      isDefaultOn={defaultSkillIds.includes(skill.id)}
+                      onToggleDefault={handleToggleDefault}
+                      canManageDefaults={canManageDefaults}
                     />
                   ))}
                 </div>
