@@ -440,6 +440,7 @@ export default function ChatScreen({
           sessionAgents={sessionAgents}
           maxTurns={activeSession?.max_turns}
           agents={agents}
+          modelConfig={modelConfig}
           onUpdated={handleSessionAgentsUpdated}
         />
       ) : null}

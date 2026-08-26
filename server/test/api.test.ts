@@ -2287,20 +2287,86 @@ describe('Session advisors', () => {
       true,
     );
 
-    await request
+    const added = await request
       .post(`/api/sessions/${sessionId}/agents`)
       .send({ agentId: advisor.id })
       .expect(200);
+
+    const participant = (
+      added.body.agents as Array<{ id: string; participantId: string; role: string }>
+    ).find((row) => row.id === advisor.id && row.role === 'advisor');
+    expect(participant?.participantId).toBeTruthy();
 
     const withAdvisor = await request.get(`/api/sessions/${sessionId}`).expect(200);
     const agentIds = (withAdvisor.body.agents as Array<{ id: string }>).map((a) => a.id);
     expect(agentIds).toContain(advisor.id);
 
-    await request.delete(`/api/sessions/${sessionId}/agents/${advisor.id}`).expect(200);
+    await request
+      .delete(`/api/sessions/${sessionId}/agents/${participant!.participantId}`)
+      .expect(200);
 
     const afterRemove = await request.get(`/api/sessions/${sessionId}`).expect(200);
     const afterIds = (afterRemove.body.agents as Array<{ id: string }>).map((a) => a.id);
     expect(afterIds).not.toContain(advisor.id);
+  });
+
+  it('allows duplicate instances of the same agent with independent model selections', async () => {
+    const executor = await createAgent({ engine: 'claude-code' });
+    const advisor = await createAgent({ engine: 'claude-code' });
+
+    const sessionRes = await request
+      .post(`/api/agents/${executor.id}/sessions`)
+      .send({ name: 'Duplicate participants' })
+      .expect(200);
+    const sessionId = sessionRes.body.id as string;
+    const model = sessionRes.body.model as string;
+    expect(model).toBeTruthy();
+
+    await request
+      .post(`/api/sessions/${sessionId}/agents`)
+      .send({ agentId: advisor.id, model })
+      .expect(200);
+    await request
+      .post(`/api/sessions/${sessionId}/agents`)
+      .send({ agentId: advisor.id, model })
+      .expect(200);
+    await request
+      .post(`/api/sessions/${sessionId}/agents`)
+      .send({ agentId: executor.id, model })
+      .expect(200);
+
+    const detail = await request.get(`/api/sessions/${sessionId}`).expect(200);
+    const advisorInstances = (
+      detail.body.agents as Array<{
+        id: string;
+        participantId: string;
+        role: string;
+        model: string | null;
+      }>
+    ).filter((row) => row.id === advisor.id && row.role === 'advisor');
+    expect(advisorInstances).toHaveLength(2);
+    expect(new Set(advisorInstances.map((row) => row.participantId)).size).toBe(2);
+    expect(advisorInstances.map((row) => row.model)).toEqual([model, model]);
+    expect(
+      (detail.body.agents as Array<{ id: string; role: string }>).filter(
+        (row) => row.id === executor.id && row.role === 'advisor',
+      ),
+    ).toHaveLength(1);
+
+    await request
+      .put(`/api/sessions/${sessionId}/agents/${advisorInstances[0]!.participantId}/model`)
+      .send({ model: null })
+      .expect(200);
+    await request
+      .delete(`/api/sessions/${sessionId}/agents/${advisorInstances[0]!.participantId}`)
+      .expect(200);
+
+    const afterRemove = await request.get(`/api/sessions/${sessionId}`).expect(200);
+    const remaining = (
+      afterRemove.body.agents as Array<{ id: string; participantId: string; role: string }>
+    ).filter((row) => row.id === advisor.id && row.role === 'advisor');
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.participantId).toBe(advisorInstances[1]!.participantId);
   });
 
   it('PATCH accepts max_turns', async () => {

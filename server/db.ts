@@ -219,11 +219,12 @@ function initDb(dataDir: string): void {
 
     -- Multi-agent sessions: advisors beyond sessions.agent_id (primary executor)
     CREATE TABLE IF NOT EXISTS session_agents (
+      id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
+      model TEXT,
       position INTEGER NOT NULL DEFAULT 0,
       added_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (session_id, agent_id),
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_session_agents_session ON session_agents(session_id);
@@ -2416,6 +2417,47 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT max_turns FROM sessions LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE sessions ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 10');
+  }
+
+  // Multi-agent participant instances. The original table keyed advisors by
+  // (session_id, agent_id), which made it impossible to add the same agent
+  // twice. Rebuild once with an instance id and per-instance model override;
+  // existing advisor rows are preserved as distinct participant instances.
+  const sessionAgentColumns = db.prepare('PRAGMA table_info(session_agents)').all() as Array<{
+    name: string;
+  }>;
+  if (!sessionAgentColumns.some((column) => column.name === 'id')) {
+    db.pragma('foreign_keys = OFF');
+    try {
+      rawExec(`
+        BEGIN;
+        ALTER TABLE session_agents RENAME TO session_agents_legacy;
+        CREATE TABLE session_agents (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          model TEXT,
+          position INTEGER NOT NULL DEFAULT 0,
+          added_at TEXT NOT NULL DEFAULT (datetime('now')),
+          FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+        INSERT INTO session_agents (id, session_id, agent_id, model, position, added_at)
+        SELECT lower(hex(randomblob(16))), session_id, agent_id, NULL, position, added_at
+        FROM session_agents_legacy;
+        DROP TABLE session_agents_legacy;
+        CREATE INDEX IF NOT EXISTS idx_session_agents_session ON session_agents(session_id);
+        COMMIT;
+      `);
+    } catch (error) {
+      try {
+        rawExec('ROLLBACK');
+      } catch {
+        // The migration may have failed before BEGIN completed.
+      }
+      throw error;
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
   }
 
   // Linked Design Studio design: when set, the session renders that design's
@@ -4902,11 +4944,12 @@ function initDb(dataDir: string): void {
       'SELECT * FROM session_agents WHERE session_id = ? ORDER BY position ASC',
     ),
     addSessionAgent: db.prepare(
-      `INSERT OR IGNORE INTO session_agents (session_id, agent_id, position)
-       VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_agents WHERE session_id = ?))`,
+      `INSERT INTO session_agents (id, session_id, agent_id, model, position)
+       VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_agents WHERE session_id = ?))`,
     ),
-    removeSessionAgent: db.prepare(
-      'DELETE FROM session_agents WHERE session_id = ? AND agent_id = ?',
+    removeSessionAgent: db.prepare('DELETE FROM session_agents WHERE session_id = ? AND id = ?'),
+    updateSessionAgentModel: db.prepare(
+      'UPDATE session_agents SET model = ? WHERE session_id = ? AND id = ?',
     ),
 
     // Designs

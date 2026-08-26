@@ -111,9 +111,12 @@ export const SessionComponent = registerComponent(
       agents: z
         .array(
           z.object({
+            participantId: z.string(),
             id: z.string(),
             name: z.string(),
             color: z.string(),
+            engine: z.string(),
+            model: z.string().nullable(),
             position: z.number().int(),
             role: z.enum(['executor', 'advisor']),
             projectId: z.string().optional(),
@@ -271,6 +274,11 @@ export const PatchSessionRequestSchema = z.object({
 
 export const AddSessionAgentRequestSchema = z.object({
   agentId: z.string().min(1, 'agentId is required'),
+  model: z.string().min(1, 'model must not be empty').nullable().optional(),
+});
+
+export const PutSessionAgentModelRequestSchema = z.object({
+  model: z.string().min(1, 'model must not be empty').nullable(),
 });
 
 export const PutSessionEngineRequestSchema = z.object({
@@ -465,8 +473,8 @@ const sessionIdParams = z.object({
   sessionId: z.string().openapi({ description: 'Session UUID.' }),
 });
 
-const sessionAgentIdParams = sessionIdParams.extend({
-  agentId: z.string().openapi({ description: 'Advisor agent ID to remove.' }),
+const sessionParticipantIdParams = sessionIdParams.extend({
+  participantId: z.string().openapi({ description: 'Advisor participant instance ID.' }),
 });
 
 const sessionCredentialRequestParams = sessionIdParams.extend({
@@ -885,31 +893,49 @@ registerPath({
   tags: ['Sessions'],
   summary: 'Add a read-only advisor agent to a multi-agent session',
   description:
-    'Session owner only. Advisor may belong to any project the caller can view. Reviewer-role agents are rejected.',
+    'Session owner only. Adds a new participant instance, so the same agent (including the executor agent) may be added more than once. An optional model overrides that participant instance only. Advisor may belong to any project the caller can view. Reviewer-role agents are rejected.',
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(AddSessionAgentRequestSchema) },
   },
   responses: {
     200: { description: 'Updated session with roster.', content: jsonContent(SessionComponent) },
-    400: errorResponse('Validation failed or primary agent cannot be added as advisor.'),
+    400: errorResponse('Validation failed or model is invalid for the agent engine.'),
     403: errorResponse('Reviewer agents cannot join multi-agent sessions.'),
     404: errorResponse('Session or agent not found.'),
   },
 });
 
-// DELETE /api/sessions/:sessionId/agents/:agentId
+// DELETE /api/sessions/:sessionId/agents/:participantId
 registerPath({
   method: 'delete',
-  path: '/api/sessions/{sessionId}/agents/{agentId}',
+  path: '/api/sessions/{sessionId}/agents/{participantId}',
   tags: ['Sessions'],
   summary: 'Remove an advisor from a multi-agent session',
-  description: 'Session owner only. Cannot remove the primary executor.',
-  request: { params: sessionAgentIdParams },
+  description: 'Session owner only. Removes one advisor participant instance.',
+  request: { params: sessionParticipantIdParams },
   responses: {
     200: { description: 'Updated session with roster.', content: jsonContent(SessionComponent) },
-    400: errorResponse('Cannot remove the primary executor.'),
-    404: errorResponse('Session not found.'),
+    404: errorResponse('Session or participant not found.'),
+  },
+});
+
+// PUT /api/sessions/:sessionId/agents/:participantId/model
+registerPath({
+  method: 'put',
+  path: '/api/sessions/{sessionId}/agents/{participantId}/model',
+  tags: ['Sessions'],
+  summary: 'Set the model for one advisor participant instance',
+  description:
+    'Session owner only. Pass null to restore the agent default for this participant instance.',
+  request: {
+    params: sessionParticipantIdParams,
+    body: { content: jsonContent(PutSessionAgentModelRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated session with roster.', content: jsonContent(SessionComponent) },
+    400: errorResponse('Model is invalid for the agent engine.'),
+    404: errorResponse('Session or participant not found.'),
   },
 });
 

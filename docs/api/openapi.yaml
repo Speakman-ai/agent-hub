@@ -2408,12 +2408,19 @@ components:
           items:
             type: object
             properties:
+              participantId:
+                type: string
               id:
                 type: string
               name:
                 type: string
               color:
                 type: string
+              engine:
+                type: string
+              model:
+                type: string
+                nullable: true
               position:
                 type: integer
               role:
@@ -2426,9 +2433,12 @@ components:
               projectName:
                 type: string
             required:
+              - participantId
               - id
               - name
               - color
+              - engine
+              - model
               - position
               - role
         advisor_count:
@@ -22507,7 +22517,7 @@ paths:
       tags:
         - Sessions
       summary: Add a read-only advisor agent to a multi-agent session
-      description: Session owner only. Advisor may belong to any project the caller can view. Reviewer-role agents are rejected.
+      description: Session owner only. Adds a new participant instance, so the same agent (including the executor agent) may be added more than once. An optional model overrides that participant instance only. Advisor may belong to any project the caller can view. Reviewer-role agents are rejected.
       parameters:
         - schema:
             type: string
@@ -22525,6 +22535,10 @@ paths:
                 agentId:
                   type: string
                   minLength: 1
+                model:
+                  type: string
+                  nullable: true
+                  minLength: 1
               required:
                 - agentId
       responses:
@@ -22535,7 +22549,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Session"
         "400":
-          description: Validation failed or primary agent cannot be added as advisor.
+          description: Validation failed or model is invalid for the agent engine.
           content:
             application/json:
               schema:
@@ -22552,12 +22566,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
-  /api/sessions/{sessionId}/agents/{agentId}:
+  /api/sessions/{sessionId}/agents/{participantId}:
     delete:
       tags:
         - Sessions
       summary: Remove an advisor from a multi-agent session
-      description: Session owner only. Cannot remove the primary executor.
+      description: Session owner only. Removes one advisor participant instance.
       parameters:
         - schema:
             type: string
@@ -22568,10 +22582,10 @@ paths:
           in: path
         - schema:
             type: string
-            description: Advisor agent ID to remove.
+            description: Advisor participant instance ID.
           required: true
-          description: Advisor agent ID to remove.
-          name: agentId
+          description: Advisor participant instance ID.
+          name: participantId
           in: path
       responses:
         "200":
@@ -22580,14 +22594,60 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Session"
+        "404":
+          description: Session or participant not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/agents/{participantId}/model:
+    put:
+      tags:
+        - Sessions
+      summary: Set the model for one advisor participant instance
+      description: Session owner only. Pass null to restore the agent default for this participant instance.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Advisor participant instance ID.
+          required: true
+          description: Advisor participant instance ID.
+          name: participantId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                  nullable: true
+                  minLength: 1
+              required:
+                - model
+      responses:
+        "200":
+          description: Updated session with roster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
         "400":
-          description: Cannot remove the primary executor.
+          description: Model is invalid for the agent engine.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "404":
-          description: Session not found.
+          description: Session or participant not found.
           content:
             application/json:
               schema:

@@ -5,7 +5,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
-import { resolveEffectiveModel } from './effective-model.js';
+import { resolveEffectiveEngineAndModel } from './effective-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
@@ -99,15 +99,20 @@ export function sessionHasAdvisors(stmts: Stmts, sessionId: string): boolean {
 
 type TurnKind = 'executor_initial' | 'advisor' | 'executor_followup';
 
+type PlannedAgent = EnrichedAgent & {
+  sessionParticipantId?: string;
+  sessionModel?: string | null;
+};
+
 interface PlannedTurn {
   kind: TurnKind;
-  agent: EnrichedAgent;
+  agent: PlannedAgent;
   advisorFeedback?: { name: string; content: string };
 }
 
 export function buildMultiAgentTurnPlan(
   primary: EnrichedAgent,
-  advisors: EnrichedAgent[],
+  advisors: PlannedAgent[],
   userContent: string,
   maxAdvisorTurns: number,
 ): PlannedTurn[] {
@@ -123,6 +128,24 @@ export function buildMultiAgentTurnPlan(
     plan.push({ kind: 'executor_followup', agent: primary, advisorFeedback: undefined });
   }
   return plan;
+}
+
+/** Preserve duplicate advisor rows and attach each row's model override. */
+export function materializeSessionAdvisors(
+  rows: SessionAgentRow[],
+  getEnrichedAgent: (agentId: string) => EnrichedAgent | null,
+): PlannedAgent[] {
+  const advisors: PlannedAgent[] = [];
+  for (const row of rows) {
+    const agent = getEnrichedAgent(row.agent_id);
+    if (!agent) continue;
+    advisors.push({
+      ...agent,
+      sessionParticipantId: row.id,
+      sessionModel: row.model,
+    });
+  }
+  return advisors;
 }
 
 function createAdvisorCursorChat(
@@ -180,7 +203,6 @@ export async function handleMultiAgentChat(
   const { sessionId, agentId, content } = msg;
   const d = getDeps();
   const S = d.stmts;
-  const config = d.getConfig();
   const MAX_QUEUE_SIZE = d.getMaxQueueSize();
 
   let session = S.getSession.get(sessionId) as SessionRow | undefined;
@@ -196,9 +218,7 @@ export async function handleMultiAgentChat(
   }
 
   const advisorRows = S.getSessionAgents.all(sessionId) as SessionAgentRow[];
-  const advisors = advisorRows
-    .map((r) => d.getEnrichedAgent(r.agent_id))
-    .filter((a): a is EnrichedAgent => !!a);
+  const advisors = materializeSessionAdvisors(advisorRows, d.getEnrichedAgent);
 
   let worktreeRoundLockHeld = false;
   const finalizeLockOwned =
@@ -391,7 +411,7 @@ async function runAdvisorTurn(
   ws: WebSocketLike | null,
   session: SessionRow,
   primary: EnrichedAgent,
-  advisor: EnrichedAgent,
+  advisor: PlannedAgent,
   roundState: RoundState,
 ): Promise<void> {
   const d = getDeps();
@@ -427,13 +447,14 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
     ? `${transcript}\n\nRespond to the conversation above. You are ${advisor.name} (advisor — read-only).`
     : 'Review the session context.';
 
-  const engine = normalizeSessionMultiEngine(advisor.engine);
   // No org-owner fallback — only the authenticated WS user.
   const roomOwnerId = getWsAuthUserId(ws as unknown as AuthStampedWs | null) ?? null;
-  const model = resolveEffectiveModel(config, engine, {
+  const { engine, model } = resolveEffectiveEngineAndModel(config, {
+    agentId: advisor.id,
+    agentEngine: normalizeSessionMultiEngine(advisor.engine),
     agentModel: advisor.model as string | undefined,
     ownerUserId: roomOwnerId,
-    agentId: advisor.id,
+    explicitModel: advisor.sessionModel,
   });
 
   d.broadcast({

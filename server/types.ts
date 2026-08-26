@@ -167,8 +167,10 @@ export interface MessageRow {
 }
 
 export interface SessionAgentRow {
+  id: string;
   session_id: string;
   agent_id: string;
+  model: string | null;
   position: number;
   added_at: string;
 }
@@ -799,9 +801,12 @@ export interface CronLogRow {
 }
 
 export interface SessionAgentDetail {
+  participantId: string;
   id: string;
   name: string;
   color: string;
+  engine: string;
+  model: string | null;
   position: number;
   role: 'executor' | 'advisor';
   projectId?: string;
@@ -2208,6 +2213,7 @@ export interface Stmts {
   getSessionAgents: Stmt;
   addSessionAgent: Stmt;
   removeSessionAgent: Stmt;
+  updateSessionAgentModel: Stmt;
 
   // Designs
   listDesigns: Stmt;

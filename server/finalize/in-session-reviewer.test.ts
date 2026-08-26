@@ -339,29 +339,38 @@ function makeDeps(
     content: string;
     agentId: string | null;
   }> = [];
-  const attached: Array<{ sessionId: string; agentId: string }> = [];
-  const removed: Array<{ sessionId: string; agentId: string }> = [];
+  const attached: Array<{
+    participantId: string;
+    sessionId: string;
+    agentId: string;
+    model: string | null;
+  }> = [];
+  const removed: Array<{ sessionId: string; participantId: string }> = [];
   return {
     deps: {
       stmts: {
         addSessionAgent: {
-          run: vi.fn((sessionId: string, agentId: string) => {
-            attached.push({ sessionId, agentId });
-          }),
+          run: vi.fn(
+            (participantId: string, sessionId: string, agentId: string, model: string | null) => {
+              attached.push({ participantId, sessionId, agentId, model });
+            },
+          ),
         },
         removeSessionAgent: {
-          run: vi.fn((sessionId: string, agentId: string) => {
-            removed.push({ sessionId, agentId });
+          run: vi.fn((sessionId: string, participantId: string) => {
+            removed.push({ sessionId, participantId });
           }),
         },
         getSessionAgents: {
           all: vi.fn(() => {
-            const removedIds = new Set(removed.map((r) => r.agentId));
+            const removedIds = new Set(removed.map((r) => r.participantId));
             return attached
-              .filter((a) => !removedIds.has(a.agentId))
+              .filter((a) => !removedIds.has(a.participantId))
               .map((a, i) => ({
+                id: a.participantId,
                 session_id: a.sessionId,
                 agent_id: a.agentId,
+                model: a.model,
                 position: i,
                 added_at: 't',
               }));
@@ -488,7 +497,8 @@ describe('runReviewerTurn — happy path (approved)', () => {
     expect(result.verdict).toBe('approved');
     expect(result.threads).toEqual([]);
     // Attach
-    expect(attached).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
+    expect(attached).toHaveLength(1);
+    expect(attached[0]).toMatchObject({ sessionId: 'sess-1', agentId: 'rev-1', model: null });
     // Persist with the structured tail STRIPPED so the chat view stays clean
     expect(messages).toHaveLength(1);
     expect(messages[0]?.content).toBe('Looks fine.');
@@ -929,8 +939,9 @@ describe('runReviewerTurn — eject lifecycle', () => {
       sessionId: 'sess-1',
     });
 
-    expect(attached).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
-    expect(removed).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
+    expect(attached).toHaveLength(1);
+    expect(attached[0]).toMatchObject({ sessionId: 'sess-1', agentId: 'rev-1' });
+    expect(removed).toEqual([{ sessionId: 'sess-1', participantId: attached[0]!.participantId }]);
     // The review message itself survives the eject — only the roster row goes.
     expect(messages).toHaveLength(1);
     expect(messages[0]?.agentId).toBe('rev-1');
@@ -941,7 +952,7 @@ describe('runReviewerTurn — eject lifecycle', () => {
 
   it('removes the reviewer even when the tail block is missing (throw path)', async () => {
     const { spawnFn } = makeSpawnFake('No block here.');
-    const { deps, removed } = makeDeps(spawnFn);
+    const { deps, attached, removed } = makeDeps(spawnFn);
 
     await expect(
       runReviewerTurn(deps, {
@@ -954,7 +965,7 @@ describe('runReviewerTurn — eject lifecycle', () => {
       }),
     ).rejects.toThrow(/without a parseable review verdict/);
 
-    expect(removed).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
+    expect(removed).toEqual([{ sessionId: 'sess-1', participantId: attached[0]!.participantId }]);
   });
 
   it('removes the reviewer when a cancel aborts before spawn', async () => {
@@ -976,8 +987,9 @@ describe('runReviewerTurn — eject lifecycle', () => {
 
     // Reviewer was attached (bring-in happens before the spawn cancel check)
     // and then ejected by the finally.
-    expect(attached).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
-    expect(removed).toEqual([{ sessionId: 'sess-1', agentId: 'rev-1' }]);
+    expect(attached).toHaveLength(1);
+    expect(attached[0]).toMatchObject({ sessionId: 'sess-1', agentId: 'rev-1' });
+    expect(removed).toEqual([{ sessionId: 'sess-1', participantId: attached[0]!.participantId }]);
   });
 });
 

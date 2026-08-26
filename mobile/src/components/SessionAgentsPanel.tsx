@@ -17,22 +17,22 @@ export default function SessionAgentsPanel({
   sessionAgents = [],
   maxTurns = 10,
   agents = [],
+  modelConfig,
   onUpdated,
 }: any) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [addSearch, setAddSearch] = useState('');
+  const [addModels, setAddModels] = useState<Record<string, string>>({});
   const executor = sessionAgents.find((a: any) => a.role === 'executor');
   const advisors = sessionAgents.filter((a: any) => a.role === 'advisor');
-  const rosterIds = useMemo<any>(
-    () => new Set(sessionAgents.map((a: any) => a.id)),
-    [sessionAgents],
-  );
   const executorProjectId = executor?.projectId;
   const availableGroups = useMemo<any>(() => {
-    const filtered = filterAgentsForPicker(agents, { query: addSearch, excludeIds: rosterIds });
+    const filtered = filterAgentsForPicker(agents, { query: addSearch });
     return groupAgentsByProject(filtered);
-  }, [agents, addSearch, rosterIds]);
+  }, [agents, addSearch]);
+  const modelsForAgent = (agent: any): string[] =>
+    modelConfig?.engineValidModels?.[agent.engine || 'claude-code'] || [];
   if (!sessionId) return null;
   const refresh = async () => {
     const detail = await api.getSessionDetail(sessionId);
@@ -47,7 +47,7 @@ export default function SessionAgentsPanel({
     const doAdd = async () => {
       setBusy(true);
       try {
-        await api.addSessionAgent(sessionId, agentId);
+        await api.addSessionAgent(sessionId, agentId, addModels[agentId] || null);
         await refresh();
       } catch (err: any) {
         console.warn('addSessionAgent failed', err);
@@ -68,14 +68,26 @@ export default function SessionAgentsPanel({
     }
     await doAdd();
   };
-  const removeAgent = async (agentId: any) => {
+  const removeAgent = async (participantId: any) => {
     if (busy) return;
     setBusy(true);
     try {
-      await api.removeSessionAgent(sessionId, agentId);
+      await api.removeSessionAgent(sessionId, participantId);
       await refresh();
     } catch (err: any) {
       console.warn('removeSessionAgent failed', err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const setAgentModel = async (participantId: string, model: string | null) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.setSessionAgentModel(sessionId, participantId, model);
+      await refresh();
+    } catch (err: any) {
+      console.warn('setSessionAgentModel failed', err);
     } finally {
       setBusy(false);
     }
@@ -100,7 +112,12 @@ export default function SessionAgentsPanel({
     executorProjectId && a.projectId && a.projectId !== executorProjectId;
   return (
     <View style={styles.wrap}>
-      <TouchableOpacity style={styles.header} onPress={() => setOpen((v: any) => !v)}>
+      <TouchableOpacity
+        style={styles.header}
+        accessibilityRole="button"
+        accessibilityLabel="Toggle session agents"
+        onPress={() => setOpen((v: any) => !v)}
+      >
         <Text style={styles.headerText}>{label}</Text>
         <Text style={styles.chevron}>{open ? '▾' : '▸'}</Text>
       </TouchableOpacity>
@@ -117,14 +134,35 @@ export default function SessionAgentsPanel({
           )}
           <Text style={[styles.section, { marginTop: 10 }]}>Advisors (read-only)</Text>
           {advisors.map((a: any) => (
-            <View key={a.id} style={styles.row}>
-              <Text style={styles.chip} numberOfLines={1}>
-                {a.name}
-                {showProjectFor(a) && a.projectName ? ` · ${a.projectName}` : ''}
-              </Text>
-              <TouchableOpacity onPress={() => removeAgent(a.id)} disabled={busy}>
-                <Text style={styles.remove}>Remove</Text>
-              </TouchableOpacity>
+            <View key={a.participantId} style={styles.participant}>
+              <View style={styles.row}>
+                <Text style={styles.chip} numberOfLines={1}>
+                  {a.name}
+                  {showProjectFor(a) && a.projectName ? ` · ${a.projectName}` : ''}
+                </Text>
+                <TouchableOpacity onPress={() => removeAgent(a.participantId)} disabled={busy}>
+                  <Text style={styles.remove}>Remove</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.modelRow}>
+                {[null, ...modelsForAgent(a)].map((model: string | null) => {
+                  const selected = (a.model || null) === model;
+                  return (
+                    <TouchableOpacity
+                      key={model || 'default'}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Use ${model || 'agent default'} for ${a.name}`}
+                      onPress={() => setAgentModel(a.participantId, model)}
+                      disabled={busy}
+                      style={[styles.modelBtn, selected && styles.modelBtnActive]}
+                    >
+                      <Text style={selected ? styles.modelTextActive : styles.modelText}>
+                        {model || 'Default'}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
             </View>
           ))}
           {advisors.length === 0 && (
@@ -145,14 +183,43 @@ export default function SessionAgentsPanel({
                     <Text style={styles.groupTitle}>{group.projectName}</Text>
                     <View style={styles.addRow}>
                       {group.agents.map((a: any) => (
-                        <TouchableOpacity
-                          key={a.id}
-                          style={styles.addBtn}
-                          onPress={() => addAgent(a.id)}
-                          disabled={busy}
-                        >
-                          <Text style={styles.addText}>+ {a.name}</Text>
-                        </TouchableOpacity>
+                        <View key={a.id} style={styles.addCard}>
+                          <View style={styles.modelRow}>
+                            {[null, ...modelsForAgent(a)].map((model: string | null) => {
+                              const selected = (addModels[a.id] || null) === model;
+                              return (
+                                <TouchableOpacity
+                                  key={model || 'default'}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`Use ${model || 'agent default'} for new ${a.name}`}
+                                  onPress={() =>
+                                    setAddModels((current) => ({
+                                      ...current,
+                                      [a.id]: model || '',
+                                    }))
+                                  }
+                                  disabled={busy}
+                                  style={[styles.modelBtn, selected && styles.modelBtnActive]}
+                                >
+                                  <Text
+                                    style={selected ? styles.modelTextActive : styles.modelText}
+                                  >
+                                    {model || 'Default'}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                          <TouchableOpacity
+                            style={styles.addBtn}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Add ${a.name}`}
+                            onPress={() => addAgent(a.id)}
+                            disabled={busy}
+                          >
+                            <Text style={styles.addText}>Add {a.name}</Text>
+                          </TouchableOpacity>
+                        </View>
                       ))}
                     </View>
                   </View>
@@ -211,6 +278,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 6,
   },
+  participant: { marginBottom: 8 },
   remove: { color: colors.red400, fontSize: 12 },
   search: {
     marginTop: 8,
@@ -231,13 +299,31 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   addRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  addBtn: {
+  addCard: {
+    width: '100%',
+    gap: 6,
+    padding: 8,
+    borderRadius: 8,
     backgroundColor: colors.gray800,
+  },
+  addBtn: {
+    backgroundColor: colors.gray700,
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
   },
   addText: { color: colors.gray300, fontSize: 12 },
+  modelRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 4 },
+  modelBtn: {
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+  },
+  modelBtnActive: { borderColor: colors.blue500, backgroundColor: colors.blue900_40 },
+  modelText: { color: colors.gray500, fontSize: 10 },
+  modelTextActive: { color: colors.blue300, fontSize: 10 },
   turnRow: { flexDirection: 'row', gap: 8 },
   turnBtn: {
     paddingHorizontal: 10,

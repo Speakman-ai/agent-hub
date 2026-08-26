@@ -266,11 +266,18 @@ export async function runReviewerTurn(
     }
   };
 
-  // Attach reviewer to session (idempotent via INSERT OR IGNORE in
-  // `addSessionAgent`). A second Finalize iteration on the same session
-  // therefore re-uses the existing attachment row.
+  // Attach the reviewer as a participant instance. The instance id lets this
+  // finally block remove exactly the temporary reviewer row even when another
+  // instance of the same agent is already attached to the session.
+  const reviewerParticipantId = uuidv4();
   try {
-    deps.stmts.addSessionAgent.run(sessionId, reviewerAgent.id, sessionId);
+    deps.stmts.addSessionAgent.run(
+      reviewerParticipantId,
+      sessionId,
+      reviewerAgent.id,
+      null,
+      sessionId,
+    );
     broadcastRoster();
   } catch (err) {
     log(
@@ -290,7 +297,7 @@ export async function runReviewerTurn(
     return await runReviewerTurnInner(sessionId, reviewerAgent, sessionRow);
   } finally {
     try {
-      deps.stmts.removeSessionAgent.run(sessionId, reviewerAgent.id);
+      deps.stmts.removeSessionAgent.run(sessionId, reviewerParticipantId);
       broadcastRoster();
     } catch (err) {
       log(

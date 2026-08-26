@@ -16,6 +16,7 @@ the *how*.
 - [Session row](#session-row)
 - [Message row](#message-row)
 - [Per-user session ownership](#per-user-session-ownership)
+- [Multi-agent participant instances](#multi-agent-participant-instances)
 - [Ask mode — read-only / plan-mode sessions](#ask-mode--read-only--plan-mode-sessions)
   - [What changes in ask mode](#what-changes-in-ask-mode)
   - [Detecting ask_mode from inside a session](#detecting-ask_mode-from-inside-a-session)
@@ -82,6 +83,19 @@ Helpers live in `server/session-ownership.ts` —
 process lifetime once a positive result is known; negative lookups
 are not memoised so a `/api/auth/setup` immediately after boot is
 visible without a process restart.
+
+## Multi-agent participant instances
+
+The session executor remains `sessions.agent_id`. Each advisor slot is a
+separate `session_agents` participant instance with its own stable `id`,
+`agent_id`, position, and optional model override. The same agent may therefore
+be added multiple times, including as an advisor alongside its executor slot,
+and each instance may run a different model.
+
+Use the participant instance id returned as `agents[].participantId` when
+removing an advisor or changing its model. Do not use the shared agent id for
+those mutations because it cannot distinguish duplicate instances. A null
+participant model restores the agent default.
 
 ## Ask mode — read-only / plan-mode sessions
 

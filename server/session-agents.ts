@@ -20,9 +20,12 @@ export function listSessionAgents(
     const agent = getEnrichedAgent(row.agent_id);
     if (!agent) continue;
     advisors.push({
+      participantId: row.id,
       id: agent.id,
       name: agent.name,
       color: agent.color || '#666',
+      engine: agent.engine || 'claude-code',
+      model: row.model,
       position: row.position,
       role: 'advisor',
       projectId: agent.projectId,
@@ -33,9 +36,12 @@ export function listSessionAgents(
   const roster: SessionAgentDetail[] = [];
   if (primary) {
     roster.push({
+      participantId: `executor:${primary.id}`,
       id: primary.id,
       name: primary.name,
       color: primary.color || '#666',
+      engine: session.engine || primary.engine || 'claude-code',
+      model: session.model,
       position: -1,
       role: 'executor',
       projectId: primary.projectId,

@@ -7050,6 +7050,7 @@ export default function App({ initialView }: any = {}) {
                       sessionAgents={sessionAgents}
                       maxTurns={activeSession?.max_turns}
                       agents={agents}
+                      modelConfig={modelConfig}
                       onUpdated={handleSessionAgentsUpdated}
                     />
                   )}

@@ -8,6 +8,7 @@ import {
   buildMultiAgentTurnPlan,
   handleMultiAgentChat,
   initSessionMultiAgent,
+  materializeSessionAdvisors,
   parseMentions,
 } from './session-multi-agent.js';
 import {
@@ -100,6 +101,47 @@ describe('buildMultiAgentTurnPlan', () => {
     const mentions = parseMentions('@Reviewer please review', [reviewer, reviewerBot]);
     expect(mentions.has('r1')).toBe(true);
     expect(mentions.has('r2')).toBe(false);
+  });
+});
+
+describe('materializeSessionAdvisors', () => {
+  it('preserves duplicate agent instances and their independent model overrides', () => {
+    const agent = {
+      id: 'advisor',
+      name: 'Same advisor',
+      engine: 'claude-code',
+      model: 'agent-default',
+      projectId: 'p1',
+      projectName: 'Project',
+      cwd: '/tmp',
+    } as EnrichedAgent;
+    const rows = [
+      {
+        id: 'participant-1',
+        session_id: 'session-1',
+        agent_id: agent.id,
+        model: 'model-a',
+        position: 0,
+        added_at: '',
+      },
+      {
+        id: 'participant-2',
+        session_id: 'session-1',
+        agent_id: agent.id,
+        model: 'model-b',
+        position: 1,
+        added_at: '',
+      },
+    ];
+
+    const participants = materializeSessionAdvisors(rows, () => agent);
+
+    expect(participants).toHaveLength(2);
+    expect(participants.map((item) => item.sessionParticipantId)).toEqual([
+      'participant-1',
+      'participant-2',
+    ]);
+    expect(participants.map((item) => item.sessionModel)).toEqual(['model-a', 'model-b']);
   });
 });
 

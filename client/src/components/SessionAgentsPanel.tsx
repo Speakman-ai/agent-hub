@@ -7,7 +7,7 @@ import {
   groupAgentsByProject,
 } from '../utils/sessionAgentPicker';
 
-function AgentChip({ agent, onRemove, busy, showProject }: any) {
+function AgentChip({ agent, onRemove, onModelChange, models = [], busy, showProject }: any) {
   const project = showProject ? agentProjectLabel(agent) : '';
   return (
     <div className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-1.5 text-sm max-w-full">
@@ -21,11 +21,27 @@ function AgentChip({ agent, onRemove, busy, showProject }: any) {
           {project}
         </span>
       ) : null}
+      {onModelChange && models.length > 0 ? (
+        <select
+          aria-label={`Model for ${agent.name}`}
+          value={agent.model || ''}
+          disabled={busy}
+          onChange={(event: any) => onModelChange(agent.participantId, event.target.value || null)}
+          className="min-w-0 max-w-48 rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-300 disabled:opacity-40"
+        >
+          <option value="">Agent default</option>
+          {models.map((model: string) => (
+            <option key={model} value={model}>
+              {model}
+            </option>
+          ))}
+        </select>
+      ) : null}
       {onRemove ? (
         <button
           type="button"
           disabled={busy}
-          onClick={() => onRemove(agent.id)}
+          onClick={() => onRemove(agent.participantId)}
           className="text-gray-500 hover:text-red-400 text-xs ml-1 disabled:opacity-40 flex-shrink-0"
         >
           ✕
@@ -44,24 +60,27 @@ export default function SessionAgentsPanel({
   sessionAgents = [],
   maxTurns = 10,
   agents = [],
+  modelConfig,
   onUpdated,
 }: any) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [addSearch, setAddSearch] = useState('');
+  const [addModels, setAddModels] = useState<Record<string, string>>({});
 
   const executor = sessionAgents.find((a: any) => a.role === 'executor');
   const advisors = sessionAgents.filter((a: any) => a.role === 'advisor');
-  const rosterIds = useMemo(() => new Set(sessionAgents.map((a: any) => a.id)), [sessionAgents]);
   const executorProjectId = executor?.projectId;
 
   const availableGroups = useMemo(() => {
     const filtered = filterAgentsForPicker(agents, {
       query: addSearch,
-      excludeIds: rosterIds,
     });
     return groupAgentsByProject(filtered);
-  }, [agents, addSearch, rosterIds]);
+  }, [agents, addSearch]);
+
+  const modelsForAgent = (agent: any): string[] =>
+    modelConfig?.engineValidModels?.[agent.engine || 'claude-code'] || [];
 
   const refresh = async () => {
     if (!sessionId) return;
@@ -87,10 +106,23 @@ export default function SessionAgentsPanel({
     }
     setBusy(true);
     try {
-      await api.addSessionAgent(sessionId, agentId);
+      await api.addSessionAgent(sessionId, agentId, addModels[agentId] || null);
       await refresh();
     } catch (err: any) {
       console.error('addSessionAgent failed:', err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleModelChange = async (participantId: string, model: string | null) => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      await api.setSessionAgentModel(sessionId, participantId, model);
+      await refresh();
+    } catch (err: any) {
+      console.error('setSessionAgentModel failed:', err);
     } finally {
       setBusy(false);
     }
@@ -144,7 +176,7 @@ export default function SessionAgentsPanel({
           <span className="flex items-center gap-1 ml-1">
             {sessionAgents.slice(0, 6).map((a: any) => (
               <span
-                key={a.id}
+                key={a.participantId}
                 className="w-2 h-2 rounded-full"
                 style={{ backgroundColor: a.color }}
                 title={a.name}
@@ -176,11 +208,13 @@ export default function SessionAgentsPanel({
               <div className="flex flex-wrap gap-2 mb-1">
                 {advisors.map((a: any) => (
                   <AgentChip
-                    key={a.id}
+                    key={a.participantId}
                     agent={a}
                     busy={busy}
                     showProject={!!executorProjectId && a.projectId !== executorProjectId}
                     onRemove={handleRemove}
+                    onModelChange={handleModelChange}
+                    models={modelsForAgent(a)}
                   />
                 ))}
                 {advisors.length === 0 && (
@@ -201,9 +235,7 @@ export default function SessionAgentsPanel({
                   />
                   {totalAvailable === 0 ? (
                     <p className="text-xs text-gray-600">
-                      {addSearch.trim()
-                        ? 'No matching agents'
-                        : 'All visible agents are already on this session'}
+                      {addSearch.trim() ? 'No matching agents' : 'No visible agents available'}
                     </p>
                   ) : (
                     <div className="space-y-3 max-h-48 overflow-y-auto pr-1">
@@ -213,21 +245,50 @@ export default function SessionAgentsPanel({
                             {group.projectName}
                           </p>
                           <div className="flex flex-wrap gap-2">
-                            {group.agents.map((a: any) => (
-                              <button
-                                key={a.id}
-                                type="button"
-                                disabled={busy}
-                                onClick={() => handleAdd(a.id)}
-                                className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 rounded-lg px-3 py-1.5 text-sm transition-colors disabled:opacity-40"
-                              >
-                                <span
-                                  className="w-2.5 h-2.5 rounded-full"
-                                  style={{ backgroundColor: a.color }}
-                                />
-                                <span className="text-gray-300">+ {a.name}</span>
-                              </button>
-                            ))}
+                            {group.agents.map((a: any) => {
+                              const models = modelsForAgent(a);
+                              return (
+                                <div
+                                  key={a.id}
+                                  className="flex items-center gap-2 rounded-lg bg-gray-800 px-2 py-1.5"
+                                >
+                                  <span
+                                    className="w-2.5 h-2.5 rounded-full"
+                                    style={{ backgroundColor: a.color }}
+                                  />
+                                  <span className="text-sm text-gray-300">{a.name}</span>
+                                  {models.length > 0 ? (
+                                    <select
+                                      aria-label={`Model for new ${a.name}`}
+                                      value={addModels[a.id] || ''}
+                                      disabled={busy}
+                                      onChange={(event: any) =>
+                                        setAddModels((current) => ({
+                                          ...current,
+                                          [a.id]: event.target.value,
+                                        }))
+                                      }
+                                      className="min-w-0 max-w-44 rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-300 disabled:opacity-40"
+                                    >
+                                      <option value="">Agent default</option>
+                                      {models.map((model: string) => (
+                                        <option key={model} value={model}>
+                                          {model}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={() => handleAdd(a.id)}
+                                    className="rounded bg-gray-700 px-2 py-1 text-xs text-gray-200 transition-colors hover:bg-gray-600 disabled:opacity-40"
+                                  >
+                                    Add
+                                  </button>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       ))}

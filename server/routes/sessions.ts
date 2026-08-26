@@ -18,6 +18,8 @@ import {
   PatchCheckpointRequestSchema,
   SubmitSessionCredentialRequestSchema,
   FollowUpSessionRequestSchema,
+  AddSessionAgentRequestSchema,
+  PutSessionAgentModelRequestSchema,
 } from './sessions.openapi.js';
 import {
   normalizeSessionMode,
@@ -1848,13 +1850,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.post('/api/sessions/:sessionId/agents', (req: Request, res: Response) => {
-    const { agentId } = req.body as { agentId?: string };
-    if (!agentId) return res.status(400).json({ error: 'agentId is required' });
+    const parsed = parseBody(AddSessionAgentRequestSchema, req, res);
+    if (!parsed) return;
+    const { agentId, model = null } = parsed;
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
-    if (agentId === session.agent_id) {
-      return res.status(400).json({ error: 'Cannot add the primary agent as an advisor' });
-    }
     const found = findAgent(agentId);
     if (!found) return res.status(404).json({ error: 'Agent not found' });
     const caller = resolveVisibilityCaller(req);
@@ -1864,7 +1864,29 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (found.agent?.role === 'reviewer') {
       return res.status(403).json({ error: 'Reviewer agents cannot join multi-agent sessions' });
     }
-    stmts.addSessionAgent.run(req.params.sessionId, agentId, req.params.sessionId);
+    const ownerUserId = session.owner_user_id ?? (req as AuthenticatedRequest).authUserId ?? null;
+    const { engine } = resolveEffectiveEngineAndModel(config, {
+      agentId,
+      agentEngine: found.agent.engine || 'claude-code',
+      agentModel: found.agent.model ?? null,
+      ownerUserId,
+    });
+    if (model) {
+      const staticAllowed = config.engineValidModels[engine] || [];
+      const allowed =
+        engine === 'codex-cli'
+          ? resolveSelectableCodexModels(
+              staticAllowed,
+              readCodexModelsCacheForUser(ownerUserId, config.dataDir),
+            )
+          : staticAllowed;
+      if (!allowed.includes(model)) {
+        return res.status(400).json({
+          error: `Model "${model}" is not valid for engine "${engine}". Allowed: ${allowed.join(', ')}`,
+        });
+      }
+    }
+    stmts.addSessionAgent.run(uuidv4(), req.params.sessionId, agentId, model, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     deps.broadcast({
       type: 'session-updated',
@@ -1873,13 +1895,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent));
   });
 
-  router.delete('/api/sessions/:sessionId/agents/:agentId', (req: Request, res: Response) => {
+  router.delete('/api/sessions/:sessionId/agents/:participantId', (req: Request, res: Response) => {
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
-    if (req.params.agentId === session.agent_id) {
-      return res.status(400).json({ error: 'Cannot remove the primary executor agent' });
+    const result = stmts.removeSessionAgent.run(req.params.sessionId, req.params.participantId);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Session participant not found' });
     }
-    stmts.removeSessionAgent.run(req.params.sessionId, req.params.agentId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     deps.broadcast({
       type: 'session-updated',
@@ -1887,6 +1909,58 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     });
     res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent));
   });
+
+  router.put(
+    '/api/sessions/:sessionId/agents/:participantId/model',
+    (req: Request, res: Response) => {
+      const parsed = parseBody(PutSessionAgentModelRequestSchema, req, res);
+      if (!parsed) return;
+      const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+      const participant = (
+        stmts.getSessionAgents.all(req.params.sessionId) as Array<{
+          id: string;
+          agent_id: string;
+        }>
+      ).find((row) => row.id === req.params.participantId);
+      if (!participant) return res.status(404).json({ error: 'Session participant not found' });
+      const found = findAgent(participant.agent_id);
+      if (!found) return res.status(404).json({ error: 'Agent not found' });
+      const ownerUserId = session.owner_user_id ?? (req as AuthenticatedRequest).authUserId ?? null;
+      const { engine } = resolveEffectiveEngineAndModel(config, {
+        agentId: participant.agent_id,
+        agentEngine: found.agent.engine || 'claude-code',
+        agentModel: found.agent.model ?? null,
+        ownerUserId,
+      });
+      if (parsed.model) {
+        const staticAllowed = config.engineValidModels[engine] || [];
+        const allowed =
+          engine === 'codex-cli'
+            ? resolveSelectableCodexModels(
+                staticAllowed,
+                readCodexModelsCacheForUser(ownerUserId, config.dataDir),
+              )
+            : staticAllowed;
+        if (!allowed.includes(parsed.model)) {
+          return res.status(400).json({
+            error: `Model "${parsed.model}" is not valid for engine "${engine}". Allowed: ${allowed.join(', ')}`,
+          });
+        }
+      }
+      stmts.updateSessionAgentModel.run(
+        parsed.model,
+        req.params.sessionId,
+        req.params.participantId,
+      );
+      const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
+      deps.broadcast({
+        type: 'session-updated',
+        session: enrichSessionWithAgents(updated, stmts, getEnrichedAgent),
+      });
+      res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent));
+    },
+  );
 
   router.put('/api/sessions/:sessionId/engine', (req: Request, res: Response) => {
     const parsed = parseBody(PutSessionEngineRequestSchema, req, res);

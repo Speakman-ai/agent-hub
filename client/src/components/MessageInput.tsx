@@ -244,8 +244,11 @@ function MessageInput(
   }, []);
 
   const mentionAgents =
-    sessionAgents.filter((a: any) =>
-      mentionQuery === null ? false : a.name.toLowerCase().includes(mentionQuery.toLowerCase()),
+    sessionAgents.filter(
+      (a: any, index: number, roster: any[]) =>
+        mentionQuery !== null &&
+        a.name.toLowerCase().includes(mentionQuery.toLowerCase()) &&
+        roster.findIndex((candidate: any) => candidate.id === a.id) === index,
     ) || [];
 
   useEffect(() => {
@@ -1099,7 +1102,7 @@ function MessageInput(
             </div>
             {mentionAgents.map((a: any, i: any) => (
               <button
-                key={a.id}
+                key={a.participantId || a.id}
                 onMouseDown={(e: any) => {
                   e.preventDefault();
                   insertMention(a.name);

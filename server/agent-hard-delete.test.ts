@@ -59,7 +59,7 @@ describe('DELETE /api/agents/:agentId — hard delete', () => {
     stmts.insertActiveTask.run(sessionId, 'msg-1', agentId, 1234, 'p', 'claude-code', 'sonnet');
     stmts.upsertAgentSkillOverride.run(agentId, 'kanban', 0);
 
-    stmts.addSessionAgent.run(sessionId, agentId, sessionId);
+    stmts.addSessionAgent.run('participant-1', sessionId, agentId, null, sessionId);
 
     // Sanity — every store has a row before deletion.
     const beforeSessions = (

@@ -252,7 +252,7 @@ export default function SessionSummarySheet({
                       </View>
                     )}
                     {advisors.map((a: any) => (
-                      <View key={a.id} style={styles.agentRow}>
+                      <View key={a.participantId || a.id} style={styles.agentRow}>
                         <View
                           style={[styles.agentDot, { backgroundColor: a.color || colors.gray500 }]}
                         />
