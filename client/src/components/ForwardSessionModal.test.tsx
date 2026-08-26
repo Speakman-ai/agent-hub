@@ -197,4 +197,99 @@ describe('<ForwardSessionModal />', () => {
       expect.objectContaining({ targetAgentId: 'src-1', autoStart: false }),
     );
   });
+
+  // ─── Model override ────────────────────────────────────────────
+
+  const modelConfig = {
+    engineValidModels: {
+      'claude-code': ['claude-opus-5', 'claude-haiku-4-6'],
+      'codex-cli': ['gpt-5.4', 'gpt-5.2'],
+    },
+    engineDefaultModels: { 'claude-code': 'claude-opus-5', 'codex-cli': 'gpt-5.4' },
+  };
+
+  const codexAgent = {
+    id: 'cdx-1',
+    name: 'Codex Agent',
+    projectId: 'proj-a',
+    active: true,
+    engine: 'codex-cli',
+    color: '#0aa',
+    model: 'gpt-5.4',
+  };
+
+  it('does not render a model picker without modelConfig', () => {
+    render(
+      <ForwardSessionModal
+        sourceAgent={source}
+        agents={[source, siblingA]}
+        sessionId="session-1"
+        onClose={() => {}}
+        onForward={() => Promise.resolve({})}
+      />,
+    );
+    fireEvent.click(screen.getByText('Hub Backend' as any) as any);
+    expect(screen.queryByTestId('forward-model-select')).toBeNull();
+  });
+
+  it('shows a model picker once an agent is selected and forwards the chosen model', () => {
+    const onForward = vi.fn(() => Promise.resolve({ session: { id: 'fwd' } }));
+    render(
+      <ForwardSessionModal
+        sourceAgent={source}
+        agents={[source, { ...siblingA, model: 'claude-opus-5' }]}
+        sessionId="session-1"
+        modelConfig={modelConfig}
+        onClose={() => {}}
+        onForward={onForward}
+      />,
+    );
+    // No agent selected yet → no picker.
+    expect(screen.queryByTestId('forward-model-select')).toBeNull();
+
+    fireEvent.click(screen.getByText('Hub Backend' as any) as any);
+    const select = screen.getByTestId('forward-model-select') as HTMLSelectElement;
+    // Defaults to the target agent's own model.
+    expect(select.value).toBe('claude-opus-5');
+
+    // Override to a different valid model, then submit.
+    fireEvent.change(select, { target: { value: 'claude-haiku-4-6' } } as any);
+    fireEvent.click(screen.getByRole('button', { name: /forward/i } as any) as any);
+    expect(onForward!).toHaveBeenCalledWith(
+      expect.objectContaining({ targetAgentId: 'sib-a', model: 'claude-haiku-4-6' }),
+    );
+  });
+
+  it('does not carry a prior target’s model after switching agents (no stale-effect race)', () => {
+    const onForward = vi.fn(() => Promise.resolve({ session: { id: 'fwd' } }));
+    render(
+      <ForwardSessionModal
+        sourceAgent={source}
+        agents={[source, { ...siblingA, model: 'claude-opus-5' }, codexAgent]}
+        sessionId="session-1"
+        modelConfig={modelConfig}
+        onClose={() => {}}
+        onForward={onForward}
+      />,
+    );
+
+    // Pick a claude-code target and override its model.
+    fireEvent.click(screen.getByText('Hub Backend' as any) as any);
+    const select = screen.getByTestId('forward-model-select') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'claude-haiku-4-6' } } as any);
+    expect(select.value).toBe('claude-haiku-4-6');
+
+    // Switch to a codex target. The rendered selection must synchronously
+    // become the codex default — the prior (now engine-foreign) haiku choice
+    // must NOT survive, even without any effect having run.
+    fireEvent.click(screen.getByText('Codex Agent' as any) as any);
+    const codexSelect = screen.getByTestId('forward-model-select') as HTMLSelectElement;
+    expect(codexSelect.value).toBe('gpt-5.4');
+
+    // Forwarding immediately sends the codex default, never the stale haiku id.
+    fireEvent.click(screen.getByRole('button', { name: /forward/i } as any) as any);
+    expect(onForward!).toHaveBeenCalledWith(
+      expect.objectContaining({ targetAgentId: 'cdx-1', model: 'gpt-5.4' }),
+    );
+  });
 });

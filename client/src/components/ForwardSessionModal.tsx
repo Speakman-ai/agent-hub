@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Send, X, ArrowLeftRight } from 'lucide-react';
+import { hubModelsForEngine, defaultHubModelForEngine } from './HubModelPicker';
 
 /**
  * Filter the flat agent list down to the subset that can be forwarded to
@@ -42,6 +43,11 @@ export default function ForwardSessionModal({
   onForwarded,
   onForward,
   onError,
+  // Engine → valid/default model maps (from GET /api/config/models). Optional:
+  // when absent the model picker is hidden and the fork inherits the target
+  // agent's own model, preserving the original behavior for callers (e.g. the
+  // thread-entry / design forward) that don't wire it up.
+  modelConfig = null,
   // Generic-forward overrides. Defaults keep the session-forward behavior so
   // existing callers are unaffected; the thread-entry forward passes its own
   // copy and a `ready` gate (no source session to key off).
@@ -52,6 +58,11 @@ export default function ForwardSessionModal({
   const [selectedAgentId, setSelectedAgentId] = useState<any>(null);
   const [prompt, setPrompt] = useState('');
   const [autoStart, setAutoStart] = useState(false);
+  // A model override tagged with the agent id it was picked for. Storing the
+  // identity lets us derive the effective model synchronously and ignore a
+  // choice that belongs to a previously-selected target — so switching agents
+  // can never leave a stale/foreign model in flight (no re-seed effect race).
+  const [modelChoice, setModelChoice] = useState<any>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<any>(null);
   const [query, setQuery] = useState('');
@@ -67,6 +78,40 @@ export default function ForwardSessionModal({
     if (!q) return candidates;
     return candidates.filter((a: any) => a.name.toLowerCase().includes(q));
   }, [candidates, query]);
+
+  const selectedAgent = useMemo(
+    () => candidates.find((a: any) => a.id === selectedAgentId) || null,
+    [candidates, selectedAgentId],
+  );
+  // The new copy keeps the target agent's engine; only the model is picked
+  // here. Models depend on the engine, so the list follows the selected agent.
+  const selectedEngine = selectedAgent?.engine || 'claude-code';
+  const modelOptions = useMemo(
+    () => hubModelsForEngine(modelConfig, selectedEngine),
+    [modelConfig, selectedEngine],
+  );
+
+  // Default model for the currently-selected target: its own configured model
+  // when valid, else the engine default. Derived, not stored.
+  const defaultModel = useMemo(() => {
+    if (!selectedAgent || modelOptions.length === 0) return '';
+    const agentModel = selectedAgent.model;
+    return agentModel && modelOptions.includes(agentModel)
+      ? agentModel
+      : defaultHubModelForEngine(modelConfig, selectedEngine);
+  }, [selectedAgent, selectedEngine, modelOptions, modelConfig]);
+
+  // The effective model, computed synchronously each render. An override only
+  // counts when it was picked for the *current* target and is still valid for
+  // its engine; otherwise we fall back to the default. This is what both the
+  // select value and the submitted payload read, so there is no window where a
+  // prior target's model can be forwarded.
+  const model =
+    modelChoice &&
+    modelChoice.agentId === selectedAgentId &&
+    modelOptions.includes(modelChoice.model)
+      ? modelChoice.model
+      : defaultModel;
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -90,6 +135,7 @@ export default function ForwardSessionModal({
         targetAgentId: selectedAgentId,
         prompt: prompt.trim() || undefined,
         autoStart,
+        model: model || undefined,
       });
       if (typeof onForwarded === 'function') onForwarded(result);
       onClose();
@@ -201,6 +247,31 @@ export default function ForwardSessionModal({
               })}
             </div>
             <div className="px-4 py-3 border-t border-gray-800 space-y-3">
+              {selectedAgent && modelOptions.length > 0 && (
+                <div>
+                  <label
+                    htmlFor="forward-model"
+                    className="block text-xs font-medium text-gray-400 mb-1"
+                  >
+                    Model
+                  </label>
+                  <select
+                    id="forward-model"
+                    data-testid="forward-model-select"
+                    value={model}
+                    onChange={(e: any) =>
+                      setModelChoice({ agentId: selectedAgentId, model: e.target.value })
+                    }
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+                  >
+                    {modelOptions.map((id: string) => (
+                      <option key={id} value={id}>
+                        {id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <label
                   htmlFor="forward-prompt"

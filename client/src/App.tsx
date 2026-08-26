@@ -7815,9 +7815,10 @@ export default function App({ initialView }: any = {}) {
             sourceAgent={activeAgent}
             agents={agents}
             sessionId={activeSessionId}
+            modelConfig={modelConfig}
             onClose={() => setShowForward(false)}
-            onForward={({ targetAgentId, prompt, autoStart }: any) =>
-              api.forwardSession(activeSessionId, { targetAgentId, prompt, autoStart })
+            onForward={({ targetAgentId, prompt, autoStart, model }: any) =>
+              api.forwardSession(activeSessionId, { targetAgentId, prompt, autoStart, model })
             }
             onForwarded={(result: any) => {
               const session = result?.session;

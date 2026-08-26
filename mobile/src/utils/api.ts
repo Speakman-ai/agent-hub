@@ -196,7 +196,10 @@ export const api = {
   // Forward the entire session transcript to a new session on another agent.
   // Mirrors the web client. Body: { targetAgentId, messageIds?, prompt?, autoStart? }
   // Returns { session, forwardedMessageId }.
-  forwardSession: (sessionId: any, { targetAgentId, messageIds, prompt, autoStart }: any = {}) =>
+  forwardSession: (
+    sessionId: any,
+    { targetAgentId, messageIds, prompt, autoStart, model }: any = {},
+  ) =>
     fetchJSON(`/sessions/${sessionId}/forward`, {
       method: 'POST',
       body: JSON.stringify({
@@ -204,6 +207,7 @@ export const api = {
         ...(messageIds ? { messageIds } : {}),
         ...(prompt ? { prompt } : {}),
         ...(autoStart != null ? { autoStart: !!autoStart } : {}),
+        ...(model ? { model } : {}),
       }),
     }),
   // Start a follow-up session from an existing one. Unlike forward, the target

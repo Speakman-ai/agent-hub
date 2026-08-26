@@ -14,6 +14,7 @@ import {
 import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 import { filterForwardTargets } from '../utils/forwardTargets';
+import { modelsForEngine, ENGINE_DEFAULT_MODELS } from '../utils/engineOptions';
 // Re-export for convenience so callers can import both the modal and the
 // filter from a single module (matches the web client's shape).
 export { filterForwardTargets };
@@ -22,6 +23,7 @@ export default function ForwardSessionModal({
   sourceAgent,
   agents,
   sessionId,
+  modelConfig = null,
   onClose,
   onForward,
   onForwarded,
@@ -30,16 +32,56 @@ export default function ForwardSessionModal({
   const [selectedAgentId, setSelectedAgentId] = useState<any>(null);
   const [prompt, setPrompt] = useState('');
   const [autoStart, setAutoStart] = useState(false);
+  // A model override tagged with the agent id it was picked for. Storing the
+  // identity lets us derive the effective model synchronously and ignore a
+  // choice that belongs to a previously-selected target — so switching agents
+  // can never leave a stale/foreign model in flight (no re-seed effect race).
+  const [modelChoice, setModelChoice] = useState<any>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<any>(null);
   const candidates = useMemo<any>(
     () => filterForwardTargets(agents, sourceAgent),
     [agents, sourceAgent],
   );
+  const selectedAgent = useMemo<any>(
+    () => candidates.find((a: any) => a.id === selectedAgentId) || null,
+    [candidates, selectedAgentId],
+  );
+  // The new copy keeps the target agent's engine; only the model is picked
+  // here. Models follow the selected agent's engine.
+  const selectedEngine = selectedAgent?.engine || 'claude-code';
+  const modelOptions = useMemo<any>(
+    () => modelsForEngine(selectedEngine, modelConfig),
+    [selectedEngine, modelConfig],
+  );
+  // Default model for the currently-selected target: its own configured model
+  // when valid, else the configured/engine default. Derived, not stored.
+  const defaultModel = useMemo<string>(() => {
+    if (!selectedAgent || modelOptions.length === 0) return '';
+    const ids = modelOptions.map((m: any) => m.id);
+    const agentModel = selectedAgent.model;
+    if (agentModel && ids.includes(agentModel)) return agentModel;
+    const configured = modelConfig?.engineDefaultModels?.[selectedEngine];
+    if (configured && ids.includes(configured)) return configured;
+    const fallback = ENGINE_DEFAULT_MODELS[selectedEngine];
+    return fallback && ids.includes(fallback) ? fallback : ids[0];
+  }, [selectedAgent, selectedEngine, modelOptions, modelConfig]);
+  // Effective model, computed synchronously each render. An override only counts
+  // when it was picked for the *current* target and is still valid for its
+  // engine; otherwise fall back to the default. Both the rendered selection and
+  // the submitted payload read this, so no window can forward a prior target's
+  // model.
+  const model =
+    modelChoice &&
+    modelChoice.agentId === selectedAgentId &&
+    modelOptions.some((m: any) => m.id === modelChoice.model)
+      ? modelChoice.model
+      : defaultModel;
   const reset = () => {
     setSelectedAgentId(null);
     setPrompt('');
     setAutoStart(false);
+    setModelChoice(null);
     setError(null);
     setSubmitting(false);
   };
@@ -57,6 +99,7 @@ export default function ForwardSessionModal({
         targetAgentId: selectedAgentId,
         prompt: prompt.trim() || undefined,
         autoStart,
+        model: model || undefined,
       });
       onForwarded?.(result);
       reset();
@@ -131,6 +174,33 @@ export default function ForwardSessionModal({
               </ScrollView>
 
               <View style={styles.controls}>
+                {selectedAgent && modelOptions.length > 0 && (
+                  <View style={styles.modelSection}>
+                    <Text style={styles.label}>Model</Text>
+                    <View style={styles.modelChips}>
+                      {modelOptions.map((m: any) => {
+                        const active = m.id === model;
+                        return (
+                          <TouchableOpacity
+                            key={m.id}
+                            style={[styles.modelChip, active && styles.modelChipActive]}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Use model ${m.label}`}
+                            onPress={() =>
+                              setModelChoice({ agentId: selectedAgentId, model: m.id })
+                            }
+                          >
+                            <Text
+                              style={[styles.modelChipText, active && styles.modelChipTextActive]}
+                            >
+                              {m.short || m.label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                )}
                 <Text style={styles.label}>Extra instructions (optional)</Text>
                 <TextInput
                   value={prompt}
@@ -296,6 +366,33 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     marginBottom: 4,
+  },
+  modelSection: {
+    marginBottom: 10,
+  },
+  modelChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  modelChip: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: colors.gray800,
+  },
+  modelChipActive: {
+    borderColor: colors.gray600,
+    backgroundColor: colors.gray700,
+  },
+  modelChipText: {
+    color: colors.gray400,
+    fontSize: 12,
+  },
+  modelChipTextActive: {
+    color: colors.white,
   },
   textarea: {
     backgroundColor: colors.gray800,

@@ -1944,7 +1944,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
-  forwardSession: (sessionId: any, { targetAgentId, messageIds, prompt, autoStart }: any = {}) =>
+  forwardSession: (
+    sessionId: any,
+    { targetAgentId, messageIds, prompt, autoStart, model }: any = {},
+  ) =>
     fetchJSON(`/sessions/${sessionId}/forward`, {
       method: 'POST',
       body: JSON.stringify({
@@ -1952,6 +1955,7 @@ export const api = {
         ...(messageIds ? { messageIds } : {}),
         ...(prompt ? { prompt } : {}),
         ...(autoStart != null ? { autoStart: !!autoStart } : {}),
+        ...(model ? { model } : {}),
       }),
       timeout: 30000,
     }),

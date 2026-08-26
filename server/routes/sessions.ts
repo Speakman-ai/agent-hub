@@ -2858,6 +2858,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     messageIds?: string[];
     prompt?: string;
     autoStart?: boolean;
+    model?: string;
   }
 
   /**
@@ -2876,6 +2877,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
    *                                Note: if the CLI spawn fails after the 201 response, the
    *                                session exists but the agent won't be running. Clients can
    *                                detect this via the normal WebSocket session status events.
+   *   model          (optional) — override the model the new session runs. Must be valid for the
+   *                                target agent's engine (400 otherwise). Defaults to the target
+   *                                agent's own effective model.
    *
    * Limits: prompt max 50k chars; without messageIds only last 200 messages are forwarded;
    *         with messageIds, 400 if count exceeds 200 or content exceeds 500 KB.
@@ -2884,7 +2888,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
    */
   router.post('/api/sessions/:sessionId/forward', (req: Request, res: Response) => {
     try {
-      const { targetAgentId, messageIds, prompt, autoStart } = req.body as ForwardBody;
+      const {
+        targetAgentId,
+        messageIds,
+        prompt,
+        autoStart,
+        model: requestedModel,
+      } = req.body as ForwardBody;
 
       if (!targetAgentId) {
         return res.status(400).json({ error: 'targetAgentId is required' });
@@ -2991,8 +3001,22 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         100,
       );
       const engine = targetAgent.engine || 'claude-code';
+      // Optional per-fork model override (lets the user pick which model the new
+      // copy of the agent runs). Validate against the engine's allowlist so a
+      // client cannot seed a session with an arbitrary model id; an empty/absent
+      // value falls through to the agent's own effective model as before.
+      const overrideModel = typeof requestedModel === 'string' ? requestedModel.trim() : '';
+      if (overrideModel) {
+        const allowed = config.engineValidModels?.[engine] || [];
+        if (!allowed.includes(overrideModel)) {
+          return res
+            .status(400)
+            .json({ error: `model "${overrideModel}" is not valid for engine ${engine}` });
+        }
+      }
       const fwdOwnerUid = getSessionOwner(String(req.params.sessionId));
       const model = resolveEffectiveModel(config, engine, {
+        explicitModel: overrideModel || undefined,
         agentModel: targetAgent.model,
         ownerUserId: fwdOwnerUid,
         agentId: targetAgentId,

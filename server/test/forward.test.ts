@@ -192,6 +192,35 @@ describe('POST /api/sessions/:sessionId/forward', () => {
     expect(msgRes.body[0].id).toBe(res.body.forwardedMessageId);
   });
 
+  // ─── Model override ────────────────────────────────────────────
+
+  it('applies a valid model override to the new session', async () => {
+    const { session: srcSession } = await createSessionWithMessages(agentA.id as string, [
+      { role: 'user', content: 'Pick a different model for the copy' },
+    ]);
+
+    const res = await request
+      .post(`/api/sessions/${srcSession.id}/forward`)
+      .send({ targetAgentId: agentA.id, model: 'claude-haiku-4-6' })
+      .expect(201);
+
+    // The forked session runs the requested model rather than the agent default.
+    expect(res.body.session.model).toBe('claude-haiku-4-6');
+  });
+
+  it('returns 400 for a model that is not valid for the target engine', async () => {
+    const { session: srcSession } = await createSessionWithMessages(agentA.id as string, [
+      { role: 'user', content: 'Invalid model' },
+    ]);
+
+    const res = await request
+      .post(`/api/sessions/${srcSession.id}/forward`)
+      .send({ targetAgentId: agentA.id, model: 'gpt-5.4' }) // codex model, not claude-code
+      .expect(400);
+
+    expect(res.body.error).toMatch(/not valid for engine/i);
+  });
+
   // ─── Validation ────────────────────────────────────────────────
 
   it('returns 400 when targetAgentId is missing', async () => {
