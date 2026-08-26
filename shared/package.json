@@ -1,7 +1,7 @@
 {
   "name": "@agent-hub/shared",
   "version": "1.0.0",
-  "license": "Apache-2.0",
+  "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "type": "module",
   "scripts": {

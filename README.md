@@ -8,7 +8,7 @@ deployments, and session replay — all in one app, all on hardware you control.
 Think of it as the dashboard your agents work _inside_, instead of a chat box
 bolted onto your editor.
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-orange.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/node-%3E%3D22.14%20%3C23-brightgreen.svg)
 ![Self-hosted](https://img.shields.io/badge/deploy-self--hosted-6f42c1.svg)
 
@@ -571,7 +571,13 @@ Per-PR preview environments are on by default. The full setup contract lives in
 
 ## Contributing
 
-Agent Hub is open source under Apache-2.0 — contributions welcome. See
+Agent Hub is mixed-license. Contributions are welcome. Every code contribution
+intended for the commercially licensed product requires a completed
+[Contributor License Agreement](CLA.md) with Ryan Speakman (or a
+copyright assignment) **before** it is accepted. You may open a pull request
+before the CLA statement is in the description; maintainers will not merge
+without it. PolyForm terms alone
+do not grant commercial relicensing rights. See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full setup and pre-PR checklist, and
 the [Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? Follow the
 [Security Policy](SECURITY.md) instead of opening a public issue. The short
@@ -615,9 +621,16 @@ Never commit directly to `main`, and never merge your own PR.
 
 ## License
 
-Agent Hub is licensed under the [Apache License 2.0](LICENSE) — see
-[`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) for attribution, and
-[`docs/licensing.md`](docs/licensing.md) for the source-header policy and
-third-party notes. Agent Hub is **open-core**: the platform in this repo is free
-to run, fork, and self-host, with an optional commercial enterprise layer
-(SSO/SCIM, RBAC, audit log, per-session isolation) available separately.
+This repository is mixed-license. First-party works owned by Ryan Speakman
+(GitHub `speakmanra`) are source-available under the
+[PolyForm Noncommercial License 1.0.0](LICENSE). Personal, hobby, research, and
+other noncommercial uses of those works are permitted. Commercial use of
+PolyForm-covered works, including using them for a for-profit company's work
+or offering a product or service built on them, requires a separate commercial
+license from Ryan Speakman. That license is the commercial boundary for those
+works. Unverified contributions remain under Apache License 2.0 and keep the
+commercial rights Apache already grants. Workspace `package.json` files
+declare `SEE LICENSE IN LICENSE` because the distributable packages are mixed;
+they are not PolyForm-only. See
+[`docs/licensing.md`](docs/licensing.md) for the chain of ownership, the
+Apache-2.0 remainder mapping, attribution, and third-party notes.

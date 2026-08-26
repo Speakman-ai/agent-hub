@@ -186,7 +186,10 @@ async function main(): Promise<void> {
         name: 'Agent Hub',
         url: 'https://github.com/Speakman-ai/agent-hub',
       },
-      license: { name: 'Proprietary' },
+      license: {
+        name: 'Mixed (PolyForm Noncommercial 1.0.0 and Apache-2.0)',
+        url: 'https://github.com/Speakman-ai/agent-hub/blob/main/docs/licensing.md',
+      },
     },
     servers: [
       { url: 'http://localhost:3051', description: 'Local development server' },

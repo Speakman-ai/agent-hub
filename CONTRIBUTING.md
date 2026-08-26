@@ -3,9 +3,46 @@
 Thanks for your interest in improving Agent Hub. This guide covers how to set
 up the project, the conventions we follow, and how to get a change merged.
 
-Agent Hub is open source under the [Apache License 2.0](LICENSE). By
-contributing, you agree that your contributions will be licensed under the same
-license.
+Agent Hub is mixed-license. First-party works owned by Ryan Speakman are
+source-available under the
+[PolyForm Noncommercial License 1.0.0](LICENSE). Commercial use of those
+works requires a separate commercial license from Ryan Speakman
+(see [`docs/licensing.md`](docs/licensing.md)). Unverified contributions
+remain under Apache License 2.0.
+
+PolyForm is only an outbound noncommercial grant to the public. Contributors
+retain copyright. Agreeing that a contribution is "licensed under PolyForm"
+does **not** give the licensor the right to commercially license the combined
+work.
+
+## Contributor agreement (required before every code contribution)
+
+Every code contribution intended for the commercially licensed product,
+including tests, documentation, and other copyrightable material that will
+ship in the repository, is accepted **only** after the contributor has
+completed one of:
+
+1. the [Contributor License Agreement](CLA.md), which grants the licensor a
+   perpetual, worldwide, sublicensable copyright and patent license that
+   includes the right to license the contribution under PolyForm Noncommercial
+   **and** under the licensor's commercial terms, or
+2. a written copyright assignment of that contribution to the licensor.
+
+**Maintainers must not merge such a contribution until a completed CLA or
+copyright assignment is on file.** There is no maintainer discretion to skip
+this for a small patch, and opening an issue does not replace the agreement.
+PolyForm terms alone are not a contributor agreement for this purpose.
+
+How to complete the CLA is in [CLA.md](CLA.md). You may open a pull
+request before the CLA is completed. Put the acceptance statement from
+CLA.md in the pull request description. Maintainers must not merge until
+that statement is recorded. A checkbox is not a substitute. If your
+employer owns rights in the contribution, the employer must complete the
+agreement first. An AI agent cannot complete the CLA; the human copyright
+holder must.
+
+Bug reports and feature requests that do not include copyrightable patches
+do not require a CLA.
 
 Please also read our [Code of Conduct](CODE_OF_CONDUCT.md). For security
 issues, follow the [Security Policy](SECURITY.md) instead of opening a public
@@ -126,6 +163,10 @@ freshness drift.
 
 ## Before You Open a PR
 
+- [ ] The pull request description includes the CLA acceptance statement
+      from [CLA.md](CLA.md) (or a copyright assignment is already on file).
+      Maintainers will not merge without this. A checkbox is not a
+      substitute.
 - [ ] `npm run typecheck` passes.
 - [ ] `npm run lint` and `npm run format:check` pass.
 - [ ] Relevant tests pass, and new logic has tests.

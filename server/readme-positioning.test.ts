@@ -66,10 +66,21 @@ describe('README sovereignty positioning', () => {
     expect(readme).toContain('erDiagram');
   });
 
-  it('states the Apache-2.0 open-core license, not proprietary', () => {
-    expect(readmeLower).toContain('apache license 2.0');
-    expect(readmeLower).toContain('open-core');
-    expect(readmeLower).not.toContain('private and proprietary');
+  it('states the mixed-license terms and PolyForm commercial-use boundary', () => {
+    const compact = readmeLower.replace(/\s+/g, ' ');
+    expect(readmeLower).toContain('mixed-license');
+    expect(readmeLower).toContain('polyform noncommercial license 1.0.0');
+    expect(readmeLower).toContain('personal, hobby, research');
+    expect(readmeLower).toContain('polyform-covered works');
+    expect(compact).toContain('requires a separate commercial license');
+    expect(compact).toContain('remain under apache license 2.0');
+    expect(readmeLower).toContain('chain of ownership');
+    expect(readmeLower).toContain('apache-2.0 remainder');
+    expect(readmeLower).not.toContain('any commercial use');
+    expect(compact).toContain('contributor license agreement');
+    expect(compact).toContain('do not grant commercial relicensing rights');
+    expect(compact).toContain('ryan speakman');
+    expect(compact).toContain('see license in license');
   });
 
   it('documents the control-plane / data-plane split', () => {

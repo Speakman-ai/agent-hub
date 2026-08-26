@@ -1,17 +1,3 @@
-This repository is mixed-license. The authoritative mapping of which
-terms apply to which material is in docs/licensing.md.
-
-- First-party works owned by Ryan Speakman (GitHub speakmanra): PolyForm
-  Noncommercial License 1.0.0 (text below; also
-  LICENSES/PolyForm-Noncommercial-1.0.0.txt).
-- Unverified contributions and previously published Apache-era versions:
-  Apache License 2.0 (LICENSES/Apache-2.0.txt).
-- Third-party dependencies and vendored code: their original licenses.
-
-The PolyForm text that follows is the outbound grant for first-party
-works Ryan Speakman owns. It does not relicense Apache-2.0 remainder
-material or third-party code.
-
 Required Notice: Copyright 2026 The Agent Hub Authors (https://github.com/Speakman-ai/agent-hub)
 
 # PolyForm Noncommercial License 1.0.0

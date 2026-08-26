@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
  * Guard against re-introducing internal-only identifiers into the repo's
  * publishable surface (top-level README, docs/, ops/ runbooks, *.example config
  * templates, and the git-tracked Terraform environment inputs) before this is
- * an open, Apache-2.0 public repo.
+ * a public, source-available repo.
  *
  * Scope note: the live `prod.tfvars` is committed on purpose so fleet/sizing
  * *config* (instance types, counts, toggles) is reviewable in PRs. It is still
@@ -31,7 +31,9 @@ const INTERNAL_PATTERNS: Array<{ label: string; re: RegExp }> = [
   { label: 'real KMS key id', re: /8bd60c33-06da-4257-8a77-28a99fd67ee4/ },
   { label: 'real EC2 instance id', re: /\bi-[0-9a-f]{17}\b/ },
   { label: 'private repo owner (mcsteen)', re: /\bmcsteen\b/ },
-  { label: 'personal env name (ryan)', re: /\bryan\b/i },
+  // "Ryan Speakman" is the identified licensor legal name in LICENSE/docs.
+  // Do not treat that published counterparty name as the retired personal env.
+  { label: 'personal env name (ryan)', re: /\bryan\b(?!\s+Speakman)/i },
   { label: 'private customer name (aimetrics)', re: /\baimetrics\b/i },
 ];
 

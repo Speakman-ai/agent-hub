@@ -1,0 +1,14 @@
+This package is mixed-license. It is not licensed under PolyForm
+Noncommercial 1.0.0 alone.
+
+The authoritative mapping and the license texts live at the repository
+root:
+
+- LICENSE
+- LICENSES/PolyForm-Noncommercial-1.0.0.txt
+- LICENSES/Apache-2.0.txt
+- docs/licensing.md
+
+First-party works owned by Ryan Speakman (GitHub speakmanra) are under
+PolyForm Noncommercial 1.0.0. Unverified contributions remain under
+Apache License 2.0.

@@ -269,7 +269,7 @@ describe('community-health files', () => {
   const read = (rel: string) => readFileSync(path.join(repoRoot, rel), 'utf8');
 
   it('ships the core community-health files at the repo root', () => {
-    for (const f of ['CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'SECURITY.md']) {
+    for (const f of ['CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'SECURITY.md', 'CLA.md']) {
       expect(readFileSync(path.join(repoRoot, f), 'utf8').length).toBeGreaterThan(0);
     }
   });
@@ -301,11 +301,23 @@ describe('community-health files', () => {
     expect(sec).toMatch(/multi-tenant/i);
   });
 
-  it('CONTRIBUTING.md points at the CoC, Security Policy, and the test rule', () => {
+  it('CONTRIBUTING.md points at the CoC, Security Policy, CLA, and the test rule', () => {
     const c = read('CONTRIBUTING.md');
     expect(c).toMatch(/CODE_OF_CONDUCT\.md/);
     expect(c).toMatch(/SECURITY\.md/);
+    expect(c).toMatch(/CLA\.md/);
     expect(c).toMatch(/at least one test/i);
+  });
+
+  it('pull request template requires the CLA statement, not only a checkbox', () => {
+    const pr = read('.github/pull_request_template.md');
+    expect(pr).toMatch(/CLA\.md/);
+    expect(pr).toMatch(/copyright assignment/i);
+    expect(pr).toMatch(/must not merge/i);
+    expect(pr).toContain('Legal name:');
+    expect(pr).toContain('Ryan Speakman');
+    expect(pr).toContain('Checking a box is not a substitute');
+    expect(pr).toContain('You may open this pull request before the CLA is completed');
   });
 
   it('issue templates do not use GitHub Actions expression syntax (it never interpolates there)', () => {

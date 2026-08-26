@@ -78,8 +78,8 @@ real engineering work. It is **not** a bug, and it is **not** something to
   Owner account. Do not expose the raw port to untrusted networks.
 
 If your use case requires isolating mutually-distrusting users on one
-deployment, Agent Hub in its current open-source form is not the right fit.
-Per-session isolation is part of the planned enterprise layer, not the OSS core.
+deployment, Agent Hub in its current source-available form is not the right fit.
+Per-session isolation is not provided by the current release.
 
 ## Scope
 
