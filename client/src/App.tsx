@@ -134,6 +134,7 @@ import {
   pendingLessonCountsSnapshot,
 } from '@shared/utils/pendingLessonCounts';
 import { api } from './utils/api';
+import { shouldSuppressToast } from './utils/toastPolicy';
 import { canCompleteInstanceOnboarding } from './utils/auth';
 import { createRefreshScheduler, kanbanEventTargetsProject } from '@shared/utils/kanbanRefresh';
 import { readCollapsedColumnIds, writeCollapsedColumnIds } from './utils/kanbanColumnCollapse';
@@ -5563,7 +5564,15 @@ export default function App({ initialView }: any = {}) {
         })
         .catch((err: any) => {
           const message = err?.message || 'Failed to prepare session workspace';
-          showToast(message, 'error', 8000);
+          // A raw request-timeout here is pure noise as a toast: this caller
+          // records the failure inline below (composer stays gated, Retry
+          // offered), so the toast would only interrupt. Every other failure
+          // (and every other caller's toast) is unaffected. Scoped here rather
+          // than in showToast so a timeout on an action whose *only* feedback
+          // is a toast is not silently swallowed.
+          if (!shouldSuppressToast(message)) {
+            showToast(message, 'error', 8000);
+          }
           // Record the failure (keeps the composer gated) so the UI can offer a
           // Retry instead of pretending the environment is ready.
           if (workspaceEnsureAttemptedRef.current.has(sid)) {

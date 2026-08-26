@@ -305,6 +305,16 @@ export function fetchTimeoutMessage(method: string, url: string, timeoutMs: numb
   return `Request timed out after ${timeoutMs}ms: ${method} ${url}`;
 }
 
+/**
+ * True when a string is a structured `fetchJSON` timeout message minted by
+ * `fetchTimeoutMessage` (`Request timed out after <n>ms: <METHOD> <path>`).
+ * Used to suppress the raw request-timeout toast globally while leaving
+ * domain-specific timeout copy (e.g. "Preview health check timed out") alone.
+ */
+export function isFetchTimeoutMessage(message: unknown): boolean {
+  return typeof message === 'string' && /^Request timed out after \d+ms: \S+ \S/.test(message);
+}
+
 async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): Promise<T> {
   const base = getApiBase();
   const authHeaders = getAuthHeaders();
@@ -1291,7 +1301,10 @@ export const api = {
     fetchJSON(`/sessions/${sessionId}/workspace/ensure`, {
       method: 'POST',
       body: JSON.stringify({}),
-      timeout: 300_000,
+      // Server worst case is 3x60s clone retries + backoff + ~120s env boot,
+      // which can exceed 300s legitimately. A 900s budget avoids aborting a
+      // clone/boot that is still going to succeed.
+      timeout: 900_000,
     }),
   deleteProject: (projectId: any) =>
     fetch(`${getApiBase()}/projects/${projectId}`, {

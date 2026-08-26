@@ -15,7 +15,13 @@ vi.mock('./auth', () => ({
   isLocalBundledDeployment: () => false,
 }));
 
-import { api, errorDetail, fetchTimeoutMessage, isFetchTimeoutError } from './api';
+import {
+  api,
+  errorDetail,
+  fetchTimeoutMessage,
+  isFetchTimeoutError,
+  isFetchTimeoutMessage,
+} from './api';
 
 const reload = vi.fn();
 const originalLocation = window.location;
@@ -211,6 +217,35 @@ describe('isFetchTimeoutError / fetchTimeoutMessage', () => {
   it('names the request that died', () => {
     expect(fetchTimeoutMessage('GET', '/projects', 15000)).toBe(
       'Request timed out after 15000ms: GET /projects',
+    );
+  });
+});
+
+describe('isFetchTimeoutMessage', () => {
+  it('matches structured fetchJSON timeout messages', () => {
+    expect(isFetchTimeoutMessage(fetchTimeoutMessage('GET', '/projects', 15000))).toBe(true);
+    expect(
+      isFetchTimeoutMessage('Request timed out after 900000ms: POST /sessions/s1/workspace/ensure'),
+    ).toBe(true);
+  });
+
+  it('leaves domain-specific timeout copy and unrelated messages visible', () => {
+    expect(isFetchTimeoutMessage('Preview health check timed out')).toBe(false);
+    expect(isFetchTimeoutMessage('The operation was aborted due to timeout')).toBe(false);
+    expect(isFetchTimeoutMessage('Failed to prepare session workspace')).toBe(false);
+    expect(isFetchTimeoutMessage(undefined)).toBe(false);
+    expect(isFetchTimeoutMessage(42)).toBe(false);
+  });
+});
+
+describe('ensureSessionWorkspace deadline', () => {
+  it('waits 900s before aborting so a still-succeeding clone+boot is not cut off', async () => {
+    // Server worst case (3x60s clone retries + backoff + ~120s boot) exceeds
+    // the old 300s budget; the deadline surfaces in the remapped message.
+    globalThis.fetch = vi.fn().mockRejectedValue(timeoutError());
+
+    await expect(api.ensureSessionWorkspace('sess-1')).rejects.toThrow(
+      'Request timed out after 900000ms: POST /sessions/sess-1/workspace/ensure',
     );
   });
 });
