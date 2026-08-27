@@ -69,6 +69,7 @@ import {
   SYSTEM_DEPS_PROCESS_NAME,
 } from './dev-server-system-deps.js';
 import { runDevServerBuild, describeBuildExit, BUILD_PROCESS_NAME } from './dev-server-build.js';
+import { withBootDiagnostic } from './preview-boot-diagnostics.js';
 import type { PreviewPortEntry } from './preview-runtime-lookup.js';
 
 // ─── Types & contracts ──────────────────────────────────────────────────
@@ -1171,7 +1172,9 @@ export class DevServerRuntime {
           },
         });
         if (buildResult.exit.code !== 0 || buildResult.exit.error || buildResult.exit.signal) {
-          throw new Error(`build failed: ${describeBuildExit(buildResult.exit)}`);
+          throw new Error(
+            withBootDiagnostic(`build failed: ${describeBuildExit(buildResult.exit)}`, record.tail),
+          );
         }
       } catch (err) {
         await this.rollbackStart(groupId, record);
@@ -1825,6 +1828,10 @@ export class DevServerRuntime {
       )
       .run(groupId);
     const record = this.active.get(groupId);
+    // Surface a host-level infra cause (e.g. Docker address-pool exhaustion at
+    // compose-up) buried in the boot log, so the reason names the self-serve
+    // fix instead of a bare exit/timeout. No-op when nothing matches.
+    if (record) reason = withBootDiagnostic(reason, record.tail);
     // Tear down the whole env, not only the top-level process handle. A
     // health timeout can leave grandchildren alive; SessionEnv.dispose
     // owns the process-group SIGTERM → SIGKILL grace and port release.

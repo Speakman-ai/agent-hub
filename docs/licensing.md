@@ -22,10 +22,10 @@ regardless of their funding.
 
 ## Commercial use
 
-Commercial use of Agent Hub requires a separate commercial license from Ryan
-Speakman. That includes using Agent Hub as part of a for-profit company's work,
-regardless of company size, and offering a product, hosted service, or other
-business built on it. Contact Ryan Speakman through
+Commercial use of Agent Hub requires a separate commercial license from
+Ryan Speakman. That includes using Agent Hub as part of a for-profit company's
+work, regardless of company size, and offering a product, hosted service, or
+other business built on it. Contact Ryan Speakman through
 [GitHub](https://github.com/Speakman-ai/agent-hub) to discuss commercial terms.
 
 ## Licensor and relicensing authority

@@ -1272,6 +1272,36 @@ describe('DevServerRuntime two-phase readiness', () => {
     );
   });
 
+  it('appends a host-infra hint when the boot log shows Docker address-pool exhaustion', async () => {
+    const clock = new FakeClock();
+    const notifyStatus = vi.fn();
+    const h = makeHarness({
+      clock,
+      fetchImpl: async () => {
+        throw new Error('ECONNREFUSED');
+      },
+      readyTimeoutMs: 5,
+      notifyStatus,
+    });
+
+    const started = await h.runtime.start('session-pool', makeProject(), '/worktree');
+    // The project's startCommand shelled out to compose, whose daemon error is
+    // in the retained tail before the health loop gives up — the same shape the
+    // real failure produced.
+    h.envs[0].proc?.emitStderr(
+      'failed to create network session-abc_default: Error response from daemon: could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network\n',
+    );
+    await flushMicrotasks(80);
+
+    expect(h.runtime.getById(started.devServerId)?.status).toBe('failed');
+    expect(notifyStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringMatching(/docker network ls/i),
+      }),
+    );
+  });
+
   it('a bind that overran the boot budget earns no fresh readiness window', async () => {
     const clock = new FakeClock();
     // The single probe response lands at t=6, past the 5ms budget: the
