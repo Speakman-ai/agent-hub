@@ -800,6 +800,31 @@ function resolveCloneUserId(req: Request): string | null {
   return resolveGithubConnectionUserId(req);
 }
 
+/**
+ * Decide what `git ls-remote` should target for the branch picker.
+ *
+ * For a GitHub HTTPS `origin` with a resolved token, embed the token in the
+ * remote URL so git authenticates directly and never invokes a credential
+ * helper. This is the fix for the branch-picker 500: the backend process has
+ * no `GH_TOKEN`, and the per-user `gh auth git-credential` helper it otherwise
+ * falls back to returns nothing when gh isn't authenticated in that HOME — git
+ * then prompts for a username and dies with "could not read Username".
+ *
+ * Every other case (SSH remote, Hub-hosted / non-github remote, or no token)
+ * falls through to the plain `origin` remote, preserving today's behavior for
+ * public repos and non-GitHub hosts.
+ */
+export function resolveBranchLsRemoteTarget(
+  originUrl: string,
+  token: string | null | undefined,
+): { target: string; injectedToken: string | null } {
+  const parsed = classifyCloneUrl(originUrl);
+  if (parsed.kind === 'github-https' && token) {
+    return { target: buildAuthenticatedUrl(parsed, token), injectedToken: token };
+  }
+  return { target: 'origin', injectedToken: null };
+}
+
 export default function createProjectRoutes(deps: RouteDeps): Router {
   const {
     stmts,
@@ -1623,14 +1648,17 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         return;
       }
 
+      let injectedToken: string | null = null;
       try {
         // Confirm there's a git remote first so we return a clean error
         // instead of letting `ls-remote` produce a cryptic stderr.
+        let originUrl = '';
         try {
-          await execAsync('git remote get-url origin', {
+          const { stdout: urlOut } = await execAsync('git remote get-url origin', {
             cwd: project.cwd,
             timeout: 5000,
           });
+          originUrl = urlOut.trim();
         } catch {
           res.status(400).json({
             error: 'Project has no `origin` git remote configured',
@@ -1639,7 +1667,34 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
           return;
         }
 
-        const { stdout } = await execAsync('git ls-remote --heads origin', {
+        // Inject the requesting user's GitHub token into the ls-remote URL
+        // when origin is a github.com HTTPS remote. Best-effort: token
+        // lookup failures fall through to the plain `origin` remote.
+        let lsRemoteTarget = 'origin';
+        if (classifyCloneUrl(originUrl).kind === 'github-https') {
+          try {
+            const userId = resolveCloneUserId(req);
+            if (userId) {
+              const oauthCreds = resolveOAuthAppCredentials(config);
+              const token = await resolveUserGithubToken(userId, {
+                oauthCredentials: oauthCreds,
+              });
+              const resolved = resolveBranchLsRemoteTarget(originUrl, token);
+              lsRemoteTarget = resolved.target;
+              injectedToken = resolved.injectedToken;
+            }
+          } catch (err) {
+            console.warn(
+              `[projects] branch-list token lookup failed for ${project.id}: ${
+                (err as Error).message?.split('\n')[0]
+              }`,
+            );
+          }
+        }
+
+        // execFile (argv, no shell) so an embedded-credential URL is never
+        // parsed by a shell.
+        const { stdout } = await execFileAsync('git', ['ls-remote', '--heads', lsRemoteTarget], {
           cwd: project.cwd,
           timeout: 15_000,
           maxBuffer: 5 * 1024 * 1024,
@@ -1679,7 +1734,8 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         branchCache.set(project.id, { branches, fetchedAt: Date.now() });
         res.json({ branches, defaultBranch, cached: false });
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const rawMsg = err instanceof Error ? err.message : String(err);
+        const msg = redactToken(rawMsg, injectedToken);
         console.warn(`[projects] branch listing failed for ${project.id}: ${msg}`);
         res.status(500).json({ error: `Failed to list branches: ${msg}`, branches: [] });
       }
