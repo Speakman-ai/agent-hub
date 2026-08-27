@@ -297,7 +297,7 @@ export async function handleMultiAgentChat(
       null,
     );
     S.touchSession.run(sessionId);
-    S.enqueueMessage.run(queueMsgId, sessionId, agentId, content, null, position);
+    S.enqueueMessage.run(queueMsgId, sessionId, agentId, content, null, position, 0);
     d.broadcast({
       type: 'message',
       message: {

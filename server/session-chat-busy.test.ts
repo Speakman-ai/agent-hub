@@ -63,9 +63,9 @@ describe('drainIdleQueuedSessions', () => {
       getAllQueuedSessions: {
         all: () => [{ session_id: 'idle' }, { session_id: 'busy' }],
       },
-      getQueuedMessages: {
-        all: (sessionId: string) =>
-          sessionId === 'idle' || sessionId === 'busy' ? [{ id: 'q1' }] : [],
+      countQueuedMessages: {
+        get: (sessionId: string) =>
+          sessionId === 'idle' || sessionId === 'busy' ? { n: 1 } : { n: 0 },
       },
       getActiveTask: {
         get: (sessionId: string) =>

@@ -1029,6 +1029,8 @@ export interface MessageQueueRow {
   content: string;
   attachments: string | null;
   position: number;
+  /** 1 = system-internal turn hidden from the human-visible queue. */
+  internal: number;
   created_at: string;
 }
 
@@ -2275,6 +2277,7 @@ export interface Stmts {
   // Message queue
   enqueueMessage: Stmt;
   getQueuedMessages: Stmt;
+  countQueuedMessages: Stmt;
   getNextQueuedMessage: Stmt;
   dequeueMessage: Stmt;
   clearSessionQueue: Stmt;

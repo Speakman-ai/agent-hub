@@ -2639,36 +2639,56 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           position = (maxPos?.max_pos ?? -1) + 1;
         }
 
-        stmts.addMessage.run(
-          queueMsgId,
-          sessionId,
-          'user',
-          content,
-          null,
-          null,
-          attachments,
-          null,
-          null,
-          null,
-          null,
-        );
+        // System-internal turns (Finalize fix dispatch, transient-error /
+        // engine-failover re-drives) carry `_skipUserMessagePersist`. They must
+        // still run when the session frees, but must NOT show up as a duplicate
+        // editable "Queued" user message — the caller already persisted the
+        // visible representation (e.g. the `finalize_fix_dispatch` system row).
+        // Interrupts are always human actions, never internal.
+        const queueInternal = msg._skipUserMessagePersist === true && !isInterrupt;
+
+        if (!queueInternal) {
+          stmts.addMessage.run(
+            queueMsgId,
+            sessionId,
+            'user',
+            content,
+            null,
+            null,
+            attachments,
+            null,
+            null,
+            null,
+            null,
+          );
+        }
         stmts.touchSession.run(sessionId);
 
-        stmts.enqueueMessage.run(queueMsgId, sessionId, agentId, content, attachments, position);
+        stmts.enqueueMessage.run(
+          queueMsgId,
+          sessionId,
+          agentId,
+          content,
+          attachments,
+          position,
+          queueInternal ? 1 : 0,
+        );
 
-        broadcast({
-          type: 'message',
-          message: {
-            id: queueMsgId,
-            session_id: sessionId,
-            role: 'user',
-            content,
-            attachments,
-            queued: !isInterrupt,
-            interrupted: isInterrupt,
-            created_at: new Date().toISOString(),
-          },
-        });
+        if (!queueInternal) {
+          broadcast({
+            type: 'message',
+            message: {
+              id: queueMsgId,
+              session_id: sessionId,
+              role: 'user',
+              content,
+              attachments,
+              queued: !isInterrupt,
+              interrupted: isInterrupt,
+              created_at: new Date().toISOString(),
+            },
+          });
+        }
 
         broadcast({
           type: 'queue_updated',

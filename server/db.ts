@@ -690,6 +690,10 @@ function initDb(dataDir: string): void {
       content TEXT NOT NULL,
       attachments TEXT,
       position INTEGER NOT NULL,
+      -- 1 = system-internal turn (e.g. a Finalize fix dispatch) that must run
+      -- when the session frees but must NOT render as a human-editable queued
+      -- message. Drain still processes it; the client-facing queue hides it.
+      internal INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
@@ -1400,6 +1404,16 @@ function initDb(dataDir: string): void {
   // includes it for fresh DBs; heal legacy installs here.
   try {
     db.exec('ALTER TABLE session_progress ADD COLUMN detail TEXT');
+  } catch {
+    /* column already exists */
+  }
+
+  // message_queue.internal — hides system-internal turns (Finalize fix
+  // dispatch, transient-error / engine-failover re-drives) from the
+  // human-visible queue while keeping them drainable. CREATE TABLE above
+  // includes it for fresh DBs; heal legacy installs here.
+  try {
+    db.exec('ALTER TABLE message_queue ADD COLUMN internal INTEGER NOT NULL DEFAULT 0');
   } catch {
     /* column already exists */
   }
@@ -5088,11 +5102,17 @@ function initDb(dataDir: string): void {
 
     // Message queue
     enqueueMessage: db.prepare(
-      'INSERT INTO message_queue (id, session_id, agent_id, content, attachments, position) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO message_queue (id, session_id, agent_id, content, attachments, position, internal) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ),
+    // Human-visible queue only: system-internal turns (internal = 1) are
+    // hidden here so they never render as an editable "Queued" user message.
+    // Drain uses getNextQueuedMessage (all rows), so internal turns still run.
     getQueuedMessages: db.prepare(
-      'SELECT * FROM message_queue WHERE session_id = ? ORDER BY position ASC',
+      'SELECT * FROM message_queue WHERE session_id = ? AND internal = 0 ORDER BY position ASC',
     ),
+    // Total queued rows including internal — used by boot/idle drain recovery
+    // so an internal-only queue is not mistaken for empty.
+    countQueuedMessages: db.prepare('SELECT COUNT(*) AS n FROM message_queue WHERE session_id = ?'),
     getNextQueuedMessage: db.prepare(
       'SELECT * FROM message_queue WHERE session_id = ? ORDER BY position ASC LIMIT 1',
     ),

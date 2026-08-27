@@ -47,7 +47,7 @@ export function logQueueDrainPoll(
 }
 
 export interface DrainIdleQueuedSessionsArgs {
-  stmts: Pick<Stmts, 'getAllQueuedSessions' | 'getActiveTask' | 'getQueuedMessages'>;
+  stmts: Pick<Stmts, 'getAllQueuedSessions' | 'getActiveTask' | 'countQueuedMessages'>;
   activeProcesses: ReadonlyMap<string, unknown>;
   drainQueue: (sessionId: string) => void;
 }
@@ -61,8 +61,10 @@ export function drainIdleQueuedSessions(args: DrainIdleQueuedSessionsArgs): numb
   let attempts = 0;
   const sessions = args.stmts.getAllQueuedSessions.all() as Array<{ session_id: string }>;
   for (const { session_id } of sessions) {
-    const queue = args.stmts.getQueuedMessages.all(session_id);
-    const queuedCount = Array.isArray(queue) ? queue.length : 0;
+    // Count ALL queued rows (including internal system turns) so a session
+    // whose only queued work is an internal Finalize fix dispatch still drains.
+    const counted = args.stmts.countQueuedMessages.get(session_id) as { n: number } | undefined;
+    const queuedCount = counted?.n ?? 0;
     if (queuedCount === 0) continue;
 
     const task = args.stmts.getActiveTask.get(session_id) as ActiveTaskRow | undefined;

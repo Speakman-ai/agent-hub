@@ -109,7 +109,7 @@ describe('handleChat — interrupt-now existing queued row', () => {
       0,
       1,
     );
-    stmts.enqueueMessage.run(queuedMsgId, sessionId, agentId, 'queued content', null, 0);
+    stmts.enqueueMessage.run(queuedMsgId, sessionId, agentId, 'queued content', null, 0, 0);
     return { agentId, sessionId, queuedMsgId };
   }
 
