@@ -4,25 +4,15 @@ Required Notice: Copyright 2026 The Agent Hub Authors (https://github.com/Speakm
 This product includes software developed by the Agent Hub project and its
 contributors.
 
-Current terms: mixed-license. PolyForm Noncommercial License 1.0.0, granted by
-Ryan Speakman (GitHub speakmanra) for first-party works that person owns. See
+Agent Hub is licensed under the PolyForm Noncommercial License 1.0.0, granted
+by Ryan Speakman (GitHub speakmanra). Noncommercial use is free. Commercial use
+of Agent Hub requires a separate commercial license from that person. See
 LICENSE, LICENSES/PolyForm-Noncommercial-1.0.0.txt, and docs/licensing.md.
-GitHub account ownership, collaborator status, and project-controlled commit
-identities are not a chain of title. Commercial use of Ryan Speakman's
-PolyForm-covered works requires a separate commercial license from that
-person. Package manifests declare SEE LICENSE IN LICENSE; they are not
-PolyForm-only.
 
-Any contribution whose copyright holder is not Ryan Speakman remains
-under Apache License 2.0. See docs/licensing.md and LICENSES/Apache-2.0.txt.
+Contributions are accepted under the Contributor License Agreement (CLA.md),
+which lets the Licensor offer both the public noncommercial license and a
+separate commercial license for the combined work.
 
-Apache License 2.0 notices for previously published versions:
-
-Copyright 2026 The Agent Hub Authors
-
-This product includes software developed by the Agent Hub project
-and its contributors.
-
-Releases and git history distributed under Apache License 2.0 remain
-available under those terms. That grant is not revoked. The Apache-2.0 text
-as previously published at the repo root is at LICENSES/Apache-2.0.txt.
+Third-party dependencies and vendored code keep their own licenses. Preserve
+their original license headers and record the origin here when vendoring
+third-party source.

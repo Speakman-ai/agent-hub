@@ -334,3 +334,33 @@ describe('community-health files', () => {
     }
   });
 });
+
+/**
+ * Single-license PolyForm Noncommercial metadata guard.
+ *
+ * Agent Hub ships under one license: PolyForm Noncommercial 1.0.0. Every
+ * workspace manifest must carry that SPDX identifier and must not reintroduce
+ * the retired mixed-license `SEE LICENSE IN LICENSE` value or any Apache-2.0
+ * dual-license metadata. (The license text / notice / docs are guarded in
+ * licensing.test.ts; this keeps the manifest metadata honest alongside the
+ * other repo-meta regression checks.)
+ */
+describe('package.json license metadata (single-license PolyForm)', () => {
+  const pkgPaths = [
+    'package.json',
+    'server/package.json',
+    'client/package.json',
+    'mobile/package.json',
+    'shared/package.json',
+  ];
+
+  for (const rel of pkgPaths) {
+    it(`${rel} declares PolyForm-Noncommercial-1.0.0 and rejects the retired mixed/Apache metadata`, () => {
+      const raw = readFileSync(path.join(repoRoot, rel), 'utf8');
+      const pkg = JSON.parse(raw) as { license?: string };
+      expect(pkg.license).toBe('PolyForm-Noncommercial-1.0.0');
+      expect(raw).not.toContain('SEE LICENSE IN LICENSE');
+      expect(raw).not.toContain('Apache');
+    });
+  }
+});

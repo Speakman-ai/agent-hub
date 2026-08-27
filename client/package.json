@@ -1,7 +1,7 @@
 {
   "name": "agent-hub-client",
   "version": "1.2.1",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "type": "module",
   "scripts": {

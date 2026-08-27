@@ -571,8 +571,8 @@ Per-PR preview environments are on by default. The full setup contract lives in
 
 ## Contributing
 
-Agent Hub is mixed-license. Contributions are welcome. Every code contribution
-intended for the commercially licensed product requires a completed
+Contributions are welcome. Every code contribution intended for the
+commercially licensed product requires a completed
 [Contributor License Agreement](CLA.md) with Ryan Speakman (or a
 copyright assignment) **before** it is accepted. You may open a pull request
 before the CLA statement is in the description; maintainers will not merge
@@ -621,16 +621,13 @@ Never commit directly to `main`, and never merge your own PR.
 
 ## License
 
-This repository is mixed-license. First-party works owned by Ryan Speakman
-(GitHub `speakmanra`) are source-available under the
-[PolyForm Noncommercial License 1.0.0](LICENSE). Personal, hobby, research, and
-other noncommercial uses of those works are permitted. Commercial use of
-PolyForm-covered works, including using them for a for-profit company's work
-or offering a product or service built on them, requires a separate commercial
-license from Ryan Speakman. That license is the commercial boundary for those
-works. Unverified contributions remain under Apache License 2.0 and keep the
-commercial rights Apache already grants. Workspace `package.json` files
-declare `SEE LICENSE IN LICENSE` because the distributable packages are mixed;
-they are not PolyForm-only. See
-[`docs/licensing.md`](docs/licensing.md) for the chain of ownership, the
-Apache-2.0 remainder mapping, attribution, and third-party notes.
+Agent Hub is source-available under the
+[PolyForm Noncommercial License 1.0.0](LICENSE), granted by Ryan Speakman
+(GitHub `speakmanra`). Personal, hobby, research, and other noncommercial uses
+are permitted. Commercial use — including using Agent Hub for a for-profit
+company's work or offering a product or service built on it — requires a
+separate commercial license from Ryan Speakman. Contributions are accepted
+under a [Contributor License Agreement](CLA.md); PolyForm terms alone do not
+grant commercial relicensing rights. Third-party dependencies keep their own
+licenses. See [`docs/licensing.md`](docs/licensing.md) for commercial-use
+detail, the contributor grant, attribution, and third-party notes.

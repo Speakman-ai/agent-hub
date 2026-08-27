@@ -3,12 +3,10 @@
 Thanks for your interest in improving Agent Hub. This guide covers how to set
 up the project, the conventions we follow, and how to get a change merged.
 
-Agent Hub is mixed-license. First-party works owned by Ryan Speakman are
-source-available under the
-[PolyForm Noncommercial License 1.0.0](LICENSE). Commercial use of those
-works requires a separate commercial license from Ryan Speakman
-(see [`docs/licensing.md`](docs/licensing.md)). Unverified contributions
-remain under Apache License 2.0.
+Agent Hub is source-available under the
+[PolyForm Noncommercial License 1.0.0](LICENSE), granted by Ryan Speakman.
+Commercial use requires a separate commercial license from Ryan Speakman
+(see [`docs/licensing.md`](docs/licensing.md)).
 
 PolyForm is only an outbound noncommercial grant to the public. Contributors
 retain copyright. Agreeing that a contribution is "licensed under PolyForm"

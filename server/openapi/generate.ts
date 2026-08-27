@@ -187,7 +187,7 @@ async function main(): Promise<void> {
         url: 'https://github.com/Speakman-ai/agent-hub',
       },
       license: {
-        name: 'Mixed (PolyForm Noncommercial 1.0.0 and Apache-2.0)',
+        name: 'PolyForm Noncommercial License 1.0.0',
         url: 'https://github.com/Speakman-ai/agent-hub/blob/main/docs/licensing.md',
       },
     },
