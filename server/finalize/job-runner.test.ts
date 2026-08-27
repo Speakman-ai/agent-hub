@@ -4,6 +4,7 @@ import { parseCiConfig } from './ci-config.js';
 import { expandJobInstances, buildFinalizeBuiltinEnv } from './ci-config-jobs.js';
 import {
   runJobPhase,
+  runInstanceWithRetries,
   sanitizeComposeProjectName,
   readMaxParallelJobs,
   DEFAULT_MAX_PARALLEL_JOBS,
@@ -11,6 +12,7 @@ import {
   minAcquireTimeoutMs,
 } from './job-runner.js';
 import { createLocalRunnerBackend } from './runner-backend-local.js';
+import { createFinalizeRunSignal } from './run-abort-registry.js';
 import type { SpawnedStep, SpawnStepFn, StepRunnerDeps } from './step-runner.js';
 
 vi.mock('./job-container.js', async (importOriginal) => {
@@ -287,6 +289,63 @@ jobs:
     expect(acquired[0].image).toBeTruthy();
     expect(order).toEqual(['e2e-cmd']);
     expect(released).toBe(1);
+  });
+
+  it('schedules nothing — no instance, no runner allocation — when the run is already cancelled', async () => {
+    // Regression for the "no-schedule-after-abort" criterion: pressing Stop must
+    // stop the phase from standing up any pending job instance. With a matrix of
+    // two instances and a pre-tripped signal, the backend's acquire() (remote
+    // runner allocation) and the leased spawnStep (step execution) must never be
+    // called — every instance is skipped instead.
+    const acquired: string[] = [];
+    const spawnCalls: string[] = [];
+    const fakeBackend = {
+      kind: 'fake',
+      acquire: async (spec: { jobId: string }) => {
+        acquired.push(spec.jobId);
+        return {
+          spawnStep: makeFakeSpawnStep((run) => spawnCalls.push(run)),
+          release: async () => {},
+        };
+      },
+    };
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    matrix:
+      include:
+        - group: A
+        - group: B
+    steps:
+      - run: e2e-cmd
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const localSpawn = vi.fn();
+    const deps = { ...makeDeps(localSpawn), runnerBackend: fakeBackend } as StepRunnerDeps;
+    const { signal, abort } = createFinalizeRunSignal();
+    abort(); // Stop pressed before the phase scheduled anything
+
+    const result = await runJobPhase(deps, {
+      runId: 'cancelled-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+      signal,
+    });
+
+    expect(acquired).toEqual([]); // no remote runner allocation
+    expect(spawnCalls).toEqual([]); // no leased step executed
+    expect(localSpawn).not.toHaveBeenCalled(); // no local step executed either
+    // The phase returns promptly (every instance skipped) so the orchestrator
+    // can reach its cancelled terminal.
+    expect(result.status).toBe('success');
   });
 
   it('passes the remaining run budget as the runner acquire timeout cap', async () => {
@@ -1116,5 +1175,59 @@ jobs:
     expect(result.status).toBe('infra_error');
     expect(spawnStep).not.toHaveBeenCalled();
     expect(deps.stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Stop Finalize — no retry after cancel ──────────────────────────
+//
+// A cancelled instance's killed step exits non-zero. Without the abort guard,
+// runInstanceWithRetries would re-run it (a same-commit `retries:` failure retry
+// or a fresh-agent infra retry), defeating the Stop. The `isAborted` guard stops
+// the loop the moment cancellation is observed.
+describe('runInstanceWithRetries — Stop Finalize prevents re-running a cancelled instance', () => {
+  const failingOutcome = (status: 'failure' | 'infra_error') => ({
+    instance: { jobId: 'checks', matrixKey: 'checks' } as never,
+    result: {
+      status,
+      stepResults: [],
+      activeSecondsBilled: 0,
+      ...(status === 'infra_error' ? { infraErrorDetail: 'runner lost' } : {}),
+    },
+  });
+
+  it('does not retry a genuine failure once the run is aborted', async () => {
+    const runOnce = vi.fn().mockResolvedValue(failingOutcome('failure'));
+    const outcome = await runInstanceWithRetries(runOnce, {
+      maxFailureRetries: 3,
+      isAborted: () => true,
+    });
+    expect(runOnce).toHaveBeenCalledTimes(1);
+    expect(outcome.result.status).toBe('failure');
+  });
+
+  it('does not retry a transient infra_error once the run is aborted', async () => {
+    const runOnce = vi.fn().mockResolvedValue(failingOutcome('infra_error'));
+    const outcome = await runInstanceWithRetries(runOnce, {
+      maxInfraAttempts: 3,
+      isAborted: () => true,
+    });
+    expect(runOnce).toHaveBeenCalledTimes(1);
+    expect(outcome.result.status).toBe('infra_error');
+  });
+
+  it('still retries a genuine failure when NOT aborted (guard is cancel-only)', async () => {
+    const runOnce = vi
+      .fn()
+      .mockResolvedValueOnce(failingOutcome('failure'))
+      .mockResolvedValueOnce({
+        instance: { jobId: 'checks', matrixKey: 'checks' } as never,
+        result: { status: 'success', stepResults: [], activeSecondsBilled: 0 },
+      });
+    const outcome = await runInstanceWithRetries(runOnce, {
+      maxFailureRetries: 3,
+      isAborted: () => false,
+    });
+    expect(runOnce).toHaveBeenCalledTimes(2);
+    expect(outcome.result.status).toBe('success');
   });
 });

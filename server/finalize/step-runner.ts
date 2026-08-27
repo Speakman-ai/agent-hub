@@ -103,6 +103,7 @@ import type { RunnerJobLossProbe } from './runner-queue.js';
 import { hasTestFailureSummary, isRunnerTeardownExit } from './runner-teardown.js';
 import { isRunnerCancellationCollateral } from './step-cancellation.js';
 import { isRunnerWorkspacePermissionError } from './step-workspace-permission.js';
+import type { CancelSignal } from './fix-dispatch.js';
 import { FINALIZE_RUNNER_WORKSPACE } from './runner-images.js';
 
 /**
@@ -521,6 +522,16 @@ export interface RunStepsSequenceOptions {
    * owns its own terminal write.
    */
   deferRunTerminal?: boolean;
+  /**
+   * Run-level cancellation signal (the same one the orchestrator honors at its
+   * awaitable boundaries). When it trips mid-step, the in-flight child is
+   * SIGTERM→SIGKILLed so a Stop pressed during a long test step actually stops
+   * it instead of running to completion; no further step in this sequence is
+   * started. The orchestrator turns an aborted run into a `cancelled` terminal,
+   * so the short-circuit result here is intentionally benign (never a red that
+   * would drive fix-dispatch or a same-commit retry).
+   */
+  signal?: CancelSignal;
 }
 /**
  * Run an ordered list of steps — the body of one job instance (matrix shard).
@@ -574,6 +585,17 @@ export async function runStepsSequence(
     const stepIndex = opts.stepIndices?.[i] ?? i + 1;
     const displayName = opts.stepNamePrefix ? `${opts.stepNamePrefix}${step.name}` : step.name;
     const stepForRun = { ...step, name: displayName };
+    // Cancelled before this step even started — stop the sequence here rather
+    // than spawn another child. Return the results so far as a benign success
+    // (the orchestrator overrides an aborted run to `cancelled`); never classify
+    // an aborted sequence as a red that would trigger fix-dispatch/retry.
+    if (opts.signal?.aborted) {
+      return finishStepSequence(deps, opts, {
+        status: 'success',
+        stepResults,
+        activeSecondsBilled,
+      });
+    }
     const remainingBudgetMs = budgetMs - (now() - startedAt);
     if (remainingBudgetMs <= 0) {
       // Step never ran (budget exhausted before spawn) → no output to store.
@@ -644,10 +666,24 @@ export async function runStepsSequence(
       now,
       spawnStep,
       hardTimeoutMs: stepHardTimeoutMs,
+      ...(opts.signal ? { cancelSignal: opts.signal } : {}),
     });
 
     activeSecondsBilled += STEP_ACTIVE_SECONDS_PER_STEP;
     stmts.updateFinalizeRunActiveSeconds.run(STEP_ACTIVE_SECONDS_PER_STEP, opts.runId);
+
+    // A Stop pressed while this step was in flight already SIGKILLed the child
+    // via the cancel listener in runSingleStep, so it resolved (non-zero) fast.
+    // Treat that as cancellation, not a genuine test failure: return a benign
+    // success without persisting a failed step row or dispatching a fix. The
+    // orchestrator writes the single `cancelled` terminal for the whole run.
+    if (opts.signal?.aborted) {
+      return finishStepSequence(deps, opts, {
+        status: 'success',
+        stepResults,
+        activeSecondsBilled,
+      });
+    }
 
     stepResults.push(runOutcome.result);
 
@@ -965,6 +1001,14 @@ interface RunSingleStepArgs {
   now: () => number;
   spawnStep: SpawnStepFn;
   hardTimeoutMs: number;
+  /**
+   * Run-level cancellation signal. When it trips while this step's child is
+   * live, the child is SIGTERM→SIGKILLed (same two-phase kill the hard-timeout
+   * watchdog uses) so a Stop pressed during a long step stops it promptly. The
+   * subscription is released when the step settles so the shared run signal
+   * doesn't accumulate a listener per step across the whole run.
+   */
+  cancelSignal?: CancelSignal;
 }
 
 /**
@@ -1005,6 +1049,8 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
     let settled = false;
     let timedOut = false;
     let postExitTimer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribeCancel: (() => void) | undefined;
+    let cancelKillTimer: ReturnType<typeof setTimeout> | undefined;
 
     let child: SpawnedStep;
     try {
@@ -1042,6 +1088,33 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       });
       return;
     }
+
+    // Run-level cancel (Stop Finalize) kills the in-flight child the same way
+    // the hard-timeout watchdog does: SIGTERM, then SIGKILL after a short grace
+    // for a child that swallows the term. `cancelled` marks why it died so the
+    // sequence classifies the fast non-zero exit as cancellation, not a red.
+    // onAbort fires immediately if the signal is already tripped (mirrors
+    // AbortSignal), which is fine — killing a just-spawned child is a no-op-safe
+    // best effort. Unsubscribed on settle so the run's shared signal never
+    // accumulates one listener per step.
+    unsubscribeCancel = args.cancelSignal?.onAbort(() => {
+      if (settled) return;
+      emit('stderr', '[finalize] step cancelled — Stop pressed; terminating the step.');
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        /* best-effort */
+      }
+      cancelKillTimer = setTimeout(() => {
+        if (settled) return;
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* best-effort */
+        }
+      }, 1_000);
+      cancelKillTimer.unref?.();
+    });
 
     const timer = setTimeout(() => {
       if (settled) return;
@@ -1160,6 +1233,8 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       settled = true;
       clearTimeout(timer);
       clearTimeout(postExitTimer);
+      clearTimeout(cancelKillTimer);
+      unsubscribeCancel?.();
       if (opts.detachOpenOutput) detachOutputStreams();
       const line = `[spawn-error] ${detail}`;
       stderrLines += 1;
@@ -1239,6 +1314,8 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       settled = true;
       clearTimeout(timer);
       clearTimeout(postExitTimer);
+      clearTimeout(cancelKillTimer);
+      unsubscribeCancel?.();
       if (opts.detachOpenOutput) detachOutputStreams();
       flushTrailingFragments();
       const exitCode = code ?? -1;

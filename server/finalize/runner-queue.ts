@@ -215,6 +215,33 @@ export function reportRunnerJob(args: {
     });
 }
 
+/**
+ * Cancel every non-terminal queue row for a run in one statement — the Stop
+ * Finalize path. A `queued` row flips `cancelled` before any agent claims it (so
+ * it is never picked up); a `claimed`/`running` row flips `cancelled` so the
+ * fleet stops treating it as live work and the agent tears down on its next poll
+ * (the channel is removed in the same cancel pass → `410 gone`). Terminal rows
+ * are immutable and left untouched. Returns the ids that were actually
+ * transitioned so the caller can unblock their in-process channels.
+ */
+export function cancelRunnerJobsForRun(args: {
+  runId: string;
+  now: number;
+  detail?: string | null;
+}): string[] {
+  const rows = getOrgsDb()
+    .prepare(
+      `UPDATE runner_jobs
+          SET state='cancelled', detail=@detail, ended_at=@now
+        WHERE run_id=@runId AND state IN ('queued','claimed','running')
+        RETURNING id`,
+    )
+    .all({ runId: args.runId, now: args.now, detail: args.detail ?? 'finalize run cancelled' }) as {
+    id: string;
+  }[];
+  return rows.map((r) => r.id);
+}
+
 /** Append one log frame to the durable spool (idempotent on (job_id, seq)). */
 export function appendRunnerJobLog(args: {
   jobId: string;

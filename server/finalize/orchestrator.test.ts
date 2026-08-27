@@ -931,6 +931,53 @@ describe('runFinalize — split modes', () => {
     expect(hook).not.toHaveBeenCalled();
   });
 
+  it('passes the run cancel signal through to runJobPhase options', async () => {
+    // Regression for the ticket's "signal plumbed to runJobPhase" criterion:
+    // the job runner can only kill an in-flight step if runFinalize forwards its
+    // CancelSignal into the checks phase. Inspect the options runFinalize hands
+    // to runJobPhase directly — removing `signal` from the production call at
+    // orchestrator.ts (`runJobs({ ..., signal })`) must fail this test.
+    const { signal } = createFinalizeRunSignal();
+    const steps = vi.fn().mockResolvedValue(STEPS_OK) as unknown as NonNullable<
+      OrchestratorDeps['runJobPhase']
+    >;
+    const { deps } = makeDeps({ runJobPhase: steps });
+
+    await runFinalize(deps, baseOpts({ mode: 'full', signal }));
+
+    expect(steps).toHaveBeenCalledTimes(1);
+    const passedOpts = (steps as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as {
+      signal?: unknown;
+    };
+    expect(passedOpts.signal).toBe(signal);
+  });
+
+  it('ends cancelled even when the killed CI phase returns timeout/infra after Stop', async () => {
+    // Regression: the job runner now kills the in-flight step on Stop, so the
+    // checks phase can return a non-success outcome (a killed step's fast
+    // non-zero exit may surface as `timeout` or `infra_error`). Those statuses
+    // have their OWN early returns in the orchestrator; the post-CI abort check
+    // must run FIRST so an aborted run terminates `cancelled` and never a
+    // timeout/infra terminal that could be retried or misreported.
+    for (const killed of ['timeout', 'infra_error'] as const) {
+      const { signal, abort } = createFinalizeRunSignal();
+      const steps = vi.fn().mockImplementation(async () => {
+        abort(); // Stop landed while the phase was in flight
+        return {
+          status: killed,
+          stepResults: [],
+          activeSecondsBilled: 1,
+          ...(killed === 'infra_error' ? { infraErrorDetail: 'killed on cancel' } : {}),
+        };
+      }) as unknown as NonNullable<OrchestratorDeps['runJobPhase']>;
+      const { deps } = makeDeps({ runJobPhase: steps });
+
+      const result = await runFinalize(deps, baseOpts({ mode: 'full', signal }));
+
+      expect(result.kind).toBe('cancelled');
+    }
+  });
+
   it('refuses to resurrect a row cancelled in the mark window (guarded UPDATE)', async () => {
     // Defense in depth: even if Stop lands in the race window AFTER the
     // post-CI abort check but BEFORE markFinalizeRunReadyToPush, the guarded

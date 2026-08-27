@@ -31,6 +31,7 @@ import {
   type StepRunResult,
   type StepRunnerDeps,
 } from './step-runner.js';
+import { createFinalizeRunSignal } from './run-abort-registry.js';
 import type { RunnerJobLossProbe } from './runner-queue.js';
 import type {
   FinalizeStepLogStore,
@@ -1819,6 +1820,94 @@ describe('defaultSpawnStep — production wiring', () => {
     // `false | cat` → `false`'s exit = 1, pipefail propagates it, set -e
     // halts the script before the `echo unreachable` line ever fires.
     expect(code).toBe(1);
+  });
+});
+
+// ─── Stop Finalize — cancel signal kills the in-flight step ─────────
+//
+// Regression: pressing Stop during the checks phase used to flip the DB row to
+// `cancelled` but leave the running test step executing to completion (the job
+// runner never observed the cancel signal). The sequence now kills the in-flight
+// child on abort and stops without starting later steps.
+describe('runStepsSequence — Stop Finalize kills the in-flight step', () => {
+  it('SIGTERMs the running child, does not spawn later steps, and returns a benign (non-red) result', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      logStore: makeLogStore().store,
+      now: makeMonoClock(),
+    };
+    const { signal, abort } = createFinalizeRunSignal();
+    const config = makeConfig([
+      { name: 'Tests', run: 'npm test' },
+      { name: 'Lint', run: 'npm run lint' },
+    ]);
+
+    const resultP = runStepsSequence(deps, {
+      runId: RUN_ID,
+      sessionId: SESSION_ID,
+      worktreePath: WORKTREE,
+      steps: config.jobs.checks.steps,
+      timeoutMinutes: config.timeoutMinutes,
+      signal,
+    });
+    await microtaskTick();
+    // Only the first step's child has spawned.
+    expect(fakes).toHaveLength(1);
+
+    // User presses Stop → the in-flight child is SIGTERMed immediately.
+    abort();
+    expect(fakes[0].killed).toContain('SIGTERM');
+
+    // The killed child exits; the sequence settles without dispatching a red.
+    fakes[0].emitter.emit('close', 143);
+    const result = await resultP;
+
+    // Benign short-circuit: never classified as a `failure`/`timeout` that would
+    // drive fix-dispatch, and the second step never ran.
+    expect(result.status).toBe('success');
+    expect(fakes).toHaveLength(1);
+  });
+
+  it('does not spawn any step when the run is already cancelled before the phase starts', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      logStore: makeLogStore().store,
+      now: makeMonoClock(),
+    };
+    const { signal, abort } = createFinalizeRunSignal();
+    abort(); // already cancelled
+
+    const result = await runStepsSequence(deps, {
+      runId: RUN_ID,
+      sessionId: SESSION_ID,
+      worktreePath: WORKTREE,
+      steps: makeConfig([{ name: 'Tests', run: 'npm test' }]).jobs.checks.steps,
+      timeoutMinutes: 60,
+      signal,
+    });
+
+    expect(fakes).toHaveLength(0);
+    expect(result.status).toBe('success');
   });
 });
 

@@ -14,6 +14,7 @@ import {
   substituteEnvString,
 } from './ci-config-jobs.js';
 import { resolveRunnerBackend, type RunnerLease } from './runner-backend.js';
+import { cancelRemoteJobsForRun } from './runner-backend-remote.js';
 import { detectRepoVisibility } from './runner-repo-visibility.js';
 import { hasExplicitResourceProfile, type RepoVisibility } from './runner-resource-profile.js';
 import { isContainerRunsOn, resolveRunsOnImage } from './runner-images.js';
@@ -31,6 +32,7 @@ import {
 } from './step-runner.js';
 import { classifyFailureReason } from './infra-retry.js';
 import { isWorktreeBundleFailureMessage } from './worktree-bundle.js';
+import type { CancelSignal } from './fix-dispatch.js';
 
 /** Default max parallel job shards (override with FINALIZE_MAX_PARALLEL_JOBS). */
 export const DEFAULT_MAX_PARALLEL_JOBS = 4;
@@ -46,6 +48,14 @@ export interface JobRunnerOptions {
   /** Tenant identity for the remote runner queue (local backend ignores these). */
   orgId?: string;
   projectId?: string;
+  /**
+   * Run-level cancellation signal (the orchestrator's Stop-Finalize signal).
+   * When it trips, in-flight step children are killed (see runStepsSequence),
+   * no not-yet-started instance is launched, and no cancelled instance is
+   * retried — so a Stop during the checks phase ends the phase promptly instead
+   * of blocking until every test finishes on its own.
+   */
+  signal?: CancelSignal;
 }
 
 interface PlannedStep {
@@ -132,6 +142,13 @@ export interface InstanceRetryPolicy {
   onInfraRetry?: (rerun: number, detail: string | undefined) => void;
   /** Called before each failure re-run with the 1-based re-run count + detail. */
   onFailureRetry?: (rerun: number, detail: string | undefined) => void;
+  /**
+   * Consulted after each attempt: when it returns true the run was cancelled,
+   * so the retry loop stops immediately (a cancelled instance's non-zero exit
+   * must never trigger a same-commit failure retry or a fresh-agent infra
+   * retry).
+   */
+  isAborted?: () => boolean;
 }
 
 /**
@@ -166,6 +183,9 @@ export async function runInstanceWithRetries(
     outcome = await runOnce();
     const status = outcome.result.status;
     if (status === 'success') break;
+    // Run cancelled mid-attempt — stop before any retry so a Stop is honored
+    // immediately instead of re-running the just-killed instance.
+    if (policy.isAborted?.()) break;
     const reason = outcome.result.failureReason;
     const detail = outcome.result.infraErrorDetail;
     if (status === 'infra_error') {
@@ -636,6 +656,7 @@ async function runJobInstance(
         persistMeta,
         skipPhaseInit: true,
         emitChecksTimeline: false,
+        ...(opts.signal ? { signal: opts.signal } : {}),
         // A shard is one of N parallel jobs. It must NOT stamp the run-level
         // terminal status on failure — doing so the moment the FIRST shard
         // fails marks `finalize_runs` ended while siblings are still running
@@ -829,6 +850,13 @@ export async function runJobPhase(
     if (failFastCancelledJobs.has(instance.jobId)) {
       return markSkipped(instance);
     }
+    // Stop pressed before this instance started (or while a dependency of it was
+    // running): don't stand up a runner for it. Marking it skipped keeps the
+    // dependency scheduler from launching downstream jobs against a cancelled
+    // run.
+    if (opts.signal?.aborted) {
+      return markSkipped(instance);
+    }
 
     let failureRerunCount = 0;
     const outcome = await runInstanceWithRetries(
@@ -836,6 +864,9 @@ export async function runJobPhase(
       {
         maxInfraAttempts: MAX_INSTANCE_INFRA_ATTEMPTS,
         maxFailureRetries: instance.retries,
+        // Never re-run an instance the user cancelled — a same-commit failure
+        // retry or infra retry would defeat the Stop the moment it fired.
+        isAborted: () => opts.signal?.aborted ?? false,
         onInfraRetry: (rerun, detail) =>
           console.warn(
             `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} infra_error on attempt ` +
@@ -878,16 +909,45 @@ export async function runJobPhase(
   // cache. With no `needs` and no warmup job, everything runs straight through
   // the concurrency pool exactly as before. (`effectiveNeeds` was computed
   // up-front above so the single-job filter could resolve its dep closure.)
+  // Remote backend only: when the run's CancelSignal trips mid-phase, actively
+  // cancel this run's queue jobs and unblock their channels so an already-
+  // dispatched shard stops and every instance promise settles promptly — rather
+  // than the phase hanging on a remote step until its hard deadline, which would
+  // stall the orchestrator's `cancelTerminal` and keep the composer locked. The
+  // local backend needs nothing here: the step child is killed directly (see
+  // runStepsSequence) and its container torn down in runJobInstance's finally.
+  const unsubscribeAbort =
+    opts.signal && isRemoteBackend()
+      ? opts.signal.onAbort(() => {
+          try {
+            cancelRemoteJobsForRun(opts.runId, now());
+          } catch (err) {
+            console.warn(
+              `[finalize-job-runner] remote cancel for run=${opts.runId} failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        })
+      : undefined;
+
   const hasDeps = [...effectiveNeeds.values()].some((n) => n.length > 0);
-  const outcomes = hasDeps
-    ? await scheduleInstancesWithDeps(
-        instances,
-        effectiveNeeds,
-        concurrency,
-        runInstance,
-        markSkipped,
-      )
-    : await runWithConcurrency(instances, concurrency, runInstance);
+  let outcomes: JobInstanceOutcome[];
+  try {
+    outcomes = hasDeps
+      ? await scheduleInstancesWithDeps(
+          instances,
+          effectiveNeeds,
+          concurrency,
+          runInstance,
+          markSkipped,
+        )
+      : await runWithConcurrency(instances, concurrency, runInstance);
+  } finally {
+    // Release the run-signal subscription so a shared signal doesn't accumulate
+    // one listener per checks round across the run's lifetime.
+    unsubscribeAbort?.();
+  }
 
   for (const outcome of outcomes) {
     activeSecondsBilled += outcome.result.activeSecondsBilled;

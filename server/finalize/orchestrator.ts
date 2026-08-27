@@ -1793,6 +1793,7 @@ export async function runFinalize(
               env: spawnEnv,
               orgId,
               projectId: opts.project.id,
+              ...(opts.signal ? { signal: opts.signal } : {}),
             },
           );
         } catch (err) {
@@ -1805,6 +1806,16 @@ export async function runFinalize(
             `step phase threw: ${msg}`,
             log,
           );
+        }
+
+        // A Stop pressed during the checks phase now kills the in-flight step
+        // children and returns here promptly (the job runner honors opts.signal).
+        // Turn that into the `cancelled` terminal BEFORE the outcome is
+        // classified, so a killed step's fast non-zero exit can never be read as
+        // a timeout/infra_error (both of which return early below) and clobber
+        // the user's cancel.
+        if (opts.signal?.aborted) {
+          return cancelTerminal(deps, runId, log);
         }
 
         // Emit active-seconds tick after the tasks phase (success or fail).

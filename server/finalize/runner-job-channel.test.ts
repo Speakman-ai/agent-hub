@@ -173,4 +173,50 @@ describe('RunnerJobChannel', () => {
     expect(ch.isAttached).toBe(false);
     removeJobChannel('job-noawaiter');
   });
+
+  // Stop Finalize path: the cancel directive must be EMITTED for in-flight steps.
+  // Regression: on run-cancel the emission cannot rely on the step-runner's own
+  // kill→cancelStep (fail() settles the step first and that path short-circuits
+  // on `settled`), so the channel emits it directly, before fail().
+  it('cancelInFlightSteps emits a cancel directive for each in-flight step', async () => {
+    const ch = createJobChannel('job-cancel');
+    await ch.nextDirective(5); // attach
+    ch.runStep(0, 'npm test', {});
+    ch.runStep(1, 'npm run lint', {});
+    // Drain the two run_step directives so the outbound queue is empty.
+    expect(await ch.nextDirective(50)).toMatchObject({ type: 'run_step', stepIndex: 0 });
+    expect(await ch.nextDirective(50)).toMatchObject({ type: 'run_step', stepIndex: 1 });
+
+    const emitted = ch.cancelInFlightSteps('SIGTERM');
+    expect(emitted.sort()).toEqual([0, 1]);
+    // The buffered cancel directives are delivered on the next polls.
+    expect(await ch.nextDirective(50)).toEqual({ type: 'cancel', stepIndex: 0, signal: 'SIGTERM' });
+    expect(await ch.nextDirective(50)).toEqual({ type: 'cancel', stepIndex: 1, signal: 'SIGTERM' });
+
+    removeJobChannel('job-cancel');
+  });
+
+  it('cancelInFlightSteps emits BEFORE fail() settles the step (ordering)', async () => {
+    const ch = createJobChannel('job-cancel-order');
+    await ch.nextDirective(5); // attach
+    const step = ch.runStep(0, 'npm test', {});
+    expect(await ch.nextDirective(50)).toMatchObject({ type: 'run_step', stepIndex: 0 });
+
+    // Agent is polling for its next directive when Stop lands.
+    const pollP = ch.nextDirective(1000);
+    const errors: Error[] = [];
+    step.on('error', (e) => errors.push(e));
+
+    // Mirror cancelRemoteJobsForRun's order: emit the directive, THEN fail.
+    ch.cancelInFlightSteps('SIGTERM');
+    ch.fail(new Error('finalize run cancelled by user'));
+    await tick();
+
+    // The pending poll got the cancel directive (not swallowed by fail()).
+    expect(await pollP).toEqual({ type: 'cancel', stepIndex: 0, signal: 'SIGTERM' });
+    // fail() still settled the in-flight step so the step-runner unblocks.
+    expect(errors).toHaveLength(1);
+
+    removeJobChannel('job-cancel-order');
+  });
 });

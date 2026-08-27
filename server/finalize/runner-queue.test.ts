@@ -5,9 +5,11 @@ import path from 'path';
 import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
 import {
   appendRunnerJobLog,
+  cancelRunnerJobsForRun,
   claimRunnerJob,
   enqueueRunnerJob,
   heartbeatRunnerJob,
+  markRunnerJobRunning,
   markRunnerJobSpotInterruption,
   probeRunnerJobLoss,
   pruneRunnerJobLogs,
@@ -277,6 +279,40 @@ describe('runner-queue', () => {
       // The next tick drains the remainder.
       expect(pruneRunnerJobLogs({ cutoff: 100, batchSize: 10, maxBatches: 2 })).toBe(5);
       expect(countLogs()).toBe(0);
+    });
+  });
+
+  describe('cancelRunnerJobsForRun (Stop Finalize)', () => {
+    it('cancels every non-terminal row for the run, leaving terminal rows and other runs untouched', () => {
+      // term: terminal before cancel → immutable. queued/running: the two live
+      // states cancel touches. other: a different run → untouched.
+      const term = enq({ jobId: 'term', runId: 'run-X', now: 1000 });
+      reportRunnerJob({ jobId: term, state: 'succeeded', now: 1100 });
+      const queued = enq({ jobId: 'queued', runId: 'run-X', now: 1200 });
+      const running = enq({ jobId: 'running', runId: 'run-X', now: 1300 });
+      const other = enq({ jobId: 'other', runId: 'run-Y', now: 1400 });
+
+      // Drive `running` into the running state (claim picks FIFO among queued;
+      // `term` is terminal so it is skipped).
+      claimRunnerJob({ agentId: 'a1', leaseMs: 60_000, now: 2000 }); // → queued
+      claimRunnerJob({ agentId: 'a2', leaseMs: 60_000, now: 2001 }); // → running
+      markRunnerJobRunning(running, 2100);
+
+      const cancelled = cancelRunnerJobsForRun({ runId: 'run-X', now: 3000 });
+
+      expect([...cancelled].sort()).toEqual([queued, running].sort());
+      expect(probeRunnerJobLoss(queued, 3100)?.state).toBe('cancelled');
+      expect(probeRunnerJobLoss(running, 3100)?.state).toBe('cancelled');
+      // Terminal row is immutable; the other run is untouched.
+      expect(probeRunnerJobLoss(term, 3100)?.state).toBe('succeeded');
+      expect(probeRunnerJobLoss(other, 3100)?.state).toBe('queued');
+    });
+
+    it('is a no-op that returns [] when the run has no live jobs', () => {
+      const done = enq({ jobId: 'done', runId: 'run-Z', now: 1000 });
+      reportRunnerJob({ jobId: done, state: 'succeeded', now: 1100 });
+      expect(cancelRunnerJobsForRun({ runId: 'run-Z', now: 2000 })).toEqual([]);
+      expect(probeRunnerJobLoss(done, 2100)?.state).toBe('succeeded');
     });
   });
 });

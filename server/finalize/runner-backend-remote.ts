@@ -10,8 +10,13 @@
  * local DinD backend stays the default. The worktree reaches the agent via an
  * S3 bundle ref added to the wire spec by the worktree-bundle increment.
  */
-import { createJobChannel, removeJobChannel } from './runner-job-channel.js';
-import { enqueueRunnerJob, probeRunnerJobLoss, reportRunnerJob } from './runner-queue.js';
+import { createJobChannel, getJobChannel, removeJobChannel } from './runner-job-channel.js';
+import {
+  cancelRunnerJobsForRun,
+  enqueueRunnerJob,
+  probeRunnerJobLoss,
+  reportRunnerJob,
+} from './runner-queue.js';
 import { reconcileFleetCapacity } from './runner-fleet-scaler.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from './runner-backend.js';
 import type { RepoVisibility, RunnerResourceProfileName } from './runner-resource-profile.js';
@@ -217,6 +222,51 @@ export function createRemoteRunnerBackend(opts?: {
       };
     },
   };
+}
+
+/**
+ * Stop Finalize → cancel every remote queue job for a run and unblock its
+ * in-process channels. Called from the job runner when the run's CancelSignal
+ * trips, so an already-dispatched shard does not keep running after the user
+ * pressed Stop (which would also stall the orchestrator's wait for the checks
+ * phase and leave the originating composer locked).
+ *
+ * For each affected job, in this order:
+ *   - the queue row is flipped `cancelled` ({@link cancelRunnerJobsForRun}) so a
+ *     `queued` shard is never claimed and a live agent tears down on its next
+ *     poll (the removed channel makes that poll `410 gone`);
+ *   - `channel.cancelInFlightSteps()` emits a `cancel` directive for every step
+ *     currently in flight — this MUST run before `fail()`, because `fail()`
+ *     settles the steps and the step-runner's own kill→`cancelStep` path
+ *     short-circuits once a step is `settled`, so this is the only place the
+ *     cancel directive reliably gets emitted on the run-cancel path;
+ *   - `channel.fail(...)` then settles any in-flight step promise in THIS
+ *     process so `runStepsSequence` returns immediately (rather than waiting out
+ *     the step's hard deadline), which lets the phase — and the orchestrator's
+ *     `cancelTerminal` — proceed;
+ *   - the channel is disposed so the agent's next poll returns `410 gone`.
+ *
+ * Returns the number of jobs transitioned (0 when the run had no live remote
+ * work). Best-effort and idempotent: a second call finds every row terminal.
+ */
+export function cancelRemoteJobsForRun(runId: string, now: number): number {
+  const ids = cancelRunnerJobsForRun({ runId, now });
+  for (const id of ids) {
+    const channel = getJobChannel(id);
+    if (channel) {
+      try {
+        // Emit the cancel directive BEFORE failing/disposing (see the note
+        // above — fail() would otherwise short-circuit the step-runner's own
+        // cancel emission).
+        channel.cancelInFlightSteps('SIGTERM');
+        channel.fail(new Error('finalize run cancelled by user'));
+      } catch {
+        /* best-effort — one bad channel must not block the rest */
+      }
+    }
+    removeJobChannel(id);
+  }
+  return ids.length;
 }
 
 export const __test = { effectiveAcquireTimeoutMs, DEFAULT_ACQUIRE_TIMEOUT_MS };

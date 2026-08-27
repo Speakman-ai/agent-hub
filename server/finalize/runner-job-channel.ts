@@ -115,6 +115,21 @@ export class RunnerJobChannel implements RemoteStepSink {
     this.pushDirective({ type: 'cancel', stepIndex, signal });
   }
 
+  /**
+   * Stop Finalize: emit a `cancel` directive for every in-flight step. Must be
+   * called BEFORE {@link fail} / {@link dispose} on the run-cancel path: `fail`
+   * settles the steps and flips their `settled` guard, and the step-runner's own
+   * kill→`cancelStep` path (RemoteSpawnedStep.kill) short-circuits on `settled`,
+   * so without emitting here the agent would never receive a cancel directive —
+   * it would run until its next poll saw the removed channel (`410 gone`).
+   * Returns the step indices a directive was emitted for (for observability/tests).
+   */
+  cancelInFlightSteps(signal: NodeJS.Signals = 'SIGTERM'): number[] {
+    const indices = [...this.steps.keys()];
+    for (const stepIndex of indices) this.cancelStep(stepIndex, signal);
+    return indices;
+  }
+
   /** Tell the agent the job is done so it tears down and exits. */
   finish(): void {
     this.pushDirective({ type: 'finish' });

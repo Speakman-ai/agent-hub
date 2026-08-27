@@ -3,9 +3,13 @@ import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
-import { claimRunnerJob, reportRunnerJob } from './runner-queue.js';
+import { claimRunnerJob, probeRunnerJobLoss, reportRunnerJob } from './runner-queue.js';
 import { getJobChannel } from './runner-job-channel.js';
-import { createRemoteRunnerBackend, __test } from './runner-backend-remote.js';
+import {
+  cancelRemoteJobsForRun,
+  createRemoteRunnerBackend,
+  __test,
+} from './runner-backend-remote.js';
 import type { BundleStore } from './worktree-bundle.js';
 
 const tick = () => new Promise((r) => setImmediate(r));
@@ -80,6 +84,65 @@ describe('createRemoteRunnerBackend', () => {
     await lease.release();
     expect(await finishP).toEqual({ type: 'finish' });
     expect(getJobChannel(claimed!.id)).toBeUndefined();
+  });
+
+  // Stop Finalize: cancelRemoteJobsForRun must flip the queue row terminal,
+  // settle the in-flight step in THIS process (so runStepsSequence unblocks and
+  // the orchestrator reaches cancelTerminal), and dispose the channel so the
+  // agent's next poll is `410 gone`.
+  it('cancelRemoteJobsForRun cancels the queue row, fails the in-flight step, and disposes the channel', async () => {
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 2000 });
+    const acquireP = backend.acquire({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'run-cancel',
+      jobId: 'e2e',
+      matrixKey: '',
+      image: 'img:latest',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'cp',
+      env: {},
+      labels: {},
+    });
+    const claimed = claimRunnerJob({ agentId: 'agent-1', leaseMs: 60_000, now: Date.now() });
+    const channel = getJobChannel(claimed!.id)!;
+    channel.attach();
+    const lease = await acquireP;
+
+    // A step is in flight (agent running its docker exec).
+    const step = lease.spawnStep({
+      step: { name: 's', run: 'npm test' },
+      index: 0,
+      cwd: '/tmp/wt',
+      env: {},
+    });
+    // Drain the run_step directive the agent would have received on spawn, so the
+    // next poll is waiting for a fresh directive (models the agent polling again).
+    expect(await channel.nextDirective(1000)).toMatchObject({ type: 'run_step', stepIndex: 0 });
+    const cancelPollP = channel.nextDirective(1000);
+
+    const errors: Error[] = [];
+    step.on('error', (e) => errors.push(e));
+
+    // User presses Stop → the run's remote jobs are cancelled.
+    const n = cancelRemoteJobsForRun('run-cancel', Date.now());
+    await tick();
+
+    expect(n).toBe(1);
+    // The cancel directive is EMITTED before the channel is failed/disposed — the
+    // pending agent poll receives it (regression: fail() used to settle the step
+    // first, short-circuiting the step-runner's own cancel emission).
+    expect(await cancelPollP).toEqual({ type: 'cancel', stepIndex: 0, signal: 'SIGTERM' });
+    // Queue row is terminal-cancelled (a later report is a no-op).
+    expect(probeRunnerJobLoss(claimed!.id, Date.now())?.state).toBe('cancelled');
+    // In-flight step settled in-process so the step-runner unblocks immediately.
+    expect(errors).toHaveLength(1);
+    // Channel disposed → the agent's next poll returns 410 gone and it tears down.
+    expect(getJobChannel(claimed!.id)).toBeUndefined();
+  });
+
+  it('cancelRemoteJobsForRun returns 0 and no-ops when the run has no live jobs', () => {
+    expect(cancelRemoteJobsForRun('nonexistent-run', Date.now())).toBe(0);
   });
 
   // Loss-evidence seam: every remote step must carry a probe wired to its queue
