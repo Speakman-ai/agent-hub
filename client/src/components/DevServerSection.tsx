@@ -470,6 +470,27 @@ export default function DevServerSection({ projects = [], onProjectsChange, onOp
         </p>
       </section>
 
+      {/* Pull request previews */}
+      <section className="rounded-lg border border-gray-800 p-4">
+        <label className="flex items-start gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={form.previewOnPullRequests}
+            onChange={(e) => setField('previewOnPullRequests', e.target.checked)}
+            className="mt-0.5"
+            data-testid="dev-server-preview-on-prs"
+          />
+          <span>
+            <span className="block text-sm text-gray-200">Show previews on all pull requests</span>
+            <span className="block text-[11px] text-gray-500 mt-0.5 max-w-2xl">
+              Surface preview state on every native pull request by default. The &ldquo;Enable
+              preview&rdquo; control is always available on Hub-hosted PRs when a start command is
+              set; this only auto-opens the preview section without the reviewer expanding it first.
+            </span>
+          </span>
+        </label>
+      </section>
+
       {/* Env vars */}
       <section
         className="rounded-lg border border-gray-800 p-4 space-y-3"

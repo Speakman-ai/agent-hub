@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
 import { api } from '../../utils/api';
 import { useApp } from '../../context/AppContext';
@@ -496,6 +497,23 @@ export default function DevServerSection({
           OS libraries pip/npm can’t install (e.g. ImageMagick for Python Wand). Space- or
           newline-separated. Installed with apt-get before the start command — only on the sysbox
           session backend; skipped with a warning on the host backend.
+        </Text>
+      </View>
+
+      {/* Pull request previews */}
+      <View style={styles.card}>
+        <View style={styles.cardHeaderRow}>
+          <Text style={styles.cardTitle}>Show previews on all pull requests</Text>
+          <Switch
+            value={form.previewOnPullRequests}
+            onValueChange={(v) => setField('previewOnPullRequests', v)}
+            trackColor={{ true: colors.blue500 }}
+            accessibilityLabel="Show previews on all pull requests"
+          />
+        </View>
+        <Text style={styles.hint}>
+          Surface preview state on every native PR by default. The Enable preview control is always
+          available on Hub-hosted PRs when a start command is set; this only auto-opens the section.
         </Text>
       </View>
 

@@ -124,6 +124,12 @@ export function prDetailCapabilities(detail: any) {
     // server's PR summary.
     canAutoMerge: isNative && isOpen,
     autoMergeEnabled: pr?.auto_merge === true || pr?.auto_merge === 1,
+    // PR-scoped preview (web parity). Available on native, OPEN PRs when the
+    // project has a dev server configured; `previewDefaultOn` opts every PR in.
+    // Open-only is load-bearing: a merged PR's preview is torn down on merge,
+    // so the control/auto-start must not reappear (server enforces the same).
+    canPreview: isNative && isOpen && detail?.preview_available === true,
+    previewDefaultOn: detail?.preview_default_on === true,
     // Native html_urls are in-app client routes — only real GitHub URLs
     // get an external "open" affordance (web parity).
     externalUrl: prUrl && /^https?:\/\//i.test(prUrl) ? prUrl : null,

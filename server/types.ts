@@ -2082,6 +2082,8 @@ export interface Stmts {
   createSession: Stmt;
   getSessions: Stmt;
   getSession: Stmt;
+  /** Resolve a session by an id prefix (the 8-hex a PR head branch encodes). */
+  getSessionByIdPrefix: Stmt;
   getRecentLiveSessions: Stmt;
   updateSessionName: Stmt;
   updateSessionNameWithTitleSource: Stmt;

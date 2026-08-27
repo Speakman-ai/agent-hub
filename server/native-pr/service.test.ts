@@ -191,6 +191,81 @@ describe('NativePrService', () => {
     });
   });
 
+  it('fires afterPrMerged with the merged PR row (PR preview teardown hook)', async () => {
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = makeProject(projectId);
+    const branch = 'agent-hub/dev/session-beef0001';
+    const { headSha } = await seedHostedRepoWithBranch(projectId, branch);
+
+    const afterPrMerged =
+      vi.fn<(args: { project: Project; row: { head_branch: string; status: string } }) => void>();
+    const service = createNativePrService({
+      stmts,
+      broadcast: () => {},
+      afterPrMerged: afterPrMerged as unknown as Parameters<
+        typeof createNativePrService
+      >[0]['afterPrMerged'],
+    });
+
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'Teardown on merge',
+      body: '',
+      author: TEST_PR_AUTHOR,
+    });
+
+    const result = await service.merge({
+      project,
+      number: 1,
+      mergeMethod: 'squash',
+      actor: 'u-tester',
+    });
+    expect(result.ok).toBe(true);
+
+    expect(afterPrMerged).toHaveBeenCalledOnce();
+    const arg = afterPrMerged.mock.calls[0][0];
+    expect(arg.project.id).toBe(projectId);
+    // The head branch string survives the git-side branch deletion because the
+    // hook keys off the persisted row, which is what teardown needs to resolve
+    // the session behind the branch.
+    expect(arg.row.head_branch).toBe(branch);
+    expect(arg.row.status).toBe('merged');
+  });
+
+  it('a hook throw does not fail the merge (fire-and-forget)', async () => {
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = makeProject(projectId);
+    const branch = 'agent-hub/dev/session-beef0002';
+    const { headSha } = await seedHostedRepoWithBranch(projectId, branch);
+
+    const service = createNativePrService({
+      stmts,
+      broadcast: () => {},
+      afterPrMerged: () => {
+        throw new Error('teardown boom');
+      },
+    });
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'Hook throws',
+      body: '',
+      author: TEST_PR_AUTHOR,
+    });
+    const result = await service.merge({
+      project,
+      number: 1,
+      mergeMethod: 'squash',
+      actor: 'u-tester',
+    });
+    expect(result.ok).toBe(true);
+  });
+
   it('merge conflict → 409 with mergeable:false; PR stays open', async () => {
     const projectId = `npr-${uuidv4().slice(0, 8)}`;
     const project = makeProject(projectId);

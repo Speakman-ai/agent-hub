@@ -1923,3 +1923,45 @@ describe('epic ↔ PR feature-branch linkage', () => {
     await authedGet(`/api/projects/${id}/board/epics/does-not-exist/pulls`).expect(404);
   });
 });
+
+describe('native PR previews', () => {
+  // The seeded head branch (`agent-hub/dev/session-cafe0001`) has no backing
+  // session row in the test DB, so start/stop resolve to "no session" (409)
+  // and state resolves to null — all without spawning a real preview process.
+  it('start/stop 409 when no live session backs the PR head branch', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Preview me' }).expect(201);
+
+    const start = await authedPost(`/api/projects/${id}/pulls/1/preview/start`)
+      .send({})
+      .expect(409);
+    expect(start.body.error).toMatch(/no live session worktree/i);
+
+    const stop = await authedPost(`/api/projects/${id}/pulls/1/preview/stop`).send({}).expect(409);
+    expect(stop.body.error).toMatch(/no live session worktree/i);
+  });
+
+  it('state returns { sessionId: null, preview: null } when no session backs the PR', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'State me' }).expect(201);
+
+    const res = await authedGet(`/api/projects/${id}/pulls/1/preview/state`).expect(200);
+    expect(res.body).toEqual({ sessionId: null, preview: null });
+  });
+
+  it('rejects non-hosted projects (400) and unknown PR numbers (404)', async () => {
+    // Non-hosted project.
+    const plainId = `plain-${uuidv4().slice(0, 8)}`;
+    await authedPost('/api/projects')
+      .send({ id: plainId, name: plainId, cwd: '/tmp', color: '#3B82F6' })
+      .expect(201);
+    const notHosted = await authedPost(`/api/projects/${plainId}/pulls/1/preview/start`)
+      .send({})
+      .expect(400);
+    expect(notHosted.body.error).toMatch(/not hosted on Agent Hub/);
+
+    // Hosted project, unknown PR number.
+    const { id } = await hostedProjectWithBranch();
+    await authedGet(`/api/projects/${id}/pulls/999/preview/state`).expect(404);
+  });
+});

@@ -182,6 +182,53 @@ describe('prDetailCapabilities', () => {
         .canAutoMerge,
     ).toBe(false);
   });
+  it('native open PR with a configured dev server: canPreview true', () => {
+    expect(
+      prDetailCapabilities({
+        source: 'agenthub',
+        preview_available: true,
+        pr: { state: 'open', html_url: 'x' },
+      }),
+    ).toMatchObject({ canPreview: true, previewDefaultOn: false });
+  });
+  it('previewDefaultOn reflects the project toggle', () => {
+    expect(
+      prDetailCapabilities({
+        source: 'agenthub',
+        preview_available: true,
+        preview_default_on: true,
+        pr: { state: 'open', html_url: 'x' },
+      }).previewDefaultOn,
+    ).toBe(true);
+  });
+  it('canPreview false without a dev server, or for GitHub PRs', () => {
+    expect(
+      prDetailCapabilities({ source: 'agenthub', pr: { state: 'open', html_url: 'x' } }).canPreview,
+    ).toBe(false);
+    expect(
+      prDetailCapabilities({
+        source: 'github',
+        preview_available: true,
+        pr: { state: 'open', html_url: 'x' },
+      }).canPreview,
+    ).toBe(false);
+  });
+  it('canPreview false for merged/closed PRs (preview torn down on merge)', () => {
+    expect(
+      prDetailCapabilities({
+        source: 'agenthub',
+        preview_available: true,
+        pr: { state: 'closed', html_url: 'x' },
+      }).canPreview,
+    ).toBe(false);
+    expect(
+      prDetailCapabilities({
+        source: 'agenthub',
+        preview_available: true,
+        pr: { state: 'closed', merged_at: '2026-06-01T00:00:00Z', html_url: 'x' },
+      }).canPreview,
+    ).toBe(false);
+  });
   it('native closed (not merged) PR: only reopen', () => {
     const caps = prDetailCapabilities({
       source: 'agenthub',

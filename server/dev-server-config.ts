@@ -177,6 +177,16 @@ export const devServerConfigSchema = z
       .array(z.string().trim().min(1).max(MAX_APT_PACKAGE_LEN))
       .max(MAX_APT_PACKAGES)
       .default([]),
+    /**
+     * Show the "Enable preview" control on every native pull request by
+     * default. The control itself is always available on Hub-hosted PRs when
+     * a dev server is configured; this only sets whether the PR page surfaces
+     * (and, on the web, auto-hydrates) preview state without the user opening
+     * the section first. Off by default — a preview boots a real process, so
+     * opting the whole project into per-PR previews is a deliberate choice.
+     * Optional (absent === off) so existing config literals need no change.
+     */
+    previewOnPullRequests: z.boolean().optional(),
   })
   .superRefine((cfg, ctx) => {
     const envKeys = Object.keys(cfg.env);

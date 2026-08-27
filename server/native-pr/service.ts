@@ -12,6 +12,7 @@
 
 import type { BroadcastFn, Project, PullRequestRow, Stmts } from '../types.js';
 import { bareRepoPath, hostedRepoExists, isAgentHubHosted } from './host.js';
+import { isDevServerConfigured } from '../dev-server-config.js';
 import { buildNativePrUrl } from './url.js';
 import { matchEpicForPrBranches, type EpicBranchRef, type LinkedEpic } from './epic-branch-link.js';
 import {
@@ -109,6 +110,14 @@ export interface NativePrServiceDeps {
     row: PullRequestRow,
     meta: { reason: 'created' | 'head_updated' },
   ) => void;
+  /**
+   * Fired after a PR merges, so per-PR side effects that key off the head
+   * branch can run. Used to tear down a PR preview (the worktree preview for
+   * the session that owns the head branch) — a merged PR's preview should not
+   * linger until the idle reaper catches it. Fire-and-forget; a teardown
+   * failure never rolls back the merge that already landed in git.
+   */
+  afterPrMerged?: (args: { project: Project; row: PullRequestRow }) => void;
 }
 
 export interface NativePrService {
@@ -921,6 +930,12 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         headSha,
         commits,
         inline_comments: inline,
+        // PR-scoped preview affordances. `preview_available` gates whether the
+        // PR page shows the "Enable preview" control at all (a dev server must
+        // be configured for the project); `preview_default_on` is the project
+        // toggle that opts every PR into showing preview state by default.
+        preview_available: isDevServerConfigured(project.prEnv?.devServer),
+        preview_default_on: project.prEnv?.devServer?.previewOnPullRequests === true,
       };
     },
 
@@ -998,6 +1013,18 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       handleCardOnMerge({ stmts, broadcast }, project.id, updated ?? row, actor);
 
       fireBaseBranchMoved(project, number, row.base_branch, result.mergedSha, 'merge');
+
+      if (deps.afterPrMerged) {
+        try {
+          deps.afterPrMerged({ project, row: updated ?? row });
+        } catch (err: unknown) {
+          console.warn(
+            `[native-pr] afterPrMerged hook failed for ${project.id}#${number}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
 
       return { ok: true as const, mergedSha: result.mergedSha };
     },

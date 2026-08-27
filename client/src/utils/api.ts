@@ -1765,6 +1765,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ requested, kind }),
     }),
+  // ── PR-scoped previews (native Agent Hub-hosted PRs) ────────────────
+  // Launch a live preview for the session that owns the PR's head branch.
+  // Returns immediately; poll getNativePrPreviewState (or the agenthub_preview
+  // WS channel) for loading → ready/failed transitions.
+  startNativePrPreview: (projectId: any, number: any, opts: any = {}) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/preview/start`, {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    }),
+  stopNativePrPreview: (projectId: any, number: any) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/preview/stop`, { method: 'POST' }),
+  getNativePrPreviewState: (projectId: any, number: any) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/preview/state`),
   submitNativePrReview: (projectId: any, number: any, { state, body = '' }: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/reviews`, {
       method: 'POST',

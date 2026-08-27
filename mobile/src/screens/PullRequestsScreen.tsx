@@ -32,6 +32,7 @@ import {
 import { resolveAgentIdFromProject } from '../utils/projectAgents';
 import { isWorkflowProject } from '../utils/project-mode';
 import { prDetailCapabilities, canDismissReview } from '../utils/prReviewActions';
+import { prPreviewViewState } from '@shared/utils/prPreview';
 import {
   appendPrPage,
   canLoadMore,
@@ -307,6 +308,115 @@ function PrDetail({
   // Which dismissed review's collapsed body the user chose to expand.
   const [expandedDismissedId, setExpandedDismissedId] = useState<any>(null);
   const prNumber = pr?.number;
+
+  // ── PR-scoped preview (web parity) ──────────────────────────────────
+  const [previewStateResp, setPreviewStateResp] = useState<any>(null);
+  const [previewPending, setPreviewPending] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const previewView = prPreviewViewState(previewStateResp, { pending: previewPending });
+  const previewStatus = previewView.status;
+  // The PR we've already auto-started (default-on projects), so opening a PR
+  // does not restart it or fight the reaper.
+  const autoStartedRef = useRef<number | null>(null);
+  // The PR currently shown. A `/preview/state` request captures the PR it was
+  // issued for; if this ref has moved on by the time it resolves, the response
+  // is stale and must NOT mutate state (else it paints the previous PR's
+  // link/failure onto the newly opened one).
+  const currentPrRef = useRef<number | null>(prNumber ?? null);
+
+  useEffect(() => {
+    currentPrRef.current = prNumber ?? null;
+    setPreviewStateResp(null);
+    setPreviewPending(false);
+    setPreviewBusy(false);
+    autoStartedRef.current = null;
+  }, [prNumber]);
+
+  const refreshPreview = useCallback(async () => {
+    if (!caps.canPreview || !prNumber) return null;
+    const requested = prNumber;
+    try {
+      const res = await api.getPullPreviewState(projectId, requested);
+      // Drop a response for a PR the user already navigated away from.
+      if (requested !== currentPrRef.current) return null;
+      setPreviewStateResp(res);
+      if (res?.preview) setPreviewPending(false);
+      return res;
+    } catch {
+      return null;
+    }
+  }, [caps.canPreview, projectId, prNumber]);
+
+  const handleEnablePreview = useCallback(async () => {
+    if (!prNumber) return;
+    // Capture the PR this operation is for; discard every UI mutation below if
+    // the user has since navigated to another PR (else a late catch/finally
+    // clears the new PR's pending/busy state).
+    const requested = prNumber;
+    setPreviewBusy(true);
+    setPreviewPending(true);
+    try {
+      await api.startPullPreview(projectId, requested, { reason: `PR #${requested} preview` });
+      await refreshPreview();
+    } catch (err: any) {
+      if (requested !== currentPrRef.current) return;
+      setPreviewPending(false);
+      Alert.alert('Preview failed', err?.message || 'Failed to start preview');
+    } finally {
+      if (requested === currentPrRef.current) setPreviewBusy(false);
+    }
+  }, [projectId, prNumber, refreshPreview]);
+
+  const handleStopPreview = useCallback(async () => {
+    if (!prNumber) return;
+    const requested = prNumber;
+    setPreviewBusy(true);
+    try {
+      await api.stopPullPreview(projectId, requested);
+      if (requested === currentPrRef.current) setPreviewPending(false);
+      await refreshPreview();
+    } catch (err: any) {
+      if (requested === currentPrRef.current) {
+        Alert.alert('Stop failed', err?.message || 'Failed to stop preview');
+      }
+    } finally {
+      if (requested === currentPrRef.current) setPreviewBusy(false);
+    }
+  }, [projectId, prNumber, refreshPreview]);
+
+  // Hydrate the CURRENT preview state whenever the PR detail opens — even when
+  // the project default is off — so an already-running/failed preview shows
+  // instead of a misleading idle state. Auto-start when the project opts every
+  // PR in and nothing is running.
+  useEffect(() => {
+    if (!caps.canPreview || !prNumber) return;
+    let alive = true;
+    (async () => {
+      const res = await refreshPreview();
+      if (!alive) return;
+      const hydrated = prPreviewViewState(res).status;
+      if (caps.previewDefaultOn && hydrated === 'idle' && autoStartedRef.current !== prNumber) {
+        autoStartedRef.current = prNumber;
+        void handleEnablePreview();
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // handleEnablePreview is guarded by autoStartedRef; excluding it keeps this
+    // to a single hydrate per PR.
+  }, [caps.canPreview, caps.previewDefaultOn, prNumber, refreshPreview]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Poll while a preview is booting (Enable, auto-start, or a boot already in
+  // flight when the PR was opened).
+  useEffect(() => {
+    if (!caps.canPreview || previewStatus !== 'loading') return;
+    const timer = setTimeout(() => {
+      void refreshPreview();
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [caps.canPreview, previewStatus, previewStateResp, refreshPreview]);
+
   // Sheets throw on failure so they can render the error inline and stay
   // open; success closes the sheet and refreshes the detail payload.
   const handleSubmitReview = useCallback(
@@ -484,6 +594,74 @@ function PrDetail({
         >
           <Text style={styles.openGithubText}>Open on GitHub {'\u2197'}</Text>
         </TouchableOpacity>
+      ) : null}
+
+      {/* PR-scoped preview (web parity) */}
+      {caps.canPreview ? (
+        <View style={styles.previewPanel} accessibilityLabel="PR preview">
+          <View style={styles.previewRow}>
+            <Text style={styles.previewLabel}>Preview</Text>
+            {previewView.status === 'idle' ? (
+              <TouchableOpacity
+                style={styles.prActionButton}
+                onPress={handleEnablePreview}
+                disabled={previewBusy}
+                accessibilityLabel="Enable preview"
+              >
+                <Text style={styles.prActionButtonText}>Enable preview</Text>
+              </TouchableOpacity>
+            ) : null}
+            {previewView.status === 'loading' ? (
+              <View style={styles.previewStatusRow}>
+                <ActivityIndicator size="small" color={colors.blue400} />
+                <Text style={styles.previewStatusText}>Starting preview…</Text>
+                <TouchableOpacity
+                  style={styles.prActionButton}
+                  onPress={handleStopPreview}
+                  disabled={previewBusy}
+                  accessibilityLabel="Stop preview"
+                >
+                  <Text style={styles.prActionButtonText}>Stop</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            {previewView.status === 'ready' ? (
+              <View style={styles.previewStatusRow}>
+                <TouchableOpacity
+                  style={styles.prActionButton}
+                  onPress={() => previewView.url && Linking.openURL(previewView.url)}
+                  disabled={!previewView.url}
+                  accessibilityLabel="Open preview"
+                >
+                  <Text style={styles.prActionButtonText}>Open preview {'↗'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.prActionButton}
+                  onPress={handleStopPreview}
+                  disabled={previewBusy}
+                  accessibilityLabel="Tear down preview"
+                >
+                  <Text style={styles.prActionButtonText}>Tear down</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            {previewView.status === 'failed' ? (
+              <TouchableOpacity
+                style={styles.prActionButton}
+                onPress={handleEnablePreview}
+                disabled={previewBusy}
+                accessibilityLabel="Retry preview"
+              >
+                <Text style={styles.prActionButtonText}>Retry</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          {previewView.status === 'failed' ? (
+            <Text style={styles.previewError} accessibilityLabel="Preview error">
+              {previewView.reason}
+            </Text>
+          ) : null}
+        </View>
       ) : null}
 
       {/* PR actions: diff, review, comment, edit, reopen */}
@@ -1418,6 +1596,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.gray800,
   },
   prActionButtonText: { color: colors.gray200, fontSize: 13, fontWeight: '600' },
+  previewPanel: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    padding: 10,
+    backgroundColor: colors.gray800,
+  },
+  previewRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  previewLabel: { color: colors.gray200, fontSize: 14, fontWeight: '700', marginRight: 4 },
+  previewStatusRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  previewStatusText: { color: colors.blue400, fontSize: 13 },
+  previewError: { color: colors.red400, fontSize: 12, marginTop: 6 },
   descriptionText: {
     color: colors.gray300,
     fontSize: 13,

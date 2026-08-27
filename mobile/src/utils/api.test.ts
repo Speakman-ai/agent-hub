@@ -1081,3 +1081,30 @@ describe('api.getProjectPulls — pagination params', () => {
     expect(url).toBe('https://example.test/api/projects/agent-hub/pulls?state=all&limit=25&page=3');
   });
 });
+
+describe('api PR preview helpers — URL + method + body parity with web client', () => {
+  it('startPullPreview(project, number, opts) → POST /pulls/:n/preview/start', async () => {
+    await api.startPullPreview('p1', 7, { reason: 'PR #7 preview' });
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/p1/pulls/7/preview/start');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ reason: 'PR #7 preview' });
+  });
+  it('startPullPreview defaults opts to {}', async () => {
+    await api.startPullPreview('p1', 7);
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({});
+  });
+  it('stopPullPreview(project, number) → POST /pulls/:n/preview/stop', async () => {
+    await api.stopPullPreview('p1', 7);
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/p1/pulls/7/preview/stop');
+    expect(init.method).toBe('POST');
+  });
+  it('getPullPreviewState(project, number) → GET /pulls/:n/preview/state', async () => {
+    await api.getPullPreviewState('p1', 7);
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/p1/pulls/7/preview/state');
+    expect(init?.method ?? 'GET').toBe('GET');
+  });
+});

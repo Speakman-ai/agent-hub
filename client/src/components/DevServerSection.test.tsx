@@ -92,6 +92,24 @@ describe('DevServerSection', () => {
     });
     // The deleted legacy preview block is not carried into the new config.
     expect(body.prEnv.preview).toBeUndefined();
+    // Off by default → the flag is omitted from the saved payload.
+    expect('previewOnPullRequests' in body.prEnv.devServer).toBe(false);
+  });
+
+  it('saves previewOnPullRequests when the PR-previews toggle is enabled', async () => {
+    render(<DevServerSection projects={[project]} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('dev-server-start-command') as HTMLInputElement).value).toBe(
+        'pnpm dev',
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId('dev-server-preview-on-prs'));
+    fireEvent.click(screen.getByTestId('dev-server-save'));
+
+    await waitFor(() => expect(api.updateProject).toHaveBeenCalledTimes(1));
+    const [, body] = (api.updateProject as any).mock.calls[0];
+    expect(body.prEnv.devServer.previewOnPullRequests).toBe(true);
   });
 
   it('keeps the just-saved edits in the form (no revert from the stale project prop)', async () => {

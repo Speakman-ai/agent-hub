@@ -39,6 +39,7 @@ import type { SecurityAutofixDeps } from './security-audit/autofix.js';
 import { createSecurityAuditStore } from './security-audit/findings-store.js';
 import { recordRecentPush } from './git-host/recent-pushes.js';
 import { createNativePrService } from './native-pr/service.js';
+import { resolveSessionForPrHeadBranch } from './preview/pr-preview.js';
 import { tryAutoMergeArmedNativePr } from './native-pr/auto-merge-armed.js';
 import { maybeRunPrAutoReview } from './native-pr/auto-review.js';
 import {
@@ -878,6 +879,35 @@ const nativePr = createNativePrService({
       },
       { trigger: meta.reason === 'created' ? 'pr_create' : 'head_update' },
     );
+  },
+  // A merged PR's preview should not linger until the idle reaper catches it.
+  // The PR preview is the worktree preview for the session that owns the head
+  // branch, so resolve that session and stop it. Best-effort: the head branch
+  // is usually deleted on merge, but we key off the branch *name* string on the
+  // (already-updated) row, which survives the git-side branch deletion.
+  afterPrMerged: ({ project, row }) => {
+    // Scoped to the PR's project and pinned to the full canonical branch — an
+    // 8-hex prefix must not let a merge in one project stop another tenant's
+    // preview.
+    const session = resolveSessionForPrHeadBranch(
+      row.head_branch,
+      project.id,
+      (prefix) => stmts!.getSessionByIdPrefix.all(prefix) as SessionRow[],
+      (s) => findAgent(s.agent_id)?.project?.id ?? null,
+    );
+    if (!session) return;
+    void devServerRuntime.stopBySessionId(session.id).catch((err: unknown) => {
+      console.warn(
+        `[native-pr] PR-merge preview teardown failed for session ${session.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
+    broadcast({
+      type: 'agenthub_preview',
+      kind: 'preview_stopped',
+      sessionId: session.id,
+    } as Record<string, unknown>);
   },
 });
 

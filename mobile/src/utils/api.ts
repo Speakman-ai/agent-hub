@@ -1641,6 +1641,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  // ── PR-scoped previews (native Agent Hub-hosted PRs) ────────────────
+  // Launch a live preview for the session that owns the PR's head branch.
+  // Returns immediately; poll getPullPreviewState for loading → ready/failed.
+  startPullPreview: (projectId: any, number: any, opts: any = {}) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/preview/start`, {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    }),
+  stopPullPreview: (projectId: any, number: any) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/preview/stop`, { method: 'POST' }),
+  getPullPreviewState: (projectId: any, number: any) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/preview/state`),
   // `data`: { event: 'APPROVE'|'REQUEST_CHANGES'|'COMMENT', body? }
   submitPullReview: (projectId: any, number: any, data: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/reviews`, {

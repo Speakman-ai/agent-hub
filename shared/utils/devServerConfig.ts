@@ -86,6 +86,8 @@ export interface DevServerForm {
   cwd: string;
   /** Whitespace/comma-separated apt package names. Empty = none. */
   aptPackagesText: string;
+  /** Show the "Enable preview" control on every native PR by default. */
+  previewOnPullRequests: boolean;
 }
 
 export interface DevServerValidationError {
@@ -112,6 +114,7 @@ export function emptyDevServerForm(): DevServerForm {
     readyTimeoutMs: '',
     cwd: '',
     aptPackagesText: '',
+    previewOnPullRequests: false,
   };
 }
 
@@ -151,6 +154,7 @@ export function devServerFormFromProject(
         : '',
     cwd: typeof ds.cwd === 'string' ? ds.cwd : '',
     aptPackagesText: (Array.isArray(ds.aptPackages) ? ds.aptPackages : []).join('\n'),
+    previewOnPullRequests: ds.previewOnPullRequests === true,
   };
 }
 
@@ -452,6 +456,8 @@ export function buildDevServerConfig(form: DevServerForm): Record<string, unknow
 
   const aptPackages = parseAptPackagesText(form.aptPackagesText);
   if (aptPackages.length > 0) config.aptPackages = aptPackages;
+
+  if (form.previewOnPullRequests) config.previewOnPullRequests = true;
 
   return config;
 }

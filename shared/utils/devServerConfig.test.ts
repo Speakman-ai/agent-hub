@@ -38,6 +38,24 @@ describe('devServerFormFromProject', () => {
     expect('buildCommand' in blank).toBe(false);
   });
 
+  it('round-trips previewOnPullRequests; defaults false and omits when off', () => {
+    // Absent on the saved config → false, and dropped from the built payload.
+    const offForm = devServerFormFromProject(
+      { prEnv: { devServer: { startCommand: 'npm run dev' } } },
+      [],
+    );
+    expect(offForm.previewOnPullRequests).toBe(false);
+    expect('previewOnPullRequests' in buildDevServerConfig(offForm)).toBe(false);
+
+    // Saved true → form true → payload keeps the flag.
+    const onForm = devServerFormFromProject(
+      { prEnv: { devServer: { startCommand: 'npm run dev', previewOnPullRequests: true } } },
+      [],
+    );
+    expect(onForm.previewOnPullRequests).toBe(true);
+    expect(buildDevServerConfig(onForm).previewOnPullRequests).toBe(true);
+  });
+
   it('maps a saved devServer config into editable rows', () => {
     const project = {
       prEnv: {

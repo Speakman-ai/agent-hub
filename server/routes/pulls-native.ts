@@ -13,7 +13,16 @@
 import { Router, type Request, type Response } from 'express';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import type { Project, RouteDeps } from '../types.js';
+import type { Project, PullRequestRow, RouteDeps, SessionRow } from '../types.js';
+import {
+  startSessionPreview,
+  type StartSessionPreviewDeps,
+} from '../preview/start-session-preview.js';
+import {
+  getSessionPreviewStateEvent,
+  type SessionPreviewStateRuntime,
+} from '../preview/get-session-preview-state.js';
+import { resolveSessionForPrHeadBranch } from '../preview/pr-preview.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { isAgentHubHosted, bareRepoPath, hostedRepoExists } from '../native-pr/host.js';
 import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
@@ -342,6 +351,98 @@ registerPath({
       description: 'The base branch kept moving; retry.',
       content: jsonContent(PrErrorSchema),
     },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/pulls/{number}/preview/start',
+  tags: ['Projects'],
+  summary: 'Launch a live preview for a native pull request',
+  description:
+    "Boots a worktree preview for the session that owns the PR's head branch and returns once the start was accepted (the preview then transitions loading → ready/failed asynchronously; poll the preview state route or the `agenthub_preview` WebSocket channel). Agent Hub-hosted PRs only. 409 when no live session worktree backs the PR's head branch.",
+  request: {
+    params: z.object({ projectId: z.string(), number: z.string() }),
+    body: {
+      content: jsonContent(
+        z.object({ route: z.string().optional(), reason: z.string().optional() }).partial(),
+      ),
+    },
+  },
+  responses: {
+    200: {
+      description: 'Preview start accepted.',
+      content: jsonContent(
+        z.object({ ok: z.literal(true), started: z.literal(true), sessionId: z.string() }),
+      ),
+    },
+    400: {
+      description: 'Not Hub-hosted or invalid PR number.',
+      content: jsonContent(PrErrorSchema),
+    },
+    404: { description: 'Unknown project/PR/session/agent.', content: jsonContent(PrErrorSchema) },
+    409: {
+      description:
+        'The PR is not open (previews only start for open PRs), no live session worktree backs the PR, or the worktree is not ready.',
+      content: jsonContent(PrErrorSchema),
+    },
+    501: {
+      description: 'Preview routing is not available on this deployment.',
+      content: jsonContent(PrErrorSchema),
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/pulls/{number}/preview/stop',
+  tags: ['Projects'],
+  summary: 'Tear down a native pull request preview',
+  description:
+    "Stops the worktree preview for the session behind the PR's head branch (SIGTERM to the process group, port release). Idempotent — returns `stopped: 0` when nothing was running. Also fired automatically when the PR merges.",
+  request: { params: z.object({ projectId: z.string(), number: z.string() }) },
+  responses: {
+    200: {
+      description: 'Preview stop processed.',
+      content: jsonContent(
+        z.object({ ok: z.literal(true), stopped: z.number(), sessionId: z.string() }),
+      ),
+    },
+    400: {
+      description: 'Not Hub-hosted or invalid PR number.',
+      content: jsonContent(PrErrorSchema),
+    },
+    404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
+    409: {
+      description: 'No live session worktree backs the PR.',
+      content: jsonContent(PrErrorSchema),
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/pulls/{number}/preview/state',
+  tags: ['Projects'],
+  summary: 'Read the current preview state for a native pull request',
+  description:
+    "Returns the `agenthub_preview` snapshot event for the session behind the PR's head branch (status loading/ready/failed, url, port, log tail), or `preview: null` when no preview is active or no session backs the branch.",
+  request: { params: z.object({ projectId: z.string(), number: z.string() }) },
+  responses: {
+    200: {
+      description: 'Preview snapshot (or null).',
+      content: jsonContent(
+        z.object({
+          sessionId: z.string().nullable(),
+          preview: z.record(z.string(), z.unknown()).nullable(),
+        }),
+      ),
+    },
+    400: {
+      description: 'Not Hub-hosted or invalid PR number.',
+      content: jsonContent(PrErrorSchema),
+    },
+    404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
   },
 });
 
@@ -891,6 +992,142 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
         sendNativeError(res, err);
         return;
       }
+    },
+  );
+
+  // ── PR-scoped previews ────────────────────────────────────────────
+  // A native PR has no preview runtime of its own — previews are
+  // session/worktree-scoped. A PR's head branch encodes the session that owns
+  // it, so a PR preview IS that session's worktree preview. These routes
+  // resolve the session and drive the existing session preview surface.
+  // Resolve the session that owns a PR head branch, scoped to `project` and
+  // pinned to the full canonical branch identity (see
+  // `resolveSessionForPrHeadBranch`). The 8-hex prefix is never the boundary.
+  const resolvePreviewSession = (project: Project, headBranch: string): SessionRow | null =>
+    resolveSessionForPrHeadBranch(
+      headBranch,
+      project.id,
+      (prefix) => deps.stmts.getSessionByIdPrefix.all(prefix) as SessionRow[],
+      (s) => deps.findAgent(s.agent_id)?.project?.id ?? null,
+    );
+
+  const resolvePrSession = (
+    ctx: { project: Project; number: number },
+    res: Response,
+    opts: { requireOpen?: boolean } = {},
+  ): SessionRow | null => {
+    const pr = deps.stmts.getPullRequestByNumber.get(ctx.project.id, ctx.number) as
+      | PullRequestRow
+      | undefined;
+    if (!pr) {
+      res.status(404).json({ error: `PR #${ctx.number} not found` });
+      return null;
+    }
+    // Starting a preview is an open-PR action. A merged PR's preview is torn
+    // down automatically on merge, so accepting a start for a merged/closed PR
+    // would defeat that teardown (and let a default-on client re-boot it). The
+    // client hides the control for non-open PRs; this is the server-side half.
+    if (opts.requireOpen && pr.status !== 'open') {
+      res.status(409).json({
+        error: `A preview can only be started for an open pull request (PR #${ctx.number} is ${pr.status}).`,
+      });
+      return null;
+    }
+    const session = resolvePreviewSession(ctx.project, pr.head_branch);
+    if (!session) {
+      res.status(409).json({
+        error:
+          'No live session worktree is associated with this pull request, so a preview cannot be launched for it.',
+      });
+      return null;
+    }
+    return session;
+  };
+
+  router.post(
+    '/api/projects/:projectId/pulls/:number/preview/start',
+    async (req: Request, res: Response) => {
+      const ctx = resolveActionContext(req, res);
+      if (!ctx) return;
+      const session = resolvePrSession(ctx, res, { requireOpen: true });
+      if (!session) return;
+      const body = (req.body ?? {}) as { route?: string; reason?: string };
+      try {
+        const result = await startSessionPreview({
+          sessionId: session.id,
+          body: { route: body.route, reason: body.reason ?? `PR #${ctx.number} preview` },
+          broadcast: deps.broadcast,
+          findAgent: deps.findAgent,
+          getDevServerRuntime: deps.getDevServerRuntime as
+            | StartSessionPreviewDeps['getDevServerRuntime']
+            | undefined,
+          getSession: (id) => deps.stmts.getSession.get(id) as SessionRow | undefined,
+          routing: {
+            publicUrl: deps.config.publicUrl,
+            subdomainBase: deps.config.previewSubdomainBase,
+          },
+        });
+        if (!result.ok) {
+          return res.status(result.statusCode).json({ error: result.error });
+        }
+        return res.json({ ok: true, started: true, sessionId: session.id });
+      } catch (err: unknown) {
+        return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/pulls/:number/preview/stop',
+    async (req: Request, res: Response) => {
+      const ctx = resolveActionContext(req, res);
+      if (!ctx) return;
+      const session = resolvePrSession(ctx, res);
+      if (!session) return;
+      const runtime = deps.getDevServerRuntime?.() ?? null;
+      let stopped = 0;
+      if (runtime) {
+        try {
+          stopped = await runtime.stopBySessionId(session.id);
+        } catch (err: unknown) {
+          console.warn(
+            `[pulls-native] preview stop failed for ${ctx.project.id}#${ctx.number} (session ${session.id}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+      deps.broadcast({
+        type: 'agenthub_preview',
+        kind: 'preview_stopped',
+        sessionId: session.id,
+      } as Record<string, unknown>);
+      return res.json({ ok: true, stopped, sessionId: session.id });
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/pulls/:number/preview/state',
+    (req: Request, res: Response) => {
+      const ctx = resolveActionContext(req, res);
+      if (!ctx) return;
+      const pr = deps.stmts.getPullRequestByNumber.get(ctx.project.id, ctx.number) as
+        | PullRequestRow
+        | undefined;
+      if (!pr) {
+        return res.status(404).json({ error: `PR #${ctx.number} not found` });
+      }
+      const session = resolvePreviewSession(ctx.project, pr.head_branch);
+      if (!session) {
+        // No session behind the branch → definitively no preview, not an error.
+        return res.json({ sessionId: null, preview: null });
+      }
+      const runtime = deps.getDevServerRuntime?.() as unknown as
+        | SessionPreviewStateRuntime
+        | null
+        | undefined;
+      const event = getSessionPreviewStateEvent(runtime, session.id);
+      return res.json({ sessionId: session.id, preview: event });
     },
   );
 

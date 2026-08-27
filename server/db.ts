@@ -4562,6 +4562,15 @@ function initDb(dataDir: string): void {
       'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC',
     ),
     getSession: db.prepare('SELECT * FROM sessions WHERE id = ?'),
+    // Candidate sessions behind a native PR's head branch
+    // (`agent-hub/<agentId>/session-<first8-of-id>`). The branch encodes only
+    // the 8-hex id prefix, so this returns ALL sessions sharing that prefix;
+    // the caller (`resolveSessionForPrHeadBranch`) then pins the exact session
+    // by full canonical-branch identity AND requesting-project scope — the
+    // 8-hex prefix must never be the authorization boundary on its own.
+    getSessionByIdPrefix: db.prepare(
+      "SELECT * FROM sessions WHERE id LIKE ? || '%' ORDER BY created_at DESC",
+    ),
     // Used by the awaiting-input snapshot to bound the scan: only sessions a
     // user has plausibly touched in the last week can be "blocked waiting for
     // a reply." The LIMIT keeps the worst-case bootstrap O(few hundred) row

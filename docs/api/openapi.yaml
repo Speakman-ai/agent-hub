@@ -39032,6 +39032,227 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/pulls/{number}/preview/start:
+    post:
+      tags:
+        - Projects
+      summary: Launch a live preview for a native pull request
+      description: Boots a worktree preview for the session that owns the PR's head branch and returns once the start was accepted (the preview then transitions loading → ready/failed asynchronously; poll the preview state route or the `agenthub_preview` WebSocket channel). Agent Hub-hosted PRs only. 409 when no live session worktree backs the PR's head branch.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                route:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Preview start accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  started:
+                    type: boolean
+                    enum:
+                      - true
+                  sessionId:
+                    type: string
+                required:
+                  - ok
+                  - started
+                  - sessionId
+        "400":
+          description: Not Hub-hosted or invalid PR number.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR/session/agent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The PR is not open (previews only start for open PRs), no live session worktree backs the PR, or the worktree is not ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "501":
+          description: Preview routing is not available on this deployment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/preview/stop:
+    post:
+      tags:
+        - Projects
+      summary: Tear down a native pull request preview
+      description: "Stops the worktree preview for the session behind the PR's head branch (SIGTERM to the process group, port release). Idempotent — returns `stopped: 0` when nothing was running. Also fired automatically when the PR merges."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      responses:
+        "200":
+          description: Preview stop processed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  stopped:
+                    type: number
+                  sessionId:
+                    type: string
+                required:
+                  - ok
+                  - stopped
+                  - sessionId
+        "400":
+          description: Not Hub-hosted or invalid PR number.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: No live session worktree backs the PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/preview/state:
+    get:
+      tags:
+        - Projects
+      summary: Read the current preview state for a native pull request
+      description: "Returns the `agenthub_preview` snapshot event for the session behind the PR's head branch (status loading/ready/failed, url, port, log tail), or `preview: null` when no preview is active or no session backs the branch."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      responses:
+        "200":
+          description: Preview snapshot (or null).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                    nullable: true
+                  preview:
+                    type: object
+                    nullable: true
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - sessionId
+                  - preview
+        "400":
+          description: Not Hub-hosted or invalid PR number.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/pulls/{number}/request-review:
     post:
       tags:

@@ -41,6 +41,7 @@ import {
   autoMergeToggleState,
   buildPrActivityTimeline,
 } from '../utils/prFormatting';
+import { prPreviewViewState, prPreviewAvailable } from '@shared/utils/prPreview';
 
 // ─── Shared atoms ──────────────────────────────────────────────
 
@@ -565,6 +566,128 @@ function PrDetail({
   // the one whose body the user chose to expand.
   const [expandedDismissedId, setExpandedDismissedId] = useState<string | null>(null);
 
+  // ── PR-scoped preview ──────────────────────────────────────────────
+  // Only native PRs whose project has a dev server configured can preview.
+  const previewAvailable = prPreviewAvailable(detail);
+  const previewDefaultOn = Boolean(detail?.preview_default_on);
+  // The latest `/preview/state` response ({ sessionId, preview } | null).
+  const [previewStateResp, setPreviewStateResp] = useState<any>(null);
+  // True between the Enable click and the first snapshot, so we render loading
+  // even though the server has not produced a snapshot row yet.
+  const [previewPending, setPreviewPending] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const previewView = prPreviewViewState(previewStateResp, { pending: previewPending });
+  const previewStatus = previewView.status;
+  // The PR number we've already auto-started (default-on projects), so opening
+  // a PR does not restart it or fight the reaper.
+  const autoStartedRef = useRef<number | null>(null);
+  // The PR the UI is currently showing. A `/preview/state` request captures the
+  // PR it was issued for; if this ref has moved on by the time it resolves, the
+  // response is stale and must NOT mutate state (else it paints the previous
+  // PR's link/failure onto the newly opened one).
+  const currentPrRef = useRef<number | null>(pr?.number ?? null);
+
+  // Reset preview UI when switching PRs so one PR's preview never bleeds into
+  // the next.
+  useEffect(() => {
+    currentPrRef.current = pr?.number ?? null;
+    setPreviewStateResp(null);
+    setPreviewPending(false);
+    setPreviewBusy(false);
+    autoStartedRef.current = null;
+  }, [pr?.number]);
+
+  const refreshPreview = useCallback(async () => {
+    if (!previewAvailable || !pr?.number) return null;
+    const requested = pr.number;
+    try {
+      const res = await api.getNativePrPreviewState(projectId, requested);
+      // Drop a response for a PR the user already navigated away from.
+      if (requested !== currentPrRef.current) return null;
+      setPreviewStateResp(res);
+      if (res?.preview) setPreviewPending(false);
+      return res;
+    } catch {
+      return null;
+    }
+  }, [previewAvailable, projectId, pr?.number]);
+
+  const handleEnablePreview = useCallback(async () => {
+    if (!pr?.number) return;
+    // Capture the PR this operation is for; discard every UI mutation below if
+    // the user has since navigated to another PR (else a late catch/finally
+    // clears the new PR's pending/busy state).
+    const requested = pr.number;
+    setPreviewBusy(true);
+    setPreviewPending(true);
+    try {
+      await api.startNativePrPreview(projectId, requested, {
+        reason: `PR #${requested} preview`,
+      });
+      await refreshPreview();
+    } catch (e: any) {
+      if (requested !== currentPrRef.current) return;
+      setPreviewPending(false);
+      onToast?.(e?.message || 'Failed to start preview', 'error');
+    } finally {
+      if (requested === currentPrRef.current) setPreviewBusy(false);
+    }
+  }, [projectId, pr?.number, refreshPreview, onToast]);
+
+  const handleStopPreview = useCallback(async () => {
+    if (!pr?.number) return;
+    const requested = pr.number;
+    setPreviewBusy(true);
+    try {
+      await api.stopNativePrPreview(projectId, requested);
+      if (requested === currentPrRef.current) setPreviewPending(false);
+      await refreshPreview();
+    } catch (e: any) {
+      if (requested === currentPrRef.current) {
+        onToast?.(e?.message || 'Failed to stop preview', 'error');
+      }
+    } finally {
+      if (requested === currentPrRef.current) setPreviewBusy(false);
+    }
+  }, [projectId, pr?.number, refreshPreview, onToast]);
+
+  // Hydrate the CURRENT preview state whenever the PR detail opens — even when
+  // the project default is off — so an already-running/failed preview is shown
+  // instead of a misleading idle state. When the project opts every PR in
+  // (previewDefaultOn) and nothing is running, auto-start one so the preview is
+  // there "by default".
+  useEffect(() => {
+    if (!previewAvailable || !pr?.number) return;
+    let alive = true;
+    (async () => {
+      const res = await refreshPreview();
+      if (!alive) return;
+      const hydrated = prPreviewViewState(res).status;
+      if (previewDefaultOn && hydrated === 'idle' && autoStartedRef.current !== pr.number) {
+        autoStartedRef.current = pr.number;
+        void handleEnablePreview();
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // handleEnablePreview is guarded by autoStartedRef, so re-runs cannot
+    // double-start; excluding it keeps this to a single hydrate per PR.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewAvailable, previewDefaultOn, pr?.number, refreshPreview]);
+
+  // Poll while a preview is booting (from any source: this client's Enable, an
+  // auto-start, or a boot already in flight when the PR was opened).
+  useEffect(() => {
+    if (!previewAvailable || previewStatus !== 'loading') return;
+    const timer = setTimeout(() => {
+      void refreshPreview();
+    }, 2500);
+    return () => clearTimeout(timer);
+    // previewStateResp in deps re-arms the timer after each poll result, so the
+    // loop continues until the status leaves 'loading'.
+  }, [previewAvailable, previewStatus, previewStateResp, refreshPreview]);
+
   // Drop the "agent review requested" latch when we move to a different PR.
   useEffect(() => {
     setAgentReviewRequested(false);
@@ -1032,6 +1155,101 @@ function PrDetail({
             Refresh
           </button>
         </div>
+
+        {previewAvailable && (
+          <div
+            data-testid="pr-preview-panel"
+            className="mb-3 rounded-lg border border-gray-700/70 bg-gray-800/40 px-3 py-2"
+          >
+            <div className="flex items-center gap-2 flex-wrap">
+              <Eye size={14} className="text-sky-300" />
+              <span className="text-sm font-medium text-gray-200">Preview</span>
+
+              {previewView.status === 'idle' && (
+                <button
+                  type="button"
+                  data-testid="pr-preview-enable"
+                  onClick={handleEnablePreview}
+                  disabled={previewBusy}
+                  className="ml-auto flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50"
+                >
+                  {previewBusy ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
+                  Enable preview
+                </button>
+              )}
+
+              {previewView.status === 'loading' && (
+                <>
+                  <span
+                    data-testid="pr-preview-loading"
+                    className="flex items-center gap-1.5 text-sm text-amber-300"
+                  >
+                    <Loader2 size={14} className="animate-spin" />
+                    Starting preview…
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="pr-preview-stop"
+                    onClick={handleStopPreview}
+                    disabled={previewBusy}
+                    className="ml-auto flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-50"
+                  >
+                    <X size={14} />
+                    Stop
+                  </button>
+                </>
+              )}
+
+              {previewView.status === 'ready' && (
+                <>
+                  <a
+                    data-testid="pr-preview-link"
+                    href={previewView.url || '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-sm text-emerald-300 hover:text-emerald-100 transition-colors"
+                  >
+                    <ExternalLink size={14} />
+                    Open preview
+                  </a>
+                  <button
+                    type="button"
+                    data-testid="pr-preview-stop"
+                    onClick={handleStopPreview}
+                    disabled={previewBusy}
+                    className="ml-auto flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-50"
+                  >
+                    <X size={14} />
+                    Tear down
+                  </button>
+                </>
+              )}
+
+              {previewView.status === 'failed' && (
+                <button
+                  type="button"
+                  data-testid="pr-preview-retry"
+                  onClick={handleEnablePreview}
+                  disabled={previewBusy}
+                  className="ml-auto flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={14} className={previewBusy ? 'animate-spin' : ''} />
+                  Retry
+                </button>
+              )}
+            </div>
+
+            {previewView.status === 'failed' && (
+              <div
+                data-testid="pr-preview-error"
+                className="mt-1.5 flex items-start gap-1.5 text-xs text-rose-300"
+              >
+                <XCircle size={13} className="mt-0.5 shrink-0" />
+                <span className="break-words">{previewView.reason}</span>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex items-center gap-2 mb-2">
           <Badge label={state.label} color={state.color} bg={state.bg} />
