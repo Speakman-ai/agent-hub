@@ -1141,18 +1141,25 @@ export default function App({ initialView }: any = {}) {
   // payload to just the open rows. Runs once; never clobbers a value a later
   // refetch already delivered. Refreshed on kanban_update (see the WS handler).
   const securityCountsSeededRef = useRef(false);
+  // Coalesce per-project findings fetches: a burst of kanban_update events (a
+  // scan inserting many finding-cards) must not fan out into one socket each,
+  // which exhausts the browser connection pool (net::ERR_INSUFFICIENT_RESOURCES)
+  // and starves the board load. Concurrent same-project calls share one fetch.
+  const securityCountFetchesRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const refreshSecurityOpenCounts = useCallback((projectId: any) => {
     if (!projectId) return;
-    api
-      .getSecurityFindings(projectId, 'open')
-      .then((data: any) => {
-        const counts = data?.openCounts;
-        if (!counts) return;
-        setSecurityOpenCounts((prev: any) => ({ ...prev, [projectId]: counts }));
-      })
-      .catch(() => {
-        /* best-effort; the badge stays at its last value */
-      });
+    void coalescePromiseByKey(securityCountFetchesRef, projectId, () =>
+      api
+        .getSecurityFindings(projectId, 'open')
+        .then((data: any) => {
+          const counts = data?.openCounts;
+          if (!counts) return;
+          setSecurityOpenCounts((prev: any) => ({ ...prev, [projectId]: counts }));
+        })
+        .catch(() => {
+          /* best-effort; the badge stays at its last value */
+        }),
+    );
   }, []);
   useEffect(() => {
     if (securityCountsSeededRef.current) return;
@@ -1252,19 +1259,24 @@ export default function App({ initialView }: any = {}) {
     };
   }, [projects, syncSkillImprovementCounts]);
 
+  // Coalesced like the security counts above: WS bursts must not fan out into
+  // one open-pulls fetch per event and drain the browser socket pool.
+  const pullCountFetchesRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const refreshOpenPullCount = useCallback((projectId: any) => {
     if (!projectId) return;
-    api
-      .getProjectPulls(projectId, { state: 'open', limit: 100 })
-      .then((data: any) => {
-        const count = Array.isArray(data?.pulls) ? data.pulls.length : 0;
-        setOpenPullCounts((prev: any) => ({ ...prev, [projectId]: count }));
-      })
-      .catch(() => {
-        setOpenPullCounts((prev: any) =>
-          prev[projectId] === undefined ? { ...prev, [projectId]: 0 } : prev,
-        );
-      });
+    void coalescePromiseByKey(pullCountFetchesRef, projectId, () =>
+      api
+        .getProjectPulls(projectId, { state: 'open', limit: 100 })
+        .then((data: any) => {
+          const count = Array.isArray(data?.pulls) ? data.pulls.length : 0;
+          setOpenPullCounts((prev: any) => ({ ...prev, [projectId]: count }));
+        })
+        .catch(() => {
+          setOpenPullCounts((prev: any) =>
+            prev[projectId] === undefined ? { ...prev, [projectId]: 0 } : prev,
+          );
+        }),
+    );
   }, []);
   const seededPullProjectsRef = useRef<Set<string>>(new Set());
   useEffect(() => {

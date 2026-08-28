@@ -2230,15 +2230,21 @@ export function AppProvider({ children }: any) {
    * project (a scan's only WS signal), so the drawer badge stays live. Passing
    * ?status=open keeps the payload to just the open rows.
    */
+  // Coalesce per-project findings fetches: a burst of kanban_update events (a
+  // scan inserting many finding-cards) must not fan out into one request each.
+  // Concurrent same-project calls share a single in-flight fetch.
+  const securityCountFetchesRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const refreshSecurityOpenCounts = useCallback(async (projectId: any) => {
     if (!projectId) return;
-    try {
-      const data = await api.getSecurityFindings(projectId, 'open');
-      const counts = data?.openCounts;
-      if (counts) setSecurityOpenCounts((prev: any) => ({ ...prev, [projectId]: counts }));
-    } catch {
-      /* best-effort; the badge stays at its last value */
-    }
+    await coalescePromiseByKey(securityCountFetchesRef, projectId, async () => {
+      try {
+        const data = await api.getSecurityFindings(projectId, 'open');
+        const counts = data?.openCounts;
+        if (counts) setSecurityOpenCounts((prev: any) => ({ ...prev, [projectId]: counts }));
+      } catch {
+        /* best-effort; the badge stays at its last value */
+      }
+    });
   }, []);
   refreshSecurityOpenCountsRef.current = refreshSecurityOpenCounts;
   // Provider-level seed of the Security drawer badge: once the project list is
@@ -2278,17 +2284,22 @@ export function AppProvider({ children }: any) {
       cancelled = true;
     };
   }, [projects]);
+  // Coalesced like the security counts above: WS bursts must not fan out into
+  // one open-pulls fetch per event.
+  const pullCountFetchesRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const refreshOpenPullCount = useCallback(async (projectId: any) => {
     if (!projectId) return;
-    try {
-      const data = await api.getProjectPulls(projectId, { state: 'open', limit: 100 });
-      const count = Array.isArray(data?.pulls) ? data.pulls.length : 0;
-      setOpenPullCounts((prev: any) => ({ ...prev, [projectId]: count }));
-    } catch {
-      setOpenPullCounts((prev: any) =>
-        prev[projectId] === undefined ? { ...prev, [projectId]: 0 } : prev,
-      );
-    }
+    await coalescePromiseByKey(pullCountFetchesRef, projectId, async () => {
+      try {
+        const data = await api.getProjectPulls(projectId, { state: 'open', limit: 100 });
+        const count = Array.isArray(data?.pulls) ? data.pulls.length : 0;
+        setOpenPullCounts((prev: any) => ({ ...prev, [projectId]: count }));
+      } catch {
+        setOpenPullCounts((prev: any) =>
+          prev[projectId] === undefined ? { ...prev, [projectId]: 0 } : prev,
+        );
+      }
+    });
   }, []);
   refreshOpenPullCountRef.current = refreshOpenPullCount;
   const seededPullProjectsRef = useRef<any>(new Set());
