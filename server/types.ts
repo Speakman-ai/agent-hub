@@ -1124,6 +1124,12 @@ export interface KanbanColumnRow {
   position: number;
   color: string | null;
   created_at: string;
+  /**
+   * Running count of cards in this column, maintained by DB triggers. Always
+   * present on rows read from SQLite (NOT NULL DEFAULT 0); optional only so
+   * hand-built test fixtures need not set it.
+   */
+  card_count?: number;
 }
 
 export interface KanbanCardRow {
@@ -2320,6 +2326,10 @@ export interface Stmts {
 
   // Kanban cards
   getKanbanCards: Stmt;
+  findKanbanCardByBoardAndTitle: Stmt;
+  getBoardLabelFacets: Stmt;
+  setBoardLabelFacets: Stmt;
+  getDistinctCardLabelsByBoard: Stmt;
   getKanbanCardsByColumn: Stmt;
   getKanbanCardsByColumnPageFirst: Stmt;
   getKanbanCardsByColumnPageAfter: Stmt;
@@ -2329,7 +2339,7 @@ export interface Stmts {
   linkKanbanCardSupportTicket: Stmt;
   claimKanbanCardForSupportTicket: Stmt;
   setKanbanCardProvenance: Stmt;
-  getLinkedSupportTicketsForBoard: Stmt;
+  getLinkedSupportTicketsForCardIds: Stmt;
   updateKanbanCard: Stmt;
   moveKanbanCard: Stmt;
   setCardPrUrl: Stmt;
@@ -2359,6 +2369,7 @@ export interface Stmts {
 
   // Card blockers (card-to-card dependencies)
   getBlockersForBoard: Stmt;
+  getBlockersForCardIds: Stmt;
   getBlockersForCard: Stmt;
   countBlockerEdgesForCard: Stmt;
   getBlocker: Stmt;
@@ -2759,7 +2770,7 @@ export interface Stmts {
    * each row to the matching card, avoiding the per-card REST fan-out
    * the v0 surface had. Bound by `(boardId)`.
    */
-  listLatestFinalizeRunsForBoard: Stmt;
+  listLatestFinalizeRunsForSessionIds: Stmt;
   /**
    * Atomically claim a ready-to-push run for the GitHub push phase. The claim
    * allows only one active push per session and only one completed push per

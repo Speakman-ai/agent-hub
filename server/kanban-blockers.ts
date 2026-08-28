@@ -196,7 +196,25 @@ export interface BoardBlockerIndex {
  * ripple effects when a card lands.
  */
 export function loadBoardBlockers(stmts: Stmts, boardId: string): BoardBlockerIndex {
-  const rows = stmts.getBlockersForBoard.all(boardId) as BoardBlockerRow[];
+  return indexBlockerRows(stmts.getBlockersForBoard.all(boardId) as BoardBlockerRow[]);
+}
+
+/**
+ * Page-scoped blocker enrichment: only edges touching one of `cardIds` (as the
+ * blocked or the blocking card). Used by GET /board so a `?limit` request indexes
+ * the page's blocker edges, not every edge on the board. Same index shape as
+ * `loadBoardBlockers`; callers only read entries for the cards they render.
+ */
+export function loadBlockersForCards(
+  stmts: Stmts,
+  cards: Array<{ id: string }>,
+): BoardBlockerIndex {
+  if (cards.length === 0) return { blockersByCard: new Map(), blocksByCard: new Map() };
+  const idsJson = JSON.stringify(cards.map((c) => c.id));
+  return indexBlockerRows(stmts.getBlockersForCardIds.all(idsJson, idsJson) as BoardBlockerRow[]);
+}
+
+function indexBlockerRows(rows: BoardBlockerRow[]): BoardBlockerIndex {
   const blockersByCard = new Map<string, KanbanBlockerLink[]>();
   const blocksByCard = new Map<string, KanbanBlockerLink[]>();
 

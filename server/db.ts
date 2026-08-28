@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import config from './config.js';
+import { normalizeKanbanTitle } from './kanban-title.js';
 import { assertSafeTestDataDir } from './db-safety.js';
 import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
 import { JOBS_SCHEMA } from './jobs/schema.js';
@@ -33,6 +34,7 @@ import {
 } from './security-audit/findings-store.js';
 import { collapseReviewColumn } from './migrations/collapse-review-column.js';
 import { backfillPhaseAutonomousDefaults } from './migrations/backfill-phase-autonomous-defaults.js';
+import { backfillEpicStates } from './migrations/backfill-epic-states.js';
 import {
   deriveCardPrefix,
   KANBAN_CARD_SHORT_ID_TRIGGER_SQL,
@@ -91,6 +93,14 @@ function initDb(dataDir: string): void {
 
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+
+  // Register the kanban title normalizer as a deterministic SQL function BEFORE
+  // any DDL, so the expression index below and the dedup query fold titles with
+  // the exact same JS (Unicode-aware) semantics. Must be registered on the
+  // connection before the index that references it is created or consulted.
+  db.function('kanban_title_norm', { deterministic: true }, (value: unknown) =>
+    normalizeKanbanTitle(value),
+  );
 
   // Record every DDL string this function executes so the additive schema
   // reconciler (run just before statement preparation, below) can diff the
@@ -2949,6 +2959,106 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN phase_id TEXT DEFAULT NULL');
   }
 
+  // Hot-path lookups that previously fell back to full-table scans (better-sqlite3
+  // is synchronous, so an unindexed scan blocks the event loop and stalls HTTP +
+  // WebSocket for every connection):
+  //  - session_id: getKanbanCardBySession runs on every chat message and
+  //    session-state recompute.
+  //  - epic_id / phase_id: recomputeEpicState / phase queries run on every card
+  //    create / move / delete and in autonomous dispatch loops.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_kanban_cards_session ON kanban_cards(session_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_kanban_cards_epic ON kanban_cards(epic_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_kanban_cards_phase ON kanban_cards(phase_id)');
+  // Expression index backing the card-create title dedup lookup
+  // (WHERE board_id = ? AND kanban_title_norm(title) = ?). Without it SQLite
+  // narrows to the board but must still normalize every title on that board — the
+  // event-loop-blocking O(board-size) work this dedup is meant to avoid. The
+  // index expression uses the same registered normalizer as the query, so the
+  // fold is Unicode-aware and matches verbatim.
+  // Drop the interim ASCII-only lower(trim(title)) index (never shipped to main)
+  // so the Unicode-correct index replaces it on any branch DB that built it.
+  db.exec('DROP INDEX IF EXISTS idx_kanban_cards_board_title_norm');
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_kanban_cards_board_title_ci ON kanban_cards(board_id, kanban_title_norm(title))',
+  );
+
+  // Precomputed board-wide label facet cache. Deriving the distinct label set on
+  // every board read is O(board size) — a DISTINCT scan over all cards — which
+  // blocks the (synchronous) event loop in proportion to card count. Instead the
+  // distinct label list is cached on the board as JSON and recomputed lazily only
+  // when a triggered dirty flag says the cards changed, so a steady-state board
+  // read is O(1). label_facets_dirty defaults to 1 so the first read after this
+  // migration backfills the cache.
+  try {
+    db.prepare('SELECT label_facets FROM kanban_boards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_boards ADD COLUMN label_facets TEXT DEFAULT NULL');
+  }
+  try {
+    db.prepare('SELECT label_facets_dirty FROM kanban_boards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_boards ADD COLUMN label_facets_dirty INTEGER NOT NULL DEFAULT 1');
+  }
+  // Triggers keep the dirty flag correct across EVERY card write path (route
+  // handlers, imports, captures, bulk ops) — nothing can mutate cards and bypass
+  // invalidation. Splitting the comma-joined labels string is left to the lazy
+  // recompute; the trigger only flips the cheap flag.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_kanban_cards_labels_ai
+    AFTER INSERT ON kanban_cards
+    BEGIN
+      UPDATE kanban_boards SET label_facets_dirty = 1 WHERE id = NEW.board_id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_kanban_cards_labels_ad
+    AFTER DELETE ON kanban_cards
+    BEGIN
+      UPDATE kanban_boards SET label_facets_dirty = 1 WHERE id = OLD.board_id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_kanban_cards_labels_au
+    AFTER UPDATE OF labels, board_id ON kanban_cards
+    BEGIN
+      UPDATE kanban_boards SET label_facets_dirty = 1
+       WHERE id = NEW.board_id OR id = OLD.board_id;
+    END;
+  `);
+
+  // Precomputed per-column card counts. The board read reports a per-column total
+  // for the pagination UI ("X of Y"); deriving it with COUNT(*) per column is
+  // O(cards) total (each COUNT visits every matching index entry). Instead store a
+  // running count on kanban_columns, maintained by triggers so the board read maps
+  // it straight off the already-loaded column rows — O(columns), no card scan.
+  try {
+    db.prepare('SELECT card_count FROM kanban_columns LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_columns ADD COLUMN card_count INTEGER NOT NULL DEFAULT 0');
+    // One-time backfill; triggers below keep it current thereafter.
+    db.exec(
+      `UPDATE kanban_columns
+          SET card_count = (
+            SELECT COUNT(*) FROM kanban_cards WHERE kanban_cards.column_id = kanban_columns.id
+          )`,
+    );
+  }
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_kanban_cards_colcount_ai
+    AFTER INSERT ON kanban_cards
+    BEGIN
+      UPDATE kanban_columns SET card_count = card_count + 1 WHERE id = NEW.column_id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_kanban_cards_colcount_ad
+    AFTER DELETE ON kanban_cards
+    BEGIN
+      UPDATE kanban_columns SET card_count = card_count - 1 WHERE id = OLD.column_id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_kanban_cards_colcount_au
+    AFTER UPDATE OF column_id ON kanban_cards
+    WHEN OLD.column_id IS NOT NEW.column_id
+    BEGIN
+      UPDATE kanban_columns SET card_count = card_count - 1 WHERE id = OLD.column_id;
+      UPDATE kanban_columns SET card_count = card_count + 1 WHERE id = NEW.column_id;
+    END;
+  `);
+
   try {
     db.prepare('SELECT linked_epic_id FROM sessions LIMIT 1').get();
   } catch {
@@ -3464,6 +3574,25 @@ function initDb(dataDir: string): void {
     }
   } catch (e) {
     console.error('[migration] backfill-phase-autonomous-defaults failed:', (e as Error).message);
+  }
+
+  // Migration: recompute every epic's persisted `state` once, so the board read
+  // paths that now trust the stored value never surface a stale/NULL state left
+  // by a pre-maintenance row or a column rename made while reads were still
+  // live-derived. Marker-guarded to run exactly once, during init.
+  //
+  // NOT wrapped in a swallow: the board read paths switch to trusting the stored
+  // state unconditionally, so the recompute is a hard precondition. If it throws
+  // (a real DB failure), let it propagate and abort startup rather than serve
+  // stale states for the process lifetime. The recompute is atomic and the marker
+  // is best-effort (see the module), so an aborted boot safely retries and a
+  // marker-write hiccup alone never blocks startup. See
+  // migrations/backfill-epic-states.ts.
+  {
+    const r = backfillEpicStates({ db, dataDir });
+    if (r.ran && r.updated > 0) {
+      console.log(`[migration] backfill-epic-states: corrected ${r.updated} epic state(s).`);
+    }
   }
 
   {
@@ -5208,6 +5337,29 @@ function initDb(dataDir: string): void {
     getKanbanCards: db.prepare(
       'SELECT * FROM kanban_cards WHERE board_id = ? ORDER BY position ASC',
     ),
+    // Title dedup on card create. Uses the kanban_title_norm expression index to
+    // match on the Unicode-folded title, returning at most one row — instead of
+    // materializing every board card into JS and scanning in-process. The caller
+    // passes normalizeKanbanTitle(title) so both sides fold identically.
+    findKanbanCardByBoardAndTitle: db.prepare(
+      `SELECT * FROM kanban_cards
+         WHERE board_id = ? AND kanban_title_norm(title) = ?
+         ORDER BY position ASC
+         LIMIT 1`,
+    ),
+    // Read + write the precomputed board label facet cache. The read path uses
+    // getBoardLabelFacets (a single PK lookup on kanban_boards, O(1)); the
+    // card-scanning DISTINCT below only runs on the rare lazy recompute when the
+    // trigger-maintained dirty flag is set.
+    getBoardLabelFacets: db.prepare(
+      'SELECT label_facets, label_facets_dirty FROM kanban_boards WHERE id = ?',
+    ),
+    setBoardLabelFacets: db.prepare(
+      'UPDATE kanban_boards SET label_facets = ?, label_facets_dirty = 0 WHERE id = ?',
+    ),
+    getDistinctCardLabelsByBoard: db.prepare(
+      "SELECT DISTINCT labels FROM kanban_cards WHERE board_id = ? AND labels IS NOT NULL AND labels != ''",
+    ),
     getKanbanCardsByColumn: db.prepare(
       'SELECT * FROM kanban_cards WHERE column_id = ? ORDER BY position ASC',
     ),
@@ -5262,18 +5414,22 @@ function initDb(dataDir: string): void {
           SET source_type = ?, source_id = ?, source_meta = ?, updated_at = datetime('now')
         WHERE id = ?`,
     ),
-    getLinkedSupportTicketsForBoard: db.prepare(
+    // Linked-ticket lookup scoped to a specific set of card ids (passed as a
+    // JSON array), so serializing a page — or a single card — costs O(cards
+    // serialized) via the kanban_cards PK, not a board-wide scan. The JSON array
+    // is bound to both UNION branches.
+    getLinkedSupportTicketsForCardIds: db.prepare(
       `SELECT c.id AS card_id, st.*
          FROM kanban_cards c
          JOIN support_tickets st
            ON st.id = COALESCE(c.support_ticket_id, c.customer_report_id)
-        WHERE c.board_id = ?
+        WHERE c.id IN (SELECT value FROM json_each(?))
        UNION ALL
        SELECT c.id AS card_id, st.*
          FROM kanban_cards c
          JOIN support_tickets st
            ON st.converted_card_id = c.id
-        WHERE c.board_id = ?
+        WHERE c.id IN (SELECT value FROM json_each(?))
           AND c.support_ticket_id IS NULL
           AND c.customer_report_id IS NULL`,
     ),
@@ -5391,6 +5547,29 @@ function initDb(dataDir: string): void {
        JOIN kanban_cards blocked ON b.card_id = blocked.id
        JOIN kanban_columns blocked_col ON blocked.column_id = blocked_col.id
        WHERE blocker.board_id = ?`,
+    ),
+    // Same blocker enrichment scoped to an explicit set of card ids (JSON array):
+    // only edges that touch a card on the page — as the blocked card (its
+    // `blockers`) or the blocking card (its `blocks`). Bound by the page's edges,
+    // not every blocker on the board. The id array is bound to both IN clauses.
+    getBlockersForCardIds: db.prepare(
+      `SELECT b.card_id AS card_id,
+              b.blocked_by_card_id AS blocked_by_card_id,
+              blocker.id AS blocker_id,
+              blocker.title AS blocker_title,
+              blocker.column_id AS blocker_column_id,
+              blocker_col.name AS blocker_column_name,
+              blocked.id AS blocked_id,
+              blocked.title AS blocked_title,
+              blocked.column_id AS blocked_column_id,
+              blocked_col.name AS blocked_column_name
+       FROM kanban_card_blockers b
+       JOIN kanban_cards blocker ON b.blocked_by_card_id = blocker.id
+       JOIN kanban_columns blocker_col ON blocker.column_id = blocker_col.id
+       JOIN kanban_cards blocked ON b.card_id = blocked.id
+       JOIN kanban_columns blocked_col ON blocked.column_id = blocked_col.id
+       WHERE b.card_id IN (SELECT value FROM json_each(?))
+          OR b.blocked_by_card_id IN (SELECT value FROM json_each(?))`,
     ),
     getBlockersForCard: db.prepare(
       'SELECT blocked_by_card_id FROM kanban_card_blockers WHERE card_id = ?',
@@ -6580,18 +6759,18 @@ function initDb(dataDir: string): void {
     pruneStaleFinalizeKickoffClaims: db.prepare(
       `DELETE FROM finalize_kickoff_claims WHERE created_at < ?`,
     ),
-    // Latest finalize run per (board-scoped) session. Returns one row per
-    // distinct `session_id` that any card on `boardId` references *and*
-    // that has finalize history. Used by `GET /api/projects/:id/board` to
-    // fold the per-card badge state into the board payload — eliminates
-    // the O(session-linked cards) per-card GET storm the v0 surface had
-    // (PR #1169 reviewer feedback).
+    // Latest finalize run per session for an explicit set of session ids (JSON
+    // array). Used by `GET /api/projects/:id/board` to fold per-card badge state
+    // into the payload without a per-card GET storm (PR #1169). Scoped to the
+    // sessions on the cards being enriched (the page) via the
+    // finalize_runs.session_id index — O(page), not a board-wide
+    // `DISTINCT session_id FROM kanban_cards` scan.
     //
-    // Window-function picker — same tiebreak (started_at DESC, id DESC)
-    // as `getLatestFinalizeRunForSession`, so single-card and board
-    // queries agree on which run is "latest". `ROW_NUMBER()` is SQLite
-    // 3.25+; `better-sqlite3` ships well above that floor.
-    listLatestFinalizeRunsForBoard: db.prepare(
+    // Window-function picker — same tiebreak (started_at DESC, id DESC) as
+    // `getLatestFinalizeRunForSession`, so single-card and board queries agree on
+    // which run is "latest". `ROW_NUMBER()` is SQLite 3.25+; `better-sqlite3`
+    // ships well above that floor.
+    listLatestFinalizeRunsForSessionIds: db.prepare(
       `SELECT fr.id,
               fr.card_id,
               fr.session_id,
@@ -6623,12 +6802,7 @@ function initDb(dataDir: string): void {
                     ORDER BY started_at DESC, id DESC
                   ) AS rn
              FROM finalize_runs
-            WHERE session_id IN (
-              SELECT DISTINCT session_id
-                FROM kanban_cards
-               WHERE board_id = ?
-                 AND session_id IS NOT NULL
-            )
+            WHERE session_id IN (SELECT value FROM json_each(?))
          ) fr
         WHERE fr.rn = 1`,
     ),

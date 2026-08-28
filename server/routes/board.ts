@@ -23,7 +23,7 @@ import type {
   SessionReplayRow,
   SupportTicketRow,
 } from '../types.js';
-import { findCycle, loadBoardBlockers, isSystemLockedColumnName } from '../kanban-blockers.js';
+import { findCycle, loadBlockersForCards, isSystemLockedColumnName } from '../kanban-blockers.js';
 import {
   blocksPrematureDoneMove,
   PREMATURE_DONE_ERROR,
@@ -71,7 +71,12 @@ import { setSessionOwner, resolveOwnerUserId, getSessionOwner } from '../session
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { recomputeSessionState } from '../session-state.js';
 import { requestReleaseGateSweep } from '../deploy/release-gate-ticker.js';
-import { epicsWithComputedState, recomputeEpicState } from '../epic-state.js';
+import {
+  epicsWithComputedState,
+  recomputeEpicState,
+  recomputeEpicStatesForBoard,
+} from '../epic-state.js';
+import { normalizeKanbanTitle } from '../kanban-title.js';
 import { disableAutonomousForEmptyEpic } from '../kanban-epic-autonomous-empty.js';
 import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from '../session-ship.js';
 import { assignedFinalizeAutomationLevel } from '../finalize/automation.js';
@@ -166,7 +171,7 @@ function resolveTemplateEpicId(
   return epic.id;
 }
 
-function collectAvailableCardLabels(cards: KanbanCardRow[]): string[] {
+function collectAvailableCardLabels(cards: Pick<KanbanCardRow, 'labels'>[]): string[] {
   const labels = new Set<string>();
   for (const card of cards) {
     for (const raw of String(card.labels || '').split(',')) {
@@ -175,6 +180,39 @@ function collectAvailableCardLabels(cards: KanbanCardRow[]): string[] {
     }
   }
   return [...labels].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Resolve the board's distinct label facet list from its precomputed cache.
+ *
+ * The cache lives on kanban_boards (label_facets JSON + label_facets_dirty). A
+ * trigger flips the dirty flag on any card write, so:
+ *  - clean board  → one PK lookup, parse cached JSON. O(1), no card scan.
+ *  - dirty board  → recompute the DISTINCT label set once (the only card-scanning
+ *    step, bounded to just-after-a-write), cache it, clear the flag.
+ *
+ * This keeps the hot board-read path independent of card count while staying
+ * correct: labels a card no longer carries disappear on the next recompute.
+ */
+function resolveBoardLabelFacets(stmts: Stmts, boardId: string): string[] {
+  const row = stmts.getBoardLabelFacets.get(boardId) as
+    | { label_facets: string | null; label_facets_dirty: number }
+    | undefined;
+  if (row && row.label_facets_dirty === 0 && row.label_facets != null) {
+    try {
+      const parsed = JSON.parse(row.label_facets);
+      if (Array.isArray(parsed)) return parsed as string[];
+    } catch {
+      // Corrupt cache — fall through and recompute.
+    }
+  }
+  const labelRows = stmts.getDistinctCardLabelsByBoard.all(boardId) as Pick<
+    KanbanCardRow,
+    'labels'
+  >[];
+  const facets = collectAvailableCardLabels(labelRows);
+  stmts.setBoardLabelFacets.run(JSON.stringify(facets), boardId);
+  return facets;
 }
 
 function defaultPhaseAutonomousModel(): string | null {
@@ -280,9 +318,18 @@ interface EnrichedCard extends SerializedKanbanCard {
  * has a session_id or no session has finalize history. Cheap — one
  * indexed window-function query per board fetch.
  */
-function loadBoardFinalizeRuns(stmts: Stmts, boardId: string): Map<string, FinalizeRunRow> {
-  const rows = stmts.listLatestFinalizeRunsForBoard.all(boardId) as FinalizeRunRow[];
+function loadFinalizeRunsForCards(
+  stmts: Stmts,
+  cards: Pick<KanbanCardRow, 'session_id'>[],
+): Map<string, FinalizeRunRow> {
   const out = new Map<string, FinalizeRunRow>();
+  // Scope the latest-run lookup to just the sessions on the cards being enriched
+  // (the page), not every session on the board — O(page), not O(board cards).
+  const sessionIds = [...new Set(cards.map((c) => c.session_id).filter(Boolean) as string[])];
+  if (sessionIds.length === 0) return out;
+  const rows = stmts.listLatestFinalizeRunsForSessionIds.all(
+    JSON.stringify(sessionIds),
+  ) as FinalizeRunRow[];
   for (const row of rows) {
     if (row.session_id) out.set(row.session_id, row);
   }
@@ -299,19 +346,24 @@ function loadBoardFinalizeRuns(stmts: Stmts, boardId: string): Map<string, Final
 function loadLinkedSupportTicketsForCards(
   req: Request,
   stmts: Stmts,
-  boardId: string,
+  cards: Pick<KanbanCardRow, 'id'>[],
 ): Map<string, LinkedSupportTicketMetadata> {
+  const out = new Map<string, LinkedSupportTicketMetadata>();
+  if (cards.length === 0) return out;
+  // Scope the linked-ticket lookup to exactly the cards being serialized (the
+  // page, or a single card on a mutation), not every card on the board — the old
+  // board-wide UNION made even one-card serialization O(board size).
   const statement = (
     stmts as Stmts & {
-      getLinkedSupportTicketsForBoard?: {
-        all?: (boardId: string, fallbackBoardId: string) => unknown[];
+      getLinkedSupportTicketsForCardIds?: {
+        all?: (idsJson: string, idsJson2: string) => unknown[];
       };
     }
-  ).getLinkedSupportTicketsForBoard;
-  if (!statement?.all) return new Map();
-  const rows = statement.all(boardId, boardId) as LinkedSupportTicketRow[];
+  ).getLinkedSupportTicketsForCardIds;
+  if (!statement?.all) return out;
+  const idsJson = JSON.stringify(cards.map((c) => c.id));
+  const rows = statement.all(idsJson, idsJson) as LinkedSupportTicketRow[];
   const canRead = canReadReporterEmail(req);
-  const out = new Map<string, LinkedSupportTicketMetadata>();
   for (const row of rows) {
     if (!out.has(row.card_id)) {
       out.set(row.card_id, linkedSupportTicketMetadata(row, { canReadReporterEmail: canRead }));
@@ -326,7 +378,7 @@ export function serializeCardsForRequest(
   boardId: string,
   cards: KanbanCardRow[],
 ): SerializedKanbanCard[] {
-  const linkedByCardId = loadLinkedSupportTicketsForCards(req, stmts, boardId);
+  const linkedByCardId = loadLinkedSupportTicketsForCards(req, stmts, cards);
   return cards.map((card) => {
     const linked = linkedByCardId.get(card.id) ?? null;
     const linkedId = linked?.id ?? null;
@@ -357,8 +409,10 @@ function enrichCards(
   boardId: string,
   cards: KanbanCardRow[],
 ): EnrichedCard[] {
-  const index = loadBoardBlockers(stmts, boardId);
-  const finalizeRuns = loadBoardFinalizeRuns(stmts, boardId);
+  // Scope blocker enrichment to the cards being serialized (the page), matching
+  // the support-ticket and finalize lookups — no board-wide blocker load.
+  const index = loadBlockersForCards(stmts, cards);
+  const finalizeRuns = loadFinalizeRunsForCards(stmts, cards);
   return serializeCardsForRequest(req, stmts, boardId, cards).map((c) => ({
     ...c,
     blockers: index.blockersByCard.get(c.id) ?? [],
@@ -403,11 +457,12 @@ function fetchColumnCardPage(
 }
 
 /** Per-column total card count, keyed by column id. Used for the board `counts` map. */
-function loadColumnCounts(stmts: Stmts, columns: KanbanColumnRow[]): Record<string, number> {
+function loadColumnCounts(columns: KanbanColumnRow[]): Record<string, number> {
+  // card_count is a trigger-maintained running total on each column row, so this
+  // reads it straight off the already-loaded columns — no per-column COUNT scan.
   const counts: Record<string, number> = {};
   for (const col of columns) {
-    const row = stmts.countKanbanCardsByColumn.get(col.id) as { n: number } | undefined;
-    counts[col.id] = row?.n ?? 0;
+    counts[col.id] = col.card_count ?? 0;
   }
   return counts;
 }
@@ -545,13 +600,22 @@ function createSpikeCardForSpecItem(
   return (stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined) ?? null;
 }
 
-export function getOrCreateBoard(stmts: Stmts, projectId: string): BoardData {
+export function getOrCreateBoard(
+  stmts: Stmts,
+  projectId: string,
+  opts: { includeCards?: boolean } = {},
+): BoardData {
+  // The paginated (?limit) GET /board path fetches cards per-column instead, so
+  // it opts out of the full-board card load (getKanbanCards.all) that would
+  // otherwise materialize every row on the board. Defaults to true so every
+  // existing caller is unaffected.
+  const includeCards = opts.includeCards !== false;
   let board = stmts.getKanbanBoard.get(projectId) as KanbanBoardRow | undefined;
   if (board) {
     return {
       board,
       columns: stmts.getKanbanColumns.all(board.id) as KanbanColumnRow[],
-      cards: stmts.getKanbanCards.all(board.id) as KanbanCardRow[],
+      cards: includeCards ? (stmts.getKanbanCards.all(board.id) as KanbanCardRow[]) : [],
       epics: stmts.getKanbanEpics.all(board.id) as KanbanEpicRow[],
       phases: stmts.getKanbanPhases.all(board.id) as KanbanPhaseRow[],
       specItems: stmts.getKanbanSpecItems.all(board.id) as KanbanEpicSpecItemRow[],
@@ -626,13 +690,19 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.get('/api/projects/:projectId/board', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    const data = getOrCreateBoard(stmts, req.params.projectId as string);
-    data.epics = epicsWithComputedState(data.epics, data.cards, data.columns);
-    const counts = loadColumnCounts(stmts, data.columns);
+    const paginated = req.query.limit !== undefined;
+    // Opt out of the full-board card load on the paginated path — it fetches
+    // cards per column below and derives epic state / label facets from thin
+    // column projections instead of materializing every row on the board.
+    const data = getOrCreateBoard(stmts, req.params.projectId as string, {
+      includeCards: !paginated,
+    });
+    const counts = loadColumnCounts(data.columns);
 
     let cards: KanbanCardRow[];
     let cursors: Record<string, string | null> | undefined;
-    if (req.query.limit !== undefined) {
+    let availableLabels: string[];
+    if (paginated) {
       const limit = clampPageLimit(req.query.limit);
       cards = [];
       cursors = {};
@@ -641,8 +711,20 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         cards.push(...page.cards);
         cursors[col.id] = page.nextCursor;
       }
+      // Epic state and label facets are read from precomputed, write-maintained
+      // stores instead of being recomputed from the cards table — so this path
+      // does NO work proportional to card count:
+      //  - epic state: kanban_epics.state, kept current by recomputeEpicState on
+      //    every card and column mutation. getKanbanEpics already returns it, so
+      //    data.epics is used as-is (O(epics)).
+      //  - label facets: the board's cached distinct-label list, invalidated by a
+      //    trigger on card writes and recomputed lazily only when dirty
+      //    (resolveBoardLabelFacets — a single PK lookup in the common case).
+      availableLabels = resolveBoardLabelFacets(stmts, data.board.id);
     } else {
       cards = data.cards;
+      data.epics = epicsWithComputedState(data.epics, data.cards, data.columns);
+      availableLabels = collectAvailableCardLabels(data.cards);
     }
 
     // Annotate each card with its blocker graph and latest finalize run. Both
@@ -666,7 +748,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       counts,
       assignableUsers,
       cardTemplates,
-      availableLabels: collectAvailableCardLabels(data.cards),
+      availableLabels,
     };
     if (cursors) body.cursors = cursors;
     res.json(body);
@@ -691,7 +773,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         if (!cursor) return res.status(400).json({ error: 'Invalid cursor' });
       }
       const limit = clampPageLimit(req.query.limit);
-      const total = (stmts.countKanbanCardsByColumn.get(column.id) as { n: number }).n;
+      // Trigger-maintained running total on the column row — no per-request COUNT.
+      const total = column.card_count ?? 0;
       const { cards: rows, nextCursor } = fetchColumnCardPage(stmts, column.id, limit, cursor);
       return res.json({ cards: enrichCards(req, stmts, board.id, rows), nextCursor, total });
     },
@@ -747,7 +830,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     }
     const nextPosition = position ?? existing.position;
     const nextColor = color !== undefined ? color || null : existing.color;
+    const nameChanged = nextName.trim().toLowerCase() !== existing.name.trim().toLowerCase();
     stmts.updateKanbanColumn.run(nextName, nextPosition, nextColor, req.params.columnId);
+    // Epic state is classified by column name and read from the persisted
+    // kanban_epics.state, so a rename must refresh it (a column becoming/ceasing
+    // to be "Done"/"Cancelled" changes every epic holding cards there).
+    if (nameChanged) recomputeEpicStatesForBoard(stmts, existing.board_id);
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json({ ok: true });
   });
@@ -821,7 +909,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.get('/api/projects/:projectId/board/cards', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+    // This endpoint's contract is the full card list; load it once (getOrCreateBoard
+    // would otherwise load every card a second time just to discard it).
+    const { board } = getOrCreateBoard(stmts, req.params.projectId as string, {
+      includeCards: false,
+    });
     const cards = stmts.getKanbanCards.all(board.id) as KanbanCardRow[];
     res.json(serializeCardsForRequest(req, stmts, board.id, cards));
   });
@@ -892,10 +984,15 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       return res.status(404).json({ error: 'Column not found on this project board' });
     }
 
-    // Deduplication: check for existing card with same title (case-insensitive) on this board
-    const allBoardCards = stmts.getKanbanCards.all(board.id) as KanbanCardRow[];
-    const titleLower = title.toLowerCase().trim();
-    const duplicate = allBoardCards.find((c) => c.title.toLowerCase().trim() === titleLower);
+    // Deduplication: check for existing card with same title (case-insensitive) on
+    // this board. Targeted query instead of loading the whole board into JS. The
+    // param uses the same normalizer registered as the SQL kanban_title_norm
+    // function backing the expression index, so the fold is Unicode-aware on both
+    // sides (JS toLowerCase, not SQLite's ASCII-only lower()).
+    const normalizedTitle = normalizeKanbanTitle(title);
+    const duplicate = stmts.findKanbanCardByBoardAndTitle.get(board.id, normalizedTitle) as
+      | KanbanCardRow
+      | undefined;
     if (duplicate) {
       // Return the existing card instead of creating a duplicate. Signal the
       // dedup so callers can tell they got an existing card back rather than a
@@ -1774,8 +1871,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   );
 
   router.get('/api/projects/:projectId/board/epics', (req: Request, res: Response) => {
-    const data = getOrCreateBoard(stmts, req.params.projectId as string);
-    res.json(epicsWithComputedState(data.epics, data.cards, data.columns));
+    // Epic state is persisted on kanban_epics.state (kept current by
+    // recomputeEpicState on every card and column mutation), so return the epics
+    // as stored — no card scan, work bounded by epic count.
+    const data = getOrCreateBoard(stmts, req.params.projectId as string, { includeCards: false });
+    res.json(data.epics);
   });
 
   // Pull requests related to an epic's feature branch: PRs that merge INTO it

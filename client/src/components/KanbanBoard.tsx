@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import {
   Plus,
   GripVertical,
@@ -64,9 +64,10 @@ import {
   writeCollapsedColumnIds,
   pruneCollapsedColumnIds,
 } from '../utils/kanbanColumnCollapse';
-import { collectDistinctLabels, cardMatchesLabelFilter } from '../utils/kanbanLabels';
-import { cardMatchesUserFilter, usernameForUserId } from '../utils/kanbanUserFilter';
-import { cardMatchesEpicFilter } from '../utils/epics';
+import { collectDistinctLabels } from '../utils/kanbanLabels';
+import { usernameForUserId } from '../utils/kanbanUserFilter';
+import { selectVisibleCardsByColumn } from '../utils/kanbanBoardCards';
+import { runCoalescedReconcile } from '../utils/coalescedReconcile';
 import { MarkdownContent } from './MarkdownRenderer';
 import FinalizeCardBadge from './finalize/CardBadge';
 import CardContextMenu from './CardContextMenu';
@@ -186,6 +187,9 @@ function CardAvatar({ name, active }: any) {
  * scrolls each column to its bottom.
  */
 const PAGE_SIZE = 50;
+// Max coalesced re-run passes for a single reconcileBoard invocation. Bounds the
+// re-fetch/re-render loop so sustained board activity can't spin it forever.
+const MAX_RECONCILE_PASSES = 3;
 
 /**
  * An invisible sentinel rendered at the bottom of a column's scroll container.
@@ -227,7 +231,10 @@ function ColumnLoadMoreSentinel({ columnId, onLoadMore }: any) {
  * that follows the cursor during a drag. `overlay` lifts it with a shadow/scale
  * so the dragged card visibly "pops" off the board.
  */
-function KanbanCard({
+// memo: a board render re-renders every mounted card unless its props are
+// unchanged. With the parent's filtered card lists memoized, an unrelated
+// kanban_update no longer forces every card to re-render its subtree.
+const KanbanCard = memo(function KanbanCard({
   card,
   board,
   epics,
@@ -427,7 +434,7 @@ function KanbanCard({
       </div>
     </div>
   );
-}
+});
 
 /**
  * One sortable card. `useSortable` provides the transform/transition that makes
@@ -436,7 +443,7 @@ function KanbanCard({
  * PointerSensor's distance activation (see KanbanBoard) means a plain click
  * still falls through to `onOpen` instead of starting a drag.
  */
-function SortableCard({
+const SortableCard = memo(function SortableCard({
   card,
   board,
   epics,
@@ -495,7 +502,7 @@ function SortableCard({
       />
     </div>
   );
-}
+});
 
 /** Floating toolbar for bulk actions on selected cards. */
 function KanbanBulkActionBar({
@@ -839,6 +846,10 @@ export default function KanbanBoard({
   const inflightRef = useRef<Set<any>>(new Set());
   const reconcileInFlightRef = useRef<Promise<any> | null>(null);
   const reconcileQueuedRef = useRef(false);
+  // Holds the latest reconcileBoard so a scheduled follow-up (see the pass-cap
+  // handling below) calls the current one without a stale closure or a
+  // reference-before-init.
+  const reconcileBoardRef = useRef<null | (() => Promise<any[] | undefined>)>(null);
   useEffect(() => {
     cardsRef.current = cards;
   }, [cards]);
@@ -1132,48 +1143,53 @@ export default function KanbanBoard({
   // Returns the reconciled card array so callers can re-pick the open card.
   const reconcileBoard = useCallback(async () => {
     if (!projectId) return undefined;
-    if (reconcileInFlightRef.current) {
-      reconcileQueuedRef.current = true;
-      return reconcileInFlightRef.current;
-    }
-
-    const reconcile = async () => {
-      let latest: any[] | undefined;
-      do {
-        reconcileQueuedRef.current = false;
-        const preserve: Record<string, any> = {};
-        for (const c of cardsRef.current) {
-          preserve[c.column_id] = (preserve[c.column_id] || 0) + 1;
-        }
-        try {
-          const { data, allCards, paging } = await loadBoardPaged(preserve);
-          setBoard(data.board);
-          setColumns(data.columns);
-          setEpics(data.epics || []);
-          setCardTemplates(data.cardTemplates || []);
-          setServerAvailableLabels(
-            Array.isArray(data.availableLabels) ? data.availableLabels : null,
-          );
-          setColumnPaging(paging);
-          setCards(allCards);
-          onAssignableUsersChange?.(data.assignableUsers || []);
-          setError(null);
-          latest = allCards;
-        } catch (err: any) {
-          setError(err.message);
-        }
-      } while (reconcileQueuedRef.current);
-      return latest;
+    // One reload pass: fetch the current pages and push them into board state.
+    // Never throws — errors surface via setError so the reconcile loop keeps its
+    // coalescing/cap invariants. See utils/coalescedReconcile for the contract.
+    const reloadOnce = async (): Promise<any[] | undefined> => {
+      const preserve: Record<string, any> = {};
+      for (const c of cardsRef.current) {
+        preserve[c.column_id] = (preserve[c.column_id] || 0) + 1;
+      }
+      try {
+        const { data, allCards, paging } = await loadBoardPaged(preserve);
+        setBoard(data.board);
+        setColumns(data.columns);
+        setEpics(data.epics || []);
+        setCardTemplates(data.cardTemplates || []);
+        setServerAvailableLabels(Array.isArray(data.availableLabels) ? data.availableLabels : null);
+        setColumnPaging(paging);
+        setCards(allCards);
+        onAssignableUsersChange?.(data.assignableUsers || []);
+        setError(null);
+        return allCards;
+      } catch (err: any) {
+        setError(err.message);
+        return undefined;
+      }
     };
 
-    const request = reconcile();
-    reconcileInFlightRef.current = request;
-    try {
-      return await request;
-    } finally {
-      if (reconcileInFlightRef.current === request) reconcileInFlightRef.current = null;
-    }
+    return runCoalescedReconcile<any[]>(
+      { inFlight: reconcileInFlightRef, queued: reconcileQueuedRef },
+      {
+        maxPasses: MAX_RECONCILE_PASSES,
+        reloadOnce,
+        // Hand a still-queued refresh to a fresh reconcile once this one settles,
+        // so a cap-truncated burst never leaves the board stale. The macrotask
+        // hop paces the burst instead of spinning it.
+        scheduleFollowUp: () => {
+          setTimeout(() => {
+            void reconcileBoardRef.current?.();
+          }, 0);
+        },
+      },
+    );
   }, [projectId, loadBoardPaged, onAssignableUsersChange]);
+
+  // Keep the follow-up ref pointed at the current reconcileBoard.
+  useEffect(() => {
+    reconcileBoardRef.current = reconcileBoard;
+  }, [reconcileBoard]);
 
   const cardDetail = useKanbanCardDetail({
     projectId,
@@ -1463,31 +1479,47 @@ export default function KanbanBoard({
     return () => window.removeEventListener('keydown', onKey);
   }, [showSelectionUi, clearSelection]);
 
-  const cardsForColumn = (columnId: any) => {
-    const q = searchQuery.toLowerCase().trim();
-    return cards
-      .filter((c: any) => c.column_id === columnId)
-      .filter((c: any) => cardMatchesEpicFilter(c, selectedEpicIds))
-      .filter((c: any) => cardMatchesLabelFilter(c, selectedLabels))
-      .filter((c: any) => cardMatchesUserFilter(c, selectedUserIds))
-      .filter(
-        (c: any) =>
-          !q ||
-          c.title.toLowerCase().includes(q) ||
-          (c.description || '').toLowerCase().includes(q) ||
-          (c.labels || '').toLowerCase().includes(q) ||
-          (c.assignee || '').toLowerCase().includes(q),
-      )
-      .sort((a: any, b: any) => a.position - b.position);
-  };
+  // One filtered+sorted grouping of the board's cards per relevant change, shared
+  // by every column render and the selection-order computation. Replaces the old
+  // per-column re-filter that ran O(columns × cards) passes on every render.
+  const visibleCardsByColumn = useMemo(
+    () =>
+      selectVisibleCardsByColumn(cards, columns, {
+        searchQuery,
+        selectedEpicIds,
+        selectedLabels,
+        selectedUserIds,
+      }),
+    [cards, columns, searchQuery, selectedEpicIds, selectedLabels, selectedUserIds],
+  );
+
+  const cardsForColumn = useCallback(
+    (columnId: any) => visibleCardsByColumn.get(columnId) ?? [],
+    [visibleCardsByColumn],
+  );
+
+  // Stable per-column id arrays for SortableContext. dnd-kit re-derives its
+  // sortable index map whenever the `items` array identity changes, so handing it
+  // a fresh array every render (the old `colCards.map`) added overhead on every
+  // board render. These references now change only when the filtered cards do.
+  const visibleCardIdsByColumn = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const [colId, list] of visibleCardsByColumn) {
+      map.set(
+        colId,
+        list.map((c: any) => c.id),
+      );
+    }
+    return map;
+  }, [visibleCardsByColumn]);
 
   const orderedVisibleCardIds = useMemo(() => {
     const ids: string[] = [];
     for (const col of columns) {
-      for (const c of cardsForColumn(col.id)) ids.push(c.id);
+      for (const id of visibleCardIdsByColumn.get(col.id) ?? []) ids.push(id);
     }
     return ids;
-  }, [columns, cards, searchQuery, selectedEpicIds, selectedLabels, selectedUserIds]);
+  }, [columns, visibleCardIdsByColumn]);
 
   const handleToggleCardSelect = useCallback(
     (cardId: string, opts: { shiftKey?: boolean } = {}) => {
@@ -2089,7 +2121,7 @@ export default function KanbanBoard({
                 : columnTotal > loadedInColumn
                   ? `${loadedInColumn} of ${columnTotal}`
                   : String(columnTotal);
-              const colCardIds = colCards.map((c: any) => c.id);
+              const colCardIds = visibleCardIdsByColumn.get(col.id) ?? [];
               const columnFullySelected = isKanbanColumnFullySelected(selectedCardIds, colCardIds);
               const isCollapsed = collapsedColumnIds.has(col.id);
 

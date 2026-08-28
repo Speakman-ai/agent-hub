@@ -59,6 +59,43 @@ describe('Card creation deduplication', () => {
     expect(card2.id).toBe(card1.id);
   });
 
+  it('deduplicates across surrounding whitespace (trim normalization)', async () => {
+    // The dedup query normalizes with lower(trim(title)); a padded title must
+    // still collide with its trimmed twin.
+    const res1 = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .send({ title: 'Trim Test Card', columnId })
+      .expect(200);
+    const card1 = res1.body as { id: string };
+
+    const res2 = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .send({ title: '  trim test card  ', columnId })
+      .expect(200);
+    const card2 = res2.body as { id: string };
+
+    expect(card2.id).toBe(card1.id);
+  });
+
+  it('deduplicates non-ASCII titles case-insensitively (Unicode fold)', async () => {
+    // SQLite's built-in lower() folds ASCII only, so a naive lower(title)
+    // predicate would treat "Éclair" and "éclair" as distinct and create a
+    // duplicate. The dedup must fold the full Unicode range (JS toLowerCase).
+    const res1 = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .send({ title: 'Éclair Recipe', columnId })
+      .expect(200);
+    const card1 = res1.body as { id: string };
+
+    const res2 = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .send({ title: 'éclair recipe', columnId })
+      .expect(200);
+    const card2 = res2.body as { id: string };
+
+    expect(card2.id).toBe(card1.id);
+  });
+
   it('allows cards with different titles', async () => {
     const res1 = await request
       .post(`/api/projects/${projectId}/board/cards`)

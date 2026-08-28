@@ -40,6 +40,21 @@ export function recomputeEpicState(
   return state;
 }
 
+/**
+ * Recompute persisted state for every epic on a board. Epic state is classified
+ * by column *name* (done / cancelled / not-started), so a column rename, delete,
+ * or reorder can change an epic's state without any card moving. The board read
+ * path trusts the persisted kanban_epics.state, so column mutations must refresh
+ * it here. Bounded by epic count and runs only on rare column edits — never on
+ * the hot board-read path.
+ */
+export function recomputeEpicStatesForBoard(stmts: Stmts, boardId: string): void {
+  const epics = stmts.getKanbanEpics.all(boardId) as KanbanEpicRow[];
+  for (const epic of epics) {
+    recomputeEpicState(stmts, epic.id);
+  }
+}
+
 export function epicsWithComputedState(
   epics: KanbanEpicRow[],
   cards: Pick<KanbanCardRow, 'epic_id' | 'column_id'>[],
