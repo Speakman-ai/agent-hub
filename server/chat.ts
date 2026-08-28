@@ -48,6 +48,8 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig, removeStaleMcpConfigFile } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { isDevServerConfigured } from './dev-server-config.js';
+import { createUploadStore } from './upload-store.js';
+import { ensureLocalUpload } from './chat-image-staging.js';
 import type { SessionEnv, SessionEnvKind } from './session-env/session-env.js';
 import { sessionTurnUsesEnvOwnedWorktree } from './session-env/workflow-session-env.js';
 import { resolveSessionEnvAdapterForSession } from './session-env/resolve-session-adapter.js';
@@ -3760,31 +3762,32 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       if (images && images.length > 0) {
         try {
           const imgPaths: string[] = [];
+          // S3-backed hubs store uploads only in the artifacts bucket, never in
+          // the local uploads dir. ensureLocalUpload hydrates the bytes from the
+          // store on demand (and throws on a genuine miss / fetch failure) so
+          // attachments are no longer silently dropped on remote deployments.
+          const uploadStore = createUploadStore(config, uploadsDir);
           if (sessionEnv && envOwned) {
             const imgDirRel = '.agent-hub-images';
             await sessionEnv.worktreeIo.exec(`mkdir -p ${imgDirRel}`, { cwd: '.' });
             for (const img of images as unknown as ImageRef[]) {
-              const srcPath = path.join(uploadsDir, img.filename);
-              if (existsSync(srcPath)) {
-                const destRel = `${imgDirRel}/${img.filename}`;
-                // Stream host → guest. readFileSync + writeFile would put a zip
-                // on the Hub heap and in one vsock JSON frame, which OOMs / throws
-                // past the 8 MB cap and restarts the process.
-                await sessionEnv.worktreeIo.uploadFile(destRel, srcPath);
-                imgPaths.push(`${FIRECRACKER_GUEST_WORKSPACE}/${destRel}`);
-              }
+              const srcPath = await ensureLocalUpload(uploadStore, uploadsDir, img.filename);
+              const destRel = `${imgDirRel}/${img.filename}`;
+              // Stream host → guest. readFileSync + writeFile would put a zip
+              // on the Hub heap and in one vsock JSON frame, which OOMs / throws
+              // past the 8 MB cap and restarts the process.
+              await sessionEnv.worktreeIo.uploadFile(destRel, srcPath);
+              imgPaths.push(`${FIRECRACKER_GUEST_WORKSPACE}/${destRel}`);
             }
           } else {
             const imgCwd = session!.worktree_path || project.cwd;
             const imgDir = path.join(imgCwd, '.agent-hub-images');
             mkdirSync(imgDir, { recursive: true });
             for (const img of images as unknown as ImageRef[]) {
-              const srcPath = path.join(uploadsDir, img.filename);
-              if (existsSync(srcPath)) {
-                const destPath = path.join(imgDir, img.filename);
-                copyFileSync(srcPath, destPath);
-                imgPaths.push(destPath);
-              }
+              const srcPath = await ensureLocalUpload(uploadStore, uploadsDir, img.filename);
+              const destPath = path.join(imgDir, img.filename);
+              copyFileSync(srcPath, destPath);
+              imgPaths.push(destPath);
             }
           }
           if (imgPaths.length > 0) {

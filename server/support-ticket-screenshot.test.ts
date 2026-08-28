@@ -219,6 +219,7 @@ describe('persistSupportTicketScreenshot', () => {
     const uploadStore: UploadStore = {
       kind: 's3',
       put,
+      getBytes: vi.fn().mockResolvedValue(null),
       delete: vi.fn().mockResolvedValue(undefined),
       presignGet: vi.fn().mockResolvedValue('https://storage.test/signed'),
     };

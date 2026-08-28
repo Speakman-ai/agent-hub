@@ -7,7 +7,7 @@
  * ref stays `/uploads/<filename>` in both cases, so callers and persisted
  * markdown do not need to know which backend owns the bytes.
  */
-import { mkdir, rm, writeFile } from 'fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'fs/promises';
 import path from 'path';
 import type { RequestHandler } from 'express';
 import type { AppConfig } from './types.js';
@@ -18,13 +18,19 @@ export type UploadStorageKind = 'local' | 's3';
 export interface UploadStore {
   readonly kind: UploadStorageKind;
   put(filename: string, body: Buffer, contentType: string): Promise<void>;
+  /**
+   * Read an upload's bytes back, or `null` when the file does not exist in this
+   * backend. Backend/transport errors (S3 network/permission failures) throw so
+   * callers can surface them rather than silently dropping the attachment.
+   */
+  getBytes(filename: string): Promise<Buffer | null>;
   delete(filename: string): Promise<void>;
   presignGet(filename: string): Promise<string | null>;
 }
 
 const SAFE_FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-function assertSafeFilename(filename: string): void {
+export function assertSafeFilename(filename: string): void {
   if (!SAFE_FILENAME_RE.test(filename) || filename.includes('..')) {
     throw new Error(`invalid upload filename: ${filename}`);
   }
@@ -51,6 +57,15 @@ export class LocalUploadStore implements UploadStore {
     await writeFile(full, body);
   }
 
+  async getBytes(filename: string): Promise<Buffer | null> {
+    try {
+      return await readFile(this.resolve(filename));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw err;
+    }
+  }
+
   async delete(filename: string): Promise<void> {
     await rm(this.resolve(filename), { force: true });
   }
@@ -71,6 +86,14 @@ export class ObjectUploadStore implements UploadStore {
 
   async put(filename: string, body: Buffer, contentType: string): Promise<void> {
     await this.objectStore.put(buildUploadKey(filename), body, contentType);
+  }
+
+  async getBytes(filename: string): Promise<Buffer | null> {
+    // A deployment may have enabled S3 after this ref was written locally, so
+    // prefer a same-named legacy local file before hitting the object store.
+    const legacy = await this.legacyLocalStore.getBytes(filename);
+    if (legacy) return legacy;
+    return this.objectStore.getBuffer(buildUploadKey(filename));
   }
 
   async delete(filename: string): Promise<void> {
