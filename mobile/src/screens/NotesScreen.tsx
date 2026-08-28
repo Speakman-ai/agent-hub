@@ -11,16 +11,51 @@ import {
   KeyboardAvoidingView,
   Platform,
   Modal,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Markdown from 'react-native-markdown-display';
+import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
+import { getServerBaseUrl } from '../utils/config';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { SidebarContext } from '../context/SidebarContext';
 import { listMarkdownSections, listMarkdownLineItems } from '@shared/utils/markdownSections';
 import { pickTodoColumn } from '@shared/utils/pickTodoColumn';
+import {
+  buildAttachmentMarkdown,
+  insertAtSelection,
+  transformRange,
+} from '@shared/utils/noteAttachments';
+
+// Resolve a renderable URI for a markdown image src. Absolute URLs and data
+// URLs pass through; server-hosted `/uploads/...` paths resolve against the
+// server root so uploaded note images load on-device.
+function resolveMobileMediaUrl(src: any) {
+  if (!src || typeof src !== 'string') return src;
+  if (/^https?:\/\//i.test(src) || src.startsWith('data:')) return src;
+  if (src.startsWith('/')) return `${getServerBaseUrl()}${src}`;
+  return src;
+}
+
+// Custom markdown image rule — the default renderer can't resolve relative
+// `/uploads/...` srcs, so we resolve and render a network <Image>.
+const markdownRules = {
+  image: (node: any) => {
+    const uri = resolveMobileMediaUrl(node?.attributes?.src);
+    if (!uri) return null;
+    return (
+      <Image
+        key={node.key}
+        source={{ uri }}
+        style={{ width: '100%', height: 220, borderRadius: 8, marginVertical: 8 }}
+        resizeMode="contain"
+      />
+    );
+  },
+};
 const mdStyles = {
   body: { color: colors.gray200, fontSize: 14 },
   paragraph: { marginTop: 0, marginBottom: 8 },
@@ -63,6 +98,53 @@ function cleanSnippet(snippet: any) {
   if (!snippet) return '';
   return String(snippet).replace(/<\/?(mark|b)>/gi, '');
 }
+
+export interface PendingAttach {
+  range: { start: number; end: number };
+  session: number;
+}
+
+/**
+ * Re-anchor a pending attachment across a content edit so its insertion point
+ * survives edits made while the picker/upload awaits are pending (see
+ * transformRange). Pure so the mobile attach flow is unit-testable.
+ */
+export function nextPendingRangeOnEdit(
+  pending: PendingAttach | null,
+  oldText: string,
+  newText: string,
+): PendingAttach | null {
+  if (!pending) return pending;
+  return { ...pending, range: transformRange(pending.range, oldText || '', newText || '') };
+}
+
+/**
+ * Decide how a completed upload applies to the current buffer. Returns null when
+ * the edit session changed since the attach began (user canceled the editor or
+ * switched/created a note) — the attachment is dropped rather than written into
+ * the wrong buffer. Otherwise inserts the snippet at the pending (edit-tracked)
+ * range, falling back to end-of-content when there is no live pending anchor.
+ * Pure so the mobile attach flow is unit-testable without the native pickers.
+ */
+export function computeAttachInsertion(opts: {
+  session: number;
+  currentSession: number;
+  pending: PendingAttach | null;
+  baseText: string;
+  snippet: string;
+}): { text: string; cursor: number } | null {
+  const { session, currentSession, pending, baseText, snippet } = opts;
+  if (currentSession !== session) return null; // session changed → reject
+  const base = baseText || '';
+  const r =
+    pending && pending.session === session
+      ? pending.range
+      : { start: base.length, end: base.length };
+  const start = Math.min(r.start, base.length);
+  const end = Math.min(r.end, base.length);
+  return insertAtSelection(base, snippet, start, end);
+}
+
 export default function NotesScreen({ route }: any) {
   const { projects } = useApp();
   const { openSidebar } = React.useContext(SidebarContext);
@@ -83,6 +165,43 @@ export default function NotesScreen({ route }: any) {
   // Edit form state
   const [editTitle, setEditTitle] = useState('');
   const [editContent, setEditContent] = useState('');
+  const [attaching, setAttaching] = useState(false);
+  // Caret position in the content field so an inserted image lands where the
+  // user was typing. Reset whenever the edit buffer changes (edit/create/select)
+  // so it never carries a stale offset from a previously edited note, and
+  // defaults to end-of-content when the field was never focused.
+  const contentSelectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
+  // Mutex guarding handleAttachImage against re-entry — `attaching` state flips
+  // asynchronously and only after the picker resolves, so a ref is what actually
+  // prevents two overlapping attach operations.
+  const attachingRef = useRef(false);
+  // Monotonic edit-session token. Bumped whenever the edit buffer's identity
+  // changes (edit, create, select, save, cancel, back). An attach captures the
+  // token before its awaits and discards its completion if the token moved — so
+  // an upload that resolves after the user switched/closed the note never writes
+  // into the wrong buffer.
+  const editSessionRef = useRef(0);
+  // The in-flight attachment's insertion range + the session it belongs to.
+  // Transformed on every content change (transformRange) so it survives edits
+  // the user makes while the picker/upload awaits are pending.
+  const pendingAttachRef = useRef<PendingAttach | null>(null);
+  const resetContentSelection = (content: string) => {
+    const end = (content || '').length;
+    contentSelectionRef.current = { start: end, end };
+  };
+  const bumpEditSession = () => {
+    editSessionRef.current += 1;
+    // A pending attachment belongs to the session that started it; once the
+    // buffer identity changes its captured range is meaningless.
+    pendingAttachRef.current = null;
+  };
+  // Content edits go through here so a pending attachment's anchor tracks them.
+  const handleEditContentChange = (next: string) => {
+    setEditContent((prev: any) => {
+      pendingAttachRef.current = nextPendingRangeOnEdit(pendingAttachRef.current, prev || '', next);
+      return next;
+    });
+  };
   // Debounce search (300ms) to match web behavior
   const searchTimeout = useRef<any>(null);
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -111,6 +230,7 @@ export default function NotesScreen({ route }: any) {
     loadNotes();
   }, [loadNotes]);
   const handleSelectNote = async (note: any) => {
+    bumpEditSession();
     try {
       const full = await api.getNote(projectId, note.id);
       setSelectedNote(full);
@@ -123,14 +243,18 @@ export default function NotesScreen({ route }: any) {
   };
   const handleEdit = () => {
     if (!selectedNote) return;
+    bumpEditSession();
     setEditTitle(selectedNote.title || '');
     setEditContent(selectedNote.content || '');
+    resetContentSelection(selectedNote.content || '');
     setEditing(true);
     setCreating(false);
   };
   const handleCreate = () => {
+    bumpEditSession();
     setEditTitle('');
     setEditContent('');
+    resetContentSelection('');
     setCreating(true);
     setEditing(false);
     setSelectedNote(null);
@@ -140,6 +264,7 @@ export default function NotesScreen({ route }: any) {
       Alert.alert('Error', 'Title is required');
       return;
     }
+    bumpEditSession();
     try {
       if (creating) {
         const note = await api.createNote(projectId, {
@@ -278,7 +403,78 @@ export default function NotesScreen({ route }: any) {
       setTicketing(false);
     }
   };
+  const handleAttachImage = async () => {
+    if (attachingRef.current) return;
+    attachingRef.current = true;
+    // Snapshot the insertion RANGE NOW, before the permission / picker / upload
+    // awaits — the content field stays editable across them, so reading the
+    // selection afterwards could be stale, belong to a different note, or still
+    // be the initial {0,0} of an unfocused field. Keep both endpoints so the
+    // insert REPLACES a selected range like a normal paste.
+    const sel = contentSelectionRef.current;
+    const range =
+      sel && typeof sel.start === 'number'
+        ? {
+            start: Math.min(sel.start, sel.end ?? sel.start),
+            end: Math.max(sel.start, sel.end ?? sel.start),
+          }
+        : { start: (editContent || '').length, end: (editContent || '').length };
+    // Bind this upload to the edit session that started it; discard on mismatch.
+    const session = editSessionRef.current;
+    // Register the pending anchor so content edits during the awaits transform
+    // it (see handleEditContentChange) instead of leaving a stale offset.
+    pendingAttachRef.current = { range, session };
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Allow photo access to attach an image.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.9,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      setAttaching(true);
+      const asset = result.assets[0];
+      const name = asset.fileName || `image-${Date.now()}.jpg`;
+      const type = asset.mimeType || 'image/jpeg';
+      const res = await api.uploadFile({ uri: asset.uri, name, type, size: asset.fileSize });
+      if (!res?.url) throw new Error('Upload returned no URL');
+      // The picker/upload awaits may have outlived the edit session (user
+      // canceled the editor or opened/created another note). Dropping here keeps
+      // the image out of the wrong buffer.
+      if (editSessionRef.current !== session) return;
+      const snippet = buildAttachmentMarkdown({ name, url: res.url, contentType: type });
+      setEditContent((prev: any) => {
+        // computeAttachInsertion re-checks the session (React may batch this
+        // after a transition) and inserts at the edit-tracked pending range.
+        const applied = computeAttachInsertion({
+          session,
+          currentSession: editSessionRef.current,
+          pending: pendingAttachRef.current,
+          baseText: prev,
+          snippet,
+        });
+        if (!applied) return prev;
+        contentSelectionRef.current = { start: applied.cursor, end: applied.cursor };
+        pendingAttachRef.current = null;
+        return applied.text;
+      });
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Failed to attach image');
+    } finally {
+      setAttaching(false);
+      attachingRef.current = false;
+      // Clear any anchor left by an early return (permission denied, canceled,
+      // upload error, session mismatch) so it can't leak into a later attach.
+      if (pendingAttachRef.current && pendingAttachRef.current.session === session) {
+        pendingAttachRef.current = null;
+      }
+    }
+  };
   const handleCancel = () => {
+    bumpEditSession();
     setEditing(false);
     setCreating(false);
     if (!selectedNote) setCreating(false);
@@ -366,6 +562,7 @@ export default function NotesScreen({ route }: any) {
       <View style={styles.topBar}>
         <TouchableOpacity
           onPress={() => {
+            bumpEditSession();
             setSelectedNote(null);
             setEditing(false);
             setCreating(false);
@@ -426,11 +623,23 @@ export default function NotesScreen({ route }: any) {
               placeholderTextColor={colors.gray600}
             />
 
-            <Text style={styles.fieldLabel}>Content (Markdown)</Text>
+            <View style={styles.contentLabelRow}>
+              <Text style={styles.fieldLabel}>Content (Markdown)</Text>
+              <TouchableOpacity
+                onPress={handleAttachImage}
+                disabled={attaching}
+                style={styles.attachButton}
+              >
+                <Text style={styles.attachButtonText}>{attaching ? 'Uploading…' : '+ Image'}</Text>
+              </TouchableOpacity>
+            </View>
             <TextInput
               style={styles.contentInput}
               value={editContent}
-              onChangeText={setEditContent}
+              onChangeText={handleEditContentChange}
+              onSelectionChange={(e: any) => {
+                contentSelectionRef.current = e.nativeEvent.selection;
+              }}
               placeholder="Write your note in markdown..."
               placeholderTextColor={colors.gray600}
               multiline
@@ -454,7 +663,7 @@ export default function NotesScreen({ route }: any) {
             <Text style={styles.noteMeta}>Updated {relativeTime(selectedNote?.updated_at)}</Text>
           </View>
           <View style={styles.markdownContainer}>
-            <Markdown style={mdStyles as any}>
+            <Markdown style={mdStyles as any} rules={markdownRules as any}>
               {selectedNote?.content || '*No content yet*'}
             </Markdown>
           </View>
@@ -650,6 +859,19 @@ const styles = StyleSheet.create({
     color: colors.white,
     marginBottom: 16,
   },
+  contentLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  attachButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    backgroundColor: colors.gray800,
+    borderRadius: 6,
+    marginBottom: 6,
+  },
+  attachButtonText: { fontSize: 13, color: colors.blue600, fontWeight: '600' },
   contentInput: {
     backgroundColor: colors.gray800,
     borderRadius: 8,

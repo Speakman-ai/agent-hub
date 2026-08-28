@@ -2,8 +2,14 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { normalizeNotesMarkdown } from '../utils/notesMarkdown';
+import { resolveServerMediaUrl } from '../utils/resolveServerMediaUrl';
 import { sliceSectionAtLine } from '@shared/utils/markdownSections';
 import { pickTodoColumn } from '@shared/utils/pickTodoColumn';
+import {
+  buildAttachmentMarkdown,
+  insertAtSelection,
+  transformRange,
+} from '@shared/utils/noteAttachments';
 import {
   StickyNote,
   Search,
@@ -21,8 +27,29 @@ import {
   ChevronDown,
   Telescope,
   TicketPlus,
+  ImagePlus,
 } from 'lucide-react';
 import { api } from '../utils/api';
+
+// Render markdown links/images so server-hosted `/uploads/...` assets resolve
+// against the same origin as the UI (remote mode / Vite dev proxy). Module-scope
+// constant so its identity is stable — passing it to react-markdown never forces
+// a preview remount. Merged into the scope/ticket component map for view mode.
+const mediaMarkdownComponents = {
+  img: ({ node: _node, src, alt, ...props }: any) => (
+    <img
+      src={src ? resolveServerMediaUrl(src) : src}
+      alt={alt}
+      {...props}
+      className="max-w-full h-auto rounded-lg border border-gray-800 my-2"
+    />
+  ),
+  a: ({ node: _node, href, children, ...props }: any) => (
+    <a href={href ? resolveServerMediaUrl(href) : href} target="_blank" rel="noreferrer" {...props}>
+      {children}
+    </a>
+  ),
+};
 
 /**
  * Parse an FTS snippet string into an array of { text, bold } segments.
@@ -132,6 +159,7 @@ function makeScopeComponents(normalized: string, opts: ScopeComponentOpts) {
   };
 
   return {
+    ...mediaMarkdownComponents,
     h1: makeHeading('h1'),
     h2: makeHeading('h2'),
     h3: makeHeading('h3'),
@@ -233,6 +261,10 @@ export default function NotesEditor({ projectId }: any) {
   // Convert-line-item-to-ticket state
   const [ticketing, setTicketing] = useState(false);
   const [ticketResult, setTicketResult] = useState<any>(null); // { status, message }
+  // Attachment upload state (paste / drop / toolbar button → markdown embed)
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const fileInputRef = useRef<any>(null);
   const searchTimerRef = useRef<any>(null);
   const saveTimerRef = useRef<any>(null);
   // Live mirrors of the edit buffers + mode so the debounced auto-save reads
@@ -267,6 +299,26 @@ export default function NotesEditor({ projectId }: any) {
   const textareaRef = useRef<any>(null);
   const dropdownRef = useRef<any>(null);
   const columnsCacheRef = useRef<any>(null); // cached board columns for ticket creation
+  // Attachment upload controller. All entry points (paste, drop, toolbar) feed a
+  // single serialized queue so overlapping actions never race on the insertion
+  // cursor, interleave markdown, or clear the "Uploading…" indicator early.
+  //   attachActionsRef — every pending attachment as a SELF-CONTAINED action:
+  //                      { file, gen, range }. Each action captures its OWN caret
+  //                      range at the moment its paste/drop/pick happened, so two
+  //                      independent actions insert at their own cursors — not one
+  //                      shared advancing offset. `gen` (draftGen) binds the
+  //                      action to its edit-session: a stale gen is discarded,
+  //                      never inserted into the wrong note. Every action's range
+  //                      is transformed as the buffer changes (user typing OR a
+  //                      sibling attachment inserting), so anchors stay correct.
+  //   attachBusyRef    — true while the single drain loop is running (mutex).
+  //   insertingActionRef — the action currently being inserted; its OWN edit must
+  //                      not transform its own range (only its siblings').
+  const attachActionsRef = useRef<
+    { file: any; gen: number; range: { start: number; end: number }; uploading?: boolean }[]
+  >([]);
+  const attachBusyRef = useRef(false);
+  const insertingActionRef = useRef<any>(null);
   // Mirror volatile in-flight flags into refs so the memoized markdown
   // components (below) can read the live value for `disabled` without being
   // rebuilt on every scoping/ticketing toggle (which would remount the preview).
@@ -550,6 +602,17 @@ export default function NotesEditor({ projectId }: any) {
   };
 
   const handleContentChange = (value: any) => {
+    // Keep every pending attachment anchor for the CURRENT edit-session aligned
+    // with the edit just made — whether that edit is the user typing/deleting or
+    // a sibling attachment inserting its snippet — so each upload still lands at
+    // the intended logical spot. The action currently inserting is skipped: its
+    // own edit must not move its own (already-consumed) range, only its siblings.
+    const oldText = editContentRef.current || '';
+    for (const action of attachActionsRef.current) {
+      if (action.gen !== draftGenRef.current) continue;
+      if (action === insertingActionRef.current) continue;
+      action.range = transformRange(action.range, oldText, value || '');
+    }
     setEditContent(value);
     editContentRef.current = value;
     dirtyRef.current = true;
@@ -561,6 +624,159 @@ export default function NotesEditor({ projectId }: any) {
     editTitleRef.current = value;
     dirtyRef.current = true;
     if (editing) scheduleAutoSave();
+  };
+
+  // Insert a markdown snippet into the content buffer at a fixed offset
+  // (replacing the [start, end) range), then move the caret past the snippet.
+  // The offsets are captured up front (see handleAttachFiles) rather than read
+  // from the live textarea, so an upload that resolves after the user has typed
+  // or moved the caret still lands where the paste/drop/attach was initiated.
+  // Returns the caret position after the inserted snippet so serial inserts can
+  // advance from it.
+  const insertSnippetAt = (snippet: any, start: number, end: number) => {
+    const { text, cursor } = insertAtSelection(editContentRef.current || '', snippet, start, end);
+    handleContentChange(text);
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.selectionStart = textareaRef.current.selectionEnd = cursor;
+      }
+    }, 0);
+    return cursor;
+  };
+
+  // Upload one file and return its markdown snippet. Images go through
+  // /api/upload (base64 data URL); other files through the binary
+  // /api/upload/file. Both return `{ url: '/uploads/<file>' }`. This does NO
+  // buffer mutation — insertion happens in the drain, AFTER re-checking the
+  // edit-session, so a slow upload can't write into a note the user left.
+  const uploadOne = async (file: any): Promise<string> => {
+    const isImage =
+      (file.type && String(file.type).startsWith('image/')) ||
+      (!file.type && /\.(jpe?g|png|gif|webp|bmp|svg|avif|heic|heif)$/i.test(file.name || ''));
+    let res: any;
+    if (isImage) {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Failed to read image'));
+        reader.readAsDataURL(file);
+      });
+      res = await api.uploadImage(dataUrl, file.name || 'image.png');
+    } else {
+      res = await api.uploadFile(file);
+    }
+    if (!res?.url) throw new Error('Upload returned no URL');
+    return buildAttachmentMarkdown({ name: file.name, url: res.url, contentType: file.type });
+  };
+
+  const dropAction = (action: any) => {
+    attachActionsRef.current = attachActionsRef.current.filter((a) => a !== action);
+  };
+
+  // Drain pending attachment actions one at a time. Only ever one drain runs (the
+  // attachBusyRef mutex), so uploads never overlap and the indicator stays lit
+  // until nothing is pending. Each action carries its own captured range and the
+  // edit-session (draftGen) it belongs to; an action whose gen no longer matches
+  // the active draft is discarded rather than inserted, both before and after its
+  // upload await — so switching/closing the note mid-upload never corrupts the
+  // new buffer. The action's range has meanwhile been kept current by
+  // handleContentChange, so it lands where the user intended even after edits.
+  const drainAttachQueue = async () => {
+    setUploading(true);
+    try {
+      // Pick the first not-yet-started action each pass (new actions can be
+      // appended mid-drain and are picked up here).
+      for (;;) {
+        const action = attachActionsRef.current.find((a) => !a.uploading);
+        if (!action) break;
+        if (action.gen !== draftGenRef.current) {
+          dropAction(action);
+          continue; // note/edit-session changed before this ran — drop it
+        }
+        action.uploading = true;
+        try {
+          const snippet = await uploadOne(action.file);
+          // Re-check AFTER the await: the user may have navigated during upload.
+          if (action.gen !== draftGenRef.current) {
+            dropAction(action);
+            continue;
+          }
+          // Insert at this action's OWN (edit-tracked) range. Mark it as the
+          // inserting action so its own insertion edit transforms only siblings.
+          insertingActionRef.current = action;
+          insertSnippetAt(snippet, action.range.start, action.range.end);
+          insertingActionRef.current = null;
+          dropAction(action);
+        } catch (err: any) {
+          insertingActionRef.current = null;
+          if (action.gen === draftGenRef.current) setUploadError(err?.message || 'Upload failed');
+          dropAction(action);
+        }
+      }
+    } finally {
+      attachBusyRef.current = false;
+      setUploading(false);
+    }
+  };
+
+  // Entry point for every attach source (paste, drop, toolbar). Captures THIS
+  // action's caret range from the live selection right now (before any await, so
+  // it replaces a selection like a normal paste and reflects where THIS action
+  // happened — not where an earlier one left the cursor), tags it with the
+  // current edit-session (draftGen), and starts the drain if idle. Each file
+  // becomes its own action with its own range copy, so independent actions insert
+  // at independent cursors while every pending range tracks later edits.
+  const handleAttachFiles = (files: any) => {
+    const list = Array.from(files || []).filter(Boolean);
+    if (list.length === 0) return;
+    const gen = draftGenRef.current;
+    const ta = textareaRef.current;
+    const len = (editContentRef.current || '').length;
+    let range: { start: number; end: number };
+    if (ta && typeof ta.selectionStart === 'number') {
+      const a = ta.selectionStart;
+      const b = ta.selectionEnd ?? a;
+      range = { start: Math.min(a, b), end: Math.max(a, b) };
+    } else {
+      range = { start: len, end: len };
+    }
+    // Each file gets its OWN range object (same starting value). When the first
+    // inserts, handleContentChange shifts the rest so they follow it in order.
+    for (const file of list) {
+      attachActionsRef.current.push({ file, gen, range: { ...range } });
+    }
+    if (attachBusyRef.current) return; // a drain is running — it will pick these up
+    attachBusyRef.current = true;
+    setUploadError('');
+    void drainAttachQueue();
+  };
+
+  const handlePaste = (e: any) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const media = Array.from(items).filter(
+      (it: any) => it.kind === 'file' && it.type && it.type.startsWith('image/'),
+    );
+    if (media.length === 0) return; // let normal text paste through
+    e.preventDefault();
+    const files = media.map((it: any) => it.getAsFile()).filter(Boolean);
+    handleAttachFiles(files);
+  };
+
+  const handleContentDragOver = (e: any) => {
+    if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+  };
+
+  const handleContentDrop = (e: any) => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    handleAttachFiles(e.dataTransfer.files);
+  };
+
+  const handleFileInputChange = (e: any) => {
+    if (e.target.files?.length) handleAttachFiles(e.target.files);
+    e.target.value = '';
   };
 
   const handleDelete = async (noteId: any) => {
@@ -720,7 +936,7 @@ export default function NotesEditor({ projectId }: any) {
 
   const renderMarkdownPreview = (content: any, components?: any) => (
     <div className="prose prose-invert prose-sm max-w-none text-gray-300">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components || mediaMarkdownComponents}>
         {normalizeNotesMarkdown(content || '')}
       </ReactMarkdown>
     </div>
@@ -856,8 +1072,38 @@ export default function NotesEditor({ projectId }: any) {
                 {!saving && !creating && selectedNoteId && (
                   <span className="text-xs text-gray-600">Auto-saved</span>
                 )}
+                {uploading && (
+                  <span className="text-xs text-blue-400 animate-pulse">Uploading…</span>
+                )}
+                {uploadError && <span className="text-xs text-red-400">{uploadError}</span>}
               </div>
               <div className="flex items-center gap-1">
+                {/* Attach image / file — no `accept` filter so the toolbar can
+                    pick any file type (PDFs, etc.), matching drag-drop, which
+                    accepts all files. Images embed inline; others link. */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={handleFileInputChange}
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  className="p-1.5 rounded transition-colors text-gray-500 hover:text-gray-300 disabled:opacity-50"
+                  title="Attach image or file (or paste / drag one in)"
+                  aria-label="Attach image or file"
+                >
+                  {uploading ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <ImagePlus size={14} />
+                  )}
+                </button>
+
+                <div className="w-px h-4 bg-gray-700 mx-1" />
+
                 {/* View mode toggle */}
                 <button
                   onClick={() => setPreviewMode('edit')}
@@ -925,7 +1171,10 @@ export default function NotesEditor({ projectId }: any) {
                     value={editContent}
                     onChange={(e: any) => handleContentChange(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="Start writing... (Markdown supported)"
+                    onPaste={handlePaste}
+                    onDragOver={handleContentDragOver}
+                    onDrop={handleContentDrop}
+                    placeholder="Start writing... (Markdown supported — paste an image, or drop a file, to attach)"
                     className="flex-1 w-full bg-transparent px-4 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none resize-none font-mono leading-relaxed"
                   />
                 </div>
