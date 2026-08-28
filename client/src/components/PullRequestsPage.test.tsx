@@ -1610,6 +1610,23 @@ describe('PR-scoped preview panel', () => {
     });
   });
 
+  it('shows an archived note instead of Enable when no live session backs the PR', async () => {
+    await openPreviewDetail({ preview_session_available: false });
+    // The panel still renders (dev server IS configured), but the clickable
+    // Enable control is replaced by an explanatory note — clicking it used to
+    // 409 with "No live session worktree is associated with this pull request".
+    expect(await screen.findByTestId('pr-preview-unavailable')).toBeTruthy();
+    expect(screen.queryByTestId('pr-preview-enable')).toBeNull();
+    expect(api.startNativePrPreview).not.toHaveBeenCalled();
+  });
+
+  it('does NOT auto-start when default-on but the owning session is archived', async () => {
+    (api.getNativePrPreviewState as any).mockResolvedValue({ sessionId: null, preview: null });
+    await openPreviewDetail({ preview_default_on: true, preview_session_available: false });
+    await screen.findByTestId('pr-preview-unavailable');
+    expect(api.startNativePrPreview).not.toHaveBeenCalled();
+  });
+
   it('does NOT auto-start when default-on but a preview is already running', async () => {
     (api.getNativePrPreviewState as any).mockResolvedValue({
       sessionId: 's1',

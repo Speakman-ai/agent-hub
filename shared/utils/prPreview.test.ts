@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { prPreviewViewState, prPreviewAvailable } from './prPreview';
+import { prPreviewViewState, prPreviewAvailable, prPreviewSessionLive } from './prPreview';
 
 describe('prPreviewViewState', () => {
   it('idle when there is no state and nothing pending', () => {
@@ -111,5 +111,19 @@ describe('prPreviewAvailable', () => {
     ).toBe(false);
     // No pr state at all → not open → false.
     expect(prPreviewAvailable({ source: 'agenthub', preview_available: true })).toBe(false);
+  });
+});
+
+describe('prPreviewSessionLive', () => {
+  it('false only when the server explicitly reports no live session', () => {
+    expect(prPreviewSessionLive({ preview_session_available: false })).toBe(false);
+  });
+  it('true when a live session backs the PR', () => {
+    expect(prPreviewSessionLive({ preview_session_available: true })).toBe(true);
+  });
+  it('defaults to true when the field is absent (older server / non-native)', () => {
+    expect(prPreviewSessionLive({})).toBe(true);
+    expect(prPreviewSessionLive(null)).toBe(true);
+    expect(prPreviewSessionLive(undefined)).toBe(true);
   });
 });

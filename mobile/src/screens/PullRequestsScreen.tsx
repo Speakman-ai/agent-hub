@@ -662,6 +662,15 @@ function PrDetail({
             </Text>
           ) : null}
         </View>
+      ) : caps.previewArchived ? (
+        <View style={styles.previewPanel} accessibilityLabel="PR preview unavailable">
+          <View style={styles.previewRow}>
+            <Text style={styles.previewLabel}>Preview</Text>
+            <Text style={styles.previewStatusText} accessibilityLabel="Preview unavailable">
+              Unavailable — session archived
+            </Text>
+          </View>
+        </View>
       ) : null}
 
       {/* PR actions: diff, review, comment, edit, reopen */}

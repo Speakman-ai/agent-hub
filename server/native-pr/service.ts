@@ -118,6 +118,17 @@ export interface NativePrServiceDeps {
    * failure never rolls back the merge that already landed in git.
    */
   afterPrMerged?: (args: { project: Project; row: PullRequestRow }) => void;
+  /**
+   * Resolve whether a live session worktree still backs a PR's head branch.
+   * A PR's preview is the worktree preview for the session that owns its head
+   * branch; once that session is archived/deleted the worktree is gone and
+   * `POST /preview/start` 409s. `getDetail` surfaces the result as
+   * `preview_session_available` so the client can gate the Enable-preview
+   * affordance instead of offering a button that only errors. When omitted
+   * (e.g. in tests), the field defaults to `preview_available` — the prior
+   * behavior — so wiring it is what activates the extra gate.
+   */
+  hasLivePreviewSession?: (project: Project, headBranch: string) => boolean;
 }
 
 export interface NativePrService {
@@ -168,6 +179,16 @@ export interface NativePrService {
     commits: PrCommitEntry[];
     /** Raw inline diff comments for in-diff rendering. */
     inline_comments: Array<Record<string, unknown>>;
+    /** True when the project has a dev server configured (preview control shown). */
+    preview_available: boolean;
+    /** Project opts every PR into showing preview state by default. */
+    preview_default_on: boolean;
+    /**
+     * True when a live session worktree still backs this PR's head branch, so a
+     * preview can actually be launched. False once the owning session is
+     * archived/deleted — the Enable-preview control would otherwise 409.
+     */
+    preview_session_available: boolean;
   }>;
   /** Guarded closed → open transition (merged PRs are immutable). */
   reopen(args: { project: Project; number: number }): { row: PullRequestRow };
@@ -892,6 +913,7 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       const blockedReason =
         row.status === 'open' ? await mergeBlockedReason(stmts, project, row, repoPath) : null;
       const checks = checksForSha(stmts, project.id, statusSha);
+      const previewAvailable = isDevServerConfigured(project.prEnv?.devServer);
       return {
         source: 'agenthub' as const,
         pr: summarize(project.id, row, {
@@ -934,8 +956,19 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         // PR page shows the "Enable preview" control at all (a dev server must
         // be configured for the project); `preview_default_on` is the project
         // toggle that opts every PR into showing preview state by default.
-        preview_available: isDevServerConfigured(project.prEnv?.devServer),
+        preview_available: previewAvailable,
         preview_default_on: project.prEnv?.devServer?.previewOnPullRequests === true,
+        // Whether a live session worktree still backs the head branch. The
+        // preview control only works while that session is alive; once it is
+        // archived the worktree is reaped and `preview/start` 409s, so the
+        // client shows an explanatory note instead of an Enable button. Only
+        // meaningful when a dev server is configured; defaults to
+        // `preview_available` when the resolver is not wired (tests).
+        preview_session_available: previewAvailable
+          ? deps.hasLivePreviewSession
+            ? deps.hasLivePreviewSession(project, row.head_branch)
+            : true
+          : false,
       };
     },
 

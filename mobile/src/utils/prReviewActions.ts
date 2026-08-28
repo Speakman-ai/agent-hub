@@ -128,7 +128,21 @@ export function prDetailCapabilities(detail: any) {
     // project has a dev server configured; `previewDefaultOn` opts every PR in.
     // Open-only is load-bearing: a merged PR's preview is torn down on merge,
     // so the control/auto-start must not reappear (server enforces the same).
-    canPreview: isNative && isOpen && detail?.preview_available === true,
+    // `preview_session_available === false` means the owning session worktree
+    // is gone (archived), so a preview can no longer launch (would 409).
+    canPreview:
+      isNative &&
+      isOpen &&
+      detail?.preview_available === true &&
+      detail?.preview_session_available !== false,
+    previewSessionLive: detail?.preview_session_available !== false,
+    // Dev server configured + open PR, but the owning session worktree is gone:
+    // show an explanatory note instead of an Enable button that would 409.
+    previewArchived:
+      isNative &&
+      isOpen &&
+      detail?.preview_available === true &&
+      detail?.preview_session_available === false,
     previewDefaultOn: detail?.preview_default_on === true,
     // Native html_urls are in-app client routes — only real GitHub URLs
     // get an external "open" affordance (web parity).

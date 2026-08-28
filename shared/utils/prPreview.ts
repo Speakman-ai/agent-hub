@@ -97,3 +97,22 @@ export function prPreviewAvailable(
   const isOpen = String(pr?.state || '').toLowerCase() === 'open';
   return isOpen && !pr?.merged_at;
 }
+
+/**
+ * Whether a live session worktree actually backs this PR's preview. A PR's
+ * preview IS the worktree preview for the session that owns its head branch;
+ * once that session is archived/deleted the worktree is reaped and
+ * `POST /preview/start` 409s with "No live session worktree is associated with
+ * this pull request". The server reports this as `preview_session_available`
+ * so the client can show an explanatory note instead of an Enable button that
+ * only errors.
+ *
+ * Defaults to `true` when the field is absent (older servers, or a non-native
+ * detail shape) so this never hides a working control — `prPreviewAvailable`
+ * remains the primary gate.
+ */
+export function prPreviewSessionLive(
+  detail: { preview_session_available?: boolean } | null | undefined,
+): boolean {
+  return detail?.preview_session_available !== false;
+}

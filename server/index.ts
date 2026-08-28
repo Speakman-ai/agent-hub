@@ -836,6 +836,20 @@ app.use(createApiDocsRoutes());
 const nativePr = createNativePrService({
   stmts: stmts!,
   broadcast,
+  // Whether a live session worktree still backs a PR's head branch, so the PR
+  // detail can gate the Enable-preview control (a dead session 409s on start).
+  // Same resolver the preview/start route and the merge-teardown hook use:
+  // scoped to the project and pinned to the full canonical branch, never the
+  // 8-hex prefix alone.
+  hasLivePreviewSession: (project, headBranch) =>
+    Boolean(
+      resolveSessionForPrHeadBranch(
+        headBranch,
+        project.id,
+        (prefix) => stmts!.getSessionByIdPrefix.all(prefix) as SessionRow[],
+        (s) => findAgent(s.agent_id)?.project?.id ?? null,
+      ),
+    ),
   afterBaseBranchMoved: async ({ project, baseBranch }) => {
     // Native merges and reverts move the base branch via `update-ref` — no
     // post-receive hook fires — so EVERY downstream reaction to "default

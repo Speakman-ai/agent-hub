@@ -213,6 +213,37 @@ describe('prDetailCapabilities', () => {
       }).canPreview,
     ).toBe(false);
   });
+  it('canPreview false when the owning session worktree is gone (would 409); shows the archived note', () => {
+    const caps = prDetailCapabilities({
+      source: 'agenthub',
+      preview_available: true,
+      preview_session_available: false,
+      pr: { state: 'open', html_url: 'x' },
+    });
+    expect(caps.canPreview).toBe(false);
+    expect(caps.previewSessionLive).toBe(false);
+    expect(caps.previewArchived).toBe(true);
+  });
+  it('a configured, session-backed PR is not treated as archived', () => {
+    const caps = prDetailCapabilities({
+      source: 'agenthub',
+      preview_available: true,
+      preview_session_available: true,
+      pr: { state: 'open', html_url: 'x' },
+    });
+    expect(caps.canPreview).toBe(true);
+    expect(caps.previewArchived).toBe(false);
+  });
+  it('preview_session_available absent (older server) defaults to live', () => {
+    const caps = prDetailCapabilities({
+      source: 'agenthub',
+      preview_available: true,
+      pr: { state: 'open', html_url: 'x' },
+    });
+    expect(caps.canPreview).toBe(true);
+    expect(caps.previewSessionLive).toBe(true);
+    expect(caps.previewArchived).toBe(false);
+  });
   it('canPreview false for merged/closed PRs (preview torn down on merge)', () => {
     expect(
       prDetailCapabilities({

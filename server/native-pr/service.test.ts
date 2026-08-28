@@ -191,6 +191,77 @@ describe('NativePrService', () => {
     });
   });
 
+  it('getDetail: preview_session_available reflects hasLivePreviewSession only when a dev server is configured', async () => {
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = {
+      ...makeProject(projectId),
+      prEnv: { devServer: { startCommand: 'npm run dev' } },
+    } as unknown as Project;
+    const branch = 'agent-hub/dev/session-cafe0001';
+    const { headSha } = await seedHostedRepoWithBranch(projectId, branch);
+
+    const hasLivePreviewSession = vi.fn<(project: Project, headBranch: string) => boolean>(
+      () => true,
+    );
+    const service = createNativePrService({
+      stmts,
+      broadcast: () => {},
+      hasLivePreviewSession,
+    });
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'Preview gate',
+      body: '',
+      author: TEST_PR_AUTHOR,
+    });
+
+    // Live session → the Enable-preview control is offered.
+    const live = await service.getDetail({ project, number: 1 });
+    expect(live.preview_available).toBe(true);
+    expect(live.preview_session_available).toBe(true);
+    expect(hasLivePreviewSession).toHaveBeenCalledWith(project, branch);
+
+    // Archived session (resolver returns null) → control gated, no 409-on-click.
+    hasLivePreviewSession.mockReturnValue(false);
+    const dead = await service.getDetail({ project, number: 1 });
+    expect(dead.preview_available).toBe(true);
+    expect(dead.preview_session_available).toBe(false);
+  });
+
+  it('getDetail: preview_session_available is false (and resolver is skipped) with no dev server', async () => {
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = makeProject(projectId); // no prEnv.devServer
+    const branch = 'agent-hub/dev/session-cafe0002';
+    const { headSha } = await seedHostedRepoWithBranch(projectId, branch);
+
+    const hasLivePreviewSession = vi.fn<(project: Project, headBranch: string) => boolean>(
+      () => true,
+    );
+    const service = createNativePrService({
+      stmts,
+      broadcast: () => {},
+      hasLivePreviewSession,
+    });
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'No preview',
+      body: '',
+      author: TEST_PR_AUTHOR,
+    });
+
+    const detail = await service.getDetail({ project, number: 1 });
+    expect(detail.preview_available).toBe(false);
+    expect(detail.preview_session_available).toBe(false);
+    // No preview control at all → never spend a session lookup.
+    expect(hasLivePreviewSession).not.toHaveBeenCalled();
+  });
+
   it('fires afterPrMerged with the merged PR row (PR preview teardown hook)', async () => {
     const projectId = `npr-${uuidv4().slice(0, 8)}`;
     const project = makeProject(projectId);

@@ -14,6 +14,7 @@ import {
   MessageSquare,
   Wrench,
   Eye,
+  EyeOff,
   Bot,
   Zap,
   ZapOff,
@@ -41,7 +42,11 @@ import {
   autoMergeToggleState,
   buildPrActivityTimeline,
 } from '../utils/prFormatting';
-import { prPreviewViewState, prPreviewAvailable } from '@shared/utils/prPreview';
+import {
+  prPreviewViewState,
+  prPreviewAvailable,
+  prPreviewSessionLive,
+} from '@shared/utils/prPreview';
 
 // ─── Shared atoms ──────────────────────────────────────────────
 
@@ -570,6 +575,11 @@ function PrDetail({
   // Only native PRs whose project has a dev server configured can preview.
   const previewAvailable = prPreviewAvailable(detail);
   const previewDefaultOn = Boolean(detail?.preview_default_on);
+  // A live session worktree must still back the PR's head branch for a preview
+  // to launch; once the owning session is archived the worktree is reaped and
+  // `preview/start` 409s. When false we show an explanatory note instead of an
+  // Enable button that only errors, and never auto-start.
+  const previewSessionLive = prPreviewSessionLive(detail);
   // The latest `/preview/state` response ({ sessionId, preview } | null).
   const [previewStateResp, setPreviewStateResp] = useState<any>(null);
   // True between the Enable click and the first snapshot, so we render loading
@@ -663,7 +673,12 @@ function PrDetail({
       const res = await refreshPreview();
       if (!alive) return;
       const hydrated = prPreviewViewState(res).status;
-      if (previewDefaultOn && hydrated === 'idle' && autoStartedRef.current !== pr.number) {
+      if (
+        previewDefaultOn &&
+        previewSessionLive &&
+        hydrated === 'idle' &&
+        autoStartedRef.current !== pr.number
+      ) {
         autoStartedRef.current = pr.number;
         void handleEnablePreview();
       }
@@ -674,7 +689,7 @@ function PrDetail({
     // handleEnablePreview is guarded by autoStartedRef, so re-runs cannot
     // double-start; excluding it keeps this to a single hydrate per PR.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewAvailable, previewDefaultOn, pr?.number, refreshPreview]);
+  }, [previewAvailable, previewDefaultOn, previewSessionLive, pr?.number, refreshPreview]);
 
   // Poll while a preview is booting (from any source: this client's Enable, an
   // auto-start, or a boot already in flight when the PR was opened).
@@ -1165,18 +1180,32 @@ function PrDetail({
               <Eye size={14} className="text-sky-300" />
               <span className="text-sm font-medium text-gray-200">Preview</span>
 
-              {previewView.status === 'idle' && (
-                <button
-                  type="button"
-                  data-testid="pr-preview-enable"
-                  onClick={handleEnablePreview}
-                  disabled={previewBusy}
-                  className="ml-auto flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50"
-                >
-                  {previewBusy ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
-                  Enable preview
-                </button>
-              )}
+              {previewView.status === 'idle' &&
+                (previewSessionLive ? (
+                  <button
+                    type="button"
+                    data-testid="pr-preview-enable"
+                    onClick={handleEnablePreview}
+                    disabled={previewBusy}
+                    className="ml-auto flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50"
+                  >
+                    {previewBusy ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Eye size={14} />
+                    )}
+                    Enable preview
+                  </button>
+                ) : (
+                  <span
+                    data-testid="pr-preview-unavailable"
+                    title="A preview runs against the live session worktree that created this PR. That session has been archived, so its worktree is gone and a preview can no longer be launched."
+                    className="ml-auto flex items-center gap-1.5 text-sm text-gray-500"
+                  >
+                    <EyeOff size={14} />
+                    Preview unavailable — session archived
+                  </span>
+                ))}
 
               {previewView.status === 'loading' && (
                 <>
