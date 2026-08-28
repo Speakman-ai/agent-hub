@@ -218,10 +218,10 @@ import {
   runWikiHybridRagForAssistantRequest,
   runWikiHybridRagForUserTurn,
   MAX_WIKI_RAG_CALLS_PER_SESSION,
-  MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES,
   effectiveWikiHybridRagUsedCount,
   nextWikiHybridRagRowAfterIncrement,
 } from './wiki-rag.js';
+import { MAX_REACT_CONTROL_BLOCK_JSON_BYTES } from './agenthub-control-limits.js';
 import { runCodeRagForUserTurn, MAX_CODE_RAG_CALLS_PER_SESSION } from './code-rag.js';
 import { runWebSearchForQuery } from './web-search.js';
 import {
@@ -1586,10 +1586,10 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
     ),
   );
   const payload = (tagMatch ? tagMatch[1] : raw).trim();
-  if (Buffer.byteLength(payload, 'utf-8') > MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES) {
+  if (Buffer.byteLength(payload, 'utf-8') > MAX_REACT_CONTROL_BLOCK_JSON_BYTES) {
     return {
       error: 'malformed',
-      detail: `ReAct block JSON exceeds ${MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES} byte cap`,
+      detail: `ReAct block JSON exceeds ${MAX_REACT_CONTROL_BLOCK_JSON_BYTES} byte cap`,
     };
   }
   // Tolerate fenced/prose-wrapped/multi-line bodies — see action-block-parsing.ts.

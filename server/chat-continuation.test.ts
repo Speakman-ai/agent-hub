@@ -15,7 +15,11 @@ import {
   utf8SuffixMaxBytes,
 } from './chat.js';
 import { LOCAL_COMMIT_REMINDER_MARKER } from './local-commit-reminder.js';
-import { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES } from './agenthub-control-limits.js';
+import {
+  MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES,
+  MAX_REACT_CONTROL_BLOCK_JSON_BYTES,
+} from './agenthub-control-limits.js';
+import { MAX_DESIGN_HTML_BYTES } from './design-react.js';
 
 describe('buildGrokHeadlessPrompt', () => {
   // Grok has no --resume flag, so the enriched system prompt (identity,
@@ -392,13 +396,33 @@ describe('ReAct block parse', () => {
   });
 
   it('rejects react block JSON over the UTF-8 byte cap', () => {
-    const q = 'a'.repeat(MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES + 500);
+    const q = 'a'.repeat(MAX_REACT_CONTROL_BLOCK_JSON_BYTES + 500);
     const payload = JSON.stringify({ actions: [{ tool: 'wiki', query: q }] });
     const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
     expect(parsed).toMatchObject({ error: 'malformed' });
     if ('error' in parsed) {
       expect(parsed.detail).toMatch(/byte cap/);
     }
+  });
+
+  it('accepts a design action whose HTML is larger than the small-block cap', () => {
+    // Regression: the design action advertises a 512 KB HTML budget, but the
+    // react parser used to reuse the 64 KB small-block cap, so any design render
+    // with HTML between ~64 KB and 512 KB was rejected as "byte cap" before
+    // per-action design validation ran — the user saw the turn error out.
+    const html = `<div>${'x'.repeat(200 * 1024)}</div>`;
+    expect(Buffer.byteLength(html, 'utf8')).toBeGreaterThan(MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES);
+    expect(Buffer.byteLength(html, 'utf8')).toBeLessThanOrEqual(MAX_DESIGN_HTML_BYTES);
+    const payload = JSON.stringify({ actions: [{ tool: 'design', op: 'render', html }] });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    expect(parsed).toMatchObject({ actions: [{ tool: 'design', op: 'render', html }] });
+  });
+
+  it('keeps the react cap above the worst-case encoded design payload', () => {
+    // JSON-encoding a printable HTML document up to ~doubles its size, so the
+    // react block cap must clear twice the design HTML budget (plus wrapper) or
+    // a valid max-size design render would be rejected by the byte cap.
+    expect(MAX_REACT_CONTROL_BLOCK_JSON_BYTES).toBeGreaterThanOrEqual(2 * MAX_DESIGN_HTML_BYTES);
   });
 
   it('rejects actions array longer than host execution cap', () => {
