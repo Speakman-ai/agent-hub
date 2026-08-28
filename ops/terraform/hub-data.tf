@@ -48,8 +48,8 @@ resource "aws_ebs_volume" "hub_data" {
   availability_zone = var.hub_data_availability_zone
   size              = var.hub_data_volume_size
   type              = "gp3"
-  iops              = 3000
-  throughput        = 125
+  iops              = var.hub_data_volume_iops
+  throughput        = var.hub_data_volume_throughput
   encrypted         = true
   kms_key_id        = var.hub_data_kms_key_arn
 

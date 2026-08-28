@@ -444,6 +444,18 @@ variable "hub_data_volume_size" {
   description = "Size (GiB) of the Hub data volume when enable_hub_data_volume = true."
 }
 
+variable "hub_data_volume_iops" {
+  type        = number
+  default     = 3000
+  description = "Provisioned IOPS for the gp3 Hub data volume. Defaults to the gp3 baseline (3000); prod raises it because the single data volume carries the Hub SQLite DBs + session/preview DB I/O and saturates its IOPS ceiling under concurrent load, stalling the Hub's synchronous SQLite reads and wedging the event loop. gp3 allows 3000–16000; live-modifiable with no downtime."
+}
+
+variable "hub_data_volume_throughput" {
+  type        = number
+  default     = 125
+  description = "Provisioned throughput (MB/s) for the gp3 Hub data volume. Defaults to the gp3 baseline (125); gp3 allows 125–1000. Live-modifiable with no downtime."
+}
+
 variable "hub_data_kms_key_arn" {
   type        = string
   default     = ""

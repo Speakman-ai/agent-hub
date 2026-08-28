@@ -50,8 +50,14 @@ instance_type    = "m7i.2xlarge"
 root_volume_size = 150
 
 # ── Hub data volume + daily snapshots (hub-data.tf) ──────────────────────────
-enable_hub_data_volume     = true
-hub_data_volume_size       = 1024
+enable_hub_data_volume = true
+hub_data_volume_size   = 1024
+# Raised from the gp3 baseline (3000/125): the single data volume carries the
+# Hub SQLite DBs + concurrent session/preview DB I/O and was pegging its 3000-IOPS
+# ceiling under load, stalling the Hub's synchronous SQLite reads and wedging the
+# event loop (health 504s / cron misses). Applied live via modify-volume 2026-08-28.
+hub_data_volume_iops       = 6000
+hub_data_volume_throughput = 250
 hub_data_availability_zone = "us-east-2a"
 # hub_data_kms_key_arn embeds the account ID + CMK ID → overlay
 # (TF_VAR_hub_data_kms_key_arn). A hub-data.tf precondition fails the plan if
