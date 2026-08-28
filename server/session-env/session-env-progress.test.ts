@@ -219,4 +219,34 @@ describe('emitSessionWorkspaceProgress', () => {
       }),
     );
   });
+
+  it('forwards an optional detail sub-line to persistence and broadcast', () => {
+    const stmts = mockStmts();
+    const broadcast = vi.fn();
+    emitSessionWorkspaceProgress({
+      stmts,
+      broadcast,
+      sessionId: 'sess-1',
+      status: 'started',
+      startedAt: 1000,
+      detail: 'First-time setup: cloning the repository and installing dependencies.',
+    });
+    expect(stmts.addSessionProgress.run).toHaveBeenCalledWith(
+      'sess-1',
+      '__session_workspace__',
+      SESSION_WORKSPACE_STEP,
+      'started',
+      1000,
+      null,
+      'First-time setup: cloning the repository and installing dependencies.',
+    );
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session-progress',
+        step: SESSION_WORKSPACE_STEP,
+        status: 'started',
+        detail: 'First-time setup: cloning the repository and installing dependencies.',
+      }),
+    );
+  });
 });

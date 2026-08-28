@@ -7,6 +7,16 @@ export const SESSION_ENV_LAUNCH_STEP = 'Launching session VM';
 /** Host-emitted progress_step while the session git worktree is cloning. */
 export const SESSION_WORKSPACE_STEP = 'Preparing session workspace';
 
+/**
+ * Sub-line shown under {@link SESSION_WORKSPACE_STEP} while a fresh session
+ * clone is provisioning. The step only surfaces when there is genuine clone
+ * work to do (see `sessionWorkspaceNeedsProvisionProgress`), so a long-running
+ * spinner here is a first-time clone + dependency install — not a hang. The
+ * detail explains that so the wait reads as expected work.
+ */
+export const SESSION_WORKSPACE_PREP_DETAIL =
+  'First-time setup: cloning the repository and installing dependencies. This can take a minute.';
+
 export type SessionEnvLaunchStatus = 'started' | 'completed' | 'failed';
 
 export type SessionEnvLaunchInfo = {

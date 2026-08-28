@@ -212,6 +212,51 @@ describe('ensureSessionWorkspace — fetch on reuse', () => {
     expect(refreshedOriginTip).toBe(newOriginTip);
   });
 
+  it('fresh clone fetches only the base branch, not every remote branch (no broad fetch)', async () => {
+    // Regression: provisioning a fresh session clone used to run a broad
+    // `git fetch origin --quiet` right after `git clone --depth 1`. On a
+    // network origin the shallow clone brings only the default branch tip, so
+    // the broad fetch downloaded EVERY remote branch's refs + objects — the
+    // dominant cost of "Preparing session workspace" on repos that accumulate
+    // hundreds of `agent-hub/<agent>/session-<id>` branches. The base branch we
+    // reset to is fetched targeted, so the broad fetch was pure overhead.
+    const persist = vi.fn();
+
+    // Push several extra branches to origin to stand in for accumulated
+    // session branches. Only these live on origin, not in the source checkout.
+    for (const b of ['agent-hub/x/session-old1', 'agent-hub/y/session-old2', 'stale-feature']) {
+      git(sourceRepo, `branch ${b} main`);
+      git(sourceRepo, `push origin ${b}`);
+      git(sourceRepo, `branch -D ${b}`);
+    }
+
+    // Point the source checkout's origin at a file:// URL so `git clone
+    // --depth 1` is HONORED (a bare-path clone ignores --depth and would fetch
+    // all branches regardless), reproducing the network-origin shape.
+    git(sourceRepo, `remote set-url origin file://${originBare}`);
+
+    const clonePath = await ensureSessionWorkspace(
+      makeSession(null),
+      sourceRepo,
+      'test-agent',
+      persist,
+    );
+    createdWorkspace = clonePath;
+
+    const remoteRefs = git(clonePath, "for-each-ref --format='%(refname)' refs/remotes/origin")
+      .split('\n')
+      .filter(Boolean);
+
+    // The base branch must be present (we reset the session branch onto it)...
+    expect(remoteRefs).toContain('refs/remotes/origin/main');
+    // ...but the accumulated session branches must NOT have been fetched.
+    expect(remoteRefs).not.toContain('refs/remotes/origin/agent-hub/x/session-old1');
+    expect(remoteRefs).not.toContain('refs/remotes/origin/agent-hub/y/session-old2');
+    expect(remoteRefs).not.toContain('refs/remotes/origin/stale-feature');
+    // The clone stayed shallow — depth-1 was honored, no unshallowing fetch ran.
+    expect(git(clonePath, 'rev-parse --is-shallow-repository')).toBe('true');
+  });
+
   it('recovers from a zombie clone dir (exists but no .git) on next call', async () => {
     const persist = vi.fn();
 

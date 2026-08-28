@@ -56,6 +56,26 @@ describe('mergeProgressEvent', () => {
     expect(steps[1].finishedAt).toBe(15);
   });
 
+  it('coalesces a repeated started event onto the in-flight row and refreshes detail', () => {
+    let steps = mergeProgressEvent([], {
+      step: 'Preparing session workspace',
+      status: 'started',
+      startedAt: 1000,
+      detail: 'Cloning the repository…',
+    });
+    steps = mergeProgressEvent(steps, {
+      step: 'Preparing session workspace',
+      status: 'started',
+      startedAt: 9999,
+      detail: 'Installing dependencies…',
+    });
+    // Single in-flight row, original startedAt preserved, detail refreshed.
+    expect(steps!).toHaveLength(1);
+    expect(steps[0].status).toBe('started');
+    expect(steps[0].startedAt).toBe(1000);
+    expect(steps[0].detail).toBe('Installing dependencies…');
+  });
+
   it('appends a failed-without-started event as a standalone entry', () => {
     const next = mergeProgressEvent([], {
       step: 'Post formal review',
@@ -211,5 +231,21 @@ describe('ProgressPanel render', () => {
     expect(screen.getByTestId('progress-panel')).toBeInTheDocument();
     expect(screen.getByText('Preparing session workspace')).toBeInTheDocument();
     expect(screen.getByLabelText('in progress')).toBeInTheDocument();
+  });
+
+  it('shows the in-flight detail sub-line so a long clone reads as expected work', () => {
+    const steps = [
+      {
+        step: 'Preparing session workspace',
+        status: 'started',
+        startedAt: Date.now() - 90_000,
+        detail: 'First-time setup: cloning the repository and installing dependencies.',
+      },
+    ];
+    render(<ProgressPanel steps={steps} sessionRunning={false} />);
+    const detail = screen.getByTestId('progress-step-detail');
+    expect(detail).toHaveTextContent('First-time setup: cloning the repository');
+    // In-flight hint is the neutral variant, not the rose failure box.
+    expect(detail.tagName).toBe('P');
   });
 });

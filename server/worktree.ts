@@ -3547,10 +3547,18 @@ async function ensureSessionWorkspaceUnlocked(
       const syncBranch = await resolveSyncBranch(projectCwd, prBaseBranch);
       const baseIsFeatureBranch = !!syncBranch && syncBranch !== defaultBranch;
       try {
-        await fetchWithRetry([...authArgs, 'fetch', 'origin', '--quiet'], {
-          cwd: cloneDir,
-          timeoutMs: FETCH_TIMEOUT_MS,
-        });
+        // NOTE: we deliberately do NOT run a broad `git fetch origin` here.
+        // On a network origin `git clone --depth 1` brought only the default
+        // branch tip, so a broad fetch would download every remote branch's
+        // refs + objects — on a Hub-hosted repo that accumulates hundreds of
+        // `agent-hub/<agent>/session-<id>` branches, that all-refs download is
+        // the dominant cost of "Preparing session workspace" on a fresh clone.
+        // Nothing below needs the full ref set: the targeted fetch just ahead
+        // brings `origin/<syncBranch>` (the only ref we reset to), and the
+        // feature-branch helpers (`ensureFeatureBaseBranchOnOrigin`,
+        // `deepenBaseForMergeBase`) each do their own scoped fetches. Fetch
+        // only what we use.
+        //
         // Epic/feature integration branch that doesn't exist yet → create it
         // from the default branch so the session has a base to branch off and
         // merge into. Previously a missing base hard-failed provisioning.

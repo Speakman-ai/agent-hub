@@ -77,6 +77,15 @@ export default function ProgressPanel({ steps, sessionRunning, className }: any)
                 >
                   {s.detail}
                 </pre>
+              ) : typeof s.detail === 'string' && s.detail.trim() && s.status === 'started' ? (
+                // In-flight hint (e.g. why a fresh workspace clone is slow) so a
+                // long spinner reads as expected work rather than a hang.
+                <p
+                  className="ml-6 break-words text-xs text-gray-400"
+                  data-testid="progress-step-detail"
+                >
+                  {s.detail}
+                </p>
               ) : null}
             </li>
           ))}
@@ -127,7 +136,9 @@ export function computeSummary(steps: any) {
  * Reducer helper: merge a new progress_step event into an existing ordered
  * list. Exported for tests + the App.jsx reducer. Rules:
  *
- * - `started`: append as a new entry.
+ * - `started`: if the same label is already in-flight, update that entry in
+ *   place (keeps its original `startedAt`, refreshes `detail`) so re-emitted
+ *   phase/detail updates don't stack duplicate rows. Otherwise append.
  * - `completed`/`failed`: mutate the most recent `started` entry with the
  *   same label. If none exists, append as a standalone entry so the panel
  *   still reflects the outcome.
@@ -136,6 +147,19 @@ export function mergeProgressEvent(steps: any, evt: any) {
   if (!evt || typeof evt.step !== 'string') return steps;
   const detail = typeof evt.detail === 'string' && evt.detail.trim() ? evt.detail : undefined;
   if (evt.status === 'started') {
+    // Coalesce onto an existing in-flight entry for the same label so live
+    // detail updates refresh the row instead of appending a second spinner.
+    for (let i = steps.length - 1; i >= 0; i--) {
+      if (steps[i].step === evt.step && steps[i].status === 'started') {
+        const next = steps.slice();
+        next[i] = {
+          ...next[i],
+          // Preserve the original startedAt so the elapsed timer keeps counting.
+          ...(detail ? { detail } : {}),
+        };
+        return next;
+      }
+    }
     return [
       ...steps,
       {

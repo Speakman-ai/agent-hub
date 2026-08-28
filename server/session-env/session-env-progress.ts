@@ -187,6 +187,8 @@ export function emitSessionWorkspaceProgress(args: {
   status: ProgressStepStatus;
   startedAt: number;
   finishedAt?: number;
+  /** Optional sub-line (e.g. why a fresh clone is slow); rendered under the step. */
+  detail?: string;
   log?: (msg: string) => void;
 }): void {
   emitProgressStep({
@@ -198,6 +200,7 @@ export function emitSessionWorkspaceProgress(args: {
     status: args.status,
     startedAt: args.startedAt,
     finishedAt: args.finishedAt,
+    detail: args.detail,
     log: args.log,
   });
 }

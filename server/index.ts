@@ -124,6 +124,7 @@ import {
   emitSessionEnvLaunchProgress,
   emitSessionWorkspaceProgress,
 } from './session-env/session-env-progress.js';
+import { SESSION_WORKSPACE_PREP_DETAIL } from '../shared/utils/sessionEnvLaunch.js';
 import {
   describeSessionEnvPortRouting,
   resolveSessionEnvPortRouting,
@@ -1884,6 +1885,10 @@ export const routeDeps: RouteDeps = {
         sessionId,
         status: 'started',
         startedAt: workspaceStartedAt,
+        // Only reached when there is real clone work (see
+        // `sessionWorkspaceNeedsProvisionProgress`), so the spinner that
+        // follows is a first-time clone + install, not a hang. Say so.
+        detail: SESSION_WORKSPACE_PREP_DETAIL,
       });
     }
     let worktreePath: string;
