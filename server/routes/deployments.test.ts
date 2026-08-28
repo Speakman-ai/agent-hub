@@ -1,7 +1,7 @@
 import '../test/setup.js';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import request from 'supertest';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { EventEmitter, Readable } from 'stream';
@@ -25,7 +25,7 @@ import {
   updateDeploymentStepStatus,
   updateDeploymentStatus,
 } from '../deploy/deployment-store.js';
-import { loadDeployConfig, parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
+import { parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
 import {
   getEnvironmentConfig,
   setEnvironmentEnabled,
@@ -94,12 +94,6 @@ function makeCheckoutDir(prefix: string): string {
   return mkdtempSync(path.join(tmpdir(), prefix));
 }
 
-function writeDeployYaml(root: string, raw: string): void {
-  const dir = path.join(root, '.agent-hub');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, 'deploy.yaml'), raw);
-}
-
 function makeBackend(opts: { autoClose?: boolean; closeOnKill?: boolean } = {}): {
   backend: RunnerBackend;
   acquireCalls: JobClaimSpec[];
@@ -163,6 +157,7 @@ function makeApp(
       resolvedRef: string;
     }>;
     loadConfig?: (deployYamlPath: string) => Promise<DeployConfig>;
+    readDeployConfig?: (project: Project) => Promise<DeployConfig>;
     releaseDigestRunner?: ReleaseDigestRunner;
   } = {},
 ) {
@@ -270,6 +265,7 @@ function makeApp(
         opts.prepareCheckout ??
         (async ({ ref }) => ({ worktreePath: `/tmp/deploy-${ref}`, resolvedRef: `${ref}-sha` })),
       loadConfig: opts.loadConfig ?? (async () => opts.config ?? CONFIG),
+      readDeployConfig: opts.readDeployConfig,
       orchestratorDeps: { runnerBackend: backend.backend, env: { PATH: '/usr/bin' } },
       releaseDigestRunner: opts.releaseDigestRunner,
     }),
@@ -586,12 +582,19 @@ environments:
     });
   });
 
-  it('renders hosted deploy config from a prepared checkout when project cwd is stale', async () => {
+  it('reads hosted deploy config via the cheap blob read, never cloning', async () => {
+    // For a hosted-git project the config comes from the repo blob at HEAD
+    // (readDeployConfig), NOT a full clone into a worktree — that clone ran
+    // ~11s on a large repo and hung the Deployments page. prepareCheckout must
+    // not be touched on this read path.
     const staleCwd = makeCheckoutDir('deploy-route-stale-cwd-');
-    const checkout = makeCheckoutDir('deploy-route-hosted-checkout-');
-    writeDeployYaml(
-      checkout,
-      `
+    const prepareCheckout = vi.fn(async () => ({
+      worktreePath: '/tmp/should-not-be-used',
+      resolvedRef: 'hosted-head-sha',
+    }));
+    const readDeployConfig = vi.fn(async () =>
+      parseDeployConfig(
+        `
 version: 1
 environments:
   production:
@@ -600,30 +603,26 @@ environments:
       - name: release
         run: ./release.sh
 `,
+      ),
     );
-    const prepareCheckout = vi.fn(async () => ({
-      worktreePath: checkout,
-      resolvedRef: 'hosted-head-sha',
-    }));
     const { app } = makeApp({
       project: { cwd: staleCwd, ahw: staleCwd, gitHost: 'agenthub' },
       prepareCheckout,
-      loadConfig: loadDeployConfig,
+      readDeployConfig,
     });
 
     const res = await request(app).get(`/api/projects/${PROJECT_ID}/deploy/config`).expect(200);
 
-    expect(prepareCheckout).toHaveBeenCalledWith({
-      project: expect.objectContaining({ id: PROJECT_ID, gitHost: 'agenthub', cwd: staleCwd }),
-      ref: 'HEAD',
-    });
+    expect(readDeployConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ id: PROJECT_ID, gitHost: 'agenthub', cwd: staleCwd }),
+    );
+    expect(prepareCheckout).not.toHaveBeenCalled();
     expect(res.body.environments).toHaveLength(1);
     expect(res.body.environments[0]).toMatchObject({
       name: 'production',
       approval: true,
       steps: [{ name: 'release', run: './release.sh' }],
     });
-    await vi.waitFor(() => expect(existsSync(checkout)).toBe(false));
   });
 
   it('renders deploy config when environment rows reference deleted deployments', async () => {

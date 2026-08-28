@@ -23,6 +23,7 @@ import type {
 import {
   DeployConfigError,
   loadDeployConfig,
+  parseDeployConfig,
   type DeployConfig,
   type DeployEnvironmentConfig,
 } from '../deploy/deploy-config.js';
@@ -106,6 +107,7 @@ import {
 import {
   DeploymentCheckoutError,
   prepareDeploymentCheckout,
+  readDeployYamlAtRef,
 } from '../deploy/deployment-checkout.js';
 import {
   AdjustDeploymentReleaseItemRequestSchema,
@@ -129,6 +131,12 @@ type CheckoutResult = { worktreePath: string; resolvedRef: string };
 interface DeploymentRouteOptions {
   prepareCheckout?: (args: { project: Project; ref: string }) => Promise<CheckoutResult>;
   loadConfig?: (deployYamlPath: string) => Promise<DeployConfig>;
+  /**
+   * Test seam for the read-only config path. Defaults to a cheap `git show`
+   * blob read (hosted git) / on-disk read (working-dir project) — never a full
+   * clone. See {@link readDeployYamlAtRef}.
+   */
+  readDeployConfig?: (project: Project) => Promise<DeployConfig>;
   orchestratorDeps?: Partial<DeployOrchestratorDeps>;
   releaseDigestRunner?: ReleaseDigestRunner;
 }
@@ -549,33 +557,20 @@ async function cleanupPreparedCheckout(checkout: CheckoutResult | null): Promise
  */
 async function withDeployConfig<T>(
   project: Project,
-  prepareCheckout: (args: { project: Project; ref: string }) => Promise<CheckoutResult>,
-  loadConfig: (deployYamlPath: string) => Promise<DeployConfig>,
+  readDeployConfig: (project: Project) => Promise<DeployConfig>,
   fn: (config: DeployConfig) => T,
 ): Promise<T> {
-  let checkout: CheckoutResult | null = null;
+  let config: DeployConfig;
   try {
-    let config: DeployConfig;
-    try {
-      if (projectUsesHostedGit(project)) {
-        checkout = await prepareCheckout({ project, ref: 'HEAD' });
-      }
-      config = await loadConfig(
-        checkout
-          ? path.join(checkout.worktreePath, '.agent-hub', 'deploy.yaml')
-          : projectDeployYamlPath(project),
-      );
-    } catch (err) {
-      if (err instanceof DeployConfigError && err.reason === 'not_found') {
-        config = { version: 1, environments: new Map() };
-      } else {
-        throw err;
-      }
+    config = await readDeployConfig(project);
+  } catch (err) {
+    if (err instanceof DeployConfigError && err.reason === 'not_found') {
+      config = { version: 1, environments: new Map() };
+    } else {
+      throw err;
     }
-    return fn(config);
-  } finally {
-    await cleanupPreparedCheckout(checkout);
   }
+  return fn(config);
 }
 
 /** Names declared in the current deploy.yaml (trimmed, deduped). */
@@ -779,6 +774,22 @@ export default function createDeploymentRoutes(
   const router = Router();
   const prepareCheckout = opts.prepareCheckout ?? prepareDeploymentCheckout;
   const loadConfig = opts.loadConfig ?? loadDeployConfig;
+  // Read-only config path: read `deploy.yaml` at HEAD without a working
+  // checkout. Hosted-git projects (bare repo, no worktree) read the blob
+  // directly; working-dir projects read the file off disk as before. The full
+  // clone stays only on the actual deploy trigger, which needs a worktree.
+  const readDeployConfig =
+    opts.readDeployConfig ??
+    (async (project: Project): Promise<DeployConfig> => {
+      if (projectUsesHostedGit(project)) {
+        const raw = await readDeployYamlAtRef({ project, ref: 'HEAD' });
+        if (raw == null) {
+          throw new DeployConfigError('not_found', 'deploy.yaml not found at HEAD.');
+        }
+        return parseDeployConfig(raw);
+      }
+      return loadConfig(projectDeployYamlPath(project));
+    });
   // Shared with the push/merge trigger hook so the manual-deploy and
   // trigger-driven paths never drift on GitHub-token / repo / recovery-checkout
   // / release-digest wiring.
@@ -876,24 +887,14 @@ export default function createDeploymentRoutes(
     const project = deps.findProject(projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    let checkout: CheckoutResult | null = null;
     try {
-      if (projectUsesHostedGit(project)) {
-        checkout = await prepareCheckout({ project, ref: 'HEAD' });
-      }
-      const config = await loadConfig(
-        checkout
-          ? path.join(checkout.worktreePath, '.agent-hub', 'deploy.yaml')
-          : projectDeployYamlPath(project),
-      );
+      const config = await readDeployConfig(project);
       return res.json(deployConfigDto(project, config));
     } catch (err) {
       if (err instanceof DeployConfigError) return mapConfigError(err, res);
       if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
       const message = err instanceof Error ? err.message : String(err);
       return res.status(500).json({ error: message });
-    } finally {
-      await cleanupPreparedCheckout(checkout);
     }
   });
 
@@ -905,7 +906,7 @@ export default function createDeploymentRoutes(
       if (!project) return res.status(404).json({ error: 'Project not found' });
 
       try {
-        const dto = await withDeployConfig(project, prepareCheckout, loadConfig, (config) =>
+        const dto = await withDeployConfig(project, readDeployConfig, (config) =>
           environmentsReadDto(project, config),
         );
         return res.json(dto);
@@ -939,7 +940,7 @@ export default function createDeploymentRoutes(
       }
 
       try {
-        const dto = await withDeployConfig(project, prepareCheckout, loadConfig, (config) => {
+        const dto = await withDeployConfig(project, readDeployConfig, (config) => {
           const declared = declaredEnvironmentNames(config);
           const hasConfigRow = getEnvironmentConfig(projectId, environmentName) != null;
           if (!declared.has(environmentName) && !hasConfigRow) {
@@ -974,15 +975,10 @@ export default function createDeploymentRoutes(
       if (!project) return res.status(404).json({ error: 'Project not found' });
 
       try {
-        const { removed, dto } = await withDeployConfig(
-          project,
-          prepareCheckout,
-          loadConfig,
-          (config) => {
-            const wasRemoved = deleteEnvironmentConfig(projectId, environmentName);
-            return { removed: wasRemoved, dto: environmentsReadDto(project, config) };
-          },
-        );
+        const { removed, dto } = await withDeployConfig(project, readDeployConfig, (config) => {
+          const wasRemoved = deleteEnvironmentConfig(projectId, environmentName);
+          return { removed: wasRemoved, dto: environmentsReadDto(project, config) };
+        });
         return res.json({ removed, ...dto });
       } catch (err) {
         if (err instanceof DeployConfigError) return mapConfigError(err, res);
@@ -1027,7 +1023,7 @@ export default function createDeploymentRoutes(
         // Guard against typos the same way the environment PATCH does: the env
         // must be declared in deploy.yaml OR already have a runtime config row,
         // so a trigger never strands against a non-existent environment name.
-        const trigger = await withDeployConfig(project, prepareCheckout, loadConfig, (config) => {
+        const trigger = await withDeployConfig(project, readDeployConfig, (config) => {
           const declared = declaredEnvironmentNames(config);
           const hasConfigRow = getEnvironmentConfig(projectId, environmentName) != null;
           if (!declared.has(environmentName) && !hasConfigRow) {
@@ -1120,7 +1116,7 @@ export default function createDeploymentRoutes(
         // Guard against typos the same way the trigger POST does: the env must be
         // declared in deploy.yaml OR already have a runtime config row, so a
         // schedule never strands against a non-existent environment name.
-        const schedule = await withDeployConfig(project, prepareCheckout, loadConfig, (config) => {
+        const schedule = await withDeployConfig(project, readDeployConfig, (config) => {
           const declared = declaredEnvironmentNames(config);
           const hasConfigRow = getEnvironmentConfig(projectId, environmentName) != null;
           if (!declared.has(environmentName) && !hasConfigRow) {
@@ -1246,7 +1242,7 @@ export default function createDeploymentRoutes(
       try {
         // Guard against typos the same way the trigger/schedule POSTs do: the env
         // must be declared in deploy.yaml OR already have a runtime config row.
-        const gate = await withDeployConfig(project, prepareCheckout, loadConfig, (config) => {
+        const gate = await withDeployConfig(project, readDeployConfig, (config) => {
           const declared = declaredEnvironmentNames(config);
           const hasConfigRow = getEnvironmentConfig(projectId, environmentName) != null;
           if (!declared.has(environmentName) && !hasConfigRow) {
@@ -1355,7 +1351,7 @@ export default function createDeploymentRoutes(
         // Guard against typos the same way the trigger/schedule POSTs do: the env
         // must be declared in deploy.yaml OR already have a runtime config row, so
         // routing never strands against a non-existent environment name.
-        await withDeployConfig(project, prepareCheckout, loadConfig, (config) => {
+        await withDeployConfig(project, readDeployConfig, (config) => {
           const declared = declaredEnvironmentNames(config);
           const hasConfigRow = getEnvironmentConfig(projectId, environmentName) != null;
           if (!declared.has(environmentName) && !hasConfigRow) {

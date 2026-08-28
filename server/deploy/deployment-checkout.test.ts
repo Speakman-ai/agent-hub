@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Project } from '../types.js';
-import { prepareDeploymentCheckout } from './deployment-checkout.js';
+import { prepareDeploymentCheckout, readDeployYamlAtRef } from './deployment-checkout.js';
 
 const roots: string[] = [];
 
@@ -62,5 +62,61 @@ describe('prepareDeploymentCheckout', () => {
     roots.push(checkout.worktreePath);
 
     expect(existsSync(path.join(checkout.worktreePath, '.agent-hub', 'deploy.yaml'))).toBe(true);
+  });
+});
+
+describe('readDeployYamlAtRef', () => {
+  function commitRepo(): { cwd: string; ahw: string } {
+    const root = makeRoot('deploy-yaml-read-');
+    const cwd = path.join(root, 'repo');
+    const ahw = path.join(root, 'ahw');
+    mkdirSync(path.join(cwd, '.agent-hub'), { recursive: true });
+    mkdirSync(ahw, { recursive: true });
+    return { cwd, ahw };
+  }
+
+  it('reads the deploy.yaml blob at HEAD without materializing a checkout', async () => {
+    const { cwd, ahw } = commitRepo();
+    const yaml = 'version: 1\nenvironments:\n  prod:\n    steps:\n      - run: ./deploy.sh\n';
+    writeFileSync(path.join(cwd, '.agent-hub', 'deploy.yaml'), yaml);
+    git(cwd, ['init', '--initial-branch=main']);
+    git(cwd, ['add', '.agent-hub/deploy.yaml']);
+    git(cwd, ['commit', '-m', 'add deploy config']);
+
+    const raw = await readDeployYamlAtRef({
+      project: { id: 'p', name: 'P', cwd, ahw, agents: [] } as Project,
+      ref: 'HEAD',
+    });
+
+    // Byte-for-byte content, and no tmp worktree was created.
+    expect(raw).toBe(yaml);
+    expect(roots.some((r) => existsSync(path.join(r, '.git', 'HEAD')) && r !== cwd)).toBe(false);
+  });
+
+  it('returns null when deploy.yaml does not exist at the ref', async () => {
+    const { cwd, ahw } = commitRepo();
+    writeFileSync(path.join(cwd, 'README.md'), '# repo\n');
+    git(cwd, ['init', '--initial-branch=main']);
+    git(cwd, ['add', 'README.md']);
+    git(cwd, ['commit', '-m', 'no deploy config']);
+
+    const raw = await readDeployYamlAtRef({
+      project: { id: 'p', name: 'P', cwd, ahw, agents: [] } as Project,
+      ref: 'HEAD',
+    });
+
+    expect(raw).toBeNull();
+  });
+
+  it('returns null for an empty repo with no commits (invalid HEAD)', async () => {
+    const { cwd, ahw } = commitRepo();
+    git(cwd, ['init', '--initial-branch=main']);
+
+    const raw = await readDeployYamlAtRef({
+      project: { id: 'p', name: 'P', cwd, ahw, agents: [] } as Project,
+      ref: 'HEAD',
+    });
+
+    expect(raw).toBeNull();
   });
 });
