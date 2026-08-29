@@ -11,6 +11,18 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  closestCorners,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import { CSS } from '@dnd-kit/utilities';
+import {
   columnDotStyle,
   columnNameById,
   columnStatusStyle,
@@ -22,6 +34,80 @@ import {
 } from '../../utils/epicScopeStats';
 import { autonomousModelOptions } from '../../utils/epics';
 import { AddPhaseForm, AddTicketForm } from './ScopeForms';
+
+const DROPPABLE_PREFIX = 'phase-drop:';
+
+/** Ticket card body — shared between the in-column draggable and the drag overlay clone. */
+function TicketCardBody({ ticket, col, blocked }: any) {
+  return (
+    <div className="flex items-start gap-2">
+      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${columnDotStyle(col)}`} title={col} />
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium text-gray-200 leading-snug line-clamp-2">
+          {ticket.title}
+        </p>
+        <div className="flex flex-wrap items-center gap-1 mt-1.5">
+          {(ticket.card_kind === 'spike' || ticket.title?.startsWith('Spike:')) && (
+            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-300 bg-violet-500/15 px-1.5 py-0.5 rounded">
+              <Zap size={9} />
+              spike
+            </span>
+          )}
+          <span
+            className={`text-[9px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded ring-1 ring-inset ${columnStatusStyle(col)}`}
+          >
+            {col}
+          </span>
+          {ticket.priority && (
+            <span className={`text-[9px] font-medium ${priorityStyle(ticket.priority)}`}>
+              {ticket.priority}
+            </span>
+          )}
+          {blocked && (
+            <span className="inline-flex items-center gap-0.5 text-[9px] text-red-400">
+              <Ban size={9} />
+              blocked
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One ticket in a phase column. When `draggable` is on it registers with
+ * `useDraggable` so it can be dropped onto another phase column. The
+ * PointerSensor's distance activation (see PhaseFlowchartView) keeps a plain
+ * click falling through to `onOpenCard` instead of starting a drag.
+ */
+function DraggableTicket({ ticket, col, blocked, draggable, moving, onOpenCard }: any) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: ticket.id,
+    data: { ticketId: ticket.id, phaseId: ticket.phase_id ?? null, ticket, col, blocked },
+    disabled: !draggable,
+  });
+  const style = {
+    transform: transform ? CSS.Translate.toString(transform) : undefined,
+    opacity: isDragging || moving ? 0.4 : undefined,
+  };
+  return (
+    <li ref={setNodeRef} style={style}>
+      <button
+        type="button"
+        onClick={() => onOpenCard?.(ticket)}
+        className={`w-full text-left rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-2 hover:bg-white/[0.05] hover:border-white/[0.12] transition-colors ${
+          draggable ? 'cursor-grab active:cursor-grabbing touch-none' : 'cursor-pointer'
+        }`}
+        data-testid={`phase-ticket-${ticket.id}`}
+        {...(draggable ? attributes : {})}
+        {...(draggable ? listeners : {})}
+      >
+        <TicketCardBody ticket={ticket} col={col} blocked={blocked} />
+      </button>
+    </li>
+  );
+}
 
 function Toggle({ checked, onChange, label }: any) {
   return (
@@ -64,11 +150,18 @@ function PhaseColumn({
   running,
   stopping,
   modelConfig,
+  ticketsDraggable,
+  movingTicketId,
 }: any) {
   const colMap = columnNameById(columns);
   const phaseTickets = ticketsForPhase(tickets, phase.id);
   const progress = phaseProgress(phaseTickets, colMap);
   const complete = phaseComplete(phaseTickets, colMap);
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
+    id: `${DROPPABLE_PREFIX}${phase.id}`,
+    data: { phaseId: phase.id },
+    disabled: !ticketsDraggable,
+  });
   const autonomous = !!phaseForm?.autonomous;
   const autoMerge = phaseForm?.autonomous_send_it === 1;
   const maxConcurrent = phaseForm?.autonomous_max_concurrent ?? 1;
@@ -79,13 +172,17 @@ function PhaseColumn({
 
   return (
     <div
+      ref={setDropRef}
       className={`flex shrink-0 w-[260px] flex-col rounded-xl border overflow-hidden transition-colors ${
-        complete
-          ? 'border-emerald-500/40 bg-emerald-950/40 ring-1 ring-emerald-500/20'
-          : 'border-white/[0.08] bg-[#0d1117]/80'
+        isOver
+          ? 'border-emerald-400/70 bg-emerald-950/40 ring-2 ring-emerald-400/40'
+          : complete
+            ? 'border-emerald-500/40 bg-emerald-950/40 ring-1 ring-emerald-500/20'
+            : 'border-white/[0.08] bg-[#0d1117]/80'
       }`}
       data-testid={`phase-column-${phase.id}`}
       data-complete={complete ? 'true' : 'false'}
+      data-drop-over={isOver ? 'true' : 'false'}
     >
       <div
         className={`px-3 pt-3 pb-2 border-b ${
@@ -288,52 +385,15 @@ function PhaseColumn({
             const col = colMap[ticket.column_id] || 'To Do';
             const blocked = ticketHasBlockers(ticket);
             return (
-              <li key={ticket.id}>
-                <button
-                  type="button"
-                  onClick={() => onOpenCard?.(ticket)}
-                  className="w-full text-left rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-2 hover:bg-white/[0.05] hover:border-white/[0.12] transition-colors cursor-pointer"
-                  data-testid={`phase-ticket-${ticket.id}`}
-                >
-                  <div className="flex items-start gap-2">
-                    <span
-                      className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${columnDotStyle(col)}`}
-                      title={col}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-medium text-gray-200 leading-snug line-clamp-2">
-                        {ticket.title}
-                      </p>
-                      <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                        {(ticket.card_kind === 'spike' || ticket.title?.startsWith('Spike:')) && (
-                          <span className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-300 bg-violet-500/15 px-1.5 py-0.5 rounded">
-                            <Zap size={9} />
-                            spike
-                          </span>
-                        )}
-                        <span
-                          className={`text-[9px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded ring-1 ring-inset ${columnStatusStyle(col)}`}
-                        >
-                          {col}
-                        </span>
-                        {ticket.priority && (
-                          <span
-                            className={`text-[9px] font-medium ${priorityStyle(ticket.priority)}`}
-                          >
-                            {ticket.priority}
-                          </span>
-                        )}
-                        {blocked && (
-                          <span className="inline-flex items-center gap-0.5 text-[9px] text-red-400">
-                            <Ban size={9} />
-                            blocked
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </button>
-              </li>
+              <DraggableTicket
+                key={ticket.id}
+                ticket={ticket}
+                col={col}
+                blocked={blocked}
+                draggable={ticketsDraggable}
+                moving={movingTicketId === ticket.id}
+                onOpenCard={onOpenCard}
+              />
             );
           })
         )}
@@ -397,6 +457,8 @@ export default function PhaseFlowchartView({
   onReorderPhases,
   phaseStoppingId,
   onOpenCard,
+  onMoveTicketToPhase,
+  movingTicketId,
   modelConfig,
 }: any) {
   const movePhase = (index: number, delta: number) => {
@@ -408,6 +470,34 @@ export default function PhaseFlowchartView({
   };
   const [showEmptyPhaseForm, setShowEmptyPhaseForm] = useState(false);
   const [showTrailingPhaseForm, setShowTrailingPhaseForm] = useState(false);
+  const [activeTicket, setActiveTicket] = useState<any>(null);
+
+  // Drag tickets between phase columns. Only enabled when a persist handler is
+  // wired (the epic page); distance activation keeps a plain click opening the
+  // card instead of starting a drag.
+  const ticketsDraggable = !!onMoveTicketToPhase;
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor),
+  );
+
+  const handleDragStart = (event: any) => {
+    setActiveTicket(event.active?.data?.current ?? null);
+  };
+  const handleDragEnd = (event: any) => {
+    setActiveTicket(null);
+    const { active, over } = event;
+    if (!over) return;
+    const overId = String(over.id);
+    if (!overId.startsWith(DROPPABLE_PREFIX)) return;
+    const targetPhaseId = overId.slice(DROPPABLE_PREFIX.length);
+    const sourcePhaseId = active?.data?.current?.phaseId ?? null;
+    const ticketId = active?.data?.current?.ticketId ?? String(active?.id);
+    if (targetPhaseId && ticketId && targetPhaseId !== sourcePhaseId) {
+      onMoveTicketToPhase?.(ticketId, targetPhaseId);
+    }
+  };
+  const handleDragCancel = () => setActiveTicket(null);
 
   if (phases.length === 0) {
     return (
@@ -446,7 +536,7 @@ export default function PhaseFlowchartView({
     );
   }
 
-  return (
+  const columnsRow = (
     <div className="overflow-x-auto pb-2" data-testid="phase-flowchart-view">
       <div className="flex items-stretch gap-0 min-w-min px-1">
         {phases.map((phase: any, index: number) => (
@@ -473,6 +563,8 @@ export default function PhaseFlowchartView({
               running={!!phase.autonomous_running}
               stopping={phaseStoppingId === phase.id}
               modelConfig={modelConfig}
+              ticketsDraggable={ticketsDraggable}
+              movingTicketId={movingTicketId}
             />
             {index < phases.length - 1 && (
               <div className="flex items-center px-1 self-center" aria-hidden>
@@ -508,5 +600,30 @@ export default function PhaseFlowchartView({
         )}
       </div>
     </div>
+  );
+
+  if (!ticketsDraggable) return columnsRow;
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCorners}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
+    >
+      {columnsRow}
+      <DragOverlay dropAnimation={{ duration: 200, easing: 'cubic-bezier(0.18,0.67,0.6,1.22)' }}>
+        {activeTicket ? (
+          <div className="w-[236px] rounded-lg border border-emerald-400/40 bg-[#0d1117] px-2.5 py-2 shadow-lg shadow-black/40">
+            <TicketCardBody
+              ticket={activeTicket.ticket}
+              col={activeTicket.col}
+              blocked={activeTicket.blocked}
+            />
+          </div>
+        ) : null}
+      </DragOverlay>
+    </DndContext>
   );
 }

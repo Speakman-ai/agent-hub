@@ -105,6 +105,8 @@ export default function EpicScopeWorkbench({
       onReorderPhases={onReorderPhases}
       phaseStoppingId={phaseStoppingId}
       onOpenCard={onOpenCard}
+      onMoveTicketToPhase={onAssignTicket}
+      movingTicketId={assigningTicketId}
       modelConfig={modelConfig}
     />
   );
