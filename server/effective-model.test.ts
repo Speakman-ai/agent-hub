@@ -179,6 +179,106 @@ describe('resolveEffectiveModel', () => {
   });
 });
 
+describe('resolveEffectiveModel — mode-aware default', () => {
+  const mockGet = vi.mocked(getUserPreferencesRow);
+
+  beforeEach(() => {
+    mockGet.mockReset();
+    mockGet.mockReturnValue({});
+  });
+
+  function makeModeCfg(): AppConfig {
+    const cfg = makeCfg();
+    cfg.engineValidModels['claude-code'] = ['allowed-a', 'wf-model', 'dev-model'];
+    cfg.engineModeDefaultModels = {
+      'claude-code': { workflow: 'wf-model', dev: 'dev-model' },
+    };
+    return cfg;
+  }
+
+  it('picks the workflow-mode default for a claude-code workflow project', () => {
+    const cfg = makeModeCfg();
+    const m = resolveEffectiveModel(cfg, 'claude-code', {
+      ownerUserId: null,
+      agentModel: '',
+      projectMode: 'workflow',
+    });
+    expect(m).toBe('wf-model');
+  });
+
+  it('picks the dev-mode default for a claude-code dev/code project', () => {
+    const cfg = makeModeCfg();
+    const m = resolveEffectiveModel(cfg, 'claude-code', {
+      ownerUserId: null,
+      agentModel: '',
+      projectMode: 'dev',
+    });
+    expect(m).toBe('dev-model');
+  });
+
+  it('falls back to the flat engine default when no projectMode is threaded', () => {
+    const cfg = makeModeCfg();
+    const m = resolveEffectiveModel(cfg, 'claude-code', {
+      ownerUserId: null,
+      agentModel: '',
+    });
+    expect(m).toBe('claude-hub');
+  });
+
+  it('ignores a mode default that is not valid for the engine', () => {
+    const cfg = makeModeCfg();
+    cfg.engineModeDefaultModels['claude-code'] = { workflow: 'not-in-allowlist' };
+    const m = resolveEffectiveModel(cfg, 'claude-code', {
+      ownerUserId: null,
+      agentModel: '',
+      projectMode: 'workflow',
+    });
+    expect(m).toBe('claude-hub');
+  });
+
+  it('lets an explicit model beat the mode default', () => {
+    const cfg = makeModeCfg();
+    const m = resolveEffectiveModel(cfg, 'claude-code', {
+      explicitModel: 'allowed-a',
+      projectMode: 'workflow',
+      ownerUserId: 'u1',
+    });
+    expect(m).toBe('allowed-a');
+  });
+
+  it('lets a per-user model override beat the mode default', () => {
+    const cfg = makeModeCfg();
+    mockGet.mockReturnValue({ agentModelOverrides: { 'agent-x': 'allowed-a' } });
+    const m = resolveEffectiveModel(cfg, 'claude-code', {
+      agentId: 'agent-x',
+      ownerUserId: 'u1',
+      agentModel: '',
+      projectMode: 'workflow',
+    });
+    expect(m).toBe('allowed-a');
+  });
+
+  it('lets a shared agent model (owner-less) beat the mode default', () => {
+    const cfg = makeModeCfg();
+    const m = resolveEffectiveModel(cfg, 'claude-code', {
+      ownerUserId: null,
+      agentModel: 'allowed-a',
+      projectMode: 'workflow',
+    });
+    expect(m).toBe('allowed-a');
+  });
+
+  it('leaves an engine without a mode entry on its flat default', () => {
+    const cfg = makeModeCfg();
+    const m = resolveEffectiveModel(cfg, 'cursor-agent', {
+      ownerUserId: null,
+      agentModel: '',
+      projectMode: 'workflow',
+    });
+    expect(m).toBe('cursor-hub');
+  });
+});
+
 describe('resolveEffectiveEngineAndModel', () => {
   const mockGet = vi.mocked(getUserPreferencesRow);
 
@@ -295,6 +395,24 @@ describe('resolveEffectiveEngineAndModel', () => {
     // Engine is untouched (shared); only the model reflects the user's pick.
     expect(r.engine).toBe('claude-code');
     expect(r.model).toBe('allowed-a2');
+    expect(r.overrideApplied).toBe(false);
+  });
+
+  it('threads projectMode into the mode-aware default for an owned agent', () => {
+    const cfg = makeCfg();
+    cfg.engineValidModels['claude-code'] = ['allowed-a', 'wf-model', 'dev-model'];
+    cfg.engineModeDefaultModels = {
+      'claude-code': { workflow: 'wf-model', dev: 'dev-model' },
+    };
+    const r = resolveEffectiveEngineAndModel(cfg, {
+      agentId: 'agent-x',
+      agentEngine: 'claude-code',
+      agentModel: '',
+      ownerUserId: 'u1',
+      projectMode: 'workflow',
+    });
+    expect(r.engine).toBe('claude-code');
+    expect(r.model).toBe('wf-model');
     expect(r.overrideApplied).toBe(false);
   });
 });

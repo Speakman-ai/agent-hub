@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { assertSafeTestDataDir, isTestContext } from './db-safety.js';
-import type { AppConfig } from './types.js';
+import type { AppConfig, ProjectMode } from './types.js';
 import { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
 import {
   resolveSpawnPath,
@@ -292,6 +292,23 @@ const mergedEngineDefaultModelsRaw =
   (fileConfig.engineDefaultModels as Record<string, string>) || DEFAULT_ENGINE_DEFAULT_MODELS;
 const mergedEngineDefaultModels = { ...mergedEngineDefaultModelsRaw };
 
+// Per-engine, per-project-mode default model. Workflow-mode projects get a
+// lighter Claude default (Sonnet 5); dev/code-mode projects get Opus 4.8.
+// Consulted only at the bottom default tier of model resolution — explicit
+// picks and per-user overrides still win — and only when a caller threads the
+// project mode through. Engines/modes without an entry fall through to the
+// flat `engineDefaultModels`.
+const DEFAULT_ENGINE_MODE_DEFAULT_MODELS: Record<string, Partial<Record<ProjectMode, string>>> = {
+  'claude-code': {
+    workflow: 'claude-sonnet-5',
+    dev: 'claude-opus-4-8',
+  },
+};
+
+const mergedEngineModeDefaultModels =
+  (fileConfig.engineModeDefaultModels as Record<string, Partial<Record<ProjectMode, string>>>) ||
+  DEFAULT_ENGINE_MODE_DEFAULT_MODELS;
+
 /**
  * Common install directories used as the last-resort search list when a binary
  * is not on $PATH. Covers the typical landing spots for per-user installers
@@ -424,6 +441,7 @@ const config: AppConfig = {
   defaultModel: resolve(null, 'defaultModel', 'claude-opus-5') as string,
 
   engineDefaultModels: mergedEngineDefaultModels,
+  engineModeDefaultModels: mergedEngineModeDefaultModels,
 
   engineValidModels: mergedEngineValidModels,
 

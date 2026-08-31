@@ -253,6 +253,7 @@ import type {
   ChatMessage,
   BrowserToolActivityEvent,
   SkillInvocationRow,
+  ProjectMode,
 } from './types.js';
 import { enrichSessionForClient } from './session-checkpoint-rewind.js';
 import {
@@ -2295,6 +2296,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     errorText: string;
     transientRetries: number;
     triedEngines: readonly string[];
+    projectMode?: ProjectMode | null;
   }): Promise<{ engine: SupportedEngine; model: string; tried: string[] } | null> {
     const {
       sessionId,
@@ -2304,6 +2306,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       errorText,
       transientRetries,
       triedEngines,
+      projectMode: failoverProjectMode,
     } = params;
     try {
       const ownerUserId = getSessionOwner(sessionId);
@@ -2333,6 +2336,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         agentModel: params.agentModel ?? null,
         ownerUserId,
         agentId,
+        projectMode: failoverProjectMode,
       });
 
       getDb().transaction(() => {
@@ -2475,6 +2479,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             agentEngine: agent.engine || 'claude-code',
             agentModel: (agent as AgentWithModel).model ?? null,
             ownerUserId: orphanOwner,
+            projectMode: getProjectMode(project as Project),
           },
         );
         stmts.createSession.run(
@@ -2860,6 +2865,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           agentModel: (agent as AgentWithModel).model,
           ownerUserId: sessOwnerUid,
           agentId,
+          projectMode: getProjectMode(project as Project),
         });
       const paths = resolveProjectPaths(project as Project, agent as Agent);
       const slashAug = augmentChatTurnForSlashSkill({
@@ -5223,6 +5229,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               currentEngine: engine,
               currentModel: model,
               errorText: errorMsg,
+              projectMode: getProjectMode(project as Project),
               transientRetries,
               triedEngines: msg._engineFailoverTried ?? [],
             });
@@ -6603,6 +6610,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             errorText: turnEndError.errorText,
             transientRetries,
             triedEngines: msg._engineFailoverTried ?? [],
+            projectMode: getProjectMode(project as Project),
           });
           if (failover) {
             setImmediate(() => {

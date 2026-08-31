@@ -4,8 +4,10 @@
  * Order: explicit (request / session picker) → per-user **per-agent** model
  * override (`agentModelOverrides` on `preferences_json`, only when `agentId` +
  * `ownerUserId` are supplied and the picked model is valid for `engine`) →
- * `cfg.engineDefaultModels[engine]` (or the first model advertised for that
- * engine). The legacy top-level `cfg.defaultModel` is deliberately not part
+ * per-project-mode default (`cfg.engineModeDefaultModels[engine][projectMode]`,
+ * only when the caller threads `projectMode` through and the id is valid for
+ * `engine`) → `cfg.engineDefaultModels[engine]` (or the first model advertised
+ * for that engine). The legacy top-level `cfg.defaultModel` is deliberately not part
  * of agent resolution: it is a host-wide setting and can make one user's
  * agent unexpectedly run under another user's model choice.
  *
@@ -25,7 +27,7 @@ import {
   resolveSelectableCodexModels,
 } from './codex-model-capability.js';
 import { getUserPreferencesRow } from './user-preferences-store.js';
-import type { AppConfig } from './types.js';
+import type { AppConfig, ProjectMode } from './types.js';
 
 export interface ResolveEffectiveModelOpts {
   /** Session / caller override (validated elsewhere when applicable). */
@@ -36,6 +38,13 @@ export interface ResolveEffectiveModelOpts {
   ownerUserId?: string | null;
   /** Agent id used to key the per-user `agentModelOverrides` map. */
   agentId?: string | null;
+  /**
+   * Project mode of the session being spawned. When supplied, the bottom
+   * default tier consults `cfg.engineModeDefaultModels[engine][mode]` before
+   * the flat `engineDefaultModels[engine]`, so a workflow-mode project can
+   * default to a lighter model than a dev-mode one. Ignored for higher tiers.
+   */
+  projectMode?: ProjectMode | null;
 }
 
 export interface ResolveEffectiveEngineAndModelOpts {
@@ -54,6 +63,11 @@ export interface ResolveEffectiveEngineAndModelOpts {
   explicitEngine?: string | null;
   /** Caller-provided model override. Wins over every other tier. */
   explicitModel?: string | null;
+  /**
+   * Project mode of the session being spawned. Threaded into the model
+   * resolution so the bottom default tier can pick a mode-specific default.
+   */
+  projectMode?: ProjectMode | null;
 }
 
 export interface ResolvedEffectiveEngineAndModel {
@@ -85,6 +99,7 @@ export function resolveEffectiveEngineAndModel(
       agentModel: explicitEngine === opts.agentEngine ? opts.agentModel : null,
       ownerUserId: opts.ownerUserId,
       agentId: opts.agentId,
+      projectMode: opts.projectMode,
     });
     return {
       engine: explicitEngine,
@@ -111,6 +126,7 @@ export function resolveEffectiveEngineAndModel(
         agentModel: override.engine === opts.agentEngine ? opts.agentModel : null,
         ownerUserId: uid,
         agentId: opts.agentId,
+        projectMode: opts.projectMode,
       });
       return {
         engine: override.engine,
@@ -125,6 +141,7 @@ export function resolveEffectiveEngineAndModel(
     agentModel: opts.agentModel,
     ownerUserId: opts.ownerUserId,
     agentId: opts.agentId,
+    projectMode: opts.projectMode,
   });
   return { engine: opts.agentEngine, model, overrideApplied: false };
 }
@@ -173,6 +190,18 @@ export function resolveEffectiveModel(
     allowed.includes(agentM)
   ) {
     return agentM;
+  }
+
+  // Mode-aware default (e.g. workflow-mode claude-code → Sonnet, dev-mode →
+  // Opus 4.8). Sits below explicit picks / per-user / shared-agent tiers and
+  // only applies when the caller threaded the project mode through and the
+  // resolved id is still valid for the engine.
+  const mode = opts.projectMode;
+  if (mode) {
+    const modeDefault = cfg.engineModeDefaultModels?.[engine]?.[mode]?.trim();
+    if (modeDefault && Array.isArray(allowed) && allowed.includes(modeDefault)) {
+      return modeDefault;
+    }
   }
 
   const configuredDefault =

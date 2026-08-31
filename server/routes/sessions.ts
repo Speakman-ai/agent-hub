@@ -625,6 +625,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       ownerUserId: ownerUid,
       explicitEngine: parsed.engine,
       explicitModel: parsed.model,
+      projectMode: getProjectMode(found?.project),
     });
     const requestedMode =
       parsed.session_mode !== undefined
@@ -898,6 +899,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       agentEngine: found.agent.engine || 'claude-code',
       agentModel: found.agent.model ?? null,
       ownerUserId: ownerUid,
+      projectMode: getProjectMode(found.project),
     });
     const sessionName = `[BG] ${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`;
     // Worktree-only — see note above.
@@ -1987,6 +1989,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           agentModel,
           ownerUserId: ownerUid,
           agentId: existing.agent_id,
+          projectMode: getProjectMode(af?.project),
         });
         stmts.updateSessionModel.run(fallbackModel, sessionId);
       }
@@ -2701,6 +2704,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         agentModel: coachAgent.model,
         ownerUserId: ownerUid,
         agentId: coachAgentId,
+        projectMode: getProjectMode(project),
       });
       const sessionName = buildExtractSkillSessionName(source.name);
       // No worktree: the coach saves skills via the write API, not git.
@@ -3094,6 +3098,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         agentModel: targetAgent.model,
         ownerUserId: fwdOwnerUid,
         agentId: targetAgentId,
+        projectMode: getProjectMode(targetFound.project),
       });
       const wt = defaultSessionUseWorktreeFlag(targetFound.project);
       stmts.createSession.run(newSessionId, targetAgentId, truncatedName, engine, model, wt, 0, 1);
@@ -3275,6 +3280,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         agentModel: targetAgent.model,
         ownerUserId: ownerUid,
         agentId: resolvedTargetAgentId,
+        projectMode: getProjectMode(targetFound.project),
       });
       const wt = defaultSessionUseWorktreeFlag(targetFound.project);
       stmts.createSession.run(

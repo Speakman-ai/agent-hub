@@ -23,6 +23,7 @@ function makeConfig(): AppConfig {
       'gemini-cli': 'gemini-2.5-pro',
       'codex-cli': 'gpt-5.3-codex',
     },
+    engineModeDefaultModels: {},
     engineValidModels: {
       'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'],
       'cursor-agent': ['composer-2.5'],

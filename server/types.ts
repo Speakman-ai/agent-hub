@@ -3750,6 +3750,16 @@ export interface AppConfig {
   projectsDir: string;
   defaultModel: string;
   engineDefaultModels: Record<string, string>;
+  /**
+   * Per-engine, per-project-mode default model. Consulted before the flat
+   * `engineDefaultModels[engine]` fallback when a caller passes the project's
+   * mode into model resolution. Lets a workflow-mode project default to a
+   * lighter model than a dev/code-mode project on the same engine. Only the
+   * bottom (default) resolution tier is affected — explicit picks and per-user
+   * overrides still win. Missing engine/mode entries fall through to
+   * `engineDefaultModels`.
+   */
+  engineModeDefaultModels: Record<string, Partial<Record<ProjectMode, string>>>;
   engineValidModels: Record<string, string[]>;
   defaultTimeoutMs: number;
   docsTimeoutMs: number;

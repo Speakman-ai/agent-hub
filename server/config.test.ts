@@ -454,6 +454,18 @@ describe('config.ts — claude-code model defaults', () => {
     expect(cfg.allValidModels).toContain('claude-sonnet-5');
     expect(cfg.engineValidModels['claude-code']).not.toContain('claude-sonnet-4-6');
   });
+
+  it('defaults claude-code to Sonnet 5 for workflow-mode and Opus 4.8 for dev-mode', async () => {
+    // Mode-aware default: workflow (no-code) projects run the lighter Sonnet 5,
+    // dev/code projects run Opus 4.8. Both ids must stay selectable so the
+    // resolved default is not filtered out downstream.
+    const cfg = await importDefaults();
+    const modeDefaults = cfg.engineModeDefaultModels['claude-code'];
+    expect(modeDefaults?.workflow).toBe('claude-sonnet-5');
+    expect(modeDefaults?.dev).toBe('claude-opus-4-8');
+    expect(cfg.engineValidModels['claude-code']).toContain('claude-sonnet-5');
+    expect(cfg.engineValidModels['claude-code']).toContain('claude-opus-4-8');
+  });
 });
 
 describe('config.ts — CLI binary auto-detection (pickBin)', () => {
