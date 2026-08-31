@@ -121,11 +121,13 @@ describe('GET /board (counts + optional first-page-per-column)', () => {
     expect(body.counts[columnId]).toBe(12);
   });
 
-  it('returns the full board when ?limit is omitted (backward compatible)', async () => {
-    const res = await request.get(`/api/projects/${projectId}/board`).expect(200);
-    const body = res.body as { cards: EnrichedCard[] };
+  it('returns the full unpaged board with ?limit=all (cursors absent)', async () => {
+    const res = await request.get(`/api/projects/${projectId}/board?limit=all`).expect(200);
+    const body = res.body as { cards: EnrichedCard[]; cursors?: Record<string, string | null> };
     const inColumn = body.cards.filter((c) => 'position' in c);
     expect(inColumn.length).toBeGreaterThanOrEqual(12);
+    // The full-board opt-out is unpaged — no per-column cursors.
+    expect(body.cursors).toBeUndefined();
   });
 
   it('bounds cards to the first page per column when ?limit is supplied', async () => {
@@ -137,10 +139,21 @@ describe('GET /board (counts + optional first-page-per-column)', () => {
     expect(body.counts[columnId]).toBe(12);
   });
 
-  it('omits the cursors map when ?limit is not supplied', async () => {
+  it('bounds the default (no ?limit) response and includes the cursors map', async () => {
     const res = await request.get(`/api/projects/${projectId}/board`).expect(200);
-    const body = res.body as { cursors?: Record<string, string | null> };
-    expect(body.cursors).toBeUndefined();
+    const body = res.body as {
+      cards: EnrichedCard[];
+      counts: Record<string, number>;
+      cursors?: Record<string, string | null>;
+    };
+    // The default is now bounded/paginated, so the resume cursors map is present
+    // (this is the payload trim: the default no longer serializes the whole board).
+    expect(body.cursors).toBeDefined();
+    // 12 cards fit inside the default page size, so the column's first page is
+    // also its last — cursor null — and every card is still returned.
+    expect(body.cursors?.[columnId]).toBeNull();
+    expect(body.counts[columnId]).toBe(12);
+    expect(body.cards.filter((c) => 'position' in c)).toHaveLength(12);
   });
 
   it('returns a per-column cursors map when ?limit is supplied (non-null when more remain)', async () => {

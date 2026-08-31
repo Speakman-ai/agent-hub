@@ -77,7 +77,7 @@ export default function SessionScopingModePane({
     const token = reloadTokenRef.current;
     setLoading(true);
     try {
-      const data = await api.getBoard(projectId);
+      const data = await api.getBoard(projectId, { limit: 'all' });
       setBoard({ ...data, __projectId: projectId, __token: token });
       setError(null);
     } catch (err: any) {

@@ -86,7 +86,7 @@ export default function LinkTodoModal({
     setCards([]);
     setEpics([]);
     api
-      .getBoard(pid)
+      .getBoard(pid, { limit: 'all' })
       .then((board: any) => {
         if (cancelled) return;
         setCards(normalizeLinkOptions(board?.cards, ['title', 'name']));

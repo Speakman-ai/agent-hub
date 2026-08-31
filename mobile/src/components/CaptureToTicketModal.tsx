@@ -77,7 +77,7 @@ export default function CaptureToTicketModal({
     setColumns([]);
     setColumnId('');
     api
-      .getProjectBoard(projectId)
+      .getProjectBoard(projectId, { limit: 'all' })
       .then((board: any) => {
         if (cancelled) return;
         const cols: BoardColumn[] = Array.isArray(board?.columns)

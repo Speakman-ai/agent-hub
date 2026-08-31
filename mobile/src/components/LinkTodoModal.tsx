@@ -326,7 +326,7 @@ export default function LinkTodoModal({
       setCards([]);
       setEpics([]);
       api
-        .getProjectBoard(projectId)
+        .getProjectBoard(projectId, { limit: 'all' })
         .then((board: any) => {
           if (cancelled) return;
           setCards(normalizeLinkOptions(board?.cards, ['title', 'name']));

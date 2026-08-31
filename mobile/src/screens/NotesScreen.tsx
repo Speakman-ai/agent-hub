@@ -377,7 +377,7 @@ export default function NotesScreen({ route }: any) {
   };
   const resolveTodoColumn = async () => {
     if (!boardColumnsRef.current) {
-      const board = await api.getProjectBoard(projectId);
+      const board = await api.getProjectBoard(projectId, { limit: 'all' });
       boardColumnsRef.current = board?.columns || [];
     }
     return pickTodoColumn(boardColumnsRef.current || []);

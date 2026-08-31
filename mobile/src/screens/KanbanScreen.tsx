@@ -489,7 +489,7 @@ export default function KanbanScreen({ route, navigation }: any) {
     }
     (async () => {
       try {
-        const full = await api.getProjectBoard(projectId);
+        const full = await api.getProjectBoard(projectId, { limit: 'all' });
         const card = full?.cards?.find((c: any) => c.id === deepLinkCardId);
         openCard(card);
       } catch {

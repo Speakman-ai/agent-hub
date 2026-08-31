@@ -128,7 +128,7 @@ export default function EpicView({
   const fetchBoard = useCallback(async () => {
     if (!projectId) return undefined;
     try {
-      const data = await api.getBoard(projectId);
+      const data = await api.getBoard(projectId, { limit: 'all' });
       setColumns(data.columns || []);
       setCards(data.cards || []);
       setEpics(data.epics || []);

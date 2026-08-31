@@ -282,7 +282,7 @@ export default function PromoteTodoModal({
     setEpics([]);
     setEpicId('');
     api
-      .getProjectBoard(projectId)
+      .getProjectBoard(projectId, { limit: 'all' })
       .then((board: any) => {
         if (cancelled) return;
         const cols = normalizePromoteOptions(board?.columns);

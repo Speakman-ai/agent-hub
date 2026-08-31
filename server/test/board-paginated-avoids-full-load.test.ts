@@ -173,12 +173,14 @@ describe('GET /board?limit — bounded by board structure, not card count', () =
     expect(epic?.state).toBe('done');
   });
 
-  it('still uses the full-board load on the non-paginated path', async () => {
+  it('uses the full-board load on the ?limit=all opt-out path', async () => {
     const { projectId, columnId } = await setup();
     await createCard(projectId, { columnId, title: 'Card full path', labels: 'delta' });
 
+    // The default is now bounded; the full unpaged board is the explicit
+    // ?limit=all opt-out, which is the path that loads every card.
     const spies = spyCardScans();
-    const res = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const res = await request.get(`/api/projects/${projectId}/board?limit=all`).expect(200);
     const body = res.body as { availableLabels: string[]; cursors?: unknown };
 
     expect(spies.fullBoard).toHaveBeenCalled();

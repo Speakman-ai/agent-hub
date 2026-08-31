@@ -105,7 +105,7 @@ export default function EpicsScreen({ route, navigation }: any) {
   const loadBoard = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await api.getProjectBoard(projectId);
+      const data = await api.getProjectBoard(projectId, { limit: 'all' });
       setBoard(data);
     } catch (err: any) {
       Alert.alert('Error', err?.message || 'Failed to load epics');

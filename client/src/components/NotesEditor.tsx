@@ -859,7 +859,7 @@ export default function NotesEditor({ projectId }: any) {
   // caching the columns so repeated line-item conversions don't refetch.
   const resolveTodoColumn = useCallback(async () => {
     if (!columnsCacheRef.current) {
-      const board = await api.getBoard(projectId);
+      const board = await api.getBoard(projectId, { limit: 'all' });
       columnsCacheRef.current = board?.columns || [];
     }
     return pickTodoColumn(columnsCacheRef.current || []);

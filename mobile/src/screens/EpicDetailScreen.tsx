@@ -650,7 +650,7 @@ export default function EpicDetailScreen({ route, navigation }: any) {
 
   const loadBoard = useCallback(async () => {
     try {
-      const data = await api.getProjectBoard(projectId);
+      const data = await api.getProjectBoard(projectId, { limit: 'all' });
       setBoard(data);
     } catch (err: any) {
       Alert.alert('Error', err?.message || 'Failed to load epic');

@@ -51,7 +51,7 @@ describe('CaptureToTicketModal', () => {
     render(<CaptureToTicketModal draft={draft} onClose={onClose} />);
 
     // Board columns load for the default (first) project.
-    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-a'));
+    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-a', { limit: 'all' }));
 
     // Title is prefilled from the draft.
     const titleInput = screen.getByLabelText('Title') as HTMLInputElement;
@@ -88,10 +88,10 @@ describe('CaptureToTicketModal', () => {
 
     render(<CaptureToTicketModal draft={draft} onClose={vi.fn()} />);
 
-    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-a'));
+    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-a', { limit: 'all' }));
 
     fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'proj-b' } });
-    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-b'));
+    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-b', { limit: 'all' }));
 
     const createBtn = screen.getByRole('button', { name: 'Create ticket' });
     await waitFor(() => expect(createBtn).toBeEnabled());

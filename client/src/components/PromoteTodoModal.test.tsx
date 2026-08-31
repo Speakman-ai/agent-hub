@@ -64,7 +64,7 @@ describe('PromoteTodoModal — picker', () => {
     render(<PromoteTodoModal todo={todo()} onClose={() => {}} />);
 
     await waitFor(() => expect(mockApi.getProjects).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-a'));
+    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-a', { limit: 'all' }));
 
     const project = (await screen.findByTestId('promote-project')) as HTMLSelectElement;
     const column = (await screen.findByTestId('promote-column')) as HTMLSelectElement;
@@ -80,12 +80,12 @@ describe('PromoteTodoModal — picker', () => {
 
   it('reloads the board when the project changes', async () => {
     render(<PromoteTodoModal todo={todo()} onClose={() => {}} />);
-    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-a'));
+    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-a', { limit: 'all' }));
 
     fireEvent.change(await screen.findByTestId('promote-project'), {
       target: { value: 'proj-b' },
     });
-    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-b'));
+    await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-b', { limit: 'all' }));
   });
 
   it('promotes with the chosen project, column, priority (and epic)', async () => {

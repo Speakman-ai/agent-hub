@@ -80,7 +80,7 @@ export default function PromoteTodoModal({
     setEpics([]);
     setEpicId('');
     api
-      .getBoard(pid)
+      .getBoard(pid, { limit: 'all' })
       .then((board: any) => {
         if (cancelled) return;
         const cols = normalizePromoteOptions(board?.columns);

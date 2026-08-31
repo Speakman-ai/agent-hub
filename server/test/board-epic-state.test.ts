@@ -8,8 +8,13 @@ let todoColumnId: string;
 let inProgressColumnId: string;
 let doneColumnId: string;
 
+// Epic state is RECOMPUTED from linked cards on the full-board (?limit=all) path
+// via epicsWithComputedState — the bounded/default path instead trusts the
+// write-maintained kanban_epics.state column. This suite corrupts the persisted
+// state to prove the read-time recompute overrides it, so it must read the
+// full board.
 async function getEpicState(epicId: string): Promise<string | null> {
-  const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+  const board = await request.get(`/api/projects/${projectId}/board?limit=all`).expect(200);
   const epic = (board.body.epics as Array<{ id: string; state: string | null }>).find(
     (row) => row.id === epicId,
   );
@@ -48,7 +53,7 @@ describe('Epic lifecycle state', () => {
       .prepare("UPDATE kanban_epics SET state = 'done', updated_at = ? WHERE id = ?")
       .run('2000-01-01 00:00:00', epicId);
     const boardWithComputedState = await request
-      .get(`/api/projects/${projectId}/board`)
+      .get(`/api/projects/${projectId}/board?limit=all`)
       .expect(200);
     const computedEpic = (
       boardWithComputedState.body.epics as Array<{ id: string; state: string | null }>

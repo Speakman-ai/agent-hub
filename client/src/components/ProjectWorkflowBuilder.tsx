@@ -167,7 +167,7 @@ export default function ProjectWorkflowBuilder({
       if (!projectId) return;
       setBoardColumnsLoadError('');
       try {
-        const data = await api.getBoard(projectId);
+        const data = await api.getBoard(projectId, { limit: 'all' });
         if (cancelled) return;
         const cols = Array.isArray(data?.columns) ? data.columns : [];
         setBoardColumns(

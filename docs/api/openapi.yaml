@@ -2249,7 +2249,7 @@ components:
           additionalProperties:
             type: string
             nullable: true
-          description: "Per-column next-page cursor, keyed by column id (`{ [columnId]: nextCursor|null }`). Present only when `?limit=N` is supplied. A non-null value is the opaque keyset cursor to pass as `cursor` to GET /board/columns/:columnId/cards for the next page; null means the first page is the last page. Lets a client seed per-column infinite scroll from this one request without reconstructing the opaque cursor."
+          description: "Per-column next-page cursor, keyed by column id (`{ [columnId]: nextCursor|null }`). Present on the bounded default and `?limit=N` responses; absent on the `?limit=all` full-board response. A non-null value is the opaque keyset cursor to pass as `cursor` to GET /board/columns/:columnId/cards for the next page; null means the first page is the last page. Lets a client seed per-column infinite scroll from this one request without reconstructing the opaque cursor."
         cardTemplates:
           type: array
           items:
@@ -2271,7 +2271,7 @@ components:
         - cards
         - epics
         - counts
-      description: "Full board state: board metadata + columns + cards (with blocker graph) + epics + per-column counts. When the request omits `?limit`, `cards` carries the full board (backward compatible). When `?limit=N` is supplied, `cards` carries only the first N cards per column (ordered by position, id), bounding the payload."
+      description: "Board state: board metadata + columns + cards (with blocker graph) + epics + per-column counts. Bounded by default — `cards` carries only the first page per column (ordered by position, id) plus a `cursors` map, so the default response does not serialize the whole board. `?limit=N` sets the page size; `?limit=all` returns every card unpaged (no `cursors`)."
     PaginatedColumnCards:
       type: object
       properties:
@@ -19447,7 +19447,7 @@ paths:
       tags:
         - Board
       summary: Get full board state
-      description: Returns the project board, all columns, all cards (with blocker graph attached), all epics, and a `counts` map of total cards per column. Idempotently creates the board and the default columns on first call. Pass `?limit=N` to cap `cards` to the first N cards per column (keyset-ordered by position, id); omit it for the full board.
+      description: "Returns the project board, columns, cards (with blocker graph attached), epics, and a `counts` map of total cards per column. Idempotently creates the board and the default columns on first call. Bounded by default: `cards` carries only the first page per column (keyset-ordered by position, id), with a `cursors` map to resume paging — so the default response never serializes the whole board. Pass `?limit=N` to set the page size, or `?limit=all` to opt into the full unpaged board."
       parameters:
         - schema:
             type: string
@@ -19458,9 +19458,9 @@ paths:
           in: path
         - schema:
             type: string
-            description: Optional per-column page size. When set, `cards` carries only the first N cards per column (1–200; values out of range are clamped). When omitted, the full board is returned.
+            description: Per-column page size. Omitted → the default page size (50). A number N (1–200; out-of-range clamped) → first N cards per column, with a `cursors` map. The literal `all` → the full unpaged board (no `cursors`); its heavy card read is served off the event loop via the async reader pool.
           required: false
-          description: Optional per-column page size. When set, `cards` carries only the first N cards per column (1–200; values out of range are clamped). When omitted, the full board is returned.
+          description: Per-column page size. Omitted → the default page size (50). A number N (1–200; out-of-range clamped) → first N cards per column, with a `cursors` map. The literal `all` → the full unpaged board (no `cursors`); its heavy card read is served off the event loop via the async reader pool.
           name: limit
           in: query
       responses:

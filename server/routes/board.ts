@@ -49,6 +49,7 @@ import { prsForEpicFeatureBranch } from '../native-pr/epic-branch-link.js';
 import { loadAssignableUsers, normalizeAssignedUserId } from '../kanban-assigned-user.js';
 import { normalizeTemplatePriority, templateRowToClient } from '../kanban-card-templates.js';
 import { getDb } from '../db.js';
+import { readAll } from '../db-async/read-facade.js';
 import { loadCardReplayContext } from '../replays/replay-context-loader.js';
 import {
   scheduleAutonomousPhase,
@@ -467,6 +468,31 @@ function loadColumnCounts(columns: KanbanColumnRow[]): Record<string, number> {
   return counts;
 }
 
+/**
+ * Per-column card count derived by tallying an already-materialized card set,
+ * keyed by column id (every column initialized to 0 so empty columns appear).
+ *
+ * Used on the `?limit=all` full-board path INSTEAD of {@link loadColumnCounts}.
+ * There the card list is read through the async reader pool, so an `await` sits
+ * between reading the columns (which carry the trigger-maintained `card_count`)
+ * and reading the cards. A concurrent insert during that await would leave the
+ * column's `card_count` and the returned `cards` describing different snapshots
+ * — a torn board where `counts` disagrees with `cards`. Counting the cards we
+ * actually return makes `counts` agree with `cards` by construction, regardless
+ * of what committed during the await.
+ */
+function countCardsByColumn(
+  cards: Pick<KanbanCardRow, 'column_id'>[],
+  columns: KanbanColumnRow[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const col of columns) counts[col.id] = 0;
+  for (const card of cards) {
+    counts[card.column_id] = (counts[card.column_id] ?? 0) + 1;
+  }
+  return counts;
+}
+
 function loadRequestAssignableUsers(req: Request): ReturnType<typeof loadAssignableUsers> {
   return loadAssignableUsers((req as AuthenticatedRequest).authOrgId);
 }
@@ -651,6 +677,31 @@ export function getOrCreateBoard(
   };
 }
 
+/**
+ * Read the structural board data (columns, epics, phases, spec items) for an
+ * existing board. All four reads run in one synchronous tick with no `await`
+ * between them, so — per the async-boundary guarantee — they observe a single
+ * consistent snapshot: no concurrent write can interleave between them. Used by
+ * the `?limit=all` path to re-read structure AFTER the offloaded card read so
+ * the returned cards can be reconciled against a snapshot they share.
+ */
+function readBoardStructureSync(
+  stmts: Stmts,
+  boardId: string,
+): {
+  columns: KanbanColumnRow[];
+  epics: KanbanEpicRow[];
+  phases: KanbanPhaseRow[];
+  specItems: KanbanEpicSpecItemRow[];
+} {
+  return {
+    columns: stmts.getKanbanColumns.all(boardId) as KanbanColumnRow[],
+    epics: stmts.getKanbanEpics.all(boardId) as KanbanEpicRow[],
+    phases: stmts.getKanbanPhases.all(boardId) as KanbanPhaseRow[],
+    specItems: stmts.getKanbanSpecItems.all(boardId) as KanbanEpicSpecItemRow[],
+  };
+}
+
 export default function createBoardRoutes(deps: RouteDeps): Router {
   const {
     findProject,
@@ -669,89 +720,147 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
   const router = Router();
 
-  // GET /board returns the full board state plus a `counts` map giving the
-  // total card count per column.
+  // GET /board returns the board state plus a `counts` map giving the total
+  // card count per column.
   //
-  // Shape:
+  // Payload shape (bounded by default so the response never serializes the
+  // whole board on the main thread):
   //   - `counts` (always present): `{ [columnId]: total }`. Additive — clients
   //     that ignore it keep working.
-  //   - `?limit=N` (optional, opt-in): when supplied, `cards` carries only the
-  //     first N cards per column (ordered by position, id), bounding the
-  //     payload to N × columnCount. The response also gains a `cursors` map
-  //     `{ [columnId]: nextCursor|null }` so a client can resume pagination
-  //     per column from this single request (via GET
-  //     /board/columns/:columnId/cards) without reconstructing the opaque
-  //     cursor itself. A null entry means the first page is the last page.
-  //     Clients fetch the rest via GET /board/columns/:columnId/cards using
-  //     `cursors` + `counts` to know when to stop. When `?limit` is omitted,
-  //     `cards` is the full board (backward compatible) and `cursors` is
-  //     absent, so the current web / mobile clients are unaffected until they
-  //     opt in.
-  router.get('/api/projects/:projectId/board', (req: Request, res: Response) => {
-    const project = findProject(req.params.projectId as string);
-    if (!project) return res.status(404).json({ error: 'Project not found' });
-    const paginated = req.query.limit !== undefined;
-    // Opt out of the full-board card load on the paginated path — it fetches
-    // cards per column below and derives epic state / label facets from thin
-    // column projections instead of materializing every row on the board.
-    const data = getOrCreateBoard(stmts, req.params.projectId as string, {
-      includeCards: !paginated,
-    });
-    const counts = loadColumnCounts(data.columns);
+  //   - Default / `?limit=N`: `cards` carries only the first page per column
+  //     (ordered by position, id) — `DEFAULT_CARD_PAGE_SIZE` when `limit` is
+  //     omitted, else `N` (clamped to `MAX_CARD_PAGE_SIZE`). This bounds the
+  //     payload to pageSize × columnCount, so the default GET no longer builds a
+  //     multi-MB body. The response also carries a `cursors` map
+  //     `{ [columnId]: nextCursor|null }` so a client resumes pagination per
+  //     column (via GET /board/columns/:columnId/cards) from this one request. A
+  //     null entry means the first page is the last page.
+  //   - `?limit=all`: explicit full-board opt-out — `cards` is every card on the
+  //     board (unpaged) and `cursors` is absent. This is the escape hatch for
+  //     callers that genuinely need the whole board in one shot (epic/link
+  //     pickers, deep-link resolution, exports). Its heavy card SELECT is routed
+  //     through the async reader pool so the read stays off the event loop.
+  router.get('/api/projects/:projectId/board', async (req: Request, res: Response) => {
+    try {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      // The unbounded full board is now opt-in via `?limit=all`. Every other
+      // value — including OMITTED — takes the bounded per-column page path, so the
+      // default response is trimmed instead of serializing every card.
+      const rawLimit = req.query.limit;
+      const wantsFullBoard = rawLimit === 'all';
+      const paginated = !wantsFullBoard;
+      // Never materialize the full board synchronously. getOrCreateBoard may
+      // create + seed a fresh board (writes), but those run to completion in this
+      // one tick before any await below, so no read-modify-write spans the async
+      // boundary (async-boundary spec). We always skip its card load here and pull
+      // cards off the sync path: the paginated path fetches bounded per-column
+      // pages, and the full-board path routes the heavy card SELECT through the
+      // async reader pool.
+      const data = getOrCreateBoard(stmts, req.params.projectId as string, {
+        includeCards: false,
+      });
 
-    let cards: KanbanCardRow[];
-    let cursors: Record<string, string | null> | undefined;
-    let availableLabels: string[];
-    if (paginated) {
-      const limit = clampPageLimit(req.query.limit);
-      cards = [];
-      cursors = {};
-      for (const col of data.columns) {
-        const page = fetchColumnCardPage(stmts, col.id, limit, null);
-        cards.push(...page.cards);
-        cursors[col.id] = page.nextCursor;
+      let cards: KanbanCardRow[];
+      let cursors: Record<string, string | null> | undefined;
+      let availableLabels: string[];
+      // `counts` is computed per-branch so it always describes the same snapshot
+      // as `cards`. The paginated/default branch is fully synchronous (no await),
+      // so the trigger-maintained per-column totals are consistent with the page
+      // it reads in the same tick; the full-board branch reads cards across an
+      // await and so must DERIVE counts from that card set (see below).
+      let counts: Record<string, number>;
+      if (paginated) {
+        counts = loadColumnCounts(data.columns);
+        const limit = clampPageLimit(rawLimit);
+        cards = [];
+        cursors = {};
+        for (const col of data.columns) {
+          const page = fetchColumnCardPage(stmts, col.id, limit, null);
+          cards.push(...page.cards);
+          cursors[col.id] = page.nextCursor;
+        }
+        // Epic state and label facets are read from precomputed, write-maintained
+        // stores instead of being recomputed from the cards table — so this path
+        // does NO work proportional to card count:
+        //  - epic state: kanban_epics.state, kept current by recomputeEpicState on
+        //    every card and column mutation. getKanbanEpics already returns it, so
+        //    data.epics is used as-is (O(epics)).
+        //  - label facets: the board's cached distinct-label list, invalidated by a
+        //    trigger on card writes and recomputed lazily only when dirty
+        //    (resolveBoardLabelFacets — a single PK lookup in the common case).
+        availableLabels = resolveBoardLabelFacets(stmts, data.board.id);
+      } else {
+        // Full-board card load — the multi-MB heavy read this endpoint is known
+        // for. Route the SELECT through the async reader pool so the SQLite work
+        // + row marshalling happen off the Node event loop instead of stalling
+        // every connection. It is a pure read: no write derives from `cards`, so
+        // the async-boundary no-interleaving rule holds.
+        cards = await readAll<KanbanCardRow>(stmts.getKanbanCards, [data.board.id]);
+        // getOrCreateBoard read the structure (columns/epics/phases/specItems)
+        // BEFORE this await, so a concurrent column/epic create, delete, or card
+        // move while readAll was in flight could leave `cards` describing a
+        // different snapshot than that structure — a returned card referencing a
+        // column or epic absent from data.columns/data.epics (or the inverse after
+        // a delete). Reconcile after the await: re-read the structure synchronously
+        // (one tick → its own consistent snapshot), then check the offloaded cards
+        // against it. On any drift, re-read cards in the SAME synchronous tick as
+        // the structure so cards + structure are guaranteed one snapshot (no await
+        // between them ⇒ no interleaving). The common case (no structural change)
+        // keeps the offloaded read.
+        const structure = readBoardStructureSync(stmts, data.board.id);
+        data.columns = structure.columns;
+        data.epics = structure.epics;
+        data.phases = structure.phases;
+        data.specItems = structure.specItems;
+        const columnIds = new Set(structure.columns.map((c) => c.id));
+        const epicIds = new Set(structure.epics.map((e) => e.id));
+        const drifted = cards.some(
+          (c) => !columnIds.has(c.column_id) || (c.epic_id != null && !epicIds.has(c.epic_id)),
+        );
+        if (drifted) {
+          cards = stmts.getKanbanCards.all(data.board.id) as KanbanCardRow[];
+        }
+        data.cards = cards;
+        // Every card-derived aggregate is now computed from `cards`, which shares
+        // one snapshot with the structure above — so the full-board response is
+        // internally consistent (counts ⇔ cards ⇔ columns ⇔ epics ⇔ labels).
+        counts = countCardsByColumn(cards, data.columns);
+        data.epics = epicsWithComputedState(data.epics, data.cards, data.columns);
+        availableLabels = collectAvailableCardLabels(data.cards);
       }
-      // Epic state and label facets are read from precomputed, write-maintained
-      // stores instead of being recomputed from the cards table — so this path
-      // does NO work proportional to card count:
-      //  - epic state: kanban_epics.state, kept current by recomputeEpicState on
-      //    every card and column mutation. getKanbanEpics already returns it, so
-      //    data.epics is used as-is (O(epics)).
-      //  - label facets: the board's cached distinct-label list, invalidated by a
-      //    trigger on card writes and recomputed lazily only when dirty
-      //    (resolveBoardLabelFacets — a single PK lookup in the common case).
-      availableLabels = resolveBoardLabelFacets(stmts, data.board.id);
-    } else {
-      cards = data.cards;
-      data.epics = epicsWithComputedState(data.epics, data.cards, data.columns);
-      availableLabels = collectAvailableCardLabels(data.cards);
-    }
 
-    // Annotate each card with its blocker graph and latest finalize run. Both
-    // are board-scoped batched queries; folding them into the payload lets the
-    // client render blocker banners and per-card finalize badges without a GET
-    // per card.
-    // The card-id prefix is persisted on the board (frozen at creation from the
-    // immutable project slug) so renaming the project never rewrites existing,
-    // already-shared card ids. Fall back to deriving from the slug only for a
-    // legacy board whose prefix predates the column and somehow wasn't
-    // backfilled.
-    const cardPrefix = data.board.card_prefix ?? deriveCardPrefix(project.id);
-    const assignableUsers = loadRequestAssignableUsers(req);
-    const cardTemplates = (
-      stmts.getKanbanCardTemplates.all(data.board.id) as KanbanCardTemplateRow[]
-    ).map(templateRowToClient);
-    const body: Record<string, unknown> = {
-      ...data,
-      board: { ...data.board, card_prefix: cardPrefix },
-      cards: enrichCards(req, stmts, data.board.id, cards),
-      counts,
-      assignableUsers,
-      cardTemplates,
-      availableLabels,
-    };
-    if (cursors) body.cursors = cursors;
-    res.json(body);
+      // Annotate each card with its blocker graph and latest finalize run. Both
+      // are board-scoped batched queries; folding them into the payload lets the
+      // client render blocker banners and per-card finalize badges without a GET
+      // per card.
+      // The card-id prefix is persisted on the board (frozen at creation from the
+      // immutable project slug) so renaming the project never rewrites existing,
+      // already-shared card ids. Fall back to deriving from the slug only for a
+      // legacy board whose prefix predates the column and somehow wasn't
+      // backfilled.
+      const cardPrefix = data.board.card_prefix ?? deriveCardPrefix(project.id);
+      const assignableUsers = loadRequestAssignableUsers(req);
+      const cardTemplates = (
+        stmts.getKanbanCardTemplates.all(data.board.id) as KanbanCardTemplateRow[]
+      ).map(templateRowToClient);
+      const body: Record<string, unknown> = {
+        ...data,
+        board: { ...data.board, card_prefix: cardPrefix },
+        cards: enrichCards(req, stmts, data.board.id, cards),
+        counts,
+        assignableUsers,
+        cardTemplates,
+        availableLabels,
+      };
+      if (cursors) body.cursors = cursors;
+      res.json(body);
+    } catch (err) {
+      // Express 4 does not forward async-handler rejections to error middleware,
+      // so contain them here (the async reader pool read is the new failure mode).
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: 'board_read_failed', message: msg });
+    }
   });
 
   // GET /board/columns/:columnId/cards — keyset-paginated slice of one column.

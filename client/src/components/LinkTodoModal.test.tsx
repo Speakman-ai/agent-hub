@@ -42,7 +42,7 @@ describe('LinkTodoModal', () => {
     expect(screen.getByTestId('link-type-card')).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() => expect(screen.getByTestId('link-option-card-1')).toBeInTheDocument());
     expect(screen.getByTestId('link-option-card-2')).toBeInTheDocument();
-    expect(api.getBoard).toHaveBeenCalledWith('proj-x');
+    expect(api.getBoard).toHaveBeenCalledWith('proj-x', { limit: 'all' });
   });
 
   it('links a card with the project id in the payload', async () => {
