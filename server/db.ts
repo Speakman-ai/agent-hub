@@ -982,6 +982,38 @@ function initDb(dataDir: string): void {
     -- read_at is ensured on legacy installs (bootstrap index here would fail
     -- when support_tickets exists without the column).
 
+    -- Feature-request voting: one row per (ticket, voter_key). Score is
+    -- SUM(value); UNIQUE enforces one vote per identity. Child of
+    -- support_tickets so a hard-delete cascades.
+    CREATE TABLE IF NOT EXISTS support_ticket_votes (
+      id TEXT PRIMARY KEY,
+      support_ticket_id TEXT NOT NULL,
+      voter_key TEXT NOT NULL,
+      value INTEGER NOT NULL CHECK(value IN (-1, 1)),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(support_ticket_id, voter_key),
+      FOREIGN KEY (support_ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_support_ticket_votes_ticket
+      ON support_ticket_votes(support_ticket_id);
+
+    -- Anonymous comment thread per support ticket. hidden_at is an operator
+    -- soft-delete; list queries skip those rows. Child of support_tickets so a
+    -- hard-delete cascades.
+    CREATE TABLE IF NOT EXISTS support_ticket_comments (
+      id TEXT PRIMARY KEY,
+      support_ticket_id TEXT NOT NULL,
+      body TEXT NOT NULL,
+      display_name TEXT,
+      source TEXT NOT NULL CHECK(source IN ('hub', 'external')),
+      hidden_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (support_ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_support_ticket_comments_ticket
+      ON support_ticket_comments(support_ticket_id);
+
     -- Wiki pages: per-project knowledge base with full-text search
     CREATE TABLE IF NOT EXISTS wiki_pages (
       id TEXT PRIMARY KEY,
@@ -1944,8 +1976,12 @@ function initDb(dataDir: string): void {
     const ddl = row?.sql ?? '';
     if (supportTicketsStatusCheckNeedsRebuild(ddl)) {
       const handle = db;
-      handle.transaction(() => {
-        handle.exec(`
+      // Votes/comments FK to support_tickets. DROP TABLE of the parent fails
+      // while foreign_keys is ON, even with empty children.
+      handle.pragma('foreign_keys = OFF');
+      try {
+        handle.transaction(() => {
+          handle.exec(`
           CREATE TABLE support_tickets_new (
             id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
@@ -1994,7 +2030,10 @@ function initDb(dataDir: string): void {
           CREATE INDEX IF NOT EXISTS idx_support_tickets_unread
             ON support_tickets(project_id, read_at);
         `);
-      })();
+        })();
+      } finally {
+        handle.pragma('foreign_keys = ON');
+      }
     }
   }
 
@@ -6195,6 +6234,59 @@ function initDb(dataDir: string): void {
     ),
     deleteSupportTicket: db.prepare('DELETE FROM support_tickets WHERE id = ?'),
     deleteSupportTicketsByProject: db.prepare('DELETE FROM support_tickets WHERE project_id = ?'),
+
+    // Feature-request voting. UNIQUE(support_ticket_id, voter_key) makes the
+    // upsert race-safe; ON CONFLICT rewrites value + updated_at in place.
+    upsertSupportTicketVote: db.prepare(
+      `INSERT INTO support_ticket_votes (id, support_ticket_id, voter_key, value)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(support_ticket_id, voter_key) DO UPDATE SET
+         value = excluded.value,
+         updated_at = datetime('now')
+       RETURNING *`,
+    ),
+    getSupportTicketVote: db.prepare(
+      'SELECT * FROM support_ticket_votes WHERE support_ticket_id = ? AND voter_key = ?',
+    ),
+    deleteSupportTicketVote: db.prepare(
+      'DELETE FROM support_ticket_votes WHERE support_ticket_id = ? AND voter_key = ?',
+    ),
+    aggregateSupportTicketVotes: db.prepare(
+      `SELECT
+         COALESCE(SUM(value), 0) AS score,
+         COALESCE(SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END), 0) AS upvotes,
+         COALESCE(SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END), 0) AS downvotes
+       FROM support_ticket_votes
+       WHERE support_ticket_id = ?`,
+    ),
+    insertSupportTicketComment: db.prepare(
+      `INSERT INTO support_ticket_comments
+         (id, support_ticket_id, body, display_name, source)
+       VALUES (?, ?, ?, ?, ?)
+       RETURNING *`,
+    ),
+    getSupportTicketComment: db.prepare('SELECT * FROM support_ticket_comments WHERE id = ?'),
+    listSupportTicketComments: db.prepare(
+      `SELECT * FROM support_ticket_comments
+       WHERE support_ticket_id = ? AND hidden_at IS NULL
+       ORDER BY created_at ASC, rowid ASC`,
+    ),
+    listSupportTicketCommentsIncludingHidden: db.prepare(
+      `SELECT * FROM support_ticket_comments
+       WHERE support_ticket_id = ?
+       ORDER BY created_at ASC, rowid ASC`,
+    ),
+    hideSupportTicketComment: db.prepare(
+      `UPDATE support_ticket_comments
+         SET hidden_at = datetime('now')
+       WHERE id = ? AND hidden_at IS NULL
+       RETURNING *`,
+    ),
+    countSupportTicketComments: db.prepare(
+      `SELECT COUNT(*) AS n
+         FROM support_ticket_comments
+        WHERE support_ticket_id = ? AND hidden_at IS NULL`,
+    ),
 
     // Workflows
     getWorkflowsByProject: db.prepare(

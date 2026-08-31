@@ -1583,6 +1583,30 @@ export interface SupportTicketRow {
   updated_at: string;
 }
 
+/** Stored vote: +1 upvote, -1 downvote. One row per (ticket, voter_key). */
+export type SupportTicketVoteValue = 1 | -1;
+
+export interface SupportTicketVoteRow {
+  id: string;
+  support_ticket_id: string;
+  voter_key: string;
+  value: SupportTicketVoteValue;
+  created_at: string;
+  updated_at: string;
+}
+
+export type SupportTicketCommentSource = 'hub' | 'external';
+
+export interface SupportTicketCommentRow {
+  id: string;
+  support_ticket_id: string;
+  body: string;
+  display_name: string | null;
+  source: SupportTicketCommentSource;
+  hidden_at: string | null;
+  created_at: string;
+}
+
 // ─── iOS Build Types ────────────────────────────────────────────
 
 export type IosBuildStatus =
@@ -2526,6 +2550,18 @@ export interface Stmts {
   countUnreadSupportTickets: Stmt;
   deleteSupportTicket: Stmt;
   deleteSupportTicketsByProject: Stmt;
+
+  // Support ticket votes / comments (feature-request voting)
+  upsertSupportTicketVote: Stmt;
+  getSupportTicketVote: Stmt;
+  deleteSupportTicketVote: Stmt;
+  aggregateSupportTicketVotes: Stmt;
+  insertSupportTicketComment: Stmt;
+  getSupportTicketComment: Stmt;
+  listSupportTicketComments: Stmt;
+  listSupportTicketCommentsIncludingHidden: Stmt;
+  hideSupportTicketComment: Stmt;
+  countSupportTicketComments: Stmt;
 
   // Bulk project cleanup
   deleteNotesByProject: Stmt;
