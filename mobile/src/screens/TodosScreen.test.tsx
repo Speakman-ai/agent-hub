@@ -196,6 +196,37 @@ describe('TodosScreen — TodoRow mobile parity', () => {
     expect(html).toContain('data-name="X"');
   });
 
+  it('renders detail notes under the title when present', () => {
+    const html = renderRow({
+      id: 'n1',
+      title: 'With detail',
+      status: 'open',
+      dueAt: null,
+      notes: 'Some longer detail here',
+    });
+    expect(html).toContain('todo-notes');
+    expect(html).toContain('Some longer detail here');
+  });
+
+  it('omits the detail block when a todo has no notes', () => {
+    const html = renderRow({
+      id: 'n2',
+      title: 'No detail',
+      status: 'open',
+      dueAt: null,
+      notes: '',
+    });
+    expect(html).not.toContain('todo-notes');
+  });
+
+  it('prefills the detail input in edit mode', () => {
+    const html = renderRow(
+      { id: 'n3', title: 'Editing detail', status: 'open', dueAt: null, notes: 'carry me' },
+      { editing: true },
+    );
+    expect(html).toContain('carry me');
+  });
+
   it('shows a promote control on an open, unlinked todo', () => {
     const html = renderRow({ id: 'pr', title: 'Promotable', status: 'open', dueAt: null });
     expect(html).toContain('todo-promote');

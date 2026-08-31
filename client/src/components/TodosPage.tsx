@@ -75,6 +75,7 @@ export default function TodosPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState('');
+  const [newNotes, setNewNotes] = useState('');
   const [newDue, setNewDue] = useState('');
   const [newPriority, setNewPriority] = useState<TodoPriority>('medium');
   const [adding, setAdding] = useState(false);
@@ -133,12 +134,14 @@ export default function TodosPage() {
     try {
       const { todo } = await api.createTodo({
         title,
+        notes: newNotes.trim() || undefined,
         doDate: dateInputToIso(newDue),
         priority: newPriority,
       });
       if (!mountedRef.current) return;
       setTodos((prev) => [...prev, todo]);
       setNewTitle('');
+      setNewNotes('');
       setNewDue('');
       setNewPriority('medium');
       setError(null);
@@ -147,13 +150,14 @@ export default function TodosPage() {
     } finally {
       if (mountedRef.current) setAdding(false);
     }
-  }, [newTitle, newDue, newPriority]);
+  }, [newTitle, newNotes, newDue, newPriority]);
 
   const patchTodo = useCallback(
     async (
       id: string,
       patch: {
         title?: string;
+        notes?: string;
         status?: 'open' | 'done';
         doDate?: string | null;
         priority?: TodoPriority;
@@ -254,51 +258,62 @@ export default function TodosPage() {
 
         {/* Add form */}
         <form
-          className="mb-6 flex flex-col sm:flex-row gap-2"
+          className="mb-6 flex flex-col gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             addTodo();
           }}
         >
-          <input
-            type="text"
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="Add a todo…"
-            aria-label="New todo title"
-            data-testid="todo-new-title"
-            className="flex-1 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="text"
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              placeholder="Add a todo…"
+              aria-label="New todo title"
+              data-testid="todo-new-title"
+              className="flex-1 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <select
+              value={newPriority}
+              onChange={(e) => setNewPriority(e.target.value as TodoPriority)}
+              aria-label="New todo priority"
+              data-testid="todo-new-priority"
+              className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 capitalize focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {PRIORITY_OPTIONS.map((p) => (
+                <option key={p} value={p} className="capitalize">
+                  {p}
+                </option>
+              ))}
+            </select>
+            <input
+              type="date"
+              value={newDue}
+              onChange={(e) => setNewDue(e.target.value)}
+              aria-label="New todo do date"
+              data-testid="todo-new-due"
+              className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <button
+              type="submit"
+              disabled={adding || !newTitle.trim()}
+              data-testid="todo-add"
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium disabled:opacity-50"
+            >
+              <Plus size={16} />
+              Add
+            </button>
+          </div>
+          <textarea
+            value={newNotes}
+            onChange={(e) => setNewNotes(e.target.value)}
+            placeholder="Add more detail (optional)…"
+            aria-label="New todo detail"
+            data-testid="todo-new-notes"
+            rows={2}
+            className="w-full resize-y bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
-          <select
-            value={newPriority}
-            onChange={(e) => setNewPriority(e.target.value as TodoPriority)}
-            aria-label="New todo priority"
-            data-testid="todo-new-priority"
-            className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 capitalize focus:outline-none focus:ring-1 focus:ring-blue-500"
-          >
-            {PRIORITY_OPTIONS.map((p) => (
-              <option key={p} value={p} className="capitalize">
-                {p}
-              </option>
-            ))}
-          </select>
-          <input
-            type="date"
-            value={newDue}
-            onChange={(e) => setNewDue(e.target.value)}
-            aria-label="New todo do date"
-            data-testid="todo-new-due"
-            className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-          <button
-            type="submit"
-            disabled={adding || !newTitle.trim()}
-            data-testid="todo-add"
-            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium disabled:opacity-50"
-          >
-            <Plus size={16} />
-            Add
-          </button>
         </form>
 
         {error && (
@@ -431,6 +446,7 @@ interface TodoRowProps {
   onToggle: () => void;
   onSave: (patch: {
     title: string;
+    notes: string;
     doDate: string | null;
     priority: TodoPriority;
   }) => void | Promise<void>;
@@ -460,6 +476,7 @@ function TodoRow({
 }: TodoRowProps) {
   const doDate = todoDoDate(todo);
   const [title, setTitle] = useState(todo.title);
+  const [notes, setNotes] = useState(todo.notes ?? '');
   const [due, setDue] = useState(isoToDateInput(doDate));
   const [priority, setPriority] = useState<TodoPriority>(todo.priority ?? 'medium');
 
@@ -467,10 +484,11 @@ function TodoRow({
   useEffect(() => {
     if (editing) {
       setTitle(todo.title);
+      setNotes(todo.notes ?? '');
       setDue(isoToDateInput(doDate));
       setPriority(todo.priority ?? 'medium');
     }
-  }, [editing, todo.title, doDate, todo.priority]);
+  }, [editing, todo.title, todo.notes, doDate, todo.priority]);
 
   const done = todo.status === 'done';
   const state = dueState(doDate);
@@ -482,58 +500,69 @@ function TodoRow({
 
   if (editing) {
     return (
-      <div className="px-4 py-3 flex flex-col sm:flex-row gap-2" data-testid="todo-row-editing">
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          aria-label="Edit todo title"
-          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-        <select
-          value={priority}
-          onChange={(e) => setPriority(e.target.value as TodoPriority)}
-          aria-label="Edit todo priority"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 capitalize focus:outline-none focus:ring-1 focus:ring-blue-500"
-        >
-          {PRIORITY_OPTIONS.map((p) => (
-            <option key={p} value={p} className="capitalize">
-              {p}
-            </option>
-          ))}
-        </select>
-        <input
-          type="date"
-          value={due}
-          onChange={(e) => setDue(e.target.value)}
-          aria-label="Edit todo do date"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() =>
-              onSave({
-                title: title.trim() || todo.title,
-                doDate: dateInputToIso(due),
-                priority,
-              })
-            }
-            disabled={!title.trim()}
-            aria-label="Save todo"
-            className="p-1.5 rounded-md text-emerald-400 hover:bg-gray-800 disabled:opacity-40"
+      <div className="px-4 py-3 flex flex-col gap-2" data-testid="todo-row-editing">
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            aria-label="Edit todo title"
+            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <select
+            value={priority}
+            onChange={(e) => setPriority(e.target.value as TodoPriority)}
+            aria-label="Edit todo priority"
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 capitalize focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
-            <Check size={16} />
-          </button>
-          <button
-            type="button"
-            onClick={onCancelEdit}
-            aria-label="Cancel edit"
-            className="p-1.5 rounded-md text-gray-400 hover:bg-gray-800"
-          >
-            <X size={16} />
-          </button>
+            {PRIORITY_OPTIONS.map((p) => (
+              <option key={p} value={p} className="capitalize">
+                {p}
+              </option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={due}
+            onChange={(e) => setDue(e.target.value)}
+            aria-label="Edit todo do date"
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() =>
+                onSave({
+                  title: title.trim() || todo.title,
+                  notes,
+                  doDate: dateInputToIso(due),
+                  priority,
+                })
+              }
+              disabled={!title.trim()}
+              aria-label="Save todo"
+              className="p-1.5 rounded-md text-emerald-400 hover:bg-gray-800 disabled:opacity-40"
+            >
+              <Check size={16} />
+            </button>
+            <button
+              type="button"
+              onClick={onCancelEdit}
+              aria-label="Cancel edit"
+              className="p-1.5 rounded-md text-gray-400 hover:bg-gray-800"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Add more detail (optional)…"
+          aria-label="Edit todo detail"
+          rows={2}
+          className="w-full resize-y bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
       </div>
     );
   }
@@ -556,6 +585,16 @@ function TodoRow({
         >
           {todo.title}
         </div>
+        {todo.notes?.trim() && (
+          <div
+            data-testid="todo-notes"
+            className={`mt-0.5 text-xs whitespace-pre-wrap break-words ${
+              done ? 'text-gray-600' : 'text-gray-400'
+            }`}
+          >
+            {todo.notes}
+          </div>
+        )}
         <div className="mt-1 flex flex-wrap items-center gap-2">
           <span
             data-testid="todo-priority"

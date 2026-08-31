@@ -107,6 +107,62 @@ describe('TodosPage — add', () => {
   });
 });
 
+describe('TodosPage — detail notes', () => {
+  it('sends the detail text when creating a todo', async () => {
+    const created = todo({ id: 'new', title: 'Buy milk', notes: 'skim, 2%', status: 'open' });
+    mockApi.createTodo.mockResolvedValue({ todo: created });
+    render(<TodosPage />);
+    await screen.findByTestId('todos-empty');
+
+    fireEvent.change(screen.getByTestId('todo-new-title'), { target: { value: 'Buy milk' } });
+    fireEvent.change(screen.getByTestId('todo-new-notes'), { target: { value: 'skim, 2%' } });
+    fireEvent.click(screen.getByTestId('todo-add'));
+
+    await waitFor(() => expect(mockApi.createTodo).toHaveBeenCalledTimes(1));
+    expect(mockApi.createTodo.mock.calls[0][0].notes).toBe('skim, 2%');
+  });
+
+  it('renders the detail text under the title', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [
+        todo({ id: 'a', title: 'Plan trip', notes: 'Book flights and hotel', status: 'open' }),
+      ],
+    });
+    render(<TodosPage />);
+    await screen.findByText('Plan trip');
+    expect(screen.getByTestId('todo-notes')).toHaveTextContent('Book flights and hotel');
+  });
+
+  it('omits the detail block when a todo has no notes', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [todo({ id: 'a', title: 'No detail', notes: '', status: 'open' })],
+    });
+    render(<TodosPage />);
+    await screen.findByText('No detail');
+    expect(screen.queryByTestId('todo-notes')).not.toBeInTheDocument();
+  });
+
+  it('edits a todo detail inline and saves it', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [todo({ id: 'a', title: 'Task', notes: 'old detail', status: 'open' })],
+    });
+    mockApi.updateTodo.mockImplementation(async (_id: string, patch: any) => ({
+      todo: todo({ id: 'a', title: 'Task', notes: patch.notes, status: 'open' }),
+    }));
+    render(<TodosPage />);
+    await screen.findByText('Task');
+
+    fireEvent.click(screen.getByLabelText('Edit todo'));
+    const detail = screen.getByLabelText('Edit todo detail');
+    expect(detail).toHaveValue('old detail');
+    fireEvent.change(detail, { target: { value: 'new detail' } });
+    fireEvent.click(screen.getByLabelText('Save todo'));
+
+    await waitFor(() => expect(mockApi.updateTodo).toHaveBeenCalledTimes(1));
+    expect(mockApi.updateTodo.mock.calls[0][1].notes).toBe('new detail');
+  });
+});
+
 describe('TodosPage — complete', () => {
   it('marks a todo done and moves it to the completed section', async () => {
     mockApi.listTodos.mockResolvedValue({

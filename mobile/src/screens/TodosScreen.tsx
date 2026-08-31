@@ -123,6 +123,7 @@ export default function TodosScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState('');
+  const [newNotes, setNewNotes] = useState('');
   const [newDue, setNewDue] = useState('');
   const [newPriority, setNewPriority] = useState<TodoPriority>('medium');
   const [adding, setAdding] = useState(false);
@@ -184,12 +185,14 @@ export default function TodosScreen() {
     try {
       const { todo } = await api.createTodo({
         title,
+        notes: newNotes.trim() || undefined,
         ...dateInputToTodoDatePatch(newDue),
         priority: newPriority,
       });
       if (!mountedRef.current) return;
       setTodos((prev) => [...prev, todo]);
       setNewTitle('');
+      setNewNotes('');
       setNewDue('');
       setNewPriority('medium');
       setError(null);
@@ -198,7 +201,7 @@ export default function TodosScreen() {
     } finally {
       if (mountedRef.current) setAdding(false);
     }
-  }, [newTitle, newDue, newPriority]);
+  }, [newTitle, newNotes, newDue, newPriority]);
 
   const patchTodo = useCallback(async (id: string, patch: any) => {
     try {
@@ -316,6 +319,16 @@ export default function TodosScreen() {
             testID="todo-new-title"
             returnKeyType="done"
             onSubmitEditing={addTodo}
+          />
+          <TextInput
+            style={styles.notesInput}
+            value={newNotes}
+            onChangeText={setNewNotes}
+            placeholder="Add more detail (optional)…"
+            placeholderTextColor={colors.gray600}
+            accessibilityLabel="New todo detail"
+            testID="todo-new-notes"
+            multiline
           />
           <PrioritySelect
             value={newPriority}
@@ -473,6 +486,7 @@ export function TodoRow({
 }: any) {
   const doDate = todoDoDate(todo);
   const [title, setTitle] = useState(todo.title);
+  const [notes, setNotes] = useState(todo.notes ?? '');
   const [due, setDue] = useState(isoToDateInput(doDate));
   const [priority, setPriority] = useState<TodoPriority>(todo.priority ?? 'medium');
 
@@ -480,10 +494,11 @@ export function TodoRow({
   useEffect(() => {
     if (editing) {
       setTitle(todo.title);
+      setNotes(todo.notes ?? '');
       setDue(isoToDateInput(doDate));
       setPriority(todo.priority ?? 'medium');
     }
-  }, [editing, todo.title, doDate, todo.priority]);
+  }, [editing, todo.title, todo.notes, doDate, todo.priority]);
 
   const done = todo.status === 'done';
   const state = dueState(doDate);
@@ -500,6 +515,15 @@ export function TodoRow({
           onChangeText={setTitle}
           accessibilityLabel="Edit todo title"
           autoFocus
+        />
+        <TextInput
+          style={styles.editNotesInput}
+          value={notes}
+          onChangeText={setNotes}
+          placeholder="Add more detail (optional)…"
+          placeholderTextColor={colors.gray600}
+          accessibilityLabel="Edit todo detail"
+          multiline
         />
         <PrioritySelect value={priority} onChange={setPriority} testIDPrefix="todo-edit-priority" />
         <View style={styles.editRow}>
@@ -519,6 +543,7 @@ export function TodoRow({
             onPress={() =>
               onSave({
                 title: title.trim() || todo.title,
+                notes,
                 ...dateInputToTodoDatePatch(due),
                 priority,
               })
@@ -564,6 +589,15 @@ export function TodoRow({
         <Text style={[styles.rowTitle, done && styles.rowTitleDone]} numberOfLines={2}>
           {todo.title}
         </Text>
+        {todo.notes && todo.notes.trim() ? (
+          <Text
+            testID="todo-notes"
+            style={[styles.rowNotes, done && styles.rowNotesDone]}
+            numberOfLines={3}
+          >
+            {todo.notes}
+          </Text>
+        ) : null}
         <View style={styles.badgeRow}>
           {/* Priority chip — always present, mirrors the web pane. */}
           <View
@@ -764,6 +798,18 @@ const styles = StyleSheet.create({
     color: colors.white,
     fontSize: 14,
   },
+  notesInput: {
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: colors.gray200,
+    fontSize: 14,
+    minHeight: 60,
+    textAlignVertical: 'top',
+  },
   addRow: {
     flexDirection: 'row',
     gap: 8,
@@ -860,6 +906,14 @@ const styles = StyleSheet.create({
     color: colors.gray500,
     textDecorationLine: 'line-through',
   },
+  rowNotes: {
+    color: colors.gray400,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  rowNotesDone: {
+    color: colors.gray600,
+  },
   badgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -927,6 +981,18 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     color: colors.white,
     fontSize: 14,
+  },
+  editNotesInput: {
+    backgroundColor: colors.gray800,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: colors.gray200,
+    fontSize: 14,
+    minHeight: 56,
+    textAlignVertical: 'top',
   },
   editRow: {
     flexDirection: 'row',
