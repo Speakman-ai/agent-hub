@@ -62,6 +62,7 @@ import {
   serializeSupportTicketForBroadcast,
   serializeSupportTicketForRequest,
   serializeSupportTicketsForRequest,
+  serializeVotingListForRequest,
   type SupportTicketResponse,
 } from '../support-ticket-serialization.js';
 import {
@@ -282,16 +283,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     }
 
     const listed = listSupportTicketsForVoting(project.id, parsed.data.voterKey);
-    const tickets = serializeSupportTicketsForRequest(
-      req,
-      listed.map((row) => row.ticket),
-    );
-    res.json(
-      tickets.map((ticket, i) => ({
-        ...ticket,
-        voting: listed[i]!.voting,
-      })),
-    );
+    res.json(serializeVotingListForRequest(req, listed));
   });
 
   router.get('/api/projects/:projectId/support-tickets/:id', (req: Request, res: Response) => {

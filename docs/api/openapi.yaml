@@ -14814,7 +14814,52 @@ components:
               $ref: "#/components/schemas/SupportTicketVotingTally"
           required:
             - voting
-      description: A feature-request support ticket with vote tallies and comment_count. Severity, status, and release badges are unchanged from SupportTicket.
+      description: "Hub-facing voting item: a feature-request support ticket with vote tallies and comment_count. Returned to interactive Hub operators (JWT / local session). Severity, status, and release badges are unchanged from SupportTicket."
+    SupportTicketVotingItemExternal:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Ticket id — required to cast subsequent vote/comment calls.
+        type:
+          type: string
+          enum:
+            - bug
+            - question
+            - feature_request
+            - incident
+            - other
+        severity:
+          type: string
+          enum:
+            - critical
+            - high
+            - medium
+            - low
+        status:
+          type: string
+          enum:
+            - new
+            - investigating
+            - converted
+            - closed
+            - duplicate
+            - wont_do
+        subject:
+          type: string
+        body:
+          type: string
+        voting:
+          $ref: "#/components/schemas/SupportTicketVotingTally"
+      required:
+        - id
+        - type
+        - severity
+        - status
+        - subject
+        - body
+        - voting
+      description: "External-safe voting item returned to Survey-Tracker. Any API-key request qualifies — the global X-API-Key or a per-user `ahub_*` key — as opposed to an interactive Hub operator session. The shape is exactly the public contract: id + subject/body/type/severity/status + the voting tally (score/upvotes/downvotes/myVote/comment_count). No project_id or timestamps; every operator-only field is stripped by construction."
     RunSupportTicketInvestigationResponse:
       type: object
       properties:
@@ -43409,7 +43454,10 @@ paths:
       tags:
         - Support
       summary: List feature-request tickets ranked by vote score
-      description: Returns `type=feature_request` tickets for the project (every lifecycle status), joined with vote aggregates `{score, upvotes, downvotes, myVote}` and `comment_count` (hidden comments excluded). Sorted by score DESC, then created_at DESC. Pass `voterKey` to populate `voting.myVote` for that identity; omit it and myVote is null.
+      description: |-
+        Returns `type=feature_request` tickets for the project (every lifecycle status), joined with vote aggregates `{score, upvotes, downvotes, myVote}` and `comment_count` (hidden comments excluded). Sorted by score DESC, then created_at DESC. Pass `voterKey` to populate `voting.myVote` for that identity; omit it and myVote is null.
+
+        Response shape depends on the caller: interactive Hub operators (JWT/cookie session, or the local bundle) receive the full `SupportTicketVotingItem` (all ticket fields plus `voting`); external API-key callers — the global X-API-Key or a per-user `ahub_*` key (Survey Tracker) — receive the allowlisted `SupportTicketVotingItemExternal`, which strips every operator-only field.
       parameters:
         - schema:
             type: string
@@ -43429,13 +43477,17 @@ paths:
           in: query
       responses:
         "200":
-          description: Feature-request tickets ordered by score (highest first), then newest.
+          description: Feature-request tickets ordered by score (highest first), then newest. Hub callers get SupportTicketVotingItem; external callers get SupportTicketVotingItemExternal.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/SupportTicketVotingItem"
+                anyOf:
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/SupportTicketVotingItem"
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/SupportTicketVotingItemExternal"
         "400":
           description: voterKey is not a string, or exceeds 256 characters.
           content:

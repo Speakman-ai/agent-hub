@@ -284,8 +284,36 @@ export const SupportTicketVotingItemComponent = registerComponent(
     voting: SupportTicketVotingTallyComponent,
   }).openapi({
     description:
-      'A feature-request support ticket with vote tallies and comment_count. Severity, status, and release badges are unchanged from SupportTicket.',
+      'Hub-facing voting item: a feature-request support ticket with vote tallies and comment_count. Returned to interactive Hub operators (JWT / local session). Severity, status, and release badges are unchanged from SupportTicket.',
   }),
+);
+
+/**
+ * External (Survey-Tracker) voting item. Allowlist projection returned to
+ * API-key-only callers with no Hub user: subject/body/type/severity/status and
+ * the vote+comment tally only. Every operator-only field (ai_summary,
+ * ai_investigation, ai_investigated_at, reporter_email, replay_ref,
+ * wont_do_reason, release ids, converted card, screenshot, read/resolved
+ * timestamps) is stripped.
+ */
+export const SupportTicketVotingItemExternalComponent = registerComponent(
+  'SupportTicketVotingItemExternal',
+  z
+    .object({
+      id: z.string().openapi({
+        description: 'Ticket id — required to cast subsequent vote/comment calls.',
+      }),
+      type: z.enum(TYPES),
+      severity: z.enum(SEVERITIES),
+      status: z.enum(STATUSES),
+      subject: z.string(),
+      body: z.string(),
+      voting: SupportTicketVotingTallyComponent,
+    })
+    .openapi({
+      description:
+        'External-safe voting item returned to Survey-Tracker. Any API-key request qualifies — the global X-API-Key or a per-user `ahub_*` key — as opposed to an interactive Hub operator session. The shape is exactly the public contract: id + subject/body/type/severity/status + the voting tally (score/upvotes/downvotes/myVote/comment_count). No project_id or timestamps; every operator-only field is stripped by construction.',
+    }),
 );
 
 registerPath({
@@ -294,7 +322,7 @@ registerPath({
   tags: ['Support'],
   summary: 'List feature-request tickets ranked by vote score',
   description:
-    'Returns `type=feature_request` tickets for the project (every lifecycle status), joined with vote aggregates `{score, upvotes, downvotes, myVote}` and `comment_count` (hidden comments excluded). Sorted by score DESC, then created_at DESC. Pass `voterKey` to populate `voting.myVote` for that identity; omit it and myVote is null.',
+    'Returns `type=feature_request` tickets for the project (every lifecycle status), joined with vote aggregates `{score, upvotes, downvotes, myVote}` and `comment_count` (hidden comments excluded). Sorted by score DESC, then created_at DESC. Pass `voterKey` to populate `voting.myVote` for that identity; omit it and myVote is null.\n\nResponse shape depends on the caller: interactive Hub operators (JWT/cookie session, or the local bundle) receive the full `SupportTicketVotingItem` (all ticket fields plus `voting`); external API-key callers — the global X-API-Key or a per-user `ahub_*` key (Survey Tracker) — receive the allowlisted `SupportTicketVotingItemExternal`, which strips every operator-only field.',
   request: {
     params: projectIdParams,
     query: z.object({
@@ -303,8 +331,14 @@ registerPath({
   },
   responses: {
     200: {
-      description: 'Feature-request tickets ordered by score (highest first), then newest.',
-      content: jsonContent(z.array(SupportTicketVotingItemComponent)),
+      description:
+        'Feature-request tickets ordered by score (highest first), then newest. Hub callers get SupportTicketVotingItem; external callers get SupportTicketVotingItemExternal.',
+      content: jsonContent(
+        z.union([
+          z.array(SupportTicketVotingItemComponent),
+          z.array(SupportTicketVotingItemExternalComponent),
+        ]),
+      ),
     },
     400: errorResponse('voterKey is not a string, or exceeds 256 characters.'),
     404: errorResponse('Project not found.'),

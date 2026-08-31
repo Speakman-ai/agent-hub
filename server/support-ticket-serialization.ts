@@ -18,7 +18,14 @@ import type {
   SupportTicketCommentSource,
   SupportTicketReleaseState,
   SupportTicketRow,
+  SupportTicketSeverity,
+  SupportTicketStatus,
+  SupportTicketType,
 } from './types.js';
+import type {
+  SupportTicketVotingListRow,
+  SupportTicketVotingTally,
+} from './support-ticket-voting-store.js';
 
 export type SupportTicketResponse = SupportTicketRow & {
   reporter_email_masked: boolean;
@@ -54,13 +61,23 @@ export function canReadReporterEmail(req: Request): boolean {
 }
 
 /**
- * Survey Tracker (and other API-key-only callers) authenticate with the
- * global X-API-Key and have no Hub user. JWT / local-bundled / unstamped
- * Hub-internal callers are not external.
+ * True for a non-interactive API-key request — the Survey-Tracker-facing
+ * class. Both key shapes count: the global break-glass X-API-Key
+ * (`authViaApiKey`, no Hub user) AND a per-user `ahub_*` key
+ * (`authViaUserApiKey`, which DOES carry an `authUserId`). The card lets
+ * Survey Tracker present either, so classifying only the keyless global path
+ * as external would leak the full ticket (reporter_email, AI investigation,
+ * replay refs, release fields) to a per-user-key caller.
+ *
+ * Interactive operators — a JWT/cookie session, or the single-tenant local
+ * bundle (`authLocalOrgBypass`) — are never external and keep the full shape.
+ * Distinguishing operator SESSIONS from API-key REQUESTS is the invariant;
+ * whether the key maps to a user is irrelevant.
  */
 export function isExternalSupportCaller(req: Request): boolean {
   const areq = req as AuthenticatedRequest;
-  return Boolean(areq.authViaApiKey && !areq.authUserId && !areq.authLocalOrgBypass);
+  if (areq.authLocalOrgBypass) return false;
+  return Boolean(areq.authViaApiKey || areq.authViaUserApiKey);
 }
 
 export function commentSourceForRequest(req: Request): SupportTicketCommentSource {
@@ -214,4 +231,73 @@ export function linkedSupportTicketMetadata(
 export function defaultReporterEmail(req: Request): string | null {
   const authUser = (req as AuthenticatedRequest).authUser;
   return typeof authUser === 'string' && authUser.includes('@') ? authUser : null;
+}
+
+/**
+ * Hub-facing voting item: the full ticket serialization plus the vote/comment
+ * tally. Interactive operators (JWT / local bypass) see this shape.
+ */
+export type SupportTicketVotingHubItem = SupportTicketResponse & {
+  voting: SupportTicketVotingTally;
+};
+
+/**
+ * External (Survey-Tracker) voting item. An allowlist projection matching the
+ * public contract exactly: `id` (required to cast subsequent vote/comment
+ * calls) plus subject/body/type/severity/status and the vote+comment tally
+ * (`voting` = score/upvotes/downvotes/myVote/comment_count). Nothing else —
+ * no project_id, no timestamps. Every operator-only field (ai_summary,
+ * ai_investigation, ai_investigated_at, reporter_email, replay_ref,
+ * wont_do_reason, release ids, converted card, screenshot, read/resolved
+ * timestamps) is stripped by construction, so a column added to
+ * SupportTicketRow later never leaks to the public surface. Widening this
+ * shape is a deliberate public-contract change, not an incidental one.
+ */
+export interface SupportTicketVotingExternalItem {
+  id: string;
+  type: SupportTicketType;
+  severity: SupportTicketSeverity;
+  status: SupportTicketStatus;
+  subject: string;
+  body: string;
+  voting: SupportTicketVotingTally;
+}
+
+export type SupportTicketVotingItemResponse =
+  | SupportTicketVotingHubItem
+  | SupportTicketVotingExternalItem;
+
+function projectVotingItemExternal(
+  row: SupportTicketVotingListRow,
+): SupportTicketVotingExternalItem {
+  const { ticket, voting } = row;
+  return {
+    id: ticket.id,
+    type: ticket.type,
+    severity: ticket.severity,
+    status: ticket.status,
+    subject: ticket.subject,
+    body: ticket.body,
+    voting,
+  };
+}
+
+/**
+ * Serialize the score-ranked voting feed for the calling identity. External
+ * API-key-only callers (Survey Tracker) get the safe projection above; every
+ * Hub caller gets the full ticket shape with the tally attached (converted-card
+ * lookups batched by {@link serializeSupportTicketsForRequest}).
+ */
+export function serializeVotingListForRequest(
+  req: Request,
+  rows: SupportTicketVotingListRow[],
+): SupportTicketVotingItemResponse[] {
+  if (isExternalSupportCaller(req)) {
+    return rows.map(projectVotingItemExternal);
+  }
+  const tickets = serializeSupportTicketsForRequest(
+    req,
+    rows.map((r) => r.ticket),
+  );
+  return tickets.map((ticket, i) => ({ ...ticket, voting: rows[i]!.voting }));
 }
