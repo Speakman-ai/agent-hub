@@ -1,6 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
-import nodeCron from 'node-cron';
 import { Router, Request, Response } from 'express';
 import type { z } from 'zod';
 import { resolveEffectiveEngineAndModel } from '../effective-model.js';
@@ -55,12 +54,7 @@ import {
   scheduleAutonomousPhase,
   startAutonomousPhase,
   stopAutonomousPhase,
-  startAutonomousEpicChain,
 } from '../autonomous.js';
-import {
-  refreshEpicStartScheduleRegistration,
-  unregisterEpicStartSchedule,
-} from '../autonomous-start-schedule.js';
 import {
   validateKanbanAssignModel,
   validateKanbanAssignModelForEngine,
@@ -124,7 +118,6 @@ import {
   CreatePhaseRequestSchema,
   UpdatePhaseRequestSchema,
   ReorderPhasesRequestSchema,
-  SetEpicStartScheduleRequestSchema,
   CreateSpecItemRequestSchema,
   UpdateSpecItemRequestSchema,
   DecideForMeRequestSchema,
@@ -2334,117 +2327,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     }
     stmts.clearKanbanCardTemplateEpic.run(board.id, req.params.epicId);
     stmts.deleteKanbanEpic.run(req.params.epicId);
-    // Drop any scheduled-start timer for the now-deleted epic.
-    unregisterEpicStartSchedule(req.params.projectId as string, req.params.epicId as string);
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json({ ok: true });
   });
-
-  // Epic-level start — sweep the epic's phases left-to-right and kick off the
-  // leftmost phase with outstanding work, honoring each phase's auto-dispatch
-  // arming (the sweep halts at the first disabled phase). Individual per-phase
-  // Run buttons remain; this is the "start the whole epic" shortcut.
-  router.post(
-    '/api/projects/:projectId/board/epics/:epicId/run',
-    async (req: Request, res: Response) => {
-      // Resolve project/board/epic up front so a missing resource returns 404
-      // (matching the start-schedule routes) — 400 is reserved for validation /
-      // auth-style start failures thrown by startAutonomousEpicChain below.
-      const project = findProject(req.params.projectId as string);
-      if (!project) return res.status(404).json({ error: 'Project not found' });
-      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
-      const epic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow | undefined;
-      if (!epic || epic.board_id !== board.id) {
-        return res.status(404).json({ error: 'Epic not found' });
-      }
-      try {
-        const enablerId = resolveOwnerUserId(req as AuthenticatedRequest);
-        const result = await startAutonomousEpicChain(
-          req.params.projectId as string,
-          req.params.epicId as string,
-          enablerId,
-        );
-        broadcast({ type: 'kanban_update', projectId: req.params.projectId });
-        res.json(result);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        res.status(400).json({ error: msg });
-      }
-    },
-  );
-
-  // Set (or update) the epic's scheduled start. A node-cron expression +
-  // optional IANA timezone; on fire the epic's phases start left-to-right under
-  // the enabling operator's identity. `enabled: false` retains the config but
-  // stops the timer (a pause). Mirrors the deploy scheduler / crons pattern.
-  router.put(
-    '/api/projects/:projectId/board/epics/:epicId/start-schedule',
-    (req: Request, res: Response) => {
-      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
-      const epic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow | undefined;
-      if (!epic || epic.board_id !== board.id) {
-        return res.status(404).json({ error: 'Epic not found' });
-      }
-      const parsed = parseBody(SetEpicStartScheduleRequestSchema, req, res);
-      if (!parsed) return;
-
-      const cronExpr = parsed.cron.trim();
-      if (!nodeCron.validate(cronExpr)) {
-        return res.status(400).json({ error: 'cron must be a valid cron expression' });
-      }
-      let timezone: string | null = null;
-      if (parsed.timezone != null && String(parsed.timezone).trim()) {
-        timezone = String(parsed.timezone).trim();
-        try {
-          new Intl.DateTimeFormat('en-US', { timeZone: timezone });
-        } catch {
-          return res.status(400).json({ error: 'timezone must be a valid IANA timezone' });
-        }
-      }
-      const enabled = parsed.enabled === false ? 0 : 1;
-      // A scheduled run resolves spawn credentials from the enabler — require a
-      // real owner when arming (same rule as the epic-run / phase-run paths).
-      const ownerId = enabled ? resolveOwnerUserId(req as AuthenticatedRequest) : null;
-      if (enabled && !ownerId) {
-        return res.status(400).json({
-          error:
-            'Authentication required to schedule an epic start — no resolvable owner for credential resolution (schedule while logged in)',
-        });
-      }
-      // Preserve the prior owner on a disable so re-enabling keeps context.
-      const enabledBy = enabled ? ownerId : (epic.scheduled_start_enabled_by ?? null);
-
-      stmts.setKanbanEpicStartSchedule.run(
-        cronExpr,
-        timezone,
-        enabled,
-        enabledBy,
-        req.params.epicId,
-      );
-      refreshEpicStartScheduleRegistration(
-        req.params.projectId as string,
-        req.params.epicId as string,
-      );
-      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
-      res.json(stmts.getKanbanEpic.get(req.params.epicId));
-    },
-  );
-
-  // Clear the epic's scheduled start entirely (config + timer).
-  router.delete(
-    '/api/projects/:projectId/board/epics/:epicId/start-schedule',
-    (req: Request, res: Response) => {
-      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
-      const epic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow | undefined;
-      if (!epic || epic.board_id !== board.id) {
-        return res.status(404).json({ error: 'Epic not found' });
-      }
-      stmts.setKanbanEpicStartSchedule.run(null, null, 0, null, req.params.epicId);
-      unregisterEpicStartSchedule(req.params.projectId as string, req.params.epicId as string);
-      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
-      res.json(stmts.getKanbanEpic.get(req.params.epicId));
-    },
-  );
 
   router.get('/api/projects/:projectId/board/phases', (req: Request, res: Response) => {
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);

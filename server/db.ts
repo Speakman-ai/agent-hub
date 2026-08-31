@@ -5751,17 +5751,6 @@ function initDb(dataDir: string): void {
     setKanbanEpicAssignedUser: db.prepare(
       `UPDATE kanban_epics SET assigned_user_id = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
-    // Scheduled epic-start setter — (cron, timezone, enabled, enabled_by). Kept
-    // standalone from updateKanbanEpic so the many existing epic-update call
-    // sites don't have to thread the scheduling fields.
-    setKanbanEpicStartSchedule: db.prepare(
-      `UPDATE kanban_epics SET scheduled_start_cron = ?, scheduled_start_timezone = ?, scheduled_start_enabled = ?, scheduled_start_enabled_by = ?, updated_at = datetime('now') WHERE id = ?`,
-    ),
-    // Every epic on a board with an ENABLED scheduled start. The boot-time
-    // ticker registration reads this per board (projectId resolved by caller).
-    getStartScheduledEpicsByBoard: db.prepare(
-      `SELECT * FROM kanban_epics WHERE board_id = ? AND scheduled_start_enabled = 1 AND scheduled_start_cron IS NOT NULL`,
-    ),
     getKanbanCardTemplates: db.prepare(
       'SELECT * FROM kanban_card_templates WHERE board_id = ? ORDER BY name ASC, created_at ASC',
     ),

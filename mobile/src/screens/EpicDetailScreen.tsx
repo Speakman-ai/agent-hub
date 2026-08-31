@@ -137,161 +137,6 @@ export function EpicSummary({ epic, phases, tickets, columns, specItems }: any) 
   );
 }
 
-const EPIC_START_OUTCOME: Record<string, (p?: string) => string> = {
-  started: (p) => `Started — kicked off phase "${p ?? ''}". Later phases advance automatically.`,
-  already_running: (p) => `Phase "${p ?? ''}" is already running.`,
-  stopped_disabled: (p) =>
-    `Stopped at phase "${p ?? ''}" — its auto-dispatch is off. Turn it on to continue.`,
-  all_complete: () => 'Every phase is already complete. Nothing to start.',
-  no_phases: () => 'This epic has no phases yet — add one first.',
-};
-
-/**
- * Epic-level start controls (mobile parity with the web EpicStartPanel): a
- * "Start epic" button that sweeps phases left-to-right honoring auto-dispatch,
- * plus an optional scheduled start (node-cron + IANA timezone, local time).
- */
-export function EpicStartSection({ epic, onRunEpic, onSaveSchedule, onClearSchedule }: any) {
-  const [cron, setCron] = useState<string>(epic?.scheduled_start_cron || '');
-  const [timezone, setTimezone] = useState<string>(epic?.scheduled_start_timezone || '');
-  const [enabled, setEnabled] = useState<boolean>(epic?.scheduled_start_enabled === 1);
-  const [running, setRunning] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [clearing, setClearing] = useState(false);
-  const [runMsg, setRunMsg] = useState<string | null>(null);
-
-  useEffect(() => {
-    setCron(epic?.scheduled_start_cron || '');
-    setTimezone(epic?.scheduled_start_timezone || '');
-    setEnabled(epic?.scheduled_start_enabled === 1);
-  }, [
-    epic?.id,
-    epic?.scheduled_start_cron,
-    epic?.scheduled_start_timezone,
-    epic?.scheduled_start_enabled,
-  ]);
-
-  const run = async () => {
-    setRunning(true);
-    setRunMsg(null);
-    try {
-      const res = await onRunEpic();
-      const fmt = EPIC_START_OUTCOME[res?.outcome];
-      setRunMsg(fmt ? fmt(res?.phaseName) : `Outcome: ${res?.outcome ?? 'unknown'}`);
-    } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Failed to start the epic');
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  const save = async () => {
-    if (!cron.trim()) return;
-    setSaving(true);
-    try {
-      await onSaveSchedule({ cron: cron.trim(), timezone: timezone.trim() || null, enabled });
-    } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Failed to save the schedule');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const clear = async () => {
-    setClearing(true);
-    try {
-      await onClearSchedule();
-      setCron('');
-      setTimezone('');
-      setEnabled(false);
-    } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Failed to clear the schedule');
-    } finally {
-      setClearing(false);
-    }
-  };
-
-  const hasSchedule = !!(epic?.scheduled_start_cron || '').trim();
-
-  return (
-    <View style={styles.formCard} testID="epic-start-section">
-      <Text style={styles.mutedNote}>
-        Start the epic's phases left-to-right. The sweep stops at the first phase whose
-        auto-dispatch is off.
-      </Text>
-      <TouchableOpacity
-        style={[styles.primaryBtn, running && { opacity: 0.5 }]}
-        disabled={running}
-        onPress={run}
-        testID="epic-start-button"
-      >
-        <Text style={styles.primaryBtnText}>{running ? 'Starting…' : 'Start epic'}</Text>
-      </TouchableOpacity>
-      {runMsg ? (
-        <Text style={[styles.mutedNote, { marginTop: 8 }]} testID="epic-start-outcome">
-          {runMsg}
-        </Text>
-      ) : null}
-
-      <Text style={[styles.label, { marginTop: 16 }]}>Scheduled start · cron</Text>
-      <TextInput
-        style={styles.input}
-        value={cron}
-        onChangeText={setCron}
-        placeholder="0 9 * * 1"
-        placeholderTextColor={colors.gray600}
-        autoCapitalize="none"
-        testID="epic-schedule-cron"
-      />
-      <Text style={styles.label}>Timezone (IANA)</Text>
-      <TextInput
-        style={styles.input}
-        value={timezone}
-        onChangeText={setTimezone}
-        placeholder="America/New_York"
-        placeholderTextColor={colors.gray600}
-        autoCapitalize="none"
-        testID="epic-schedule-timezone"
-      />
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginTop: 8,
-        }}
-      >
-        <Text style={styles.label}>Enabled</Text>
-        <Switch
-          value={enabled}
-          onValueChange={setEnabled}
-          trackColor={{ true: colors.emerald600, false: colors.gray700 }}
-          thumbColor={enabled ? colors.emerald400 : colors.gray500}
-          testID="epic-schedule-enabled"
-        />
-      </View>
-      <TouchableOpacity
-        style={[styles.primaryBtn, (saving || !cron.trim()) && { opacity: 0.5 }]}
-        disabled={saving || !cron.trim()}
-        onPress={save}
-        testID="epic-schedule-save"
-      >
-        <Text style={styles.primaryBtnText}>{saving ? 'Saving…' : 'Save schedule'}</Text>
-      </TouchableOpacity>
-      {hasSchedule ? (
-        <TouchableOpacity
-          style={[styles.secondaryBtn, { marginTop: 8 }, clearing && { opacity: 0.5 }]}
-          disabled={clearing}
-          onPress={clear}
-          testID="epic-schedule-clear"
-        >
-          <Text style={styles.secondaryBtnText}>{clearing ? 'Clearing…' : 'Clear schedule'}</Text>
-        </TouchableOpacity>
-      ) : null}
-    </View>
-  );
-}
-
 /** One spec decision — status pill, decision text, decide/write actions. */
 export function SpecItemRow({ item, saving, onDecideForMe, onUpdateSpecItem, onOpenCard }: any) {
   const [editing, setEditing] = useState(false);
@@ -745,25 +590,6 @@ export default function EpicDetailScreen({ route, navigation }: any) {
     [projectId, loadBoard],
   );
 
-  const handleRunEpic = useCallback(async () => {
-    const res = await api.runEpic(projectId, epicId);
-    await loadBoard();
-    return res;
-  }, [projectId, epicId, loadBoard]);
-
-  const handleSaveEpicSchedule = useCallback(
-    async (data: { cron: string; timezone: string | null; enabled: boolean }) => {
-      await api.setEpicStartSchedule(projectId, epicId, data);
-      await loadBoard();
-    },
-    [projectId, epicId, loadBoard],
-  );
-
-  const handleClearEpicSchedule = useCallback(async () => {
-    await api.clearEpicStartSchedule(projectId, epicId);
-    await loadBoard();
-  }, [projectId, epicId, loadBoard]);
-
   const defaultColumnId = useMemo(() => {
     const backlog = columns.find((c: any) => (c.name || '').toLowerCase() === 'backlog');
     const todo = columns.find((c: any) => (c.name || '').toLowerCase() === 'to do');
@@ -965,14 +791,6 @@ export default function EpicDetailScreen({ route, navigation }: any) {
               <Text style={styles.secondaryBtnText}>Board</Text>
             </TouchableOpacity>
           </View>
-
-          {/* ── Autonomous start (now / scheduled) ───────────── */}
-          <EpicStartSection
-            epic={epic}
-            onRunEpic={handleRunEpic}
-            onSaveSchedule={handleSaveEpicSchedule}
-            onClearSchedule={handleClearEpicSchedule}
-          />
 
           {/* ── Spec decisions ───────────────────────────────── */}
           <View style={styles.sectionHead}>

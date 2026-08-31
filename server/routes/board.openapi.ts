@@ -273,21 +273,6 @@ export const KanbanEpicComponent = registerComponent(
       autonomous_model: z.string().nullable(),
       orchestration_budgets_json: z.string().nullable().optional(),
       pr_base_branch: z.string().nullable().optional(),
-      scheduled_start_cron: z.string().nullable().optional().openapi({
-        description:
-          "node-cron expression for the optional scheduled epic start (interpreted in scheduled_start_timezone). When it fires, the epic's phases start left-to-right honoring each phase's auto-dispatch arming.",
-      }),
-      scheduled_start_timezone: z.string().nullable().optional().openapi({
-        description:
-          'IANA timezone the scheduled-start cron is interpreted in. Null = server default.',
-      }),
-      scheduled_start_enabled: z.number().int().optional().openapi({
-        description:
-          'Operator on/off switch for the scheduled start (1 = enabled). A disabled schedule is retained.',
-      }),
-      scheduled_start_enabled_by: z.string().nullable().optional().openapi({
-        description: 'User id the scheduled sweep spawns under (credential owner).',
-      }),
       position: z.number().int(),
       created_at: z.string(),
       updated_at: z.string(),
@@ -731,30 +716,6 @@ export const ReorderPhasesRequestSchema = z.preprocess(
     sortByDependencies: z.boolean().optional().openapi({
       description:
         "When true, the server derives the order from the epic's card blocker graph (prerequisites first) and rewrites positions. Returns 409 `cycle` if the phase dependency graph has a loop. Provide this OR phaseIds, not both.",
-    }),
-  }),
-);
-
-export const SetEpicStartScheduleRequestSchema = z.preprocess(
-  aliasPreprocess({ timezone: 'timezone' }),
-  z.object({
-    cron: z
-      .string({ error: 'cron is required' })
-      .min(1, 'cron is required')
-      .max(200, 'cron must be 200 characters or fewer')
-      .openapi({
-        description:
-          "node-cron expression for when the epic's phases start (interpreted in `timezone`). Validated server-side.",
-        example: '0 9 * * 1',
-      }),
-    timezone: z.string().nullable().optional().openapi({
-      description:
-        'IANA timezone the cron is interpreted in (e.g. "America/New_York"). Null / omitted = server scheduler default (local server time).',
-      example: 'America/New_York',
-    }),
-    enabled: z.boolean().optional().openapi({
-      description:
-        'Operator on/off switch. Defaults to true. A disabled schedule is retained (a pause, not a delete) and never fires.',
     }),
   }),
 );
@@ -1626,67 +1587,6 @@ registerPath({
     400: errorResponse('Validation failed.'),
     404: errorResponse('Project or epic not found.'),
     409: errorResponse('Phase dependency graph has a cycle (auto sort only).'),
-  },
-});
-
-// ── Epic-level start + scheduled start ──────────────────────────────────
-const StartEpicResultSchema = z
-  .object({
-    outcome: z
-      .enum(['started', 'already_running', 'stopped_disabled', 'all_complete', 'no_phases'])
-      .openapi({
-        description:
-          '`started`: the leftmost phase with work was armed and kicked off (the completion cascade advances rightward from there). `already_running`: that phase was already running. `stopped_disabled`: the leftmost phase with work has auto-dispatch off, so the sweep halted there without starting it. `all_complete`: every phase is Done. `no_phases`: the epic has no phases.',
-      }),
-    phaseId: z.string().optional(),
-    phaseName: z.string().optional(),
-  })
-  .openapi({ description: 'Outcome of an epic-level start sweep.' });
-
-registerPath({
-  method: 'post',
-  path: '/api/projects/{projectId}/board/epics/{epicId}/run',
-  tags: ['Board'],
-  summary: "Start an epic's phases left-to-right (honoring per-phase auto-dispatch)",
-  request: { params: projectEpicIdParams },
-  responses: {
-    200: { description: 'Sweep outcome.', content: jsonContent(StartEpicResultSchema) },
-    400: errorResponse('Epic could not be started (e.g. no resolvable owner).'),
-    404: errorResponse('Project or epic not found on this board.'),
-  },
-});
-
-registerPath({
-  method: 'put',
-  path: '/api/projects/{projectId}/board/epics/{epicId}/start-schedule',
-  tags: ['Board'],
-  summary: "Set or update the epic's scheduled start (cron + timezone)",
-  request: {
-    params: projectEpicIdParams,
-    body: { content: jsonContent(SetEpicStartScheduleRequestSchema) },
-  },
-  responses: {
-    200: {
-      description: 'The epic with its updated schedule.',
-      content: jsonContent(KanbanEpicComponent),
-    },
-    400: errorResponse('Validation failed (invalid cron / timezone, or no resolvable owner).'),
-    404: errorResponse('Epic not found on this project board.'),
-  },
-});
-
-registerPath({
-  method: 'delete',
-  path: '/api/projects/{projectId}/board/epics/{epicId}/start-schedule',
-  tags: ['Board'],
-  summary: "Clear the epic's scheduled start",
-  request: { params: projectEpicIdParams },
-  responses: {
-    200: {
-      description: 'The epic with its schedule cleared.',
-      content: jsonContent(KanbanEpicComponent),
-    },
-    404: errorResponse('Epic not found on this project board.'),
   },
 });
 

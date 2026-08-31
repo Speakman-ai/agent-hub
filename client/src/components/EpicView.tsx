@@ -31,7 +31,6 @@ import {
 import EpicLeadUserField from './EpicLeadUserField';
 import KanbanUserFilterChips from './KanbanUserFilterChips';
 import EpicScopeWorkbench from './epic-scope/EpicScopeWorkbench';
-import EpicStartPanel from './epic-scope/EpicStartPanel';
 import { specProgress, ticketsForEpic } from '../utils/epicScopeStats';
 import type { AssignableUser } from '../utils/kanbanUserFilter';
 import KanbanCardDetailModal from './kanban/KanbanCardDetailModal';
@@ -613,29 +612,6 @@ export default function EpicView({
     }
   };
 
-  const handleRunEpic = async () => {
-    if (!epic?.id) return { outcome: 'no_phases' };
-    const res = await api.runEpic(projectId, epic.id);
-    await fetchBoard();
-    return res;
-  };
-
-  const handleSaveEpicSchedule = async (data: {
-    cron: string;
-    timezone: string | null;
-    enabled: boolean;
-  }) => {
-    if (!epic?.id) return;
-    await api.setEpicStartSchedule(projectId, epic.id, data);
-    await fetchBoard();
-  };
-
-  const handleClearEpicSchedule = async () => {
-    if (!epic?.id) return;
-    await api.clearEpicStartSchedule(projectId, epic.id);
-    await fetchBoard();
-  };
-
   const handleStopPhase = async (phaseId: string) => {
     if (phaseStoppingId) return;
     setPhaseRunError(null);
@@ -1200,20 +1176,6 @@ export default function EpicView({
               </div>
 
               <EpicPullsSection projectId={projectId} epicId={epicId} onOpenPull={onOpenPull} />
-
-              <div className="max-w-6xl">
-                <SectionCard
-                  title="Autonomous start"
-                  description="Start the epic's phases now, or schedule them to start at a set time."
-                >
-                  <EpicStartPanel
-                    epic={epic}
-                    onRunEpic={handleRunEpic}
-                    onSaveSchedule={handleSaveEpicSchedule}
-                    onClearSchedule={handleClearEpicSchedule}
-                  />
-                </SectionCard>
-              </div>
 
               <EpicScopeWorkbench
                 variant="page"

@@ -240,7 +240,6 @@ import { prepareDeploymentCheckout } from './deploy/deployment-checkout.js';
 import { maybeRunDeployTriggers } from './deploy/deploy-trigger-hook.js';
 import { initDeploySchedules } from './deploy/deploy-schedule-ticker.js';
 import { initReleaseGates, requestReleaseGateSweep } from './deploy/release-gate-ticker.js';
-import { initEpicStartSchedules } from './autonomous-start-schedule.js';
 import { initDailySummarySchedules } from './daily-summary-schedule.js';
 import { generateDailySummary } from './hub-daily-summary.js';
 import { listUsersWithDailySummarySchedule } from './user-preferences-store.js';
@@ -2874,15 +2873,6 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       initReleaseGates({ broadcast, config, findProject });
     } catch (e) {
       console.error('[release-gate] init on boot', (e as Error).message);
-    }
-
-    // Register node-cron tasks for every enabled scheduled epic start so a
-    // configured epic kicks off its phase sweep at its scheduled local time
-    // without a restart.
-    try {
-      initEpicStartSchedules({ getProjects });
-    } catch (e) {
-      console.error('[epic-start-schedule] init on boot', (e as Error).message);
     }
 
     // Register the once-a-minute ticker that auto-refreshes each user's Hub
