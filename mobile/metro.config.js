@@ -1,6 +1,7 @@
 // Learn more https://docs.expo.dev/guides/customizing-metro
 const { getDefaultConfig } = require('expo/metro-config');
 const path = require('path');
+const { sharedJsFallbackSpecifier } = require('./metro-shared-js-resolver.cjs');
 
 const projectRoot = __dirname;
 const repoRoot = path.resolve(projectRoot, '..');
@@ -19,6 +20,23 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (moduleName.startsWith('@shared/')) {
     const subpath = moduleName.slice('@shared/'.length);
     return context.resolveRequest(context, path.join(sharedRoot, subpath), platform);
+  }
+  // Shared TS files use explicit ".js" ESM specifiers on relative sibling
+  // imports; Metro resolves them literally and fails against the ".ts" source.
+  // For imports originating inside shared/, fall back to the extension-stripped
+  // specifier so sourceExts find the ".ts"/".tsx". Real ".js" files still win
+  // because we only strip when the literal resolve throws.
+  const fallback = sharedJsFallbackSpecifier(
+    moduleName,
+    context.originModulePath || '',
+    sharedRoot,
+  );
+  if (fallback) {
+    try {
+      return context.resolveRequest(context, moduleName, platform);
+    } catch {
+      return context.resolveRequest(context, fallback, platform);
+    }
   }
   return context.resolveRequest(context, moduleName, platform);
 };
