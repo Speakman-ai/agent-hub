@@ -57,6 +57,7 @@ import {
   buildSessionRunSnapshot,
   buildAggregationSkippedRunSnapshot,
   getSnapshotAggregateLimit,
+  type RunSnapshot,
 } from '../session-run-snapshot.js';
 import {
   applyMessagesLimitQuery,
@@ -588,8 +589,21 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   const router = Router();
 
-  router.get('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
-    const all = stmts.getSessions.all(req.params.agentId) as SessionRow[];
+  router.get('/api/agents/:agentId/sessions', async (req: Request, res: Response) => {
+    // Unbounded session-list read: a full `WHERE agent_id = ? ORDER BY
+    // updated_at DESC` scan over the agent's entire lifetime session partition,
+    // which only grows. Route it through the async reader pool so the SQLite
+    // scan + row marshalling happen off the Node event loop. Pure read — the
+    // filter/map below derive nothing that is written back, so the
+    // async-boundary no-interleaving rule holds.
+    let all: SessionRow[];
+    try {
+      all = await readAll<SessionRow>(stmts.getSessions, [req.params.agentId]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: 'sessions_read_failed', message: msg });
+      return;
+    }
     // Sidebar list = the caller's OWN sessions only. We use the strict
     // `userOwnsSession` predicate (not the permissive `userCanReadSession`)
     // so sessions the caller does not own — including shared reviewer
@@ -1069,7 +1083,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
    * Rich metadata for the session sidebar: linked kanban card, skill invocations,
    * and aggregated run snapshot (tools / files / context reads) from all message events.
    */
-  router.get('/api/sessions/:sessionId/summary', (req: Request, res: Response) => {
+  router.get('/api/sessions/:sessionId/summary', async (req: Request, res: Response) => {
     const id = req.params.sessionId;
     const session = stmts.getSession.get(id) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
@@ -1117,15 +1131,29 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
     const countRow = stmts.countSessionEventsForSession.get(id) as { c: number } | undefined;
     const eventCount = countRow?.c ?? 0;
-    const runSnapshot =
-      eventCount > getSnapshotAggregateLimit()
-        ? buildAggregationSkippedRunSnapshot(eventCount)
-        : buildSessionRunSnapshot(
-            stmts.getSessionEventsForSession.all(id) as Array<{
-              event_type: string;
-              payload: string;
-            }>,
-          );
+    let runSnapshot: RunSnapshot;
+    if (eventCount > getSnapshotAggregateLimit()) {
+      runSnapshot = buildAggregationSkippedRunSnapshot(eventCount);
+    } else {
+      // Heavy event-replay read: session_events ⋈ messages for this session,
+      // up to MAX_SESSION_EVENTS_FOR_SNAPSHOT_AGGREGATE (25k) rows. Offload the
+      // scan + marshal to the async reader pool; the snapshot builder only
+      // reads the rows (no write derives from them, so async is safe). The
+      // count above is advisory — a concurrent event write between it and this
+      // read only shifts a derived display metric, never a persisted value.
+      let eventRows: Array<{ event_type: string; payload: string }>;
+      try {
+        eventRows = await readAll<{ event_type: string; payload: string }>(
+          stmts.getSessionEventsForSession,
+          [id],
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(500).json({ error: 'session_summary_read_failed', message: msg });
+        return;
+      }
+      runSnapshot = buildSessionRunSnapshot(eventRows);
+    }
 
     const skillRows = stmts.listSkillInvocationsForSession.all(id) as SkillInvocationRow[];
     const skills = skillRows.map((s) => ({
