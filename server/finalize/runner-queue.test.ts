@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
+import { getRunnerJobLogsDb } from './runner-logs-db.js';
 import {
   appendRunnerJobLog,
   cancelRunnerJobsForRun,
@@ -192,11 +193,11 @@ describe('runner-queue', () => {
     appendRunnerJobLog({ jobId: j, seq: 0, stepIndex: 1, stream: 'stdout', data: 'a', now: 1 });
     appendRunnerJobLog({ jobId: j, seq: 0, stepIndex: 1, stream: 'stdout', data: 'dup', now: 2 });
     appendRunnerJobLog({ jobId: j, seq: 1, stepIndex: 1, stream: 'stderr', data: 'b', now: 3 });
-    const n = getOrgsDb()
+    const n = getRunnerJobLogsDb()
       .prepare('SELECT COUNT(*) AS n FROM runner_job_logs WHERE job_id=?')
       .get(j) as { n: number };
     expect(n.n).toBe(2); // duplicate seq=0 ignored
-    const first = getOrgsDb()
+    const first = getRunnerJobLogsDb()
       .prepare('SELECT data FROM runner_job_logs WHERE job_id=? AND seq=0')
       .get(j) as { data: string };
     expect(first.data).toBe('a'); // original kept, not 'dup'
@@ -204,7 +205,11 @@ describe('runner-queue', () => {
 
   describe('pruneRunnerJobLogs', () => {
     const countLogs = () =>
-      (getOrgsDb().prepare('SELECT COUNT(*) AS n FROM runner_job_logs').get() as { n: number }).n;
+      (
+        getRunnerJobLogsDb().prepare('SELECT COUNT(*) AS n FROM runner_job_logs').get() as {
+          n: number;
+        }
+      ).n;
 
     it('deletes frames older than the cutoff and keeps newer ones', () => {
       const j = enq({ jobId: 'j', now: 1000 });
@@ -237,7 +242,7 @@ describe('runner-queue', () => {
 
       expect(deleted).toBe(1); // only `at < 200` (the cutoff is exclusive)
       expect(countLogs()).toBe(2);
-      const survivors = getOrgsDb()
+      const survivors = getRunnerJobLogsDb()
         .prepare('SELECT data FROM runner_job_logs ORDER BY seq')
         .all() as Array<{ data: string }>;
       expect(survivors.map((r) => r.data)).toEqual(['edge', 'new']);
@@ -252,10 +257,10 @@ describe('runner-queue', () => {
 
     it('drains a backlog larger than one batch across batches in a single call', () => {
       const j = enq({ jobId: 'j', now: 1000 });
-      const insert = getOrgsDb().prepare(
+      const insert = getRunnerJobLogsDb().prepare(
         'INSERT INTO runner_job_logs (job_id, seq, step_index, stream, data, at) VALUES (?,?,?,?,?,?)',
       );
-      const tx = getOrgsDb().transaction(() => {
+      const tx = getRunnerJobLogsDb().transaction(() => {
         for (let i = 0; i < 25; i++) insert.run(j, i, 0, 'stdout', 'd', 10);
       });
       tx();
@@ -267,10 +272,10 @@ describe('runner-queue', () => {
 
     it('caps work per call at batchSize * maxBatches, leaving the rest for the next tick', () => {
       const j = enq({ jobId: 'j', now: 1000 });
-      const insert = getOrgsDb().prepare(
+      const insert = getRunnerJobLogsDb().prepare(
         'INSERT INTO runner_job_logs (job_id, seq, step_index, stream, data, at) VALUES (?,?,?,?,?,?)',
       );
-      const tx = getOrgsDb().transaction(() => {
+      const tx = getRunnerJobLogsDb().transaction(() => {
         for (let i = 0; i < 25; i++) insert.run(j, i, 0, 'stdout', 'd', 10);
       });
       tx();
@@ -286,14 +291,18 @@ describe('runner-queue', () => {
 
   describe('pruneOldestRunnerJobLogs', () => {
     const countLogs = () =>
-      (getOrgsDb().prepare('SELECT COUNT(*) AS n FROM runner_job_logs').get() as { n: number }).n;
+      (
+        getRunnerJobLogsDb().prepare('SELECT COUNT(*) AS n FROM runner_job_logs').get() as {
+          n: number;
+        }
+      ).n;
 
     const seed = (n: number, atFn: (i: number) => number) => {
       const j = enq({ jobId: 'j', now: 1000 });
-      const insert = getOrgsDb().prepare(
+      const insert = getRunnerJobLogsDb().prepare(
         'INSERT INTO runner_job_logs (job_id, seq, step_index, stream, data, at) VALUES (?,?,?,?,?,?)',
       );
-      getOrgsDb().transaction(() => {
+      getRunnerJobLogsDb().transaction(() => {
         for (let i = 0; i < n; i++) insert.run(j, i, 0, 'stdout', `row-${i}`, atFn(i));
       })();
       return j;
@@ -310,7 +319,7 @@ describe('runner-queue', () => {
       seed(10, (i) => 100 + i);
       expect(pruneOldestRunnerJobLogs({ keepRows: 4, batchSize: 10, maxBatches: 5 })).toBe(6);
       expect(countLogs()).toBe(4);
-      const survivors = getOrgsDb()
+      const survivors = getRunnerJobLogsDb()
         .prepare('SELECT data FROM runner_job_logs ORDER BY at ASC')
         .all() as Array<{ data: string }>;
       expect(survivors.map((r) => r.data)).toEqual(['row-6', 'row-7', 'row-8', 'row-9']);

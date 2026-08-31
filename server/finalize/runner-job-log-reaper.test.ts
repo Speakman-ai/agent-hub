@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync, statSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
+import { initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
+import { getRunnerJobLogsDb, resolveRunnerJobLogsDbPath } from './runner-logs-db.js';
 import { enqueueRunnerJob, runnerJobLogStats } from './runner-queue.js';
 import {
   DEFAULT_BATCH_SIZE,
@@ -28,7 +29,7 @@ function fileBytes(p: string): number {
   }
 }
 
-function measureOrgsDb(dbPath: string): { dbBytes: number; walBytes: number; totalBytes: number } {
+function measureDbFiles(dbPath: string): { dbBytes: number; walBytes: number; totalBytes: number } {
   const dbBytes = fileBytes(dbPath);
   const walBytes = fileBytes(`${dbPath}-wal`);
   return { dbBytes, walBytes, totalBytes: dbBytes + walBytes };
@@ -183,15 +184,17 @@ describe('runRunnerJobLogReaper (mocked)', () => {
   });
 });
 
-describe('runRunnerJobLogReaper (orgs.db)', () => {
+describe('runRunnerJobLogReaper (runner-logs.db)', () => {
   let dir: string;
-  let dbPath: string;
+  let logsDbPath: string;
 
   beforeEach(() => {
     dir = mkdtempSync(path.join(os.tmpdir(), 'runner-job-log-reaper-'));
-    dbPath = path.join(dir, 'orgs.db');
-    setOrgsDbPathForTests(dbPath);
+    setOrgsDbPathForTests(path.join(dir, 'orgs.db'));
     initOrgsDb();
+    // The spool lives in its own file beside orgs.db; the reaper (and this
+    // test's footprint assertions) act on that file, not orgs.db.
+    logsDbPath = resolveRunnerJobLogsDbPath(dir);
   });
 
   afterEach(() => {
@@ -212,11 +215,11 @@ describe('runRunnerJobLogReaper (orgs.db)', () => {
     });
 
   const seed = (jobId: string, n: number, at: number, data: string) => {
-    const insert = getOrgsDb().prepare(
+    const insert = getRunnerJobLogsDb().prepare(
       'INSERT INTO runner_job_logs (job_id, seq, step_index, stream, data, at) VALUES (?,?,?,?,?,?)',
     );
     const start = runnerJobLogStats().rows;
-    getOrgsDb().transaction(() => {
+    getRunnerJobLogsDb().transaction(() => {
       for (let i = 0; i < n; i++) insert.run(jobId, start + i, 0, 'stdout', data, at);
     })();
   };
@@ -240,7 +243,9 @@ describe('runRunnerJobLogReaper (orgs.db)', () => {
     expect(result.expiredDeleted).toBe(3);
     expect(result.sizeDeleted).toBe(0);
     expect(runnerJobLogStats().rows).toBe(2);
-    const survivors = getOrgsDb().prepare('SELECT data FROM runner_job_logs').all() as Array<{
+    const survivors = getRunnerJobLogsDb()
+      .prepare('SELECT data FROM runner_job_logs')
+      .all() as Array<{
       data: string;
     }>;
     expect(survivors.every((r) => r.data === 'fresh')).toBe(true);
@@ -263,7 +268,7 @@ describe('runRunnerJobLogReaper (orgs.db)', () => {
     expect(result.expiredDeleted).toBe(0);
     expect(result.sizeDeleted).toBe(6);
     expect(runnerJobLogStats().rows).toBe(4);
-    const survivors = getOrgsDb()
+    const survivors = getRunnerJobLogsDb()
       .prepare('SELECT data FROM runner_job_logs ORDER BY at ASC')
       .all() as Array<{ data: string }>;
     expect(survivors.map((r) => r.data)).toEqual(['row-6', 'row-7', 'row-8', 'row-9']);
@@ -292,7 +297,7 @@ describe('runRunnerJobLogReaper (orgs.db)', () => {
     expect(runnerJobLogStats().rows).toBe(5);
   });
 
-  it('drops orgs.db / WAL footprint on a seeded flood after a batched reap', () => {
+  it('drops runner-logs.db / WAL footprint on a seeded flood after a batched reap', () => {
     const j = enq();
     const now = 10_000_000;
     const payload = 'x'.repeat(2048);
@@ -301,9 +306,9 @@ describe('runRunnerJobLogReaper (orgs.db)', () => {
     seed(j, 40, now - 100, 'fresh');
 
     // Materialize the flood into the main file so dbBytes is the honest before.
-    getOrgsDb().pragma('wal_checkpoint(TRUNCATE)');
+    getRunnerJobLogsDb().pragma('wal_checkpoint(TRUNCATE)');
     const beforeStats = runnerJobLogStats();
-    const beforeFiles = measureOrgsDb(dbPath);
+    const beforeFiles = measureDbFiles(logsDbPath);
     expect(beforeStats.rows).toBe(flood + 40);
     expect(beforeStats.payloadBytes).toBeGreaterThan(flood * 2000);
     expect(beforeFiles.dbBytes).toBeGreaterThan(flood * 2000);
@@ -328,9 +333,9 @@ describe('runRunnerJobLogReaper (orgs.db)', () => {
     // Batched DELETEs land in the WAL; TRUNCATE checkpoints them. The main
     // file does not shrink without VACUUM (freelist reuse), and production
     // never VACUUMs on this path (that would itself stall).
-    const midFiles = measureOrgsDb(dbPath);
-    getOrgsDb().pragma('wal_checkpoint(TRUNCATE)');
-    const afterFiles = measureOrgsDb(dbPath);
+    const midFiles = measureDbFiles(logsDbPath);
+    getRunnerJobLogsDb().pragma('wal_checkpoint(TRUNCATE)');
+    const afterFiles = measureDbFiles(logsDbPath);
 
     console.log(
       `[runner-job-log-reaper] flood before rows=${beforeStats.rows} payload=${beforeStats.payloadBytes} db=${beforeFiles.dbBytes} wal=${beforeFiles.walBytes}`,

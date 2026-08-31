@@ -1,6 +1,7 @@
 import { stripAnsi } from '../ansi-strip.js';
 import type { FinalizeRunStepRow, MessageRow, Stmts } from '../types.js';
 import { getOrgsDb } from '../orgs.js';
+import { getRunnerJobLogsDb } from './runner-logs-db.js';
 
 export interface FinalizeStepOutputLine {
   stream: 'stdout' | 'stderr';
@@ -101,10 +102,12 @@ const RUNNER_QUEUE_STEP_OUTPUT_TAIL_LINES = 40;
 /**
  * Load remote-runner log frames for a finalize step from the runner queue spool.
  *
- * Remote fleet agents persist stdout/stderr into `orgs.runner_job_logs`, while
- * the Runners page reads this finalize-step endpoint. The finalize step row
- * stores the logical job id + matrix key, so we bridge that to the newest queue
- * job for the same project/run/job/matrix and return the frames for the step.
+ * Remote fleet agents persist stdout/stderr into the dedicated `runner-logs.db`
+ * spool, while the Runners page reads this finalize-step endpoint. The finalize
+ * step row stores the logical job id + matrix key, so we bridge that to the
+ * newest queue job (in orgs.db) for the same project/run/job/matrix and then
+ * read the frames for the step from the spool DB. The queue-job lookup and the
+ * frame reads are two separate queries against two files, never a JOIN.
  */
 export function loadRunnerQueueStepOutput(args: {
   projectId: string;
@@ -137,8 +140,9 @@ export function loadRunnerQueueStepOutput(args: {
     typeof args.maxLines === 'number' && Number.isFinite(args.maxLines) && args.maxLines > 0
       ? Math.floor(args.maxLines)
       : RUNNER_QUEUE_STEP_OUTPUT_MAX_LINES;
+  const logsDb = getRunnerJobLogsDb();
   const totalLines = (
-    getOrgsDb()
+    logsDb
       .prepare(
         `SELECT COUNT(*) AS n
            FROM runner_job_logs
@@ -150,7 +154,7 @@ export function loadRunnerQueueStepOutput(args: {
 
   const loadRows = (sql: string, limit: number): RunnerJobLogRow[] => {
     if (limit <= 0) return [];
-    return getOrgsDb()
+    return logsDb
       .prepare(sql)
       .all({ jobId: job.id, stepIndex: args.step.step_index, limit }) as RunnerJobLogRow[];
   };

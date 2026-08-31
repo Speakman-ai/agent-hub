@@ -49,25 +49,14 @@ CREATE TABLE IF NOT EXISTS runner_agents (
   registered_at  INTEGER NOT NULL,
   last_seen_at   INTEGER NOT NULL
 );
-
--- Append-only durable log spool: survives a Hub restart mid-stream and lets the
--- UI replay. Keyed by (job_id, seq) so reconnect/resume can dedupe.
-CREATE TABLE IF NOT EXISTS runner_job_logs (
-  job_id     TEXT NOT NULL,
-  seq        INTEGER NOT NULL,
-  step_index INTEGER NOT NULL,
-  stream     TEXT NOT NULL,                  -- stdout|stderr
-  data       TEXT NOT NULL,
-  at         INTEGER NOT NULL,
-  PRIMARY KEY (job_id, seq)
-);
-
--- Age index for the retention reaper. The spool is append-only and grows
--- without bound (transient CI stdout/stderr frames, never read post-run), so a
--- periodic prune deletes frames older than the TTL. Without this index the
--- prune DELETE would full-scan a multi-million-row table every tick.
-CREATE INDEX IF NOT EXISTS idx_runner_job_logs_at ON runner_job_logs(at);
 `;
+
+// NOTE: the append-only `runner_job_logs` spool no longer lives here. It is a
+// hot-write flood table (~1M rows/day) whose checkpoints stalled every other
+// orgs.db request, so per spec `hot-write-isolation` it moved to its own DB
+// file with its own connection + WAL — see server/finalize/runner-logs-db.ts
+// (RUNNER_JOB_LOGS_SCHEMA). initOrgsDb() migrates any legacy rows out of orgs.db
+// on startup.
 
 /** Terminal job states (a run leaving any of these needs no further work). */
 export const RUNNER_JOB_TERMINAL_STATES = ['succeeded', 'failed', 'cancelled', 'lost'] as const;

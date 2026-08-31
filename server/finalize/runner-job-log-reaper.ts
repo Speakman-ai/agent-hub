@@ -1,12 +1,13 @@
 /**
  * runner-job-log-reaper.ts: periodic retention prune for `runner_job_logs`.
  *
- * `runner_job_logs` (orgs.db) is an append-only spool of CI stdout/stderr
- * frames posted by remote Finalize runner agents. It exists so the UI can
- * replay a job's live output across a Hub restart and so the Runners page can
- * serve step output when no blob is attached. Without a bound it grew without
- * limit (9.23M rows observed) until synchronous SQLite work against the bloated
- * DB stalled the Node event loop.
+ * `runner_job_logs` (its own `runner-logs.db`, split out of orgs.db per spec
+ * hot-write-isolation) is an append-only spool of CI stdout/stderr frames posted
+ * by remote Finalize runner agents. It exists so the UI can replay a job's live
+ * output across a Hub restart and so the Runners page can serve step output when
+ * no blob is attached. Without a bound it grew without limit (9.23M rows
+ * observed) until synchronous SQLite work against the bloated DB stalled the
+ * Node event loop.
  *
  * Two passes keep the spool bounded, sharing one per-tick delete budget:
  *
@@ -18,11 +19,12 @@
  * Both passes DELETE in small rowid-subquery batches so a single tick never
  * becomes one giant synchronous statement (or checkpoint). A first-run backlog
  * drains across later ticks. Pure SQLite, so NOT docker-gated and NOT tied to
- * the ECS fleet-scaler. It must run on every Hub that has an orgs.db.
+ * the ECS fleet-scaler. It must run on every Hub that has a runner-logs.db.
  *
  * Writes stay on the main thread (spec async-boundary). Volume reduction is
- * the lever; the dedicated-DB split ships after this so the isolated file
- * starts small.
+ * the lever; with the dedicated-DB split now shipped, both the flood writes and
+ * these prune checkpoints hit `runner-logs.db` rather than orgs.db, so the
+ * isolated file stays small and its checkpoints never stall orgs.db requests.
  *
  * Operator env (invalid / <=0 values fall back to the default so a typo cannot
  * wipe the spool or wedge the event loop):

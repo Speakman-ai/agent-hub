@@ -8,6 +8,11 @@ import { USER_SKILL_OPTIONS_SCHEMA } from './skill-options-schema.js';
 import { GOOGLE_CONNECTIONS_SCHEMA } from './google-connections-schema.js';
 import { AUTH_CREDENTIAL_AUDIT_SCHEMA } from './auth-credential-audit-schema.js';
 import { RUNNER_QUEUE_SCHEMA } from './finalize/runner-queue-schema.js';
+import {
+  initRunnerJobLogsDb,
+  migrateLegacyRunnerJobLogsFromOrgsDb,
+  closeRunnerJobLogsDb,
+} from './finalize/runner-logs-db.js';
 import { USER_TODOS_SCHEMA } from './user-todos-schema.js';
 import { PROJECT_MEMBERS_SCHEMA } from './project-members-schema.js';
 
@@ -40,6 +45,10 @@ export function setOrgsDbPathForTests(p: string | null): void {
     } catch {}
     orgsDb = null;
   }
+  // The dedicated runner_job_logs spool is co-located with orgs.db and
+  // initialized by initOrgsDb(); reset it in lockstep so a test's next
+  // initOrgsDb() re-opens it against the fresh data dir.
+  closeRunnerJobLogsDb();
 }
 
 /**
@@ -252,6 +261,14 @@ export function initOrgsDb(): void {
 
   // Multi-tenant Finalize runner control-plane queue (shared across orgs).
   orgsDb.exec(RUNNER_QUEUE_SCHEMA);
+
+  // The hot-write `runner_job_logs` spool lives in its own DB file (own
+  // connection + WAL) so its checkpoints never stall orgs.db requests (spec
+  // hot-write-isolation). Open it beside orgs.db, then migrate any legacy rows
+  // out of orgs.db (no-op on fresh installs; documented clean cutover if the
+  // copy fails). Must run before the migration so the destination table exists.
+  initRunnerJobLogsDb(path.dirname(dbPath));
+  migrateLegacyRunnerJobLogsFromOrgsDb(orgsDb);
 
   // Add `spot_interruption_at` to runner_jobs on installs predating EC2 Spot
   // reclaim detection. Nullable column — the runner agent stamps it when IMDS

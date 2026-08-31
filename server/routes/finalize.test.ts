@@ -18,7 +18,7 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import { getRequest } from '../test/helpers.js';
 import { getDb, getStmts } from '../db.js';
-import { getOrgsDb } from '../orgs.js';
+import { getRunnerJobLogsDb } from '../finalize/runner-logs-db.js';
 import type { AppConfig, FinalizeRunStepRow } from '../types.js';
 import { createFinalizeStepLogStore } from '../finalize/finalize-log-store.js';
 import { appendRunnerJobLog, enqueueRunnerJob } from '../finalize/runner-queue.js';
@@ -764,11 +764,11 @@ describe('GET /api/projects/:projectId/finalize/:runId/steps/:stepIndex/output',
       specJson: '{}',
       now: 2000,
     });
-    const insert = getOrgsDb().prepare(
+    const insert = getRunnerJobLogsDb().prepare(
       `INSERT INTO runner_job_logs (job_id, seq, step_index, stream, data, at)
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
-    const seedLogs = getOrgsDb().transaction(() => {
+    const seedLogs = getRunnerJobLogsDb().transaction(() => {
       for (let i = 0; i < 5002; i++) {
         insert.run(queueJobId, i, 1, 'stdout', `line-${i}`, 3000 + i);
       }

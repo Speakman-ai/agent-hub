@@ -6,6 +6,11 @@
  * back, and reports the result, which the backend mirrors into the per-org
  * `agent-hub.db` run state.
  *
+ * EXCEPTION: the append-only `runner_job_logs` spool (append/prune/stats helpers
+ * below) lives in its own `runner-logs.db`, not orgs.db — it is a hot-write
+ * flood table whose checkpoints stalled orgs.db (spec hot-write-isolation). Those
+ * helpers use `getRunnerJobLogsDb()`; everything else here uses `getOrgsDb()`.
+ *
  * CONCURRENCY: claim is an atomic conditional `UPDATE ... WHERE state='queued'
  * ... RETURNING`. This is race-free ONLY because better-sqlite3 serializes
  * writers within one process. If the control plane is ever sharded across
@@ -13,6 +18,7 @@
  */
 import { randomUUID } from 'crypto';
 import { getOrgsDb } from '../orgs.js';
+import { getRunnerJobLogsDb } from './runner-logs-db.js';
 import type { RunnerJobState } from './runner-queue-schema.js';
 
 export interface EnqueueRunnerJobInput {
@@ -251,7 +257,7 @@ export function appendRunnerJobLog(args: {
   data: string;
   now: number;
 }): void {
-  getOrgsDb()
+  getRunnerJobLogsDb()
     .prepare(
       `INSERT OR IGNORE INTO runner_job_logs (job_id, seq, step_index, stream, data, at)
        VALUES (@jobId, @seq, @stepIndex, @stream, @data, @now)`,
@@ -314,7 +320,7 @@ export function pruneRunnerJobLogs(args: {
   maxBatches?: number;
 }): number {
   const { batchSize, maxBatches } = clampPruneBatch(args.batchSize, args.maxBatches);
-  const db = getOrgsDb();
+  const db = getRunnerJobLogsDb();
   const stmt = db.prepare(
     `DELETE FROM runner_job_logs
        WHERE rowid IN (
@@ -332,7 +338,7 @@ export function pruneRunnerJobLogs(args: {
 
 /** Row count + payload bytes currently sitting in `runner_job_logs`. */
 export function runnerJobLogStats(): { rows: number; payloadBytes: number } {
-  const row = getOrgsDb()
+  const row = getRunnerJobLogsDb()
     .prepare(
       `SELECT COUNT(*) AS rows, COALESCE(SUM(LENGTH(data)), 0) AS payloadBytes
          FROM runner_job_logs`,
@@ -359,7 +365,7 @@ export function pruneOldestRunnerJobLogs(args: {
 }): number {
   const keepRows = Math.max(0, Math.floor(args.keepRows));
   const { batchSize, maxBatches } = clampPruneBatch(args.batchSize, args.maxBatches);
-  const db = getOrgsDb();
+  const db = getRunnerJobLogsDb();
   const current = (db.prepare('SELECT COUNT(*) AS n FROM runner_job_logs').get() as { n: number })
     .n;
   let excess = current - keepRows;
