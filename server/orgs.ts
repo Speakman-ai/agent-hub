@@ -239,6 +239,17 @@ export function initOrgsDb(): void {
     // Best-effort: a failed rebuild leaves the old table intact (grok audit
     // rows just won't persist), never blocks orgs.db init.
   }
+  // Additive migration: `invites.project_ids` carries the optional set of
+  // projects to assign the invited user to on acceptance (JSON array of
+  // project ids, validated against the issuer's visible set at creation
+  // time). CREATE TABLE IF NOT EXISTS above won't add it to an existing
+  // invites table, so probe-then-ALTER. Idempotent.
+  try {
+    orgsDb.prepare('SELECT project_ids FROM invites LIMIT 1').get();
+  } catch {
+    orgsDb.exec('ALTER TABLE invites ADD COLUMN project_ids TEXT');
+  }
+
   // Multi-tenant Finalize runner control-plane queue (shared across orgs).
   orgsDb.exec(RUNNER_QUEUE_SCHEMA);
 

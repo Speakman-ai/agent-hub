@@ -154,7 +154,17 @@ export const MfaLoginBody = registerComponent(
 export const CreateUserBody = registerComponent(
   'AuthCreateUserBody',
   credentialBody(
-    { password: z.string(), role: z.enum(['Owner', 'Admin', 'User']).optional() },
+    {
+      password: z.string(),
+      role: z.enum(['Owner', 'Admin', 'User']).optional(),
+      projectIds: z
+        .array(z.string().min(1, 'project id must be a non-empty string'))
+        .optional()
+        .openapi({
+          description:
+            'Optional project ids to assign the new user to on creation. Each must be a non-empty string and becomes a project-member (visibility) assignment. Empty strings and unknown/inaccessible ids are rejected (not silently dropped).',
+        }),
+    },
     '`email` is canonical. `username` is accepted for compatibility. One identifier is required.',
   ),
 );
@@ -211,6 +221,13 @@ export const CreateInviteBody = registerComponent(
     role: z.enum(['Admin', 'User']).optional(),
     email: z.string().optional().nullable(),
     ttlHours: z.number().optional(),
+    projectIds: z
+      .array(z.string().min(1, 'project id must be a non-empty string'))
+      .optional()
+      .openapi({
+        description:
+          'Optional project ids to assign the invited user to on acceptance. Each must be a non-empty string. Requires the issuer to be an Owner (project-member assignment is an Owner-only ACL); each id is validated against the issuer’s visible project set. Empty strings and unknown/inaccessible ids are rejected (not silently dropped).',
+      }),
   }),
 );
 

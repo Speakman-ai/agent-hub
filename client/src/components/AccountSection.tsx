@@ -1159,12 +1159,39 @@ export function InvitesSection({ callerRole, invites, emailDelivery, onChanged }
   const [sendingToken, setSendingToken] = useState<any>(null);
   const [status, setStatus] = useState<any>(null);
   const [copiedToken, setCopiedToken] = useState<any>(null);
+  // Project pre-assignment is an Owner-only ACL; only load + offer the picker
+  // to Owners (the server also enforces this — non-Owners get a 403).
+  const canAssignProjects = callerRole === 'Owner';
+  const [projects, setProjects] = useState<Array<{ id: string; name?: string }>>([]);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!options.includes(role)) {
       setRole(options[options.length - 1] || 'User');
     }
   }, [options, role]);
+
+  useEffect(() => {
+    if (!canAssignProjects) return;
+    let cancelled = false;
+    api
+      .getProjects()
+      .then((list: any) => {
+        if (!cancelled) setProjects(Array.isArray(list) ? list : []);
+      })
+      .catch(() => {
+        if (!cancelled) setProjects([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canAssignProjects]);
+
+  const toggleProject = (id: string) => {
+    setSelectedProjectIds((prev) =>
+      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id],
+    );
+  };
 
   const copyInviteLink = async (invite: any, successMessage = 'Invite link copied.') => {
     const url = absoluteInviteUrl(invite);
@@ -1188,8 +1215,15 @@ export function InvitesSection({ callerRole, invites, emailDelivery, onChanged }
     }
     setBusy(true);
     try {
-      const created = await api.createInvite({ email: nextEmail, role });
+      const created = await api.createInvite({
+        email: nextEmail,
+        role,
+        ...(canAssignProjects && selectedProjectIds.length > 0
+          ? { projectIds: selectedProjectIds }
+          : {}),
+      });
       setEmail('');
+      setSelectedProjectIds([]);
       await onChanged();
       if (created.emailDelivery?.sent) {
         setStatus({ type: 'success', msg: `Invite email sent to ${created.email || nextEmail}.` });
@@ -1292,6 +1326,32 @@ export function InvitesSection({ callerRole, invites, emailDelivery, onChanged }
         </button>
       </form>
 
+      {canAssignProjects && projects.length > 0 && (
+        <div>
+          <div className="text-[11px] text-gray-500 mb-1">Assign to projects (optional)</div>
+          <div
+            className="max-h-40 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 p-2"
+            role="group"
+            aria-label="Assign invited user to projects"
+          >
+            {projects.map((p) => (
+              <label
+                key={p.id}
+                className="flex items-center gap-2 py-0.5 text-sm text-gray-200 cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedProjectIds.includes(p.id)}
+                  onChange={() => toggleProject(p.id)}
+                  className="accent-indigo-500"
+                />
+                <span className="truncate">{p.name || p.id}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
       {status && (
         <div
           role={status.type === 'success' ? 'status' : 'alert'}
@@ -1380,6 +1440,30 @@ function AddUserModal({ callerRole, onClose, onCreated }: any) {
   const [role, setRole] = useState(options[options.length - 1] || 'User');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<any>(null);
+  const [projects, setProjects] = useState<Array<{ id: string; name?: string }>>([]);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getProjects()
+      .then((list: any) => {
+        if (!cancelled) setProjects(Array.isArray(list) ? list : []);
+      })
+      .catch(() => {
+        // Project pre-assignment is optional — a load failure just hides the picker.
+        if (!cancelled) setProjects([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggleProject = (id: string) => {
+    setSelectedProjectIds((prev) =>
+      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id],
+    );
+  };
 
   const handleSubmit = async (e: any) => {
     e.preventDefault();
@@ -1393,7 +1477,13 @@ function AddUserModal({ callerRole, onClose, onCreated }: any) {
       const res = await fetch(`${getApiBase()}/auth/users`, {
         method: 'POST',
         headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: username.trim(), username: username.trim(), password, role }),
+        body: JSON.stringify({
+          email: username.trim(),
+          username: username.trim(),
+          password,
+          role,
+          projectIds: selectedProjectIds,
+        }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -1471,6 +1561,32 @@ function AddUserModal({ callerRole, onClose, onCreated }: any) {
             </option>
           ))}
         </select>
+
+        {projects.length > 0 && (
+          <div className="mb-3">
+            <div className="block text-xs text-gray-400 mb-1">Assign to projects (optional)</div>
+            <div
+              className="max-h-40 overflow-y-auto rounded border border-gray-700 bg-gray-800 p-2"
+              role="group"
+              aria-label="Assign to projects"
+            >
+              {projects.map((p) => (
+                <label
+                  key={p.id}
+                  className="flex items-center gap-2 py-0.5 text-sm text-gray-200 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedProjectIds.includes(p.id)}
+                    onChange={() => toggleProject(p.id)}
+                    className="accent-indigo-500"
+                  />
+                  <span className="truncate">{p.name || p.id}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
 
         {error && (
           <div

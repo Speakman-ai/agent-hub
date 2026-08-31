@@ -110,6 +110,58 @@ describe('MembersSection invite helpers', () => {
     expect(clipboard).toHaveBeenCalledWith('https://hub.test/invite/tok-created');
   });
 
+  it('forwards selected projectIds (deduped, blanks dropped) on the invite body', async () => {
+    const apiClient = {
+      createInvite: vi.fn().mockResolvedValue({
+        token: 'tok-proj',
+        url: '/invite/tok-proj',
+        email: 'pm@example.com',
+        role: 'User',
+        projectIds: ['proj-a', 'proj-b'],
+        emailDelivery: { attempted: false, sent: false, reason: 'smtp_not_configured' },
+      }),
+    };
+    const clipboard = vi.fn().mockResolvedValue(true);
+
+    await createInviteAndCopyLink({
+      apiClient,
+      clipboard,
+      email: 'pm@example.com',
+      role: 'User',
+      projectIds: ['proj-a', 'proj-b', 'proj-a', ''],
+    });
+    expect(apiClient.createInvite).toHaveBeenCalledWith({
+      email: 'pm@example.com',
+      role: 'User',
+      projectIds: ['proj-a', 'proj-b'],
+    });
+  });
+
+  it('omits projectIds entirely when none are selected', async () => {
+    const apiClient = {
+      createInvite: vi.fn().mockResolvedValue({
+        token: 'tok-none',
+        url: '/invite/tok-none',
+        email: 'none@example.com',
+        role: 'User',
+        emailDelivery: { attempted: false, sent: false, reason: 'smtp_not_configured' },
+      }),
+    };
+    const clipboard = vi.fn().mockResolvedValue(true);
+
+    await createInviteAndCopyLink({
+      apiClient,
+      clipboard,
+      email: 'none@example.com',
+      role: 'User',
+      projectIds: [],
+    });
+    expect(apiClient.createInvite).toHaveBeenCalledWith({
+      email: 'none@example.com',
+      role: 'User',
+    });
+  });
+
   it('creates an invite without copying when SMTP sends the email', async () => {
     const apiClient = {
       createInvite: vi.fn().mockResolvedValue({

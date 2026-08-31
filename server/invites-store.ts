@@ -22,6 +22,25 @@ export interface InviteRow {
   created_at: string;
   accepted_by: string | null;
   accepted_at: string | null;
+  /**
+   * JSON-encoded array of project ids to assign the invited user to on
+   * acceptance (the per-project visibility ACL). `null` / absent for invites
+   * with no pre-assignment. Validated against the issuer's visible project
+   * set at creation time; consumed in the accept transaction. Use
+   * `inviteProjectIds(row)` to decode safely.
+   */
+  project_ids: string | null;
+}
+
+/** Safely decode `InviteRow.project_ids` into a string[] (empty on null/garbage). */
+export function inviteProjectIds(row: Pick<InviteRow, 'project_ids'>): string[] {
+  if (!row.project_ids) return [];
+  try {
+    const parsed = JSON.parse(row.project_ids);
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 const DEFAULT_TTL_HOURS = 72;
@@ -47,14 +66,25 @@ export function createInvite(opts: {
   createdBy: string;
   ttlHours?: number;
   token?: string;
+  projectIds?: string[];
 }): InviteRow {
   const db = getOrgsDb();
   const token = opts.token || generateInviteToken();
   const expiresAt = computeExpiresAt(opts.ttlHours);
+  const projectIdsJson =
+    opts.projectIds && opts.projectIds.length > 0 ? JSON.stringify(opts.projectIds) : null;
   db.prepare(
-    `INSERT INTO invites (token, org_id, email, role, expires_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(token, opts.orgId, opts.email ?? null, opts.role, expiresAt, opts.createdBy);
+    `INSERT INTO invites (token, org_id, email, role, expires_at, created_by, project_ids)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    token,
+    opts.orgId,
+    opts.email ?? null,
+    opts.role,
+    expiresAt,
+    opts.createdBy,
+    projectIdsJson,
+  );
   return getInvite(token)!;
 }
 

@@ -43,13 +43,23 @@ export async function createInviteAndCopyLink({
   clipboard,
   email,
   role,
+  projectIds = [],
   inviteUrl = absoluteInviteUrl,
 }: any) {
   const nextEmail = String(email || '').trim();
   if (!isValidInviteEmail(nextEmail)) {
     return { ok: false, status: { type: 'error', message: 'Enter a valid email address.' } };
   }
-  const created = await apiClient.createInvite({ email: nextEmail, role });
+  const cleanProjectIds = Array.isArray(projectIds)
+    ? [...new Set(projectIds.filter((id: any) => typeof id === 'string' && id))]
+    : [];
+  const created = await apiClient.createInvite({
+    email: nextEmail,
+    role,
+    // Project pre-assignment is Owner-only (server enforces); only sent when
+    // the caller selected projects. Empty list is omitted entirely.
+    ...(cleanProjectIds.length > 0 ? { projectIds: cleanProjectIds } : {}),
+  });
   const sent = created?.emailDelivery?.sent === true;
   const copied = sent ? false : await clipboard(inviteUrl(created));
   return {
@@ -106,7 +116,18 @@ export default function MembersSection() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<any>(null);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const options = inviteRoleOptionsFor(me?.role);
+  // Project pre-assignment is an Owner-only ACL (server enforces); only Owners
+  // get the picker.
+  const canAssignProjects = me?.role === 'Owner';
+
+  const toggleProject = (id: string) => {
+    setSelectedProjectIds((prev) =>
+      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id],
+    );
+  };
 
   const load = async () => {
     setLoading(true);
@@ -133,6 +154,26 @@ export default function MembersSection() {
     if (!options.includes(role)) setRole(options[options.length - 1] || 'User');
   }, [options, role]);
 
+  useEffect(() => {
+    if (!canAssignProjects) {
+      setProjects([]);
+      setSelectedProjectIds([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getProjects()
+      .then((list: any) => {
+        if (!cancelled) setProjects(Array.isArray(list) ? list : []);
+      })
+      .catch(() => {
+        if (!cancelled) setProjects([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canAssignProjects]);
+
   const createInvite = async () => {
     const nextEmail = email.trim();
     setStatus(null);
@@ -147,12 +188,14 @@ export default function MembersSection() {
         clipboard: copyToClipboard,
         email: nextEmail,
         role,
+        projectIds: canAssignProjects ? selectedProjectIds : [],
       });
       if (!result.ok) {
         setStatus(result.status);
         return;
       }
       setEmail('');
+      setSelectedProjectIds([]);
       await load();
       setStatus(result.status);
     } catch (err: any) {
@@ -268,8 +311,35 @@ export default function MembersSection() {
         ))}
       </View>
 
+      {canAssignProjects && projects.length > 0 ? (
+        <View style={{ marginTop: 12 }}>
+          <Text style={styles.inputLabel}>Assign to projects (optional)</Text>
+          <View style={styles.projectList}>
+            {projects.map((project: any) => {
+              const selected = selectedProjectIds.includes(project.id);
+              return (
+                <TouchableOpacity
+                  key={project.id}
+                  style={[styles.projectChip, selected && styles.projectChipActive]}
+                  onPress={() => toggleProject(project.id)}
+                >
+                  <Text style={[styles.projectChipText, selected && styles.projectChipTextActive]}>
+                    {selected ? '✓ ' : ''}
+                    {project.name || project.id}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
+
       <TouchableOpacity
-        style={[styles.saveBtn, (!isValidInviteEmail(email) || busy) && { opacity: 0.4 }]}
+        style={[
+          styles.saveBtn,
+          { marginTop: 12 },
+          (!isValidInviteEmail(email) || busy) && { opacity: 0.4 },
+        ]}
         onPress={createInvite}
         disabled={!isValidInviteEmail(email) || busy}
       >
@@ -483,6 +553,30 @@ const styles = StyleSheet.create({
     color: colors.gray500,
     fontSize: 11,
     marginTop: 4,
+  },
+  projectList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  projectChip: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  projectChipActive: {
+    borderColor: colors.indigo500,
+    backgroundColor: colors.indigo900_40,
+  },
+  projectChipText: {
+    color: colors.gray400,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  projectChipTextActive: {
+    color: colors.white,
   },
   inviteActions: {
     flexDirection: 'row',

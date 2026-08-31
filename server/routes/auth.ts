@@ -39,9 +39,8 @@ import {
 } from '../auth-store.js';
 import { requireRole, hasAtLeastRole, parseRole, type Role } from '../roles.js';
 import { isLocalBundledServer, type AuthenticatedRequest } from '../auth.js';
-import { getActiveOrgId, getOrg, getOrgsDb } from '../orgs.js';
+import { getActiveOrgId, getOrg } from '../orgs.js';
 import {
-  createUser,
   getUserById,
   getUserByUsername,
   deleteUser,
@@ -86,11 +85,13 @@ import {
   countMembershipsForUser,
   listMembersForOrg,
 } from '../memberships-store.js';
+import { provisionUser } from '../provision-user.js';
 import {
   createInvite,
   deleteInvite,
   getInvite,
   type InviteRow,
+  inviteProjectIds,
   inviteState,
   listActiveInvitesForOrg,
   markInviteAccepted,
@@ -1378,11 +1379,21 @@ registerPath({
   responses: {
     201: {
       description: 'Created.',
-      content: { 'application/json': { schema: z.object({ user: UserSummary }) } },
+      content: {
+        'application/json': {
+          schema: z.object({
+            user: UserSummary,
+            assignedProjectIds: z.array(z.string()).openapi({
+              description: 'Project ids the new user was assigned to (echo of the request list).',
+            }),
+          }),
+        },
+      },
     },
     400: {
-      description: 'Invalid body or domain failure.',
-      content: { 'application/json': { schema: ZodErrorResponse } },
+      description:
+        'Invalid body (Zod validation, incl. empty project ids) or a domain failure such as an unknown/inaccessible project id.',
+      content: { 'application/json': { schema: z.union([ZodErrorResponse, ErrorResponse]) } },
     },
     403: {
       description: 'Only Owner may create Owner.',
@@ -1390,6 +1401,10 @@ registerPath({
     },
     409: {
       description: 'Email taken.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    500: {
+      description: 'Project assignment validation is unavailable (fail-closed).',
       content: { 'application/json': { schema: ErrorResponse } },
     },
   },
@@ -1596,17 +1611,25 @@ registerPath({
             email: z.string().nullable(),
             expiresAt: z.string(),
             createdAt: z.string(),
+            projectIds: z.array(z.string()).openapi({
+              description: 'Projects the invited user will be assigned to on acceptance.',
+            }),
             emailDelivery: InviteEmailDeliverySchema,
           }),
         },
       },
     },
     400: {
-      description: 'Invalid role or missing user session.',
-      content: { 'application/json': { schema: ZodErrorResponse } },
+      description:
+        'Invalid body (Zod validation, incl. empty project ids) or a domain failure: bad role, missing user session, or an unknown/inaccessible project id.',
+      content: { 'application/json': { schema: z.union([ZodErrorResponse, ErrorResponse]) } },
     },
     403: {
-      description: 'Insufficient role.',
+      description: 'Insufficient role (incl. non-Owner attempting project pre-assignment).',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    500: {
+      description: 'Project assignment validation is unavailable (fail-closed).',
       content: { 'application/json': { schema: ErrorResponse } },
     },
   },
@@ -1917,6 +1940,34 @@ export interface AuthRoutesOptions {
     deletedProjectIds: string[];
     orphanedSharedProjectIds: string[];
   };
+  /**
+   * The set of project ids the given caller may assign a member to — the
+   * active org's projects filtered to the caller's visible set (see
+   * `filterVisibleProjects` / `resolveVisibilityCaller`). This is the
+   * *authorization* gate for the `projectIds` pre-assignment list on
+   * `POST /api/auth/users` and `POST /api/auth/invites`: it validates against
+   * the active org and the caller's visibility, not merely global existence.
+   *
+   * FAIL CLOSED: when a caller sends a non-empty `projectIds` and this
+   * dependency is absent, the routes reject the request (500) rather than
+   * accepting arbitrary ids. Injected by `index.ts`; only a misconfigured
+   * mount would omit it.
+   */
+  resolveAssignableProjectIds?: (req: AuthenticatedRequest) => Set<string>;
+  /**
+   * Referential-existence predicate: true iff `projectId` currently exists in
+   * the active org (injected from `findProject`). This is the *write-time*
+   * guard, distinct from the authorization gate above. It is passed into
+   * `provisionUser`, which re-checks each id INSIDE the account-creation
+   * transaction so an ACL row is never written for a project that no longer
+   * exists — closing the invite issuance→redemption window where a project
+   * can be deleted after an invite is minted but before it is redeemed.
+   *
+   * FAIL CLOSED: routes reject (direct create) or skip assignment (invite
+   * accept) when this is absent and `projectIds` is non-empty, rather than
+   * writing unvalidated ACL rows.
+   */
+  projectExists?: (projectId: string) => boolean;
 }
 
 type LimiterHandler = NonNullable<RateLimitOptions['handler']>;
@@ -4052,6 +4103,11 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     const username = sanitizeEmailIdentifier(credentialFromBody(parsedCreateUser.data));
     const password = sanitizePassword(rawPass);
     const role = parseRole(rawRole) ?? 'User';
+    // Optional pre-assignment: which projects the new user should be a member
+    // of on creation. The Zod schema already guarantees an array of non-empty
+    // strings (empty ids are rejected as a 400, not silently dropped), so we
+    // only dedupe here.
+    const requestedProjectIds = [...new Set(parsedCreateUser.data.projectIds ?? [])];
     if (!username) {
       res.status(400).json({ error: 'email must be a valid email address' });
       return;
@@ -4072,10 +4128,45 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(409).json({ error: 'email already taken' });
       return;
     }
+    // Validate the pre-assignment list before creating anything, so a bad
+    // project id fails the whole request instead of half-creating a user.
+    // Validation is against the caller's visible project set in the active
+    // org (not global existence): a caller cannot pre-assign a project they
+    // can't see, which closes the cross-org / hidden-project assignment gap.
+    if (requestedProjectIds.length) {
+      // Fail closed: never accept a project list we can't authorize + validate.
+      if (!options.resolveAssignableProjectIds || !options.projectExists) {
+        res.status(500).json({ error: 'Project assignment is unavailable on this server.' });
+        return;
+      }
+      const assignable = options.resolveAssignableProjectIds(authedReq);
+      const unknown = requestedProjectIds.filter((id) => !assignable.has(id));
+      if (unknown.length) {
+        res
+          .status(400)
+          .json({ error: `Unknown or inaccessible project id(s): ${unknown.join(', ')}` });
+        return;
+      }
+    }
     const orgId = getActiveOrgId();
     const passwordHash = await hashPassword(password);
-    const user = createUser({ username, passwordHash });
-    createMembership(user.id, orgId, role);
+    // Atomic: user + membership + project assignments commit together or not
+    // at all (see provisionUser) — no half-created accounts if an assignment
+    // fails. provisionUser re-checks each project's existence at write time
+    // (projectExists) so no dangling ACL row is written. Project pre-assignment
+    // is the Owner-only visibility ACL that `/api/projects/:id/members`
+    // manages; this route is itself Owner-gated (requireRole('Owner')), so the
+    // actor's authority is established — mirrors the Owner check the invite
+    // path applies inline.
+    const { user, assignedProjectIds } = provisionUser({
+      username,
+      passwordHash,
+      orgId,
+      role,
+      projectIds: requestedProjectIds,
+      assignedBy: authedReq.authUserId ?? null,
+      projectExists: options.projectExists,
+    });
     res.status(201).json({
       user: {
         id: user.id,
@@ -4083,6 +4174,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         role,
         createdAt: user.created_at,
       },
+      assignedProjectIds,
     });
   });
 
@@ -4346,12 +4438,41 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json({ error: 'email must be a valid email address' });
       return;
     }
+    // Optional project pre-assignment on the invite. Project-member
+    // assignment is an Owner-only ACL (see requireProjectMemberAdmin on the
+    // /api/projects/:id/members routes), so even though invites are Admin+,
+    // attaching a project list requires the *issuer* to be an Owner — an
+    // Admin cannot mint project-member rows via an invite. Validated against
+    // the issuer's visible set, then persisted and applied at accept time.
+    // The Zod schema guarantees non-empty strings (empty ids 400 rather than
+    // being dropped), so we only dedupe here.
+    const requestedProjectIds = [...new Set(parsedInvite.data.projectIds ?? [])];
+    if (requestedProjectIds.length > 0) {
+      if (authedReq.authRole !== 'Owner') {
+        res.status(403).json({ error: 'Owner role required to pre-assign projects on an invite.' });
+        return;
+      }
+      // Fail closed: never persist a project list we can't authorize + validate.
+      if (!options.resolveAssignableProjectIds || !options.projectExists) {
+        res.status(500).json({ error: 'Project assignment is unavailable on this server.' });
+        return;
+      }
+      const assignable = options.resolveAssignableProjectIds(authedReq);
+      const unknown = requestedProjectIds.filter((id) => !assignable.has(id));
+      if (unknown.length) {
+        res
+          .status(400)
+          .json({ error: `Unknown or inaccessible project id(s): ${unknown.join(', ')}` });
+        return;
+      }
+    }
     const invite = createInvite({
       orgId: authedReq.authOrgId,
       role,
       email: inviteEmail,
       createdBy: authedReq.authUserId,
       ttlHours,
+      projectIds: requestedProjectIds,
     });
     const url = buildInviteUrl(req, invite);
     const emailDelivery = await deliverInviteEmail(req, invite);
@@ -4362,6 +4483,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       email: invite.email,
       expiresAt: invite.expires_at,
       createdAt: invite.created_at,
+      projectIds: inviteProjectIds(invite),
       emailDelivery,
     });
   });
@@ -4538,27 +4660,41 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
 
       const passwordHash = await hashPassword(password);
 
-      // Wrap user creation + invite acceptance + membership in a single
-      // DB transaction so a crash mid-flow can't strand a consumed invite
-      // against a user row with no membership (a "ghost account" that can
-      // log in but 403s on every call). better-sqlite3's db.transaction()
-      // returns a function that commits on normal return and rolls back
-      // on any thrown error, so we throw an in-band sentinel when the
-      // atomic `markInviteAccepted` loses its race.
+      // Provision the account atomically through the shared helper: user +
+      // invite-acceptance + membership + project assignments all commit
+      // together or roll back together, so a crash mid-flow can't strand a
+      // consumed invite against a user row with no membership (a "ghost
+      // account" that can log in but 403s on every call), nor leave only a
+      // prefix of the invite's projects assigned. `afterCreateUser` runs the
+      // atomic `markInviteAccepted` race check inside the same transaction;
+      // an in-band sentinel signals a lost race so the whole thing unwinds.
+      //
+      // The persisted project ids were authorized against the (Owner) issuer's
+      // visible set at creation time, but a project can be DELETED between
+      // issuance and redemption. `provisionUser` re-checks each id's existence
+      // at write time via `projectExists`, so a since-deleted project is
+      // silently skipped rather than creating a dangling ACL row — the invitee
+      // still joins with the projects that remain. Fail closed if no existence
+      // checker is available: assign nothing rather than write unvalidated
+      // rows. `created_by` is the issuer for the ACL audit trail (null if that
+      // user was later deleted).
+      const inviteProjects = options.projectExists ? inviteProjectIds(row) : [];
       class InviteRaceLost extends Error {}
       let user: { id: string; username: string };
       try {
-        user = getOrgsDb().transaction(() => {
-          const u = createUser({ username, passwordHash });
-          const won = markInviteAccepted(token, u.id);
-          if (!won) {
-            // Losing the race rolls back the createUser + leaves the
-            // original winner's acceptance intact.
-            throw new InviteRaceLost();
-          }
-          createMembership(u.id, row.org_id, row.role);
-          return u;
-        })();
+        ({ user } = provisionUser({
+          username,
+          passwordHash,
+          orgId: row.org_id,
+          role: row.role,
+          projectIds: inviteProjects,
+          assignedBy: row.created_by ?? null,
+          projectExists: options.projectExists,
+          afterCreateUser: (userId) => {
+            const won = markInviteAccepted(token, userId);
+            if (!won) throw new InviteRaceLost();
+          },
+        }));
       } catch (err) {
         if (err instanceof InviteRaceLost) {
           res.status(410).json({ error: 'invite no longer valid' });

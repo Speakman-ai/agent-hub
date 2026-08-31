@@ -181,7 +181,12 @@ import createConfigRoutes from './routes/config.js';
 import createSessionRoutes, { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import createProjectRoutes from './routes/projects.js';
 import createProjectBrandingRoutes from './routes/project-branding.js';
-import { createProjectVisibilityGate } from './project-visibility-middleware.js';
+import {
+  createProjectVisibilityGate,
+  resolveVisibilityCaller,
+} from './project-visibility-middleware.js';
+import { filterVisibleProjects } from './project-visibility.js';
+import { isHubSystemProject } from '../shared/utils/hub.js';
 import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
 import createPreviewSecretsRoutes from './routes/preview-secrets.js';
 import createProjectAwsRoutes from './routes/project-aws.js';
@@ -2077,6 +2082,26 @@ app.use(
         { stmts: stmts!, getProjects, saveProjects },
         userId,
       ),
+    // Resolves the set of projects the caller may pre-assign a new user to
+    // (POST /api/auth/users and POST /api/auth/invites): the active org's
+    // projects, filtered to the caller's visible set, minus Hub system
+    // projects. `findProject`/`getProjects` already scope to the active org
+    // (per-org projects.json), and `filterVisibleProjects` narrows to what
+    // the caller can actually see — so a caller cannot assign a project
+    // outside their org or a private project they can't view.
+    resolveAssignableProjectIds: (req) => {
+      const caller = resolveVisibilityCaller(req);
+      return new Set(
+        filterVisibleProjects(getProjects(), caller)
+          .filter((p) => !isHubSystemProject(p))
+          .map((p) => p.id),
+      );
+    },
+    // Write-time referential-existence guard (distinct from the authorization
+    // gate above). provisionUser re-checks each id inside the account-creation
+    // transaction so an ACL row is never written for a project that no longer
+    // exists — closing the invite issuance→redemption deletion window.
+    projectExists: (projectId) => Boolean(findProject(projectId)),
   }),
 );
 app.use(createMeTodosRoutes(routeDeps));

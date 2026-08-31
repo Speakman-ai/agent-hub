@@ -32,13 +32,15 @@ const { setAuthFilePathForTests, reloadAuthRecord, saveAuthRecord, getAuthRecord
 const { initOrgsDb, setOrgsDbPathForTests, getOrgsDb, updateOrg } = await import('../orgs.js');
 const { createUser, getUserByUsername } = await import('../users-store.js');
 const { createMembership, getMembershipRole } = await import('../memberships-store.js');
+const { assignedProjectIdsForUser, isProjectRestricted } =
+  await import('../project-members-store.js');
 const { hashPassword } = await import('../password.js');
 
-function buildGatedApp() {
+function buildGatedApp(options: Parameters<typeof createAuthRoutes>[0] = {}) {
   const app = express();
   app.use(express.json());
   app.use(authMiddleware);
-  app.use(createAuthRoutes());
+  app.use(createAuthRoutes(options));
   return app;
 }
 
@@ -123,6 +125,112 @@ describe('POST /api/auth/users (Owner only)', () => {
       .set('Authorization', `Bearer ${ownerToken}`)
       .send({ email: 'alice@example.com', password: 'another-strong-password', role: 'User' });
     expect(dup.status).toBe(409);
+  });
+
+  it('pre-assigns the new user to the selected projects (caller-visible set)', async () => {
+    const visible = new Set(['proj-a', 'proj-b']);
+    const app = buildGatedApp({
+      resolveAssignableProjectIds: () => visible,
+      projectExists: (id) => visible.has(id),
+    });
+    const ownerToken = await setupOwner(app);
+
+    const res = await supertest(app)
+      .post('/api/auth/users')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        email: 'alice@example.com',
+        password: 'alices-super-strong-password',
+        role: 'User',
+        projectIds: ['proj-a', 'proj-b', 'proj-a'], // duplicate is deduped
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.assignedProjectIds.sort()).toEqual(['proj-a', 'proj-b']);
+
+    const alice = getUserByUsername('alice@example.com')!;
+    expect([...assignedProjectIdsForUser(alice.id)].sort()).toEqual(['proj-a', 'proj-b']);
+  });
+
+  it('rejects an inaccessible/unknown project id without creating the user', async () => {
+    // 'nope' is outside the caller's visible set — must be rejected even
+    // though the request is otherwise valid.
+    const app = buildGatedApp({
+      resolveAssignableProjectIds: () => new Set(['proj-a']),
+      projectExists: (id) => id === 'proj-a',
+    });
+    const ownerToken = await setupOwner(app);
+
+    const res = await supertest(app)
+      .post('/api/auth/users')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        email: 'ghost@example.com',
+        password: 'ghosts-super-strong-password',
+        role: 'User',
+        projectIds: ['proj-a', 'nope'],
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('nope');
+    // The user must NOT have been created — validation runs before createUser.
+    expect(getUserByUsername('ghost@example.com')).toBeNull();
+  });
+
+  it('rejects an empty-string project id with 400 rather than dropping it', async () => {
+    const app = buildGatedApp({
+      resolveAssignableProjectIds: () => new Set(['proj-a']),
+      projectExists: (id) => id === 'proj-a',
+    });
+    const ownerToken = await setupOwner(app);
+
+    const res = await supertest(app)
+      .post('/api/auth/users')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        email: 'blank@example.com',
+        password: 'blanks-super-strong-password',
+        role: 'User',
+        projectIds: [''],
+      });
+    expect(res.status).toBe(400);
+    // The bad request must not create a user.
+    expect(getUserByUsername('blank@example.com')).toBeNull();
+  });
+
+  it('fails closed with 500 when project validation is unavailable', async () => {
+    // No resolveAssignableProjectIds / projectExists injected — a non-empty
+    // projectIds must be rejected, not accepted with arbitrary ids.
+    const app = buildGatedApp();
+    const ownerToken = await setupOwner(app);
+
+    const res = await supertest(app)
+      .post('/api/auth/users')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({
+        email: 'failclosed@example.com',
+        password: 'failcloseds-strong-password',
+        role: 'User',
+        projectIds: ['proj-a'],
+      });
+    expect(res.status).toBe(500);
+    expect(getUserByUsername('failclosed@example.com')).toBeNull();
+  });
+
+  it('creates the user with an empty assignment list when projectIds is omitted', async () => {
+    const app = buildGatedApp({
+      resolveAssignableProjectIds: () => new Set(['proj-a']),
+      projectExists: (id) => id === 'proj-a',
+    });
+    const ownerToken = await setupOwner(app);
+
+    const res = await supertest(app)
+      .post('/api/auth/users')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ email: 'solo@example.com', password: 'solos-super-strong-password', role: 'User' });
+    expect(res.status).toBe(201);
+    expect(res.body.assignedProjectIds).toEqual([]);
+
+    const solo = getUserByUsername('solo@example.com')!;
+    expect(assignedProjectIdsForUser(solo.id).size).toBe(0);
   });
 });
 
@@ -247,6 +355,127 @@ describe('Invite flow end-to-end', () => {
       .post(`/api/auth/invites/${token}/accept`)
       .send({ email: 'latecomer@example.com', password: 'latecomers-strong-password' });
     expect(accept.status).toBe(410);
+  });
+});
+
+describe('Invite project pre-assignment', () => {
+  it('Owner issues an invite with projectIds; acceptance assigns them', async () => {
+    const existing = new Set(['proj-a', 'proj-b']);
+    const app = buildGatedApp({
+      resolveAssignableProjectIds: () => existing,
+      projectExists: (id) => existing.has(id),
+    });
+    const ownerToken = await setupOwner(app);
+
+    const invite = await supertest(app)
+      .post('/api/auth/invites')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ role: 'User', email: 'pm@example.com', projectIds: ['proj-a', 'proj-b', 'proj-a'] });
+    expect(invite.status).toBe(201);
+    expect(invite.body.projectIds.sort()).toEqual(['proj-a', 'proj-b']);
+    const token: string = invite.body.token;
+
+    const accept = await supertest(app)
+      .post(`/api/auth/invites/${token}/accept`)
+      .send({ email: 'pm-user@example.com', password: 'pm-users-strong-password' });
+    expect(accept.status).toBe(201);
+
+    const user = getUserByUsername('pm-user@example.com')!;
+    expect([...assignedProjectIdsForUser(user.id)].sort()).toEqual(['proj-a', 'proj-b']);
+  });
+
+  it('skips a project deleted between invite issuance and acceptance (TOCTOU)', async () => {
+    // `existing` is mutable so we can drop a project after the invite is minted
+    // but before it is redeemed — the accept path must not create an ACL row
+    // for the now-missing project, while the invitee still joins.
+    const existing = new Set(['proj-a', 'proj-b']);
+    const app = buildGatedApp({
+      resolveAssignableProjectIds: () => new Set(existing),
+      projectExists: (id) => existing.has(id),
+    });
+    const ownerToken = await setupOwner(app);
+
+    const invite = await supertest(app)
+      .post('/api/auth/invites')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ role: 'User', email: 'gap@example.com', projectIds: ['proj-a', 'proj-b'] });
+    expect(invite.status).toBe(201);
+    const token: string = invite.body.token;
+
+    // proj-b is deleted before the invite is accepted.
+    existing.delete('proj-b');
+
+    const accept = await supertest(app)
+      .post(`/api/auth/invites/${token}/accept`)
+      .send({ email: 'gap-user@example.com', password: 'gap-users-strong-password' });
+    expect(accept.status).toBe(201);
+
+    const user = getUserByUsername('gap-user@example.com')!;
+    // Only the still-existing project is assigned; no dangling row for proj-b.
+    expect([...assignedProjectIdsForUser(user.id)]).toEqual(['proj-a']);
+    expect(isProjectRestricted('proj-b')).toBe(false);
+  });
+
+  it('rejects project pre-assignment from a non-Owner issuer with 403', async () => {
+    const app = buildGatedApp({
+      resolveAssignableProjectIds: () => new Set(['proj-a']),
+      projectExists: (id) => id === 'proj-a',
+    });
+    const ownerToken = await setupOwner(app);
+
+    // Create + log in as an Admin.
+    await supertest(app).post('/api/auth/users').set('Authorization', `Bearer ${ownerToken}`).send({
+      email: 'admin@example.com',
+      password: 'admins-super-strong-password',
+      role: 'Admin',
+    });
+    const adminLogin = await supertest(app)
+      .post('/api/auth/login')
+      .send({ email: 'admin@example.com', password: 'admins-super-strong-password' });
+    const adminToken: string = adminLogin.body.token;
+
+    const res = await supertest(app)
+      .post('/api/auth/invites')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ role: 'User', projectIds: ['proj-a'] });
+    expect(res.status).toBe(403);
+
+    // A plain invite (no projectIds) from the same Admin still works.
+    const plain = await supertest(app)
+      .post('/api/auth/invites')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ role: 'User' });
+    expect(plain.status).toBe(201);
+    expect(plain.body.projectIds).toEqual([]);
+  });
+
+  it('rejects an empty-string project id on invite creation with 400', async () => {
+    const app = buildGatedApp({
+      resolveAssignableProjectIds: () => new Set(['proj-a']),
+      projectExists: (id) => id === 'proj-a',
+    });
+    const ownerToken = await setupOwner(app);
+
+    const res = await supertest(app)
+      .post('/api/auth/invites')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ role: 'User', projectIds: [''] });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an inaccessible project id on invite creation with 400', async () => {
+    const app = buildGatedApp({
+      resolveAssignableProjectIds: () => new Set(['proj-a']),
+      projectExists: (id) => id === 'proj-a',
+    });
+    const ownerToken = await setupOwner(app);
+
+    const res = await supertest(app)
+      .post('/api/auth/invites')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ role: 'User', projectIds: ['proj-a', 'nope'] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('nope');
   });
 });
 

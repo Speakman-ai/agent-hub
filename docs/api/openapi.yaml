@@ -471,6 +471,12 @@ components:
                 - Owner
                 - Admin
                 - User
+            projectIds:
+              type: array
+              items:
+                type: string
+                minLength: 1
+              description: Optional project ids to assign the new user to on creation. Each must be a non-empty string and becomes a project-member (visibility) assignment. Empty strings and unknown/inaccessible ids are rejected (not silently dropped).
           required:
             - email
             - password
@@ -488,6 +494,12 @@ components:
                 - Owner
                 - Admin
                 - User
+            projectIds:
+              type: array
+              items:
+                type: string
+                minLength: 1
+              description: Optional project ids to assign the new user to on creation. Each must be a non-empty string and becomes a project-member (visibility) assignment. Empty strings and unknown/inaccessible ids are rejected (not silently dropped).
           required:
             - username
             - password
@@ -560,6 +572,12 @@ components:
           nullable: true
         ttlHours:
           type: number
+        projectIds:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: Optional project ids to assign the invited user to on acceptance. Each must be a non-empty string. Requires the issuer to be an Owner (project-member assignment is an Owner-only ACL); each id is validated against the issuer’s visible project set. Empty strings and unknown/inaccessible ids are rejected (not silently dropped).
     AcceptInviteBody:
       anyOf:
         - type: object
@@ -17823,14 +17841,22 @@ paths:
                 properties:
                   user:
                     $ref: "#/components/schemas/UserSummary"
+                  assignedProjectIds:
+                    type: array
+                    items:
+                      type: string
+                    description: Project ids the new user was assigned to (echo of the request list).
                 required:
                   - user
+                  - assignedProjectIds
         "400":
-          description: Invalid body or domain failure.
+          description: Invalid body (Zod validation, incl. empty project ids) or a domain failure such as an unknown/inaccessible project id.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
+                anyOf:
+                  - $ref: "#/components/schemas/ZodErrorResponse"
+                  - $ref: "#/components/schemas/ErrorResponse"
         "403":
           description: Only Owner may create Owner.
           content:
@@ -17839,6 +17865,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Email taken.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Project assignment validation is unavailable (fail-closed).
           content:
             application/json:
               schema:
@@ -18173,6 +18205,11 @@ paths:
                     type: string
                   createdAt:
                     type: string
+                  projectIds:
+                    type: array
+                    items:
+                      type: string
+                    description: Projects the invited user will be assigned to on acceptance.
                   emailDelivery:
                     anyOf:
                       - type: object
@@ -18227,15 +18264,24 @@ paths:
                   - email
                   - expiresAt
                   - createdAt
+                  - projectIds
                   - emailDelivery
         "400":
-          description: Invalid role or missing user session.
+          description: "Invalid body (Zod validation, incl. empty project ids) or a domain failure: bad role, missing user session, or an unknown/inaccessible project id."
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ZodErrorResponse"
+                anyOf:
+                  - $ref: "#/components/schemas/ZodErrorResponse"
+                  - $ref: "#/components/schemas/ErrorResponse"
         "403":
-          description: Insufficient role.
+          description: Insufficient role (incl. non-Owner attempting project pre-assignment).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Project assignment validation is unavailable (fail-closed).
           content:
             application/json:
               schema:
