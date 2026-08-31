@@ -14549,6 +14549,34 @@ components:
         - ok
         - improvement
       description: The reviewed record with its final status.
+    SupportTicketVoteAggregate:
+      type: object
+      properties:
+        score:
+          type: integer
+          description: SUM(value) across all votes.
+        upvotes:
+          type: integer
+          minimum: 0
+        downvotes:
+          type: integer
+          minimum: 0
+        myVote:
+          anyOf:
+            - type: number
+              enum:
+                - 1
+            - type: number
+              enum:
+                - -1
+            - nullable: true
+          description: Current vote for this voterKey, or null when they have not voted.
+      required:
+        - score
+        - upvotes
+        - downvotes
+        - myVote
+      description: Aggregate score for a feature-request ticket, plus the caller’s vote.
     SupportTicketReleaseNotification:
       type: object
       properties:
@@ -14780,6 +14808,28 @@ components:
         - created_at
         - updated_at
       description: A single support ticket row.
+    SupportTicketVotingTally:
+      allOf:
+        - $ref: "#/components/schemas/SupportTicketVoteAggregate"
+        - type: object
+          properties:
+            comment_count:
+              type: integer
+              minimum: 0
+              description: Count of non-hidden comments on this ticket.
+          required:
+            - comment_count
+      description: Vote aggregate plus non-hidden comment_count for one feature-request ticket on the voting feed.
+    SupportTicketVotingItem:
+      allOf:
+        - $ref: "#/components/schemas/SupportTicket"
+        - type: object
+          properties:
+            voting:
+              $ref: "#/components/schemas/SupportTicketVotingTally"
+          required:
+            - voting
+      description: A feature-request support ticket with vote tallies and comment_count. Severity, status, and release badges are unchanged from SupportTicket.
     RunSupportTicketInvestigationResponse:
       type: object
       properties:
@@ -14849,34 +14899,6 @@ components:
         - ticketId
         - linked
       description: The existing kanban card the ticket was linked to, plus the retained source ticket.
-    SupportTicketVoteAggregate:
-      type: object
-      properties:
-        score:
-          type: integer
-          description: SUM(value) across all votes.
-        upvotes:
-          type: integer
-          minimum: 0
-        downvotes:
-          type: integer
-          minimum: 0
-        myVote:
-          anyOf:
-            - type: number
-              enum:
-                - 1
-            - type: number
-              enum:
-                - -1
-            - nullable: true
-          description: Current vote for this voterKey, or null when they have not voted.
-      required:
-        - score
-        - upvotes
-        - downvotes
-        - myVote
-      description: Aggregate score for a feature-request ticket, plus the caller’s vote.
     SupportTicketComment:
       type: object
       properties:
@@ -43540,6 +43562,50 @@ paths:
                     minimum: 0
                 required:
                   - count
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/voting:
+    get:
+      tags:
+        - Support
+      summary: List feature-request tickets ranked by vote score
+      description: Returns `type=feature_request` tickets for the project (every lifecycle status), joined with vote aggregates `{score, upvotes, downvotes, myVote}` and `comment_count` (hidden comments excluded). Sorted by score DESC, then created_at DESC. Pass `voterKey` to populate `voting.myVote` for that identity; omit it and myVote is null.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+            description: Opaque per-voter token. One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.
+          required: false
+          description: Opaque per-voter token. One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.
+          name: voterKey
+          in: query
+      responses:
+        "200":
+          description: Feature-request tickets ordered by score (highest first), then newest.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SupportTicketVotingItem"
+        "400":
+          description: voterKey is not a string, or exceeds 256 characters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
         "404":
           description: Project not found.
           content:

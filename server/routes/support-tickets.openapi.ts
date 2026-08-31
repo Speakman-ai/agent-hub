@@ -19,6 +19,29 @@ const STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'w
 const RELEASE_STATES = ['fixed_pending_release', 'released_to_prod', 'customer_notified'] as const;
 const INVESTIGATION_ENGINES = ['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli'] as const;
 
+/** Opaque voter identity token. Callers that have a user email should pass
+ *  SHA-256(server_salt + lowercased email) rather than the raw address. */
+const VoterKeySchema = z.string().trim().min(1).max(256).openapi({
+  description:
+    'Opaque per-voter token. One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.',
+});
+
+export const SupportTicketVoteAggregateComponent = registerComponent(
+  'SupportTicketVoteAggregate',
+  z
+    .object({
+      score: z.number().int().openapi({ description: 'SUM(value) across all votes.' }),
+      upvotes: z.number().int().nonnegative(),
+      downvotes: z.number().int().nonnegative(),
+      myVote: VoteValueOrNullSchema.openapi({
+        description: 'Current vote for this voterKey, or null when they have not voted.',
+      }),
+    })
+    .openapi({
+      description: 'Aggregate score for a feature-request ticket, plus the caller’s vote.',
+    }),
+);
+
 const SupportTicketReleaseNotificationComponent = registerComponent(
   'SupportTicketReleaseNotification',
   z.object({
@@ -230,6 +253,60 @@ registerPath({
       description: 'Unread ticket count.',
       content: jsonContent(z.object({ count: z.number().int().nonnegative() })),
     },
+    404: errorResponse('Project not found.'),
+  },
+});
+
+export const VotingListQuerySchema = z.object({
+  voterKey: z
+    .string()
+    .trim()
+    .max(256)
+    .optional()
+    .transform((v) => (v ? v : undefined)),
+});
+
+const SupportTicketVotingTallyComponent = registerComponent(
+  'SupportTicketVotingTally',
+  SupportTicketVoteAggregateComponent.extend({
+    comment_count: z.number().int().nonnegative().openapi({
+      description: 'Count of non-hidden comments on this ticket.',
+    }),
+  }).openapi({
+    description:
+      'Vote aggregate plus non-hidden comment_count for one feature-request ticket on the voting feed.',
+  }),
+);
+
+export const SupportTicketVotingItemComponent = registerComponent(
+  'SupportTicketVotingItem',
+  SupportTicketComponent.extend({
+    voting: SupportTicketVotingTallyComponent,
+  }).openapi({
+    description:
+      'A feature-request support ticket with vote tallies and comment_count. Severity, status, and release badges are unchanged from SupportTicket.',
+  }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/support-tickets/voting',
+  tags: ['Support'],
+  summary: 'List feature-request tickets ranked by vote score',
+  description:
+    'Returns `type=feature_request` tickets for the project (every lifecycle status), joined with vote aggregates `{score, upvotes, downvotes, myVote}` and `comment_count` (hidden comments excluded). Sorted by score DESC, then created_at DESC. Pass `voterKey` to populate `voting.myVote` for that identity; omit it and myVote is null.',
+  request: {
+    params: projectIdParams,
+    query: z.object({
+      voterKey: VoterKeySchema.optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Feature-request tickets ordered by score (highest first), then newest.',
+      content: jsonContent(z.array(SupportTicketVotingItemComponent)),
+    },
+    400: errorResponse('voterKey is not a string, or exceeds 256 characters.'),
     404: errorResponse('Project not found.'),
   },
 });
@@ -491,13 +568,6 @@ registerPath({
   },
 });
 
-/** Opaque voter identity token. Callers that have a user email should pass
- *  SHA-256(server_salt + lowercased email) rather than the raw address. */
-const VoterKeySchema = z.string().trim().min(1).max(256).openapi({
-  description:
-    'Opaque per-voter token. One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.',
-});
-
 export const CastVoteRequestSchema = z
   .object({
     voterKey: VoterKeySchema,
@@ -509,22 +579,6 @@ export const CastVoteRequestSchema = z
     description:
       'Cast, change, or retract a vote on a feature-request ticket. UNIQUE(ticket, voter_key) makes the write race-safe: the same key upserts in place; null deletes the row.',
   });
-
-export const SupportTicketVoteAggregateComponent = registerComponent(
-  'SupportTicketVoteAggregate',
-  z
-    .object({
-      score: z.number().int().openapi({ description: 'SUM(value) across all votes.' }),
-      upvotes: z.number().int().nonnegative(),
-      downvotes: z.number().int().nonnegative(),
-      myVote: VoteValueOrNullSchema.openapi({
-        description: 'Current vote for this voterKey, or null when they have not voted.',
-      }),
-    })
-    .openapi({
-      description: 'Aggregate score for a feature-request ticket, plus the caller’s vote.',
-    }),
-);
 
 registerPath({
   method: 'put',

@@ -8,6 +8,7 @@ import {
   getSupportTicketVoteAggregate,
   hideSupportTicketComment,
   listSupportTicketComments,
+  listSupportTicketsForVoting,
   retractSupportTicketVote,
   SUPPORT_TICKET_COMMENT_MAX_LEN,
   upsertSupportTicketVote,
@@ -294,5 +295,113 @@ describe('cascade delete', () => {
       )
       .get() as { votes: number; comments: number };
     expect(leftover).toEqual({ votes: 0, comments: 0 });
+  });
+});
+
+describe('listSupportTicketsForVoting', () => {
+  function setCreatedAt(id: string, createdAt: string) {
+    getDb().prepare('UPDATE support_tickets SET created_at = ? WHERE id = ?').run(createdAt, id);
+  }
+
+  it('returns only feature_request tickets for the project, score-desc then newest', () => {
+    const bug = createSupportTicket({ projectId: 'p1', type: 'bug', body: 'crash' });
+    const otherProj = createSupportTicket({
+      projectId: 'p2',
+      type: 'feature_request',
+      body: 'other project',
+    });
+    const low = ticket('low score');
+    const high = ticket('high score');
+    const tiedNewer = ticket('tied newer');
+    const tiedOlder = ticket('tied older');
+    setCreatedAt(low.id, '2026-01-01 00:00:00');
+    setCreatedAt(high.id, '2026-01-02 00:00:00');
+    setCreatedAt(tiedOlder.id, '2026-01-03 00:00:00');
+    setCreatedAt(tiedNewer.id, '2026-01-04 00:00:00');
+
+    upsertSupportTicketVote({ supportTicketId: high.id, voterKey: 'a', value: 1 });
+    upsertSupportTicketVote({ supportTicketId: high.id, voterKey: 'b', value: 1 });
+    upsertSupportTicketVote({ supportTicketId: low.id, voterKey: 'a', value: -1 });
+    upsertSupportTicketVote({ supportTicketId: tiedNewer.id, voterKey: 'a', value: 1 });
+    upsertSupportTicketVote({ supportTicketId: tiedOlder.id, voterKey: 'a', value: 1 });
+
+    const listed = listSupportTicketsForVoting('p1');
+    expect(listed.map((row) => row.ticket.id)).toEqual([
+      high.id,
+      tiedNewer.id,
+      tiedOlder.id,
+      low.id,
+    ]);
+    expect(listed.map((row) => row.ticket.type)).toEqual([
+      'feature_request',
+      'feature_request',
+      'feature_request',
+      'feature_request',
+    ]);
+    expect(listed.map((row) => row.voting.score)).toEqual([2, 1, 1, -1]);
+    expect(listed.every((row) => row.voting.myVote === null)).toBe(true);
+    expect(listed.find((row) => row.ticket.id === bug.id)).toBeUndefined();
+    expect(listed.find((row) => row.ticket.id === otherProj.id)).toBeUndefined();
+  });
+
+  it("does not fold another project's votes or comments into this project's tallies", () => {
+    const local = ticket('local');
+    upsertSupportTicketVote({ supportTicketId: local.id, voterKey: 'a', value: 1 });
+    addSupportTicketComment({ supportTicketId: local.id, body: 'hi', source: 'hub' });
+
+    const other = createSupportTicket({
+      projectId: 'p2',
+      type: 'feature_request',
+      body: 'other project',
+    });
+    upsertSupportTicketVote({ supportTicketId: other.id, voterKey: 'a', value: 1 });
+    upsertSupportTicketVote({ supportTicketId: other.id, voterKey: 'b', value: 1 });
+    addSupportTicketComment({ supportTicketId: other.id, body: 'noise', source: 'external' });
+
+    const listed = listSupportTicketsForVoting('p1');
+    expect(listed).toHaveLength(1);
+    expect(listed[0]!.voting).toMatchObject({
+      score: 1,
+      upvotes: 1,
+      downvotes: 0,
+      comment_count: 1,
+    });
+  });
+
+  it('fills myVote for the given voterKey and leaves others null', () => {
+    const up = ticket('up');
+    const down = ticket('down');
+    const untouched = ticket('untouched');
+    upsertSupportTicketVote({ supportTicketId: up.id, voterKey: 'alice', value: 1 });
+    upsertSupportTicketVote({ supportTicketId: down.id, voterKey: 'alice', value: -1 });
+    upsertSupportTicketVote({ supportTicketId: down.id, voterKey: 'bob', value: 1 });
+
+    const forAlice = listSupportTicketsForVoting('p1', 'alice');
+    const byId = Object.fromEntries(forAlice.map((row) => [row.ticket.id, row.voting]));
+    expect(byId[up.id]?.myVote).toBe(1);
+    expect(byId[down.id]?.myVote).toBe(-1);
+    expect(byId[untouched.id]?.myVote).toBeNull();
+
+    const forBob = listSupportTicketsForVoting('p1', 'bob');
+    const bobById = Object.fromEntries(forBob.map((row) => [row.ticket.id, row.voting]));
+    expect(bobById[up.id]?.myVote).toBeNull();
+    expect(bobById[down.id]?.myVote).toBe(1);
+  });
+
+  it('excludes hidden comments from comment_count', () => {
+    const t = ticket('comments');
+    addSupportTicketComment({ supportTicketId: t.id, body: 'keep', source: 'hub' });
+    addSupportTicketComment({ supportTicketId: t.id, body: 'also keep', source: 'external' });
+    const spam = addSupportTicketComment({
+      supportTicketId: t.id,
+      body: 'spam',
+      source: 'external',
+    });
+    hideSupportTicketComment(spam.id);
+
+    const listed = listSupportTicketsForVoting('p1');
+    expect(listed).toHaveLength(1);
+    expect(listed[0]!.voting.comment_count).toBe(2);
+    expect(countSupportTicketComments(t.id)).toBe(2);
   });
 });

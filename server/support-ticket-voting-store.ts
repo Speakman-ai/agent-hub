@@ -16,6 +16,7 @@ import { getSupportTicket } from './support-tickets-store.js';
 import type {
   SupportTicketCommentRow,
   SupportTicketCommentSource,
+  SupportTicketRow,
   SupportTicketVoteRow,
   SupportTicketVoteValue,
 } from './types.js';
@@ -214,4 +215,58 @@ export function countSupportTicketComments(supportTicketId: string): number {
     | { n: number }
     | undefined;
   return row?.n ?? 0;
+}
+
+export interface SupportTicketVotingTally extends SupportTicketVoteAggregate {
+  comment_count: number;
+}
+
+export interface SupportTicketVotingListRow {
+  ticket: SupportTicketRow;
+  voting: SupportTicketVotingTally;
+}
+
+interface VotingSqlRow extends SupportTicketRow {
+  vote_score: number;
+  vote_upvotes: number;
+  vote_downvotes: number;
+  comment_count: number;
+  my_vote: number | null;
+}
+
+function asVoteValue(v: unknown): SupportTicketVoteValue | null {
+  return v === 1 || v === -1 ? v : null;
+}
+
+function mapVotingSqlRow(row: VotingSqlRow): SupportTicketVotingListRow {
+  const { vote_score, vote_upvotes, vote_downvotes, comment_count, my_vote, ...ticket } = row;
+  return {
+    ticket,
+    voting: {
+      score: Number(vote_score) || 0,
+      upvotes: Number(vote_upvotes) || 0,
+      downvotes: Number(vote_downvotes) || 0,
+      myVote: asVoteValue(my_vote),
+      comment_count: Number(comment_count) || 0,
+    },
+  };
+}
+
+/**
+ * Feature-request tickets for a project, joined with vote tallies and
+ * non-hidden comment counts, ordered by score DESC then created_at DESC.
+ * `myVote` is filled when `voterKey` is supplied; otherwise it is null.
+ */
+export function listSupportTicketsForVoting(
+  projectId: string,
+  voterKey?: string | null,
+): SupportTicketVotingListRow[] {
+  const key = typeof voterKey === 'string' && voterKey.trim() ? voterKey.trim() : '';
+  const rows = getStmts().listSupportTicketsVoting.all(
+    projectId,
+    projectId,
+    key,
+    projectId,
+  ) as VotingSqlRow[];
+  return rows.map(mapVotingSqlRow);
 }

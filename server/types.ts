@@ -2562,6 +2562,7 @@ export interface Stmts {
   listSupportTicketCommentsIncludingHidden: Stmt;
   hideSupportTicketComment: Stmt;
   countSupportTicketComments: Stmt;
+  listSupportTicketsVoting: Stmt;
 
   // Bulk project cleanup
   deleteNotesByProject: Stmt;

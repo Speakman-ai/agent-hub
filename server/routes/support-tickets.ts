@@ -41,14 +41,8 @@ import {
   CastVoteRequestSchema,
   ConvertSupportTicketRequestSchema,
   LinkSupportTicketToCardRequestSchema,
+  VotingListQuerySchema,
 } from './support-tickets.openapi.js';
-import {
-  addSupportTicketComment,
-  getSupportTicketComment,
-  hideSupportTicketComment,
-  listSupportTicketComments,
-  applySupportTicketVote,
-} from '../support-ticket-voting-store.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
 import { resolveEffectiveEngineAndModel } from '../effective-model.js';
 import type { SupportedEngine } from '../engine-availability.js';
@@ -70,6 +64,14 @@ import {
   serializeSupportTicketsForRequest,
   type SupportTicketResponse,
 } from '../support-ticket-serialization.js';
+import {
+  addSupportTicketComment,
+  getSupportTicketComment,
+  hideSupportTicketComment,
+  listSupportTicketComments,
+  listSupportTicketsForVoting,
+  applySupportTicketVote,
+} from '../support-ticket-voting-store.js';
 
 export { serializeSupportTicket };
 
@@ -262,6 +264,35 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       res.json({ count: countUnreadSupportTickets(project.id) });
     },
   );
+
+  /**
+   * Score-ranked voting feed. Only `type=feature_request` tickets, joined
+   * with vote tallies and non-hidden comment counts. Optional `voterKey`
+   * fills `voting.myVote` for that identity; omitted/blank leaves it null.
+   */
+  router.get('/api/projects/:projectId/support-tickets/voting', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const parsed = VotingListQuerySchema.safeParse({ voterKey: req.query.voterKey });
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: 'voterKey must be a string of at most 256 characters',
+      });
+    }
+
+    const listed = listSupportTicketsForVoting(project.id, parsed.data.voterKey);
+    const tickets = serializeSupportTicketsForRequest(
+      req,
+      listed.map((row) => row.ticket),
+    );
+    res.json(
+      tickets.map((ticket, i) => ({
+        ...ticket,
+        voting: listed[i]!.voting,
+      })),
+    );
+  });
 
   router.get('/api/projects/:projectId/support-tickets/:id', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);

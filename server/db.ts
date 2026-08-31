@@ -6287,6 +6287,48 @@ function initDb(dataDir: string): void {
          FROM support_ticket_comments
         WHERE support_ticket_id = ? AND hidden_at IS NULL`,
     ),
+    // Score-ranked voting feed: feature_request tickets plus vote tallies
+    // and non-hidden comment counts. Binds: project_id (votes aggregate),
+    // project_id (comments aggregate), voter_key (empty string skips
+    // myVote), project_id (outer filter). Aggregates join support_tickets
+    // on project + type so we never GROUP BY another tenant's rows.
+    listSupportTicketsVoting: db.prepare(
+      `SELECT
+         t.*,
+         COALESCE(v.score, 0) AS vote_score,
+         COALESCE(v.upvotes, 0) AS vote_upvotes,
+         COALESCE(v.downvotes, 0) AS vote_downvotes,
+         COALESCE(c.comment_count, 0) AS comment_count,
+         mine.value AS my_vote
+       FROM support_tickets t
+       LEFT JOIN (
+         SELECT
+           votes.support_ticket_id,
+           SUM(votes.value) AS score,
+           SUM(CASE WHEN votes.value = 1 THEN 1 ELSE 0 END) AS upvotes,
+           SUM(CASE WHEN votes.value = -1 THEN 1 ELSE 0 END) AS downvotes
+         FROM support_ticket_votes votes
+         INNER JOIN support_tickets feed
+           ON feed.id = votes.support_ticket_id
+          AND feed.project_id = ?
+          AND feed.type = 'feature_request'
+         GROUP BY votes.support_ticket_id
+       ) v ON v.support_ticket_id = t.id
+       LEFT JOIN (
+         SELECT comments.support_ticket_id, COUNT(*) AS comment_count
+         FROM support_ticket_comments comments
+         INNER JOIN support_tickets feed
+           ON feed.id = comments.support_ticket_id
+          AND feed.project_id = ?
+          AND feed.type = 'feature_request'
+         WHERE comments.hidden_at IS NULL
+         GROUP BY comments.support_ticket_id
+       ) c ON c.support_ticket_id = t.id
+       LEFT JOIN support_ticket_votes mine
+         ON mine.support_ticket_id = t.id AND mine.voter_key = ?
+       WHERE t.project_id = ? AND t.type = 'feature_request'
+       ORDER BY COALESCE(v.score, 0) DESC, t.created_at DESC, t.rowid DESC`,
+    ),
 
     // Workflows
     getWorkflowsByProject: db.prepare(
