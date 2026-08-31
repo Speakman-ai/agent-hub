@@ -169,7 +169,7 @@ describe('Sidebar — per-project Epics nav', () => {
     );
   });
 
-  it('does not render the Epics link for workflow-mode projects', () => {
+  it('renders the Epics link for workflow-mode projects', () => {
     const projects = [
       {
         id: PROJECT_ID,
@@ -180,7 +180,7 @@ describe('Sidebar — per-project Epics nav', () => {
       },
     ];
     render(<Sidebar {...buildProps({ projects })} />);
-    expect(screen.queryByTestId(`sidebar-epics-link-${PROJECT_ID}`)).not.toBeInTheDocument();
+    expect(screen.getByTestId(`sidebar-epics-link-${PROJECT_ID}`)).toBeInTheDocument();
   });
 });
 

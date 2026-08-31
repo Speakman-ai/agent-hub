@@ -853,7 +853,10 @@ export default function Sidebar({
                         (!!project.githubRepo || project.gitHost === 'agenthub') &&
                         project.mode !== 'workflow';
                       const showDeployments = !workflowProject;
-                      const showEpics = !workflowProject;
+                      // Epics are available on every project mode: the epic/phase
+                      // REST endpoints are not mode-gated, and workflow projects
+                      // use epics to group kanban cards just like dev projects.
+                      const showEpics = true;
                       const showStats = !workflowProject;
                       const showSupport = !workflowProject;
                       const showLogs = !workflowProject;

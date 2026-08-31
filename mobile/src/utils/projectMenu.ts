@@ -24,7 +24,6 @@ import { isWorkflowProject } from './project-mode';
 const WORKFLOW_EXCLUDED_KEYS = new Set([
   'pulls',
   'deployments',
-  'epics',
   'stats',
   'support',
   'security',

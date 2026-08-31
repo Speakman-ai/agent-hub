@@ -121,7 +121,6 @@ describe('projectNavGroups', () => {
     for (const excluded of [
       'deployments',
       'pulls',
-      'epics',
       'stats',
       'support',
       'security',
@@ -136,6 +135,7 @@ describe('projectNavGroups', () => {
     for (const kept of [
       'board',
       'workflows',
+      'epics',
       'notes',
       'threads',
       'wiki',
