@@ -37,9 +37,11 @@ import { getOrCreateBoard, serializeCardForRequest } from './board.js';
 import { linkReplay } from '../replays/replay-store.js';
 import { getDb } from '../db.js';
 import {
+  CastVoteRequestSchema,
   ConvertSupportTicketRequestSchema,
   LinkSupportTicketToCardRequestSchema,
 } from './support-tickets.openapi.js';
+import { applySupportTicketVote } from '../support-ticket-voting-store.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
 import { resolveEffectiveEngineAndModel } from '../effective-model.js';
 import type { SupportedEngine } from '../engine-availability.js';
@@ -109,6 +111,47 @@ function screenshotReferencedByConvertedCard(
   if (!ticket.converted_card_id) return false;
   const card = stmts.getKanbanCard.get(ticket.converted_card_id) as KanbanCardRow | undefined;
   return Boolean(card && typeof card.description === 'string' && card.description.includes(ref));
+}
+
+/**
+ * Per-ticket mutex so write + aggregate + broadcast cannot interleave.
+ * Without this, request A can snapshot an older aggregate, request B can
+ * write and emit a newer one, then A can emit the stale snapshot and Hub /
+ * Survey Tracker clients regress.
+ *
+ * A rejecting task does not poison the chain. Different tickets still run
+ * concurrently. Test hooks let a regression test park one request after the
+ * snapshot and prove a second overlapping vote waits.
+ */
+const voteTails = new Map<string, Promise<unknown>>();
+const voteWaiters = new Map<string, number>();
+let voteAfterApply: ((ticketId: string) => Promise<void>) | null = null;
+
+export function _setVoteAfterApply(fn: ((ticketId: string) => Promise<void>) | null): void {
+  voteAfterApply = fn;
+}
+
+export function _voteLockWaiterCount(ticketId: string): number {
+  return voteWaiters.get(ticketId) ?? 0;
+}
+
+async function withTicketVoteLock<T>(ticketId: string, task: () => Promise<T>): Promise<T> {
+  voteWaiters.set(ticketId, (voteWaiters.get(ticketId) ?? 0) + 1);
+  const prev = voteTails.get(ticketId) ?? Promise.resolve();
+  const run = prev.then(task, task);
+  const tail = run.then(
+    () => {},
+    () => {},
+  );
+  voteTails.set(ticketId, tail);
+  try {
+    return await run;
+  } finally {
+    const left = (voteWaiters.get(ticketId) ?? 1) - 1;
+    if (left <= 0) voteWaiters.delete(ticketId);
+    else voteWaiters.set(ticketId, left);
+    if (voteTails.get(ticketId) === tail) voteTails.delete(ticketId);
+  }
 }
 
 /**
@@ -837,6 +880,58 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         ticketId: ticket.id,
         linked: true,
       });
+    },
+  );
+
+  /**
+   * Cast, change, or retract a vote on a feature-request ticket.
+   * Body `{ voterKey, value }` where value is 1, -1, or null (retract).
+   * UNIQUE(ticket, voter_key) makes the upsert/delete race-safe. Write,
+   * aggregate, and broadcast share a per-ticket lock so overlapping votes
+   * cannot emit a stale total after a newer one.
+   */
+  router.put(
+    '/api/projects/:projectId/support-tickets/:id/vote',
+    async (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const ticket = getSupportTicket(req.params.id as string);
+      if (!ticket || ticket.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+      if (ticket.type !== 'feature_request') {
+        return res.status(400).json({
+          error: 'Voting is only available on feature_request tickets',
+        });
+      }
+
+      const parsed = CastVoteRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Invalid request body' });
+      }
+      const { voterKey, value } = parsed.data;
+
+      try {
+        const aggregate = await withTicketVoteLock(ticket.id, async () => {
+          const next = applySupportTicketVote(ticket.id, voterKey, value);
+          if (voteAfterApply) await voteAfterApply(ticket.id);
+          broadcast({
+            type: 'support_ticket_vote_updated',
+            ticketId: ticket.id,
+            projectId: project.id,
+            score: next.score,
+            upvotes: next.upvotes,
+            downvotes: next.downvotes,
+          });
+          return next;
+        });
+        res.json(aggregate);
+      } catch (err) {
+        if (!res.headersSent) {
+          res.status(400).json({ error: (err as Error).message });
+        }
+      }
     },
   );
 

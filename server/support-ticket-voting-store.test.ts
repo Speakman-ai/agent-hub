@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   addSupportTicketComment,
   countSupportTicketComments,
+  applySupportTicketVote,
   getSupportTicketVote,
   getSupportTicketVoteAggregate,
   hideSupportTicketComment,
@@ -160,6 +161,34 @@ describe('vote aggregate', () => {
     });
     retractSupportTicketVote(t.id, 'a');
     expect(getSupportTicketVoteAggregate(t.id, 'a')).toEqual({
+      score: 1,
+      upvotes: 1,
+      downvotes: 0,
+      myVote: null,
+    });
+  });
+
+  it('applySupportTicketVote writes and returns the aggregate in one snapshot', () => {
+    const t = ticket();
+    expect(applySupportTicketVote(t.id, 'a', 1)).toEqual({
+      score: 1,
+      upvotes: 1,
+      downvotes: 0,
+      myVote: 1,
+    });
+    expect(applySupportTicketVote(t.id, 'b', 1)).toEqual({
+      score: 2,
+      upvotes: 2,
+      downvotes: 0,
+      myVote: 1,
+    });
+    expect(applySupportTicketVote(t.id, 'a', -1)).toEqual({
+      score: 0,
+      upvotes: 1,
+      downvotes: 1,
+      myVote: -1,
+    });
+    expect(applySupportTicketVote(t.id, 'a', null)).toEqual({
       score: 1,
       upvotes: 1,
       downvotes: 0,

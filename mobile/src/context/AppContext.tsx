@@ -976,6 +976,17 @@ export function AppProvider({ children }: any) {
             bump: Date.now(),
           });
           break;
+        case 'support_ticket_vote_updated':
+          setLastSupportTicketEvent({
+            type: 'support_ticket_vote_updated',
+            projectId: data.projectId,
+            ticketId: data.ticketId,
+            score: data.score,
+            upvotes: data.upvotes,
+            downvotes: data.downvotes,
+            bump: Date.now(),
+          });
+          break;
         case 'support_tickets_read_all':
           if (data.projectId) {
             setUnreadTicketCounts((prev: any) => ({ ...prev, [data.projectId]: 0 }));

@@ -11,7 +11,7 @@
  * table never sees raw PII.
  */
 import { v4 as uuidv4 } from 'uuid';
-import { getStmts } from './db.js';
+import { getDb, getStmts } from './db.js';
 import { getSupportTicket } from './support-tickets-store.js';
 import type {
   SupportTicketCommentRow,
@@ -139,6 +139,26 @@ export function getSupportTicketVoteAggregate(
     downvotes: totals?.downvotes ?? 0,
     myVote,
   };
+}
+
+/**
+ * Write (or retract) then read the aggregate in one IMMEDIATE transaction so
+ * the snapshot cannot include another voter's later write.
+ */
+export function applySupportTicketVote(
+  supportTicketId: string,
+  voterKey: string,
+  value: SupportTicketVoteValue | null,
+): SupportTicketVoteAggregate {
+  const run = getDb().transaction(() => {
+    if (value === null) {
+      retractSupportTicketVote(supportTicketId, voterKey);
+    } else {
+      upsertSupportTicketVote({ supportTicketId, voterKey, value });
+    }
+    return getSupportTicketVoteAggregate(supportTicketId, voterKey);
+  });
+  return run.immediate();
 }
 
 export function addSupportTicketComment(

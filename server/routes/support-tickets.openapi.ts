@@ -10,6 +10,9 @@
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { KanbanCardComponent, MAX_ASSIGNMENT_COMMENT_LEN } from './board.openapi.js';
 
+const VoteValueSchema = z.union([z.literal(1), z.literal(-1)]);
+const VoteValueOrNullSchema = z.union([VoteValueSchema, z.null()]);
+
 const TYPES = ['bug', 'question', 'feature_request', 'incident', 'other'] as const;
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
 const STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do'] as const;
@@ -485,6 +488,64 @@ registerPath({
     409: errorResponse(
       'Ticket already converted, or the card is already linked to another ticket.',
     ),
+  },
+});
+
+/** Opaque voter identity token. Callers that have a user email should pass
+ *  SHA-256(server_salt + lowercased email) rather than the raw address. */
+const VoterKeySchema = z.string().trim().min(1).max(256).openapi({
+  description:
+    'Opaque per-voter token. One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.',
+});
+
+export const CastVoteRequestSchema = z
+  .object({
+    voterKey: VoterKeySchema,
+    value: VoteValueOrNullSchema.openapi({
+      description: '1 to upvote, -1 to downvote, null to retract the existing vote.',
+    }),
+  })
+  .openapi({
+    description:
+      'Cast, change, or retract a vote on a feature-request ticket. UNIQUE(ticket, voter_key) makes the write race-safe: the same key upserts in place; null deletes the row.',
+  });
+
+export const SupportTicketVoteAggregateComponent = registerComponent(
+  'SupportTicketVoteAggregate',
+  z
+    .object({
+      score: z.number().int().openapi({ description: 'SUM(value) across all votes.' }),
+      upvotes: z.number().int().nonnegative(),
+      downvotes: z.number().int().nonnegative(),
+      myVote: VoteValueOrNullSchema.openapi({
+        description: 'Current vote for this voterKey, or null when they have not voted.',
+      }),
+    })
+    .openapi({
+      description: 'Aggregate score for a feature-request ticket, plus the caller’s vote.',
+    }),
+);
+
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/support-tickets/{id}/vote',
+  tags: ['Support'],
+  summary: 'Cast, change, or retract a vote on a feature-request ticket',
+  description:
+    'One vote per (ticket, voterKey). Sending the opposite value flips the row; `value: null` retracts. The ticket must exist and have type `feature_request`. Broadcasts `support_ticket_vote_updated` with `{ ticketId, projectId, score, upvotes, downvotes }` (no voter identity).',
+  request: {
+    params: ticketParams,
+    body: { required: true, content: jsonContent(CastVoteRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Updated aggregate for this ticket, including the caller’s vote.',
+      content: jsonContent(SupportTicketVoteAggregateComponent),
+    },
+    400: errorResponse(
+      'Invalid body, or the ticket is not a feature_request (voting is only allowed on feature requests).',
+    ),
+    404: errorResponse('Project or ticket not found.'),
   },
 });
 

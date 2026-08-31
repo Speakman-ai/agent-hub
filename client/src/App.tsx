@@ -3157,6 +3157,10 @@ export default function App({ initialView }: any = {}) {
           }
           break;
         }
+        case 'support_ticket_vote_updated': {
+          window.dispatchEvent(new CustomEvent('agenthub-support-ticket-vote', { detail: data }));
+          break;
+        }
         case 'support_tickets_read_all': {
           if (data.projectId) {
             setUnreadTicketCounts((prev: any) => ({ ...prev, [data.projectId]: 0 }));
