@@ -24,7 +24,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
-import { computeEpicState } from '../epic-state.js';
+import { computeEpicStateForPersist } from '../epic-state.js';
 import type { KanbanCardRow, KanbanColumnRow } from '../types.js';
 
 /** Marker file written into the data dir once the backfill has run. */
@@ -78,7 +78,10 @@ export function backfillEpicStates(opts: {
         columnsByBoard.set(epic.board_id, columns);
       }
       const cards = cardsForEpic.all(epic.id) as Pick<KanbanCardRow, 'column_id'>[];
-      const next = computeEpicState(cards, columns);
+      // Coalesce the card-less (null) case: `kanban_epics.state` may be a legacy
+      // NOT NULL column on older DBs, where persisting NULL throws
+      // SQLITE_CONSTRAINT_NOTNULL and crash-loops boot. See EMPTY_EPIC_PERSISTED_STATE.
+      const next = computeEpicStateForPersist(cards, columns);
       if ((epic.state ?? null) !== next) {
         updateState.run(next, epic.id);
         updated += 1;

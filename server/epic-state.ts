@@ -24,6 +24,37 @@ export function computeEpicState(
   return anyStarted ? 'in_progress' : 'not_started';
 }
 
+/**
+ * The lifecycle value persisted for an epic that computes to *no* state (no live
+ * cards, where {@link computeEpicState} returns null).
+ *
+ * `kanban_epics.state` is *intended* to be nullable (schema: `state TEXT DEFAULT
+ * NULL CHECK (state IS NULL OR state IN (...))`), but some databases carry a
+ * legacy `state TEXT NOT NULL DEFAULT 'open'` column: it pre-existed the nullable
+ * redefinition, so `CREATE TABLE IF NOT EXISTS` and the guarded ALTER never
+ * reconciled the constraint. Persisting NULL into that legacy column throws
+ * `SQLITE_CONSTRAINT_NOTNULL` — and from the boot-time backfill that crash-loops
+ * startup (a single card-less epic took prod down this way).
+ *
+ * Coalescing the empty case to 'not_started' is valid under BOTH the legacy
+ * NOT NULL column and the current nullable+CHECK schema, and the board read
+ * paths (which now trust the stored value) render a card-less epic as
+ * "Not started" — a sensible, non-crashing value.
+ */
+export const EMPTY_EPIC_PERSISTED_STATE: EpicState = 'not_started';
+
+/**
+ * {@link computeEpicState} coalesced to a value that is always safe to persist
+ * into `kanban_epics.state` (never NULL). Use this at every *write* site; keep
+ * `computeEpicState` (nullable) for pure in-memory classification.
+ */
+export function computeEpicStateForPersist(
+  cards: Pick<KanbanCardRow, 'column_id'>[],
+  columns: Pick<KanbanColumnRow, 'id' | 'name'>[],
+): EpicState {
+  return computeEpicState(cards, columns) ?? EMPTY_EPIC_PERSISTED_STATE;
+}
+
 export function recomputeEpicState(
   stmts: Stmts,
   epicId: string | null | undefined,
@@ -33,7 +64,10 @@ export function recomputeEpicState(
   if (!epic) return null;
   const cards = stmts.getKanbanCardsByEpic.all(epicId) as KanbanCardRow[];
   const columns = stmts.getKanbanColumns.all(epic.board_id) as KanbanColumnRow[];
-  const state = computeEpicState(cards, columns);
+  // Never persist NULL: the column may be a legacy NOT NULL definition (see
+  // EMPTY_EPIC_PERSISTED_STATE). Coalesce the card-less case so a runtime
+  // mutation that empties an epic can't hit SQLITE_CONSTRAINT_NOTNULL.
+  const state = computeEpicStateForPersist(cards, columns);
   if ((epic.state ?? null) !== state) {
     stmts.updateKanbanEpicState.run(state, epicId);
   }

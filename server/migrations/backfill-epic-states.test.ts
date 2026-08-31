@@ -106,11 +106,53 @@ describe('backfillEpicStates', () => {
     expect(r.updated).toBe(1); // only the NULL one changed
   });
 
-  it('leaves an epic with no cards at NULL state', () => {
+  it('persists a card-less epic as not_started (never NULL)', () => {
+    // A card-less epic computes to no state (computeEpicState -> null). It must
+    // NOT be persisted as NULL: the column may be a legacy NOT NULL definition
+    // where that throws. Coalesced to 'not_started'.
     insertEpic(db, 'empty', 'done'); // stale non-null on an empty epic
     const r = backfillEpicStates({ db, dataDir });
-    expect(epicState(db, 'empty')).toBeNull();
+    expect(epicState(db, 'empty')).toBe('not_started');
     expect(r.updated).toBe(1);
+  });
+
+  it('does not crash on a legacy NOT NULL state column (prod schema drift)', () => {
+    // Reproduces the prod boot crash: `kanban_epics.state` is a legacy
+    // `TEXT NOT NULL DEFAULT 'open'` column, and one epic has no cards. The old
+    // code wrote NULL -> SQLITE_CONSTRAINT_NOTNULL -> initDb threw -> restart loop.
+    const legacy = new Database(':memory:');
+    legacy.exec(`
+      CREATE TABLE kanban_epics (
+        id TEXT PRIMARY KEY,
+        board_id TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'open'
+      );
+      CREATE TABLE kanban_columns (id TEXT PRIMARY KEY, board_id TEXT NOT NULL, name TEXT NOT NULL);
+      CREATE TABLE kanban_cards (id TEXT PRIMARY KEY, board_id TEXT NOT NULL, column_id TEXT NOT NULL, epic_id TEXT);
+    `);
+    legacy.prepare('INSERT INTO kanban_columns (id, board_id, name) VALUES (?, ?, ?)').run('todo', 'b1', 'To Do'); // prettier-ignore
+    legacy.prepare('INSERT INTO kanban_columns (id, board_id, name) VALUES (?, ?, ?)').run('done', 'b1', 'Done'); // prettier-ignore
+    legacy
+      .prepare("INSERT INTO kanban_epics (id, board_id, state) VALUES ('empty', 'b1', 'open')")
+      .run();
+    legacy
+      .prepare("INSERT INTO kanban_epics (id, board_id, state) VALUES ('withcards', 'b1', 'open')")
+      .run();
+    legacy.prepare("INSERT INTO kanban_cards (id, board_id, column_id, epic_id) VALUES ('c1', 'b1', 'done', 'withcards')").run(); // prettier-ignore
+
+    try {
+      const r = backfillEpicStates({ db: legacy, dataDir });
+      expect(r.ran).toBe(true);
+      // card-less epic coalesced to a safe non-null value; the other normalized.
+      expect(
+        (legacy.prepare('SELECT state FROM kanban_epics WHERE id = ?').get('empty') as { state: string }).state, // prettier-ignore
+      ).toBe('not_started');
+      expect(
+        (legacy.prepare('SELECT state FROM kanban_epics WHERE id = ?').get('withcards') as { state: string }).state, // prettier-ignore
+      ).toBe('done');
+    } finally {
+      legacy.close();
+    }
   });
 
   it('throws when the recompute fails, so startup aborts rather than serve stale state', () => {
