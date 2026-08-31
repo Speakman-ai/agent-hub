@@ -267,14 +267,44 @@ export function appendRunnerJobLog(args: {
 }
 
 /**
+ * Default per-statement DELETE size and per-call batch cap for runner_job_logs
+ * prune. Each DELETE is a synchronous better-sqlite3 statement on the main
+ * thread; 2_000 × 25 = 50k rows/tick is enough to outrun ~1M frames/day at a
+ * 5-minute cadence while staying a short event-loop slice. A first-run
+ * multi-million-row backlog drains across later ticks instead of one stall.
+ * The reaper may pass tighter/looser values from env; these are the fallbacks
+ * for direct callers.
+ */
+export const RUNNER_JOB_LOG_PRUNE_BATCH_SIZE = 2_000;
+export const RUNNER_JOB_LOG_PRUNE_MAX_BATCHES = 25;
+
+function clampPruneBatch(
+  batchSize: number | undefined,
+  maxBatches: number | undefined,
+): {
+  batchSize: number;
+  maxBatches: number;
+} {
+  const batch =
+    typeof batchSize === 'number' && Number.isFinite(batchSize) && batchSize > 0
+      ? Math.floor(batchSize)
+      : RUNNER_JOB_LOG_PRUNE_BATCH_SIZE;
+  const batches =
+    typeof maxBatches === 'number' && Number.isFinite(maxBatches) && maxBatches > 0
+      ? Math.floor(maxBatches)
+      : RUNNER_JOB_LOG_PRUNE_MAX_BATCHES;
+  return { batchSize: batch, maxBatches: batches };
+}
+
+/**
  * Prune `runner_job_logs` frames older than `cutoff` (epoch ms), in bounded
  * batches so a single tick can never block the synchronous better-sqlite3 event
- * loop — the exact failure mode this reaper exists to prevent. A naive
- * `DELETE ... WHERE at < cutoff` over a multi-million-row backlog is one giant
- * synchronous statement that stalls the loop (= the slow page loads). Instead we
- * delete in `batchSize` chunks (via a rowid subquery — better-sqlite3's bundled
- * SQLite isn't built with `DELETE ... LIMIT`) and stop after `maxBatches` chunks
- * so a huge first-run backlog drains across several ticks rather than one stall.
+ * loop. A naive `DELETE ... WHERE at < cutoff` over a multi-million-row backlog
+ * is one giant synchronous statement that stalls the loop (the slow page loads).
+ * Instead we delete in `batchSize` chunks (via a rowid subquery:
+ * better-sqlite3's bundled SQLite isn't built with `DELETE ... LIMIT`) and stop
+ * after `maxBatches` chunks so a huge first-run backlog drains across several
+ * ticks rather than one stall.
  *
  * Returns the number of rows deleted this call.
  */
@@ -283,8 +313,7 @@ export function pruneRunnerJobLogs(args: {
   batchSize?: number;
   maxBatches?: number;
 }): number {
-  const batchSize = args.batchSize ?? 5_000;
-  const maxBatches = args.maxBatches ?? 200;
+  const { batchSize, maxBatches } = clampPruneBatch(args.batchSize, args.maxBatches);
   const db = getOrgsDb();
   const stmt = db.prepare(
     `DELETE FROM runner_job_logs
@@ -297,6 +326,64 @@ export function pruneRunnerJobLogs(args: {
     const res = stmt.run({ cutoff: args.cutoff, batchSize });
     deleted += res.changes;
     if (res.changes < batchSize) break;
+  }
+  return deleted;
+}
+
+/** Row count + payload bytes currently sitting in `runner_job_logs`. */
+export function runnerJobLogStats(): { rows: number; payloadBytes: number } {
+  const row = getOrgsDb()
+    .prepare(
+      `SELECT COUNT(*) AS rows, COALESCE(SUM(LENGTH(data)), 0) AS payloadBytes
+         FROM runner_job_logs`,
+    )
+    .get() as { rows: number; payloadBytes: number };
+  return row;
+}
+
+/**
+ * Size-based prune: delete the oldest frames until the table is at most
+ * `keepRows` rows, in the same bounded batches as {@link pruneRunnerJobLogs}.
+ * Used when a burst inside the age TTL would still grow the spool without
+ * bound (the 1.5 GB orgs.db incident was a flood, not just old rows).
+ *
+ * Returns the number of rows deleted this call. No-op when already at or
+ * under `keepRows`.
+ */
+export function pruneOldestRunnerJobLogs(args: {
+  keepRows: number;
+  batchSize?: number;
+  maxBatches?: number;
+  /** Hard cap on rows deleted this call (shared tick budget). */
+  maxDeletes?: number;
+}): number {
+  const keepRows = Math.max(0, Math.floor(args.keepRows));
+  const { batchSize, maxBatches } = clampPruneBatch(args.batchSize, args.maxBatches);
+  const db = getOrgsDb();
+  const current = (db.prepare('SELECT COUNT(*) AS n FROM runner_job_logs').get() as { n: number })
+    .n;
+  let excess = current - keepRows;
+  if (excess <= 0) return 0;
+
+  const budget =
+    typeof args.maxDeletes === 'number' && Number.isFinite(args.maxDeletes) && args.maxDeletes >= 0
+      ? Math.floor(args.maxDeletes)
+      : batchSize * maxBatches;
+  if (budget <= 0) return 0;
+
+  const stmt = db.prepare(
+    `DELETE FROM runner_job_logs
+       WHERE rowid IN (
+         SELECT rowid FROM runner_job_logs ORDER BY at ASC LIMIT @n
+       )`,
+  );
+  let deleted = 0;
+  for (let i = 0; i < maxBatches && excess > 0 && deleted < budget; i++) {
+    const n = Math.min(batchSize, excess, budget - deleted);
+    const res = stmt.run({ n });
+    deleted += res.changes;
+    excess -= res.changes;
+    if (res.changes < n) break;
   }
   return deleted;
 }

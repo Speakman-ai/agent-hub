@@ -336,10 +336,7 @@ import { PREVIEW_REAPER_CRON } from './preview/preview-runtime-primitives.js';
 import { runFinalizeReaper, FINALIZE_REAPER_CRON } from './finalize/finalize-reaper.js';
 import { reapFinalizeSourceCheckouts } from './finalize/session-source.js';
 import { runStuckRunReaper, STUCK_RUN_REAPER_CRON } from './finalize/stuck-run-reaper.js';
-import {
-  runRunnerJobLogReaper,
-  RUNNER_JOB_LOG_REAPER_CRON,
-} from './finalize/runner-job-log-reaper.js';
+import { runRunnerJobLogReaper, resolveReaperCron } from './finalize/runner-job-log-reaper.js';
 import {
   RELEASE_NOTIFICATION_OUTBOX_WORKER_CRON,
   runReleaseNotificationOutboxWorker,
@@ -1635,14 +1632,12 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
     { name: 'finalize-stuck-reaper' },
   );
 
-  // Runner job-log retention reaper — prune transient CI stdout/stderr frames
-  // from `runner_job_logs` (orgs.db) older than the TTL. Append-only and never
-  // read post-run, the spool grew without bound until synchronous reads against
-  // the bloated DB stalled the event loop (the recurring slow-page-load
-  // incident). Pure SQLite, so NOT docker-gated; runs on every Hub.
+  // Runner job-log retention reaper: age TTL + size cap on `runner_job_logs`
+  // (orgs.db), batched DELETEs. Pure SQLite, so NOT docker-gated; runs on every
+  // Hub. Cadence from FINALIZE_RUNNER_JOB_LOG_REAPER_CRON (default every 5 min).
   // See server/finalize/runner-job-log-reaper.ts.
   cron.schedule(
-    RUNNER_JOB_LOG_REAPER_CRON,
+    resolveReaperCron(),
     () => {
       try {
         runRunnerJobLogReaper();

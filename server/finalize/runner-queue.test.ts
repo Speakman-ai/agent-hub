@@ -12,7 +12,9 @@ import {
   markRunnerJobRunning,
   markRunnerJobSpotInterruption,
   probeRunnerJobLoss,
+  pruneOldestRunnerJobLogs,
   pruneRunnerJobLogs,
+  runnerJobLogStats,
   reapExpiredRunnerLeases,
   reportRunnerJob,
   runnerQueueDepth,
@@ -279,6 +281,58 @@ describe('runner-queue', () => {
       // The next tick drains the remainder.
       expect(pruneRunnerJobLogs({ cutoff: 100, batchSize: 10, maxBatches: 2 })).toBe(5);
       expect(countLogs()).toBe(0);
+    });
+  });
+
+  describe('pruneOldestRunnerJobLogs', () => {
+    const countLogs = () =>
+      (getOrgsDb().prepare('SELECT COUNT(*) AS n FROM runner_job_logs').get() as { n: number }).n;
+
+    const seed = (n: number, atFn: (i: number) => number) => {
+      const j = enq({ jobId: 'j', now: 1000 });
+      const insert = getOrgsDb().prepare(
+        'INSERT INTO runner_job_logs (job_id, seq, step_index, stream, data, at) VALUES (?,?,?,?,?,?)',
+      );
+      getOrgsDb().transaction(() => {
+        for (let i = 0; i < n; i++) insert.run(j, i, 0, 'stdout', `row-${i}`, atFn(i));
+      })();
+      return j;
+    };
+
+    it('is a no-op when the table is already at or under keepRows', () => {
+      seed(5, (i) => 100 + i);
+      expect(pruneOldestRunnerJobLogs({ keepRows: 5 })).toBe(0);
+      expect(pruneOldestRunnerJobLogs({ keepRows: 50 })).toBe(0);
+      expect(countLogs()).toBe(5);
+    });
+
+    it('deletes the oldest frames and keeps the newest until keepRows remain', () => {
+      seed(10, (i) => 100 + i);
+      expect(pruneOldestRunnerJobLogs({ keepRows: 4, batchSize: 10, maxBatches: 5 })).toBe(6);
+      expect(countLogs()).toBe(4);
+      const survivors = getOrgsDb()
+        .prepare('SELECT data FROM runner_job_logs ORDER BY at ASC')
+        .all() as Array<{ data: string }>;
+      expect(survivors.map((r) => r.data)).toEqual(['row-6', 'row-7', 'row-8', 'row-9']);
+    });
+
+    it('caps work per call at maxDeletes, leaving the rest for the next tick', () => {
+      seed(25, () => 10);
+      expect(
+        pruneOldestRunnerJobLogs({ keepRows: 0, batchSize: 10, maxBatches: 5, maxDeletes: 20 }),
+      ).toBe(20);
+      expect(countLogs()).toBe(5);
+      expect(
+        pruneOldestRunnerJobLogs({ keepRows: 0, batchSize: 10, maxBatches: 5, maxDeletes: 20 }),
+      ).toBe(5);
+      expect(countLogs()).toBe(0);
+    });
+
+    it('reports payload bytes alongside the row count', () => {
+      seed(3, (i) => 100 + i);
+      const stats = runnerJobLogStats();
+      expect(stats.rows).toBe(3);
+      expect(stats.payloadBytes).toBeGreaterThan(0);
     });
   });
 
