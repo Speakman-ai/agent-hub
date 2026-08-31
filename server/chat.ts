@@ -1412,7 +1412,30 @@ When you need a secret from the user (a password, API key, login, token, or any 
 
     ah-api.sh POST "/api/sessions/$AGENT_HUB_SESSION_ID/credential-requests/<requestId>/consume"
 
-The submitted secret stays retrievable until the request's TTL expires, so you can call \`consume\` again with the **same \`requestId\`** if you lost the value (for example you fetched it inside a throwaway subprocess or a probe step that then exited). **Do that instead of asking the user to resubmit.** Consume the value in the same step that uses it, and hold it in process memory only as long as you need it— never echo it back to chat, log it, or write it to a file. Only when consume returns 404 or an \`expired\` status is the secret actually gone: then ask the user to resubmit by emitting a fresh \`agenthub:credential-request\` block.`;
+The submitted secret stays retrievable until the request's TTL expires, so you can call \`consume\` again with the **same \`requestId\`** if you lost the value (for example you fetched it inside a throwaway subprocess or a probe step that then exited). **Do that instead of asking the user to resubmit.** Consume the value in the same step that uses it, and hold it in process memory only as long as you need it— never echo it back to chat, log it, or write it to a file. Only when consume returns 404 or an \`expired\` status is the secret actually gone: then ask the user to resubmit by emitting a fresh \`agenthub:credential-request\` block.
+
+**Standing skill logins — \`persist\` the box into the skill's credential store.** When the login you're collecting is a *reusable* credential that an installed skill declares in its \`credentials:\` frontmatter (env-var keys the skill reads on every spawn), add a \`persist\` object to the block. On submit, Agent Hub writes the values into the session owner's per-user skill credentials for that skill — so future sessions get them injected automatically and the user never re-types them — while the ephemeral copy is still stored for you to \`consume\` this session. \`persist.skillId\` is the skill id; \`persist.map\` maps each request field \`key\` to the skill's declared credential key name. Only keys the skill actually declares are stored; unknown keys are skipped. Use this whenever the stored skill credentials were missing or failed to authenticate and you had to re-collect them, so the fix sticks:
+
+\`\`\`agenthub:credential-request
+{
+  "requestId": "survey-tracker-login",
+  "service": "Survey Tracker",
+  "purpose": "Sign in to query work orders on dev.",
+  "fields": [
+    { "key": "username", "label": "Username", "type": "username" },
+    { "key": "password", "label": "Password", "type": "password" }
+  ],
+  "persist": {
+    "skillId": "survey-tracker",
+    "map": {
+      "username": "SURVEYTRACKER_API_DATA_USERNAME",
+      "password": "SURVEYTRACKER_API_DATA_PASSWORD"
+    }
+  }
+}
+\`\`\`
+
+The card tells the user their input will be saved for future sessions (rather than "discarded when they expire") so persisting is transparent at the moment they type it.`;
   }
 
   // The system prompt is rebuilt and re-sent on every turn, so a rule dropped

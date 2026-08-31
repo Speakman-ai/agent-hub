@@ -317,6 +317,21 @@ export const SubmitSessionCredentialRequestSchema = z.object({
   ttlSeconds: z.number().positive().max(3600).optional().openapi({
     description: 'Credential lifetime in seconds. Defaults to 15 minutes, capped at 1 hour.',
   }),
+  persist: z
+    .object({
+      skillId: z.string().min(1).max(128).openapi({
+        description: 'Skill id whose `credentials:` frontmatter declares the target keys.',
+      }),
+      map: z.record(z.string(), z.string()).openapi({
+        description:
+          "Map of request field key → the skill's declared credential key name. Only declared keys are stored.",
+      }),
+    })
+    .optional()
+    .openapi({
+      description:
+        "When present, the submitted values are ALSO written into the session owner's persistent per-user skill credential store for `skillId`, so future spawns inject them as env vars. The ephemeral session copy is still stored for same-session use.",
+    }),
 });
 
 const SessionCredentialStatusResponse = registerComponent(
@@ -330,6 +345,18 @@ const SessionCredentialStatusResponse = registerComponent(
     submittedAt: z.string(),
     consumedAt: z.string().nullable(),
     expiresAt: z.string(),
+    persisted: z
+      .object({
+        skillId: z.string(),
+        stored: z.array(z.string()),
+        skipped: z.array(z.object({ keyName: z.string(), reason: z.string() })),
+        error: z.string().optional(),
+      })
+      .optional()
+      .openapi({
+        description:
+          "Present on the PUT (submit) response when the request declared a `persist` target: which credential keys were written to the owner's skill store, which were skipped, and any skill-level persist error.",
+      }),
   }),
 );
 

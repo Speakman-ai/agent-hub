@@ -2,7 +2,7 @@ import '../test/setup.js';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import type supertest from 'supertest';
 import supertestRequest from 'supertest';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,10 @@ import { getRequest } from '../test/helpers.js';
 import { getDb, getStmts } from '../db.js';
 import createSessionRoutes from './sessions.js';
 import { reloadAuthRecord, saveAuthRecord, setAuthFilePathForTests } from '../auth-store.js';
+import { setProjectSkillsDataDir } from '../project-skill-paths.js';
+import { listMaskedUserSkillCredentials } from '../skill-credentials-store.js';
+import { createUser } from '../users-store.js';
+import config from '../config.js';
 import type { RouteDeps } from '../types.js';
 import {
   __setSessionCredentialConsumeBeforeUpdateForTests,
@@ -52,7 +56,10 @@ function enableStrictAuth(): void {
   reloadAuthRecord();
 }
 
-function mountCredentialRoutes(authUserId: string): supertest.Agent {
+function mountCredentialRoutes(
+  authUserId: string,
+  findAgent: RouteDeps['findAgent'] = () => null,
+): supertest.Agent {
   const app = express();
   app.use(express.json());
   app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -63,7 +70,7 @@ function mountCredentialRoutes(authUserId: string): supertest.Agent {
     createSessionRoutes({
       stmts: getStmts(),
       broadcast: vi.fn(),
-      findAgent: () => null,
+      findAgent,
       findProject: () => null,
       getEnrichedAgent: () => null,
       config: {},
@@ -355,6 +362,118 @@ describe('session credential requests', () => {
       )
       .get(sessionId, requestId);
     expect(raw).toBeUndefined();
+  });
+
+  it('persists box-collected values into the owner skill store when the request declares a persist target', async () => {
+    const originalDataDir = config.dataDir;
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'session-cred-persist-route-'));
+    setProjectSkillsDataDir(dataDir);
+    try {
+      const projectId = 'proj-persist';
+      const skillId = 'survey-tracker';
+      const skillDir = path.join(dataDir, 'project-skills', projectId, skillId);
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        path.join(skillDir, 'SKILL.md'),
+        `---
+name: survey-tracker
+credentials:
+  - name: SURVEYTRACKER_API_DATA_USERNAME
+    label: Username
+    required: false
+    type: secret
+  - name: SURVEYTRACKER_API_DATA_PASSWORD
+    label: Password
+    required: false
+    type: secret
+---
+# Survey Tracker
+`,
+        'utf8',
+      );
+
+      const ownerUserId = createUser({
+        username: `owner-${uuidv4()}@example.com`,
+        passwordHash: 'scrypt$hash',
+      }).id;
+      const sessionId = createSession(ownerUserId);
+      const findAgent = (() => ({
+        agent: { id: 'agent-dev' },
+        project: { id: projectId },
+      })) as unknown as RouteDeps['findAgent'];
+
+      const submit = await mountCredentialRoutes(ownerUserId, findAgent)
+        .put(`/api/sessions/${sessionId}/credential-requests/survey-tracker-login`)
+        .send({
+          service: 'Survey Tracker',
+          purpose: 'Sign in to query work orders.',
+          fields: [
+            { key: 'username', label: 'Username', type: 'username' },
+            { key: 'password', label: 'Password', type: 'password' },
+          ],
+          values: { username: 'ryan@example.com', password: 'survey-secret-password' },
+          persist: {
+            skillId,
+            map: {
+              username: 'SURVEYTRACKER_API_DATA_USERNAME',
+              password: 'SURVEYTRACKER_API_DATA_PASSWORD',
+            },
+          },
+        })
+        .expect(200);
+
+      expect(submit.body.status).toBe('submitted');
+      expect(submit.body.persisted.skillId).toBe(skillId);
+      expect(submit.body.persisted.error ?? 'no-error').toBe('no-error');
+      expect(submit.body.persisted.skipped).toEqual([]);
+      expect(submit.body.persisted.stored.sort()).toEqual([
+        'SURVEYTRACKER_API_DATA_PASSWORD',
+        'SURVEYTRACKER_API_DATA_USERNAME',
+      ]);
+      // No plaintext ever echoes back on the response.
+      expect(JSON.stringify(submit.body)).not.toContain('survey-secret-password');
+
+      // The values now live in the owner's persistent skill credential store.
+      const stored = listMaskedUserSkillCredentials(ownerUserId, skillId);
+      expect(stored.map((r) => r.key_name).sort()).toEqual([
+        'SURVEYTRACKER_API_DATA_PASSWORD',
+        'SURVEYTRACKER_API_DATA_USERNAME',
+      ]);
+    } finally {
+      setProjectSkillsDataDir(originalDataDir);
+    }
+  });
+
+  it('reports a persist error (without failing the submit) when the skill declares no credentials', async () => {
+    const originalDataDir = config.dataDir;
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'session-cred-persist-route-err-'));
+    setProjectSkillsDataDir(dataDir);
+    try {
+      const ownerUserId = `owner-${uuidv4()}`;
+      const sessionId = createSession(ownerUserId);
+      const findAgent = (() => ({
+        agent: { id: 'agent-dev' },
+        project: { id: 'proj-no-skill' },
+      })) as unknown as RouteDeps['findAgent'];
+
+      const submit = await mountCredentialRoutes(ownerUserId, findAgent)
+        .put(`/api/sessions/${sessionId}/credential-requests/no-skill-login`)
+        .send({
+          service: 'Nowhere',
+          purpose: 'Sign in.',
+          fields: [{ key: 'password', label: 'Password', type: 'password' }],
+          values: { password: 'x' },
+          persist: { skillId: 'this-skill-does-not-exist', map: { password: 'FOO' } },
+        })
+        .expect(200);
+
+      // Ephemeral submit still succeeded so the agent can use the value now.
+      expect(submit.body.status).toBe('submitted');
+      expect(submit.body.persisted.stored).toEqual([]);
+      expect(submit.body.persisted.error).toMatch(/declares no credentials/);
+    } finally {
+      setProjectSkillsDataDir(originalDataDir);
+    }
   });
 
   it('rejects credential consumption for a session owned by another user', async () => {

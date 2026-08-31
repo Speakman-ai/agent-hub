@@ -2707,6 +2707,34 @@ components:
           nullable: true
         expiresAt:
           type: string
+        persisted:
+          type: object
+          properties:
+            skillId:
+              type: string
+            stored:
+              type: array
+              items:
+                type: string
+            skipped:
+              type: array
+              items:
+                type: object
+                properties:
+                  keyName:
+                    type: string
+                  reason:
+                    type: string
+                required:
+                  - keyName
+                  - reason
+            error:
+              type: string
+          required:
+            - skillId
+            - stored
+            - skipped
+          description: "Present on the PUT (submit) response when the request declared a `persist` target: which credential keys were written to the owner's skill store, which were skipped, and any skill-level persist error."
       required:
         - requestId
         - service
@@ -22349,6 +22377,23 @@ paths:
                   exclusiveMinimum: true
                   maximum: 3600
                   description: Credential lifetime in seconds. Defaults to 15 minutes, capped at 1 hour.
+                persist:
+                  type: object
+                  properties:
+                    skillId:
+                      type: string
+                      minLength: 1
+                      maxLength: 128
+                      description: Skill id whose `credentials:` frontmatter declares the target keys.
+                    map:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: Map of request field key → the skill's declared credential key name. Only declared keys are stored.
+                  required:
+                    - skillId
+                    - map
+                  description: When present, the submitted values are ALSO written into the session owner's persistent per-user skill credential store for `skillId`, so future spawns inject them as env vars. The ephemeral session copy is still stored for same-session use.
               required:
                 - service
                 - purpose

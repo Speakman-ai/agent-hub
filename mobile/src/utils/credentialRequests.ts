@@ -1,3 +1,5 @@
+import { normalizeCredentialPersistTarget } from '@shared/utils/credentialPersistOutcome';
+
 const CREDENTIAL_FENCE_RE = /```agenthub:credential-request\s*\n?([\s\S]*?)\n?```/g;
 const REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
@@ -10,6 +12,10 @@ function simpleHash(s: string): string {
 function cleanText(value: any, fallback: string, max: number): string {
   const text = typeof value === 'string' ? value.trim() : '';
   return (text || fallback).slice(0, max);
+}
+
+export function parsePersistTarget(raw: any, fieldKeys: Set<string>) {
+  return normalizeCredentialPersistTarget(raw, { fieldKeys }) ?? undefined;
 }
 
 function parseField(raw: any) {
@@ -44,12 +50,14 @@ export function parseCredentialRequestEnvelope(raw: string) {
     typeof parsed.ttlSeconds === 'number' && Number.isFinite(parsed.ttlSeconds)
       ? Math.max(1, Math.min(Math.floor(parsed.ttlSeconds), 3600))
       : undefined;
+  const persist = parsePersistTarget(parsed.persist, new Set(fields.map((f: any) => f.key)));
   return {
     requestId,
     service: cleanText(parsed.service, 'Credential request', 120),
     purpose: cleanText(parsed.purpose, 'Sign in for this session', 240),
     fields,
     ...(ttlSeconds ? { ttlSeconds } : {}),
+    ...(persist ? { persist } : {}),
   };
 }
 

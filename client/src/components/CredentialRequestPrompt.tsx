@@ -2,6 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { Eye, EyeOff, KeyRound, LockKeyhole, ShieldCheck } from 'lucide-react';
 import { api } from '../utils/api';
 import type { CredentialRequestBlock } from '../utils/credentialRequests';
+import {
+  describeCredentialPersistOutcome,
+  type CredentialPersistResult,
+} from '@shared/utils/credentialPersistOutcome';
 
 function statusLabel(status: string | null): string {
   if (status === 'submitted') return 'Credentials submitted';
@@ -62,14 +66,21 @@ export default function CredentialRequestPrompt({
         fields: request.fields,
         values,
         ttlSeconds: request.ttlSeconds,
+        ...(request.persist ? { persist: request.persist } : {}),
       });
       setRemoteStatus(body?.status || 'submitted');
       setValues(Object.fromEntries(request.fields.map((field) => [field.key, ''])));
+      const persisted = (body as { persisted?: CredentialPersistResult } | undefined)?.persisted;
+      const persistedLine = describeCredentialPersistOutcome({
+        service: request.service,
+        persist: request.persist,
+        persisted,
+      }).line;
       onSubmit?.(
         [
           `${request.service} credentials were submitted securely for request \`${request.requestId}\`.`,
           '',
-          'They are available to this session through the credential request API until they expire, then discarded.',
+          persistedLine,
         ].join('\n'),
       );
     } catch (err: any) {
@@ -100,8 +111,9 @@ export default function CredentialRequestPrompt({
         <div className="rounded-md border border-emerald-800/60 bg-black/20 px-3 py-2 text-xs text-emerald-100/75 flex items-start gap-2">
           <LockKeyhole size={14} className="text-emerald-300 shrink-0 mt-0.5" />
           <span>
-            Values are sent to Agent Hub directly, skipped from chat history, and discarded when
-            they expire.
+            {request.persist
+              ? `Values are sent to Agent Hub directly, skipped from chat history, and saved to your ${request.service} skill credentials for use in future sessions.`
+              : 'Values are sent to Agent Hub directly, skipped from chat history, and discarded when they expire.'}
           </span>
         </div>
 

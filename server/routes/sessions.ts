@@ -166,6 +166,11 @@ import {
   submitSessionCredentialRequest,
   SessionCredentialRequestError,
 } from '../session-credential-requests.js';
+import {
+  normalizePersistTarget,
+  persistSessionCredentialToSkill,
+} from '../session-credential-persist.js';
+import { resolveProjectSkillsDir } from '../project-skill-paths.js';
 
 /**
  * A session row joined with its parent cron's metadata, as returned by
@@ -837,12 +842,64 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         });
       }
       try {
+        const { persist, ...ephemeral } = parsed.data;
         const status = submitSessionCredentialRequest({
           sessionId,
           requestId,
-          ...parsed.data,
+          ...ephemeral,
         });
-        res.json(status);
+
+        // Optional: promote the just-submitted values into the session owner's
+        // persistent per-user skill credential store, so future spawns inject
+        // them automatically. Failure here never fails the ephemeral submit —
+        // the agent still gets the value this session; we surface the persist
+        // outcome (or error) on the response for the card to render.
+        type PersistInfo = {
+          skillId: string;
+          stored: string[];
+          skipped: Array<{ keyName: string; reason: string }>;
+          error?: string;
+        };
+        const response: typeof status & { persisted?: PersistInfo } = { ...status };
+        const target = persist ? normalizePersistTarget(persist) : null;
+        if (target) {
+          const ownerUserId =
+            getSessionOwner(sessionId) ?? resolveOwnerUserId(req as AuthenticatedRequest);
+          if (!ownerUserId) {
+            response.persisted = {
+              skillId: target.skillId,
+              stored: [],
+              skipped: [],
+              error: 'no session owner to store credentials for',
+            };
+          } else {
+            const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+            const project = session ? (findAgent(session.agent_id)?.project ?? null) : null;
+            const projectSkillsDirs = project ? [resolveProjectSkillsDir(project)] : [];
+            try {
+              response.persisted = persistSessionCredentialToSkill({
+                ownerUserId,
+                actorUserId: ownerUserId,
+                target,
+                values: ephemeral.values,
+                projectSkillsDirs,
+              });
+            } catch (persistErr) {
+              const message =
+                persistErr instanceof SessionCredentialRequestError
+                  ? persistErr.message
+                  : 'failed to persist credentials to skill store';
+              response.persisted = {
+                skillId: target.skillId,
+                stored: [],
+                skipped: [],
+                error: message,
+              };
+            }
+          }
+        }
+
+        res.json(response);
       } catch (err) {
         if (err instanceof SessionCredentialRequestError) {
           return res.status(err.statusCode).json({ error: err.message });

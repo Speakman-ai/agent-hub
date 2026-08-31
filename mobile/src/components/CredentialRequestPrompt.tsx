@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
+import {
+  describeCredentialPersistOutcome,
+  type CredentialPersistResult,
+} from '@shared/utils/credentialPersistOutcome';
 
 function statusLabel(status: any) {
   if (status === 'submitted') return 'Credentials submitted';
@@ -53,14 +57,21 @@ export default function CredentialRequestPrompt({ sessionId, request, onSubmit }
         fields: request.fields,
         values,
         ttlSeconds: request.ttlSeconds,
+        ...(request.persist ? { persist: request.persist } : {}),
       });
       setRemoteStatus(body?.status || 'submitted');
       setValues(Object.fromEntries((request.fields || []).map((field: any) => [field.key, ''])));
+      const persisted = body?.persisted as CredentialPersistResult | undefined;
+      const persistedLine = describeCredentialPersistOutcome({
+        service: request.service,
+        persist: request.persist,
+        persisted,
+      }).line;
       onSubmit?.(
         [
           `${request.service} credentials were submitted securely for request \`${request.requestId}\`.`,
           '',
-          'They are available to this session through the credential request API until they expire, then discarded.',
+          persistedLine,
         ].join('\n'),
       );
     } catch (err: any) {
@@ -80,8 +91,9 @@ export default function CredentialRequestPrompt({ sessionId, request, onSubmit }
         <Text style={styles.purpose}>{request.purpose}</Text>
         <View style={styles.notice}>
           <Text style={styles.noticeText}>
-            Values are sent directly to Agent Hub, skipped from chat history, and discarded when
-            they expire.
+            {request.persist
+              ? `Values are sent directly to Agent Hub, skipped from chat history, and saved to your ${request.service} skill credentials for use in future sessions.`
+              : 'Values are sent directly to Agent Hub, skipped from chat history, and discarded when they expire.'}
           </Text>
         </View>
         {(request.fields || []).map((field: any) => {

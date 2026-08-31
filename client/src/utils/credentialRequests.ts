@@ -1,3 +1,5 @@
+import { normalizeCredentialPersistTarget } from '@shared/utils/credentialPersistOutcome';
+
 const CREDENTIAL_FENCE_RE = /```agenthub:credential-request\s*\n?([\s\S]*?)\n?```/g;
 
 const REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
@@ -8,12 +10,32 @@ export interface CredentialRequestField {
   type: 'text' | 'username' | 'password';
 }
 
+export interface CredentialRequestPersistTarget {
+  skillId: string;
+  map: Record<string, string>;
+}
+
 export interface CredentialRequestBlock {
   requestId: string;
   service: string;
   purpose: string;
   fields: CredentialRequestField[];
   ttlSeconds?: number;
+  persist?: CredentialRequestPersistTarget;
+}
+
+/**
+ * Parse the optional `persist` target from a credential-request envelope.
+ * Delegates to the single shared normalizer (same rules the server enforces,
+ * incl. unique destination keys). Returns undefined (persistence off) whenever
+ * the shape is unusable — an invalid target must never block rendering the
+ * ephemeral card.
+ */
+export function parsePersistTarget(
+  raw: unknown,
+  fieldKeys: ReadonlySet<string>,
+): CredentialRequestPersistTarget | undefined {
+  return normalizeCredentialPersistTarget(raw, { fieldKeys }) ?? undefined;
 }
 
 export interface CredentialRequestExtraction {
@@ -73,9 +95,11 @@ export function parseCredentialRequestEnvelope(raw: string): CredentialRequestBl
     typeof parsed.ttlSeconds === 'number' && Number.isFinite(parsed.ttlSeconds)
       ? Math.max(1, Math.min(Math.floor(parsed.ttlSeconds), 3600))
       : undefined;
-  return ttlSeconds
-    ? { requestId, service, purpose, fields, ttlSeconds }
-    : { requestId, service, purpose, fields };
+  const persist = parsePersistTarget(parsed.persist, new Set(fields.map((f) => f.key)));
+  const block: CredentialRequestBlock = { requestId, service, purpose, fields };
+  if (ttlSeconds) block.ttlSeconds = ttlSeconds;
+  if (persist) block.persist = persist;
+  return block;
 }
 
 export function extractCredentialRequestBlocks(text: string): CredentialRequestExtraction {
