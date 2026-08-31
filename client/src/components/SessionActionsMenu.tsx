@@ -4,6 +4,7 @@ import type { LucideIcon } from 'lucide-react';
 import {
   SESSION_ACTION_MENU_ITEM_CLASS,
   SESSION_ACTION_MENU_ITEM_PRESSED_CLASS,
+  SESSION_ACTION_TOOLBAR_BUTTON_CLASS,
 } from '../utils/sessionActionMenu';
 
 export type SessionActionMenuItem = {
@@ -22,13 +23,19 @@ export type SessionActionMenuItem = {
 /**
  * Single session-toolbar dropdown that hosts pane toggles (timeline, changes,
  * artifacts, terminal) plus nested controls passed as children (preview, AWS).
+ *
+ * With `inline`, the surviving items render as flat toolbar buttons instead of
+ * a dropdown. Workflow (no-code) sessions gate most items off, so the few that
+ * remain don't warrant hiding behind an extra click.
  */
 export default function SessionActionsMenu({
   items = [],
   children,
+  inline = false,
 }: {
   items?: SessionActionMenuItem[];
   children?: any;
+  inline?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -53,6 +60,40 @@ export default function SessionActionsMenu({
   }, [open]);
 
   if (visibleItems.length === 0 && !hasChildren) return null;
+
+  if (inline) {
+    return (
+      <div className="contents" data-testid="session-actions-menu" data-inline="true" ref={rootRef}>
+        {visibleItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              aria-pressed={Boolean(item.pressed)}
+              data-testid={item.testId}
+              title={item.title}
+              disabled={item.disabled}
+              onClick={() => item.onSelect()}
+              className={`${SESSION_ACTION_TOOLBAR_BUTTON_CLASS} disabled:opacity-50 disabled:cursor-not-allowed ${
+                item.pressed
+                  ? 'bg-slate-700/70 text-slate-50 border-slate-500'
+                  : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
+              }`}
+            >
+              <Icon size={13} className="shrink-0 text-gray-400" aria-hidden />
+              <span className="truncate">{item.label}</span>
+              {item.badge != null && item.badge !== '' && Number(item.badge) !== 0 ? (
+                <span className="text-[10px] tabular-nums opacity-80">{item.badge}</span>
+              ) : null}
+              {item.pressed ? <Check size={12} className="text-emerald-400 shrink-0" /> : null}
+            </button>
+          );
+        })}
+        {children}
+      </div>
+    );
+  }
 
   return (
     <div className="relative shrink-0" ref={rootRef} data-testid="session-actions-menu">

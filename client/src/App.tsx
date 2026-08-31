@@ -7467,6 +7467,7 @@ export default function App({ initialView }: any = {}) {
                         <div className="shrink-0 border-t border-gray-800/80">
                           <div className="px-3 md:px-6 pb-2 flex flex-wrap justify-center gap-2 sm:flex-nowrap sm:justify-start sm:items-center pt-2">
                             <SessionActionsMenu
+                              inline={chatProjectIsWorkflow}
                               items={[
                                 {
                                   id: 'timeline',
@@ -7592,7 +7593,7 @@ export default function App({ initialView }: any = {}) {
                               )}
                               {activeSessionId && activeChatProject?.id ? (
                                 <AwsSsoLoginMenu
-                                  variant="menu"
+                                  variant={chatProjectIsWorkflow ? 'toolbar' : 'menu'}
                                   projectId={activeChatProject.id}
                                   project={activeChatProject}
                                   disabled={!connected}
