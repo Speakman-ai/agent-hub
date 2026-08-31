@@ -4,7 +4,11 @@ import supertest from 'supertest';
 import { createProjectVisibilityGate } from '../project-visibility-middleware.js';
 import createRumSessionsRoutes from './rum-sessions.js';
 import type { Project, RouteDeps } from '../types.js';
-import { getDb } from '../db.js';
+// Importing db.js runs its module-load initDb(config.dataDir), which opens this
+// test's dedicated rum.db so getRumEventsDb() below (and the route's list-store)
+// resolve a live handle. This test builds its own app rather than the full one.
+import '../db.js';
+import { getRumEventsDb } from '../replays/rum-events-db.js';
 
 // GET /api/projects/:projectId/rum/sessions returns user PII (usrEmail/usrName).
 // The handler itself only does findProject → 404 and never checks membership —
@@ -57,7 +61,7 @@ describe('rum-sessions visibility gate (PII protection)', () => {
   });
 
   it('lets the project owner through to the (PII-bearing) session list', async () => {
-    getDb()
+    getRumEventsDb()
       .prepare(
         `INSERT OR REPLACE INTO rum_sessions
            (session_id, project_id, started_at, usr_email)

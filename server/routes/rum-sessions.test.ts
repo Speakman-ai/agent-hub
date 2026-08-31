@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import type supertest from 'supertest';
 import { getRequest, createProject } from '../test/helpers.js';
-import { getDb } from '../db.js';
+import { getRumEventsDb } from '../replays/rum-events-db.js';
 
 let request: supertest.Agent;
 
@@ -53,7 +53,7 @@ function labels(sessions: any[]): string[] {
 /** Insert a rum_sessions row directly (the recorder→rollup path is exercised in
  *  rum-session-store.test.ts; here we seed rows to test the list query). */
 function seedSession(s: SessionSeed): void {
-  getDb()
+  getRumEventsDb()
     .prepare(
       `INSERT INTO rum_sessions
          (session_id, project_id, started_at, ended_at, time_spent, view_count,

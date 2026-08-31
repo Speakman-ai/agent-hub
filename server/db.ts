@@ -44,6 +44,7 @@ import { installStatsCompletionTimestamps } from './stats-completion.js';
 import type { Stmts } from './types.js';
 import { configureDbInstrumentation, instrumentStmts } from './db-instrumentation.js';
 import { reconcileSchema } from './schema-reconcile.js';
+import { initRumEventsDb, migrateLegacyRumEventsFromPrimary } from './replays/rum-events-db.js';
 
 let db: Database.Database | undefined;
 let stmts: Stmts | undefined;
@@ -85,6 +86,9 @@ function initDb(dataDir: string): void {
   if (cached) {
     db = cached.db;
     stmts = cached.stmts;
+    // Re-select this org's dedicated RUM events handle as current so the
+    // list-store (which resolves it lazily) reads/writes the right file.
+    initRumEventsDb(dataDir);
     return;
   }
 
@@ -93,6 +97,14 @@ function initDb(dataDir: string): void {
 
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+
+  // The hot-write RUM segment-ingest tables (`rum_segments` + `rum_sessions`)
+  // live in their own DB file (own connection + WAL) so their checkpoints never
+  // stall primary-DB requests (spec hot-write-isolation). Open it beside this
+  // org's `agent-hub.db`; the one-time migration off any legacy in-primary
+  // copies runs below, after the heal-ALTERs that ensure the source columns
+  // exist. Statements for these tables are prepared against `rumEventsDb`.
+  const rumEventsDb = initRumEventsDb(dataDir);
 
   // Register the kanban title normalizer as a deterministic SQL function BEFORE
   // any DDL, so the expression index below and the dedup query fold titles with
@@ -161,21 +173,6 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE support_tickets ADD COLUMN read_at TEXT');
   } catch (_e) {
     /* table doesn't exist yet (fresh install) or column already present */
-  }
-
-  // rum_sessions enriched request facets: device_type/browser/os parsed from the
-  // ingest User-Agent, geo_country resolved from the client IP (rum-enrichment.ts).
-  // Added BEFORE the schema exec below so the (project_id, device_type|…) indexes
-  // in that block can reference the columns on a legacy rum_sessions table where
-  // CREATE TABLE IF NOT EXISTS is a no-op. Per-column try/catch so a partial prior
-  // migration still completes. Fresh installs: the table doesn't exist yet, so the
-  // ALTERs throw + are caught, and the CREATE TABLE below carries the columns.
-  for (const col of ['device_type', 'browser', 'os', 'geo_country']) {
-    try {
-      db.exec(`ALTER TABLE rum_sessions ADD COLUMN ${col} TEXT`);
-    } catch (_e) {
-      /* table doesn't exist yet (fresh install) or column already present */
-    }
   }
 
   db.exec(`
@@ -438,125 +435,12 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_session_replays_ticket
       ON session_replays(support_ticket_id);
 
-    -- rum_segments: the append-only segment manifest for 'segmented' captures.
-    -- Each row indexes ONE gzipped S3 object holding a view-scoped slice of rrweb
-    -- events (~5s or ~60KB, flushed on view_change / page-exit). S3 is the byte
-    -- source of truth; this table is the pointer + metadata index playback lists
-    -- and orders by. Append is O(1): one PUT + one INSERT, never re-reading prior
-    -- segments. The UNIQUE (session_id, view_id, index_in_view) makes an
-    -- index-slot double-write fail instead of silently clobbering a segment.
-    -- has_full_snapshot marks index_in_view=0 (every view opens with a fresh full
-    -- snapshot). start_ts/end_ts are epoch-ms spans; byte_size is the gzipped
-    -- object size. storage_kind/bucket/region mirror session_replays so a read
-    -- resolves the ORIGINAL backend even after config changes.
-    CREATE TABLE IF NOT EXISTS rum_segments (
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      view_id TEXT NOT NULL,
-      project_id TEXT,
-      index_in_view INTEGER NOT NULL,
-      has_full_snapshot INTEGER NOT NULL DEFAULT 0,
-      start_ts INTEGER NOT NULL DEFAULT 0,
-      end_ts INTEGER NOT NULL DEFAULT 0,
-      event_count INTEGER NOT NULL DEFAULT 0,
-      byte_size INTEGER NOT NULL DEFAULT 0,
-      storage_kind TEXT NOT NULL,
-      storage_key TEXT NOT NULL,
-      storage_bucket TEXT,
-      storage_region TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_rum_segments_slot
-      ON rum_segments(session_id, view_id, index_in_view);
-    -- Playback manifest: chronological across views, sequential within a view.
-    CREATE INDEX IF NOT EXISTS idx_rum_segments_session
-      ON rum_segments(session_id, start_ts, index_in_view);
-    -- Retention sweep: age-ordered scan for the orphan-segment reconciliation
-    -- pass (WHERE created_at < ? ORDER BY created_at). Without it the sweep scans
-    -- + sorts the whole segment index every interval as it grows toward retention.
-    CREATE INDEX IF NOT EXISTS idx_rum_segments_created_at
-      ON rum_segments(created_at);
-    -- Per-tenant BASE-retention override sweep: getExpiredOrphanRumSegmentsByProject
-    -- runs (WHERE project_id = ? AND created_at < ? ...) once per overriding tenant
-    -- every sweep. This composite seeks straight to the tenant's aged orphan
-    -- segments instead of scanning the whole global age range per tenant.
-    CREATE INDEX IF NOT EXISTS idx_rum_segments_project_created
-      ON rum_segments(project_id, created_at);
-
-    -- rum_sessions: the session-grain metadata row the RUM dashboard lists and
-    -- filters on (Datadog "session" grain). One row per client-minted session id,
-    -- carrying rollup aggregates maintained incrementally as segments are ingested
-    -- (server/replays/rum-session-store.ts):
-    --   view_count        — distinct views (each view opens with an index_in_view=0
-    --                       segment, counted exactly once).
-    --   action_count      — sum of per-segment action counts (client-sent meta).
-    --   error_count       — sum of per-segment error counts.
-    --   frustration_count — sum of per-segment frustration counts (rage/dead/error
-    --                       click; detected client-side, sent as counts).
-    --   started_at/ended_at — earliest/latest event timestamp across the whole
-    --                       session, epoch ms; time_spent = ended_at - started_at.
-    -- project_id is first-non-null-wins so an anonymous first segment that later
-    -- attributes keeps its tenant. Per-user identity is carried by
-    -- usr_id/usr_email/usr_name + usr_attributes (custom attributes, JSON): the
-    -- client stamps usr onto segment meta forward-only, and the rollup keeps the
-    -- LAST non-null value per field so a session that identifies mid-stream still
-    -- shows a user in the dashboard "User Email" column. Identity is tenant-scoped
-    -- PII. The enriched request facet columns device_type/browser/os (parsed from
-    -- the ingest User-Agent) and geo_country (resolved from the client IP) are
-    -- computed once per session (first-non-null-wins) at ingest by
-    -- server/replays/rum-enrichment.ts. The (project_id, started_at) index backs
-    -- the tenant-scoped, time-ranged list query; the (project_id, usr_*) and
-    -- (project_id, device_type|browser|os|geo_country) indexes back the
-    -- tenant-scoped username and facet filters.
-    CREATE TABLE IF NOT EXISTS rum_sessions (
-      session_id TEXT PRIMARY KEY,
-      project_id TEXT,
-      started_at INTEGER,
-      ended_at INTEGER,
-      time_spent INTEGER NOT NULL DEFAULT 0,
-      view_count INTEGER NOT NULL DEFAULT 0,
-      action_count INTEGER NOT NULL DEFAULT 0,
-      error_count INTEGER NOT NULL DEFAULT 0,
-      frustration_count INTEGER NOT NULL DEFAULT 0,
-      usr_id TEXT,
-      usr_email TEXT,
-      usr_name TEXT,
-      usr_attributes TEXT,
-      device_type TEXT,
-      browser TEXT,
-      os TEXT,
-      geo_country TEXT,
-      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_rum_sessions_project
-      ON rum_sessions(project_id, started_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_email
-      ON rum_sessions(project_id, usr_email);
-    CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_id
-      ON rum_sessions(project_id, usr_id);
-    CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_name
-      ON rum_sessions(project_id, usr_name);
-    CREATE INDEX IF NOT EXISTS idx_rum_sessions_device_type
-      ON rum_sessions(project_id, device_type);
-    CREATE INDEX IF NOT EXISTS idx_rum_sessions_browser
-      ON rum_sessions(project_id, browser);
-    CREATE INDEX IF NOT EXISTS idx_rum_sessions_os
-      ON rum_sessions(project_id, os);
-    CREATE INDEX IF NOT EXISTS idx_rum_sessions_geo_country
-      ON rum_sessions(project_id, geo_country);
-    -- Retention sweep: age-ordered scan for the expired-session pass
-    -- (WHERE updated_at < ? ORDER BY updated_at). Without it the sweep scans +
-    -- sorts the whole session index every interval as it grows toward retention.
-    CREATE INDEX IF NOT EXISTS idx_rum_sessions_updated_at
-      ON rum_sessions(updated_at);
-    -- Per-tenant BASE-retention override sweep: getExpiredRumSessionsByProject
-    -- runs (WHERE project_id = ? AND updated_at < ? ORDER BY updated_at) once per
-    -- overriding tenant every sweep. The global idx_rum_sessions_updated_at would
-    -- force each of those to scan the whole global age range and filter by
-    -- project; this composite seeks straight to the tenant's rows in age order.
-    CREATE INDEX IF NOT EXISTS idx_rum_sessions_project_updated
-      ON rum_sessions(project_id, updated_at);
+    -- rum_segments + rum_sessions moved out of the primary DB into the dedicated
+    -- rum.db file (own connection + WAL) so the hot segment-ingest write stream
+    -- and its checkpoints never stall primary-DB requests (spec
+    -- hot-write-isolation). Schema, connection, and the one-time migration off
+    -- legacy in-primary copies live in server/replays/rum-events-db.ts; their
+    -- prepared statements are built against that handle in the stmts map below.
 
     -- project_rum_clients: per-project RUM (real user monitoring) ingest
     -- credentials. A third-party vendor site authenticates a replay upload to
@@ -1492,28 +1376,6 @@ function initDb(dataDir: string): void {
   } catch {
     db.exec('ALTER TABLE session_replays ADD COLUMN retained_until TEXT');
     db.exec('ALTER TABLE session_replays ADD COLUMN retention_flagged_at TEXT');
-  }
-
-  // rum_sessions per-user identity columns. The client stamps `usr` onto segment
-  // meta forward-only; the rollup splits standard fields into indexed columns and
-  // keeps custom attributes as JSON, retaining the LAST non-null value per field.
-  // All nullable TEXT, so plain ADD COLUMN; existing rows read NULL (anonymous).
-  try {
-    db.prepare('SELECT usr_id FROM rum_sessions LIMIT 1').get();
-  } catch {
-    db.exec('ALTER TABLE rum_sessions ADD COLUMN usr_id TEXT');
-    db.exec('ALTER TABLE rum_sessions ADD COLUMN usr_email TEXT');
-    db.exec('ALTER TABLE rum_sessions ADD COLUMN usr_name TEXT');
-    db.exec('ALTER TABLE rum_sessions ADD COLUMN usr_attributes TEXT');
-    db.exec(
-      'CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_email ON rum_sessions(project_id, usr_email)',
-    );
-    db.exec(
-      'CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_id ON rum_sessions(project_id, usr_id)',
-    );
-    db.exec(
-      'CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_name ON rum_sessions(project_id, usr_name)',
-    );
   }
 
   try {
@@ -3889,6 +3751,14 @@ function initDb(dataDir: string): void {
     }
   }
 
+  // One-time cutover: move any legacy in-primary `rum_segments` / `rum_sessions`
+  // rows into this org's dedicated `rum.db`, then drop each legacy table ONLY
+  // after its copy is verified complete (these are durable dashboard metadata,
+  // so an incomplete copy preserves the source and retries next boot — never a
+  // silent drop). No-op on fresh installs (the primary schema no longer creates
+  // these tables). Runs on the primary connection after all other migrations.
+  migrateLegacyRumEventsFromPrimary(db, dataDir);
+
   stmts = {
     // Artifacts (session-generated documents)
     insertArtifact: db.prepare(
@@ -4114,32 +3984,34 @@ function initDb(dataDir: string): void {
     // index_in_view) index makes a reused slot throw instead of clobbering a
     // segment, so the claim happens BEFORE the object PUT (same pattern as
     // insertSessionReplay).
-    insertRumSegment: db.prepare(
+    insertRumSegment: rumEventsDb.prepare(
       `INSERT INTO rum_segments
          (id, session_id, view_id, project_id, index_in_view, has_full_snapshot,
           start_ts, end_ts, event_count, byte_size,
           storage_kind, storage_key, storage_bucket, storage_region)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
-    getRumSegment: db.prepare('SELECT * FROM rum_segments WHERE id = ?'),
+    getRumSegment: rumEventsDb.prepare('SELECT * FROM rum_segments WHERE id = ?'),
     // Playback manifest for a whole session: chronological across views,
     // sequential within a view (matches idx_rum_segments_session).
-    listRumSegmentsBySession: db.prepare(
+    listRumSegmentsBySession: rumEventsDb.prepare(
       `SELECT * FROM rum_segments
         WHERE session_id = ?
         ORDER BY start_ts ASC, index_in_view ASC, id ASC`,
     ),
     // Per-view manifest: strictly by append order within the view.
-    listRumSegmentsByView: db.prepare(
+    listRumSegmentsByView: rumEventsDb.prepare(
       `SELECT * FROM rum_segments
         WHERE session_id = ? AND view_id = ?
         ORDER BY index_in_view ASC`,
     ),
-    deleteRumSegment: db.prepare('DELETE FROM rum_segments WHERE id = ?'),
-    deleteRumSegmentsBySession: db.prepare('DELETE FROM rum_segments WHERE session_id = ?'),
+    deleteRumSegment: rumEventsDb.prepare('DELETE FROM rum_segments WHERE id = ?'),
+    deleteRumSegmentsBySession: rumEventsDb.prepare(
+      'DELETE FROM rum_segments WHERE session_id = ?',
+    ),
     // rum_sessions — session-grain rollup row (rum-session-store.ts). Maintained
     // incrementally as segments ingest; the dashboard lists/filters these rows.
-    insertRumSession: db.prepare(
+    insertRumSession: rumEventsDb.prepare(
       `INSERT INTO rum_sessions
          (session_id, project_id, started_at, ended_at, time_spent,
           view_count, action_count, error_count, frustration_count,
@@ -4147,8 +4019,8 @@ function initDb(dataDir: string): void {
           device_type, browser, os, geo_country)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
-    getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
-    updateRumSessionRollup: db.prepare(
+    getRumSession: rumEventsDb.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
+    updateRumSessionRollup: rumEventsDb.prepare(
       `UPDATE rum_sessions
           SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
               view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
@@ -4157,13 +4029,13 @@ function initDb(dataDir: string): void {
               updated_at = datetime('now')
         WHERE session_id = ?`,
     ),
-    listRumSessionsByProject: db.prepare(
+    listRumSessionsByProject: rumEventsDb.prepare(
       `SELECT * FROM rum_sessions
         WHERE project_id = ?
         ORDER BY started_at DESC, session_id DESC
         LIMIT ?`,
     ),
-    deleteRumSession: db.prepare('DELETE FROM rum_sessions WHERE session_id = ?'),
+    deleteRumSession: rumEventsDb.prepare('DELETE FROM rum_sessions WHERE session_id = ?'),
     // Index-row TTL reconciliation for segmented captures
     // (server/replays/rum-segment-retention-sweeper.ts). Once the S3-native
     // lifecycle rule (T61) expires the `rum/` bytes, these index rows point at
@@ -4173,7 +4045,7 @@ function initDb(dataDir: string): void {
     // objects past expiry, so reaping it can never drop an index row whose bytes
     // still live. Oldest-first so a bounded batch chips at the longest-lived
     // backlog each sweep.
-    getExpiredRumSessions: db.prepare(
+    getExpiredRumSessions: rumEventsDb.prepare(
       `SELECT * FROM rum_sessions
         WHERE updated_at < ?
         ORDER BY updated_at ASC
@@ -4183,7 +4055,7 @@ function initDb(dataDir: string): void {
     // per-tenant cutoff is applied to just this project's sessions, with its own
     // per-sweep budget so one heavy tenant can't stall another's window. Params:
     // (cutoff, projectId, limit).
-    getExpiredRumSessionsByProject: db.prepare(
+    getExpiredRumSessionsByProject: rumEventsDb.prepare(
       `SELECT * FROM rum_sessions
         WHERE updated_at < ?
           AND project_id = ?
@@ -4196,14 +4068,14 @@ function initDb(dataDir: string): void {
     // segment and bump `updated_at` in between. Guarding the delete on the cutoff
     // keeps a now-active session (and its fresh, un-reclaimed segment) instead of
     // dropping the row out from under it.
-    deleteExpiredRumSession: db.prepare(
+    deleteExpiredRumSession: rumEventsDb.prepare(
       `DELETE FROM rum_sessions WHERE session_id = ? AND updated_at < ?`,
     ),
     // Orphan-segment reconciliation: rum_segments rows whose session-grain row is
     // already gone (a best-effort rollup that threw during ingest, or a partial
     // prior sweep) never get reaped by the session-keyed pass. Reap those whose
     // own created_at is past the cutoff so they can't accumulate.
-    getExpiredOrphanRumSegments: db.prepare(
+    getExpiredOrphanRumSegments: rumEventsDb.prepare(
       `SELECT s.* FROM rum_segments s
         WHERE s.created_at < ?
           AND NOT EXISTS (
@@ -4216,7 +4088,7 @@ function initDb(dataDir: string): void {
     // segments (session-grain row already gone) scoped to one project_id so the
     // tighter cutoff reaps them on the tenant's own schedule. Params: (cutoff,
     // projectId, limit).
-    getExpiredOrphanRumSegmentsByProject: db.prepare(
+    getExpiredOrphanRumSegmentsByProject: rumEventsDb.prepare(
       `SELECT s.* FROM rum_segments s
         WHERE s.created_at < ?
           AND s.project_id = ?

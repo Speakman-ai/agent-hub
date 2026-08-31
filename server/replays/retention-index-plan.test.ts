@@ -4,6 +4,7 @@ import path from 'path';
 import { mkdirSync, rmSync } from 'fs';
 import Database from 'better-sqlite3';
 import { initDb, getDb } from '../db.js';
+import { getRumEventsDb } from './rum-events-db.js';
 
 /**
  * Finding-1 regression: the per-project retention sweep queries must seek via a
@@ -19,6 +20,9 @@ function planDetails(db: Database.Database, sql: string, params: unknown[]): str
 describe('per-project retention sweep index coverage', () => {
   let dataDir: string;
   let db: Database.Database;
+  // rum_segments / rum_sessions live in the dedicated rum.db (hot-write
+  // isolation); their query plans must be checked against that handle.
+  let rumDb: Database.Database;
 
   beforeAll(() => {
     dataDir = path.join(
@@ -28,6 +32,7 @@ describe('per-project retention sweep index coverage', () => {
     mkdirSync(dataDir, { recursive: true });
     initDb(dataDir);
     db = getDb();
+    rumDb = getRumEventsDb();
   });
 
   afterAll(() => {
@@ -59,7 +64,7 @@ describe('per-project retention sweep index coverage', () => {
 
   it('rum_sessions per-project sweep seeks via idx_rum_sessions_project_updated', () => {
     const detail = planDetails(
-      db,
+      rumDb,
       `SELECT * FROM rum_sessions
          WHERE updated_at < ? AND project_id = ?
          ORDER BY updated_at ASC
@@ -72,7 +77,7 @@ describe('per-project retention sweep index coverage', () => {
 
   it('rum_segments per-project orphan sweep seeks via idx_rum_segments_project_created', () => {
     const detail = planDetails(
-      db,
+      rumDb,
       `SELECT s.* FROM rum_segments s
          WHERE s.created_at < ?
            AND s.project_id = ?

@@ -9,13 +9,16 @@
 // a started-at time range.
 //
 // Every filter maps to a first-class indexed column on `rum_sessions` (see the
-// `idx_rum_sessions_*` indexes in db.ts): exact-match text facets are `col = ?`,
-// count/duration filters are `>=` / `<=` range predicates, and the time range is
-// an inclusive `started_at BETWEEN` bounded by the composite (project_id,
-// started_at) index. Filters compose as ANDed WHERE fragments with positional
-// binds, the same way `replay-list-store.ts` and the support-ticket queue build
-// their dynamic WHERE.
-import { getDb } from '../db.js';
+// `idx_rum_sessions_*` indexes in rum-events-db.ts): exact-match text facets are
+// `col = ?`, count/duration filters are `>=` / `<=` range predicates, and the
+// time range is an inclusive `started_at BETWEEN` bounded by the composite
+// (project_id, started_at) index. Filters compose as ANDed WHERE fragments with
+// positional binds, the same way `replay-list-store.ts` and the support-ticket
+// queue build their dynamic WHERE.
+//
+// `rum_sessions` lives in the dedicated `rum.db` file (hot-write isolation), so
+// this module resolves the RUM events handle, NOT the primary `getDb()`.
+import { getRumEventsDb } from './rum-events-db.js';
 import type { RumSessionRow } from '../types.js';
 
 export const RUM_SESSION_LIST_MAX_LIMIT = 200;
@@ -154,7 +157,7 @@ export function listRumSessions(opts: ListRumSessionsOpts): ListRumSessionsResul
   }
 
   const whereClause = `WHERE ${where.join(' AND ')}`;
-  const db = getDb();
+  const db = getRumEventsDb();
 
   const total = (
     db.prepare(`SELECT COUNT(*) AS n FROM rum_sessions ${whereClause}`).get(...params) as {
