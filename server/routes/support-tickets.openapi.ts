@@ -549,6 +549,109 @@ registerPath({
   },
 });
 
+export const AddSupportTicketCommentRequestSchema = z
+  .object({
+    body: z
+      .string()
+      .trim()
+      .min(1, 'body is required')
+      .max(
+        MAX_ASSIGNMENT_COMMENT_LEN,
+        `body must be ${MAX_ASSIGNMENT_COMMENT_LEN} characters or fewer`,
+      )
+      .openapi({
+        description: `Comment body (max ${MAX_ASSIGNMENT_COMMENT_LEN} characters).`,
+      }),
+    displayName: z.string().trim().max(80).optional().openapi({
+      description:
+        'Optional free-text display name. Not a user id; omitted comments are anonymous.',
+    }),
+  })
+  .openapi({
+    description:
+      'Append an anonymous comment. `source` is derived from the caller (Hub UI → hub, API-key-only → external) and is not accepted in the body.',
+  });
+
+export const SupportTicketCommentComponent = registerComponent(
+  'SupportTicketComment',
+  z
+    .object({
+      id: z.string(),
+      support_ticket_id: z.string(),
+      body: z.string(),
+      display_name: z.string().nullable(),
+      source: z.enum(['hub', 'external']).openapi({
+        description: 'Where the comment was posted. Hub-auth responses always include this.',
+      }),
+      hidden_at: z.string().nullable().optional().openapi({
+        description:
+          'Operator soft-delete timestamp. Present on Hub-auth responses; omitted from the external projection. Listed comments always have this null/absent.',
+      }),
+      created_at: z.string(),
+    })
+    .openapi({
+      description:
+        'Anonymous comment on a support ticket. No user id is stored. Operators hide via DELETE (sets hidden_at); lists skip hidden rows.',
+    }),
+);
+
+const commentParams = ticketParams.extend({
+  commentId: z.string().openapi({ description: 'Comment id.' }),
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/support-tickets/{id}/comments',
+  tags: ['Support'],
+  summary: 'List anonymous comments on a support ticket',
+  description:
+    'Non-hidden comments, oldest-first. Hub-auth responses include `source` and `hidden_at`. The external projection omits `hidden_at` and never returns hidden rows. Broadcasts are not emitted on list.',
+  request: { params: ticketParams },
+  responses: {
+    200: {
+      description: 'Comments in created_at order (oldest first).',
+      content: jsonContent(z.array(SupportTicketCommentComponent)),
+    },
+    404: errorResponse('Project or ticket not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/support-tickets/{id}/comments',
+  tags: ['Support'],
+  summary: 'Append an anonymous comment',
+  description:
+    'Body is `{ body, displayName? }`. `source` defaults from the caller. Broadcasts `support_ticket_comment_created` with `{ ticketId, projectId, comment }`.',
+  request: {
+    params: ticketParams,
+    body: { required: true, content: jsonContent(AddSupportTicketCommentRequestSchema) },
+  },
+  responses: {
+    201: {
+      description: 'Created comment row.',
+      content: jsonContent(SupportTicketCommentComponent),
+    },
+    400: errorResponse('Invalid body (empty, or longer than 4000 characters).'),
+    404: errorResponse('Project or ticket not found.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/support-tickets/{id}/comments/{commentId}',
+  tags: ['Support'],
+  summary: 'Hide a comment (operator soft-delete)',
+  description:
+    'Hub-auth only. Sets `hidden_at` so subsequent lists skip the row. External (API-key-only) callers receive 403. Broadcasts `support_ticket_comment_deleted` with `{ ticketId, projectId, commentId }`.',
+  request: { params: commentParams },
+  responses: {
+    200: { description: 'Hidden.', content: jsonContent(z.object({ ok: z.boolean() })) },
+    403: errorResponse('Caller is not a Hub operator (API-key-only / external).'),
+    404: errorResponse('Project, ticket, or comment not found, or already hidden.'),
+  },
+});
+
 registerPath({
   method: 'delete',
   path: '/api/projects/{projectId}/support-tickets/{id}',

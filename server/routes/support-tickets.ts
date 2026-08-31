@@ -37,11 +37,18 @@ import { getOrCreateBoard, serializeCardForRequest } from './board.js';
 import { linkReplay } from '../replays/replay-store.js';
 import { getDb } from '../db.js';
 import {
+  AddSupportTicketCommentRequestSchema,
   CastVoteRequestSchema,
   ConvertSupportTicketRequestSchema,
   LinkSupportTicketToCardRequestSchema,
 } from './support-tickets.openapi.js';
-import { applySupportTicketVote } from '../support-ticket-voting-store.js';
+import {
+  addSupportTicketComment,
+  getSupportTicketComment,
+  hideSupportTicketComment,
+  listSupportTicketComments,
+  applySupportTicketVote,
+} from '../support-ticket-voting-store.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
 import { resolveEffectiveEngineAndModel } from '../effective-model.js';
 import type { SupportedEngine } from '../engine-availability.js';
@@ -53,8 +60,11 @@ import { resolveUploadsDir } from '../uploads-dir.js';
 import { createUploadStore } from '../upload-store.js';
 
 import {
+  commentSourceForRequest,
   defaultReporterEmail,
+  isExternalSupportCaller,
   serializeSupportTicket,
+  serializeSupportTicketComment,
   serializeSupportTicketForBroadcast,
   serializeSupportTicketForRequest,
   serializeSupportTicketsForRequest,
@@ -932,6 +942,112 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           res.status(400).json({ error: (err as Error).message });
         }
       }
+    },
+  );
+
+  /**
+   * Anonymous comment thread. List is non-hidden, oldest-first. Hub-auth
+   * responses include `source` and `hidden_at`; the external projection
+   * drops `hidden_at`. Hidden rows never appear in either list.
+   */
+  router.get(
+    '/api/projects/:projectId/support-tickets/:id/comments',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const ticket = getSupportTicket(req.params.id as string);
+      if (!ticket || ticket.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+
+      const comments = listSupportTicketComments(ticket.id).map((row) =>
+        serializeSupportTicketComment(req, row),
+      );
+      res.json(comments);
+    },
+  );
+
+  /**
+   * Append an anonymous comment. `source` is derived from the caller
+   * (Hub UI / local → hub; API-key-only → external), not the body.
+   */
+  router.post(
+    '/api/projects/:projectId/support-tickets/:id/comments',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const ticket = getSupportTicket(req.params.id as string);
+      if (!ticket || ticket.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+
+      const parsed = AddSupportTicketCommentRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'Invalid request body' });
+      }
+
+      try {
+        const comment = addSupportTicketComment({
+          supportTicketId: ticket.id,
+          body: parsed.data.body,
+          displayName: parsed.data.displayName,
+          source: commentSourceForRequest(req),
+        });
+        const payload = serializeSupportTicketComment(req, comment);
+        broadcast({
+          type: 'support_ticket_comment_created',
+          ticketId: ticket.id,
+          projectId: project.id,
+          comment: payload,
+        });
+        res.status(201).json(payload);
+      } catch (err) {
+        if (!res.headersSent) {
+          res.status(400).json({ error: (err as Error).message });
+        }
+      }
+    },
+  );
+
+  /**
+   * Operator soft-delete. Hub-auth only; API-key-only (external) callers
+   * get 403. Sets `hidden_at` so subsequent lists skip the row.
+   */
+  router.delete(
+    '/api/projects/:projectId/support-tickets/:id/comments/:commentId',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      if (isExternalSupportCaller(req)) {
+        return res.status(403).json({ error: 'Comment moderation requires Hub authentication' });
+      }
+
+      const ticket = getSupportTicket(req.params.id as string);
+      if (!ticket || ticket.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+
+      const commentId = req.params.commentId as string;
+      const existing = getSupportTicketComment(commentId);
+      if (!existing || existing.support_ticket_id !== ticket.id) {
+        return res.status(404).json({ error: 'Comment not found' });
+      }
+
+      const hidden = hideSupportTicketComment(commentId);
+      if (!hidden) {
+        return res.status(404).json({ error: 'Comment not found' });
+      }
+
+      broadcast({
+        type: 'support_ticket_comment_deleted',
+        ticketId: ticket.id,
+        projectId: project.id,
+        commentId,
+      });
+      res.json({ ok: true });
     },
   );
 

@@ -3161,6 +3161,13 @@ export default function App({ initialView }: any = {}) {
           window.dispatchEvent(new CustomEvent('agenthub-support-ticket-vote', { detail: data }));
           break;
         }
+        case 'support_ticket_comment_created':
+        case 'support_ticket_comment_deleted': {
+          window.dispatchEvent(
+            new CustomEvent('agenthub-support-ticket-comment', { detail: data }),
+          );
+          break;
+        }
         case 'support_tickets_read_all': {
           if (data.projectId) {
             setUnreadTicketCounts((prev: any) => ({ ...prev, [data.projectId]: 0 }));

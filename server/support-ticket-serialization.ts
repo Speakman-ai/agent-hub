@@ -13,7 +13,12 @@ import {
   releaseNotificationHistoryItem,
   type ReleaseNotificationHistoryItem,
 } from './release-notification-outbox.js';
-import type { SupportTicketReleaseState, SupportTicketRow } from './types.js';
+import type {
+  SupportTicketCommentRow,
+  SupportTicketCommentSource,
+  SupportTicketReleaseState,
+  SupportTicketRow,
+} from './types.js';
 
 export type SupportTicketResponse = SupportTicketRow & {
   reporter_email_masked: boolean;
@@ -46,6 +51,56 @@ export interface LinkedSupportTicketMetadata {
 export function canReadReporterEmail(req: Request): boolean {
   const caller = resolveVisibilityCaller(req);
   return Boolean(caller.localBypass || caller.role === 'Owner' || caller.role === 'Admin');
+}
+
+/**
+ * Survey Tracker (and other API-key-only callers) authenticate with the
+ * global X-API-Key and have no Hub user. JWT / local-bundled / unstamped
+ * Hub-internal callers are not external.
+ */
+export function isExternalSupportCaller(req: Request): boolean {
+  const areq = req as AuthenticatedRequest;
+  return Boolean(areq.authViaApiKey && !areq.authUserId && !areq.authLocalOrgBypass);
+}
+
+export function commentSourceForRequest(req: Request): SupportTicketCommentSource {
+  return isExternalSupportCaller(req) ? 'external' : 'hub';
+}
+
+export type SupportTicketCommentResponse = {
+  id: string;
+  support_ticket_id: string;
+  body: string;
+  display_name: string | null;
+  source: SupportTicketCommentSource;
+  created_at: string;
+  hidden_at?: string | null;
+};
+
+/** Hub-auth keeps `source` + `hidden_at`. External projection drops `hidden_at`. */
+export function serializeSupportTicketComment(
+  req: Request,
+  comment: SupportTicketCommentRow,
+): SupportTicketCommentResponse {
+  if (isExternalSupportCaller(req)) {
+    return {
+      id: comment.id,
+      support_ticket_id: comment.support_ticket_id,
+      body: comment.body,
+      display_name: comment.display_name,
+      source: comment.source,
+      created_at: comment.created_at,
+    };
+  }
+  return {
+    id: comment.id,
+    support_ticket_id: comment.support_ticket_id,
+    body: comment.body,
+    display_name: comment.display_name,
+    source: comment.source,
+    hidden_at: comment.hidden_at,
+    created_at: comment.created_at,
+  };
 }
 
 export function serializeSupportTicket(

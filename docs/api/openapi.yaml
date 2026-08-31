@@ -14831,6 +14831,38 @@ components:
         - downvotes
         - myVote
       description: Aggregate score for a feature-request ticket, plus the caller’s vote.
+    SupportTicketComment:
+      type: object
+      properties:
+        id:
+          type: string
+        support_ticket_id:
+          type: string
+        body:
+          type: string
+        display_name:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum:
+            - hub
+            - external
+          description: Where the comment was posted. Hub-auth responses always include this.
+        hidden_at:
+          type: string
+          nullable: true
+          description: Operator soft-delete timestamp. Present on Hub-auth responses; omitted from the external projection. Listed comments always have this null/absent.
+        created_at:
+          type: string
+      required:
+        - id
+        - support_ticket_id
+        - body
+        - display_name
+        - source
+        - created_at
+      description: Anonymous comment on a support ticket. No user id is stored. Operators hide via DELETE (sets hidden_at); lists skip hidden rows.
     SupportTicketOverviewErrorResponse:
       type: object
       properties:
@@ -43921,6 +43953,152 @@ paths:
                 $ref: "#/components/schemas/SupportTicketErrorResponse"
         "404":
           description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/{id}/comments:
+    get:
+      tags:
+        - Support
+      summary: List anonymous comments on a support ticket
+      description: Non-hidden comments, oldest-first. Hub-auth responses include `source` and `hidden_at`. The external projection omits `hidden_at` and never returns hidden rows. Broadcasts are not emitted on list.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Comments in created_at order (oldest first).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SupportTicketComment"
+        "404":
+          description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+    post:
+      tags:
+        - Support
+      summary: Append an anonymous comment
+      description: Body is `{ body, displayName? }`. `source` defaults from the caller. Broadcasts `support_ticket_comment_created` with `{ ticketId, projectId, comment }`.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+                  description: Comment body (max 4000 characters).
+                displayName:
+                  type: string
+                  maxLength: 80
+                  description: Optional free-text display name. Not a user id; omitted comments are anonymous.
+              required:
+                - body
+              description: Append an anonymous comment. `source` is derived from the caller (Hub UI → hub, API-key-only → external) and is not accepted in the body.
+      responses:
+        "201":
+          description: Created comment row.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketComment"
+        "400":
+          description: Invalid body (empty, or longer than 4000 characters).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "404":
+          description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/{id}/comments/{commentId}:
+    delete:
+      tags:
+        - Support
+      summary: Hide a comment (operator soft-delete)
+      description: Hub-auth only. Sets `hidden_at` so subsequent lists skip the row. External (API-key-only) callers receive 403. Broadcasts `support_ticket_comment_deleted` with `{ ticketId, projectId, commentId }`.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+        - schema:
+            type: string
+            description: Comment id.
+          required: true
+          description: Comment id.
+          name: commentId
+          in: path
+      responses:
+        "200":
+          description: Hidden.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "403":
+          description: Caller is not a Hub operator (API-key-only / external).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "404":
+          description: Project, ticket, or comment not found, or already hidden.
           content:
             application/json:
               schema:

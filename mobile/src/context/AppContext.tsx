@@ -987,6 +987,24 @@ export function AppProvider({ children }: any) {
             bump: Date.now(),
           });
           break;
+        case 'support_ticket_comment_created':
+          setLastSupportTicketEvent({
+            type: 'support_ticket_comment_created',
+            projectId: data.projectId,
+            ticketId: data.ticketId,
+            comment: data.comment,
+            bump: Date.now(),
+          });
+          break;
+        case 'support_ticket_comment_deleted':
+          setLastSupportTicketEvent({
+            type: 'support_ticket_comment_deleted',
+            projectId: data.projectId,
+            ticketId: data.ticketId,
+            commentId: data.commentId,
+            bump: Date.now(),
+          });
+          break;
         case 'support_tickets_read_all':
           if (data.projectId) {
             setUnreadTicketCounts((prev: any) => ({ ...prev, [data.projectId]: 0 }));
