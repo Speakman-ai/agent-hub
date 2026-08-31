@@ -33,13 +33,13 @@ This doc is that install, plus the decision record and capacity guidance.
 
 ## Host requirements
 
-| Requirement | Gate | AL2023 host |
-| --- | --- | --- |
-| Linux | hard | yes |
-| Kernel >= 5.12 (idmapped mounts; >= 5.19 recommended) | hard | 6.1 ✅ |
-| Unprivileged user namespaces (`user.max_user_namespaces > 0`) | hard | on by default ✅ |
-| Docker installed natively (snap Docker is incompatible) | hard | ECS-optimized AMI ✅ |
-| Nested virtualization / KVM | **not needed** | n/a |
+| Requirement                                                   | Gate           | AL2023 host          |
+| ------------------------------------------------------------- | -------------- | -------------------- |
+| Linux                                                         | hard           | yes                  |
+| Kernel >= 5.12 (idmapped mounts; >= 5.19 recommended)         | hard           | 6.1 ✅               |
+| Unprivileged user namespaces (`user.max_user_namespaces > 0`) | hard           | on by default ✅     |
+| Docker installed natively (snap Docker is incompatible)       | hard           | ECS-optimized AMI ✅ |
+| Nested virtualization / KVM                                   | **not needed** | n/a                  |
 
 ## Install
 
@@ -58,14 +58,65 @@ What it does:
    - AL2023 / other kernel >= 5.12 distros: clones the pinned release tag,
      builds via `make sysbox-static` (containerized build), `make install`,
      and installs `sysbox-mgr.service` + `sysbox-fs.service` units.
-3. Registers the `sysbox-runc` runtime in `/etc/docker/daemon.json` (backup
-   kept beside it) and restarts dockerd. Pass `--skip-docker-restart` to
-   defer the restart to a maintenance window — running containers with
-   restart policies come back, but in-flight `docker exec`s die.
+3. Merges the `sysbox-runc` runtime (and, when opted in, a widened
+   `default-address-pools`) into `/etc/docker/daemon.json` (backup kept beside
+   it) and restarts dockerd **only if the merged config actually changed**.
+   Pass `--skip-docker-restart` to defer the restart to a maintenance window —
+   running containers with restart policies come back, but in-flight
+   `docker exec`s die. Re-running purely to add or change pools works on an
+   already-sysbox host.
 4. `--verify-run` launches a throwaway `--runtime=sysbox-runc` container to
    prove the runtime end to end.
 
 Pin a different release with `SYSBOX_VERSION=x.y.z`.
+
+## Preview network capacity — widen `default-address-pools`
+
+Each session compose preview allocates its own Docker network from the
+daemon's `default-address-pools`. Stock dockerd only offers **~31 subnets**
+(`172.17.0.0/16`–`172.31.0.0/16` as /16s, plus `192.168.0.0/20`–
+`192.168.240.0/20`). On a busy shared preview host, concurrent and long-lived
+session/test stacks consume every pool, and new previews fail the build with:
+
+```
+could not find an available, non-overlapping IPv4 address pool among the defaults
+```
+
+`docker network prune` does **not** help while those networks have live
+containers attached (they belong to other active sessions, not leaks). The Hub
+surfaces this exact case as a preview boot diagnostic, but the durable fix is
+host capacity: widen the pool so thousands of small per-preview networks fit.
+
+Opt in on the setup script (OFF by default — no behavior change unless set):
+
+```bash
+# Carve /24s out of 10.128.0.0/9 → 32768 preview networks, 256 addrs each.
+sudo ops/scripts/setup-sysbox-host.sh --address-pool-base 10.128.0.0/9 --address-pool-size 24
+# Env form (same effect):
+sudo AGENT_HUB_DOCKER_ADDRESS_POOL_BASE=10.128.0.0/9 \
+     AGENT_HUB_DOCKER_ADDRESS_POOL_SIZE=24 ops/scripts/setup-sysbox-host.sh
+```
+
+- `--address-pool-base <cidr>` — the supernet the daemon carves preview
+  networks from. **It MUST NOT overlap this host's VPC/subnet CIDR.** Docker
+  keeps `10.0.0.0/8` out of its stock defaults precisely because AWS VPCs
+  commonly live there; a base that collides with the VPC silently breaks
+  host↔container routing. Confirm your VPC/subnet ranges (e.g. `ip route`,
+  the VPC CIDR in the console) and pick a supernet with no overlap. On the
+  reference infra the VPC sits low in `10.0.0.0/16`, so `10.128.0.0/9`
+  (i.e. `10.128.0.0`–`10.255.255.255`) is clear. The value must be a valid
+  **canonical IPv4 network base with an explicit prefix** — host bits must be
+  zero (`10.128.0.0/9`, not `10.128.5.3/9`). The setup script parses and
+  rejects anything else _before_ it edits `daemon.json`, so a typo can never
+  wedge the docker restart.
+- `--address-pool-size <n>` — prefix length per preview network (default `24`
+  = 256 addresses). Must be `>=` the base prefix and `<= 30`. Bigger `n` =
+  more, smaller networks.
+
+Applying this restarts dockerd (unless `--skip-docker-restart`), which bounces
+running containers — do it in a maintenance window on a busy host. Enable
+`live-restore` in `daemon.json` first if you want containers to survive the
+restart.
 
 ## Hub adapter selection (boot capability probe)
 
@@ -99,7 +150,7 @@ Unknown values fall back to `auto` — a typo never forces a backend.
 ## Disk headroom & capacity
 
 - **Budget ~0.5–1 GB per concurrent session** (session container rootfs +
-  the project's own backing-service images pulled *inside* the session
+  the project's own backing-service images pulled _inside_ the session
   container's inner dockerd). On the shared 32 GB m7i.2xlarge running the
   Hub + finalize runners, size the docker volume for peak concurrent
   sessions plus the finalize fleet; 100 GB+ gp3 is a sane floor.

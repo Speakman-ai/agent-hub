@@ -304,6 +304,42 @@ describe('agent-hub-user-data.tftpl', () => {
       );
     });
 
+    // Per-session compose previews on the host backend leak their
+    // `session-<id>_*` network — session dispose runs no docker cleanup, and
+    // neither the boot reconcile nor the GC ever removed networks. They
+    // accumulate and exhaust the daemon's default-address-pools. The reap must
+    // be SCOPED to leaked Hub session networks (dangling + `session-` name),
+    // NOT a blanket `docker network prune` that would also remove
+    // operator/tool-provisioned idle networks (reviewer feedback on card 2001).
+    it('installs a scoped session-network reaper, not a blanket network prune', () => {
+      // Never a blanket prune anywhere in the template.
+      expect(rendered).not.toMatch(/docker network prune/);
+      const reaper = rendered.slice(
+        rendered.indexOf('agenthub-network-reap.sh <<'),
+        rendered.indexOf('NETREAP\nchmod'),
+      );
+      expect(reaper).toContain('--filter dangling=true');
+      // Must require the 8-hex session id AND the compose `_` separator, so
+      // operator names like `session-cache` / `session-backup` never match.
+      expect(reaper).toContain("grep -E '^session-[0-9a-f]{8}_'");
+      expect(reaper).toContain('docker network rm');
+    });
+
+    it('runs the session-network reaper (ExecStartPre) after container prune', () => {
+      const pre = rendered.indexOf('ExecStartPre=-/usr/bin/docker container prune -f');
+      const net = rendered.indexOf('ExecStartPre=-/usr/local/bin/agenthub-network-reap.sh');
+      expect(pre).toBeGreaterThanOrEqual(0);
+      expect(net).toBeGreaterThan(pre);
+    });
+
+    it('runs the session-network reaper in the daily GC script after container prune', () => {
+      const gc = rendered.slice(rendered.indexOf('agenthub-docker-gc.sh <<'));
+      const pre = gc.indexOf('/usr/bin/docker container prune -f');
+      const net = gc.indexOf('/usr/local/bin/agenthub-network-reap.sh');
+      expect(pre).toBeGreaterThanOrEqual(0);
+      expect(net).toBeGreaterThan(pre);
+    });
+
     it('does not install host nginx, certbot, or the dns-route53 plugin (PR-env removal)', () => {
       expect(rendered).not.toMatch(/\$PKG_INSTALL\s+nginx\s+certbot/);
       expect(rendered).not.toContain('python3-certbot-dns-route53');

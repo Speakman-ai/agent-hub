@@ -375,6 +375,27 @@ exec docker run --rm --name agenthub-server \
 RUNSCRIPT
 chmod 0755 /usr/local/bin/agenthub-server-run.sh
 
+# Reap ONLY leaked per-session compose networks: those named `session-<id>_*`
+# (created by a project `docker compose up` on the HOST backend) that have no
+# attached container. Deliberately narrower than a blanket network-prune sweep,
+# which would also delete operator/tool-provisioned custom networks that happen
+# to be idle — that blunt sweep is NOT what we want. `--filter dangling=true` = not
+# used by any container; the name pattern matches ONLY a Hub session compose
+# network — `session-<8-hex-id>_<netname>` (the project name is
+# `session-` + session.id.slice(0,8), see server/worktree.ts) — so it requires
+# the 8-hex session id AND the compose `_` separator. Names like `session-cache`
+# or `session-backup` (no hex id, no separator) are never matched. Best-effort:
+# never block startup or the GC timer.
+cat >/usr/local/bin/agenthub-network-reap.sh <<'NETREAP'
+#!/usr/bin/env bash
+set +e
+docker network ls --filter dangling=true --format '{{.Name}}' 2>/dev/null \
+  | grep -E '^session-[0-9a-f]{8}_' \
+  | xargs -r -n1 docker network rm >/dev/null 2>&1
+exit 0
+NETREAP
+chmod 0755 /usr/local/bin/agenthub-network-reap.sh
+
 cat >/etc/systemd/system/agenthub-server.service <<'UNIT'
 [Unit]
 Description=Agent Hub server (Docker container, pull-on-start)
@@ -398,7 +419,14 @@ ExecStartPre=-/usr/bin/docker rm -f agenthub-server
 # not, but only stopped/dangling targets are reaped so the running
 # container and bind mounts are safe).
 # `-` prefix makes each step tolerant of prune failures (e.g. no images yet).
+# The network-reap runs AFTER `container prune` so a stopped stack's containers
+# are gone first, leaving its `session-<id>_*` compose network unattached and
+# reapable. It removes ONLY leaked Hub session networks (see the helper), never
+# a blanket network-prune sweep, so operator/tool-provisioned networks are
+# untouched. This reclaims the per-session networks that leak on the host
+# backend and would otherwise exhaust the daemon's default-address-pools.
 ExecStartPre=-/usr/bin/docker container prune -f
+ExecStartPre=-/usr/local/bin/agenthub-network-reap.sh
 ExecStartPre=-/usr/bin/docker image prune -af --filter until=24h
 ExecStartPre=-/usr/bin/docker builder prune -af --filter until=24h
 ExecStartPre=-/usr/bin/docker volume prune -f
@@ -423,6 +451,11 @@ cat >/usr/local/bin/agenthub-docker-gc.sh <<'GCSCRIPT'
 # to prune) must not block the rest.
 set +e
 /usr/bin/docker container prune -f
+# After container prune so newly-orphaned compose networks (e.g. leaked
+# session-<id>_* from host-backend previews) are unattached and reapable. Scoped
+# to Hub session networks only (see the helper) — NOT a blanket network prune,
+# so operator/tool-provisioned networks are never removed.
+/usr/local/bin/agenthub-network-reap.sh
 /usr/bin/docker image prune -af --filter until=24h
 /usr/bin/docker builder prune -af --filter until=24h
 /usr/bin/docker volume prune -f
@@ -433,7 +466,7 @@ chmod 0755 /usr/local/bin/agenthub-docker-gc.sh
 
 cat >/etc/systemd/system/agenthub-docker-gc.service <<'GCUNIT'
 [Unit]
-Description=Agent Hub daily docker GC (image/container/builder/volume prune)
+Description=Agent Hub daily docker GC (container/image/builder/volume prune + leaked session-network reap)
 After=docker.service
 Requires=docker.service
 
