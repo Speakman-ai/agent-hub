@@ -36,6 +36,92 @@ export const MIME_TO_EXT: Record<string, string> = {
 };
 
 /**
+ * Extension (no leading dot, lowercase) → canonical MIME type. Used to
+ * reconcile a stored/declared content type against the filename when the
+ * declared type is missing or a generic `application/octet-stream` — so a PDF
+ * named `report.pdf` always serves as `application/pdf` and renders inline
+ * rather than downloading as an opaque blob. This is the reverse direction of
+ * `MIME_TO_EXT`, plus a few extra extensions that share a canonical type.
+ */
+export const EXT_TO_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+  avi: 'video/x-msvideo',
+  mkv: 'video/x-matroska',
+  pdf: 'application/pdf',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  markdown: 'text/markdown',
+  csv: 'text/csv',
+  html: 'text/html',
+  htm: 'text/html',
+  json: 'application/json',
+  xml: 'application/xml',
+  zip: 'application/zip',
+  gz: 'application/gzip',
+  tgz: 'application/gzip',
+  tar: 'application/x-tar',
+  js: 'application/javascript',
+  mjs: 'application/javascript',
+  css: 'text/css',
+};
+
+/**
+ * True when `contentType` is missing or a generic catch-all
+ * (`application/octet-stream`, `binary/octet-stream`) — i.e. it tells the
+ * browser nothing about how to render the bytes.
+ */
+export function isGenericContentType(contentType: string | null | undefined): boolean {
+  const t = (contentType || '').split(';')[0].trim().toLowerCase();
+  return !t || t === 'application/octet-stream' || t === 'binary/octet-stream';
+}
+
+/**
+ * Canonical MIME type for a filename's extension, or `null` when the extension
+ * is unknown / absent.
+ */
+export function contentTypeForFilename(name: string): string | null {
+  const base = path.basename((name || '').trim());
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const ext = base.slice(dot + 1).toLowerCase();
+  return EXT_TO_MIME[ext] || null;
+}
+
+/**
+ * Reconcile a declared content type against the filename so a file's type
+ * always matches what its name claims to be.
+ *
+ * The filename extension is authoritative when it maps to a known type: a
+ * `report.pdf` is served as `application/pdf` even when the uploader declared
+ * something else (or a generic `application/octet-stream`) — this is what
+ * guarantees PDFs always carry the correct type. This is safe because the
+ * content route sets `X-Content-Type-Options: nosniff` (the browser won't
+ * reinterpret the bytes) and routes any *active* reconciled type
+ * (e.g. `.html` → `text/html`) through the active-content attachment guard.
+ *
+ * When the extension is unknown or absent, an explicit non-generic declared
+ * type is trusted as-is (parameters preserved); a missing or generic type
+ * falls back to `application/octet-stream`.
+ */
+export function reconcileContentType(
+  contentType: string | null | undefined,
+  filename: string,
+): string {
+  const fromExt = contentTypeForFilename(filename);
+  if (fromExt) return fromExt;
+  if (!isGenericContentType(contentType)) return contentType as string;
+  return 'application/octet-stream';
+}
+
+/**
  * Best-effort extension (no leading dot) for a content type. Falls back to any
  * usable extension already on `originalName`, then to a text-subtype guess, and
  * finally to `dat`. Never returns an empty string.

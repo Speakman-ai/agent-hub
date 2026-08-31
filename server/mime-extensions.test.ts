@@ -4,6 +4,9 @@ import {
   hasFileExtension,
   ensureFilenameExtension,
   truncateFilename,
+  contentTypeForFilename,
+  isGenericContentType,
+  reconcileContentType,
 } from './mime-extensions.js';
 
 describe('extensionForContentType', () => {
@@ -94,6 +97,77 @@ describe('ensureFilenameExtension', () => {
     expect(out.length).toBe(255);
     expect(out.endsWith('.gz')).toBe(true);
     expect(hasFileExtension(out)).toBe(true);
+  });
+});
+
+describe('contentTypeForFilename', () => {
+  it('maps a known extension to its canonical MIME type', () => {
+    expect(contentTypeForFilename('report.pdf')).toBe('application/pdf');
+    expect(contentTypeForFilename('photo.JPG')).toBe('image/jpeg');
+    expect(contentTypeForFilename('notes.md')).toBe('text/markdown');
+    expect(contentTypeForFilename('data.json')).toBe('application/json');
+  });
+
+  it('uses only the basename and is case-insensitive', () => {
+    expect(contentTypeForFilename('/tmp/some.dir/Quarterly Report.PDF')).toBe('application/pdf');
+  });
+
+  it('returns null for unknown or missing extensions', () => {
+    expect(contentTypeForFilename('archive.rar')).toBeNull();
+    expect(contentTypeForFilename('Quarterly Report')).toBeNull();
+    expect(contentTypeForFilename('.gitignore')).toBeNull();
+    expect(contentTypeForFilename('')).toBeNull();
+  });
+});
+
+describe('isGenericContentType', () => {
+  it('treats missing and octet-stream types as generic', () => {
+    expect(isGenericContentType('')).toBe(true);
+    expect(isGenericContentType(null)).toBe(true);
+    expect(isGenericContentType(undefined)).toBe(true);
+    expect(isGenericContentType('application/octet-stream')).toBe(true);
+    expect(isGenericContentType('binary/octet-stream')).toBe(true);
+    expect(isGenericContentType('APPLICATION/OCTET-STREAM; charset=binary')).toBe(true);
+  });
+
+  it('treats a specific type as non-generic', () => {
+    expect(isGenericContentType('application/pdf')).toBe(false);
+    expect(isGenericContentType('image/png')).toBe(false);
+  });
+});
+
+describe('reconcileContentType', () => {
+  it('recovers a real type from the filename when the declared type is generic', () => {
+    expect(reconcileContentType('application/octet-stream', 'report.pdf')).toBe('application/pdf');
+    expect(reconcileContentType('', 'slides.pdf')).toBe('application/pdf');
+    expect(reconcileContentType(null, 'image.png')).toBe('image/png');
+  });
+
+  it('lets a known extension override a mismatched declared type', () => {
+    // The ticket requires PDFs to ALWAYS carry the correct type, even when the
+    // uploader declared something else. The extension is authoritative.
+    expect(reconcileContentType('text/plain', 'report.pdf')).toBe('application/pdf');
+    expect(reconcileContentType('application/msword', 'contract.pdf')).toBe('application/pdf');
+    expect(reconcileContentType('image/png; charset=binary', 'x.pdf')).toBe('application/pdf');
+  });
+
+  it('keeps a matching declared type (drops redundant parameters)', () => {
+    expect(reconcileContentType('application/pdf', 'report.pdf')).toBe('application/pdf');
+    expect(reconcileContentType('image/png', 'logo.png')).toBe('image/png');
+  });
+
+  it('trusts an explicit non-generic declared type when the extension is unknown', () => {
+    expect(reconcileContentType('application/pdf', 'weird.name')).toBe('application/pdf');
+    expect(reconcileContentType('application/x-rar-compressed', 'blob.rar')).toBe(
+      'application/x-rar-compressed',
+    );
+  });
+
+  it('falls back to octet-stream when both the type and extension are unknown', () => {
+    expect(reconcileContentType('application/octet-stream', 'blob.rar')).toBe(
+      'application/octet-stream',
+    );
+    expect(reconcileContentType('', 'noext')).toBe('application/octet-stream');
   });
 });
 

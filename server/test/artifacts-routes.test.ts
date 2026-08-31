@@ -183,6 +183,93 @@ describe('POST /api/sessions/:id/artifacts', () => {
     expect(upload.body.filename).toBe('data.json');
   });
 
+  it('recovers application/pdf from the filename when uploaded as octet-stream', async () => {
+    // Regression: an uploader without `file(1)` (or a browser upload that omits
+    // the type) sends application/octet-stream for a PDF. The stored + served
+    // type must be recovered from the .pdf extension so the browser renders it
+    // inline instead of downloading an opaque blob.
+    const id = await newSessionId();
+    const upload = await request
+      .post(`/api/sessions/${id}/artifacts`)
+      .set('Content-Type', 'application/octet-stream')
+      .set('x-filename', 'invoice.pdf')
+      .send(Buffer.from('%PDF-1.4 fake pdf bytes'))
+      .expect(200);
+    expect(upload.body).toMatchObject({
+      filename: 'invoice.pdf',
+      contentType: 'application/pdf',
+    });
+
+    // The list view reports the reconciled type too.
+    const list = await request.get(`/api/sessions/${id}/artifacts`).expect(200);
+    expect(list.body.artifacts[0].contentType).toBe('application/pdf');
+
+    // The content route serves application/pdf, inline, with the nosniff guard.
+    const content = await request
+      .get(`/api/sessions/${id}/artifacts/${upload.body.id as string}/content`)
+      .expect(200);
+    expect(content.headers['content-type']).toContain('application/pdf');
+    expect(content.headers['content-disposition']).toContain('inline');
+    expect(content.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  it('overrides a mismatched non-generic declared type for a .pdf upload', async () => {
+    // Reviewer regression: a PDF declared as text/plain (or any non-generic
+    // type) must still be stored + served as application/pdf — the .pdf
+    // extension is authoritative so PDFs are ALWAYS typed correctly.
+    const id = await newSessionId();
+    const upload = await request
+      .post(`/api/sessions/${id}/artifacts`)
+      .set('Content-Type', 'text/plain')
+      .set('x-filename', 'statement.pdf')
+      .send(Buffer.from('%PDF-1.4 fake pdf bytes'))
+      .expect(200);
+    expect(upload.body).toMatchObject({
+      filename: 'statement.pdf',
+      contentType: 'application/pdf',
+    });
+    const content = await request
+      .get(`/api/sessions/${id}/artifacts/${upload.body.id as string}/content`)
+      .expect(200);
+    expect(content.headers['content-type']).toContain('application/pdf');
+    expect(content.headers['content-disposition']).toContain('inline');
+  });
+
+  it('leaves an octet-stream blob with an unknown extension as octet-stream', async () => {
+    const id = await newSessionId();
+    const upload = await request
+      .post(`/api/sessions/${id}/artifacts`)
+      .set('Content-Type', 'application/octet-stream')
+      .set('x-filename', 'data.bin')
+      .send(Buffer.from('\x00\x01\x02 not a known type'))
+      .expect(200);
+    expect(upload.body.contentType).toBe('application/octet-stream');
+    const content = await request
+      .get(`/api/sessions/${id}/artifacts/${upload.body.id as string}/content`)
+      .expect(200);
+    expect(content.headers['content-type']).toContain('application/octet-stream');
+  });
+
+  it('still neutralizes octet-stream bytes whose filename implies active HTML', async () => {
+    // Reconciling a generic type from the extension must not open an XSS hole:
+    // an octet-stream upload named evil.html becomes text/html, which the
+    // active-content guard then forces to a neutral attachment.
+    const id = await newSessionId();
+    const upload = await request
+      .post(`/api/sessions/${id}/artifacts`)
+      .set('Content-Type', 'application/octet-stream')
+      .set('x-filename', 'evil.html')
+      .send(Buffer.from('<script>alert(document.cookie)</script>'))
+      .expect(200);
+    const res = await request
+      .get(`/api/sessions/${id}/artifacts/${upload.body.id as string}/content`)
+      .expect(200);
+    expect(res.headers['content-disposition']).toContain('attachment');
+    expect(res.headers['content-type']).toContain('application/octet-stream');
+    expect(res.headers['content-type']).not.toContain('text/html');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+  });
+
   it('serves active content (HTML) as a neutralized attachment, never inline', async () => {
     const id = await newSessionId();
     const upload = await request

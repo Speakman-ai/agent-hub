@@ -35,8 +35,18 @@ export interface ArtifactStore {
    * Mint a short-lived URL a browser can GET directly (S3 only). Returns null
    * when the backend can't presign (local store) — callers then stream the
    * bytes through the Hub instead.
+   *
+   * `opts` overrides the response headers the object is served with, so a
+   * redirect can carry the reconciled content type / disposition instead of
+   * the object's stored (possibly stale/generic) metadata.
    */
-  presignGet(key: string): Promise<string | null>;
+  presignGet(key: string, opts?: PresignGetOptions): Promise<string | null>;
+}
+
+/** Response-header overrides applied when the presigned URL is fetched. */
+export interface PresignGetOptions {
+  responseContentType?: string;
+  responseContentDisposition?: string;
 }
 
 /**
@@ -94,7 +104,7 @@ export class LocalArtifactStore implements ArtifactStore {
     await rm(this.resolve(key), { force: true });
   }
 
-  async presignGet(_key: string): Promise<string | null> {
+  async presignGet(_key: string, _opts?: PresignGetOptions): Promise<string | null> {
     return null;
   }
 }

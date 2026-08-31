@@ -13,7 +13,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Readable } from 'stream';
-import type { ArtifactStore } from './artifact-store.js';
+import type { ArtifactStore, PresignGetOptions } from './artifact-store.js';
 
 export interface S3ArtifactStoreOptions {
   bucket: string;
@@ -66,9 +66,20 @@ export class S3ArtifactStore implements ArtifactStore {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 
-  async presignGet(key: string): Promise<string | null> {
-    return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), {
-      expiresIn: this.presignTtlSeconds,
-    });
+  async presignGet(key: string, opts?: PresignGetOptions): Promise<string | null> {
+    return getSignedUrl(
+      this.client,
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        // Override the stored (possibly stale/generic) metadata so the direct
+        // download carries the reconciled type/disposition — otherwise an
+        // older object stored as application/octet-stream would still serve as
+        // that generic type via the redirect.
+        ResponseContentType: opts?.responseContentType,
+        ResponseContentDisposition: opts?.responseContentDisposition,
+      }),
+      { expiresIn: this.presignTtlSeconds },
+    );
   }
 }

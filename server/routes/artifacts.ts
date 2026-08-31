@@ -16,7 +16,7 @@ import type { RouteDeps, ArtifactRow } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { userOwnsSession, getSessionOwner } from '../session-ownership.js';
 import { validateUploadContent } from '../upload-validation.js';
-import { ensureFilenameExtension } from '../mime-extensions.js';
+import { ensureFilenameExtension, reconcileContentType } from '../mime-extensions.js';
 import {
   getArtifactStore,
   getArtifactStoreForLocation,
@@ -74,7 +74,10 @@ function toArtifactView(row: ArtifactRow): ArtifactView {
     id: row.id,
     sessionId: row.session_id,
     filename: row.filename,
-    contentType: row.content_type,
+    // Report the reconciled type so the Artifacts panel's inline-view decision
+    // matches what the content route actually serves, even for older rows
+    // stored as a generic `application/octet-stream`.
+    contentType: reconcileContentType(row.content_type, row.filename),
     size: row.size,
     storageKind: row.storage_kind,
     createdBy: row.created_by,
@@ -183,7 +186,7 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
           .json({ error: `File too large. Max size: ${MAX_ARTIFACT_SIZE / 1024 / 1024}MB` });
       }
 
-      const contentType =
+      const declaredType =
         (req.headers['content-type'] as string | undefined) || 'application/octet-stream';
       // Guarantee every stored artifact carries an extension (derived from the
       // content type when the caller's name lacks one) so downloads open in the
@@ -192,9 +195,16 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
       // extension it just guaranteed.
       const filename = ensureFilenameExtension(
         decodeFilenameHeader((req.headers['x-filename'] as string | undefined) || 'artifact'),
-        contentType,
+        declaredType,
         255,
       );
+      // A generic `application/octet-stream` (uploaders without `file`, or a
+      // browser upload that omits the type) would make a PDF download as an
+      // opaque blob instead of rendering inline. Recover the real type from the
+      // filename extension so PDFs (and other known types) are always stored
+      // and served with the correct content type. An explicit non-generic type
+      // is trusted as-is.
+      const contentType = reconcileContentType(declaredType, filename);
       const createdBy = (req.headers['x-agent-id'] as string | undefined) || null;
       const presentation =
         req.headers['x-artifact-presentation'] === 'inline' ? ('inline' as const) : undefined;
@@ -269,30 +279,42 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
         throw err;
       }
 
+      // Reconcile a generic/missing stored type against the filename so an
+      // artifact stored as `application/octet-stream` (e.g. a PDF uploaded
+      // before the type was recovered at upload time) still serves with its
+      // real content type and renders inline. An explicit type is kept as-is.
+      // The active-content guard below runs on this reconciled type, so
+      // deriving e.g. `text/html` from a `.html` name still forces a download.
+      const effectiveType = reconcileContentType(row.content_type, row.filename);
+
       // Agent-controlled artifacts must never execute script in the app origin:
       // active content (HTML/SVG/XML/JS) is forced to download with a neutral
       // type, and `nosniff` stops the browser from re-interpreting bytes.
-      const active = isActiveContentType(row.content_type);
+      const active = isActiveContentType(effectiveType);
       res.setHeader('X-Content-Type-Options', 'nosniff');
+
+      const forceAttachment = active || req.query.download === '1';
+      const disposition = forceAttachment ? 'attachment' : 'inline';
+      const contentType = active ? 'application/octet-stream' : effectiveType;
 
       // S3 backend: hand the browser a presigned URL when asked, so large
       // downloads don't proxy through the Hub process. Skip for active content —
       // a direct-to-S3 URL renders inline with the stored type and can't carry
-      // our nosniff / attachment guards.
+      // our nosniff / attachment guards. Override the object's stored metadata
+      // with the reconciled type + disposition so a redirect corrects an older
+      // object stored as a generic `application/octet-stream` (e.g. a PDF)
+      // instead of serving it with that stale type.
       if (req.query.redirect === '1' && !active) {
         try {
-          const url = await store.presignGet(row.storage_key);
+          const url = await store.presignGet(row.storage_key, {
+            responseContentType: contentType,
+            responseContentDisposition: contentDisposition(disposition, row.filename),
+          });
           if (url) return res.redirect(302, url);
         } catch {
           // fall through to streaming below
         }
       }
-
-      const forceAttachment = active || req.query.download === '1';
-      const disposition = forceAttachment ? 'attachment' : 'inline';
-      const contentType = active
-        ? 'application/octet-stream'
-        : row.content_type || 'application/octet-stream';
       try {
         const buf = await store.getBuffer(row.storage_key);
         res.setHeader('Content-Type', contentType);
