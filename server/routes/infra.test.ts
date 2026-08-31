@@ -1230,7 +1230,12 @@ describe('infra spend routes (Cost Explorer)', () => {
       .put(`/api/projects/${projectId}/infra/spend/config`)
       .send({ enabled: true })
       .expect(200);
-    seedSpend(projectId, [{ day: '2026-08-01', service: 'Amazon EC2', amountUsd: 4 }]);
+    // Seed a day inside the rolling 30-day window relative to now, not a fixed
+    // calendar date — a hardcoded day silently ages out of the window and the
+    // cached total reads back as 0 (the failure this test is meant to catch is
+    // "cache discarded on toggle-off", not "seed fell outside the query range").
+    const today = new Date().toISOString().slice(0, 10);
+    seedSpend(projectId, [{ day: today, service: 'Amazon EC2', amountUsd: 4 }]);
 
     const off = await request
       .put(`/api/projects/${projectId}/infra/spend/config`)

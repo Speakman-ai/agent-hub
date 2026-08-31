@@ -1,1 +1,1 @@
-export function resolveTsxEsmPath(electronDir: string): string;
+export function resolveTsxApiPath(electronDir: string): string;
