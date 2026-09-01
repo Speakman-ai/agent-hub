@@ -11,6 +11,10 @@ const apiMocks = vi.hoisted(() => ({
   addSupportTicketComment: vi.fn(),
   hideSupportTicketComment: vi.fn(),
   getProjectBoard: vi.fn(),
+  getSupportTickets: vi.fn(),
+  getProjects: vi.fn(),
+  getAgents: vi.fn(),
+  startVotingScaffolder: vi.fn(),
 }));
 
 // AsyncStorage-backed voter key: resolve immediately with no stored token so
@@ -113,13 +117,21 @@ vi.mock('../context/SidebarContext', () => ({
 
 // AppContext is stubbed per-test via this mutable holder so a test can push a
 // live WS event through `lastSupportTicketEvent`.
-const appState: any = { lastSupportTicketEvent: null };
+const appState: any = {
+  lastSupportTicketEvent: null,
+  projects: [{ id: 'proj-1', name: 'Hub' }],
+  agents: [],
+  refreshSupportUnreadCount: vi.fn(),
+  setSupportUnreadCount: vi.fn(),
+  setActiveAgentId: vi.fn(),
+  setActiveSessionId: vi.fn(),
+};
 vi.mock('../context/AppContext', () => ({
   useApp: () => appState,
 }));
 
 import { Alert } from 'react-native';
-import { VotingTab, CommentThread } from './CustomerSupportScreen';
+import CustomerSupportScreen, { VotingTab, CommentThread } from './CustomerSupportScreen';
 
 function mount() {
   const container = document.createElement('div');
@@ -177,6 +189,9 @@ describe('CustomerSupportScreen — VotingTab', () => {
     appState.lastSupportTicketEvent = null;
     apiMocks.getVotingItems.mockResolvedValue([]);
     apiMocks.castVote.mockResolvedValue({ score: 1, upvotes: 1, downvotes: 0, myVote: 1 });
+    apiMocks.getSupportTickets.mockResolvedValue([]);
+    apiMocks.getProjects.mockResolvedValue([]);
+    apiMocks.getAgents.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -384,5 +399,197 @@ describe('CustomerSupportScreen — CommentThread', () => {
     expect(container.querySelector('[data-testid="comment-row-c1"]')).toBeFalsy();
 
     flushSync(() => root.unmount());
+  });
+});
+
+const SCAFFOLD_PROJECTS = [
+  { id: 'proj-1', name: 'Hub' },
+  { id: 'acme-app', name: 'Acme' },
+];
+const SCAFFOLD_AGENTS = [
+  { id: 'agent-hub', name: 'Hub Dev', projectId: 'proj-1', engine: 'claude-code' },
+  {
+    id: 'agent-reviewer',
+    name: 'Reviewer',
+    projectId: 'proj-1',
+    engine: 'claude-code',
+    role: 'reviewer',
+  },
+  { id: 'agent-acme', name: 'Acme Dev', projectId: 'acme-app', engine: 'cursor-agent' },
+];
+
+describe('CustomerSupportScreen — Set up voting in an app launcher', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    store.clear();
+    appState.lastSupportTicketEvent = null;
+    appState.projects = SCAFFOLD_PROJECTS;
+    appState.agents = SCAFFOLD_AGENTS;
+    apiMocks.getSupportTickets.mockResolvedValue([]);
+    apiMocks.getVotingItems.mockResolvedValue([]);
+    apiMocks.getProjects.mockResolvedValue(SCAFFOLD_PROJECTS);
+    apiMocks.getAgents.mockResolvedValue(SCAFFOLD_AGENTS);
+    apiMocks.startVotingScaffolder.mockResolvedValue({
+      sessionId: 'sess-vote-1',
+      agentId: 'agent-acme',
+    });
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  async function openLauncher(nav: { navigate: ReturnType<typeof vi.fn> } = { navigate: vi.fn() }) {
+    const { container, root } = mount();
+    flushSync(() =>
+      root.render(
+        <CustomerSupportScreen route={{ params: { projectId: 'proj-1' } }} navigation={nav} />,
+      ),
+    );
+    await flush();
+    click(container.querySelector('[data-testid="support-tab-voting"]'));
+    await flush();
+    click(container.querySelector('[data-testid="voting-setup-launcher"]'));
+    await flush();
+    return { container, root, nav };
+  }
+
+  it('renders the launcher on the Voting tab and hides it on Issues', async () => {
+    const { container, root } = mount();
+    flushSync(() =>
+      root.render(
+        <CustomerSupportScreen
+          route={{ params: { projectId: 'proj-1' } }}
+          navigation={{ navigate: vi.fn() }}
+        />,
+      ),
+    );
+    await flush();
+    expect(container.querySelector('[data-testid="voting-setup-launcher"]')).toBeNull();
+
+    click(container.querySelector('[data-testid="support-tab-voting"]'));
+    await flush();
+    const launcher = container.querySelector('[data-testid="voting-setup-launcher"]');
+    expect(launcher?.textContent).toContain('Set up voting in an app');
+
+    flushSync(() => root.unmount());
+  });
+
+  it('opens a modal with the styling explainer, defaults the project, and omits reviewers', async () => {
+    const { container, root } = await openLauncher();
+    expect(container.querySelector('[data-testid="voting-setup-modal"]')).toBeTruthy();
+    const explainer = container.querySelector(
+      '[data-testid="voting-setup-explainer"]',
+    )?.textContent;
+    expect(explainer).toMatch(/match its existing styling/i);
+    expect(explainer).toMatch(/where the voting page should live/i);
+
+    expect(
+      container
+        .querySelector('[data-testid="voting-setup-project-option-proj-1"]')
+        ?.getAttribute('data-selected'),
+    ).toBe('true');
+    expect(
+      container.querySelector('[data-testid="voting-setup-agent-option-agent-hub"]'),
+    ).toBeTruthy();
+    expect(
+      container.querySelector('[data-testid="voting-setup-agent-option-agent-reviewer"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain('Reviewer');
+
+    flushSync(() => root.unmount());
+  });
+
+  it('selecting a project+agent and confirming seeds a session and navigates to it', async () => {
+    const { container, root, nav } = await openLauncher();
+
+    click(container.querySelector('[data-testid="voting-setup-project-option-acme-app"]'));
+    await flush();
+    expect(
+      container
+        .querySelector('[data-testid="voting-setup-agent-option-agent-acme"]')
+        ?.getAttribute('data-selected'),
+    ).toBe('true');
+
+    typeInput(
+      container.querySelector('[data-testid="voting-setup-page-hint"]') as HTMLInputElement,
+      'Ideas',
+    );
+    click(container.querySelector('[data-testid="voting-setup-confirm"]'));
+    await flush();
+
+    expect(apiMocks.startVotingScaffolder).toHaveBeenCalledWith('acme-app', {
+      agentId: 'agent-acme',
+      pageNameHint: 'Ideas',
+    });
+    expect(appState.setActiveAgentId).toHaveBeenCalledWith('agent-acme');
+    expect(appState.setActiveSessionId).toHaveBeenCalledWith('sess-vote-1');
+    expect(nav.navigate).toHaveBeenCalledWith('Chat');
+    expect(container.querySelector('[data-testid="voting-setup-modal"]')).toBeNull();
+
+    flushSync(() => root.unmount());
+  });
+
+  it('surfaces an error and stays on the modal when spawn fails', async () => {
+    apiMocks.startVotingScaffolder.mockRejectedValueOnce(new Error('no agents'));
+    const { container, root, nav } = await openLauncher();
+
+    click(container.querySelector('[data-testid="voting-setup-confirm"]'));
+    await flush();
+
+    expect(container.querySelector('[data-testid="voting-setup-error"]')?.textContent).toContain(
+      'no agents',
+    );
+    expect(nav.navigate).not.toHaveBeenCalled();
+    expect(appState.setActiveSessionId).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="voting-setup-modal"]')).toBeTruthy();
+
+    flushSync(() => root.unmount());
+  });
+
+  it('disables cancel and close while setup is in flight', async () => {
+    const pending = deferred<any>();
+    apiMocks.startVotingScaffolder.mockReturnValueOnce(pending.promise);
+    const { container, root } = await openLauncher();
+
+    click(container.querySelector('[data-testid="voting-setup-confirm"]'));
+    await flush();
+
+    const cancel = container.querySelector(
+      '[data-testid="voting-setup-cancel"]',
+    ) as HTMLButtonElement;
+    const close = container.querySelector(
+      '[data-testid="voting-setup-close"]',
+    ) as HTMLButtonElement;
+    expect(cancel.disabled).toBe(true);
+    expect(close.disabled).toBe(true);
+
+    click(cancel);
+    click(close);
+    await flush();
+    expect(container.querySelector('[data-testid="voting-setup-modal"]')).toBeTruthy();
+    expect(appState.setActiveSessionId).not.toHaveBeenCalled();
+
+    pending.resolve({ sessionId: 'sess-vote-1', agentId: 'agent-hub' });
+    await flush();
+    flushSync(() => root.unmount());
+  });
+
+  it('does not navigate if the modal unmounts while setup is in flight', async () => {
+    const pending = deferred<any>();
+    apiMocks.startVotingScaffolder.mockReturnValueOnce(pending.promise);
+    const { container, root, nav } = await openLauncher();
+
+    click(container.querySelector('[data-testid="voting-setup-confirm"]'));
+    await flush();
+    expect(apiMocks.startVotingScaffolder).toHaveBeenCalled();
+
+    flushSync(() => root.unmount());
+    pending.resolve({ sessionId: 'sess-vote-1', agentId: 'agent-hub' });
+    await flush();
+
+    expect(nav.navigate).not.toHaveBeenCalled();
+    expect(appState.setActiveSessionId).not.toHaveBeenCalled();
+    expect(appState.setActiveAgentId).not.toHaveBeenCalled();
   });
 });

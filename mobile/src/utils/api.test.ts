@@ -887,6 +887,29 @@ describe('api support-ticket helpers — URL + method parity with web client', (
     expect(url).toBe('https://example.test/api/support-tickets?status=new');
   });
 });
+describe('api.startVotingScaffolder — voting setup wizard parity with web client', () => {
+  it('POSTs /projects/:projectId/voting/setup-wizard with agentId', async () => {
+    await api.startVotingScaffolder('acme-app', { agentId: 'agent-acme' });
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/acme-app/voting/setup-wizard');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ agentId: 'agent-acme' });
+  });
+  it('includes pageNameHint when provided and omits it when blank', async () => {
+    await api.startVotingScaffolder('acme-app', {
+      agentId: 'agent-acme',
+      pageNameHint: 'Ideas',
+    });
+    expect(JSON.parse(lastCall()[1].body)).toEqual({
+      agentId: 'agent-acme',
+      pageNameHint: 'Ideas',
+    });
+    mockFetch.mockClear();
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    await api.startVotingScaffolder('acme-app', { agentId: 'agent-acme', pageNameHint: '' });
+    expect(JSON.parse(lastCall()[1].body)).toEqual({ agentId: 'agent-acme' });
+  });
+});
 describe('api kanban pagination helpers — URL parity with web client', () => {
   it('getProjectBoard(projectId) without opts → GET /projects/:id/board', async () => {
     await api.getProjectBoard('agent-hub');

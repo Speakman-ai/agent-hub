@@ -1824,6 +1824,20 @@ export const api = {
   markAllSupportTicketsRead: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/support-tickets/read-all`, { method: 'POST' }),
 
+  /**
+   * Spawn a `[Voting Setup]` session in the target project's workspace, seeded
+   * with the voting integration task pack. `agentId` must belong to that project.
+   * Returns `{ sessionId, agentId, session }`.
+   */
+  startVotingScaffolder: (projectId: any, opts: { agentId: string; pageNameHint?: string }) =>
+    fetchJSON(`/projects/${projectId}/voting/setup-wizard`, {
+      method: 'POST',
+      body: JSON.stringify({
+        agentId: opts.agentId,
+        ...(opts.pageNameHint ? { pageNameHint: opts.pageNameHint } : {}),
+      }),
+    }),
+
   // Score-ranked voting feed — only `type=feature_request` tickets, sorted by
   // score desc, each carrying a `voting` tally { score, upvotes, downvotes,
   // myVote, comment_count }. Pass the per-device `voterKey` so `myVote` reflects

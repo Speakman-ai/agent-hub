@@ -32,6 +32,7 @@ import { SidebarContext } from '../context/SidebarContext';
 import { convertedCardLabel } from '@shared/utils/convertedCardLabel';
 import { computeOptimisticVote, sortVotingItems } from '@shared/utils/voting';
 import { getVoterKey } from '../utils/voterKey';
+import VotingScaffolderModal from './VotingScaffolderModal';
 const SEVERITY_COLOR: Record<string, any> = {
   critical: colors.red500,
   high: colors.rose400,
@@ -927,13 +928,15 @@ export function VotingTab({ projectId, onOpen, onOpenReplay, ticketHandlers = {}
   );
 }
 
-export default function CustomerSupportScreen({ route }: any) {
+export default function CustomerSupportScreen({ route, navigation }: any) {
   const {
     projects,
     agents,
     lastSupportTicketEvent,
     refreshSupportUnreadCount,
     setSupportUnreadCount,
+    setActiveAgentId,
+    setActiveSessionId,
   } = useApp();
   const { openSidebar } = useContext(SidebarContext);
   const projectId = route?.params?.projectId || projects?.[0]?.id;
@@ -942,6 +945,9 @@ export default function CustomerSupportScreen({ route }: any) {
   // Which surface is showing: the issue queue or the score-ranked Voting feed.
   // Both live under the Customer Support screen (spec `ui-placement`).
   const [activeTab, setActiveTab] = useState<'issues' | 'voting'>('issues');
+  // Voting-tab scaffolder: pick a target app + agent, spawn the seeded
+  // `[Voting Setup]` session, then jump into its chat.
+  const [launcherOpen, setLauncherOpen] = useState(false);
   // Default to the "Open" group; terminal tickets are retained but hidden.
   const [statusFilter, setStatusFilter] = useState('open');
   const [typeFilter, setTypeFilter] = useState('all');
@@ -1413,6 +1419,15 @@ export default function CustomerSupportScreen({ route }: any) {
             </Text>
           </TouchableOpacity>
         ))}
+        {activeTab === 'voting' ? (
+          <TouchableOpacity
+            testID="voting-setup-launcher"
+            onPress={() => setLauncherOpen(true)}
+            style={styles.votingSetupLauncher}
+          >
+            <Text style={styles.votingSetupLauncherText}>Set up voting in an app</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {activeTab === 'voting' ? (
@@ -1605,6 +1620,20 @@ export default function CustomerSupportScreen({ route }: any) {
           </View>
         </View>
       </Modal>
+      {launcherOpen ? (
+        <VotingScaffolderModal
+          currentProjectId={projectId}
+          onClose={() => setLauncherOpen(false)}
+          onOpened={(target) => {
+            setLauncherOpen(false);
+            if (target.agentId) setActiveAgentId(target.agentId);
+            setActiveSessionId(target.sessionId);
+            if (navigation && typeof navigation.navigate === 'function') {
+              navigation.navigate('Chat');
+            }
+          }}
+        />
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -1976,6 +2005,8 @@ const styles = StyleSheet.create({
   },
   tabRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
     gap: 6,
     paddingHorizontal: 12,
     paddingTop: 8,
@@ -1990,6 +2021,15 @@ const styles = StyleSheet.create({
   tabButtonActive: { backgroundColor: colors.gray700 },
   tabText: { fontSize: 12, color: colors.gray500 },
   tabTextActive: { color: colors.gray100, fontWeight: '700' },
+  votingSetupLauncher: {
+    marginLeft: 'auto',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+  },
+  votingSetupLauncherText: { fontSize: 11, color: colors.gray300, fontWeight: '600' },
   votingItem: {
     flexDirection: 'row',
     gap: 8,
