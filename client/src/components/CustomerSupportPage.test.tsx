@@ -20,6 +20,8 @@ import { api } from '../utils/api';
     markSupportTicketUnread: vi.fn().mockResolvedValue({}),
     markAllSupportTicketsRead: vi.fn().mockResolvedValue({ marked: 0, unreadCount: 0 }),
     getSupportUnreadCount: vi.fn().mockResolvedValue({ count: 0 }),
+    getVotingItems: vi.fn().mockResolvedValue([]),
+    castVote: vi.fn(),
   },
 }));
 
@@ -1292,5 +1294,232 @@ describe('CustomerSupportPage — read/unread', () => {
     await waitFor(() => expect(screen.getByText('Converted to card')).toBeInTheDocument());
     expect(screen.queryByTestId('converted-card-link')).toBeNull();
     expect(screen.queryByText(/card-gone/)).toBeNull();
+  });
+});
+
+function votingItem(overrides: any = {}) {
+  return {
+    id: overrides.id || 'f1',
+    project_id: 'proj-1',
+    type: 'feature_request',
+    severity: 'low',
+    status: 'new',
+    subject: overrides.subject || 'A feature',
+    body: 'Body',
+    created_at: overrides.created_at || '2026-06-14 10:00:00',
+    voting: { score: 0, upvotes: 0, downvotes: 0, myVote: null, comment_count: 0 },
+    ...overrides,
+  };
+}
+
+async function openVotingTab(props: any = {}) {
+  render(<CustomerSupportPage projectId="proj-1" {...props} />);
+  await waitFor(() => expect(screen.getByTestId('support-tab-voting')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('support-tab-voting'));
+  await waitFor(() => expect(api.getVotingItems).toHaveBeenCalled());
+}
+
+describe('CustomerSupportPage — Voting tab', () => {
+  beforeEach(() => localStorage.clear());
+
+  it('renders the voting list sorted by score (highest first)', async () => {
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({
+        id: 'low',
+        subject: 'Low score',
+        voting: { score: 1, upvotes: 1, downvotes: 0, myVote: null, comment_count: 0 },
+      }),
+      votingItem({
+        id: 'high',
+        subject: 'High score',
+        voting: { score: 9, upvotes: 9, downvotes: 0, myVote: null, comment_count: 2 },
+      }),
+    ]);
+    await openVotingTab();
+
+    await waitFor(() => expect(screen.getByText('High score')).toBeInTheDocument());
+    const items = screen.getAllByTestId('voting-item');
+    expect(items[0].getAttribute('data-ticket-id')).toBe('high');
+    expect(items[1].getAttribute('data-ticket-id')).toBe('low');
+  });
+
+  it('passes the per-browser voter token to the voting fetch', async () => {
+    (api.getVotingItems as any).mockResolvedValue([]);
+    await openVotingTab();
+    const [, voterKey] = (api.getVotingItems as any).mock.calls.at(-1);
+    expect(typeof voterKey).toBe('string');
+    expect(voterKey.length).toBeGreaterThan(0);
+    // The same token is persisted for reuse.
+    expect(localStorage.getItem('agent-hub-voter-key')).toBe(voterKey);
+  });
+
+  it('clicking up sends value=1 and increments the score; clicking again retracts', async () => {
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({
+        id: 'f1',
+        subject: 'Vote me',
+        voting: { score: 2, upvotes: 2, downvotes: 0, myVote: null, comment_count: 0 },
+      }),
+    ]);
+    (api.castVote as any)
+      .mockResolvedValueOnce({ score: 3, upvotes: 3, downvotes: 0, myVote: 1 })
+      .mockResolvedValueOnce({ score: 2, upvotes: 2, downvotes: 0, myVote: null });
+    await openVotingTab();
+    await waitFor(() => expect(screen.getByText('Vote me')).toBeInTheDocument());
+
+    // First click: value=1, optimistic score 2 → 3.
+    fireEvent.click(screen.getByTestId('vote-up-f1'));
+    await waitFor(() => expect(screen.getByTestId('vote-score-f1')).toHaveTextContent('3'));
+    expect((api.castVote as any).mock.calls[0][3]).toBe(1);
+    // Upvote arrow is highlighted for myVote=1 after the server reconcile.
+    await waitFor(() =>
+      expect(screen.getByTestId('vote-up-f1').getAttribute('aria-pressed')).toBe('true'),
+    );
+
+    // Second click on up: retract (value=null), score back to 2.
+    fireEvent.click(screen.getByTestId('vote-up-f1'));
+    await waitFor(() => expect(screen.getByTestId('vote-score-f1')).toHaveTextContent('2'));
+    expect((api.castVote as any).mock.calls[1][3]).toBeNull();
+    expect(screen.getByTestId('vote-up-f1').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('serializes rapid votes: only one PUT in flight, coalescing to the latest desired value', async () => {
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({
+        id: 'f1',
+        subject: 'Race me',
+        voting: { score: 2, upvotes: 2, downvotes: 0, myVote: null, comment_count: 0 },
+      }),
+    ]);
+    // Manually controlled castVote promises so we can hold requests open and
+    // observe that only ONE is ever in flight for the ticket at a time.
+    const calls: Array<{ value: any; resolve: (v: any) => void }> = [];
+    (api.castVote as any).mockImplementation(
+      (_p: any, _id: any, _vk: any, value: any) =>
+        new Promise((resolve: any) => calls.push({ value, resolve })),
+    );
+    await openVotingTab();
+    await waitFor(() => expect(screen.getByText('Race me')).toBeInTheDocument());
+
+    // Click up (desired=1), then immediately up again to retract (desired=null).
+    fireEvent.click(screen.getByTestId('vote-up-f1'));
+    await waitFor(() => expect(screen.getByTestId('vote-score-f1')).toHaveTextContent('3'));
+    fireEvent.click(screen.getByTestId('vote-up-f1'));
+    await waitFor(() => expect(screen.getByTestId('vote-score-f1')).toHaveTextContent('2'));
+
+    // Serialized: only the first request has been sent so far (value=1). The
+    // retract is NOT dispatched concurrently — it waits for the first to settle.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].value).toBe(1);
+
+    // First request settles. The worker now sends the coalesced latest desired
+    // value (retract, null) as a SECOND, ordered request.
+    await act(async () => {
+      calls[0].resolve({ score: 3, upvotes: 3, downvotes: 0, myVote: 1 });
+    });
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].value).toBeNull();
+
+    // The final request carries the last desired value, so the server ends
+    // retracted — matching the UI. No third request is ever sent.
+    await act(async () => {
+      calls[1].resolve({ score: 2, upvotes: 2, downvotes: 0, myVote: null });
+    });
+    expect(calls).toHaveLength(2);
+    expect(screen.getByTestId('vote-score-f1')).toHaveTextContent('2');
+    expect(screen.getByTestId('vote-up-f1').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('on a failed follow-up, reverts to the last succeeded vote — not the pre-vote snapshot', async () => {
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({
+        id: 'f1',
+        subject: 'Partial',
+        voting: { score: 2, upvotes: 2, downvotes: 0, myVote: null, comment_count: 0 },
+      }),
+    ]);
+    // Controlled castVote calls so we can succeed the upvote then fail the retract.
+    const calls: Array<{ value: any; resolve: (v: any) => void; reject: (e: any) => void }> = [];
+    (api.castVote as any).mockImplementation(
+      (_p: any, _id: any, _vk: any, value: any) =>
+        new Promise((resolve: any, reject: any) => calls.push({ value, resolve, reject })),
+    );
+    const onNotify = vi.fn();
+    await openVotingTab({ onNotify });
+    await waitFor(() => expect(screen.getByText('Partial')).toBeInTheDocument());
+
+    // Upvote (desired=1), then retract (desired=null) while the first is pending.
+    fireEvent.click(screen.getByTestId('vote-up-f1'));
+    await waitFor(() => expect(screen.getByTestId('vote-score-f1')).toHaveTextContent('3'));
+    fireEvent.click(screen.getByTestId('vote-up-f1'));
+    await waitFor(() => expect(screen.getByTestId('vote-score-f1')).toHaveTextContent('2'));
+    expect(calls).toHaveLength(1);
+
+    // The upvote SUCCEEDS server-side (server now records +1).
+    await act(async () => {
+      calls[0].resolve({ score: 3, upvotes: 3, downvotes: 0, myVote: 1 });
+    });
+    // The coalesced retract is dispatched next and FAILS.
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].value).toBeNull();
+    await act(async () => {
+      calls[1].reject(new Error('network down'));
+    });
+
+    // The retract never applied, so the server still records the upvote. The UI
+    // must reflect that (score 3, up highlighted) — NOT roll back to no-vote.
+    expect(onNotify).toHaveBeenCalled();
+    expect(screen.getByTestId('vote-score-f1')).toHaveTextContent('3');
+    expect(screen.getByTestId('vote-up-f1').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('highlights the arrow matching myVote from the initial fetch', async () => {
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({
+        id: 'f1',
+        voting: { score: -1, upvotes: 0, downvotes: 1, myVote: -1, comment_count: 0 },
+      }),
+    ]);
+    await openVotingTab();
+    await waitFor(() => expect(screen.getByTestId('voting-item')).toBeInTheDocument());
+    expect(screen.getByTestId('vote-down-f1').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('vote-up-f1').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('live-patches the score from a support_ticket_vote_updated WebSocket event without changing myVote', async () => {
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({
+        id: 'f1',
+        voting: { score: 4, upvotes: 5, downvotes: 1, myVote: 1, comment_count: 0 },
+      }),
+    ]);
+    await openVotingTab();
+    await waitFor(() => expect(screen.getByTestId('vote-score-f1')).toHaveTextContent('4'));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub-support-ticket-vote', {
+          detail: {
+            type: 'support_ticket_vote_updated',
+            ticketId: 'f1',
+            projectId: 'proj-1',
+            score: 7,
+            upvotes: 8,
+            downvotes: 1,
+          },
+        }),
+      );
+    });
+    await waitFor(() => expect(screen.getByTestId('vote-score-f1')).toHaveTextContent('7'));
+    // A peer's vote does not flip our own choice.
+    expect(screen.getByTestId('vote-up-f1').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('shows an empty state when there are no feature requests to vote on', async () => {
+    (api.getVotingItems as any).mockResolvedValue([]);
+    await openVotingTab();
+    await waitFor(() =>
+      expect(screen.getByText('No feature requests to vote on')).toBeInTheDocument(),
+    );
   });
 });

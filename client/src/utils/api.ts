@@ -2801,6 +2801,24 @@ export const api = {
   markAllSupportTicketsRead: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/support-tickets/read-all`, { method: 'POST' }),
 
+  // Score-ranked voting feed — only `type=feature_request` tickets, sorted by
+  // score desc, each carrying a `voting` tally { score, upvotes, downvotes,
+  // myVote, comment_count }. Pass the per-browser `voterKey` so `myVote`
+  // reflects this device's current vote; omit it and myVote is null.
+  getVotingItems: (projectId: any, voterKey?: any) => {
+    const qs = voterKey ? `?voterKey=${encodeURIComponent(String(voterKey))}` : '';
+    return fetchJSON(`/projects/${projectId}/support-tickets/voting${qs}`);
+  },
+  // Cast, change, or retract a vote on a feature-request ticket. `value` is 1
+  // (up), -1 (down), or null (retract). Returns the fresh aggregate { score,
+  // upvotes, downvotes, myVote } and emits a support_ticket_vote_updated
+  // WebSocket event so other clients reconcile without a refetch.
+  castVote: (projectId: any, id: any, voterKey: any, value: any) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/vote`, {
+      method: 'PUT',
+      body: JSON.stringify({ voterKey, value }),
+    }),
+
   // Cross-project support overview — every project's support tickets in one
   // severity-ordered list (critical → low). Returns { tickets, projects } where
   // each ticket carries a `project_name` and `projects` is the full set of

@@ -16,9 +16,13 @@ import {
   Mail,
   RefreshCw,
   Link2,
+  ThumbsUp,
+  ThumbsDown,
+  MessageCircle,
 } from 'lucide-react';
 import { convertedCardId, convertedCardLabel } from '@shared/utils/convertedCardLabel';
 import { api } from '../utils/api';
+import { getVoterKey, computeOptimisticVote } from '../utils/voting';
 import { getServerBase } from '../utils/connection';
 import ReplayPlayerModal from './ReplayPlayerModal';
 import { parseReplayIdFromRef } from '../utils/replayPlayer';
@@ -188,6 +192,18 @@ function sortTickets(list: any, mode: 'priority' | 'date' = 'priority') {
     }
     // Newest first (within a severity for priority mode; overall for date mode),
     // matching the server's created_at DESC.
+    return (b.created_at || '').localeCompare(a.created_at || '');
+  });
+}
+
+// Sort the voting feed: highest score first, ties broken by newest first —
+// matching the server's ORDER BY so a WebSocket-patched row lands in the right
+// place without a refetch.
+function sortVotingItems(list: any[]) {
+  return [...list].sort((a: any, b: any) => {
+    const sa = Number(a?.voting?.score) || 0;
+    const sb = Number(b?.voting?.score) || 0;
+    if (sa !== sb) return sb - sa;
     return (b.created_at || '').localeCompare(a.created_at || '');
   });
 }
@@ -1421,10 +1437,252 @@ function SupportTicketDetailModal({
   );
 }
 
+// A single votable item: score with up/down controls. The current voter's
+// choice (`myVote`) highlights the matching arrow. Votes are optimistic —
+// applied locally, then reconciled with the server aggregate (and the
+// support_ticket_vote_updated WebSocket echo for cross-client sync).
+function VotingItemCard({ item, onVote }: any) {
+  const voting = item.voting || { score: 0, upvotes: 0, downvotes: 0, myVote: null };
+  const myVote = voting.myVote;
+  const commentCount = Number(voting.comment_count) || 0;
+  return (
+    <div
+      data-testid="voting-item"
+      data-ticket-id={item.id}
+      className="flex items-start gap-3 rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-3"
+    >
+      {/* Vote control column */}
+      <div className="flex flex-col items-center gap-1 flex-shrink-0">
+        <button
+          type="button"
+          data-testid={`vote-up-${item.id}`}
+          aria-pressed={myVote === 1}
+          aria-label="Upvote"
+          onClick={() => onVote(item, 'up')}
+          className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${
+            myVote === 1
+              ? 'border-emerald-500/50 bg-emerald-500/20 text-emerald-300'
+              : 'border-gray-700 text-gray-500 hover:text-gray-200 hover:border-gray-600'
+          }`}
+        >
+          <ThumbsUp size={14} />
+        </button>
+        <span
+          data-testid={`vote-score-${item.id}`}
+          className="text-sm font-semibold tabular-nums text-gray-200"
+        >
+          {Number(voting.score) || 0}
+        </span>
+        <button
+          type="button"
+          data-testid={`vote-down-${item.id}`}
+          aria-pressed={myVote === -1}
+          aria-label="Downvote"
+          onClick={() => onVote(item, 'down')}
+          className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${
+            myVote === -1
+              ? 'border-rose-500/50 bg-rose-500/20 text-rose-300'
+              : 'border-gray-700 text-gray-500 hover:text-gray-200 hover:border-gray-600'
+          }`}
+        >
+          <ThumbsDown size={14} />
+        </button>
+      </div>
+
+      {/* Item body */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <Lightbulb size={13} className="flex-shrink-0 text-emerald-400" />
+          <h3 className="truncate text-sm font-medium text-gray-100">{item.subject}</h3>
+        </div>
+        {item.body?.trim() ? (
+          <p className="mt-1 line-clamp-2 text-xs text-gray-400 break-words">{item.body}</p>
+        ) : null}
+        <div className="mt-1.5 flex items-center gap-3 text-[11px] text-gray-600">
+          <span>Opened {relativeTime(item.created_at)}</span>
+          <span className="inline-flex items-center gap-1">
+            <MessageCircle size={11} />
+            {commentCount}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// The Voting tab: score-ranked feature requests with anonymous up/down votes.
+// Reads the page's project, mints a per-browser voter token, and reconciles
+// live from the support_ticket_vote_updated WebSocket event (dispatched by
+// App.tsx as an `agenthub-support-ticket-vote` window event).
+function VotingTab({ projectId, onNotify }: any) {
+  const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<any>(null);
+  const voterKey = useMemo(() => getVoterKey(), []);
+  // Per-ticket vote queue. Only ONE castVote PUT is ever in flight per ticket:
+  // rapid clicks update `desired` (the latest target value) and the in-flight
+  // worker resends it once the current request settles. Serializing on the
+  // client forces the server to process votes in click order — a client-side
+  // revision guard alone can't, because two concurrent PUTs can be applied
+  // server-side in reverse, and the WS aggregate can't repair voter-specific
+  // `myVote`. `base` snapshots the tally at the batch start for error revert.
+  const voteQueueRef = useRef<
+    Record<string, { desired: 1 | -1 | null; inFlight: boolean; base: any; lastGood: any }>
+  >({});
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api
+      .getVotingItems(projectId, voterKey)
+      .then((data: any) => {
+        if (!cancelled) setItems(sortVotingItems(Array.isArray(data) ? data : []));
+      })
+      .catch((err: any) => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, voterKey]);
+
+  // Patch a single item's tally in place, then re-sort so a score change bumps
+  // the row to its new rank without a refetch. `patch` overrides tally fields;
+  // untouched fields (e.g. myVote on a cross-client WS echo) are preserved.
+  const patchTally = (ticketId: any, patch: any) => {
+    setItems((prev: any) =>
+      sortVotingItems(
+        prev.map((it: any) =>
+          it.id === ticketId ? { ...it, voting: { ...it.voting, ...patch } } : it,
+        ),
+      ),
+    );
+  };
+
+  // Live cross-client reconcile: the WS event carries score/upvotes/downvotes
+  // but not this device's myVote (a peer's vote never changes ours), so we
+  // patch only the aggregate and keep the local myVote.
+  useEffect(() => {
+    const onWsVote = (e: any) => {
+      const d = e?.detail;
+      if (!d || d.projectId !== projectId || !d.ticketId) return;
+      patchTally(d.ticketId, {
+        score: Number(d.score) || 0,
+        upvotes: Number(d.upvotes) || 0,
+        downvotes: Number(d.downvotes) || 0,
+      });
+    };
+    window.addEventListener('agenthub-support-ticket-vote', onWsVote as any);
+    return () => window.removeEventListener('agenthub-support-ticket-vote', onWsVote as any);
+  }, [projectId]);
+
+  // Drain a ticket's vote queue: send the latest desired value, and if the user
+  // changed it while the request was in flight, send again — one request at a
+  // time. Reconcile with the authoritative aggregate only once the sent value
+  // matches the final desired value, so the UI settles to the true server state.
+  const flushVotes = async (ticketId: any) => {
+    const st = voteQueueRef.current[ticketId];
+    if (!st || st.inFlight) return;
+    st.inFlight = true;
+    try {
+      for (;;) {
+        const sentValue = st.desired;
+        const aggregate = await api.castVote(projectId, ticketId, voterKey, sentValue);
+        // This request WAS applied server-side, so its aggregate is the newest
+        // authoritative state — remember it even if we loop to send a newer
+        // value. On a later failure this is what we revert to, so a succeeded
+        // earlier vote in the batch is never rolled back to the pre-vote guess.
+        const applied = {
+          score: Number(aggregate?.score) || 0,
+          upvotes: Number(aggregate?.upvotes) || 0,
+          downvotes: Number(aggregate?.downvotes) || 0,
+          myVote: aggregate?.myVote === 1 || aggregate?.myVote === -1 ? aggregate.myVote : null,
+        };
+        st.lastGood = applied;
+        // The user moved on while this was in flight — send the newer value
+        // next (the server has already applied `sentValue`, so ordering holds).
+        if (st.desired !== sentValue) continue;
+        patchTally(ticketId, applied);
+        break;
+      }
+    } catch (err: any) {
+      // Trust the server on failure: revert to the last request that DID apply
+      // in this batch (authoritative), falling back to the pre-vote snapshot
+      // only when nothing succeeded (server never changed).
+      const revertTo = st.lastGood ?? st.base;
+      if (revertTo) patchTally(ticketId, revertTo);
+      onNotify?.(err?.message || 'Could not record your vote', 'error');
+    } finally {
+      st.inFlight = false;
+      st.base = null;
+      st.lastGood = null;
+    }
+  };
+
+  const handleVote = (item: any, direction: 'up' | 'down') => {
+    const { value, tally } = computeOptimisticVote(item.voting, direction);
+    const existing = voteQueueRef.current[item.id];
+    if (existing) {
+      existing.desired = value;
+    } else {
+      voteQueueRef.current[item.id] = {
+        desired: value,
+        inFlight: false,
+        base: null,
+        lastGood: null,
+      };
+    }
+    const st = voteQueueRef.current[item.id];
+    // Snapshot the pre-vote tally at the start of a fresh batch for error revert.
+    if (!st.inFlight && !st.base) st.base = { ...item.voting };
+    // Optimistic: apply the computed tally immediately, then drain the queue.
+    patchTally(item.id, tally);
+    void flushVotes(item.id);
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto" data-testid="voting-tab-body">
+      {loading ? (
+        <div className="flex h-full items-center justify-center text-gray-500">
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-600 border-t-gray-300" />
+        </div>
+      ) : error ? (
+        <div className="flex h-full items-center justify-center text-gray-500">
+          <div className="text-center">
+            <AlertCircle size={32} className="mx-auto mb-2 text-red-400" />
+            <p className="text-sm text-red-400">{error}</p>
+          </div>
+        </div>
+      ) : items.length === 0 ? (
+        <div className="flex h-full flex-col items-center justify-center py-20 text-gray-600">
+          <Lightbulb size={36} className="mb-3 text-gray-700" />
+          <p className="text-sm">No feature requests to vote on</p>
+          <p className="mt-1 text-xs text-gray-700">
+            Feature requests appear here, most upvoted first.
+          </p>
+        </div>
+      ) : (
+        <div className="mx-auto max-w-5xl space-y-2 p-3">
+          {items.map((item: any) => (
+            <VotingItemCard key={item.id} item={item} onVote={handleVote} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CustomerSupportPageInner(
   { projectId, agents = [], onNotify, initialTicketId, onOpenCard }: any,
   ref: any,
 ) {
+  // Which surface is showing: the issue queue or the score-ranked Voting feed.
+  // Both live under the Customer Support page (spec `ui-placement`).
+  const [activeTab, setActiveTab] = useState<'issues' | 'voting'>('issues');
   const [tickets, setTickets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
@@ -1599,7 +1857,33 @@ function CustomerSupportPageInner(
       <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-800 bg-gray-900/50">
         <LifeBuoy size={16} className="text-blue-400" />
         <h2 className="text-sm font-medium text-gray-200">Customer Support</h2>
-        <div className="flex items-center gap-1 ml-auto flex-wrap justify-end">
+        {/* Issues | Voting tab switcher */}
+        <div className="flex items-center gap-0.5 rounded-md border border-gray-800 bg-gray-900/60 p-0.5">
+          {[
+            { key: 'issues', label: 'Issues' },
+            { key: 'voting', label: 'Voting' },
+          ].map((t: any) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setActiveTab(t.key)}
+              data-testid={`support-tab-${t.key}`}
+              aria-pressed={activeTab === t.key}
+              className={`text-[11px] px-2.5 py-1 rounded transition-colors ${
+                activeTab === t.key
+                  ? 'bg-gray-700 text-gray-200'
+                  : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div
+          className={`flex items-center gap-1 ml-auto flex-wrap justify-end ${
+            activeTab === 'voting' ? 'hidden' : ''
+          }`}
+        >
           {hasUnread ? (
             <button
               onClick={handleMarkAllRead}
@@ -1628,98 +1912,104 @@ function CustomerSupportPageInner(
         </div>
       </div>
 
-      {/* Type filter + sort toggle */}
-      <div className="flex items-center gap-1 px-4 py-2 border-b border-gray-800 bg-gray-900/30 flex-wrap">
-        <span className="text-[11px] text-gray-600 mr-1">Type</span>
-        {TYPE_FILTERS.map((f: any) => (
-          <button
-            key={f.key}
-            onClick={() => setTypeFilter(f.key)}
-            data-testid={`type-filter-${f.key}`}
-            className={`text-[11px] px-2 py-1 rounded transition-colors ${
-              typeFilter === f.key
-                ? 'bg-gray-700 text-gray-200'
-                : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
-        <div className="flex items-center gap-1 ml-auto">
-          <span className="text-[11px] text-gray-600 mr-1">Sort</span>
-          {SORT_MODES.map((s: any) => (
-            <button
-              key={s.key}
-              onClick={() => setSortMode(s.key)}
-              data-testid={`sort-mode-${s.key}`}
-              title={s.title}
-              className={`text-[11px] px-2 py-1 rounded transition-colors ${
-                sortMode === s.key
-                  ? 'bg-gray-700 text-gray-200'
-                  : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
-              }`}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Body */}
-      <div ref={screenshotScrollRef} className="flex-1 overflow-y-auto">
-        {loading ? (
-          <div className="flex items-center justify-center h-full text-gray-500">
-            <div className="animate-spin w-5 h-5 border-2 border-gray-600 border-t-gray-300 rounded-full" />
-          </div>
-        ) : error ? (
-          <div className="flex items-center justify-center h-full text-gray-500">
-            <div className="text-center">
-              <AlertCircle size={32} className="mx-auto mb-2 text-red-400" />
-              <p className="text-sm text-red-400">{error}</p>
+      {activeTab === 'voting' ? (
+        <VotingTab projectId={projectId} onNotify={onNotify} />
+      ) : (
+        <>
+          {/* Type filter + sort toggle */}
+          <div className="flex items-center gap-1 px-4 py-2 border-b border-gray-800 bg-gray-900/30 flex-wrap">
+            <span className="text-[11px] text-gray-600 mr-1">Type</span>
+            {TYPE_FILTERS.map((f: any) => (
+              <button
+                key={f.key}
+                onClick={() => setTypeFilter(f.key)}
+                data-testid={`type-filter-${f.key}`}
+                className={`text-[11px] px-2 py-1 rounded transition-colors ${
+                  typeFilter === f.key
+                    ? 'bg-gray-700 text-gray-200'
+                    : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+            <div className="flex items-center gap-1 ml-auto">
+              <span className="text-[11px] text-gray-600 mr-1">Sort</span>
+              {SORT_MODES.map((s: any) => (
+                <button
+                  key={s.key}
+                  onClick={() => setSortMode(s.key)}
+                  data-testid={`sort-mode-${s.key}`}
+                  title={s.title}
+                  className={`text-[11px] px-2 py-1 rounded transition-colors ${
+                    sortMode === s.key
+                      ? 'bg-gray-700 text-gray-200'
+                      : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
             </div>
           </div>
-        ) : tickets.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">
-            <LifeBuoy size={36} className="mb-3 text-gray-700" />
-            <p className="text-sm">No support requests</p>
-            <p className="text-xs text-gray-700 mt-1">
-              Incoming requests appear here, most urgent first.
-            </p>
-          </div>
-        ) : (
-          <div className="p-3 space-y-2 max-w-5xl mx-auto">
-            {sortedTickets.map((ticket: any) => (
-              <SupportTicketCard
-                key={ticket.id}
-                ticket={ticket}
-                projectId={projectId}
-                agents={agents}
-                screenshotRoot={screenshotScrollRef}
-                onOpen={handleOpenTicket}
-                onDeleted={removeTicket}
-                onConverted={removeTicket}
-                onUpdated={upsertTicket}
-                onNotify={onNotify}
-                onOpenCard={onOpenCard}
-              />
-            ))}
-          </div>
-        )}
-      </div>
 
-      {openTicket ? (
-        <SupportTicketDetailModal
-          ticket={openTicket}
-          projectId={projectId}
-          agents={agents}
-          onClose={() => setOpenTicket(null)}
-          onDeleted={removeTicket}
-          onConverted={removeTicket}
-          onUpdated={upsertTicket}
-          onNotify={onNotify}
-          onOpenCard={onOpenCard}
-        />
-      ) : null}
+          {/* Body */}
+          <div ref={screenshotScrollRef} className="flex-1 overflow-y-auto">
+            {loading ? (
+              <div className="flex items-center justify-center h-full text-gray-500">
+                <div className="animate-spin w-5 h-5 border-2 border-gray-600 border-t-gray-300 rounded-full" />
+              </div>
+            ) : error ? (
+              <div className="flex items-center justify-center h-full text-gray-500">
+                <div className="text-center">
+                  <AlertCircle size={32} className="mx-auto mb-2 text-red-400" />
+                  <p className="text-sm text-red-400">{error}</p>
+                </div>
+              </div>
+            ) : tickets.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full text-gray-600 py-20">
+                <LifeBuoy size={36} className="mb-3 text-gray-700" />
+                <p className="text-sm">No support requests</p>
+                <p className="text-xs text-gray-700 mt-1">
+                  Incoming requests appear here, most urgent first.
+                </p>
+              </div>
+            ) : (
+              <div className="p-3 space-y-2 max-w-5xl mx-auto">
+                {sortedTickets.map((ticket: any) => (
+                  <SupportTicketCard
+                    key={ticket.id}
+                    ticket={ticket}
+                    projectId={projectId}
+                    agents={agents}
+                    screenshotRoot={screenshotScrollRef}
+                    onOpen={handleOpenTicket}
+                    onDeleted={removeTicket}
+                    onConverted={removeTicket}
+                    onUpdated={upsertTicket}
+                    onNotify={onNotify}
+                    onOpenCard={onOpenCard}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {openTicket ? (
+            <SupportTicketDetailModal
+              ticket={openTicket}
+              projectId={projectId}
+              agents={agents}
+              onClose={() => setOpenTicket(null)}
+              onDeleted={removeTicket}
+              onConverted={removeTicket}
+              onUpdated={upsertTicket}
+              onNotify={onNotify}
+              onOpenCard={onOpenCard}
+            />
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
