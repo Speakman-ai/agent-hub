@@ -41,6 +41,22 @@ describe('diagnosePreviewBootFailure', () => {
     expect(diag?.hint).toMatch(/docker network ls/i);
   });
 
+  it('flags a hardcoded-host-port conflict from a real compose-up failure tail', () => {
+    // Reported failure: a compose service publishes a fixed host port (4100)
+    // that a leftover container still holds. The daemon error is the last line
+    // and reads like a session clash even though only one session is active.
+    const tail = [
+      'Container session-27c12ea3-frontend-1 Starting',
+      'Error response from daemon: driver failed programming external connectivity on endpoint ' +
+        'session-27c12ea3-frontend-1 (d1c07d29555ed6a2ede05f1a55418bc4fcdd47a5934b8ea51b22cb848c0bb4b6): ' +
+        'Bind for 0.0.0.0:4100 failed: port is already allocated',
+    ];
+    const diag = diagnosePreviewBootFailure(tail);
+    expect(diag?.code).toBe('docker_host_port_conflict');
+    expect(diag?.hint).toMatch(/docker ps/i);
+    expect(diag?.hint).toMatch(/AGENT_HUB_HOST_PORT/);
+  });
+
   it('flags out-of-disk failures', () => {
     const tail = [
       'Step 9/22 : RUN pip install --no-cache-dir -r requirements-docker.txt',

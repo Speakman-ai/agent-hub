@@ -52,6 +52,25 @@ function signatureMatchesLine(sig: BootFailureSignature, line: string): boolean 
 // they have inspected what exists.
 const SIGNATURES: readonly BootFailureSignature[] = [
   {
+    // Docker daemon, on `compose up` / `docker run -p` when a service publishes
+    // a FIXED host port another process already holds:
+    //   "Error response from daemon: driver failed programming external
+    //    connectivity on endpoint session-<id>-frontend-1 (<hash>): Bind for
+    //    0.0.0.0:4100 failed: port is already allocated"
+    // The confusing part for users is that it reads like a Hub session clash
+    // ("this is the only active session…"), but the collision is on the HOST:
+    // the compose file hardcodes the host side of a `ports:` mapping, so a
+    // leftover container from a previous boot still owns that number.
+    code: 'docker_host_port_conflict',
+    test: /port is already allocated/i,
+    hint:
+      'A preview service publishes a fixed host port that something on the host already holds ' +
+      '(usually a leftover container from a previous boot, not another Hub session). ' +
+      'Find what owns it with `docker ps` and stop that container, then retry. ' +
+      'To stop it recurring, bind the host side of the compose `ports:` mapping to `${AGENT_HUB_HOST_PORT}` ' +
+      'instead of a hardcoded number so each session gets a unique host port.',
+  },
+  {
     code: 'docker_network_pool_exhausted',
     // Docker daemon, on `compose up` / `network create` when every subnet in
     // the daemon's default-address-pools is already assigned to a network:
