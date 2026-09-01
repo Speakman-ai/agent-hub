@@ -30,6 +30,8 @@ import {
 } from '../utils/supportTickets';
 import { SidebarContext } from '../context/SidebarContext';
 import { convertedCardLabel } from '@shared/utils/convertedCardLabel';
+import { computeOptimisticVote, sortVotingItems } from '@shared/utils/voting';
+import { getVoterKey } from '../utils/voterKey';
 const SEVERITY_COLOR: Record<string, any> = {
   critical: colors.red500,
   high: colors.rose400,
@@ -495,6 +497,436 @@ function TicketInvestigationControl({ projectId, ticket, agents, onUpdated }: an
   );
 }
 
+// Anonymous comment thread for a support ticket (spec `comment-thread`), mobile
+// parity with the web CommentThread. Lists non-hidden comments oldest-first,
+// appends with an optional free-text display name, and — since the mobile app is
+// the Hub-operator surface — lets an operator hide (soft-delete) any comment.
+// Live-reconciles from the support_ticket_comment_created/_deleted events
+// surfaced on AppContext's lastSupportTicketEvent.
+export function CommentThread({ projectId, ticketId }: any) {
+  const { lastSupportTicketEvent } = useApp();
+  const [comments, setComments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<any>(null);
+  const [body, setBody] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [hidingId, setHidingId] = useState<any>(null);
+  // WS events that arrive WHILE the initial GET is in flight would be clobbered
+  // by the fetched snapshot (a stale list that predates them). Buffer them until
+  // the fetch resolves, then replay against the fetched rows so a mid-request
+  // create/delete survives. `loaded` flips true once the GET settles; after that
+  // events apply straight to state.
+  const pendingEventsRef = useRef<any[]>([]);
+  const loadedRef = useRef(false);
+
+  // Insert without duplicating: the POST/optimistic add and the WS echo can both
+  // deliver the same row, so key on id.
+  const mergeComment = (incoming: any) => {
+    if (!incoming?.id) return;
+    setComments((prev: any) =>
+      prev.some((c: any) => c.id === incoming.id) ? prev : [...prev, incoming],
+    );
+  };
+
+  // Apply one buffered/live event to a comment list, returning the next list.
+  const applyCommentEvent = (list: any[], ev: any): any[] => {
+    if (ev.type === 'support_ticket_comment_created' && ev.comment?.id) {
+      return list.some((c: any) => c.id === ev.comment.id) ? list : [...list, ev.comment];
+    }
+    if (ev.type === 'support_ticket_comment_deleted' && ev.commentId) {
+      return list.filter((c: any) => c.id !== ev.commentId);
+    }
+    return list;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    loadedRef.current = false;
+    pendingEventsRef.current = [];
+    setLoading(true);
+    setError(null);
+    api
+      .getSupportTicketComments(projectId, ticketId)
+      .then((data: any) => {
+        if (cancelled) return;
+        const base = Array.isArray(data) ? data.slice() : [];
+        const reconciled = pendingEventsRef.current.reduce(applyCommentEvent, base);
+        setComments(reconciled);
+      })
+      .catch((err: any) => {
+        if (!cancelled) setError(err.message || 'Failed to load comments');
+      })
+      .finally(() => {
+        if (cancelled) return;
+        loadedRef.current = true;
+        pendingEventsRef.current = [];
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, ticketId]);
+
+  // React to the latest comment WS event for this ticket.
+  useEffect(() => {
+    const d = lastSupportTicketEvent;
+    if (!d || d.projectId !== projectId || d.ticketId !== ticketId) return;
+    if (d.type !== 'support_ticket_comment_created' && d.type !== 'support_ticket_comment_deleted')
+      return;
+    // Still loading: buffer the event; the GET's reconcile step replays it.
+    if (!loadedRef.current) {
+      pendingEventsRef.current.push(d);
+      return;
+    }
+    if (d.type === 'support_ticket_comment_created') {
+      mergeComment(d.comment);
+    } else if (d.type === 'support_ticket_comment_deleted' && d.commentId) {
+      setComments((prev: any) => prev.filter((c: any) => c.id !== d.commentId));
+    }
+  }, [lastSupportTicketEvent, projectId, ticketId]);
+
+  const submit = async () => {
+    const trimmed = body.trim();
+    if (!trimmed || submitting) return;
+    setSubmitting(true);
+    try {
+      const created = await api.addSupportTicketComment(projectId, ticketId, {
+        body: trimmed,
+        displayName: displayName.trim() || undefined,
+      });
+      mergeComment(created);
+      setBody('');
+    } catch (err: any) {
+      Alert.alert('Could not add comment', err?.message || 'Failed to add comment');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const hide = async (commentId: any) => {
+    if (hidingId) return;
+    setHidingId(commentId);
+    try {
+      await api.hideSupportTicketComment(projectId, ticketId, commentId);
+      setComments((prev: any) => prev.filter((c: any) => c.id !== commentId));
+    } catch (err: any) {
+      Alert.alert('Could not remove comment', err?.message || 'Failed to remove comment');
+    } finally {
+      setHidingId(null);
+    }
+  };
+
+  return (
+    <View style={styles.commentSection} testID="comment-thread">
+      <Text style={styles.commentSectionTitle}>
+        Comments{comments.length > 0 ? ` (${comments.length})` : ''}
+      </Text>
+      {loading ? (
+        <Text style={styles.commentEmpty}>Loading comments…</Text>
+      ) : error ? (
+        <Text style={styles.convertErrorText}>{error}</Text>
+      ) : comments.length === 0 ? (
+        <Text style={styles.commentEmpty}>No comments yet.</Text>
+      ) : (
+        <View style={styles.commentList}>
+          {comments.map((c: any) => (
+            <View key={c.id} testID={`comment-row-${c.id}`} style={styles.commentRow}>
+              <View style={styles.commentRowMain}>
+                <Text style={styles.commentMeta}>
+                  {c.display_name?.trim() || 'Anonymous'} · {relativeTime(c.created_at)}
+                </Text>
+                <Text style={styles.commentBody}>{c.body}</Text>
+              </View>
+              <TouchableOpacity
+                testID={`comment-hide-${c.id}`}
+                onPress={() => hide(c.id)}
+                disabled={hidingId === c.id}
+                style={styles.commentHideButton}
+              >
+                <Text style={styles.commentHideText}>{hidingId === c.id ? '…' : 'Hide'}</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      )}
+      <TextInput
+        style={styles.commentNameInput}
+        value={displayName}
+        onChangeText={setDisplayName}
+        placeholder="Name (optional)"
+        placeholderTextColor={colors.gray600}
+        editable={!submitting}
+        maxLength={80}
+        testID="comment-display-name"
+      />
+      <TextInput
+        style={styles.commentBodyInput}
+        value={body}
+        onChangeText={setBody}
+        placeholder="Add a comment…"
+        placeholderTextColor={colors.gray600}
+        editable={!submitting}
+        multiline
+        maxLength={4000}
+        testID="comment-body"
+      />
+      <TouchableOpacity
+        testID="comment-submit"
+        onPress={submit}
+        disabled={submitting || !body.trim()}
+        style={[
+          styles.commentSubmitButton,
+          (submitting || !body.trim()) && styles.convertButtonDisabled,
+        ]}
+      >
+        <Text style={styles.commentSubmitText}>{submitting ? 'Posting…' : 'Comment'}</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+// A single votable item: an up/score/down vote column beside the reused
+// TicketCard, which carries the existing convert / auto-merge / link / delete /
+// status action row unchanged. `myVote` highlights the matching arrow. Votes are
+// optimistic — applied locally, then reconciled with the server aggregate (and
+// the support_ticket_vote_updated WebSocket echo for cross-client sync).
+export function VotingItemCard({ item, projectId, onVote, ticketHandlers = {} }: any) {
+  const voting = item.voting || { score: 0, upvotes: 0, downvotes: 0, myVote: null };
+  const myVote = voting.myVote;
+  return (
+    <View testID="voting-item" style={styles.votingItem}>
+      <View style={styles.voteColumn}>
+        <TouchableOpacity
+          testID={`vote-up-${item.id}`}
+          accessibilityState={{ selected: myVote === 1 }}
+          onPress={() => onVote(item, 'up')}
+          style={[styles.voteButton, myVote === 1 && styles.voteButtonUpActive]}
+        >
+          <Text style={[styles.voteArrow, myVote === 1 && styles.voteArrowUpActive]}>▲</Text>
+        </TouchableOpacity>
+        <Text testID={`vote-score-${item.id}`} style={styles.voteScore}>
+          {Number(voting.score) || 0}
+        </Text>
+        <TouchableOpacity
+          testID={`vote-down-${item.id}`}
+          accessibilityState={{ selected: myVote === -1 }}
+          onPress={() => onVote(item, 'down')}
+          style={[styles.voteButton, myVote === -1 && styles.voteButtonDownActive]}
+        >
+          <Text style={[styles.voteArrow, myVote === -1 && styles.voteArrowDownActive]}>▼</Text>
+        </TouchableOpacity>
+      </View>
+      <View style={styles.votingItemBody}>
+        <TicketCard item={item} projectId={projectId} {...ticketHandlers} />
+      </View>
+    </View>
+  );
+}
+
+// The Voting tab: score-ranked feature requests with anonymous up/down votes.
+// Mints a per-device voter token, reconciles live from the
+// support_ticket_vote_updated event on AppContext's lastSupportTicketEvent, and
+// opens the shared ticket detail (comment thread + operator actions) on tap.
+export function VotingTab({ projectId, onOpen, onOpenReplay, ticketHandlers = {} }: any) {
+  const { lastSupportTicketEvent } = useApp();
+  const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<any>(null);
+  const [voterKey, setVoterKey] = useState<string | null>(null);
+  // Per-ticket vote queue: only ONE castVote PUT is in flight per ticket. Rapid
+  // presses update `desired`; the in-flight worker resends once the current
+  // request settles, so the server processes votes in press order. `base`
+  // snapshots the tally at batch start for error revert; `lastGood` holds the
+  // newest authoritative aggregate that actually applied.
+  const voteQueueRef = useRef<
+    Record<string, { desired: 1 | -1 | null; inFlight: boolean; base: any; lastGood: any }>
+  >({});
+
+  useEffect(() => {
+    let cancelled = false;
+    getVoterKey()
+      .then((key) => {
+        if (!cancelled) setVoterKey(key);
+      })
+      .catch(() => {
+        if (!cancelled) setVoterKey('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (voterKey === null) return; // wait for the voter token to resolve
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api
+      .getVotingItems(projectId, voterKey || undefined)
+      .then((data: any) => {
+        if (!cancelled) setItems(sortVotingItems(Array.isArray(data) ? data : []));
+      })
+      .catch((err: any) => {
+        if (!cancelled) setError(err.message || 'Failed to load feature requests');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, voterKey]);
+
+  // Patch a single item's tally in place, then re-sort so a score change bumps
+  // the row to its new rank without a refetch.
+  const patchTally = (ticketId: any, patch: any) => {
+    setItems((prev: any) =>
+      sortVotingItems(
+        prev.map((it: any) =>
+          it.id === ticketId ? { ...it, voting: { ...it.voting, ...patch } } : it,
+        ),
+      ),
+    );
+  };
+
+  // Live reconcile from the latest WS event: vote aggregate (keep our myVote),
+  // ticket delete/convert removal.
+  useEffect(() => {
+    const d = lastSupportTicketEvent;
+    if (!d || d.projectId !== projectId) return;
+    if (d.type === 'support_ticket_vote_updated' && d.ticketId) {
+      patchTally(d.ticketId, {
+        score: Number(d.score) || 0,
+        upvotes: Number(d.upvotes) || 0,
+        downvotes: Number(d.downvotes) || 0,
+      });
+    } else if (d.type === 'support_ticket_deleted' && d.ticketId) {
+      setItems((prev: any) => prev.filter((it: any) => it.id !== d.ticketId));
+    }
+  }, [lastSupportTicketEvent, projectId]);
+
+  const flushVotes = async (ticketId: any) => {
+    const st = voteQueueRef.current[ticketId];
+    if (!st || st.inFlight) return;
+    st.inFlight = true;
+    try {
+      for (;;) {
+        const sentValue = st.desired;
+        try {
+          const aggregate = await api.castVote(
+            projectId,
+            ticketId,
+            voterKey || undefined,
+            sentValue,
+          );
+          const applied = {
+            score: Number(aggregate?.score) || 0,
+            upvotes: Number(aggregate?.upvotes) || 0,
+            downvotes: Number(aggregate?.downvotes) || 0,
+            myVote: aggregate?.myVote === 1 || aggregate?.myVote === -1 ? aggregate.myVote : null,
+          };
+          st.lastGood = applied;
+          // The user moved on while this was in flight — send the newer value
+          // next (the server has already applied `sentValue`, so ordering holds).
+          if (st.desired !== sentValue) continue;
+          patchTally(ticketId, applied);
+          break;
+        } catch (err: any) {
+          // The user changed their vote while this request was in flight: the
+          // newer press supersedes this failure, so retry with the latest
+          // desired value instead of reverting — otherwise the later action is
+          // silently dropped.
+          if (st.desired !== sentValue) continue;
+          // Nothing newer is pending — trust the server and revert to the last
+          // request that DID apply in this batch (authoritative), falling back
+          // to the pre-vote snapshot only when nothing succeeded.
+          const revertTo = st.lastGood ?? st.base;
+          if (revertTo) patchTally(ticketId, revertTo);
+          Alert.alert('Could not record your vote', err?.message || 'Failed to record vote');
+          break;
+        }
+      }
+    } finally {
+      st.inFlight = false;
+      st.base = null;
+      st.lastGood = null;
+    }
+  };
+
+  const handleVote = (item: any, direction: 'up' | 'down') => {
+    const { value, tally } = computeOptimisticVote(item.voting, direction);
+    const existing = voteQueueRef.current[item.id];
+    if (existing) {
+      existing.desired = value;
+    } else {
+      voteQueueRef.current[item.id] = {
+        desired: value,
+        inFlight: false,
+        base: null,
+        lastGood: null,
+      };
+    }
+    const st = voteQueueRef.current[item.id];
+    if (!st.inFlight && !st.base) st.base = { ...item.voting };
+    patchTally(item.id, tally);
+    void flushVotes(item.id);
+  };
+
+  const removeItem = (ticketId: any) => {
+    setItems((prev: any) => prev.filter((it: any) => it.id !== ticketId));
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.centerState}>
+        <ActivityIndicator size="small" color={colors.gray400} />
+      </View>
+    );
+  }
+  if (error) {
+    return (
+      <View style={styles.centerState}>
+        <Text style={styles.errorText}>{error}</Text>
+      </View>
+    );
+  }
+  if (items.length === 0) {
+    return (
+      <View style={styles.centerState}>
+        <Text style={styles.emptyTitle}>No feature requests to vote on</Text>
+        <Text style={styles.emptyDesc}>Feature requests appear here, most upvoted first.</Text>
+      </View>
+    );
+  }
+  // Compose the ticket action-row handlers: the screen supplies status/severity/
+  // reclassify/won't-do + open; convert/delete drop the item from the voting
+  // feed too (it leaves the score-ranked view once converted/deleted).
+  const itemHandlers = {
+    ...ticketHandlers,
+    onOpenReplay,
+    onPress: onOpen,
+    onDeleted: removeItem,
+    onConverted: removeItem,
+  };
+
+  return (
+    <FlatList
+      data={items}
+      keyExtractor={(item: any) => item.id}
+      contentContainerStyle={{ padding: 12 }}
+      renderItem={({ item }: any) => (
+        <VotingItemCard
+          item={item}
+          projectId={projectId}
+          onVote={handleVote}
+          ticketHandlers={itemHandlers}
+        />
+      )}
+    />
+  );
+}
+
 export default function CustomerSupportScreen({ route }: any) {
   const {
     projects,
@@ -507,6 +939,9 @@ export default function CustomerSupportScreen({ route }: any) {
   const projectId = route?.params?.projectId || projects?.[0]?.id;
   const project = projects?.find((p: any) => p.id === projectId);
   const [tickets, setTickets] = useState<any[]>([]);
+  // Which surface is showing: the issue queue or the score-ranked Voting feed.
+  // Both live under the Customer Support screen (spec `ui-placement`).
+  const [activeTab, setActiveTab] = useState<'issues' | 'voting'>('issues');
   // Default to the "Open" group; terminal tickets are retained but hidden.
   const [statusFilter, setStatusFilter] = useState('open');
   const [typeFilter, setTypeFilter] = useState('all');
@@ -855,6 +1290,7 @@ export default function CustomerSupportScreen({ route }: any) {
               resizeMode="contain"
             />
           ) : null}
+          <CommentThread projectId={projectId} ticketId={selectedTicket.id} />
         </ScrollView>
         <Modal
           visible={!!reclassifyTicket}
@@ -960,72 +1396,111 @@ export default function CustomerSupportScreen({ route }: any) {
         )}
       </View>
 
-      <View style={styles.filterRow}>
-        {STATUS_FILTERS.map((f: any) => (
+      <View style={styles.tabRow}>
+        {[
+          { key: 'issues', label: 'Issues' },
+          { key: 'voting', label: 'Voting' },
+        ].map((t: any) => (
           <TouchableOpacity
-            key={f.key}
-            testID={`status-filter-${f.key}`}
-            onPress={() => setStatusFilter(f.key)}
-            style={[styles.filterButton, statusFilter === f.key && styles.filterButtonActive]}
+            key={t.key}
+            testID={`support-tab-${t.key}`}
+            accessibilityState={{ selected: activeTab === t.key }}
+            onPress={() => setActiveTab(t.key)}
+            style={[styles.tabButton, activeTab === t.key && styles.tabButtonActive]}
           >
-            <Text style={[styles.filterText, statusFilter === f.key && styles.filterTextActive]}>
-              {f.label}
+            <Text style={[styles.tabText, activeTab === t.key && styles.tabTextActive]}>
+              {t.label}
             </Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      <View style={styles.typeFilterRow}>
-        {TYPE_FILTERS.map((f: any) => (
-          <TouchableOpacity
-            key={f.key}
-            testID={`type-filter-${f.key}`}
-            onPress={() => setTypeFilter(f.key)}
-            style={[styles.typeFilterButton, typeFilter === f.key && styles.filterButtonActive]}
-          >
-            <Text style={[styles.filterText, typeFilter === f.key && styles.filterTextActive]}>
-              {f.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      <View style={styles.sortRow}>
-        <Text style={styles.sortLabel}>Sort</Text>
-        {SORT_MODES.map((s: any) => (
-          <TouchableOpacity
-            key={s.key}
-            testID={`sort-mode-${s.key}`}
-            onPress={() => setSortMode(s.key)}
-            style={[styles.typeFilterButton, sortMode === s.key && styles.filterButtonActive]}
-          >
-            <Text style={[styles.filterText, sortMode === s.key && styles.filterTextActive]}>
-              {s.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      {loading ? (
-        <View style={styles.centerState}>
-          <ActivityIndicator size="small" color={colors.gray400} />
-        </View>
-      ) : error ? (
-        <View style={styles.centerState}>
-          <Text style={styles.errorText}>{error}</Text>
-        </View>
-      ) : tickets.length === 0 ? (
-        <View style={styles.centerState}>
-          <Text style={styles.emptyTitle}>No support requests</Text>
-          <Text style={styles.emptyDesc}>Incoming requests appear here, most urgent first.</Text>
-        </View>
-      ) : (
-        <FlatList
-          data={sortedTickets}
-          keyExtractor={(item: any) => item.id}
-          contentContainerStyle={{ padding: 12 }}
-          renderItem={renderItem}
+      {activeTab === 'voting' ? (
+        <VotingTab
+          projectId={projectId}
+          onOpen={handleTicketPress}
+          onOpenReplay={openReplay}
+          ticketHandlers={{
+            onSetStatus: setStatus,
+            onWontDo: handleWontDo,
+            onReclassify: setReclassifyTicket,
+            onReRate: setSeverityTicket,
+          }}
         />
+      ) : (
+        <>
+          <View style={styles.filterRow}>
+            {STATUS_FILTERS.map((f: any) => (
+              <TouchableOpacity
+                key={f.key}
+                testID={`status-filter-${f.key}`}
+                onPress={() => setStatusFilter(f.key)}
+                style={[styles.filterButton, statusFilter === f.key && styles.filterButtonActive]}
+              >
+                <Text
+                  style={[styles.filterText, statusFilter === f.key && styles.filterTextActive]}
+                >
+                  {f.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <View style={styles.typeFilterRow}>
+            {TYPE_FILTERS.map((f: any) => (
+              <TouchableOpacity
+                key={f.key}
+                testID={`type-filter-${f.key}`}
+                onPress={() => setTypeFilter(f.key)}
+                style={[styles.typeFilterButton, typeFilter === f.key && styles.filterButtonActive]}
+              >
+                <Text style={[styles.filterText, typeFilter === f.key && styles.filterTextActive]}>
+                  {f.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <View style={styles.sortRow}>
+            <Text style={styles.sortLabel}>Sort</Text>
+            {SORT_MODES.map((s: any) => (
+              <TouchableOpacity
+                key={s.key}
+                testID={`sort-mode-${s.key}`}
+                onPress={() => setSortMode(s.key)}
+                style={[styles.typeFilterButton, sortMode === s.key && styles.filterButtonActive]}
+              >
+                <Text style={[styles.filterText, sortMode === s.key && styles.filterTextActive]}>
+                  {s.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {loading ? (
+            <View style={styles.centerState}>
+              <ActivityIndicator size="small" color={colors.gray400} />
+            </View>
+          ) : error ? (
+            <View style={styles.centerState}>
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          ) : tickets.length === 0 ? (
+            <View style={styles.centerState}>
+              <Text style={styles.emptyTitle}>No support requests</Text>
+              <Text style={styles.emptyDesc}>
+                Incoming requests appear here, most urgent first.
+              </Text>
+            </View>
+          ) : (
+            <FlatList
+              data={sortedTickets}
+              keyExtractor={(item: any) => item.id}
+              contentContainerStyle={{ padding: 12 }}
+              renderItem={renderItem}
+            />
+          )}
+        </>
       )}
 
       <Modal
@@ -1499,4 +1974,110 @@ const styles = StyleSheet.create({
     borderColor: colors.gray700,
     marginBottom: 8,
   },
+  tabRow: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  tabButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: colors.gray800,
+  },
+  tabButtonActive: { backgroundColor: colors.gray700 },
+  tabText: { fontSize: 12, color: colors.gray500 },
+  tabTextActive: { color: colors.gray100, fontWeight: '700' },
+  votingItem: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  voteColumn: {
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: 4,
+    width: 36,
+    gap: 2,
+  },
+  voteButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  voteButtonUpActive: { borderColor: colors.emerald500, backgroundColor: colors.gray900 },
+  voteButtonDownActive: { borderColor: colors.rose400, backgroundColor: colors.gray900 },
+  voteArrow: { fontSize: 12, color: colors.gray500 },
+  voteArrowUpActive: { color: colors.emerald300 },
+  voteArrowDownActive: { color: colors.rose400 },
+  voteScore: { fontSize: 13, fontWeight: '700', color: colors.gray200, paddingVertical: 2 },
+  votingItemBody: { flex: 1 },
+  commentSection: { marginTop: 16, gap: 8 },
+  commentSectionTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.gray500,
+    textTransform: 'uppercase',
+  },
+  commentEmpty: { fontSize: 12, color: colors.gray500 },
+  commentList: { gap: 8 },
+  commentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 8,
+    backgroundColor: colors.gray900,
+    padding: 10,
+  },
+  commentRowMain: { flex: 1 },
+  commentMeta: { fontSize: 11, color: colors.gray500, marginBottom: 2 },
+  commentBody: { fontSize: 13, color: colors.gray300 },
+  commentHideButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+  },
+  commentHideText: { fontSize: 11, color: colors.red400, fontWeight: '600' },
+  commentNameInput: {
+    backgroundColor: colors.gray950,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: colors.gray100,
+    fontSize: 12,
+  },
+  commentBodyInput: {
+    backgroundColor: colors.gray950,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: colors.gray100,
+    fontSize: 13,
+    minHeight: 56,
+    textAlignVertical: 'top',
+  },
+  commentSubmitButton: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray800,
+  },
+  commentSubmitText: { fontSize: 12, color: colors.gray200, fontWeight: '700' },
 });

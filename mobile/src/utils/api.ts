@@ -1823,6 +1823,42 @@ export const api = {
   // Mark every unread ticket in the project read; emits support_tickets_read_all.
   markAllSupportTicketsRead: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/support-tickets/read-all`, { method: 'POST' }),
+
+  // Score-ranked voting feed — only `type=feature_request` tickets, sorted by
+  // score desc, each carrying a `voting` tally { score, upvotes, downvotes,
+  // myVote, comment_count }. Pass the per-device `voterKey` so `myVote` reflects
+  // this device's current vote; omit it and myVote is null.
+  getVotingItems: (projectId: any, voterKey?: any) => {
+    const qs = voterKey ? `?voterKey=${encodeURIComponent(String(voterKey))}` : '';
+    return fetchJSON(`/projects/${projectId}/support-tickets/voting${qs}`);
+  },
+  // Cast, change, or retract a vote on a feature-request ticket. `value` is 1
+  // (up), -1 (down), or null (retract). Returns the fresh aggregate { score,
+  // upvotes, downvotes, myVote } and emits a support_ticket_vote_updated
+  // WebSocket event so other clients reconcile without a refetch.
+  castVote: (projectId: any, id: any, voterKey: any, value: any) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/vote`, {
+      method: 'PUT',
+      body: JSON.stringify({ voterKey, value }),
+    }),
+  // Anonymous comment thread on a feature-request (or any) support ticket. List
+  // returns non-hidden comments oldest-first; each carries an optional free-text
+  // `display_name` (no user id is stored).
+  getSupportTicketComments: (projectId: any, id: any) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/comments`),
+  // Append a comment. `body` is required; `displayName` is optional. The server
+  // derives `source` from the caller and broadcasts support_ticket_comment_created.
+  addSupportTicketComment: (projectId: any, id: any, opts: any = {}) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body: opts.body, displayName: opts.displayName }),
+    }),
+  // Operator soft-delete (hide) a comment. Hub-auth only; broadcasts
+  // support_ticket_comment_deleted so other clients drop the row.
+  hideSupportTicketComment: (projectId: any, id: any, commentId: any) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/comments/${commentId}`, {
+      method: 'DELETE',
+    }),
   // Security audit — Dependabot-style dependency findings for a Hub-hosted repo.
   // `status` optionally narrows to one lifecycle state (open | fixed |
   // dismissed); omit for all. Returns { findings, openCounts } where openCounts
