@@ -271,6 +271,7 @@ import {
 } from './project-mode.js';
 import { isWorkflowProject } from './project-mode-guards.js';
 import { isSetupWizardSession } from './setup-wizard-session.js';
+import { isVotingScaffolderSession } from './voting-integration/scaffolder-session.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 import {
   runBrowserReActStep,
@@ -3058,7 +3059,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           finalizeConfigured: worktreeHasFinalizeCi(session!.worktree_path),
           sessionWorktreePath: session!.worktree_path ?? null,
           sessionWorktreeBranch: session!.worktree_branch ?? null,
-          omitWorkspaceMemory: isSetupWizardSession(session!),
+          omitWorkspaceMemory:
+            isSetupWizardSession(session!) || isVotingScaffolderSession(session!),
           sessionEnvAdapter,
           _getEnrichedAgent: getEnrichedAgent,
         },
