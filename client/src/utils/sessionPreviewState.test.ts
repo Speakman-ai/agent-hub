@@ -19,6 +19,8 @@ import {
   previewStateApiPath,
   reconcilePreviewEvent,
   resolvePreviewHydration,
+  derivePreviewIndicator,
+  previewIndicatorTitle,
   PREVIEW_DEVICE_PRESETS,
 } from './sessionPreviewState';
 
@@ -131,6 +133,44 @@ describe('derivePaneState', () => {
 
   it('returns `idle` for an unknown kind', () => {
     expect(derivePaneState({ kind: 'preview_weird' })).toEqual({ status: 'idle' });
+  });
+});
+
+describe('derivePreviewIndicator', () => {
+  it('reports `building` from the optimistic starting flag before any WS frame', () => {
+    expect(derivePreviewIndicator(null, true)).toEqual({ status: 'building' });
+    expect(derivePreviewIndicator(undefined, true)).toEqual({ status: 'building' });
+  });
+
+  it('the optimistic flag wins even when a stale `ready` event lingers', () => {
+    expect(derivePreviewIndicator({ kind: 'preview' }, true)).toEqual({ status: 'building' });
+  });
+
+  it('reports `building` for a `preview_starting` event', () => {
+    expect(derivePreviewIndicator({ kind: 'preview_starting' })).toEqual({ status: 'building' });
+  });
+
+  it('reports `ready` for a `preview` event', () => {
+    expect(derivePreviewIndicator({ kind: 'preview', fullUrl: 'http://x' })).toEqual({
+      status: 'ready',
+    });
+  });
+
+  it('returns null for error / unavailable / stopped / idle states', () => {
+    expect(derivePreviewIndicator({ kind: 'preview_failed' })).toBeNull();
+    expect(derivePreviewIndicator({ kind: 'preview_unavailable' })).toBeNull();
+    expect(derivePreviewIndicator({ kind: 'preview_stopped' })).toBeNull();
+    expect(derivePreviewIndicator(null)).toBeNull();
+    expect(derivePreviewIndicator(undefined)).toBeNull();
+    expect(derivePreviewIndicator({})).toBeNull();
+    expect(derivePreviewIndicator('nope')).toBeNull();
+  });
+});
+
+describe('previewIndicatorTitle', () => {
+  it('distinguishes building from attached', () => {
+    expect(previewIndicatorTitle({ status: 'building' })).toMatch(/building/i);
+    expect(previewIndicatorTitle({ status: 'ready' })).toMatch(/running|attached/i);
   });
 });
 

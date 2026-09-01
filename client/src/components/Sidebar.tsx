@@ -50,6 +50,7 @@ import { daysUntilPurge } from '../utils/time';
 import SessionStateIcon from './SessionStateIcon';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import { deriveWatchIndicator, watchIndicatorTitle } from '../utils/backgroundShells';
+import { derivePreviewIndicator, previewIndicatorTitle } from '../utils/sessionPreviewState';
 import BugReportButton from './BugReportButton';
 import BrandLogo from './BrandLogo';
 import KanbanSidebarEpicsPanel from './KanbanSidebarEpicsPanel';
@@ -164,6 +165,14 @@ export default function Sidebar({
    * on their own when the work finishes.
    */
   backgroundShellsBySession = {},
+  /**
+   * Map of sessionId → latest `agenthub_preview` WS event. Drives the sidebar
+   * preview pill: a `building` pulse while the dev server boots, a solid
+   * monitor once a preview is attached and serving.
+   */
+  previewEventBySession = {},
+  /** Map of sessionId → optimistic "preview starting" flag (pre-WS seed). */
+  previewStartingBySession = {},
   changesReadyBySession = {},
   /**
    * Map of sessionId → latest Finalize Code Changes status string. When a
@@ -1534,6 +1543,30 @@ export default function Sidebar({
                                                       {watch.watching > 0
                                                         ? watch.watching
                                                         : watch.running}
+                                                    </span>
+                                                  );
+                                                })()}
+                                                {(() => {
+                                                  const preview = derivePreviewIndicator(
+                                                    previewEventBySession[session.id],
+                                                    !!previewStartingBySession[session.id],
+                                                  );
+                                                  if (!preview) return null;
+                                                  const building = preview.status === 'building';
+                                                  return (
+                                                    <span
+                                                      className={`flex items-center flex-shrink-0 ${
+                                                        building
+                                                          ? 'text-sky-400'
+                                                          : 'text-emerald-400'
+                                                      }`}
+                                                      title={previewIndicatorTitle(preview)}
+                                                      data-testid={`session-preview-pill-${session.id}`}
+                                                    >
+                                                      <MonitorPlay
+                                                        size={10}
+                                                        className={building ? 'animate-pulse' : ''}
+                                                      />
                                                     </span>
                                                   );
                                                 })()}

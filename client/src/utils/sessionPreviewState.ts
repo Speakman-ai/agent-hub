@@ -377,6 +377,45 @@ export function normalizePreviewPorts(raw: any) {
   return cleaned.sort((a: any, b: any) => (b.primary ? 1 : 0) - (a.primary ? 1 : 0));
 }
 
+/**
+ * Sidebar preview indicator — the small pill on a session row that mirrors
+ * the background-shell watch pill. Two live states only:
+ *
+ *   - `building` — the dev server is spawning/booting (optimistic
+ *     `preview_starting` seed, or the `preview_starting` WS frame). Renders a
+ *     pulsing icon, the preview analogue of "running shell command".
+ *   - `ready`    — a dev server is attached and serving (`preview` frame).
+ *
+ * Error / unavailable / stopped states return null: they are transient and
+ * the pane already surfaces them, so a persistent sidebar pill would be
+ * misleading. Returning null (not a zeroed object) keeps call sites honest —
+ * the pill should not render when there is nothing in flight or attached.
+ *
+ * `starting` is the optimistic flag from `previewStartingBySession[sid]`,
+ * set on the Start-preview click before the first WS frame lands. It wins so
+ * the pill appears immediately, matching the pane's synthetic seed.
+ */
+export type PreviewIndicatorStatus = 'building' | 'ready';
+
+export interface PreviewIndicator {
+  status: PreviewIndicatorStatus;
+}
+
+export function derivePreviewIndicator(event: any, starting?: boolean): PreviewIndicator | null {
+  if (starting) return { status: 'building' };
+  if (!event || typeof event !== 'object') return null;
+  if (event.kind === 'preview_starting') return { status: 'building' };
+  if (event.kind === 'preview') return { status: 'ready' };
+  return null;
+}
+
+/** Tooltip copy for the sidebar preview pill. */
+export function previewIndicatorTitle(indicator: PreviewIndicator): string {
+  return indicator.status === 'building'
+    ? 'Building preview — the dev server is starting for this session.'
+    : 'Preview running — a dev server is attached to this session.';
+}
+
 export function derivePaneState(event: any) {
   if (!event || typeof event !== 'object') return { status: 'idle' };
   const { kind, target, route, agentReason, previewId } = event;
