@@ -34,6 +34,8 @@ import {
   DEFAULT_WRITE_QUEUE_FLUSH_INTERVAL_MS,
 } from './logs-schema.js';
 import { incLogMetric, recordLogFlush } from './log-metrics.js';
+import { isWalUnderPressureLabel } from '../db-checkpoint.js';
+import { LOGS_CHECKPOINT_LABEL } from './logs-db.js';
 
 /** The store write the queue drives; injectable so tests can force failures. */
 export type LogWriteFn = (
@@ -202,6 +204,13 @@ export function getLogWriteQueue(): LogWriteQueue {
 
 /** Admit records into the shared queue (ingest hot path). */
 export function enqueueLogRecords(records: LogRecordInput[]): EnqueueResult {
+  // WAL-pressure backpressure: if logs.db has grown past its hard limit and cannot
+  // be checkpointed, shed the batch (same clean drop semantics as a full queue)
+  // so ingest stops appending to — and growing — the WAL until it drains.
+  if (records.length > 0 && isWalUnderPressureLabel(LOGS_CHECKPOINT_LABEL)) {
+    incLogMetric('dropped', records.length);
+    return { enqueued: 0, dropped: records.length };
+  }
   return getLogWriteQueue().enqueue(records);
 }
 

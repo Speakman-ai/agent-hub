@@ -18,7 +18,8 @@
  */
 import { randomUUID } from 'crypto';
 import { getOrgsDb } from '../orgs.js';
-import { getRunnerJobLogsDb } from './runner-logs-db.js';
+import { getRunnerJobLogsDb, RUNNER_JOB_LOGS_CHECKPOINT_LABEL } from './runner-logs-db.js';
+import { isWalUnderPressureLabel } from '../db-checkpoint.js';
 import type { RunnerJobState } from './runner-queue-schema.js';
 
 export interface EnqueueRunnerJobInput {
@@ -257,6 +258,11 @@ export function appendRunnerJobLog(args: {
   data: string;
   now: number;
 }): void {
+  // WAL-pressure backpressure: if runner-logs.db has grown past its hard limit and
+  // cannot be checkpointed, shed this frame instead of appending to (and further
+  // growing) the WAL. Frames are transient CI stdout, aggressively reaped and never
+  // read post-run, so dropping under an emergency is a documented clean cutover.
+  if (isWalUnderPressureLabel(RUNNER_JOB_LOGS_CHECKPOINT_LABEL)) return;
   getRunnerJobLogsDb()
     .prepare(
       `INSERT OR IGNORE INTO runner_job_logs (job_id, seq, step_index, stream, data, at)

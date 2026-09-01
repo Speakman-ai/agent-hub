@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { mkdirSync, existsSync, readFileSync, readdirSync, unlinkSync } from 'fs';
 import config from './config.js';
+import { registerCheckpointDb } from './db-checkpoint.js';
 import type { OrgRow } from './types.js';
 import { USER_SKILL_CREDENTIALS_SCHEMA } from './skill-credentials-schema.js';
 import { USER_SKILL_OPTIONS_SCHEMA } from './skill-options-schema.js';
@@ -78,6 +79,10 @@ export function initOrgsDb(): void {
   // Foreign keys are required for the ON DELETE CASCADE semantics on
   // memberships/invites — SQLite disables them by default.
   orgsDb.pragma('foreign_keys = ON');
+  // Bound WAL cadence + enroll in the background checkpoint sweep. orgs.db was
+  // the file that grew a 147 MB WAL in the incident; keep its checkpoints small
+  // and frequent so no single one stalls requests. See server/db-checkpoint.ts.
+  registerCheckpointDb(orgsDb, 'orgs.db');
 
   orgsDb.exec(`
     CREATE TABLE IF NOT EXISTS orgs (

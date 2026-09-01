@@ -22,6 +22,10 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import { mkdirSync } from 'fs';
+import { registerCheckpointDb, unregisterCheckpointDb } from '../db-checkpoint.js';
+
+/** Checkpoint-registry label for `runner-logs.db` (shared with the WAL-pressure gate). */
+export const RUNNER_JOB_LOGS_CHECKPOINT_LABEL = 'runner-logs.db';
 
 /**
  * DDL for the isolated spool. Identical shape to the table that previously
@@ -60,6 +64,9 @@ export function setRunnerJobLogsDbPathForTests(p: string | null): void {
 /** Close the handle (test teardown / re-init). Safe to call when not open. */
 export function closeRunnerJobLogsDb(): void {
   if (logsDb) {
+    try {
+      unregisterCheckpointDb(logsDb);
+    } catch {}
     try {
       logsDb.close();
     } catch {}
@@ -100,6 +107,9 @@ export function initRunnerJobLogsDb(dir: string): void {
   // cross-connection ATTACH write; a short busy wait avoids spurious
   // `SQLITE_BUSY` under that light contention.
   db.pragma('busy_timeout = 5000');
+  // Bound WAL cadence + enroll in the background checkpoint sweep so this
+  // hot-write spool's checkpoints stay small (see server/db-checkpoint.ts).
+  registerCheckpointDb(db, RUNNER_JOB_LOGS_CHECKPOINT_LABEL);
   db.exec(RUNNER_JOB_LOGS_SCHEMA);
   logsDb = db;
   logsDbPath = dbPath;

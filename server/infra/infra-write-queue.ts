@@ -36,6 +36,8 @@ import {
   DEFAULT_INFRA_WRITE_QUEUE_FLUSH_POINTS,
   DEFAULT_INFRA_WRITE_QUEUE_FLUSH_INTERVAL_MS,
 } from './infra-schema.js';
+import { isWalUnderPressureLabel } from '../db-checkpoint.js';
+import { INFRA_CHECKPOINT_LABEL } from './infra-db.js';
 
 /** The store write the queue drives; injectable so tests can force failures. */
 export type InfraWriteFn = (points: InfraMetricPointInput[]) => {
@@ -273,6 +275,12 @@ export function getInfraWriteQueue(): InfraWriteQueue {
 
 /** Admit points into the shared queue (collector hot path). */
 export function enqueueInfraMetricPoints(points: InfraMetricPointInput[]): InfraEnqueueResult {
+  // WAL-pressure backpressure: if infra.db has grown past its hard limit and
+  // cannot be checkpointed, shed the batch (same drop semantics as a full queue)
+  // so the collector stops appending to — and growing — the WAL until it drains.
+  if (points.length > 0 && isWalUnderPressureLabel(INFRA_CHECKPOINT_LABEL)) {
+    return { enqueued: 0, dropped: points.length };
+  }
   return getInfraWriteQueue().enqueue(points);
 }
 

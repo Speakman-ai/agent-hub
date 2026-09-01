@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
-import { getRunnerJobLogsDb } from './runner-logs-db.js';
+import { getRunnerJobLogsDb, RUNNER_JOB_LOGS_CHECKPOINT_LABEL } from './runner-logs-db.js';
+import { __setWalPressureForTests } from '../db-checkpoint.js';
 import {
   appendRunnerJobLog,
   cancelRunnerJobsForRun,
@@ -201,6 +202,29 @@ describe('runner-queue', () => {
       .prepare('SELECT data FROM runner_job_logs WHERE job_id=? AND seq=0')
       .get(j) as { data: string };
     expect(first.data).toBe('a'); // original kept, not 'dup'
+  });
+
+  it('appendRunnerJobLog sheds frames while runner-logs.db WAL is under pressure', () => {
+    const j = enq({ jobId: 'jp', now: 1000 });
+    const count = () =>
+      (
+        getRunnerJobLogsDb()
+          .prepare('SELECT COUNT(*) AS n FROM runner_job_logs WHERE job_id=?')
+          .get(j) as { n: number }
+      ).n;
+
+    __setWalPressureForTests(RUNNER_JOB_LOGS_CHECKPOINT_LABEL, true);
+    try {
+      appendRunnerJobLog({ jobId: j, seq: 0, stepIndex: 0, stream: 'stdout', data: 'x', now: 1 });
+      appendRunnerJobLog({ jobId: j, seq: 1, stepIndex: 0, stream: 'stdout', data: 'y', now: 2 });
+      expect(count()).toBe(0); // dropped, WAL not grown
+
+      __setWalPressureForTests(RUNNER_JOB_LOGS_CHECKPOINT_LABEL, false);
+      appendRunnerJobLog({ jobId: j, seq: 2, stepIndex: 0, stream: 'stdout', data: 'z', now: 3 });
+      expect(count()).toBe(1); // admitted again
+    } finally {
+      __setWalPressureForTests(RUNNER_JOB_LOGS_CHECKPOINT_LABEL, false);
+    }
   });
 
   describe('pruneRunnerJobLogs', () => {

@@ -31,6 +31,7 @@ import { readAllReplayEvents } from '../replays/replay-context-loader.js';
 import { buildReplayTranscript } from '../replays/replay-transcript.js';
 import { buildReplayContextPack } from '../replays/replay-context-pack.js';
 import { ArtifactStoreUnavailableError } from '../artifacts/artifact-store.js';
+import { WalPressureError } from '../db-checkpoint.js';
 import { canViewProject, type VisibilityCaller } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { verifyRumToken } from '../rum-clients-store.js';
@@ -811,6 +812,12 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
         } catch (err) {
           if (err instanceof SegmentNeedsSnapshotError) {
             return res.status(400).json({ error: err.message });
+          }
+          if (err instanceof WalPressureError) {
+            // rum.db WAL is over its hard limit and can't be checkpointed; shed
+            // ingest until it drains so the WAL stops growing.
+            res.setHeader('Retry-After', '30');
+            return res.status(503).json({ error: err.message });
           }
           if (err instanceof ArtifactStoreUnavailableError) {
             return res.status(503).json({ error: err.message });

@@ -16,6 +16,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { stmts, initDb, getDb } from './db.js';
+import { startDbCheckpointScheduler } from './db-checkpoint.js';
 import { MAX_RESUME_ATTEMPTS, shouldGiveUpAutoResume } from './resume-attempts.js';
 import { createGitSmartHttpRoutes } from './git-host/smart-http.js';
 import createGitHostRoutes from './routes/git-host.js';
@@ -525,6 +526,15 @@ if (_startupOrgId !== 'default') {
   initProjects(_startupDataDir);
   console.log(`[Org] Restoring last-active org: ${_startupOrgId} → ${_startupDataDir}`);
 }
+
+// Every DB handle enrolled itself in the checkpoint registry at init
+// (registerCheckpointDb), with main-thread autocheckpoint disabled. Start the
+// single background sweep now that they're all open: every 30 s it reads each
+// WAL's size from the filesystem (no checkpoint) and, only for a WAL past the
+// ~8 MB threshold, offloads a TRUNCATE to a worker thread; smaller WALs are
+// skipped. So no checkpoint ever folds hundreds of MB back synchronously on the
+// main thread (the 147 MB WAL incident). See server/db-checkpoint.ts.
+startDbCheckpointScheduler();
 
 // Legacy NULL-owner sessions are intentionally NOT backfilled to any user:
 // AI auth and session ownership are strictly per-account, with no org-owner

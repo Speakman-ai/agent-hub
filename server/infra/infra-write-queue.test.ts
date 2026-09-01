@@ -7,7 +7,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { initInfraDb, closeInfraDb, infraResourceKey } from './infra-db.js';
+import { initInfraDb, closeInfraDb, infraResourceKey, INFRA_CHECKPOINT_LABEL } from './infra-db.js';
+import { __setWalPressureForTests } from '../db-checkpoint.js';
 import {
   countInfraMetricPoints,
   queryInfraMetricPoints,
@@ -353,5 +354,18 @@ describe('shared queue singleton — end-to-end against infra.db', () => {
   it('flushInfraWriteQueue is safe before the singleton exists', () => {
     resetInfraWriteQueueForTests();
     expect(flushInfraWriteQueue()).toBe(0);
+  });
+
+  it('sheds points while infra.db WAL is under pressure, then admits again on release', () => {
+    resetInfraWriteQueueForTests();
+    __setWalPressureForTests(INFRA_CHECKPOINT_LABEL, true);
+    try {
+      expect(enqueueInfraMetricPoints(points(3))).toEqual({ enqueued: 0, dropped: 3 });
+      __setWalPressureForTests(INFRA_CHECKPOINT_LABEL, false);
+      expect(enqueueInfraMetricPoints(points(2)).enqueued).toBe(2);
+    } finally {
+      __setWalPressureForTests(INFRA_CHECKPOINT_LABEL, false);
+      resetInfraWriteQueueForTests();
+    }
   });
 });

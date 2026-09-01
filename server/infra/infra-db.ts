@@ -18,7 +18,15 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { mkdirSync } from 'fs';
 import { assertSafeTestDataDir } from '../db-safety.js';
+import {
+  recoverWalAtStartupBounded,
+  registerCheckpointDb,
+  unregisterCheckpointDb,
+} from '../db-checkpoint.js';
 import { reconcileSchema } from '../schema-reconcile.js';
+
+/** Checkpoint-registry label for `infra.db` (shared with the WAL-pressure gate). */
+export const INFRA_CHECKPOINT_LABEL = 'infra.db';
 import {
   INFRA_TABLES_SCHEMA,
   INFRA_INDEXES_SCHEMA,
@@ -33,6 +41,9 @@ let infraDbPathOverride: string | null = null;
 export function setInfraDbPathForTests(p: string | null): void {
   infraDbPathOverride = p;
   if (infraDb) {
+    try {
+      unregisterCheckpointDb(infraDb);
+    } catch {}
     try {
       infraDb.close();
     } catch {}
@@ -76,21 +87,26 @@ export function initInfraDb(dataDir: string): Database.Database {
   // collector writer. `normal` sync trades a small durability window (the last
   // few committed transactions on a hard crash) for throughput, which is the
   // right trade for sampled telemetry that is re-collectable from CloudWatch.
-  // `wal_autocheckpoint` bounds the WAL against a collector burst;
   // `busy_timeout` lets a reader wait out the writer instead of throwing
-  // SQLITE_BUSY.
+  // SQLITE_BUSY. `registerCheckpointDb` applies the shared WAL cadence pragmas
+  // (disables main-thread autocheckpoint + sets journal_size_limit) and enrolls
+  // this handle in the background off-thread checkpoint sweep, so a collector
+  // burst is drained without ever running a synchronous checkpoint on the request
+  // thread (see server/db-checkpoint.ts).
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
-  db.pragma('wal_autocheckpoint = 1000');
+  registerCheckpointDb(db, INFRA_CHECKPOINT_LABEL);
 
   // Safe startup/recovery: a prior hard crash can leave the WAL mid-commit.
-  // `wal_checkpoint(TRUNCATE)` replays and resets it; `quick_check` surfaces
-  // gross corruption in the log. We never throw on a dirty WAL — infra metrics
-  // are best-effort and must not block boot.
+  // `recoverWalAtStartupBounded` resets a small dirty WAL synchronously but
+  // defers a large one to the off-thread sweep (the handle is already registered
+  // above), so boot never pays a giant synchronous checkpoint. `quick_check`
+  // surfaces gross corruption. We never throw on a dirty WAL — infra metrics are
+  // best-effort and must not block boot.
   try {
-    db.pragma('wal_checkpoint(TRUNCATE)');
+    recoverWalAtStartupBounded(db, 'infra.db');
     const integrity = db.pragma('quick_check', { simple: true });
     if (integrity !== 'ok') {
       console.warn(`[infra] infra.db quick_check returned: ${String(integrity)}`);
@@ -146,6 +162,9 @@ export function initInfraDb(dataDir: string): Database.Database {
 /** Close the handle (tests / shutdown). */
 export function closeInfraDb(): void {
   if (infraDb) {
+    try {
+      unregisterCheckpointDb(infraDb);
+    } catch {}
     try {
       infraDb.close();
     } catch {}

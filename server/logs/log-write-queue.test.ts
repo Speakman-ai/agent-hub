@@ -9,9 +9,16 @@ import {
   resetLogWriteQueueForTests,
   type LogWriteFn,
 } from './log-write-queue.js';
-import { initLogsDb, closeLogsDb, queryLogRecords, type LogRecordInput } from './logs-db.js';
+import {
+  initLogsDb,
+  closeLogsDb,
+  queryLogRecords,
+  LOGS_CHECKPOINT_LABEL,
+  type LogRecordInput,
+} from './logs-db.js';
 import { getLogMetrics, resetLogMetrics } from './log-metrics.js';
 import { SEVERITY_NUMBER } from './logs-schema.js';
+import { __setWalPressureForTests } from '../db-checkpoint.js';
 
 function rec(body: string): LogRecordInput {
   return {
@@ -156,5 +163,27 @@ describe('shared queue singleton — end-to-end against logs.db (restart/persist
     expect(flushLogWriteQueue()).toBe(2);
     const rows = queryLogRecords({ projectId: 'proj-a', limit: 10 }).records;
     expect(rows.map((r) => r.body).sort()).toEqual(['queued-a', 'queued-b']);
+  });
+});
+
+describe('enqueueLogRecords WAL backpressure', () => {
+  beforeEach(() => {
+    resetLogWriteQueueForTests();
+    resetLogMetrics();
+  });
+  afterEach(() => {
+    __setWalPressureForTests(LOGS_CHECKPOINT_LABEL, false);
+    resetLogWriteQueueForTests();
+    resetLogMetrics();
+  });
+
+  it('sheds the batch (counted dropped) while logs.db WAL is under pressure', () => {
+    __setWalPressureForTests(LOGS_CHECKPOINT_LABEL, true);
+    expect(enqueueLogRecords([rec('a'), rec('b')])).toEqual({ enqueued: 0, dropped: 2 });
+    expect(getLogMetrics().dropped).toBeGreaterThanOrEqual(2);
+
+    // Released → admitted again (into the in-memory queue).
+    __setWalPressureForTests(LOGS_CHECKPOINT_LABEL, false);
+    expect(enqueueLogRecords([rec('c')]).enqueued).toBe(1);
   });
 });

@@ -35,6 +35,8 @@ import {
   extractSegmentUser,
 } from './rum-session-store.js';
 import type { SessionEnrichment } from './rum-enrichment.js';
+import { getRumEventsDbIfPresent } from './rum-events-db.js';
+import { isWalUnderPressure, WalPressureError } from '../db-checkpoint.js';
 
 const SEGMENT_CONTENT_TYPE = 'application/gzip';
 
@@ -167,6 +169,13 @@ export async function appendSegment(
   input: AppendSegmentInput,
 ): Promise<RumSegmentRow> {
   const { stmts, config } = deps;
+  // WAL-pressure backpressure: if rum.db has grown past its hard limit and cannot
+  // be checkpointed, reject the ingest (mapped to 503 by the route) so segment
+  // writes stop appending to — and growing — the WAL until it drains.
+  const rumDb = getRumEventsDbIfPresent();
+  if (rumDb && isWalUnderPressure(rumDb)) {
+    throw new WalPressureError('rum.db');
+  }
   const indexInView = Math.max(0, Math.floor(input.indexInView));
   const hasFullSnapshot = input.events.some((e) => e.type === RRWEB_FULL_SNAPSHOT);
 

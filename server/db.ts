@@ -3,6 +3,7 @@ import path from 'path';
 import config from './config.js';
 import { normalizeKanbanTitle } from './kanban-title.js';
 import { assertSafeTestDataDir } from './db-safety.js';
+import { registerCheckpointDb } from './db-checkpoint.js';
 import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
 import { JOBS_SCHEMA } from './jobs/schema.js';
 import {
@@ -97,6 +98,11 @@ function initDb(dataDir: string): void {
 
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  // Disable main-thread autocheckpoint + set journal_size_limit, and enroll this
+  // handle in the background off-thread checkpoint sweep, so a starved WAL is
+  // never folded back with a synchronous checkpoint on the request thread (the
+  // 147 MB WAL incident). See server/db-checkpoint.ts.
+  registerCheckpointDb(db, `agent-hub.db (${dataDir})`);
 
   // The hot-write RUM segment-ingest tables (`rum_segments` + `rum_sessions`)
   // live in their own DB file (own connection + WAL) so their checkpoints never

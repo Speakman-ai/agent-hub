@@ -31,6 +31,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import { mkdirSync } from 'fs';
+import { registerCheckpointDb, unregisterCheckpointDb } from '../db-checkpoint.js';
 
 /**
  * DDL for the isolated ingest tables. Identical shape (columns + indexes) to
@@ -151,6 +152,9 @@ export function setRumEventsDbPathForTests(p: string | null): void {
 export function closeRumEventsDb(): void {
   for (const handle of registry.values()) {
     try {
+      unregisterCheckpointDb(handle);
+    } catch {}
+    try {
       handle.close();
     } catch {}
   }
@@ -169,9 +173,19 @@ export function getRumEventsDb(): Database.Database {
   return current;
 }
 
+/** Like {@link getRumEventsDb} but returns null instead of throwing when uninit. */
+export function getRumEventsDbIfPresent(): Database.Database | null {
+  return current;
+}
+
 /** Resolve the on-disk path for `rum.db` given the org data dir (honours override). */
 export function resolveRumEventsDbPath(dir: string): string {
   return pathOverride || path.join(dir, RUM_EVENTS_DB_FILENAME);
+}
+
+/** Checkpoint-registry label for this org dir's `rum.db` (shared with the pressure gate). */
+export function rumEventsCheckpointLabel(dir: string): string {
+  return `rum.db (${dir})`;
 }
 
 /**
@@ -194,6 +208,10 @@ export function initRumEventsDb(dir: string): Database.Database {
   // migration's cross-connection ATTACH write; a short busy wait avoids spurious
   // `SQLITE_BUSY` under that light contention.
   db.pragma('busy_timeout = 5000');
+  // Bound WAL cadence + enroll in the background checkpoint sweep so this
+  // hot-write segment-ingest file's checkpoints stay small and never stall
+  // primary-DB requests (see server/db-checkpoint.ts).
+  registerCheckpointDb(db, rumEventsCheckpointLabel(dir));
   db.exec(RUM_EVENTS_SCHEMA);
   registry.set(dbPath, db);
   current = db;

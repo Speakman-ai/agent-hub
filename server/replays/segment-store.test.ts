@@ -19,6 +19,12 @@ import {
 import { storeReplay, readReplayEventsPage, type ReplayEvent } from './replay-store.js';
 import { getRumSession } from './rum-session-store.js';
 import { LocalArtifactStore, resetArtifactStoreCache } from '../artifacts/artifact-store.js';
+import { initRumEventsDb, closeRumEventsDb, rumEventsCheckpointLabel } from './rum-events-db.js';
+import {
+  __setWalPressureForTests,
+  clearCheckpointRegistry,
+  WalPressureError,
+} from '../db-checkpoint.js';
 import type { AppConfig, Stmts } from '../types.js';
 
 const SNAPSHOT: ReplayEvent = { type: 2, timestamp: 1000, data: { node: {} } };
@@ -231,6 +237,39 @@ describe('segment-store (append-only backend)', () => {
       if (existsSync(dataDir)) rmSync(dataDir, { recursive: true, force: true });
     } catch {
       /* noop */
+    }
+  });
+
+  it('rejects ingest with WalPressureError while rum.db WAL is under pressure', async () => {
+    // Register the real rum.db so appendSegment's gate can resolve its pressure.
+    initRumEventsDb(dataDir);
+    const label = rumEventsCheckpointLabel(dataDir);
+    try {
+      __setWalPressureForTests(label, true);
+      await expect(
+        appendSegment(deps, {
+          sessionId: 's',
+          viewId: 'v',
+          indexInView: 0,
+          projectId: 'p',
+          events: seg(SNAPSHOT, { type: 3, timestamp: 1001 }),
+        }),
+      ).rejects.toBeInstanceOf(WalPressureError);
+
+      // Released → ingest resumes.
+      __setWalPressureForTests(label, false);
+      const row = await appendSegment(deps, {
+        sessionId: 's',
+        viewId: 'v',
+        indexInView: 0,
+        projectId: 'p',
+        events: seg(SNAPSHOT, { type: 3, timestamp: 1001 }),
+      });
+      expect(row.index_in_view).toBe(0);
+    } finally {
+      __setWalPressureForTests(label, false);
+      closeRumEventsDb();
+      clearCheckpointRegistry();
     }
   });
 

@@ -19,6 +19,14 @@ import path from 'path';
 import { mkdirSync } from 'fs';
 import { assertSafeTestDataDir } from '../db-safety.js';
 import {
+  recoverWalAtStartupBounded,
+  registerCheckpointDb,
+  unregisterCheckpointDb,
+} from '../db-checkpoint.js';
+
+/** Checkpoint-registry label for `logs.db` (shared with the WAL-pressure gate). */
+export const LOGS_CHECKPOINT_LABEL = 'logs.db';
+import {
   LOGS_SCHEMA,
   LOGS_FTS_SCHEMA,
   DEFAULT_RETENTION_DAYS,
@@ -44,6 +52,9 @@ let logsDbPathOverride: string | null = null;
 export function setLogsDbPathForTests(p: string | null): void {
   logsDbPathOverride = p;
   if (logsDb) {
+    try {
+      unregisterCheckpointDb(logsDb);
+    } catch {}
     try {
       logsDb.close();
     } catch {}
@@ -123,21 +134,26 @@ export function initLogsDb(dataDir: string): Database.Database {
   // WAL for concurrent readers alongside the single batch writer. `normal`
   // sync trades a small durability window (last few committed txns on a hard
   // crash) for throughput — acceptable for developer log tail data, and the
-  // source app never blocks on our fsync. `wal_autocheckpoint` bounds the WAL
-  // so a write burst can't grow it without limit; `busy_timeout` lets a reader
-  // wait out the writer instead of throwing SQLITE_BUSY.
+  // source app never blocks on our fsync. `busy_timeout` lets a reader wait out
+  // the writer instead of throwing SQLITE_BUSY. `registerCheckpointDb` applies
+  // the shared WAL cadence pragmas (disables main-thread autocheckpoint + sets
+  // journal_size_limit) and enrolls this handle in the background off-thread
+  // checkpoint sweep, so a write burst is drained without ever running a
+  // synchronous checkpoint on the request thread (see server/db-checkpoint.ts).
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
-  db.pragma('wal_autocheckpoint = 1000');
+  registerCheckpointDb(db, LOGS_CHECKPOINT_LABEL);
 
   // Safe startup/recovery: a prior hard crash can leave the WAL mid-commit.
-  // `wal_checkpoint(TRUNCATE)` replays and resets it; `quick_check` surfaces
-  // gross corruption in the log. We never throw on a dirty WAL — logs are
+  // `recoverWalAtStartupBounded` resets a small dirty WAL synchronously but
+  // defers a large one to the off-thread sweep (the handle is already registered
+  // above), so boot never pays a giant synchronous checkpoint. `quick_check`
+  // surfaces gross corruption. We never throw on a dirty WAL — logs are
   // best-effort and must not block boot (decision LOG-STORE).
   try {
-    db.pragma('wal_checkpoint(TRUNCATE)');
+    recoverWalAtStartupBounded(db, 'logs.db');
     const integrity = db.pragma('quick_check', { simple: true });
     if (integrity !== 'ok') {
       console.warn(`[logs] logs.db quick_check returned: ${String(integrity)}`);
@@ -166,6 +182,9 @@ export function initLogsDb(dataDir: string): Database.Database {
 /** Close the handle (tests / shutdown). */
 export function closeLogsDb(): void {
   if (logsDb) {
+    try {
+      unregisterCheckpointDb(logsDb);
+    } catch {}
     try {
       logsDb.close();
     } catch {}
