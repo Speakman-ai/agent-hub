@@ -495,7 +495,8 @@ export default function Sidebar({
     const activeAgents = (project.agents || []).filter((a: any) => a.active !== false);
     if (activeAgents.length === 0) return false;
     const isCollapsed = collapsedProjects[project.id];
-    return !isCollapsed || activeAgents.length === 1;
+    const canCollapse = activeAgents.length > 1 || isWorkflowProject(project);
+    return !isCollapsed || !canCollapse;
   };
   const scheduledTaskHomeProjectIds = new Set(
     (projects || []).filter(projectShowsScheduledTasks).map((p: any) => p.id),
@@ -707,6 +708,14 @@ export default function Sidebar({
 
             const isActiveProject = activeProject?.id === project.id;
             const isCollapsed = collapsedProjects[project.id];
+            // A project exposes a full-collapse affordance when it has more than
+            // one agent OR is a workflow project. Workflow projects are always
+            // seeded with a single agent, so without the mode check they'd fall
+            // into the single-agent "auto-expand" path and could never be fully
+            // collapsed the way multi-agent projects can (matches mobile, which
+            // collapses every project regardless of agent count). A regular
+            // single-agent project keeps the auto-expand behavior.
+            const canCollapse = activeAgents.length > 1 || isWorkflowProject(project);
 
             const isBeingDragged = draggedProjectId === project.id;
             const isDropTarget =
@@ -807,10 +816,10 @@ export default function Sidebar({
                   )}
                   <button
                     onClick={(e: any) => {
-                      if (activeAgents.length === 1) {
-                        toggleAgentExpanded(activeAgents[0].id);
-                      } else {
+                      if (canCollapse) {
                         toggleProjectCollapse(project.id, e);
+                      } else {
+                        toggleAgentExpanded(activeAgents[0].id);
                       }
                     }}
                     className={`flex-1 text-left px-2 py-2 rounded-lg flex items-center gap-2 transition-colors ${
@@ -837,7 +846,7 @@ export default function Sidebar({
                         Wf
                       </span>
                     )}
-                    {activeAgents.length > 1 && (
+                    {canCollapse && (
                       <span className="text-gray-500 text-2xl leading-none flex items-center">
                         {isCollapsed ? '▸' : '▾'}
                       </span>
@@ -846,7 +855,7 @@ export default function Sidebar({
                 </div>
 
                 {/* Project links (Board, Wiki, Skills, …) */}
-                {(!isCollapsed || activeAgents.length === 1) && (
+                {(!isCollapsed || !canCollapse) && (
                   <div
                     className={`order-2 ${activeAgents.length > 1 ? 'ml-3' : ''}`}
                     data-testid={`sidebar-project-menu-wrap-${project.id}`}
@@ -1269,7 +1278,7 @@ export default function Sidebar({
                 )}
 
                 {/* Agents within project (auto-expand if single agent) */}
-                {(!isCollapsed || activeAgents.length === 1) && (
+                {(!isCollapsed || !canCollapse) && (
                   <div
                     className={`order-1 ${activeAgents.length > 1 ? 'ml-3' : ''}`}
                     data-testid={`sidebar-project-agents-${project.id}`}
@@ -1818,7 +1827,7 @@ export default function Sidebar({
                     this project, so users never miss a running task or a PR that's
                     ready for review behind the project chevron. */}
                 {isCollapsed &&
-                  activeAgents.length > 1 &&
+                  canCollapse &&
                   isActiveProject &&
                   (() => {
                     const actionableSessions = (sessions || []).filter(isSessionActionable);

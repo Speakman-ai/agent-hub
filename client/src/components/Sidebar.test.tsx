@@ -1728,3 +1728,89 @@ describe('Sidebar — Skills pending-lesson badge', () => {
     expect(within(skillsButton()).queryByTitle(/pending review/)).not.toBeInTheDocument();
   });
 });
+
+describe('Sidebar — workflow projects collapse like multi-agent ones', () => {
+  // Regression: workflow projects are always seeded with exactly ONE agent, so
+  // they fell into the single-agent "auto-expand" path — no collapse chevron,
+  // header click toggled the agent instead of the project, and the menu/agents
+  // could never be fully hidden. They must collapse like any other project.
+  const workflowProps = (overrides: any = {}) =>
+    buildProps({
+      projects: [
+        {
+          id: PROJECT_ID,
+          name: 'Workflow Project',
+          color: '#22d3ee',
+          mode: 'workflow',
+          agents: [{ id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true }],
+        },
+      ],
+      ...overrides,
+    });
+
+  it('fully collapses a single-agent workflow project on header click', () => {
+    render(<Sidebar {...workflowProps()} />);
+
+    // Expanded by default: project menu + agents block (with the auto-expanded
+    // active agent's sessions) are visible.
+    expect(screen.getByTestId(`sidebar-project-menu-wrap-${PROJECT_ID}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`sidebar-project-agents-${PROJECT_ID}`)).toBeInTheDocument();
+    expect(screen.getByTestId('agent-sessions-list')).toBeInTheDocument();
+
+    // The header must expose a collapse chevron (▾ when expanded).
+    const header = screen.getByText('Workflow Project').closest('button');
+    expect(header).not.toBeNull();
+    expect(header!.textContent).toContain('▾');
+
+    // Clicking the header collapses the WHOLE project, not just the agent.
+    fireEvent.click(screen.getByText('Workflow Project') as any);
+
+    expect(screen.queryByTestId(`sidebar-project-menu-wrap-${PROJECT_ID}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`sidebar-project-agents-${PROJECT_ID}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('agent-sessions-list')).not.toBeInTheDocument();
+    // Chevron flips to the collapsed glyph.
+    expect(screen.getByText('Workflow Project').closest('button')!.textContent).toContain('▸');
+  });
+
+  it('still surfaces actionable sessions behind a collapsed workflow project', () => {
+    render(<Sidebar {...workflowProps()} />);
+    fireEvent.click(screen.getByText('Workflow Project') as any);
+
+    // Running / PR-ready sessions remain reachable via the collapsed fallback.
+    const collapsedPanel = screen.getByTestId('project-collapsed-actionable');
+    expect(within(collapsedPanel).getByText('Running task')).toBeInTheDocument();
+    expect(within(collapsedPanel).getByText('PR ready session')).toBeInTheDocument();
+    expect(within(collapsedPanel).queryByText('Idle session')).not.toBeInTheDocument();
+  });
+
+  it('leaves a regular single-agent project on the auto-expand path (no full collapse)', () => {
+    // A non-workflow single-agent project keeps its historical behavior: the
+    // header toggles the agent's session list, and there is no collapse chevron.
+    render(
+      <Sidebar
+        {...buildProps({
+          projects: [
+            {
+              id: PROJECT_ID,
+              name: 'Solo Project',
+              color: '#22d3ee',
+              agents: [{ id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true }],
+            },
+          ],
+        })}
+      />,
+    );
+
+    const header = screen.getByText('Solo Project').closest('button');
+    // No collapse chevron on a regular single-agent project.
+    expect(header!.textContent).not.toContain('▾');
+    expect(header!.textContent).not.toContain('▸');
+
+    // The project menu stays mounted regardless of header clicks.
+    expect(screen.getByTestId(`sidebar-project-menu-wrap-${PROJECT_ID}`)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Solo Project') as any);
+    // Header click collapses the AGENT's sessions, not the project menu.
+    expect(screen.getByTestId(`sidebar-project-menu-wrap-${PROJECT_ID}`)).toBeInTheDocument();
+    expect(screen.queryByTestId('agent-sessions-list')).not.toBeInTheDocument();
+  });
+});
