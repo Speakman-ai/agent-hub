@@ -21,6 +21,7 @@ import {
   isSharedCronSession,
   resolveOwnerUserId,
   resolveAutonomousOwnerUserId,
+  resolveWikiDocOwnerUserId,
 } from './session-ownership.js';
 import * as projectModel from './project-model.js';
 import type { AgentLookup } from './types.js';
@@ -277,6 +278,75 @@ describe('resolveAutonomousOwnerUserId — owner resolution chain', () => {
   it('handles null card and null epic without throwing', () => {
     expect(() => resolveAutonomousOwnerUserId(null, null)).not.toThrow();
     expect(resolveAutonomousOwnerUserId(null, null)).toBeNull();
+  });
+});
+
+describe('resolveWikiDocOwnerUserId — merge-triggered wiki-doc owner chain', () => {
+  let userA: string;
+  let userB: string;
+  let assigned: string;
+
+  beforeEach(() => {
+    getDb().exec('DELETE FROM sessions');
+    const dir = mkdtempSync(path.join(tmpdir(), 'wiki-doc-owner-test-'));
+    setOrgsDbPathForTests(path.join(dir, 'orgs.db'));
+    initOrgsDb();
+    userA = createUser({ username: `wa-${Date.now()}-${Math.random()}`, passwordHash: 'h' }).id;
+    userB = createUser({ username: `wb-${Date.now()}-${Math.random()}`, passwordHash: 'h' }).id;
+    assigned = createUser({ username: `wc-${Date.now()}-${Math.random()}`, passwordHash: 'h' }).id;
+  });
+
+  it('step 1: prefers the linked session owner over assigned_user_id / created_by', () => {
+    const shipping = seedSession();
+    setSessionOwner(shipping, userA);
+    const out = resolveWikiDocOwnerUserId({
+      session_id: shipping,
+      assigned_user_id: assigned,
+      created_by: userB,
+    });
+    expect(out).toBe(userA);
+  });
+
+  it('step 2: falls back to assigned_user_id when the session has no owner', () => {
+    const orphan = seedSession();
+    const out = resolveWikiDocOwnerUserId({
+      session_id: orphan,
+      assigned_user_id: assigned,
+      created_by: userB,
+    });
+    expect(out).toBe(assigned);
+  });
+
+  it('step 2: falls back to assigned_user_id when there is no linked session', () => {
+    const out = resolveWikiDocOwnerUserId({
+      session_id: null,
+      assigned_user_id: assigned,
+      created_by: null,
+    });
+    expect(out).toBe(assigned);
+  });
+
+  it('step 3: falls back to created_by when it is a real user', () => {
+    const out = resolveWikiDocOwnerUserId({
+      session_id: null,
+      assigned_user_id: null,
+      created_by: userB,
+    });
+    expect(out).toBe(userB);
+  });
+
+  it('ignores free-form created_by (e.g. "support-ticket") — no org-owner fallback', () => {
+    const out = resolveWikiDocOwnerUserId({
+      session_id: null,
+      assigned_user_id: null,
+      created_by: 'support-ticket',
+    });
+    expect(out).toBeNull();
+  });
+
+  it('returns null for a null card without throwing', () => {
+    expect(() => resolveWikiDocOwnerUserId(null)).not.toThrow();
+    expect(resolveWikiDocOwnerUserId(null)).toBeNull();
   });
 });
 

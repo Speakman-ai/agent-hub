@@ -1,5 +1,19 @@
 import './test/setup.js';
 import { describe, it, expect, vi, afterEach } from 'vitest';
+
+// Spy on the owner-threading seam. Without a resolved owner the merge-triggered
+// docs session spawns userless and the CLI runs logged-out (`Not logged in`),
+// so wiki entries never get written — the reported bug. These stubs let us
+// assert the resolved owner reaches setSessionOwner.
+vi.mock('./session-ownership.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./session-ownership.js')>();
+  return {
+    ...actual,
+    setSessionOwner: vi.fn(),
+    resolveWikiDocOwnerUserId: vi.fn(),
+  };
+});
+import { setSessionOwner, resolveWikiDocOwnerUserId } from './session-ownership.js';
 import {
   buildWikiDocOnMergePrompt,
   buildWikiDocBackfillPrompt,
@@ -215,6 +229,36 @@ describe('dispatchWikiDocOnMerge', () => {
     expect(handleChat).toHaveBeenCalledOnce();
     const msg = handleChat.mock.calls[0]![1] as { content: string };
     expect(msg.content).toContain('Add wiki merge hook');
+  });
+
+  it('threads the card-resolved owner into the spawned session (regression: was userless)', () => {
+    vi.mocked(resolveWikiDocOwnerUserId).mockReset();
+    vi.mocked(setSessionOwner).mockReset();
+    vi.mocked(resolveWikiDocOwnerUserId).mockReturnValue('user-77');
+    const stmts = fakeStmts();
+    dispatchWikiDocOnMerge(deps(stmts), {
+      projectId: 'p1',
+      card: card({ session_id: 'ship-sess', assigned_user_id: 'dev-9' }),
+    });
+    // The resolver is consulted with the merged card, and its result pins the
+    // session owner — previously the merge hook passed no owner and this was null.
+    expect(vi.mocked(resolveWikiDocOwnerUserId)).toHaveBeenCalledWith(
+      expect.objectContaining({ session_id: 'ship-sess', assigned_user_id: 'dev-9' }),
+    );
+    expect(vi.mocked(setSessionOwner)).toHaveBeenCalledWith(expect.any(String), 'user-77');
+  });
+
+  it('an explicit ownerUserId wins over the card resolver', () => {
+    vi.mocked(resolveWikiDocOwnerUserId).mockReset();
+    vi.mocked(setSessionOwner).mockReset();
+    vi.mocked(resolveWikiDocOwnerUserId).mockReturnValue('card-user');
+    dispatchWikiDocOnMerge(deps(fakeStmts()), {
+      projectId: 'p1',
+      card: card(),
+      ownerUserId: 'explicit-user',
+    });
+    expect(vi.mocked(resolveWikiDocOwnerUserId)).not.toHaveBeenCalled();
+    expect(vi.mocked(setSessionOwner)).toHaveBeenCalledWith(expect.any(String), 'explicit-user');
   });
 
   it('skips when the card is already documented', () => {

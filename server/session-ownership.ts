@@ -368,3 +368,41 @@ export function resolveAutonomousOwnerUserId(
   // No real user → no owner. Caller hard-fails (no org-owner fallback).
   return null;
 }
+
+/**
+ * Resolve the human whose per-user CLI credentials a merge-triggered wiki-doc
+ * session should run as. The card-on-merge hooks have no `req`, so — like the
+ * autonomous dispatcher — walk progressively-weaker signals off the merged
+ * card to find a real human:
+ *
+ *   1. **linked session owner** (`card.session_id`) — the human who owns the
+ *      chat session that shipped the change. Strongest signal.
+ *   2. **`card.assigned_user_id`** — the Hub user the card was assigned to.
+ *   3. **`card.created_by`** — card creator, only when it names a real user
+ *      row (support-ticket intake stamps free-form strings like
+ *      `support-ticket`, which must never be written as an owner).
+ *
+ * Returns `null` when none identifies a real user. There is **no org-owner
+ * fallback**: an unowned wiki-doc spawn runs userless and the CLI spawn path
+ * fails closed (per-account engines refuse rather than borrow an identity).
+ * Without this, the docs agent runs logged-out and wiki writes fail with
+ * `Not logged in`.
+ */
+export function resolveWikiDocOwnerUserId(
+  card:
+    | { session_id?: string | null; assigned_user_id?: string | null; created_by?: string | null }
+    | null
+    | undefined,
+): string | null {
+  if (card?.session_id) {
+    const sessionOwner = getSessionOwner(card.session_id);
+    if (sessionOwner && isKnownUserId(sessionOwner)) return sessionOwner;
+  }
+  if (card?.assigned_user_id && isKnownUserId(card.assigned_user_id)) {
+    return card.assigned_user_id;
+  }
+  if (card?.created_by && isKnownUserId(card.created_by)) {
+    return card.created_by;
+  }
+  return null;
+}

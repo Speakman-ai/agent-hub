@@ -23,7 +23,7 @@ import type {
   SessionRow,
   Stmts,
 } from './types.js';
-import { setSessionOwner } from './session-ownership.js';
+import { setSessionOwner, resolveWikiDocOwnerUserId } from './session-ownership.js';
 import { broadcastSessionCreated } from './session-checkpoint-rewind.js';
 import { resolveEffectiveModel } from './effective-model.js';
 
@@ -320,13 +320,17 @@ export function dispatchWikiDocOnMerge(
     prTitle: args.prTitle,
     prUrl: args.prUrl,
   });
+  // The card-on-merge hooks pass no explicit owner. Without one the docs
+  // session spawns userless and the CLI runs logged-out (`Not logged in`),
+  // so wiki entries never get written. Resolve the human off the merged card.
+  const ownerUserId = args.ownerUserId ?? resolveWikiDocOwnerUserId(card);
   const result = kickWikiDocSession(deps, {
     docsAgent: found.agent,
     sessionName: wikiDocSessionNameForCard(card.id),
     prompt,
     kind: 'merge',
     cardId: card.id,
-    ownerUserId: args.ownerUserId,
+    ownerUserId,
   });
 
   try {
