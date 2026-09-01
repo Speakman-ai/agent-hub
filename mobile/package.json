@@ -7,6 +7,7 @@
     "pretest": "node -e \"const fs=require('fs');if(!fs.existsSync('node_modules/react/package.json')){console.error('Mobile deps missing. From repo root run: npm run install:all   (or: cd mobile && npm install)');process.exit(1)}\"",
     "generate:xterm-bundle": "node scripts/generate-xterm-bundle.mjs",
     "typecheck": "tsc --noEmit",
+    "postinstall": "patch-package",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
@@ -37,6 +38,7 @@
     "expo-status-bar": "~3.0.9",
     "expo-web-browser": "~15.0.11",
     "lucide-react-native": "^1.20.0",
+    "patch-package": "^8.0.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
@@ -62,6 +64,7 @@
     "vitest": "^4.1.4"
   },
   "overrides": {
+    "decode-uri-component": "^0.5.0",
     "postcss": "^8.5.18",
     "linkify-it": "^5.0.2",
     "markdown-it": "^14.3.0",
