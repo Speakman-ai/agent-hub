@@ -66,6 +66,15 @@ export interface SearchResultRow {
   score: number;
   ftsScore?: number;
   semanticScore?: number;
+  /**
+   * Raw cosine similarity of the best-matching chunk, in `[-1, 1]`, BEFORE the
+   * min-max normalization that `semanticScore` carries. This is an absolute
+   * measure of semantic relevance suitable for a fixed threshold (a relevance
+   * floor); `semanticScore`/`score` are normalized per-result-set and so cannot
+   * be compared against a constant. Undefined when the page had no semantic hit
+   * (FTS-only) or on the FTS fallback path.
+   */
+  rawSemanticScore?: number;
   matchedChunk?: string;
   snippet?: string;
 }
@@ -377,6 +386,8 @@ export interface RankedResult {
   score: number;
   ftsScore: number;
   semanticScore: number;
+  /** Raw cosine similarity (pre-normalization) of the best chunk; see `SearchResultRow.rawSemanticScore`. */
+  rawSemanticScore?: number;
   matchedChunk?: string;
   snippet?: string;
 }
@@ -431,6 +442,7 @@ export function rankHybrid(
       score: blended,
       ftsScore: ftsS,
       semanticScore: semS,
+      rawSemanticScore: bestSemanticByPage.get(pageId)?.score,
       matchedChunk: bestSemanticByPage.get(pageId)?.chunkText,
       snippet: ftsScoreByPage.get(pageId)?.snippet,
     });
@@ -599,6 +611,7 @@ export async function searchWiki(
           updated_at: page.updated_at,
           score: hit.score,
           semanticScore: hit.score,
+          rawSemanticScore: hit.score,
           matchedChunk: hit.chunkText,
         } as SearchResultRow;
       })
@@ -627,6 +640,7 @@ export async function searchWiki(
     score: r.score,
     ftsScore: r.ftsScore,
     semanticScore: r.semanticScore,
+    rawSemanticScore: r.rawSemanticScore,
     matchedChunk: r.matchedChunk,
     snippet: r.snippet,
   }));

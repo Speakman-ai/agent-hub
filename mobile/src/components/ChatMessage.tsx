@@ -30,6 +30,7 @@ import { getUserMessageFlags } from '../utils/chatMessageUserFlags';
 import { resolveAgentDisplayName } from '../utils/agentDisplayName';
 import { parseRawReviewVerdictContent } from '../utils/reviewVerdictContent';
 import HandoffCard from './HandoffCard';
+import WikiConsultedChip from './WikiConsultedChip';
 // Built once — overrides the Markdown library's default text/code rules so
 // every leaf <Text> is `selectable`, enabling browser-like drag-select copy
 // inside assistant bubbles.
@@ -666,6 +667,8 @@ function ChatMessage({
             )}
           </>
         )}
+
+        {!isUser && !isSystem && <WikiConsultedChip metadata={message.metadata} />}
 
         {/* Timestamp */}
         <Text style={[styles.timestamp, isUser ? styles.timestampUser : styles.timestampAssistant]}>

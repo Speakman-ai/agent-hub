@@ -204,6 +204,31 @@ describe('rankHybrid', () => {
     const ranked = rankHybrid(fts, semantic, lookup);
     expect(ranked[0]!.matchedChunk).toBe('high');
   });
+
+  it('exposes rawSemanticScore as the raw cosine (pre-normalization), unlike semanticScore', () => {
+    // Two pages with distinct raw cosines. semanticScore is min-max normalized
+    // (top → 1, bottom → 0); rawSemanticScore must preserve the true cosine so a
+    // fixed relevance floor can be applied.
+    const fts: FtsHit[] = [];
+    const semantic: SemanticHit[] = [
+      { pageId: 'a', chunkIdx: 0, chunkText: 'a', score: 0.82 },
+      { pageId: 'b', chunkIdx: 0, chunkText: 'b', score: 0.44 },
+    ];
+    const ranked = rankHybrid(fts, semantic, lookup);
+    const a = ranked.find((r) => r.page.id === 'a')!;
+    const b = ranked.find((r) => r.page.id === 'b')!;
+    expect(a.rawSemanticScore).toBeCloseTo(0.82, 5);
+    expect(b.rawSemanticScore).toBeCloseTo(0.44, 5);
+    // Normalized scores are stretched to [0, 1] and differ from the raw cosine.
+    expect(a.semanticScore).toBeCloseTo(1, 5);
+    expect(b.semanticScore).toBeCloseTo(0, 5);
+  });
+
+  it('leaves rawSemanticScore undefined for FTS-only pages', () => {
+    const fts: FtsHit[] = [{ pageId: 'a', page: pageA, bm25Rank: -3 }];
+    const ranked = rankHybrid(fts, [], lookup);
+    expect(ranked[0]!.rawSemanticScore).toBeUndefined();
+  });
 });
 
 describe('DEFAULT_MODEL', () => {

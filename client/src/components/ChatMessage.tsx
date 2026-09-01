@@ -27,6 +27,7 @@ import FinalizeReadyToPushBlock from './finalize/blocks/FinalizeReadyToPushBlock
 import FinalizeRunSummaryBlock from './finalize/blocks/FinalizeRunSummaryBlock';
 import TurnChangeSummaryBlock from './finalize/blocks/TurnChangeSummaryBlock';
 import { parseTurnChangeSummaryMetadata } from '../utils/turnChangeSummary';
+import WikiConsultedChip from './WikiConsultedChip';
 import FinalizeTerminalBlock from './finalize/blocks/FinalizeTerminalBlock';
 import FinalizeReviewNoticeBlock from './finalize/blocks/FinalizeReviewNoticeBlock';
 import FinalizeFixDispatchBlock from './finalize/blocks/FinalizeFixDispatchBlock';
@@ -678,6 +679,7 @@ function ChatMessage({
             )}
           </div>
         )}
+        {!isUser && !isSystem && <WikiConsultedChip metadata={message.metadata} />}
         <div className={`text-xs mt-1 ${isUser ? 'text-blue-300' : 'text-gray-600'}`}>
           {message.created_at && relativeTime(message.created_at)}
         </div>

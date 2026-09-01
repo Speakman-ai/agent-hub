@@ -10,6 +10,21 @@ const MAX_TOTAL_BLOCK_CHARS = 5000;
 const MIN_QUERY_CHARS_FOR_FIRST_TURN_RAG = 12;
 export const MAX_WIKI_RAG_CALLS_PER_SESSION = 16;
 
+/**
+ * Relevance floor for the automatic (backend) wiki-RAG path, expressed as raw
+ * cosine similarity in `[-1, 1]` — NOT the min-max normalized `score`/`semanticScore`
+ * a result row also carries. Normalization forces the top hit toward the high end
+ * of every result set regardless of true quality, so a threshold on the displayed
+ * score cannot tell a great match from the best of a bad batch. We gate on
+ * `SearchResultRow.rawSemanticScore` instead. Pages below this bar are dropped from
+ * the injected prompt block; if nothing clears it, the turn attaches nothing and
+ * the UI shows a "wiki checked, no strong match" chip. Tunable; kept conservative
+ * so genuinely relevant pages still pass. Only the automatic path applies this
+ * floor — the agent-initiated `<agenthub:wiki>` path returns whatever matches, since
+ * the agent explicitly chose the query.
+ */
+export const WIKI_RAG_MIN_COSINE = 0.6;
+
 export { MAX_AGENTHUB_CONTROL_BLOCK_JSON_BYTES };
 
 /**
@@ -165,11 +180,34 @@ export async function buildWikiRagContextFromQuery(
   query: string,
 ): Promise<string> {
   if (!projectId || !query) return '';
-  const rows = await searchWiki(projectId, query, {
-    mode: 'hybrid',
-    limit: MAX_RESULTS,
-  });
+  const rows = await retrieveWikiRows(projectId, query);
   return formatWikiRagContext(query, rows);
+}
+
+/** Raw hybrid retrieval (no relevance floor). Shared by the block builder and the user-turn path. */
+export async function retrieveWikiRows(
+  projectId: string,
+  query: string,
+): Promise<SearchResultRow[]> {
+  if (!projectId || !query) return [];
+  return searchWiki(projectId, query, { mode: 'hybrid', limit: MAX_RESULTS });
+}
+
+/**
+ * Drop rows whose raw cosine similarity is below `minCosine`. When no row carries
+ * a raw cosine (e.g. Gemini not configured, so hybrid degraded to FTS-only), the
+ * floor is not applicable and all rows are preserved — suppressing the FTS
+ * fallback entirely would be a silent regression for keyless installs.
+ */
+export function applyRelevanceFloor(
+  rows: SearchResultRow[],
+  minCosine: number = WIKI_RAG_MIN_COSINE,
+): SearchResultRow[] {
+  const hasCosine = rows.some((r) => typeof r.rawSemanticScore === 'number');
+  if (!hasCosine) return rows;
+  return rows.filter(
+    (r) => typeof r.rawSemanticScore === 'number' && r.rawSemanticScore >= minCosine,
+  );
 }
 
 /**
@@ -195,17 +233,62 @@ export function shouldAttachWikiRag(input: {
   return q.length >= MIN_QUERY_CHARS_FOR_FIRST_TURN_RAG;
 }
 
+/** One page shown in the persisted "Consulted wiki" chip. */
+export interface WikiRagIndicatorPage {
+  title: string;
+  slug: string;
+  category: string;
+  /** Min-max normalized blended score (as shown in the injected block). */
+  score: number;
+  /** Raw cosine similarity of the best chunk, when available (pre-normalization). */
+  rawScore?: number;
+}
+
+/**
+ * User-visible record that the automatic wiki-RAG path ran on a turn. Persisted
+ * on the assistant message row (`metadata.wikiRag`) and rendered as a chip in
+ * web + mobile. `status: 'consulted'` means pages cleared the relevance floor and
+ * were injected into the prompt; `status: 'no_match'` means retrieval ran but
+ * nothing cleared the floor (or there were no results), so nothing was injected.
+ */
+export interface WikiRagIndicator {
+  status: 'consulted' | 'no_match';
+  /** Number of pages injected into the prompt (0 when `no_match`). */
+  retrieved: number;
+  /** Pages injected, best-first (empty when `no_match`). */
+  pages: WikiRagIndicatorPage[];
+  /** Query used for retrieval (the user's message, normalized). */
+  query: string;
+}
+
 export interface WikiHybridRagUserTurnResult {
   /** Suffix to append to the system prompt (empty when skipped or no block). */
   promptSuffix: string;
   /**
-   * When true, increment `wiki_hybrid_rag_consumed` for the session. Set
-   * after `buildWikiRagContext` resolves (including empty result). Not set on
-   * throw so a later turn can retry after transient failures.
+   * When true, increment `wiki_hybrid_rag_consumed` for the session. Set once
+   * retrieval actually ran (including a `no_match` result — the embedding call
+   * was still spent). Not set on throw or when retrieval was skipped, so a later
+   * turn can retry after transient failures.
    */
   shouldIncrementWikiHybridRagUsage: boolean;
   /** Non-null when retrieval threw; caller should log. */
   logWarning: string | null;
+  /**
+   * Non-null when retrieval actually ran (eligible + no throw); drives the
+   * persisted "Consulted wiki" chip. Null when retrieval was skipped (ineligible,
+   * budget exhausted, slash-skill turn) or threw — no chip in those cases.
+   */
+  indicator: WikiRagIndicator | null;
+}
+
+function toIndicatorPage(r: SearchResultRow): WikiRagIndicatorPage {
+  return {
+    title: r.title,
+    slug: r.slug,
+    category: r.category,
+    score: Number.isFinite(r.score) ? r.score : 0,
+    ...(typeof r.rawSemanticScore === 'number' ? { rawScore: r.rawSemanticScore } : {}),
+  };
 }
 
 /**
@@ -230,18 +313,48 @@ export async function runWikiHybridRagForUserTurn(
       slashSkillActive: options.slashSkillActive,
     })
   ) {
-    return { promptSuffix: '', shouldIncrementWikiHybridRagUsage: false, logWarning: null };
-  }
-  try {
-    const ragContext = await buildWikiRagContext(projectId, userMessage);
     return {
-      promptSuffix: ragContext ? `\n\n${ragContext}` : '',
+      promptSuffix: '',
+      shouldIncrementWikiHybridRagUsage: false,
+      logWarning: null,
+      indicator: null,
+    };
+  }
+  const query = normalizeRagQuery(userMessage);
+  try {
+    const rows = await retrieveWikiRows(projectId, query);
+    const kept = applyRelevanceFloor(rows);
+    if (kept.length > 0) {
+      const block = formatWikiRagContext(query, kept);
+      return {
+        promptSuffix: block ? `\n\n${block}` : '',
+        shouldIncrementWikiHybridRagUsage: true,
+        logWarning: null,
+        indicator: {
+          status: 'consulted',
+          retrieved: kept.length,
+          pages: kept.slice(0, MAX_RESULTS).map(toIndicatorPage),
+          query,
+        },
+      };
+    }
+    // Retrieval ran but nothing cleared the relevance floor: inject nothing, but
+    // surface a subtle "wiki checked, no strong match" chip. The embedding call
+    // was spent, so still count it against the session budget.
+    return {
+      promptSuffix: '',
       shouldIncrementWikiHybridRagUsage: true,
       logWarning: null,
+      indicator: { status: 'no_match', retrieved: 0, pages: [], query },
     };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    return { promptSuffix: '', shouldIncrementWikiHybridRagUsage: false, logWarning: message };
+    return {
+      promptSuffix: '',
+      shouldIncrementWikiHybridRagUsage: false,
+      logWarning: message,
+      indicator: null,
+    };
   }
 }
 

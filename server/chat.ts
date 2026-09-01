@@ -220,6 +220,7 @@ import {
   MAX_WIKI_RAG_CALLS_PER_SESSION,
   effectiveWikiHybridRagUsedCount,
   nextWikiHybridRagRowAfterIncrement,
+  type WikiRagIndicator,
 } from './wiki-rag.js';
 import { MAX_REACT_CONTROL_BLOCK_JSON_BYTES } from './agenthub-control-limits.js';
 import { runCodeRagForUserTurn, MAX_CODE_RAG_CALLS_PER_SESSION } from './code-rag.js';
@@ -3227,6 +3228,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       );
       const maxWikiSession = orchestrationBudgets.maxWikiRagCallsPerSession;
 
+      // Captured from the automatic wiki-RAG path and persisted on the assistant
+      // message row (metadata.wikiRag) so the "Consulted wiki" chip survives
+      // reload. Null unless retrieval actually ran this turn.
+      let wikiRagIndicator: WikiRagIndicator | null = null;
+
       if (projectId && !isAutoContinuation) {
         // Wiki-RAG and code-RAG each issue an independent query-embedding round
         // trip to Gemini and touch disjoint tables, so run them concurrently
@@ -3254,6 +3260,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (wikiRag.promptSuffix) {
           enrichedPrompt += wikiRag.promptSuffix;
         }
+        wikiRagIndicator = wikiRag.indicator;
         if (wikiRag.logWarning) {
           console.warn(
             `[wiki-rag] retrieval failed for session ${sessionId}: ${wikiRag.logWarning}`,
@@ -6195,6 +6202,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           });
         }
 
+        // Persist the automatic wiki-RAG indicator on the assistant row so the
+        // "Consulted wiki" chip survives reload (the live chip rides the `done`
+        // broadcast below). Only present when retrieval actually ran this turn.
+        const assistantMetadata = wikiRagIndicator
+          ? JSON.stringify({ wikiRag: wikiRagIndicator })
+          : null;
         try {
           S.addMessage.run(
             assistantMsgId,
@@ -6204,7 +6217,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             engine,
             model,
             null,
-            null,
+            assistantMetadata,
             null,
             null,
             null,
@@ -6251,6 +6264,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             content: finalContent,
             engine,
             model,
+            metadata: assistantMetadata,
             created_at: new Date().toISOString(),
           },
         });

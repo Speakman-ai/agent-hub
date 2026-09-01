@@ -13,8 +13,10 @@ import {
   shouldAttachWikiRag,
   runWikiHybridRagForAssistantRequest,
   runWikiHybridRagForUserTurn,
+  applyRelevanceFloor,
+  WIKI_RAG_MIN_COSINE,
 } from './wiki-rag.js';
-import { searchWiki } from './wiki-embeddings.js';
+import { searchWiki, type SearchResultRow } from './wiki-embeddings.js';
 
 vi.mock('./wiki-embeddings.js', () => ({
   searchWiki: vi.fn(),
@@ -306,6 +308,114 @@ describe('runWikiHybridRagForUserTurn (chat orchestration)', () => {
     );
     expect(r.shouldIncrementWikiHybridRagUsage).toBe(false);
     expect(r.logWarning).toBe('embedding unavailable');
+  });
+});
+
+function row(overrides: Partial<SearchResultRow>): SearchResultRow {
+  return {
+    id: overrides.slug ?? 'id',
+    project_id: 'p1',
+    title: overrides.title ?? 'Title',
+    slug: overrides.slug ?? 'slug',
+    category: overrides.category ?? 'architecture',
+    updated_by: 'a',
+    created_at: 'n',
+    updated_at: 'n',
+    score: 0.5,
+    matchedChunk: 'hit',
+    ...overrides,
+  };
+}
+
+describe('applyRelevanceFloor', () => {
+  it('drops rows whose raw cosine is below the floor', () => {
+    const kept = applyRelevanceFloor([
+      row({ slug: 'a', rawSemanticScore: WIKI_RAG_MIN_COSINE + 0.1 }),
+      row({ slug: 'b', rawSemanticScore: WIKI_RAG_MIN_COSINE - 0.1 }),
+    ]);
+    expect(kept.map((r) => r.slug)).toEqual(['a']);
+  });
+
+  it('keeps rows exactly at the floor (inclusive)', () => {
+    const kept = applyRelevanceFloor([row({ slug: 'a', rawSemanticScore: WIKI_RAG_MIN_COSINE })]);
+    expect(kept).toHaveLength(1);
+  });
+
+  it('preserves all rows when none carry a raw cosine (FTS-only fallback)', () => {
+    const rows = [row({ slug: 'a' }), row({ slug: 'b' })];
+    expect(applyRelevanceFloor(rows)).toHaveLength(2);
+  });
+
+  it('returns empty when every row is below the floor', () => {
+    expect(applyRelevanceFloor([row({ slug: 'a', rawSemanticScore: 0.1 })])).toHaveLength(0);
+  });
+});
+
+describe('runWikiHybridRagForUserTurn relevance floor + indicator', () => {
+  beforeEach(() => {
+    mockedSearchWiki.mockReset();
+  });
+
+  const longQ = 'this is a long enough question about our wiki?';
+
+  it('attaches block + consulted indicator when a row clears the floor', async () => {
+    mockedSearchWiki.mockResolvedValueOnce([
+      row({ slug: 'x', title: 'X', rawSemanticScore: WIKI_RAG_MIN_COSINE + 0.2 }),
+      row({ slug: 'y', title: 'Y', rawSemanticScore: WIKI_RAG_MIN_COSINE - 0.2 }),
+    ]);
+    const r = await runWikiHybridRagForUserTurn('p1', longQ, {
+      wikiHybridRagUsedCount: 0,
+      slashSkillActive: false,
+    });
+    expect(r.promptSuffix).toContain('X');
+    expect(r.promptSuffix).not.toContain('Y');
+    expect(r.shouldIncrementWikiHybridRagUsage).toBe(true);
+    expect(r.indicator).toEqual({
+      status: 'consulted',
+      retrieved: 1,
+      query: expect.any(String),
+      pages: [expect.objectContaining({ slug: 'x', title: 'X', category: 'architecture' })],
+    });
+    expect(r.indicator?.pages[0]).toHaveProperty('rawScore');
+  });
+
+  it('emits a no_match indicator and no block when nothing clears the floor', async () => {
+    mockedSearchWiki.mockResolvedValueOnce([row({ slug: 'x', title: 'X', rawSemanticScore: 0.1 })]);
+    const r = await runWikiHybridRagForUserTurn('p1', longQ, {
+      wikiHybridRagUsedCount: 0,
+      slashSkillActive: false,
+    });
+    expect(r.promptSuffix).toBe('');
+    expect(r.shouldIncrementWikiHybridRagUsage).toBe(true);
+    expect(r.indicator).toMatchObject({ status: 'no_match', retrieved: 0, pages: [] });
+  });
+
+  it('emits a no_match indicator when there are zero results', async () => {
+    mockedSearchWiki.mockResolvedValueOnce([]);
+    const r = await runWikiHybridRagForUserTurn('p1', longQ, {
+      wikiHybridRagUsedCount: 0,
+      slashSkillActive: false,
+    });
+    expect(r.indicator).toMatchObject({ status: 'no_match' });
+  });
+
+  it('returns a null indicator when retrieval is skipped (ineligible turn)', async () => {
+    const r = await runWikiHybridRagForUserTurn('p1', 'short', {
+      wikiHybridRagUsedCount: 0,
+      slashSkillActive: false,
+    });
+    expect(r.indicator).toBe(null);
+    expect(mockedSearchWiki).not.toHaveBeenCalled();
+  });
+
+  it('returns a null indicator when retrieval throws', async () => {
+    mockedSearchWiki.mockRejectedValueOnce(new Error('embedding unavailable'));
+    const r = await runWikiHybridRagForUserTurn('p1', longQ, {
+      wikiHybridRagUsedCount: 0,
+      slashSkillActive: false,
+    });
+    expect(r.indicator).toBe(null);
+    expect(r.shouldIncrementWikiHybridRagUsage).toBe(false);
   });
 });
 
