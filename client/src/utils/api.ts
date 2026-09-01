@@ -2819,6 +2819,25 @@ export const api = {
       body: JSON.stringify({ voterKey, value }),
     }),
 
+  // Anonymous comment thread on a feature-request (or any) support ticket.
+  // List returns non-hidden comments oldest-first; each carries an optional
+  // free-text `display_name` (no user id is stored).
+  getSupportTicketComments: (projectId: any, id: any) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/comments`),
+  // Append a comment. `body` is required; `displayName` is optional. The server
+  // derives `source` from the caller and broadcasts support_ticket_comment_created.
+  addSupportTicketComment: (projectId: any, id: any, opts: any = {}) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body: opts.body, displayName: opts.displayName }),
+    }),
+  // Operator soft-delete (hide) a comment. Hub-auth only; broadcasts
+  // support_ticket_comment_deleted so other clients drop the row.
+  hideSupportTicketComment: (projectId: any, id: any, commentId: any) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/comments/${commentId}`, {
+      method: 'DELETE',
+    }),
+
   // Cross-project support overview — every project's support tickets in one
   // severity-ordered list (critical → low). Returns { tickets, projects } where
   // each ticket carries a `project_name` and `projects` is the full set of

@@ -1096,6 +1096,230 @@ function TicketInvestigationControl({ projectId, ticket, agents, onUpdated, onNo
   );
 }
 
+// Anonymous comment thread for a support ticket (spec `comment-thread`).
+// Feature-request tickets are the votable items, but the thread is generic to
+// any ticket the modal opens. Lists non-hidden comments oldest-first, appends
+// with an optional free-text display name, and — since the web page is always
+// the Hub-operator surface — lets an operator hide (soft-delete) any comment.
+// Live-reconciles from the support_ticket_comment_created/_deleted WS events
+// (App.tsx re-dispatches them as the `agenthub-support-ticket-comment` window
+// event), so a peer's comment or moderation lands without a refetch.
+function CommentThread({ projectId, ticketId, onNotify }: any) {
+  const [comments, setComments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<any>(null);
+  const [body, setBody] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [hidingId, setHidingId] = useState<any>(null);
+  // WS events that arrive WHILE the initial GET is in flight would be clobbered
+  // by the fetched snapshot (a stale list that predates them). Buffer them here
+  // until the fetch resolves, then replay them against the fetched rows so a
+  // mid-request create/delete survives. `loaded` flips true once the GET settles;
+  // after that WS events apply straight to state.
+  const pendingEventsRef = useRef<any[]>([]);
+  const loadedRef = useRef(false);
+
+  // Insert without duplicating: the POST/optimistic add and the WS echo can both
+  // deliver the same row, so key on id.
+  const mergeComment = (incoming: any) => {
+    if (!incoming?.id) return;
+    setComments((prev: any) =>
+      prev.some((c: any) => c.id === incoming.id) ? prev : [...prev, incoming],
+    );
+  };
+
+  // Apply one buffered/live event to a comment list, returning the next list.
+  const applyCommentEvent = (list: any[], ev: any): any[] => {
+    if (ev.type === 'support_ticket_comment_created' && ev.comment?.id) {
+      return list.some((c: any) => c.id === ev.comment.id) ? list : [...list, ev.comment];
+    }
+    if (ev.type === 'support_ticket_comment_deleted' && ev.commentId) {
+      return list.filter((c: any) => c.id !== ev.commentId);
+    }
+    return list;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    // Reset the load-window state for this ticket before the fetch begins so
+    // events are buffered from "request began", not from a prior ticket.
+    loadedRef.current = false;
+    pendingEventsRef.current = [];
+    setLoading(true);
+    setError(null);
+    api
+      .getSupportTicketComments(projectId, ticketId)
+      .then((data: any) => {
+        if (cancelled) return;
+        // Reconcile: start from the fetched snapshot, then replay every event
+        // that landed during the fetch (in arrival order) so a create/delete
+        // received mid-request isn't undone by the older response.
+        const base = Array.isArray(data) ? data.slice() : [];
+        const reconciled = pendingEventsRef.current.reduce(applyCommentEvent, base);
+        setComments(reconciled);
+      })
+      .catch((err: any) => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        loadedRef.current = true;
+        pendingEventsRef.current = [];
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, ticketId]);
+
+  useEffect(() => {
+    const onWs = (e: any) => {
+      const d = e?.detail;
+      if (!d || d.projectId !== projectId || d.ticketId !== ticketId) return;
+      // Still loading: buffer the event; the GET's reconcile step replays it.
+      if (!loadedRef.current) {
+        pendingEventsRef.current.push(d);
+        return;
+      }
+      if (d.type === 'support_ticket_comment_created') {
+        mergeComment(d.comment);
+      } else if (d.type === 'support_ticket_comment_deleted' && d.commentId) {
+        setComments((prev: any) => prev.filter((c: any) => c.id !== d.commentId));
+      }
+    };
+    window.addEventListener('agenthub-support-ticket-comment', onWs as any);
+    return () => window.removeEventListener('agenthub-support-ticket-comment', onWs as any);
+  }, [projectId, ticketId]);
+
+  const submit = async () => {
+    const trimmed = body.trim();
+    if (!trimmed || submitting) return;
+    setSubmitting(true);
+    try {
+      const created = await api.addSupportTicketComment(projectId, ticketId, {
+        body: trimmed,
+        displayName: displayName.trim() || undefined,
+      });
+      mergeComment(created);
+      setBody('');
+    } catch (err: any) {
+      onNotify?.(err?.message || 'Failed to add comment', 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const hide = async (commentId: any) => {
+    if (hidingId) return;
+    setHidingId(commentId);
+    try {
+      await api.hideSupportTicketComment(projectId, ticketId, commentId);
+      setComments((prev: any) => prev.filter((c: any) => c.id !== commentId));
+    } catch (err: any) {
+      onNotify?.(err?.message || 'Failed to remove comment', 'error');
+    } finally {
+      setHidingId(null);
+    }
+  };
+
+  return (
+    <div data-testid="comment-thread">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+        <MessageCircle size={12} />
+        Comments
+        {comments.length > 0 ? <span className="text-gray-600">({comments.length})</span> : null}
+      </div>
+
+      {loading ? (
+        <div className="rounded-md border border-dashed border-gray-800 p-3 text-xs text-gray-500">
+          Loading comments…
+        </div>
+      ) : error ? (
+        <div className="rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1.5 text-xs text-red-300">
+          {error}
+        </div>
+      ) : comments.length === 0 ? (
+        <div className="rounded-md border border-dashed border-gray-800 p-3 text-xs text-gray-500">
+          No comments yet.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {comments.map((c: any) => (
+            <div
+              key={c.id}
+              data-testid="comment-row"
+              data-comment-id={c.id}
+              className="group rounded-md border border-gray-800 bg-gray-950/60 p-2.5"
+            >
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 text-[11px] text-gray-500">
+                    <span className="font-medium text-gray-400">
+                      {c.display_name?.trim() || 'Anonymous'}
+                    </span>
+                    <span>· {relativeTime(c.created_at)}</span>
+                  </div>
+                  <div className="mt-1 whitespace-pre-wrap break-words text-sm text-gray-300">
+                    {c.body}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => hide(c.id)}
+                  disabled={hidingId === c.id}
+                  data-testid={`comment-hide-${c.id}`}
+                  aria-label="Hide comment"
+                  title="Hide this comment (operator moderation)"
+                  className="flex-shrink-0 text-gray-600 opacity-0 transition-opacity hover:text-red-400 focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-2 space-y-1.5">
+        <input
+          type="text"
+          value={displayName}
+          onChange={(e: any) => setDisplayName(e.target.value)}
+          disabled={submitting}
+          maxLength={80}
+          placeholder="Name (optional)"
+          aria-label="Display name (optional)"
+          data-testid="comment-display-name"
+          className="w-full rounded border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-300 placeholder-gray-600 focus:border-gray-600 focus:outline-none disabled:opacity-50"
+        />
+        <textarea
+          value={body}
+          onChange={(e: any) => setBody(e.target.value)}
+          disabled={submitting}
+          rows={2}
+          maxLength={4000}
+          placeholder="Add a comment…"
+          aria-label="Comment body"
+          data-testid="comment-body"
+          className="w-full resize-y rounded border border-gray-700 bg-gray-950 px-2 py-1 text-sm text-gray-300 placeholder-gray-600 focus:border-gray-600 focus:outline-none disabled:opacity-50"
+        />
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={submit}
+            disabled={submitting || !body.trim()}
+            data-testid="comment-submit"
+            className="inline-flex items-center gap-1.5 rounded border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:border-gray-600 hover:bg-gray-800 hover:text-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting ? 'Posting…' : 'Comment'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SupportTicketDetailModal({
   ticket: liveTicket,
   projectId,
@@ -1374,6 +1598,8 @@ function SupportTicketDetailModal({
                 </div>
               )}
             </div>
+
+            <CommentThread projectId={projectId} ticketId={ticket.id} onNotify={onNotify} />
           </div>
 
           {/* Footer actions */}
@@ -1441,7 +1667,7 @@ function SupportTicketDetailModal({
 // choice (`myVote`) highlights the matching arrow. Votes are optimistic —
 // applied locally, then reconciled with the server aggregate (and the
 // support_ticket_vote_updated WebSocket echo for cross-client sync).
-function VotingItemCard({ item, onVote }: any) {
+function VotingItemCard({ item, onVote, onOpen }: any) {
   const voting = item.voting || { score: 0, upvotes: 0, downvotes: 0, myVote: null };
   const myVote = voting.myVote;
   const commentCount = Number(voting.comment_count) || 0;
@@ -1489,8 +1715,13 @@ function VotingItemCard({ item, onVote }: any) {
         </button>
       </div>
 
-      {/* Item body */}
-      <div className="min-w-0 flex-1">
+      {/* Item body — click opens the detail modal (thread + operator actions) */}
+      <button
+        type="button"
+        onClick={() => onOpen?.(item)}
+        data-testid={`voting-open-${item.id}`}
+        className="min-w-0 flex-1 text-left"
+      >
         <div className="flex items-center gap-2">
           <Lightbulb size={13} className="flex-shrink-0 text-emerald-400" />
           <h3 className="truncate text-sm font-medium text-gray-100">{item.subject}</h3>
@@ -1505,7 +1736,7 @@ function VotingItemCard({ item, onVote }: any) {
             {commentCount}
           </span>
         </div>
-      </div>
+      </button>
     </div>
   );
 }
@@ -1514,10 +1745,14 @@ function VotingItemCard({ item, onVote }: any) {
 // Reads the page's project, mints a per-browser voter token, and reconciles
 // live from the support_ticket_vote_updated WebSocket event (dispatched by
 // App.tsx as an `agenthub-support-ticket-vote` window event).
-function VotingTab({ projectId, onNotify }: any) {
+function VotingTab({ projectId, agents = [], onNotify, onOpenCard }: any) {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
+  // The voting item whose detail modal is open (null = closed). Voting items ARE
+  // feature_request support tickets, so they reuse SupportTicketDetailModal — the
+  // same comment thread and operator action row (convert / assign / auto-merge).
+  const [openItem, setOpenItem] = useState<any>(null);
   const voterKey = useMemo(() => getVoterKey(), []);
   // Per-ticket vote queue. Only ONE castVote PUT is ever in flight per ticket:
   // rapid clicks update `desired` (the latest target value) and the in-flight
@@ -1644,6 +1879,30 @@ function VotingTab({ projectId, onNotify }: any) {
     void flushVotes(item.id);
   };
 
+  // Drop an item that converted/deleted server-side (it leaves the feed) and
+  // close the modal. The support_ticket_deleted WS echo also reconciles peers.
+  const removeItem = (ticketId: any) => {
+    setItems((prev: any) => prev.filter((it: any) => it.id !== ticketId));
+    setOpenItem((cur: any) => (cur && cur.id === ticketId ? null : cur));
+  };
+
+  // A modal-driven field change (status / severity / type) returns the ticket
+  // WITHOUT the voting tally — preserve the existing tally when merging so the
+  // score/vote state survives an unrelated edit.
+  const updateItem = (updated: any) => {
+    if (!updated?.id) return;
+    setItems((prev: any) =>
+      sortVotingItems(
+        prev.map((it: any) =>
+          it.id === updated.id ? { ...it, ...updated, voting: it.voting } : it,
+        ),
+      ),
+    );
+    setOpenItem((cur: any) =>
+      cur && cur.id === updated.id ? { ...cur, ...updated, voting: cur.voting } : cur,
+    );
+  };
+
   return (
     <div className="flex-1 overflow-y-auto" data-testid="voting-tab-body">
       {loading ? (
@@ -1668,10 +1927,24 @@ function VotingTab({ projectId, onNotify }: any) {
       ) : (
         <div className="mx-auto max-w-5xl space-y-2 p-3">
           {items.map((item: any) => (
-            <VotingItemCard key={item.id} item={item} onVote={handleVote} />
+            <VotingItemCard key={item.id} item={item} onVote={handleVote} onOpen={setOpenItem} />
           ))}
         </div>
       )}
+
+      {openItem ? (
+        <SupportTicketDetailModal
+          ticket={openItem}
+          projectId={projectId}
+          agents={agents}
+          onClose={() => setOpenItem(null)}
+          onDeleted={removeItem}
+          onConverted={removeItem}
+          onUpdated={updateItem}
+          onNotify={onNotify}
+          onOpenCard={onOpenCard}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1913,7 +2186,12 @@ function CustomerSupportPageInner(
       </div>
 
       {activeTab === 'voting' ? (
-        <VotingTab projectId={projectId} onNotify={onNotify} />
+        <VotingTab
+          projectId={projectId}
+          agents={agents}
+          onNotify={onNotify}
+          onOpenCard={onOpenCard}
+        />
       ) : (
         <>
           {/* Type filter + sort toggle */}

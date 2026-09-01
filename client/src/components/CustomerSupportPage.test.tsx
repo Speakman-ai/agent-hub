@@ -22,6 +22,9 @@ import { api } from '../utils/api';
     getSupportUnreadCount: vi.fn().mockResolvedValue({ count: 0 }),
     getVotingItems: vi.fn().mockResolvedValue([]),
     castVote: vi.fn(),
+    getSupportTicketComments: vi.fn().mockResolvedValue([]),
+    addSupportTicketComment: vi.fn(),
+    hideSupportTicketComment: vi.fn().mockResolvedValue({ ok: true }),
   },
 }));
 
@@ -1521,5 +1524,246 @@ describe('CustomerSupportPage — Voting tab', () => {
     await waitFor(() =>
       expect(screen.getByText('No feature requests to vote on')).toBeInTheDocument(),
     );
+  });
+});
+
+function comment(overrides: any = {}) {
+  return {
+    id: overrides.id || 'c1',
+    support_ticket_id: overrides.support_ticket_id || 'f1',
+    body: overrides.body || 'A comment',
+    display_name: overrides.display_name ?? null,
+    source: overrides.source || 'hub',
+    hidden_at: null,
+    created_at: overrides.created_at || '2026-06-14 11:00:00',
+    ...overrides,
+  };
+}
+
+// Open the detail modal for a voting item by clicking its row body.
+async function openVotingItem(id: string, props: any = {}) {
+  await openVotingTab(props);
+  await waitFor(() => expect(screen.getByTestId(`voting-open-${id}`)).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId(`voting-open-${id}`));
+  await waitFor(() =>
+    expect(screen.getByTestId('support-ticket-detail-modal')).toBeInTheDocument(),
+  );
+}
+
+describe('CustomerSupportPage — Voting item detail (thread + operator actions)', () => {
+  beforeEach(() => localStorage.clear());
+
+  it('opens the shared detail modal with the operator action row and comment thread', async () => {
+    (api.getVotingItems as any).mockResolvedValue([votingItem({ id: 'f1', subject: 'Dark mode' })]);
+    (api.getSupportTicket as any).mockResolvedValue(votingItem({ id: 'f1', subject: 'Dark mode' }));
+    (api.getSupportTicketComments as any).mockResolvedValue([]);
+
+    await openVotingItem('f1', { agents: [{ id: 'agent-1', name: 'Builder' }] });
+
+    // Operator action row: agent picker + auto-merge toggle reused unchanged.
+    expect(screen.getByTestId('convert-assign-agent')).toBeInTheDocument();
+    expect(screen.getByTestId('convert-auto-merge')).toBeInTheDocument();
+    // Anonymous comment thread present, fetched for this ticket.
+    expect(screen.getByTestId('comment-thread')).toBeInTheDocument();
+    expect(api.getSupportTicketComments).toHaveBeenCalledWith('proj-1', 'f1');
+  });
+
+  it('lists existing comments with display names', async () => {
+    (api.getVotingItems as any).mockResolvedValue([votingItem({ id: 'f1' })]);
+    (api.getSupportTicket as any).mockResolvedValue(votingItem({ id: 'f1' }));
+    (api.getSupportTicketComments as any).mockResolvedValue([
+      comment({ id: 'c1', body: 'Please build this', display_name: 'Ada' }),
+      comment({ id: 'c2', body: 'Anonymous ask', display_name: null }),
+    ]);
+
+    await openVotingItem('f1');
+
+    await waitFor(() => expect(screen.getByText('Please build this')).toBeInTheDocument());
+    expect(screen.getByText('Ada')).toBeInTheDocument();
+    expect(screen.getByText('Anonymous ask')).toBeInTheDocument();
+    expect(screen.getAllByTestId('comment-row')).toHaveLength(2);
+  });
+
+  it('adds a comment with an optional display name and appends it', async () => {
+    (api.getVotingItems as any).mockResolvedValue([votingItem({ id: 'f1' })]);
+    (api.getSupportTicket as any).mockResolvedValue(votingItem({ id: 'f1' }));
+    (api.getSupportTicketComments as any).mockResolvedValue([]);
+    (api.addSupportTicketComment as any).mockResolvedValue(
+      comment({ id: 'c-new', body: 'Great idea', display_name: 'Grace' }),
+    );
+
+    await openVotingItem('f1');
+
+    fireEvent.change(screen.getByTestId('comment-display-name'), {
+      target: { value: '  Grace  ' },
+    });
+    fireEvent.change(screen.getByTestId('comment-body'), { target: { value: '  Great idea  ' } });
+    fireEvent.click(screen.getByTestId('comment-submit'));
+
+    await waitFor(() =>
+      expect(api.addSupportTicketComment).toHaveBeenCalledWith('proj-1', 'f1', {
+        body: 'Great idea',
+        displayName: 'Grace',
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('Great idea')).toBeInTheDocument());
+    // The composer clears after a successful post.
+    expect(screen.getByTestId('comment-body')).toHaveValue('');
+  });
+
+  it('hides (soft-deletes) a comment via operator moderation', async () => {
+    (api.getVotingItems as any).mockResolvedValue([votingItem({ id: 'f1' })]);
+    (api.getSupportTicket as any).mockResolvedValue(votingItem({ id: 'f1' }));
+    (api.getSupportTicketComments as any).mockResolvedValue([
+      comment({ id: 'c1', body: 'Hide me' }),
+    ]);
+
+    await openVotingItem('f1');
+    await waitFor(() => expect(screen.getByText('Hide me')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('comment-hide-c1'));
+
+    await waitFor(() =>
+      expect(api.hideSupportTicketComment).toHaveBeenCalledWith('proj-1', 'f1', 'c1'),
+    );
+    await waitFor(() => expect(screen.queryByText('Hide me')).toBeNull());
+  });
+
+  it('appends a comment pushed over the live WS event', async () => {
+    (api.getVotingItems as any).mockResolvedValue([votingItem({ id: 'f1' })]);
+    (api.getSupportTicket as any).mockResolvedValue(votingItem({ id: 'f1' }));
+    (api.getSupportTicketComments as any).mockResolvedValue([]);
+
+    await openVotingItem('f1');
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub-support-ticket-comment', {
+          detail: {
+            type: 'support_ticket_comment_created',
+            ticketId: 'f1',
+            projectId: 'proj-1',
+            comment: comment({ id: 'ws1', body: 'Live comment', display_name: 'Peer' }),
+          },
+        }),
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText('Live comment')).toBeInTheDocument());
+  });
+
+  it('reconciles a WS delete that arrives before the initial comment fetch resolves', async () => {
+    (api.getVotingItems as any).mockResolvedValue([votingItem({ id: 'f1' })]);
+    (api.getSupportTicket as any).mockResolvedValue(votingItem({ id: 'f1' }));
+    // Hold the initial GET open so we can inject a WS event while it's pending.
+    let resolveGet: (v: any) => void = () => {};
+    (api.getSupportTicketComments as any).mockImplementation(
+      () =>
+        new Promise((r: any) => {
+          resolveGet = r;
+        }),
+    );
+
+    await openVotingItem('f1');
+    // Thread is still loading — no rows yet.
+    expect(screen.queryByTestId('comment-row')).toBeNull();
+
+    // A delete for c1 lands BEFORE the (older) snapshot resolves.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub-support-ticket-comment', {
+          detail: {
+            type: 'support_ticket_comment_deleted',
+            ticketId: 'f1',
+            projectId: 'proj-1',
+            commentId: 'c1',
+          },
+        }),
+      );
+    });
+
+    // Now the stale GET resolves with c1 still present.
+    await act(async () => {
+      resolveGet([
+        comment({ id: 'c1', body: 'Deleted mid-fetch' }),
+        comment({ id: 'c2', body: 'Still here' }),
+      ]);
+    });
+
+    // The mid-request delete wins: c1 is not restored, c2 remains.
+    await waitFor(() => expect(screen.getByText('Still here')).toBeInTheDocument());
+    expect(screen.queryByText('Deleted mid-fetch')).toBeNull();
+  });
+
+  it('reconciles a WS create that arrives before the initial comment fetch resolves', async () => {
+    (api.getVotingItems as any).mockResolvedValue([votingItem({ id: 'f1' })]);
+    (api.getSupportTicket as any).mockResolvedValue(votingItem({ id: 'f1' }));
+    let resolveGet: (v: any) => void = () => {};
+    (api.getSupportTicketComments as any).mockImplementation(
+      () =>
+        new Promise((r: any) => {
+          resolveGet = r;
+        }),
+    );
+
+    await openVotingItem('f1');
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub-support-ticket-comment', {
+          detail: {
+            type: 'support_ticket_comment_created',
+            ticketId: 'f1',
+            projectId: 'proj-1',
+            comment: comment({ id: 'ws-new', body: 'Arrived early' }),
+          },
+        }),
+      );
+    });
+
+    await act(async () => {
+      resolveGet([comment({ id: 'c1', body: 'From snapshot' })]);
+    });
+
+    // Both the snapshot row and the mid-request create survive.
+    await waitFor(() => expect(screen.getByText('From snapshot')).toBeInTheDocument());
+    expect(screen.getByText('Arrived early')).toBeInTheDocument();
+    expect(screen.getAllByTestId('comment-row')).toHaveLength(2);
+  });
+
+  it('convert & assign on a voting item fires with autoMerge and drops the item', async () => {
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({ id: 'f1', subject: 'Wire it up' }),
+    ]);
+    (api.getSupportTicket as any).mockResolvedValue(
+      votingItem({ id: 'f1', subject: 'Wire it up' }),
+    );
+    (api.getSupportTicketComments as any).mockResolvedValue([]);
+    (api.convertSupportTicketToCard as any).mockResolvedValue({
+      card: { id: 'card-9' },
+      ticketId: 'f1',
+      deleted: true,
+    });
+    (api.assignCard as any).mockResolvedValue({ sessionId: 's1', card: { id: 'card-9' } });
+
+    await openVotingItem('f1', { agents: [{ id: 'agent-1', name: 'Builder' }] });
+
+    fireEvent.change(screen.getByTestId('convert-assign-agent'), { target: { value: 'agent-1' } });
+    fireEvent.click(screen.getByTestId('convert-auto-merge'));
+    fireEvent.click(screen.getByRole('button', { name: /convert & assign/i }));
+
+    await waitFor(() =>
+      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 'f1', {
+        autoMerge: true,
+      }),
+    );
+    await waitFor(() =>
+      expect(api.assignCard).toHaveBeenCalledWith('proj-1', 'card-9', 'agent-1', {
+        autoMerge: true,
+      }),
+    );
+    // Full success removes the item from the feed and closes the modal.
+    await waitFor(() => expect(screen.queryByTestId('support-ticket-detail-modal')).toBeNull());
+    expect(screen.queryByTestId('voting-open-f1')).toBeNull();
   });
 });
