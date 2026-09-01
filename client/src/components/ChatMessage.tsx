@@ -463,13 +463,22 @@ function ChatMessage({
   }
 
   // If a user message had nothing but an ask-answer payload (no prose, no
-  // attachments, no queued/interrupted affordances), suppress the bubble
-  // entirely — the picker already reflects the submission.
+  // attachments), suppress the bubble entirely — the picker already flips to
+  // "Answers submitted", so a second representation is pure noise. This holds
+  // even when the answer is queued: submitting a picker while the turn is still
+  // wrapping up gets the message queued server-side, and the old guard let that
+  // through as a confusing empty "Queued" bubble (support ticket 94a1653c). The
+  // message still drains and reaches the agent; only the redundant bubble is
+  // hidden.
+  //
+  // Interrupted answers are deliberately NOT suppressed: an interrupt is the
+  // user's only visible signal that delivery cut off the running turn, and
+  // hiding it would strip that recovery context while the picker still reads
+  // "Answers submitted".
   if (
     isUser &&
     !displayContent &&
     !message.attachments &&
-    !isQueued &&
     !isInterrupted &&
     typeof message.content === 'string' &&
     message.content.includes('agenthub:ask:answer')
