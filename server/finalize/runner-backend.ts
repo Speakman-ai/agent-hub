@@ -31,8 +31,15 @@ export interface JobClaimSpec {
   runId: string;
   jobId: string;
   matrixKey: string;
-  /** Resolved runner image for `runs-on` (e.g. agent-hub finalize runner). */
+  /** Resolved runner image for `runs-on` (e.g. agent-hub finalize runner). Empty for a native/macOS job. */
   image: string;
+  /**
+   * The raw `runs-on` label. Backends use it to derive the runner queue class
+   * (see `runnerClassForRunsOn`) so a macOS job is claimed only by a macOS agent,
+   * and to mark the wire spec as a native (non-container) job. Optional for
+   * back-compat; absent is treated as the default (Linux container) class.
+   */
+  runsOn?: string;
   /** Hub-local worktree path (local backend clones a per-job copy then bind-mounts it; remote ships a bundle). */
   worktreePath: string;
   composeProjectName: string;
@@ -81,6 +88,36 @@ export interface RunnerLease {
 
 export interface RunnerBackend {
   readonly kind: string;
+  /**
+   * The OS platforms on which this backend runs a **native, non-container** job
+   * (a `runs-on` label that resolves to no image — `host` or `macos-*`).
+   *
+   * This is the capability the job scheduler consults to decide whether a
+   * platform-specific native job (notably `runs-on: macos-*`, which needs
+   * Xcode) can actually be satisfied — instead of assuming the coordinator's
+   * own `process.platform`, which describes the Hub, not the runner:
+   *   - `local`  → `[process.platform]`: native jobs run on THIS Hub host, so
+   *                the Hub's platform IS the runner's platform.
+   *   - `remote` → the platforms the fleet's runner pool provides (today `[]` —
+   *                the fleet has no native macOS capacity yet; the macOS-fleet
+   *                follow-up flips this on once macOS runner-agents exist).
+   *
+   * When omitted, callers fall back to `[process.platform]` (the local-host
+   * assumption) so an injected/legacy backend behaves as before.
+   */
+  readonly nativeHostPlatforms?: readonly NodeJS.Platform[];
+  /**
+   * True when this backend executes a native (non-container) job on a REMOTE
+   * runner it acquires — i.e. a `runs-on: macos-*` job should be dispatched
+   * through `acquire()` to a fleet agent, not run on the Hub host.
+   *
+   *   - `local`  → falsy: native jobs run on THIS Hub host (the scheduler uses
+   *                the in-process host spawner), so macOS is only possible when
+   *                the Hub itself is a Mac.
+   *   - `remote` → true: the fleet has (or can scale up) a macOS agent that runs
+   *                the job natively, so a Linux Hub can still ship macOS work.
+   */
+  readonly runsNativeJobsRemotely?: boolean;
   acquire(spec: JobClaimSpec): Promise<RunnerLease>;
 }
 

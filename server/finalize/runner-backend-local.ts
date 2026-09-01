@@ -32,6 +32,10 @@ export function createLocalRunnerBackend(opts: LocalRunnerBackendOpts = {}): Run
   const materialize = opts.materialize ?? materializeJobWorktree;
   return {
     kind: 'local',
+    // Native (non-container) jobs run directly on THIS Hub host, so the Hub's
+    // platform is the runner's platform. A `runs-on: macos-*` job is therefore
+    // satisfiable here only when Agent Hub itself runs on macOS.
+    nativeHostPlatforms: [process.platform],
     async acquire(spec: JobClaimSpec): Promise<RunnerLease> {
       const containerName = sanitizeJobContainerName(spec.runId, spec.jobId, spec.matrixKey);
       const jobWt = jobWorktreePath(

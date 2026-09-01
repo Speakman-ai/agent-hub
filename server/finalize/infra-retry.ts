@@ -105,6 +105,13 @@ export const CI_FAILURE_REASONS = [
   // livelocks on a sub-second acquire window. See job-runner.ts
   // `MIN_ACQUIRE_TIMEOUT_MS`.
   'budget_exhausted',
+  // A `runs-on: macos-*` job was scheduled onto a non-macOS Finalize host.
+  // DETERMINISTIC — the host OS does not change between attempts, so an infra
+  // auto-retry would re-schedule onto the same wrong platform and fail
+  // identically. Classified CI-class so the human fixes the runner topology
+  // (point the job at a macOS-capable backend) rather than livelocking a retry
+  // loop. See `macosRunnerMismatch` in runner-images.ts.
+  'runner_platform_mismatch',
 ] as const;
 
 /**

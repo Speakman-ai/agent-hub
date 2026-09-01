@@ -223,6 +223,128 @@ jobs:
     spawnStep,
   });
 
+  const MACOS_CONFIG = `
+version: 2
+on: [finalize]
+jobs:
+  ios:
+    runs-on: macos-14
+    steps:
+      - run: xcodebuild test -scheme App
+`;
+
+  it('fails a macos job fast when the backend has no macOS host, without running any step', async () => {
+    // A backend advertising no darwin native host (e.g. a Linux local backend,
+    // or a remote fleet with no macOS capacity) must fail the job with a
+    // deterministic CI-class reason and never execute its steps — iOS build steps
+    // on Linux would either error confusingly or mislead. Capability is injected
+    // so the assertion holds regardless of the test host's real platform.
+    const spawnCalls: string[] = [];
+    const spawnStep = vi.fn(makeFakeSpawnStep((run) => spawnCalls.push(run)));
+
+    const parsed = parseCiConfig(MACOS_CONFIG);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const acquired: string[] = [];
+    const fakeBackend = {
+      kind: 'remote',
+      nativeHostPlatforms: [] as NodeJS.Platform[], // fleet with no macOS capacity
+      acquire: async (spec: { image: string }) => {
+        acquired.push(spec.image);
+        return { spawnStep, release: async () => {} };
+      },
+    };
+    const deps = { ...makeDeps(spawnStep), runnerBackend: fakeBackend } as StepRunnerDeps;
+
+    const result = await runJobPhase(deps, {
+      runId: 'ios-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('runner_platform_mismatch');
+    expect(result.infraErrorDetail).toContain('macos-14');
+    expect(result.infraErrorDetail).toContain('remote'); // blames the backend, not process.platform
+    expect(spawnCalls).toEqual([]);
+    expect(acquired).toEqual([]);
+  });
+
+  it('runs a macos job on a backend that advertises a darwin native host', async () => {
+    // A macOS-capable backend (a Mac Hub's local backend, or a macOS fleet) must
+    // NOT be rejected by the coordinator's platform — the job runs its steps.
+    const spawnCalls: string[] = [];
+    const spawnStep = vi.fn(makeFakeSpawnStep((run) => spawnCalls.push(run)));
+
+    const parsed = parseCiConfig(MACOS_CONFIG);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const macBackend = {
+      kind: 'local',
+      nativeHostPlatforms: ['darwin'] as NodeJS.Platform[],
+      acquire: async () => ({ spawnStep, release: async () => {} }),
+    };
+    const deps = { ...makeDeps(spawnStep), runnerBackend: macBackend } as StepRunnerDeps;
+
+    const result = await runJobPhase(deps, {
+      runId: 'ios-run-mac',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('success');
+    expect(spawnCalls).toEqual(['xcodebuild test -scheme App']);
+  });
+
+  it('dispatches a macos job THROUGH a remote darwin-capable backend (not the local host)', async () => {
+    // The reviewer's target: a (Linux) Hub with the remote fleet backend must
+    // ROUTE a macos-* job to the backend's acquire (a macOS fleet agent runs it),
+    // not run it on the Hub host. Proven by acquire being called with the macos
+    // runs-on + empty image, and the step running via the LEASE's spawnStep.
+    const localCalls: string[] = [];
+    const leaseCalls: string[] = [];
+    const localSpawn = vi.fn(makeFakeSpawnStep((run) => localCalls.push(run)));
+    const leaseSpawn = vi.fn(makeFakeSpawnStep((run) => leaseCalls.push(run)));
+
+    const parsed = parseCiConfig(MACOS_CONFIG);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const acquired: Array<{ runsOn?: string; image: string }> = [];
+    const fleetBackend = {
+      kind: 'remote',
+      nativeHostPlatforms: ['darwin'] as NodeJS.Platform[],
+      runsNativeJobsRemotely: true,
+      acquire: async (spec: { runsOn?: string; image: string }) => {
+        acquired.push({ runsOn: spec.runsOn, image: spec.image });
+        return { spawnStep: leaseSpawn, release: async () => {} };
+      },
+    };
+    const deps = { ...makeDeps(localSpawn), runnerBackend: fleetBackend } as StepRunnerDeps;
+
+    const result = await runJobPhase(deps, {
+      runId: 'ios-remote',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('success');
+    expect(acquired).toEqual([{ runsOn: 'macos-14', image: '' }]);
+    expect(leaseCalls).toEqual(['xcodebuild test -scheme App']); // ran on the fleet agent
+    expect(localCalls).toEqual([]); // never ran on the Hub host
+  });
+
   const WARMUP_CONFIG = `
 version: 2
 on: [finalize]

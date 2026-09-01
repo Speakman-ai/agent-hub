@@ -17,7 +17,12 @@ import { resolveRunnerBackend, type RunnerLease } from './runner-backend.js';
 import { cancelRemoteJobsForRun } from './runner-backend-remote.js';
 import { detectRepoVisibility } from './runner-repo-visibility.js';
 import { hasExplicitResourceProfile, type RepoVisibility } from './runner-resource-profile.js';
-import { isContainerRunsOn, resolveRunsOnImage } from './runner-images.js';
+import {
+  isContainerRunsOn,
+  isMacosRunsOn,
+  macosRunnerMismatch,
+  resolveRunsOnImage,
+} from './runner-images.js';
 import {
   defaultSpawnStep,
   emitFinalizeChecksRoundTimeline,
@@ -488,8 +493,68 @@ async function runJobInstance(
 
   let lease: RunnerLease | null = null;
 
-  if (isContainerRunsOn(instance.runsOn)) {
-    if (!image) {
+  // Resolve the runner backend once for any job that needs one: a container job
+  // (always), or a macOS job (to read its native-host capability and, when the
+  // backend runs native jobs remotely, to dispatch it to a macOS fleet agent).
+  // A `host`/unknown job runs in-process and needs no backend.
+  const needsRunnerBackend = isContainerRunsOn(instance.runsOn) || isMacosRunsOn(instance.runsOn);
+  const backend = needsRunnerBackend ? (deps.runnerBackend ?? resolveRunnerBackend()) : null;
+
+  // macOS jobs (`runs-on: macos-*`) need a native macOS runner — there is no
+  // macOS container. Whether one is available is a property of the SELECTED
+  // BACKEND, not the Hub coordinator's `process.platform`: the local backend
+  // runs native jobs on the Hub host (so its platform is the Hub's), while a
+  // remote fleet backend advertises the platforms its runner pool provides (the
+  // macOS runner-agent → `darwin`). Consult that capability so a Linux Hub with
+  // a macOS-capable fleet isn't wrongly rejected, and one with no macOS capacity
+  // fails fast with an honest reason instead of running iOS steps on Linux.
+  // Deterministic, so it's CI-class (`runner_platform_mismatch`) — the human
+  // fixes the runner topology instead of infra-retrying onto the same backend.
+  if (isMacosRunsOn(instance.runsOn) && backend) {
+    const nativeHostPlatforms = backend.nativeHostPlatforms ?? [process.platform];
+    const macosMismatch = macosRunnerMismatch(instance.runsOn, backend.kind, nativeHostPlatforms);
+    if (macosMismatch) {
+      const endedAt = now();
+      console.warn(
+        `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} infra_error: ${macosMismatch}`,
+      );
+      persistJobState(
+        deps,
+        runId,
+        instance.jobId,
+        instance.matrixKey,
+        'failed',
+        -1,
+        jobStartedAt,
+        endedAt,
+        jobAttempt,
+      );
+      return {
+        instance,
+        result: {
+          status: 'infra_error',
+          stepResults: [],
+          activeSecondsBilled: 0,
+          infraErrorDetail: macosMismatch,
+          failureReason: 'runner_platform_mismatch',
+        },
+      };
+    }
+  }
+
+  // Route through the backend for a container job (always) or a macOS job when
+  // the backend runs native jobs on a REMOTE agent (the remote fleet dispatches
+  // `runs-on: macos-*` to a macOS runner-agent). A macOS job on the LOCAL backend
+  // is NOT routed here — it falls through to in-process host execution on the Mac
+  // Hub (the guard above already proved the local host is darwin).
+  const routeViaBackend =
+    isContainerRunsOn(instance.runsOn) ||
+    (isMacosRunsOn(instance.runsOn) && backend?.runsNativeJobsRemotely === true);
+
+  if (routeViaBackend && backend) {
+    // A container label that resolved to no image is a config error. A native
+    // macOS job legitimately has no image, so this check is container-only.
+    if (isContainerRunsOn(instance.runsOn) && !image) {
       const endedAt = now();
       const detail = `unsupported runs-on: ${instance.runsOn}`;
       console.warn(
@@ -516,8 +581,6 @@ async function runJobInstance(
         },
       };
     }
-
-    const backend = deps.runnerBackend ?? resolveRunnerBackend();
 
     // Budget-exhaustion guard (card #1243). When earlier attempts have already
     // consumed the run's CI time budget, the remaining-budget acquire cap
@@ -569,8 +632,10 @@ async function runJobInstance(
     // operator already pinned a valid profile — the override wins regardless,
     // so the gh call would be wasted. Detection failures resolve to 'unknown',
     // which keeps the stricter default tier (the safe direction).
+    // Resource caps (visibility -> GitHub-parity tier) apply only to CONTAINER
+    // jobs — a native macOS job is not a Docker container, so skip the probe.
     let visibility: RepoVisibility | undefined;
-    if (!hasExplicitResourceProfile()) {
+    if (isContainerRunsOn(instance.runsOn) && !hasExplicitResourceProfile()) {
       visibility = await detectRepoVisibility({ worktreePath, env: process.env });
     }
     try {
@@ -580,7 +645,10 @@ async function runJobInstance(
         runId: opts.runId,
         jobId: instance.jobId,
         matrixKey: instance.matrixKey,
-        image,
+        // Empty for a native macOS job (no container image); the agent runs the
+        // steps directly on its host.
+        image: image ?? '',
+        runsOn: instance.runsOn,
         worktreePath,
         composeProjectName,
         env: mergedEnv,

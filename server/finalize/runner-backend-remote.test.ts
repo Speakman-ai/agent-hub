@@ -86,6 +86,76 @@ describe('createRemoteRunnerBackend', () => {
     expect(getJobChannel(claimed!.id)).toBeUndefined();
   });
 
+  it('advertises the fleet native platforms and remote native dispatch', () => {
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 100 });
+    expect(backend.nativeHostPlatforms).toContain('darwin');
+    expect(backend.runsNativeJobsRemotely).toBe(true);
+  });
+
+  it('routes a macOS job to the macos runner class with a native wire spec', async () => {
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 2000 });
+    const acquireP = backend.acquire({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r-mac',
+      jobId: 'ios',
+      matrixKey: '',
+      image: '', // native macOS job has no container image
+      runsOn: 'macos-14',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'cp',
+      env: {},
+      labels: {},
+    });
+
+    // A default (Linux DinD) agent must NOT be able to claim a macOS job.
+    expect(claimRunnerJob({ agentId: 'linux-1', leaseMs: 60_000, now: Date.now() })).toBeNull();
+
+    // A macOS agent claims it; the wire spec is marked native and carries runs-on.
+    const claimed = claimRunnerJob({
+      agentId: 'mac-1',
+      runnerClass: 'macos',
+      leaseMs: 60_000,
+      now: Date.now(),
+    });
+    expect(claimed).not.toBeNull();
+    const wire = JSON.parse(claimed!.specJson) as { native?: boolean; runsOn?: string };
+    expect(wire.native).toBe(true);
+    expect(wire.runsOn).toBe('macos-14');
+
+    getJobChannel(claimed!.id)!.attach();
+    const lease = await acquireP;
+    await lease.release();
+  });
+
+  it('routes a container job to the default runner class', async () => {
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 2000 });
+    const acquireP = backend.acquire({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r-linux',
+      jobId: 'e2e',
+      matrixKey: '',
+      image: 'img:latest',
+      runsOn: 'ubuntu-24.04',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'cp',
+      env: {},
+      labels: {},
+    });
+    // A macOS agent must NOT claim a Linux container job.
+    expect(
+      claimRunnerJob({ agentId: 'mac-1', runnerClass: 'macos', leaseMs: 60_000, now: Date.now() }),
+    ).toBeNull();
+    const claimed = claimRunnerJob({ agentId: 'linux-1', leaseMs: 60_000, now: Date.now() });
+    expect(claimed).not.toBeNull();
+    const wire = JSON.parse(claimed!.specJson) as { native?: boolean };
+    expect(wire.native).toBe(false);
+    getJobChannel(claimed!.id)!.attach();
+    const lease = await acquireP;
+    await lease.release();
+  });
+
   // Stop Finalize: cancelRemoteJobsForRun must flip the queue row terminal,
   // settle the in-flight step in THIS process (so runStepsSequence unblocks and
   // the orchestrator reaches cancelTerminal), and dispose the channel so the

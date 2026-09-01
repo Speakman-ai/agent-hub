@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import {
   agentIsDraining,
   httpTransport,
@@ -8,6 +11,12 @@ import {
   runAgentJob,
   runClaimedJobWithRecovery,
   runExecStepChild,
+  nativeHostOps,
+  sanitizeNativeStepEnv,
+  scrubAgentProcessEnvSecrets,
+  resolveFleetToken,
+  resolveAgentMode,
+  assertNativeRunnerTenancy,
   RunnerBringupTimeoutError,
   STEP_DEADLINE_EXIT_CODE,
   withBringupDeadline,
@@ -1052,5 +1061,220 @@ describe('agentIsDraining (claim-loop Spot guard)', () => {
         throw new Error('IMDS unreachable');
       }),
     ).resolves.toBe(false);
+  });
+});
+
+describe('resolveAgentMode', () => {
+  it('selects native mode for a macos runner class', () => {
+    expect(resolveAgentMode({ FINALIZE_RUNNER_CLASS: 'macos' })).toEqual({
+      runnerClass: 'macos',
+      native: true,
+    });
+  });
+
+  it('selects native mode when FINALIZE_RUNNER_NATIVE is truthy', () => {
+    const mode = resolveAgentMode({ FINALIZE_RUNNER_NATIVE: '1' });
+    expect(mode.native).toBe(true);
+    expect(mode.runnerClass).toBe('default');
+  });
+
+  it('defaults to the DinD (non-native) default class', () => {
+    expect(resolveAgentMode({})).toEqual({ runnerClass: 'default', native: false });
+  });
+});
+
+describe('assertNativeRunnerTenancy', () => {
+  it('refuses a native runner on the shared multi-tenant scope', () => {
+    expect(() => assertNativeRunnerTenancy(true, 'shared')).toThrow(/single-tenant|dedicated org/i);
+    expect(() => assertNativeRunnerTenancy(true, '')).toThrow(/single-tenant|dedicated org/i);
+  });
+
+  it('allows a native runner pinned to a dedicated org', () => {
+    expect(() => assertNativeRunnerTenancy(true, 'acme')).not.toThrow();
+  });
+
+  it('does not constrain non-native (DinD) runners', () => {
+    expect(() => assertNativeRunnerTenancy(false, 'shared')).not.toThrow();
+    expect(() => assertNativeRunnerTenancy(false, 'acme')).not.toThrow();
+  });
+});
+
+describe('nativeHostOps (Mac Finalize Runner executor)', () => {
+  class FakeChild extends EventEmitter {
+    stdout = new EventEmitter();
+    stderr = new EventEmitter();
+    constructor(public pid: number | undefined = 4321) {
+      super();
+    }
+    kill(): boolean {
+      return true;
+    }
+  }
+
+  it('startContainer returns the workspace path (no container) and stopContainer is a no-op', async () => {
+    const ops = nativeHostOps({ spawnFn: (() => new FakeChild()) as never });
+    const cwd = await ops.startContainer({} as RunnerJobWireSpec, '/ws/repo');
+    expect(cwd).toBe('/ws/repo');
+    await expect(ops.stopContainer('/ws/repo')).resolves.toBeUndefined();
+  });
+
+  it('execStep runs bash in the worktree with a sanitized env and streams output', async () => {
+    const captured: { cmd?: string; args?: string[]; opts?: Record<string, unknown> } = {};
+    const fc = new FakeChild();
+    const spawnFn = ((cmd: string, args: string[], opts: Record<string, unknown>) => {
+      captured.cmd = cmd;
+      captured.args = args;
+      captured.opts = opts;
+      return fc;
+    }) as never;
+    const ops = nativeHostOps({ spawnFn });
+
+    // Plant a fleet token + host AWS key on the agent's process env; a step must
+    // NOT see either.
+    const prevToken = process.env.FINALIZE_RUNNER_FLEET_TOKEN;
+    const prevAws = process.env.AWS_SECRET_ACCESS_KEY;
+    process.env.FINALIZE_RUNNER_FLEET_TOKEN = 'super-secret';
+    process.env.AWS_SECRET_ACCESS_KEY = 'aws-secret';
+    try {
+      const out: string[] = [];
+      const p = ops.execStep('/ws/repo', 'xcodebuild test', { LANG: 'en_US' }, (_s, d) =>
+        out.push(d),
+      );
+      fc.stdout.emit('data', Buffer.from('** TEST SUCCEEDED **\n'));
+      fc.emit('exit', 0);
+      fc.emit('close', 0);
+      await expect(p).resolves.toBe(0);
+
+      // Runs the step under bash directly (no `docker exec`), in the worktree.
+      expect(captured.cmd).toBe('bash');
+      expect(captured.args).toEqual(['-euo', 'pipefail', '-c', 'xcodebuild test']);
+      expect(captured.opts?.cwd).toBe('/ws/repo');
+      const env = captured.opts?.env as Record<string, string>;
+      expect(env.LANG).toBe('en_US'); // step env applied
+      expect(env.PATH).toBeDefined(); // host toolchain env inherited
+      expect(env.FINALIZE_RUNNER_FLEET_TOKEN).toBeUndefined(); // fleet token scrubbed
+      expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined(); // host cred scrubbed
+      expect(out.join('')).toBe('** TEST SUCCEEDED **\n');
+    } finally {
+      if (prevToken === undefined) delete process.env.FINALIZE_RUNNER_FLEET_TOKEN;
+      else process.env.FINALIZE_RUNNER_FLEET_TOKEN = prevToken;
+      if (prevAws === undefined) delete process.env.AWS_SECRET_ACCESS_KEY;
+      else process.env.AWS_SECRET_ACCESS_KEY = prevAws;
+    }
+  });
+});
+
+describe('sanitizeNativeStepEnv', () => {
+  it('strips runner-control and host-credential vars, keeps toolchain env', () => {
+    const env = sanitizeNativeStepEnv(
+      {
+        PATH: '/usr/bin',
+        HOME: '/Users/runner',
+        LANG: 'en_US',
+        FINALIZE_RUNNER_FLEET_TOKEN: 'secret',
+        FINALIZE_RUNNER_TOKEN_SECRET: 'secret2',
+        FINALIZE_FLEET_ECS_CLUSTER: 'c',
+        FINALIZE_WORKTREE_BUCKET: 'b',
+        AWS_ACCESS_KEY_ID: 'k',
+        AWS_SECRET_ACCESS_KEY: 's',
+        AWS_SESSION_TOKEN: 't',
+        GITHUB_TOKEN: 'gh',
+        NPM_TOKEN: 'npm',
+      },
+      {},
+    );
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.HOME).toBe('/Users/runner');
+    expect(env.LANG).toBe('en_US');
+    for (const blocked of [
+      'FINALIZE_RUNNER_FLEET_TOKEN',
+      'FINALIZE_RUNNER_TOKEN_SECRET',
+      'FINALIZE_FLEET_ECS_CLUSTER',
+      'FINALIZE_WORKTREE_BUCKET',
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'GITHUB_TOKEN',
+      'NPM_TOKEN',
+    ]) {
+      expect(env[blocked], `${blocked} must be scrubbed`).toBeUndefined();
+    }
+  });
+
+  it('lets the job-delivered step env win, including intentional AWS creds', () => {
+    // A job that needs AWS provides scoped creds via its OWN step env (project
+    // secrets); those are trusted and must survive even though ambient AWS_* is
+    // scrubbed from the host base.
+    const env = sanitizeNativeStepEnv(
+      { AWS_SECRET_ACCESS_KEY: 'host-ambient', PATH: '/usr/bin' },
+      { AWS_SECRET_ACCESS_KEY: 'job-scoped', FOO: 'bar' },
+    );
+    expect(env.AWS_SECRET_ACCESS_KEY).toBe('job-scoped');
+    expect(env.FOO).toBe('bar');
+    expect(env.PATH).toBe('/usr/bin');
+  });
+});
+
+describe('scrubAgentProcessEnvSecrets', () => {
+  it('deletes the fleet token + host creds from the process env, keeps benign config', () => {
+    const env: NodeJS.ProcessEnv = {
+      FINALIZE_RUNNER_FLEET_TOKEN: 'secret',
+      FINALIZE_RUNNER_TOKEN_SECRET: 'secret2',
+      AWS_ACCESS_KEY_ID: 'k',
+      AWS_SECRET_ACCESS_KEY: 's',
+      GITHUB_TOKEN: 'gh',
+      NPM_TOKEN: 'npm',
+      // Non-secret runner CONFIG must survive (read lazily at job time).
+      FINALIZE_RUNNER_HUB_URL: 'https://hub',
+      FINALIZE_RUNNER_CLASS: 'macos',
+      FINALIZE_RUNNER_WORKSPACE_DIR: '/ws',
+      PATH: '/usr/bin',
+    };
+    scrubAgentProcessEnvSecrets(env);
+    for (const gone of [
+      'FINALIZE_RUNNER_FLEET_TOKEN',
+      'FINALIZE_RUNNER_TOKEN_SECRET',
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'GITHUB_TOKEN',
+      'NPM_TOKEN',
+    ]) {
+      expect(env[gone], `${gone} must be deleted`).toBeUndefined();
+    }
+    // Non-secret config + toolchain kept.
+    expect(env.FINALIZE_RUNNER_HUB_URL).toBe('https://hub');
+    expect(env.FINALIZE_RUNNER_CLASS).toBe('macos');
+    expect(env.FINALIZE_RUNNER_WORKSPACE_DIR).toBe('/ws');
+    expect(env.PATH).toBe('/usr/bin');
+  });
+});
+
+describe('resolveFleetToken', () => {
+  it('reads the token from FINALIZE_RUNNER_FLEET_TOKEN_FILE (kept out of the env block)', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'fleet-token-'));
+    const file = path.join(dir, 'token');
+    try {
+      writeFileSync(file, '  file-token\n');
+      // File wins over the env var, and the returned value is trimmed.
+      expect(
+        resolveFleetToken({
+          FINALIZE_RUNNER_FLEET_TOKEN_FILE: file,
+          FINALIZE_RUNNER_FLEET_TOKEN: 'env-token',
+        }),
+      ).toBe('file-token');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the env var when no file is configured', () => {
+    expect(resolveFleetToken({ FINALIZE_RUNNER_FLEET_TOKEN: 'env-token' })).toBe('env-token');
+    expect(resolveFleetToken({})).toBeUndefined();
+  });
+
+  it('throws a clear error when the token file cannot be read', () => {
+    expect(() =>
+      resolveFleetToken({ FINALIZE_RUNNER_FLEET_TOKEN_FILE: '/no/such/token/file' }),
+    ).toThrow(/FINALIZE_RUNNER_FLEET_TOKEN_FILE/);
   });
 });

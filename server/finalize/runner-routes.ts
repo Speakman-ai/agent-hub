@@ -30,13 +30,14 @@ import {
 } from './hub-task-protection.js';
 import type { JobResourceSummary } from './job-resource-sampler.js';
 import {
+  authenticateFleetToken,
   bearerToken,
   isRunnerFleetEnabled,
   signAgentToken,
   verifyAgentToken,
-  verifyFleetToken,
   type AgentTokenPayload,
 } from './runner-auth.js';
+import { MACOS_RUNNER_CLASS } from './runner-images.js';
 
 interface RunnerReq extends Request {
   agent?: AgentTokenPayload;
@@ -153,16 +154,49 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       res.status(404).json({ error: 'runner fleet not enabled' });
       return;
     }
-    const { fleetToken, orgScope, ecsTaskArn } = (req.body ?? {}) as {
+    const { fleetToken, orgScope, ecsTaskArn, runnerClass } = (req.body ?? {}) as {
       fleetToken?: string;
       orgScope?: string;
       ecsTaskArn?: string;
+      runnerClass?: string;
     };
-    if (!verifyFleetToken(fleetToken)) {
+    const auth = authenticateFleetToken(fleetToken);
+    if (!auth.ok) {
       res.status(401).json({ error: 'invalid fleet token' });
       return;
     }
-    const scope = orgScope && /^[A-Za-z0-9_-]+$/.test(orgScope) ? orgScope : 'shared';
+    // The runner class partitions the queue (Linux DinD `default` vs native
+    // `macos`). Baked into the agent token so it can't be spoofed per-claim.
+    const runnerClassValid =
+      runnerClass && /^[a-z0-9_-]+$/.test(runnerClass) ? runnerClass : 'default';
+
+    // Native (same-UID, no-sandbox) runners are SINGLE-TENANT only. Job code on
+    // the Mac runs as the agent user and can read whatever registration
+    // credential the runner holds, so that credential must be narrowly scoped:
+    // require an ORG-SCOPED token and pin the agent to that org. This makes a
+    // leaked native token non-escalating (it can only register agents for the
+    // org the runner already serves) and guarantees a native agent never claims
+    // another tenant's jobs. A `shared` native agent is refused outright.
+    const isNativeClass = runnerClassValid === MACOS_RUNNER_CLASS;
+    let scope: string;
+    if (isNativeClass) {
+      if (!auth.forcedOrgScope) {
+        res.status(403).json({
+          error:
+            'native runner class requires an org-scoped fleet token ' +
+            '(FINALIZE_RUNNER_ORG_FLEET_TOKENS); the shared global token cannot register ' +
+            'a native single-tenant runner',
+        });
+        return;
+      }
+      scope = auth.forcedOrgScope;
+    } else {
+      // Org-scoped token is always pinned to its org; the global token may
+      // register the requested scope (including `shared`) for the container fleet.
+      scope =
+        auth.forcedOrgScope ??
+        (orgScope && /^[A-Za-z0-9_-]+$/.test(orgScope) ? orgScope : 'shared');
+    }
     // The agent reports its own ECS task ARN (from the ECS metadata endpoint) so
     // the Hub can protect that exact task on claim. Validate it loosely; off-ECS
     // agents send nothing and the Hub-side protection no-ops.
@@ -178,7 +212,10 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
          VALUES (?, ?, 'idle', ?, ?, ?)`,
       )
       .run(agentId, scope, taskArn, now, now);
-    res.json({ agentId, token: signAgentToken({ agentId, orgScope: scope }) });
+    res.json({
+      agentId,
+      token: signAgentToken({ agentId, orgScope: scope, runnerClass: runnerClassValid }),
+    });
   });
 
   router.post('/api/runners/claim', requireAgent, async (req: RunnerReq, res: Response) => {
@@ -187,7 +224,13 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
     touchAgent(agent.agentId);
     const deadline = Date.now() + claimWaitMs;
     for (;;) {
-      const job = claimRunnerJob({ agentId: agent.agentId, orgId, leaseMs, now: Date.now() });
+      const job = claimRunnerJob({
+        agentId: agent.agentId,
+        orgId,
+        runnerClass: agent.runnerClass ?? 'default',
+        leaseMs,
+        now: Date.now(),
+      });
       if (job) {
         getOrgsDb()
           .prepare(

@@ -29,6 +29,7 @@ import createRunnerRoutes, {
   type JobResourcesEvent,
 } from './runner-routes.js';
 import type { RunnerLease } from './runner-backend.js';
+import { verifyAgentToken } from './runner-auth.js';
 
 const tick = () => new Promise((r) => setImmediate(r));
 const FLEET = 'test-fleet-secret';
@@ -248,6 +249,44 @@ describe('runner-routes (HTTP control plane)', () => {
       (await request(app).post('/api/runners/register').send({ fleetToken: 'nope' })).status,
     ).toBe(401);
     expect((await request(app).post('/api/runners/claim').send({})).status).toBe(401);
+  });
+
+  it('refuses to register a native (macos) runner with the shared global token', async () => {
+    // The global token cannot authorize a same-UID native runner — that would let
+    // job code that reads it register agents for any tenant.
+    const r = await request(app)
+      .post('/api/runners/register')
+      .send({ fleetToken: FLEET, runnerClass: 'macos' });
+    expect(r.status).toBe(403);
+    expect(r.body.error).toMatch(/org-scoped/i);
+  });
+
+  it('registers a native runner with an org-scoped token, pinned to that org', async () => {
+    process.env.FINALIZE_RUNNER_ORG_FLEET_TOKENS = JSON.stringify({ acme: 'acme-secret' });
+    try {
+      // An org-scoped token pins the agent to its org regardless of the requested
+      // scope, and only for the native class it was issued for.
+      const r = await request(app)
+        .post('/api/runners/register')
+        .send({ fleetToken: 'acme-secret', runnerClass: 'macos', orgScope: 'shared' });
+      expect(r.status).toBe(200);
+      const payload = verifyAgentToken(r.body.token as string);
+      expect(payload).not.toBeNull();
+      expect(payload!.orgScope).toBe('acme'); // pinned, not the requested 'shared'
+      expect(payload!.runnerClass).toBe('macos');
+    } finally {
+      delete process.env.FINALIZE_RUNNER_ORG_FLEET_TOKENS;
+    }
+  });
+
+  it('still registers a default (DinD) runner with the shared global token', async () => {
+    const r = await request(app)
+      .post('/api/runners/register')
+      .send({ fleetToken: FLEET, runnerClass: 'default', orgScope: 'shared' });
+    expect(r.status).toBe(200);
+    const payload = verifyAgentToken(r.body.token as string);
+    expect(payload!.orgScope).toBe('shared');
+    expect(payload!.runnerClass).toBe('default');
   });
 
   it('full path: register → claim → poll(run_step) → logs → step-result → 410-on-release', async () => {

@@ -12,6 +12,7 @@
  * wire the production implementations.
  */
 import { spawn } from 'child_process';
+import { readFileSync } from 'fs';
 import path from 'path';
 import { buildExecJobStepArgv, sanitizeJobContainerName } from './runner-exec-args.js';
 import { startJobContainer, stopJobContainer } from './job-container.js';
@@ -359,7 +360,14 @@ export async function runAgentJob(args: {
         // if materialize was skipped the path does not exist and `sudo chown -R`
         // hard-errors ("No such file or directory"), marking the shard agent_lost
         // instead of letting startContainer surface a real error.
-        await (args.ensureJobWorktreeOwnership ?? chownWorktreeForJobRunner)(jobWorkspace);
+        //
+        // DinD only: this aligns bind-mount ownership with the container's
+        // `runner` uid. A NATIVE (macOS) runner runs steps in-place as its own
+        // user — there is no container uid to match, and chowning to uid 1000
+        // would be wrong on macOS — so skip it.
+        if (!spec.native) {
+          await (args.ensureJobWorktreeOwnership ?? chownWorktreeForJobRunner)(jobWorkspace);
+        }
       }
       return docker.startContainer(spec, jobWorkspace);
     });
@@ -542,6 +550,168 @@ export function realDockerOps(): AgentDocker {
 }
 
 /**
+ * Env-name PREFIXES stripped from the host env before a NATIVE step runs.
+ *
+ *   - `FINALIZE_RUNNER_` / `FINALIZE_FLEET_` / `FINALIZE_WORKTREE_` — the agent's
+ *     control-plane config, including `FINALIZE_RUNNER_FLEET_TOKEN` and
+ *     `FINALIZE_RUNNER_TOKEN_SECRET`. A repository step must NEVER see these: the
+ *     fleet token would let a malicious step register rogue agents and claim other
+ *     tenants' jobs. (The DinD path is isolated by the container; a native step
+ *     runs in the agent's own process env, so it must be scrubbed explicitly.)
+ *   - `AWS_` — the agent host's ambient cloud credentials. A job that genuinely
+ *     needs AWS access receives scoped creds through its OWN delivered step env
+ *     (project secrets), which is merged AFTER this and wins.
+ */
+export const NATIVE_ENV_BLOCK_PREFIXES = [
+  'FINALIZE_RUNNER_',
+  'FINALIZE_FLEET_',
+  'FINALIZE_WORKTREE_',
+  'AWS_',
+] as const;
+
+/** Exact env names (ambient host credentials) stripped before a native step. */
+export const NATIVE_ENV_BLOCK_EXACT = new Set<string>([
+  'GITHUB_TOKEN',
+  'GH_TOKEN',
+  'NPM_TOKEN',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+]);
+
+/**
+ * Build the environment for a NATIVE step: the agent host env with runner-control
+ * and host-credential variables removed, then the job's own (trusted, Hub-
+ * delivered) step env merged over it.
+ *
+ * Native steps run directly in the agent's process environment — there is no
+ * container boundary — so without this scrub any repository step could read the
+ * fleet token / host cloud keys and exfiltrate them. The step env is delivered by
+ * the Hub (project secrets, matrix vars) and is the intended, auditable channel
+ * for anything a job legitimately needs, so it is applied last and wins.
+ */
+export function sanitizeNativeStepEnv(
+  base: NodeJS.ProcessEnv,
+  stepEnv: Record<string, string>,
+): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value === undefined) continue;
+    if (NATIVE_ENV_BLOCK_EXACT.has(key)) continue;
+    if (NATIVE_ENV_BLOCK_PREFIXES.some((p) => key.startsWith(p))) continue;
+    out[key] = value;
+  }
+  for (const [key, value] of Object.entries(stepEnv)) out[key] = value;
+  return out;
+}
+
+/**
+ * Secrets removed from the AGENT'S OWN `process.env` at startup.
+ *
+ * ROOT CAUSE (why the per-step child scrub isn't enough): native steps run under
+ * the same OS user as this long-lived agent, so they can read the PARENT's
+ * environment (`ps eww -p $PPID`, `/proc/<ppid>/environ`) and recover the fleet
+ * token even though the child's env was sanitized. The only durable fix is to
+ * not keep the secret in this process's environment at all — capture what we
+ * need into locals at startup, then delete it here.
+ *
+ * Prefixes: `AWS_` (host cloud creds — the agent never needs them; it fetches
+ * worktrees via presigned URLs). Exacts: the fleet token + token secret, plus the
+ * ambient host tokens in {@link NATIVE_ENV_BLOCK_EXACT}.
+ */
+const AGENT_SECRET_ENV_PREFIXES = ['AWS_'] as const;
+const AGENT_SECRET_ENV_EXACT = new Set<string>([
+  'FINALIZE_RUNNER_FLEET_TOKEN',
+  'FINALIZE_RUNNER_TOKEN_SECRET',
+  ...NATIVE_ENV_BLOCK_EXACT,
+]);
+
+/**
+ * Delete the fleet token + host credentials from the agent process environment.
+ * Idempotent; safe to call once at startup AFTER {@link resolveFleetToken} has
+ * captured the token into a local. Exported for tests.
+ */
+export function scrubAgentProcessEnvSecrets(env: NodeJS.ProcessEnv = process.env): void {
+  for (const key of Object.keys(env)) {
+    if (
+      AGENT_SECRET_ENV_EXACT.has(key) ||
+      AGENT_SECRET_ENV_PREFIXES.some((p) => key.startsWith(p))
+    ) {
+      delete env[key];
+    }
+  }
+}
+
+/**
+ * Resolve the shared fleet token for registration.
+ *
+ * Prefer `FINALIZE_RUNNER_FLEET_TOKEN_FILE` (a path to a file holding the token):
+ * a file-delivered secret is never placed in the process environment block, so it
+ * cannot be recovered from `ps eww` / `/proc/<pid>/environ` at all — the strongest
+ * form of the fix, recommended for the native macOS runner. Falls back to the
+ * `FINALIZE_RUNNER_FLEET_TOKEN` env var (scrubbed from `process.env` right after
+ * this returns) for back-compat. Exported for tests.
+ */
+export function resolveFleetToken(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const file = env.FINALIZE_RUNNER_FLEET_TOKEN_FILE?.trim();
+  if (file) {
+    try {
+      return readFileSync(file, 'utf8').trim() || undefined;
+    } catch (err) {
+      throw new Error(
+        `failed to read FINALIZE_RUNNER_FLEET_TOKEN_FILE (${file}): ${(err as Error).message}`,
+      );
+    }
+  }
+  return env.FINALIZE_RUNNER_FLEET_TOKEN;
+}
+
+/**
+ * The NATIVE runner executor — the actual "Mac Finalize Runner".
+ *
+ * A macOS runner-agent cannot use DinD (Xcode/iOS toolchains don't run in a
+ * Linux container, and Docker Desktop on macOS can't run macOS containers). So
+ * instead of starting a job container and `docker exec`-ing steps into it, this
+ * executor runs each step DIRECTLY on the agent host, in the materialized
+ * worktree, inheriting the runner's toolchain environment. It satisfies the same
+ * `AgentDocker` seam so the whole claim → poll → run_step → report agent loop is
+ * reused unchanged; only how a step is executed differs.
+ *
+ *   - `startContainer` is a no-op that returns the workspace path (used as the
+ *     step cwd — the "container name" slot carries the working directory).
+ *   - `execStep` runs `bash -euo pipefail -c <run>` in that cwd with the host
+ *     env folded under the step env (so `xcodebuild`, `xcrun`, `fastlane`, and
+ *     Node are found on PATH), reusing `runExecStepChild` for streaming, the
+ *     local deadline abort, and process-group kill.
+ *   - `stopContainer` is a no-op — there is nothing to tear down.
+ *
+ * `spawnFn` is injectable so tests exercise the executor without spawning.
+ */
+export function nativeHostOps(opts?: { spawnFn?: typeof spawn }): AgentDocker {
+  return {
+    async startContainer(_spec, workspaceMount) {
+      return workspaceMount;
+    },
+    execStep(cwd, run, env, onLog, signal) {
+      return runExecStepChild({
+        argv: ['bash', '-euo', 'pipefail', '-c', run],
+        cwd,
+        // Host toolchain env (PATH to Xcode, Homebrew, Node) MINUS runner-control
+        // and host-credential vars (fleet token, AWS keys, …), then the job's own
+        // delivered step env merged over it. Without the scrub a repository step
+        // could read the fleet token and register rogue agents — there is no
+        // container boundary on the native path. See sanitizeNativeStepEnv.
+        env: sanitizeNativeStepEnv(process.env, env),
+        onLog,
+        ...(signal ? { signal } : {}),
+        ...(opts?.spawnFn ? { spawnFn: opts.spawnFn } : {}),
+      });
+    },
+    async stopContainer() {
+      // No container to remove — native steps ran directly in the worktree.
+    },
+  };
+}
+
+/**
  * Grace (ms) after a step's process EXITS before we stop waiting for its stdio
  * to flush. We resolve on process exit, not on stdout `close`: a leftover child
  * that inherited the exec's stdout/stderr can hold those pipes open long after
@@ -577,6 +747,14 @@ export function runExecStepChild(args: {
   spawnFn?: typeof spawn;
   exitDrainGraceMs?: number;
   killGraceMs?: number;
+  /**
+   * Working directory / environment for the spawned child. Unused by the DinD
+   * path (cwd + env live INSIDE the container via `docker exec` flags), set by
+   * the NATIVE executor so a macOS step runs in the materialized worktree with
+   * the runner's toolchain env.
+   */
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
 }): Promise<number> {
   const spawnFn = args.spawnFn ?? spawn;
   const exitDrainGraceMs = args.exitDrainGraceMs ?? STEP_EXIT_DRAIN_GRACE_MS;
@@ -585,6 +763,8 @@ export function runExecStepChild(args: {
     const child = spawnFn(args.argv[0], args.argv.slice(1), {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+      ...(args.env ? { env: args.env } : {}),
     });
     child.stdout?.on('data', (d) => args.onLog('stdout', d.toString()));
     child.stderr?.on('data', (d) => args.onLog('stderr', d.toString()));
@@ -755,15 +935,62 @@ export async function registerAgent(
   hubUrl: string,
   fleetToken: string,
   orgScope: string,
+  runnerClass?: string,
 ): Promise<{ agentId: string; token: string }> {
   const ecsTaskArn = await resolveEcsTaskArn();
   const res = await fetch(`${hubUrl.replace(/\/$/, '')}/api/runners/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ fleetToken, orgScope, ...(ecsTaskArn ? { ecsTaskArn } : {}) }),
+    body: JSON.stringify({
+      fleetToken,
+      orgScope,
+      ...(runnerClass ? { runnerClass } : {}),
+      ...(ecsTaskArn ? { ecsTaskArn } : {}),
+    }),
   });
   if (!res.ok) throw new Error(`register failed: ${res.status}`);
   return (await res.json()) as { agentId: string; token: string };
+}
+
+/**
+ * Resolve this runner-agent's execution mode from env. A macOS runner
+ * (`FINALIZE_RUNNER_NATIVE=1`, or `FINALIZE_RUNNER_CLASS=macos`) runs steps
+ * natively on the host; everything else uses the Linux DinD container executor.
+ */
+export function resolveAgentMode(env: NodeJS.ProcessEnv = process.env): {
+  runnerClass: string;
+  native: boolean;
+} {
+  const runnerClass = (env.FINALIZE_RUNNER_CLASS || 'default').trim().toLowerCase();
+  const nativeFlag = /^(1|true|on)$/i.test((env.FINALIZE_RUNNER_NATIVE || '').trim());
+  const native = nativeFlag || runnerClass === 'macos';
+  return { runnerClass, native };
+}
+
+/**
+ * Enforce the single-tenant trust boundary for NATIVE execution.
+ *
+ * Native steps run as the long-lived agent user with no sandbox or disposable
+ * execution boundary, so a job can persist (modify startup files, daemonize,
+ * touch the keychain) and observe a LATER job's secrets. That is only acceptable
+ * within ONE tenant's own jobs — the self-hosted-runner trust model. A `shared`
+ * (multi-tenant) native agent would let one tenant's job compromise the next
+ * tenant, so it is refused: a native runner must be pinned to a dedicated org
+ * scope. Throws with actionable guidance; returns void when the config is safe.
+ *
+ * (The Hub enforces the matching invariant server-side — a native runner class
+ * may only register with an org-scoped token — so this is fail-fast local
+ * guidance, not the sole gate.)
+ */
+export function assertNativeRunnerTenancy(native: boolean, orgScope: string): void {
+  if (native && (!orgScope || orgScope === 'shared')) {
+    throw new Error(
+      'native runner refused: a macOS/native runner runs job code as the agent user with no ' +
+        'sandbox, so it must be SINGLE-TENANT. Set FINALIZE_RUNNER_ORG_SCOPE to a dedicated org ' +
+        'and register with an org-scoped token (FINALIZE_RUNNER_ORG_FLEET_TOKENS). Running native ' +
+        'jobs on the shared multi-tenant pool would let one tenant compromise the next.',
+    );
+  }
 }
 
 /**
@@ -828,15 +1055,32 @@ export async function runAgentClaimLoop(args: {
 export async function runAgentMain(): Promise<void> {
   const hubUrl =
     process.env.FINALIZE_RUNNER_HUB_URL || process.env.AGENT_HUB_URL || 'http://127.0.0.1:3051';
-  const fleetToken = process.env.FINALIZE_RUNNER_FLEET_TOKEN;
+  const fleetToken = resolveFleetToken();
   const orgScope = process.env.FINALIZE_RUNNER_ORG_SCOPE || 'shared';
   const workspaceDir = process.env.FINALIZE_RUNNER_WORKSPACE_DIR || '/github/workspace';
   const bundleDir = process.env.FINALIZE_RUNNER_BUNDLE_DIR;
-  if (!fleetToken) throw new Error('FINALIZE_RUNNER_FLEET_TOKEN is required');
+  if (!fleetToken) {
+    throw new Error(
+      'FINALIZE_RUNNER_FLEET_TOKEN (or FINALIZE_RUNNER_FLEET_TOKEN_FILE) is required',
+    );
+  }
 
-  const { token } = await registerAgent(hubUrl, fleetToken, orgScope);
+  const { runnerClass, native } = resolveAgentMode();
+  // Refuse an unsafe native config before doing anything else: a native runner
+  // must be single-tenant (dedicated org scope). See assertNativeRunnerTenancy.
+  assertNativeRunnerTenancy(native, orgScope);
+  // Root-cause secret isolation: now that the fleet token is captured in a local,
+  // delete it (and host creds) from THIS process's environment so a co-user
+  // repository step can't recover it by inspecting the parent (`ps eww -p $PPID`,
+  // /proc/<ppid>/environ). Must happen BEFORE the claim loop runs any step. Native
+  // runners should prefer FINALIZE_RUNNER_FLEET_TOKEN_FILE so the token never
+  // enters the env block in the first place.
+  scrubAgentProcessEnvSecrets();
+  const { token } = await registerAgent(hubUrl, fleetToken, orgScope, runnerClass);
   const transport = httpTransport(hubUrl, token);
-  const docker = realDockerOps();
+  // A native (macOS) runner runs steps directly on the host; a default runner
+  // uses the Linux DinD container executor.
+  const docker = native ? nativeHostOps() : realDockerOps();
   // Under ECS this protects the task from being killed mid-job by a deploy or
   // scale-in; off-ECS (local 2a fleet) $ECS_AGENT_URI is unset → no-op.
   const protection = ecsTaskProtection();

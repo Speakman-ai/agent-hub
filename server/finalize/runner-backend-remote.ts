@@ -27,6 +27,8 @@ import {
   type BundleStore,
   type WorktreeRef,
 } from './worktree-bundle.js';
+import { isMacosRunsOn, runnerClassForRunsOn } from './runner-images.js';
+import { resolveFleetNativePlatforms } from './runner-fleet-constants.js';
 
 // How long a dispatched job waits for an agent to claim it before it's marked
 // lost. With uncapped Hub dispatch (the remote default) every shard is enqueued
@@ -49,6 +51,15 @@ export interface RunnerJobWireSpec {
   jobId: string;
   matrixKey: string;
   image: string;
+  /** Raw `runs-on` label, so the agent knows the job's runner class. */
+  runsOn?: string;
+  /**
+   * When true this is a NATIVE (non-container) job: the agent runs the steps
+   * directly on its host in the materialized worktree instead of starting a DinD
+   * container. Set for `runs-on: macos-*` jobs claimed by a macOS agent — Xcode
+   * cannot run in a Linux container.
+   */
+  native?: boolean;
   composeProjectName: string;
   env: Record<string, string>;
   /**
@@ -110,6 +121,16 @@ export function createRemoteRunnerBackend(opts?: {
 
   return {
     kind: 'remote',
+    // Native (non-container) platforms the FLEET provides, independent of where
+    // the Hub runs. The macOS runner-agent runs iOS jobs natively, so the fleet
+    // advertises `darwin` by default (override via FINALIZE_FLEET_NATIVE_PLATFORMS).
+    // This is what lets a Linux Hub accept `runs-on: macos-*` and enqueue it to
+    // the macOS runner class instead of rejecting it on the coordinator's own
+    // `process.platform`.
+    nativeHostPlatforms: resolveFleetNativePlatforms(),
+    // A `runs-on: macos-*` job is dispatched THROUGH this backend to a macOS
+    // fleet agent that runs it natively — not on the Hub host.
+    runsNativeJobsRemotely: true,
     async acquire(spec: JobClaimSpec): Promise<RunnerLease> {
       let worktreeRef: WorktreeRef | null = null;
       if (store) {
@@ -136,6 +157,9 @@ export function createRemoteRunnerBackend(opts?: {
         const getUrl = store.presignGet ? await store.presignGet(baseRef.key) : null;
         worktreeRef = getUrl ? { ...baseRef, getUrl } : baseRef;
       }
+      const runsOn = spec.runsOn ?? '';
+      const runnerClass = runnerClassForRunsOn(runsOn);
+      const native = isMacosRunsOn(runsOn);
       const wire: RunnerJobWireSpec = {
         orgId: spec.orgId,
         projectId: spec.projectId,
@@ -143,6 +167,8 @@ export function createRemoteRunnerBackend(opts?: {
         jobId: spec.jobId,
         matrixKey: spec.matrixKey,
         image: spec.image,
+        runsOn,
+        native,
         composeProjectName: spec.composeProjectName,
         env: toEnvRecord(spec.env),
         visibility: spec.visibility,
@@ -157,6 +183,9 @@ export function createRemoteRunnerBackend(opts?: {
         jobId: spec.jobId,
         matrixKey: spec.matrixKey,
         image: spec.image,
+        // Class-partition the queue so ONLY a macOS agent claims a macOS job (and
+        // a Linux DinD agent never does). Default class for container/host jobs.
+        runnerClass,
         specJson: JSON.stringify(wire),
         now: now(),
       });
