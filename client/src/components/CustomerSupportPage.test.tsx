@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRef } from 'react';
 import { render, screen, waitFor, act, fireEvent, within } from '@testing-library/react';
-import CustomerSupportPage, { sortTickets, resolveReplayUrl } from './CustomerSupportPage';
+import CustomerSupportPage, {
+  sortTickets,
+  resolveReplayUrl,
+  flattenBoardCardsForPicker,
+} from './CustomerSupportPage';
 import { api } from '../utils/api';
 
 (vi as any).mock('../utils/api.js', () => ({
@@ -97,6 +101,45 @@ describe('sortTickets', () => {
       ticket({ id: 'crit', severity: 'critical', created_at: '2026-06-14 09:00:00' }),
     ]);
     expect(sorted.map((t: any) => t.id)).toEqual(['crit', 'low']);
+  });
+});
+
+describe('flattenBoardCardsForPicker', () => {
+  // Regression: the GET /board response returns cards as a FLAT top-level array
+  // with columns carrying NO nested `.cards`. The old code iterated
+  // `column.cards`, so the Link-to-card picker was always empty ("shows no
+  // cards"). Flattening must read `board.cards` and resolve the column by id.
+  it('flattens the flat cards array and resolves column names by id', () => {
+    const board = {
+      columns: [
+        { id: 'col-todo', name: 'To Do' },
+        { id: 'col-done', name: 'Done' },
+      ],
+      cards: [
+        { id: 'c1', title: 'First bug', short_id: 12, column_id: 'col-todo' },
+        { id: 'c2', title: 'Shipped fix', short_id: 34, column_id: 'col-done' },
+      ],
+    };
+    expect(flattenBoardCardsForPicker(board)).toEqual([
+      { id: 'c1', title: 'First bug', shortId: 12, column: 'To Do' },
+      { id: 'c2', title: 'Shipped fix', shortId: 34, column: 'Done' },
+    ]);
+  });
+
+  it('does NOT read a nested column.cards shape (the shape that never populated)', () => {
+    const board = {
+      columns: [{ id: 'col-todo', name: 'To Do', cards: [{ id: 'ignored', title: 'x' }] }],
+      cards: [],
+    };
+    expect(flattenBoardCardsForPicker(board)).toEqual([]);
+  });
+
+  it('tolerates a missing/empty board without throwing', () => {
+    expect(flattenBoardCardsForPicker(undefined)).toEqual([]);
+    expect(flattenBoardCardsForPicker({})).toEqual([]);
+    expect(
+      flattenBoardCardsForPicker({ cards: [{ id: 'c1', title: 't', column_id: 'gone' }] }),
+    ).toEqual([{ id: 'c1', title: 't', shortId: undefined, column: '' }]);
   });
 });
 

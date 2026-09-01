@@ -197,6 +197,26 @@ function sortTickets(list: any, mode: 'priority' | 'date' = 'priority') {
   });
 }
 
+// Flatten a `GET /board` response into picker rows for the Link-to-card
+// control. The board response carries cards as a FLAT top-level array; each
+// card references its column by `column_id` and columns do NOT nest their
+// cards. Resolving the column name through an id→name map is what keeps the
+// picker populated (iterating a non-existent `column.cards` yields nothing).
+function flattenBoardCardsForPicker(board: any) {
+  const columnNameById = new Map<string, string>();
+  for (const col of board?.columns || []) columnNameById.set(col.id, col.name);
+  const flat: any[] = [];
+  for (const c of board?.cards || []) {
+    flat.push({
+      id: c.id,
+      title: c.title,
+      shortId: c.short_id,
+      column: columnNameById.get(c.column_id) || '',
+    });
+  }
+  return flat;
+}
+
 // Sort the voting feed: highest score first, ties broken by newest first —
 // matching the server's ORDER BY so a WebSocket-patched row lands in the right
 // place without a refetch.
@@ -704,13 +724,7 @@ function LinkToCardControl({
     try {
       // Pull a generous page per column so the picker covers the whole board.
       const board: any = await api.getBoard(projectId, { limit: 200 });
-      const flat: any[] = [];
-      for (const col of board?.columns || []) {
-        for (const c of col?.cards || []) {
-          flat.push({ id: c.id, title: c.title, shortId: c.short_id, column: col.name });
-        }
-      }
-      setCards(flat);
+      setCards(flattenBoardCardsForPicker(board));
     } catch (err: any) {
       setError(err?.message || 'Failed to load board cards');
     } finally {
@@ -2329,4 +2343,4 @@ function CustomerSupportPageInner(
 const CustomerSupportPage = forwardRef(CustomerSupportPageInner);
 CustomerSupportPage.displayName = 'CustomerSupportPage';
 export default CustomerSupportPage;
-export { sortTickets, resolveReplayUrl };
+export { sortTickets, resolveReplayUrl, flattenBoardCardsForPicker };
