@@ -25,6 +25,9 @@ import { api } from '../utils/api';
     getSupportTicketComments: vi.fn().mockResolvedValue([]),
     addSupportTicketComment: vi.fn(),
     hideSupportTicketComment: vi.fn().mockResolvedValue({ ok: true }),
+    getProjects: vi.fn().mockResolvedValue([]),
+    getAgents: vi.fn().mockResolvedValue([]),
+    startVotingScaffolder: vi.fn(),
   },
 }));
 
@@ -1765,5 +1768,105 @@ describe('CustomerSupportPage — Voting item detail (thread + operator actions)
     // Full success removes the item from the feed and closes the modal.
     await waitFor(() => expect(screen.queryByTestId('support-ticket-detail-modal')).toBeNull());
     expect(screen.queryByTestId('voting-open-f1')).toBeNull();
+  });
+});
+
+describe('CustomerSupportPage — voting scaffolder launcher', () => {
+  const PROJECTS = [
+    { id: 'proj-1', name: 'Hub' },
+    { id: 'acme-app', name: 'Acme' },
+  ];
+  const AGENTS = [
+    { id: 'agent-hub', name: 'Hub Dev', projectId: 'proj-1', engine: 'claude-code' },
+    {
+      id: 'agent-reviewer',
+      name: 'Reviewer',
+      projectId: 'proj-1',
+      engine: 'claude-code',
+      role: 'reviewer',
+    },
+    { id: 'agent-acme', name: 'Acme Dev', projectId: 'acme-app', engine: 'cursor-agent' },
+  ];
+
+  beforeEach(() => {
+    localStorage.clear();
+    (api.getVotingItems as any).mockResolvedValue([]);
+    (api.getProjects as any).mockResolvedValue(PROJECTS);
+    (api.getAgents as any).mockResolvedValue(AGENTS);
+    (api.startVotingScaffolder as any).mockResolvedValue({
+      sessionId: 'sess-vote-1',
+      agentId: 'agent-acme',
+    });
+  });
+
+  async function openLauncher(props: any = {}) {
+    const onOpenSession = props.onOpenSession ?? vi.fn();
+    await openVotingTab({ onOpenSession, ...props });
+    fireEvent.click(screen.getByTestId('voting-setup-launcher'));
+    await waitFor(() => expect(screen.getByTestId('voting-setup-modal')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('voting-setup-project')).not.toBeDisabled());
+    return { onOpenSession };
+  }
+
+  it('renders the launcher on the Voting tab with the styling explainer', async () => {
+    await openLauncher();
+    expect(screen.getByTestId('voting-setup-launcher')).toHaveTextContent(
+      'Set up voting in an app',
+    );
+    expect(screen.getByTestId('voting-setup-explainer')).toHaveTextContent(
+      /match its existing styling/i,
+    );
+    expect(screen.getByTestId('voting-setup-explainer')).toHaveTextContent(
+      /where the voting page should live/i,
+    );
+  });
+
+  it('defaults the project picker to the current support project and omits reviewers', async () => {
+    await openLauncher();
+    expect(screen.getByTestId('voting-setup-project')).toHaveValue('proj-1');
+    const agentSelect = screen.getByTestId('voting-setup-agent');
+    expect(agentSelect).toHaveValue('agent-hub');
+    expect(agentSelect).toHaveTextContent('Hub Dev');
+    expect(agentSelect).not.toHaveTextContent('Reviewer');
+  });
+
+  it('selecting a project+agent and confirming seeds a session and navigates to it', async () => {
+    const onOpenSession = vi.fn();
+    await openLauncher({ onOpenSession });
+
+    fireEvent.change(screen.getByTestId('voting-setup-project'), {
+      target: { value: 'acme-app' },
+    });
+    await waitFor(() => expect(screen.getByTestId('voting-setup-agent')).toHaveValue('agent-acme'));
+
+    fireEvent.change(screen.getByTestId('voting-setup-page-hint'), {
+      target: { value: 'Ideas' },
+    });
+    fireEvent.click(screen.getByTestId('voting-setup-confirm'));
+
+    await waitFor(() =>
+      expect(api.startVotingScaffolder).toHaveBeenCalledWith('acme-app', {
+        agentId: 'agent-acme',
+        pageNameHint: 'Ideas',
+      }),
+    );
+    expect(onOpenSession).toHaveBeenCalledWith({
+      sessionId: 'sess-vote-1',
+      agentId: 'agent-acme',
+    });
+    expect(screen.queryByTestId('voting-setup-modal')).toBeNull();
+  });
+
+  it('surfaces an error and stays on the modal when spawn fails', async () => {
+    (api.startVotingScaffolder as any).mockRejectedValueOnce(new Error('no agents'));
+    const onOpenSession = vi.fn();
+    const onNotify = vi.fn();
+    await openLauncher({ onOpenSession, onNotify });
+
+    fireEvent.click(screen.getByTestId('voting-setup-confirm'));
+    expect(await screen.findByTestId('voting-setup-error')).toHaveTextContent('no agents');
+    expect(onOpenSession).not.toHaveBeenCalled();
+    expect(onNotify).toHaveBeenCalled();
+    expect(screen.getByTestId('voting-setup-modal')).toBeInTheDocument();
   });
 });

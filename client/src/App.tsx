@@ -6851,6 +6851,9 @@ export default function App({ initialView }: any = {}) {
                     setCurrentView(`kanban:${supportProjectId}`);
                     setSidebarOpen(false);
                   }}
+                  onOpenSession={({ sessionId, agentId }: any) =>
+                    focusAgentSession(agentId, sessionId)
+                  }
                 />
               ) : currentView === 'hub' ||
                 currentView === 'home' ||

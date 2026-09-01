@@ -25,6 +25,7 @@ import { api } from '../utils/api';
 import { getVoterKey, computeOptimisticVote } from '../utils/voting';
 import { getServerBase } from '../utils/connection';
 import ReplayPlayerModal from './ReplayPlayerModal';
+import VotingScaffolderModal from './VotingScaffolderModal';
 import { parseReplayIdFromRef } from '../utils/replayPlayer';
 import { MarkdownContent } from './MarkdownRenderer';
 
@@ -1950,7 +1951,7 @@ function VotingTab({ projectId, agents = [], onNotify, onOpenCard }: any) {
 }
 
 function CustomerSupportPageInner(
-  { projectId, agents = [], onNotify, initialTicketId, onOpenCard }: any,
+  { projectId, agents = [], onNotify, initialTicketId, onOpenCard, onOpenSession }: any,
   ref: any,
 ) {
   // Which surface is showing: the issue queue or the score-ranked Voting feed.
@@ -1972,6 +1973,7 @@ function CustomerSupportPageInner(
   // that drives the list (see upsertTicket / removeTicket), so it still tracks
   // live updates and closes if the ticket is deleted.
   const [openTicket, setOpenTicket] = useState<any>(null);
+  const [launcherOpen, setLauncherOpen] = useState(false);
   const screenshotScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Resolve the active filter group to the set of statuses it covers (the API
@@ -2152,6 +2154,19 @@ function CustomerSupportPageInner(
             </button>
           ))}
         </div>
+        {activeTab === 'voting' ? (
+          <div className="ml-auto flex items-center">
+            <button
+              type="button"
+              onClick={() => setLauncherOpen(true)}
+              data-testid="voting-setup-launcher"
+              className="inline-flex items-center gap-1.5 rounded border border-gray-700 px-2.5 py-1 text-[11px] text-gray-300 hover:border-gray-600 hover:bg-gray-800 hover:text-gray-100"
+            >
+              <Sparkles size={12} />
+              Set up voting in an app
+            </button>
+          </div>
+        ) : null}
         <div
           className={`flex items-center gap-1 ml-auto flex-wrap justify-end ${
             activeTab === 'voting' ? 'hidden' : ''
@@ -2288,6 +2303,25 @@ function CustomerSupportPageInner(
           ) : null}
         </>
       )}
+
+      {launcherOpen ? (
+        <VotingScaffolderModal
+          currentProjectId={projectId}
+          onClose={() => setLauncherOpen(false)}
+          onNotify={onNotify}
+          onOpened={(target) => {
+            setLauncherOpen(false);
+            if (typeof onOpenSession === 'function') {
+              onOpenSession(target);
+            } else {
+              onNotify?.(
+                `Setup session started. Open it from the agent session list (${target.sessionId}).`,
+                'info',
+              );
+            }
+          }}
+        />
+      ) : null}
     </div>
   );
 }

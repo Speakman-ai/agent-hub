@@ -15035,6 +15035,46 @@ components:
           type: string
       required:
         - error
+    VotingWizardErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+      description: Error envelope for the voting scaffolder spawn route.
+    VotingWizardStartRequest:
+      type: object
+      properties:
+        agentId:
+          type: string
+          minLength: 1
+          description: Agent in the target project that will host the scaffolder session.
+        pageNameHint:
+          type: string
+          maxLength: 80
+          description: Optional page/route name hint (untrusted). Sanitized before it is interpolated into the task pack.
+      required:
+        - agentId
+      description: Body for spawning a voting scaffolder session.
+    VotingWizardStartResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          description: Id of the spawned `[Voting Setup]` session.
+        agentId:
+          type: string
+          description: Agent the session was created on.
+        session:
+          nullable: true
+          description: Raw `sessions` row for the spawned scaffolder session.
+      required:
+        - sessionId
+        - agentId
+      description: Voting scaffolder session spawned successfully.
     WikiPage:
       type: object
       properties:
@@ -44343,6 +44383,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UploadErrorResponse"
+  /api/projects/{projectId}/voting/setup-wizard:
+    post:
+      tags:
+        - Support
+      summary: Spawn a voting-integration scaffolder session
+      description: |-
+        User+. Spawns a **worktree-backed** chat session named `[Voting Setup] <project>`
+        on the chosen agent, seeded with the versioned voting integration task pack
+        as the first user message. The agent inspects the target app, asks where the
+        voting page should live, and generates a score-sorted list + up/down votes +
+        anonymous comment thread wired to the public voting API of this project.
+      parameters:
+        - schema:
+            type: string
+            description: Target project slug. The session is spawned in this project workspace.
+          required: true
+          description: Target project slug. The session is spawned in this project workspace.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VotingWizardStartRequest"
+      responses:
+        "201":
+          description: Scaffolder session spawned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VotingWizardStartResponse"
+        "400":
+          description: Missing agentId, agent not in this project, inactive or reviewer agent, or project has no cwd.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VotingWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VotingWizardErrorResponse"
+        "500":
+          description: The seeded first turn was not accepted. The session row is deleted so a retry cannot leave an empty [Voting Setup] session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VotingWizardErrorResponse"
   /api/projects/{projectId}/wiki:
     get:
       tags:

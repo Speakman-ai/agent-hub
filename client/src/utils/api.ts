@@ -2805,6 +2805,23 @@ export const api = {
   // score desc, each carrying a `voting` tally { score, upvotes, downvotes,
   // myVote, comment_count }. Pass the per-browser `voterKey` so `myVote`
   // reflects this device's current vote; omit it and myVote is null.
+  /**
+   * Spawn a `[Voting Setup]` session in the target project's workspace, seeded
+   * with the voting integration task pack. `agentId` must belong to that project.
+   * Returns `{ sessionId, agentId, session }`.
+   */
+  startVotingScaffolder: (projectId: string, opts: { agentId: string; pageNameHint?: string }) =>
+    fetchJSON<{ sessionId: string; agentId: string; session?: Record<string, unknown> }>(
+      `/projects/${projectId}/voting/setup-wizard`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          agentId: opts.agentId,
+          ...(opts.pageNameHint ? { pageNameHint: opts.pageNameHint } : {}),
+        }),
+      },
+    ),
+
   getVotingItems: (projectId: any, voterKey?: any) => {
     const qs = voterKey ? `?voterKey=${encodeURIComponent(String(voterKey))}` : '';
     return fetchJSON(`/projects/${projectId}/support-tickets/voting${qs}`);
