@@ -87,7 +87,11 @@ export default function RunnersScreen({ route, navigation }: any) {
   };
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
-      <ProjectScreenHeader title="Runners" project={project} onBack={() => navigation.goBack()} />
+      <ProjectScreenHeader
+        title="Finalize CI"
+        project={project}
+        onBack={() => navigation.goBack()}
+      />
       <ScrollView contentContainerStyle={styles.content}>
         <FinalizeSection navigation={navigation} fixedProjectId={projectId} />
 

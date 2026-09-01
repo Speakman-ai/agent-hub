@@ -67,6 +67,8 @@ import { api } from '../utils/api';
     ),
     deleteMyAgentEngineOverride: vi.fn().mockResolvedValue({ agentEngineOverrides: {} }),
     getSkills: vi.fn().mockResolvedValue([]),
+    getContext: vi.fn().mockResolvedValue({}),
+    saveContext: vi.fn().mockResolvedValue({ ok: true }),
     getGlobalSkills: vi.fn().mockResolvedValue([]),
     getGlobalSkill: vi.fn().mockResolvedValue({ content: '' }),
     createGlobalSkill: vi.fn().mockResolvedValue({ id: 'new-skill' }),
@@ -161,7 +163,7 @@ describe('SettingsPage — tab labels', () => {
 
   it('no longer exposes Preview or Finalize tabs (moved to per-project sidebar)', async () => {
     // Preview and Finalize configuration moved out of Settings and into the
-    // per-project sidebar as "Preview" and "Runners". Guard against the tabs
+    // per-project sidebar as "Previews" and "Finalize CI". Guard against the tabs
     // accidentally reappearing here.
     const { findByRole, queryByRole } = render(
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
@@ -170,6 +172,25 @@ describe('SettingsPage — tab labels', () => {
     expect(await findByRole('button', { name: /^General$/ })).toBeTruthy();
     expect(queryByRole('button', { name: /^Preview$/ })).toBeNull();
     expect(queryByRole('button', { name: /^Finalize$/ })).toBeNull();
+  });
+
+  it('no longer exposes Tool Errors or Slack settings tabs', async () => {
+    const { findByRole, queryByRole } = render(
+      <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,
+    );
+    expect(await findByRole('button', { name: /^General$/ })).toBeTruthy();
+    expect(queryByRole('button', { name: /^Tool Errors$/ })).toBeNull();
+    expect(queryByRole('button', { name: /^Slack$/ })).toBeNull();
+  });
+
+  it('maps retired Slack and Tool Errors deep-links onto General', async () => {
+    const { findByRole } = render(
+      <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} initialTab="tool-errors" />,
+    );
+    expect(await findByRole('button', { name: /^General$/ })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
   });
 
   it('labels the host-wide Gemini key tab "Global API Keys"', async () => {
@@ -563,7 +584,7 @@ describe('SettingsPage — sidebar navigation', () => {
     await findByText('Project settings');
     expect(
       await findByText(
-        'Configure install/build commands, session startup, secrets, visibility, and lifecycle settings for this project.',
+        'Configure install/build commands, session startup, secrets, and lifecycle settings for this project.',
       ),
     ).toBeTruthy();
   });
@@ -583,6 +604,15 @@ describe('SettingsPage — sidebar navigation', () => {
     const projectsView = render(<ProjectsSection projects={projects} projectId="p1" />);
     expect(await projectsView.findByText('Project Commands')).toBeTruthy();
     expect(projectsView.getByTestId('project-workflow-commands-p1')).toBeTruthy();
+    expect(projectsView.getByText('Session startup')).toBeTruthy();
+    expect(projectsView.getByText('VM startup')).toBeTruthy();
+    expect(
+      projectsView.getByText('Commands that run at the start of every session. One per line.'),
+    ).toBeTruthy();
+    expect(
+      projectsView.getByText('Commands that run only when a session boots a VM. One per line.'),
+    ).toBeTruthy();
+    expect(projectsView.queryByText(/Session startup \(after env boot\)/)).toBeNull();
     projectsView.unmount();
 
     const agentsView = render(
@@ -733,7 +763,7 @@ describe('OrganizationsSection — Connection Mode toggle visibility', () => {
   });
 });
 
-describe('ProjectsSection — visibility toggle', () => {
+describe('ProjectsSection — retired visibility and mode editors', () => {
   beforeEach(() => {
     (api.getModelConfig as any).mockResolvedValue({
       defaultModel: 'claude-opus-4-8',
@@ -747,23 +777,19 @@ describe('ProjectsSection — visibility toggle', () => {
     vi.clearAllMocks();
   });
 
-  function makeProject(overrides: any = {}) {
-    return {
+  it('does not render Visibility or Project mode editors (Members / create-time assignment replace them)', async () => {
+    const project = {
       id: 'p1',
       name: 'Demo',
       cwd: '/tmp/p1',
       ahw: '/tmp/p1-ahw',
       color: '#6366f1',
       visibility: 'shared',
+      mode: 'dev',
       ownerUserId: null,
       agents: [],
-      ...overrides,
     };
-  }
-
-  it('renders the Visibility select pre-populated from project.visibility', async () => {
-    const project = makeProject({ visibility: 'private', ownerUserId: 'u1' });
-    const { getByTestId } = render(
+    const { queryByTestId, queryByText } = render(
       <ProjectsSection
         projects={[project]}
         onProjectsChange={() => {}}
@@ -771,57 +797,10 @@ describe('ProjectsSection — visibility toggle', () => {
       />,
     );
     await waitFor(() => {
-      const sel = getByTestId('project-visibility-select-p1');
-      expect((sel as any).value).toBe('private');
+      expect(queryByTestId('project-visibility-select-p1')).toBeNull();
     });
-  });
-
-  it('calls api.updateProject with the new visibility and triggers onProjectsChange', async () => {
-    const project = makeProject({ visibility: 'shared' });
-    const onProjectsChange = vi.fn();
-    const { getByTestId } = render(
-      <ProjectsSection
-        projects={[project]}
-        onProjectsChange={onProjectsChange}
-        initialExpandedProjectId="p1"
-      />,
-    );
-
-    const sel = await waitFor(() => getByTestId('project-visibility-select-p1'));
-    fireEvent.change(sel, { target: { value: 'private' } } as any);
-
-    await waitFor(() => {
-      expect(api.updateProject).toHaveBeenCalledWith('p1', { visibility: 'private' });
-    });
-    await waitFor(() => {
-      expect(onProjectsChange!).toHaveBeenCalled();
-    });
-  });
-
-  it('surfaces a server error via showToast when updateProject rejects (e.g. 403)', async () => {
-    (api.updateProject as any).mockRejectedValueOnce(
-      new Error('Only org Owners can make a shared project private.'),
-    );
-    const project = makeProject({ visibility: 'shared' });
-    const showToast = vi.fn();
-    const { getByTestId } = render(
-      <ProjectsSection
-        projects={[project]}
-        onProjectsChange={() => {}}
-        initialExpandedProjectId="p1"
-        showToast={showToast}
-      />,
-    );
-
-    const sel = await waitFor(() => getByTestId('project-visibility-select-p1'));
-    fireEvent.change(sel, { target: { value: 'private' } } as any);
-
-    await waitFor(() => {
-      expect(showToast!).toHaveBeenCalledWith(
-        expect.stringMatching(/Only org Owners can make a shared project private/),
-        'error',
-      );
-    });
+    expect(queryByText('Visibility')).toBeNull();
+    expect(queryByText('Project mode')).toBeNull();
   });
 });
 
@@ -1132,5 +1111,165 @@ describe('AgentConfigSection — allowed-skills multi-select', () => {
     fireEvent.click(getByTestId('agent-allowed-skills-toggle' as any));
     const list = await findByTestId('agent-allowed-skills-list');
     expect(within(list).getAllByRole('checkbox')).toHaveLength(3);
+  });
+});
+
+describe('AgentConfigSection — context files', () => {
+  beforeEach(() => {
+    (api.getConfig as any).mockResolvedValue({ claudeBin: '/bin/claude', _file: {} });
+    (api.get as any).mockResolvedValue({});
+    (api.getModelConfig as any).mockResolvedValue({
+      defaultModel: 'claude-opus-4-8',
+      engineDefaultModels: { 'claude-code': 'claude-opus-4-8' },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
+    });
+    (api.getMyAgentModelOverrides as any).mockResolvedValue({ agentModelOverrides: {} });
+    (api.getMyAgentEngineOverrides as any).mockResolvedValue({ agentEngineOverrides: {} });
+    (api.getSkills as any).mockResolvedValue([]);
+    (api.getContext as any).mockResolvedValue({
+      'AGENTS.md': '# Project agents',
+      'IDENTITY.md': '# I am agent a',
+      'SOUL.md': '# leftover soul',
+      'USER.md': '# leftover user',
+    });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const agent = {
+    id: 'agent-a',
+    name: 'Agent A',
+    role: 'lead',
+    engine: 'claude-code',
+    active: true,
+    projectId: 'p1',
+  };
+
+  it('shows project AGENTS.md and per-agent IDENTITY.md, not the leftover shared files', async () => {
+    const { findByTestId, queryByTestId, findByText } = render(
+      <AgentConfigSection
+        projects={[{ id: 'p1', name: 'Acme', cwd: '/tmp', agents: [] }]}
+        agents={[agent]}
+        projectId="p1"
+        onAgentsChange={() => {}}
+      />,
+    );
+
+    expect(await findByTestId('context-file-AGENTS.md')).toBeTruthy();
+    expect(await findByText('AGENTS.md')).toBeTruthy();
+    expect(queryByTestId('context-file-SOUL.md')).toBeNull();
+    expect(queryByTestId('context-file-USER.md')).toBeNull();
+    expect(queryByTestId('context-file-TOOLS.md')).toBeNull();
+    expect(queryByTestId('context-file-MEMORY.md')).toBeNull();
+    expect(queryByTestId('context-file-IDENTITY.md')).toBeNull();
+
+    fireEvent.click(await findByText('Agent A' as any));
+    expect(await findByTestId('context-file-IDENTITY.md')).toBeTruthy();
+    expect(queryByTestId('context-file-SOUL.md')).toBeNull();
+  });
+
+  it('gates AGENTS.md on a rejected read instead of offering an empty editable file', async () => {
+    (api.getContext as any).mockRejectedValue(new Error('boom'));
+    const { findByTestId, queryByText } = render(
+      <AgentConfigSection
+        projects={[{ id: 'p1', name: 'Acme', cwd: '/tmp', agents: [] }]}
+        agents={[agent]}
+        projectId="p1"
+        onAgentsChange={() => {}}
+      />,
+    );
+
+    // Error surface with a retry, not an editable empty textarea.
+    expect(await findByTestId('context-file-AGENTS.md-error')).toBeTruthy();
+    expect(queryByText('Edit')).toBeNull();
+    expect(api.saveContext as any).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed AGENTS.md read', async () => {
+    (api.getContext as any).mockRejectedValueOnce(new Error('boom'));
+    (api.getContext as any).mockResolvedValue({ 'AGENTS.md': '# recovered' });
+    const { findByTestId, findByText } = render(
+      <AgentConfigSection
+        projects={[{ id: 'p1', name: 'Acme', cwd: '/tmp', agents: [] }]}
+        agents={[agent]}
+        projectId="p1"
+        onAgentsChange={() => {}}
+      />,
+    );
+
+    const error = await findByTestId('context-file-AGENTS.md-error');
+    fireEvent.click(within(error).getByText('Retry'));
+    // A successful reload replaces the error state with the editable panel.
+    expect(await findByText('Edit')).toBeTruthy();
+  });
+
+  it('gates IDENTITY.md on a rejected read', async () => {
+    // Reject every context read; expanding the agent row drives the IDENTITY
+    // fetch, which must surface an error rather than an empty editable file.
+    (api.getContext as any).mockRejectedValue(new Error('boom'));
+    const { findByText, findByTestId } = render(
+      <AgentConfigSection
+        projects={[{ id: 'p1', name: 'Acme', cwd: '/tmp', agents: [] }]}
+        agents={[agent]}
+        projectId="p1"
+        onAgentsChange={() => {}}
+      />,
+    );
+    fireEvent.click(await findByText('Agent A' as any));
+    // The IDENTITY panel renders collapsed; expand it to reveal the state body.
+    const identityCard = await findByTestId('context-file-IDENTITY.md');
+    fireEvent.click(within(identityCard).getByText('IDENTITY.md'));
+    expect(await findByTestId('context-file-IDENTITY.md-error')).toBeTruthy();
+    expect(api.saveContext as any).not.toHaveBeenCalled();
+  });
+
+  it('does not present a prior project AGENTS.md as editable while the next read is pending', async () => {
+    (api.getContext as any).mockResolvedValue({ 'AGENTS.md': 'ALPHA_PROJECT_BODY' });
+    const agentB = { ...agent, id: 'agent-b', name: 'Agent B', projectId: 'p2' };
+    const { findByText, rerender, findByTestId, queryByText } = render(
+      <AgentConfigSection
+        projects={[{ id: 'p1', name: 'Acme', cwd: '/tmp', agents: [] }]}
+        agents={[agent]}
+        projectId="p1"
+        onAgentsChange={() => {}}
+      />,
+    );
+    expect(await findByText('ALPHA_PROJECT_BODY')).toBeTruthy();
+
+    // Switch to project B with a read that never settles during this window.
+    (api.getContext as any).mockReturnValue(new Promise(() => {}));
+    rerender(
+      <AgentConfigSection
+        projects={[{ id: 'p2', name: 'Beta', cwd: '/tmp', agents: [] }]}
+        agents={[agentB]}
+        projectId="p2"
+        onAgentsChange={() => {}}
+      />,
+    );
+
+    // The panel gates on load — project A's body is gone and no editor is open,
+    // so a save can't copy A's AGENTS.md through project B's agent id.
+    expect(await findByTestId('context-file-AGENTS.md-loading')).toBeTruthy();
+    expect(queryByText('ALPHA_PROJECT_BODY')).toBeNull();
+    expect(queryByText('Edit')).toBeNull();
+    expect(api.saveContext as any).not.toHaveBeenCalled();
+  });
+
+  it('does not render a PR Reviewer GitHub username field', async () => {
+    const { findByText, queryByLabelText, queryByPlaceholderText, queryByText } = render(
+      <AgentConfigSection
+        projects={[{ id: 'p1', name: 'Acme', cwd: '/tmp', agents: [] }]}
+        agents={[agent]}
+        projectId="p1"
+        onAgentsChange={() => {}}
+      />,
+    );
+
+    fireEvent.click(await findByText('Agent A' as any));
+    expect(queryByText(/PR Reviewer/)).toBeNull();
+    expect(queryByLabelText(/PR Reviewer/)).toBeNull();
+    expect(queryByPlaceholderText('github-username')).toBeNull();
   });
 });

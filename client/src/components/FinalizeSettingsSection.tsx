@@ -1,10 +1,10 @@
 /**
- * FinalizeSettingsSection — Runner panel (per-project sidebar route).
+ * FinalizeSettingsSection — Finalize CI panel (per-project sidebar route).
  *
- * Mirrors the PreviewSection adoption path: a "Set up Runner" button that
+ * Mirrors the PreviewSection adoption path: a "Set up CI" button that
  * spawns the wizard session, env-var scan + project secrets editor, and a
- * short prose explanation of what the wizard authors. Secrets stored here
- * are merged into Runner step runs at execution time.
+ * short explanation of what the wizard authors. Secrets stored here are
+ * merged into CI job env at execution time.
  */
 import { useState, useEffect, useCallback } from 'react';
 import { ClipboardCheck, Loader2, AlertCircle, Sparkles, Key } from 'lucide-react';
@@ -110,14 +110,13 @@ export default function FinalizeSettingsSection({
       <div>
         <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
           <ClipboardCheck size={18} className="text-emerald-400" />
-          Runner
+          Finalize CI
         </h3>
         <p className="text-xs text-gray-500 max-w-2xl">
-          Author <code className="text-gray-300">.agent-hub/ci.yaml</code> — the v1 config that
-          drives the Runner pre-PR pipeline (lint, typecheck, tests, fixture data, etc.). Click{' '}
-          <strong className="text-gray-300">Set up Runner</strong> to scan the repo and walk through
-          a proposed config in chat. Store project secrets below (or in the wizard) so CI steps can
-          read AWS keys, database creds, and other env vars at run time.
+          Jobs in <code className="text-gray-300">.agent-hub/ci.yaml</code> run before a session
+          ships — lint, typecheck, tests, and so on. Click{' '}
+          <strong className="text-gray-300">Set up CI</strong> to scan the repo and draft a config
+          in chat.
         </p>
       </div>
 
@@ -133,12 +132,9 @@ export default function FinalizeSettingsSection({
               Guided setup walkthrough
             </h4>
             <p className="text-xs text-gray-500 max-w-xl">
-              Spawns a normal worktree-backed session loaded with the{' '}
-              <code className="text-gray-300">finalize-setup</code> skill. It scans{' '}
-              <code className="text-gray-300">README.md</code>, package manifests, and existing CI
-              workflows, proposes a <code className="text-gray-300">.agent-hub/ci.yaml</code>, runs
-              the configured steps to prove the pipeline, then pushes and opens a PR for review. It
-              can also collect missing secrets and persist them alongside the config commit.
+              Opens a chat session that reads the repo, proposes{' '}
+              <code className="text-gray-300">.agent-hub/ci.yaml</code>, tries the jobs, then opens
+              a PR. Missing secrets can be saved here or in that chat.
             </p>
             {lastSessionId && (
               <p className="text-xs text-emerald-400 mt-2">
@@ -157,7 +153,7 @@ export default function FinalizeSettingsSection({
             ) : (
               <Sparkles size={14} />
             )}
-            {wizardStarting ? 'Starting…' : 'Set up Runner'}
+            {wizardStarting ? 'Starting…' : 'Set up CI'}
           </button>
         </div>
         {wizardError && (
@@ -172,12 +168,11 @@ export default function FinalizeSettingsSection({
         <div>
           <h4 className="text-sm font-semibold text-gray-300 mb-1 flex items-center gap-2">
             <Key size={14} className="text-amber-400" />
-            Project secrets for Runner
+            Project secrets
           </h4>
           <p className="text-xs text-gray-500 max-w-2xl">
-            Runner steps run as shell commands in the session worktree. v1 ci.yaml has no{' '}
-            <code className="text-gray-300">env:</code> block — store values here and they are
-            injected when steps run (same store as Preview and chat spawns).
+            CI jobs, preview, and chat receive these as environment variables. Store AWS keys,
+            database passwords, and similar values here.
           </p>
         </div>
 
@@ -232,7 +227,7 @@ export default function FinalizeSettingsSection({
         {projectId && (
           <ProjectSecretsEditor
             projectId={projectId}
-            hint="Encrypted key/value pairs merged into Runner step runs, chat spawns, crons, and preview for this project. Leave secret values blank when editing to keep the stored value."
+            hint="Leave a secret blank when editing to keep the stored value."
           />
         )}
       </div>
@@ -241,19 +236,11 @@ export default function FinalizeSettingsSection({
         <h4 className="text-sm font-semibold text-gray-300 mb-2">What lands in your repo</h4>
         <ul className="text-xs text-gray-500 space-y-1.5 list-disc list-inside">
           <li>
-            A single file at <code className="text-gray-300">.agent-hub/ci.yaml</code>
+            One file: <code className="text-gray-300">.agent-hub/ci.yaml</code>
           </li>
-          <li>
-            Committed on a fresh branch in the setup session&apos;s own worktree, verified locally,
-            then pushed and opened as a PR for review — like any code change.
-          </li>
-          <li>
-            One step per check you want to run before pushing — install, typecheck, lint, test, etc.
-            Hard cap: 4 hours of active time.
-          </li>
-          <li>
-            Re-run the wizard any time to propose a fresh config — it overwrites the existing file.
-          </li>
+          <li>Written in the setup session, then opened as a PR.</li>
+          <li>Jobs in that file run in parallel when you Finalize a session.</li>
+          <li>Run setup again any time to propose a new config.</li>
         </ul>
       </div>
     </div>

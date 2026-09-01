@@ -7,7 +7,7 @@
  *   - Planning  — Board, Workflows, Epics, Notes
  *   - Support   — Customer Issues, Threads, Logs, RUM, Replays, AWS, Security
  *   - AI        — Agents, Wiki
- *   - Settings  — Project Configuration, Runners, Dev Server, Cron Jobs
+ *   - Settings  — Project Configuration, Finalize CI, Previews, Cron Jobs
  *
  * Mobile-specific divergences from web (intentional, no mobile surface exists):
  *   - Previews, Reviewer, and per-project Skills are web-only and omitted here.
@@ -120,8 +120,8 @@ export function projectNavGroups(project: any) {
           icon: 'Settings',
           screen: 'ProjectSettings',
         },
-        { key: 'runners', label: 'Runners', icon: 'Play', screen: 'Runners' },
-        { key: 'dev-server', label: 'Dev Server', icon: 'Terminal', screen: 'DevServer' },
+        { key: 'runners', label: 'Finalize CI', icon: 'Play', screen: 'Runners' },
+        { key: 'dev-server', label: 'Previews', icon: 'Terminal', screen: 'DevServer' },
         { key: 'project-crons', label: 'Cron Jobs', icon: 'Clock', screen: 'ProjectCrons' },
       ],
     },

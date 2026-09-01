@@ -1244,7 +1244,7 @@ export default function Sidebar({
                                   )}
                                 >
                                   <Play size={14} className="flex-shrink-0" />
-                                  <span className="truncate">Runners</span>
+                                  <span className="truncate">Finalize CI</span>
                                 </button>
                               )}
                               {showDevserver && (
@@ -1256,7 +1256,7 @@ export default function Sidebar({
                                   )}
                                 >
                                   <Terminal size={14} className="flex-shrink-0" />
-                                  <span className="truncate">Dev server</span>
+                                  <span className="truncate">Previews</span>
                                 </button>
                               )}
                               <button

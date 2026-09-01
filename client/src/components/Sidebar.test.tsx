@@ -1315,9 +1315,10 @@ describe('Sidebar — per-project nav groups', () => {
     expect(screen.getByRole('button', { name: 'Wiki' })).toBeInTheDocument();
     // Settings
     expect(screen.getByRole('button', { name: 'Project Configuration' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Runners' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Dev server' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Previews' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Finalize CI' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Previews' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Runners' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Dev server' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Cron Jobs' })).toBeInTheDocument();
   });
 
@@ -1440,10 +1441,10 @@ describe('Sidebar — per-project nav groups', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Project Configuration' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`project-settings:${PROJECT_ID}`);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Runners' } as any) as any);
+    fireEvent.click(screen.getByRole('button', { name: 'Finalize CI' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`runners:${PROJECT_ID}`);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Dev server' } as any) as any);
+    fireEvent.click(screen.getByRole('button', { name: 'Previews' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`devserver:${PROJECT_ID}`);
 
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' } as any) as any);
@@ -1542,6 +1543,7 @@ describe('Sidebar — per-project nav groups', () => {
     expect(screen.queryByRole('button', { name: 'Replays' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Security' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Runners' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Finalize CI' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Previews' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'RUM' })).toBeNull();
 

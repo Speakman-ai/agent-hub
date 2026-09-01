@@ -346,7 +346,7 @@ export default function DevServerSection({
     <View>
       <View style={styles.headerRow}>
         <HubIcon name="Terminal" size={18} color={colors.emerald400} />
-        <Text style={styles.sectionTitle}>Dev server</Text>
+        <Text style={styles.sectionTitle}>Previews</Text>
       </View>
       <Text style={styles.sectionDesc}>
         Agent Hub runs your app as a managed long-lived process from the start command inside the

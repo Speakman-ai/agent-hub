@@ -38300,6 +38300,8 @@ paths:
                       nullable: true
                     sessionStartupCommands:
                       nullable: true
+                    sessionStartupCommandsAll:
+                      nullable: true
                     checkHealCommands:
                       nullable: true
                     checkHealMaxRounds:

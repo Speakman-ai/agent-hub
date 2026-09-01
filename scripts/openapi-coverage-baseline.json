@@ -20,7 +20,6 @@
   "skills": { "allowed_unregistered": 5, "note": "pre-existing migration debt (card 3ed3bfc9); dead registry/install/import/plugin/ClawHub routes removed" },
   "slack": { "allowed_unregistered": 10, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "threads": { "allowed_unregistered": 5, "note": "pre-existing migration debt (card 3ed3bfc9); forward route registered in threads.openapi.ts" },
-  "tool-errors": { "allowed_unregistered": 1, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "transcribe": { "allowed_unregistered": 1, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "workflows": { "allowed_unregistered": 10, "note": "pre-existing migration debt (card 3ed3bfc9)" }
 }

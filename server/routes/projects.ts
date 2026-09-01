@@ -420,6 +420,7 @@ interface OnboardBody {
     githubRepo?: { owner: string; repo: string };
     preCommitCommands?: unknown;
     sessionStartupCommands?: unknown;
+    sessionStartupCommandsAll?: unknown;
     checkHealCommands?: unknown;
     checkHealMaxRounds?: unknown;
   };
@@ -463,8 +464,18 @@ function normalizePreCommitCommands(value: unknown): string[] {
     .filter(Boolean);
 }
 
-/** Same shape as pre-commit — reused for `sessionStartupCommands`. */
+/** Same shape as pre-commit — reused for session startup command lists. */
 const normalizeSessionStartupCommands = normalizePreCommitCommands;
+
+function assignStartupCommandField(
+  project: Record<string, unknown>,
+  key: 'sessionStartupCommands' | 'sessionStartupCommandsAll',
+  raw: unknown,
+): void {
+  const lines = normalizeSessionStartupCommands(raw);
+  if (lines.length) project[key] = lines;
+  else delete project[key];
+}
 
 /** Persisted 1–5; invalid values yield `undefined` (caller returns 400 when the field was explicit). */
 function normalizeCheckHealMaxRounds(value: unknown): number | undefined {
@@ -1752,6 +1763,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       commands,
       preCommitCommands,
       sessionStartupCommands,
+      sessionStartupCommandsAll,
       checkHealCommands,
       checkHealMaxRounds,
       mode,
@@ -1765,6 +1777,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       commands?: ProjectCommands;
       preCommitCommands?: unknown;
       sessionStartupCommands?: unknown;
+      sessionStartupCommandsAll?: unknown;
       checkHealCommands?: unknown;
       checkHealMaxRounds?: unknown;
       mode?: unknown;
@@ -1881,10 +1894,16 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     }
     const pcCreate = normalizePreCommitCommands(preCommitCommands);
     if (pcCreate.length) (project as Record<string, unknown>).preCommitCommands = pcCreate;
-    const startupCreate = normalizeSessionStartupCommands(sessionStartupCommands);
-    if (startupCreate.length) {
-      (project as Record<string, unknown>).sessionStartupCommands = startupCreate;
-    }
+    assignStartupCommandField(
+      project as Record<string, unknown>,
+      'sessionStartupCommands',
+      sessionStartupCommands,
+    );
+    assignStartupCommandField(
+      project as Record<string, unknown>,
+      'sessionStartupCommandsAll',
+      sessionStartupCommandsAll,
+    );
     const healCreate = normalizePreCommitCommands(checkHealCommands);
     if (healCreate.length) (project as Record<string, unknown>).checkHealCommands = healCreate;
     if ((req.body as Record<string, unknown>).checkHealMaxRounds !== undefined) {
@@ -2177,10 +2196,18 @@ This workspace has no git repo and no PR automation — your job is planning, or
       else delete (project as Record<string, unknown>).preCommitCommands;
     }
     if ((req.body as Record<string, unknown>).sessionStartupCommands !== undefined) {
-      const rawSu = (req.body as Record<string, unknown>).sessionStartupCommands;
-      const su = normalizeSessionStartupCommands(rawSu);
-      if (su.length) (project as Record<string, unknown>).sessionStartupCommands = su;
-      else delete (project as Record<string, unknown>).sessionStartupCommands;
+      assignStartupCommandField(
+        project as Record<string, unknown>,
+        'sessionStartupCommands',
+        (req.body as Record<string, unknown>).sessionStartupCommands,
+      );
+    }
+    if ((req.body as Record<string, unknown>).sessionStartupCommandsAll !== undefined) {
+      assignStartupCommandField(
+        project as Record<string, unknown>,
+        'sessionStartupCommandsAll',
+        (req.body as Record<string, unknown>).sessionStartupCommandsAll,
+      );
     }
     if ((req.body as Record<string, unknown>).checkHealCommands !== undefined) {
       const rawH = (req.body as Record<string, unknown>).checkHealCommands;
@@ -3250,6 +3277,12 @@ This workspace has no git repo and no PR automation — your job is planning, or
     const startupOnboard = normalizeSessionStartupCommands(projectData.sessionStartupCommands);
     if (startupOnboard.length) {
       (project as Record<string, unknown>).sessionStartupCommands = startupOnboard;
+    }
+    const startupAllOnboard = normalizeSessionStartupCommands(
+      projectData.sessionStartupCommandsAll,
+    );
+    if (startupAllOnboard.length) {
+      (project as Record<string, unknown>).sessionStartupCommandsAll = startupAllOnboard;
     }
     const healOnboard = normalizePreCommitCommands(projectData.checkHealCommands);
     if (healOnboard.length) (project as Record<string, unknown>).checkHealCommands = healOnboard;

@@ -1,6 +1,6 @@
 /**
  * CiRunsSection — GHA-style run history + "CI on push" config, rendered
- * inside the Runners page (FinalizeSettingsSection).
+ * inside the Finalize CI page (FinalizeSettingsSection).
  *
  * Shows every past CI execution for the project (Finalize runs and
  * report-only push-CI runs share the same tables) with per-job results,
@@ -154,7 +154,7 @@ function RunnerStats({ stats, range, onRangeChange }: any) {
       <div className="border-t border-gray-700/70 pt-4">
         <div className="flex items-center justify-between gap-3">
           <p className="text-xs text-gray-500 flex items-center gap-1.5">
-            <Loader2 size={12} className="animate-spin" /> Loading runner stats...
+            <Loader2 size={12} className="animate-spin" /> Loading CI stats...
           </p>
           <StatsRangeControl range={range} onRangeChange={onRangeChange} />
         </div>
@@ -198,7 +198,7 @@ function RunnerStats({ stats, range, onRangeChange }: any) {
         <div className="text-xs font-medium text-gray-400 mb-2">Overall</div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <StatsCell
-            label="Avg completion"
+            label="Avg duration"
             value={formatStatsDuration(overall.average_seconds)}
             detail={rateDetail(overall.total_runs, overall.total_runs, 'no completed runs')}
           />
@@ -208,7 +208,7 @@ function RunnerStats({ stats, range, onRangeChange }: any) {
             detail={rateDetail(overall.failed_runs, overall.total_runs, '0 / 0 runs')}
           />
           <StatsCell
-            label="Infra/container"
+            label="Infra errors"
             value={formatRate(overall.infra_error_rate)}
             detail={rateDetail(overall.infra_errors, overall.total_errors, '0 / 0 errors')}
           />
@@ -216,15 +216,15 @@ function RunnerStats({ stats, range, onRangeChange }: any) {
       </div>
 
       <div>
-        <div className="text-xs font-medium text-gray-400 mb-2">Tests in ci.yaml</div>
+        <div className="text-xs font-medium text-gray-400 mb-2">Jobs</div>
         {tests.length === 0 ? (
-          <p className="text-xs text-gray-600 italic">No configured tests found.</p>
+          <p className="text-xs text-gray-600 italic">No jobs in ci.yaml yet.</p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-gray-700/60">
             <table className="w-full text-left text-xs">
               <thead className="bg-gray-900/70 text-[10px] uppercase tracking-wide text-gray-500">
                 <tr>
-                  <th className="font-medium py-2 pl-3 pr-4">Test</th>
+                  <th className="font-medium py-2 pl-3 pr-4">Job</th>
                   <th className="font-medium py-2 px-3 text-right whitespace-nowrap">Runs</th>
                   <th className="font-medium py-2 px-3 text-right whitespace-nowrap">Avg</th>
                   <th className="font-medium py-2 px-3 text-right whitespace-nowrap">Failures</th>
@@ -710,9 +710,8 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
               CI on push
             </span>
             <p className="text-xs text-gray-500">
-              Run <code className="font-mono">.agent-hub/ci.yaml</code> jobs whenever the default
-              branch moves (a push or a merged pull request). Results appear below — report-only,
-              like GitHub Actions on master.
+              Run the same jobs when the default branch updates. Results appear below. This does not
+              block the merge.
             </p>
           </div>
           <button

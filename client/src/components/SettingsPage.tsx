@@ -26,9 +26,9 @@ import ProjectSecretsEditor from './ProjectSecretsEditor';
 import GitHostSettingsSection from './GitHostSettingsSection';
 import ProjectDefaultAutomationSection from './finalize/ProjectDefaultAutomationSection';
 import ProjectMembersSection from './ProjectMembersSection';
+import ContextFilePanel from './ContextFilePanel';
 import InfraAlertRoutingSection from './InfraAlertRoutingSection';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar';
-import { isWorkflowProject } from '../utils/projectMode';
 import {
   agentAcceptsAutonomousTickets,
   isAutonomyLocked,
@@ -109,7 +109,6 @@ import {
   ScrollText,
   FileText,
   UserCircle,
-  AlertTriangle,
   Info,
   Menu,
   FolderGit2,
@@ -1017,8 +1016,8 @@ export function GitHubSection() {
 }
 
 /**
- * Install/build/test/lint, pre-commit, session startup, check auto-heal,
- * orchestration budgets, and browser-tool defaults for one project.
+ * Install/build/test/lint, session startup, and orchestration budgets for one
+ * project.
  *
  * Lives on Project Configuration (not Agents) — these are project workflow
  * settings, not per-agent identity.
@@ -1032,9 +1031,9 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
     test: project.commands?.test || '',
     lint: project.commands?.lint || '',
   }));
-  const [preCommitInput, setPreCommitInput] = useState(() =>
-    Array.isArray(project.preCommitCommands) && project.preCommitCommands.length
-      ? project.preCommitCommands.join('\n')
+  const [sessionStartupAllInput, setSessionStartupAllInput] = useState(() =>
+    Array.isArray(project.sessionStartupCommandsAll) && project.sessionStartupCommandsAll.length
+      ? project.sessionStartupCommandsAll.join('\n')
       : '',
   );
   const [sessionStartupInput, setSessionStartupInput] = useState(() =>
@@ -1042,46 +1041,18 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
       ? project.sessionStartupCommands.join('\n')
       : '',
   );
-  const [checkHealInput, setCheckHealInput] = useState(() =>
-    Array.isArray(project.checkHealCommands) && project.checkHealCommands.length
-      ? project.checkHealCommands.join('\n')
-      : '',
-  );
-  const [checkHealMaxRounds, setCheckHealMaxRounds] = useState(() => {
-    const n = project.checkHealMaxRounds;
-    return typeof n === 'number' && n >= 1 && n <= 5 ? String(n) : '2';
-  });
   const [orchestrationFields, setOrchestrationFields] = useState(() =>
     orchestrationFieldsFromProject(project.orchestrationBudgets),
   );
-  const [browserFields, setBrowserFields] = useState(() => ({
-    defaultOn: project.browserToolsDefaultEnabled !== false,
-    viewportW:
-      typeof project.browserViewportWidth === 'number' ? String(project.browserViewportWidth) : '',
-    viewportH:
-      typeof project.browserViewportHeight === 'number'
-        ? String(project.browserViewportHeight)
-        : '',
-    timeoutMs:
-      typeof project.browserPageLoadTimeoutMs === 'number'
-        ? String(project.browserPageLoadTimeoutMs)
-        : '',
-  }));
   const [saved, setSaved] = useState(false);
 
   const serverSnap = useMemo(
     () =>
       JSON.stringify({
         commands: project.commands ?? null,
-        preCommitCommands: project.preCommitCommands ?? [],
+        sessionStartupCommandsAll: project.sessionStartupCommandsAll ?? [],
         sessionStartupCommands: project.sessionStartupCommands ?? [],
-        checkHealCommands: project.checkHealCommands ?? [],
-        checkHealMaxRounds: project.checkHealMaxRounds ?? null,
         orchestrationBudgets: project.orchestrationBudgets ?? null,
-        browserToolsDefaultEnabled: project.browserToolsDefaultEnabled ?? null,
-        browserViewportWidth: project.browserViewportWidth ?? null,
-        browserViewportHeight: project.browserViewportHeight ?? null,
-        browserPageLoadTimeoutMs: project.browserPageLoadTimeoutMs ?? null,
       }),
     [project],
   );
@@ -1093,9 +1064,9 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
       test: project.commands?.test || '',
       lint: project.commands?.lint || '',
     });
-    setPreCommitInput(
-      Array.isArray(project.preCommitCommands) && project.preCommitCommands.length
-        ? project.preCommitCommands.join('\n')
+    setSessionStartupAllInput(
+      Array.isArray(project.sessionStartupCommandsAll) && project.sessionStartupCommandsAll.length
+        ? project.sessionStartupCommandsAll.join('\n')
         : '',
     );
     setSessionStartupInput(
@@ -1103,31 +1074,7 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
         ? project.sessionStartupCommands.join('\n')
         : '',
     );
-    setCheckHealInput(
-      Array.isArray(project.checkHealCommands) && project.checkHealCommands.length
-        ? project.checkHealCommands.join('\n')
-        : '',
-    );
-    {
-      const n = project.checkHealMaxRounds;
-      setCheckHealMaxRounds(typeof n === 'number' && n >= 1 && n <= 5 ? String(n) : '2');
-    }
     setOrchestrationFields(orchestrationFieldsFromProject(project.orchestrationBudgets));
-    setBrowserFields({
-      defaultOn: project.browserToolsDefaultEnabled !== false,
-      viewportW:
-        typeof project.browserViewportWidth === 'number'
-          ? String(project.browserViewportWidth)
-          : '',
-      viewportH:
-        typeof project.browserViewportHeight === 'number'
-          ? String(project.browserViewportHeight)
-          : '',
-      timeoutMs:
-        typeof project.browserPageLoadTimeoutMs === 'number'
-          ? String(project.browserPageLoadTimeoutMs)
-          : '',
-    });
     // Re-sync only when the server snapshot for this project changes — not
     // on every parent re-render while the user is typing.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- serverSnap is the intentional gate
@@ -1135,7 +1082,7 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
 
   const save = async () => {
     try {
-      const preCommitLines = preCommitInput
+      const sessionStartupAllLines = sessionStartupAllInput
         .split('\n')
         .map((l: any) => l.trim())
         .filter(Boolean);
@@ -1143,13 +1090,6 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
         .split('\n')
         .map((l: any) => l.trim())
         .filter(Boolean);
-      const checkHealLines = checkHealInput
-        .split('\n')
-        .map((l: any) => l.trim())
-        .filter(Boolean);
-      const roundsParsed = parseInt(String(checkHealMaxRounds ?? '2').trim(), 10);
-      const rounds =
-        Number.isFinite(roundsParsed) && roundsParsed >= 1 && roundsParsed <= 5 ? roundsParsed : 2;
       const hasObTyping = ORCHESTRATION_FIELD_META.some(
         ({ key }: any) => String(orchestrationFields[key] ?? '').trim() !== '',
       );
@@ -1160,10 +1100,8 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
           test: commands.test || null,
           lint: commands.lint || null,
         },
-        preCommitCommands: preCommitLines,
+        sessionStartupCommandsAll: sessionStartupAllLines,
         sessionStartupCommands: sessionStartupLines,
-        checkHealCommands: checkHealLines,
-        checkHealMaxRounds: checkHealLines.length ? rounds : null,
       };
       let payload: any = basePayload;
       if (!hasObTyping) {
@@ -1180,72 +1118,6 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
         payload = { ...basePayload, orchestrationBudgets: obParsed };
       }
 
-      const browserPayload: Record<string, any> = {};
-      if (browserFields.defaultOn) {
-        browserPayload.browserToolsDefaultEnabled =
-          project.browserToolsDefaultEnabled === false ? true : null;
-      } else {
-        browserPayload.browserToolsDefaultEnabled = false;
-      }
-      const mergeOptDim = (raw: any, prevVal: any, field: any, min: any, max: any, label: any) => {
-        const t = String(raw ?? '').trim();
-        if (t === '') {
-          if (prevVal != null) browserPayload[field] = null;
-          return true;
-        }
-        const n = parseInt(t, 10);
-        if (!Number.isFinite(n) || n < min || n > max) {
-          showToast?.(
-            `${label}: use an integer between ${min} and ${max}, or leave empty.`,
-            'error',
-          );
-          return false;
-        }
-        browserPayload[field] = n;
-        return true;
-      };
-      if (
-        !mergeOptDim(
-          browserFields.viewportW,
-          project.browserViewportWidth,
-          'browserViewportWidth',
-          320,
-          3840,
-          'Viewport width',
-        )
-      ) {
-        return;
-      }
-      if (
-        !mergeOptDim(
-          browserFields.viewportH,
-          project.browserViewportHeight,
-          'browserViewportHeight',
-          240,
-          2160,
-          'Viewport height',
-        )
-      ) {
-        return;
-      }
-      const timeoutRaw = String(browserFields.timeoutMs ?? '').trim();
-      if (timeoutRaw === '') {
-        if (project.browserPageLoadTimeoutMs != null) {
-          browserPayload.browserPageLoadTimeoutMs = null;
-        }
-      } else {
-        const n = parseInt(timeoutRaw, 10);
-        if (!Number.isFinite(n) || n < 1000 || n > 120000) {
-          showToast?.(
-            'Browser timeout: enter 1000–120000 ms, or leave empty for default.',
-            'error',
-          );
-          return;
-        }
-        browserPayload.browserPageLoadTimeoutMs = n;
-      }
-
-      payload = { ...payload, ...browserPayload };
       await api.updateProject(projectId, payload);
       onProjectsChange?.();
       setSaved(true);
@@ -1285,42 +1157,23 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
       </div>
 
       <div className="pt-1">
-        <label className="text-xs text-gray-400 font-semibold">
-          Pre-commit (before git commit)
-        </label>
+        <label className="text-xs text-gray-400 font-semibold">Session startup</label>
         <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
-          One shell command per line, run in the agent worktree after an initial{' '}
-          <code className="text-gray-400">git add</code>, then the tree is{' '}
-          <code className="text-gray-400">git add</code>’d again before{' '}
-          <code className="text-gray-400">git commit</code> so formatters/fixers stay staged. Leave
-          empty to skip. Native git hooks still run on commit.
+          Commands that run at the start of every session. One per line.
         </p>
         <textarea
-          value={preCommitInput}
-          onChange={(e: any) => setPreCommitInput(e.target.value)}
-          placeholder={'npm run lint\nnpm test'}
-          rows={4}
+          value={sessionStartupAllInput}
+          onChange={(e: any) => setSessionStartupAllInput(e.target.value)}
+          placeholder="npm ci"
+          rows={3}
           className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
         />
       </div>
 
       <div className="pt-1">
-        <label className="text-xs text-gray-400 font-semibold">
-          Session startup (after env boot)
-        </label>
+        <label className="text-xs text-gray-400 font-semibold">VM startup</label>
         <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
-          One shell command per line, run with <code className="text-gray-400">bash</code> in the
-          background inside the session environment after every VM/container boot (does not block
-          chat). Not run on host (non-isolated) sessions, so they cannot mutate the operator
-          checkout. Each command uses the session workspace cwd — the same worktree root as chat,
-          terminal, and preview (guest <code className="text-gray-400">/workspace</code> when
-          env-owned). Each line is a fresh shell, so prefer{' '}
-          <code className="text-gray-400">.venv/bin/pip install …</code> over a separate{' '}
-          <code className="text-gray-400">source</code> line. Use idempotent commands (e.g.{' '}
-          <code className="text-gray-400">[ -d .venv ] || python3 -m venv .venv</code>
-          ). Status is written to{' '}
-          <code className="text-gray-400">.agent-hub-runtime/session-startup.json</code> so the
-          agent can see progress. Leave empty to skip.
+          Commands that run only when a session boots a VM. One per line.
         </p>
         <textarea
           value={sessionStartupInput}
@@ -1328,43 +1181,9 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
           placeholder={
             '[ -d .venv ] || python3 -m venv .venv\n.venv/bin/pip install -r requirements.txt'
           }
-          rows={4}
-          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-        />
-      </div>
-
-      <div className="pt-1">
-        <label className="text-xs text-gray-400 font-semibold">
-          Check auto-heal (after failed pre-commit)
-        </label>
-        <p className="text-[11px] text-gray-500 mt-0.5 mb-1">
-          One shell command per line (e.g. <code className="text-gray-400">npm run lint:fix</code>,{' '}
-          <code className="text-gray-400">npm run format</code>). When a configured pre-commit
-          command exits non-zero, the server runs these fixers, optionally re-stages with{' '}
-          <code className="text-gray-400">git add -A</code>, waits briefly, then re-runs{' '}
-          <strong>all</strong> check commands. Timeouts and output-cap failures are never
-          auto-healed. Leave empty to keep the legacy fail-fast behavior.
-        </p>
-        <textarea
-          value={checkHealInput}
-          onChange={(e: any) => setCheckHealInput(e.target.value)}
-          placeholder={'npm run lint:fix\nnpm run format'}
           rows={3}
           className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
         />
-        <div className="flex items-center gap-2 mt-1.5">
-          <label className="text-[11px] text-gray-500 whitespace-nowrap">
-            Max check rounds (1–5, default 2)
-          </label>
-          <input
-            type="number"
-            min={1}
-            max={5}
-            value={checkHealMaxRounds}
-            onChange={(e: any) => setCheckHealMaxRounds(e.target.value)}
-            className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-0.5 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-          />
-        </div>
       </div>
 
       <div className="pt-2 border-t border-gray-700/50 space-y-2">
@@ -1391,83 +1210,6 @@ function ProjectWorkflowCommandsEditor({ project, showToast, onProjectsChange }:
               />
             </div>
           ))}
-        </div>
-      </div>
-
-      <div className="pt-2 border-t border-gray-700/50 space-y-2">
-        <div className="flex items-center gap-2 text-xs text-gray-400 font-semibold">
-          <Globe size={14} className="text-sky-400 shrink-0" />
-          <Monitor size={14} className="text-sky-400 shrink-0" />
-          <span>Browser tools (project default)</span>
-        </div>
-        <p className="text-[11px] text-gray-500">
-          Agents without their own Browser Tools setting follow this default. When OFF, host browser
-          ReAct tools stay out of the enriched prompt unless an agent explicitly enables them.
-        </p>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            data-testid={`project-${projectId}-browser-default-toggle`}
-            onClick={() =>
-              setBrowserFields((prev: any) => ({
-                ...prev,
-                defaultOn: !(prev.defaultOn !== false),
-              }))
-            }
-            className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-              browserFields.defaultOn !== false
-                ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
-                : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-            }`}
-          >
-            {browserFields.defaultOn !== false ? 'ON' : 'OFF'}
-          </button>
-          <span className="text-[11px] text-gray-500">Default browser tools</span>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pl-1">
-          <div>
-            <label className="block text-[10px] text-gray-500 mb-0.5">Viewport width (px)</label>
-            <input
-              type="number"
-              min={320}
-              max={3840}
-              placeholder="1280 default"
-              value={browserFields.viewportW}
-              onChange={(e: any) =>
-                setBrowserFields((prev: any) => ({ ...prev, viewportW: e.target.value }))
-              }
-              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-            />
-          </div>
-          <div>
-            <label className="block text-[10px] text-gray-500 mb-0.5">Viewport height (px)</label>
-            <input
-              type="number"
-              min={240}
-              max={2160}
-              placeholder="720 default"
-              value={browserFields.viewportH}
-              onChange={(e: any) =>
-                setBrowserFields((prev: any) => ({ ...prev, viewportH: e.target.value }))
-              }
-              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-            />
-          </div>
-          <div>
-            <label className="block text-[10px] text-gray-500 mb-0.5">Load timeout (ms)</label>
-            <input
-              type="number"
-              min={1000}
-              max={120000}
-              step={500}
-              placeholder="30000 default"
-              value={browserFields.timeoutMs}
-              onChange={(e: any) =>
-                setBrowserFields((prev: any) => ({ ...prev, timeoutMs: e.target.value }))
-              }
-              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-100 focus:outline-none focus:border-gray-600 font-mono"
-            />
-          </div>
         </div>
       </div>
 
@@ -1531,10 +1273,6 @@ export function ProjectsSection({
     setExpandedProject(initialExpandedProjectId);
     lastDeepLinkExpandIdRef.current = initialExpandedProjectId;
   }, [initialExpandedProjectId, projects]);
-
-  const inputClass =
-    'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
-  const labelClass = 'block text-xs text-gray-400 mb-1';
 
   // --- Per-project handlers ---
 
@@ -1700,64 +1438,6 @@ export function ProjectsSection({
         </button>
       </div>
 
-      <div className="space-y-2" data-testid={`project-visibility-${p.id}`}>
-        <label className={labelClass}>Visibility</label>
-        <p className="text-xs text-gray-500">
-          <strong>Shared</strong> (default): every member of your org can see and enter this
-          project. <strong>Private</strong>: visible only to you; org Owners retain a delete-only
-          kill switch from the admin list. Flipping a shared project private is restricted to org
-          Owners (it hides the project from collaborators); the current owner or any org Owner can
-          publish a private project back to shared.
-        </p>
-        <select
-          value={p.visibility === 'private' ? 'private' : 'shared'}
-          data-testid={`project-visibility-select-${p.id}`}
-          onChange={async (e: any) => {
-            const visibility = e.target.value;
-            try {
-              await api.updateProject(p.id, { visibility });
-              if (onProjectsChange) onProjectsChange();
-            } catch (err: any) {
-              const msg = String(err.message || err);
-              if (showToast) showToast(msg, 'error');
-              else alert(msg);
-            }
-          }}
-          className={inputClass}
-        >
-          <option value="shared">Shared (org-wide)</option>
-          <option value="private">Private (only me)</option>
-        </select>
-      </div>
-
-      <div className="space-y-2">
-        <label className={labelClass}>Project mode</label>
-        <p className="text-xs text-gray-500">
-          <strong>Dev</strong> (default): kanban lifecycle, per-session worktrees, and GitHub PR
-          flows. <strong>Workflow</strong>: work in the project checkout; session PR flows stay off.
-          For a <strong>tasks-only project</strong> (just wiki, board, sessions, crons — no git or
-          GitHub), pick <em>Workflow</em>.
-        </p>
-        <select
-          value={isWorkflowProject(p) ? 'workflow' : 'dev'}
-          onChange={async (e: any) => {
-            const mode = e.target.value;
-            try {
-              await api.updateProject(p.id, { mode });
-              if (onProjectsChange) onProjectsChange();
-            } catch (err: any) {
-              const msg = String(err.message || err);
-              if (showToast) showToast(msg, 'error');
-              else alert(msg);
-            }
-          }}
-          className={inputClass}
-        >
-          <option value="dev">Dev (GitHub-connected)</option>
-          <option value="workflow">Workflow / Tasks-only (no PR automation)</option>
-        </select>
-      </div>
-
       {/* Test Connection */}
       <div className="pt-2 border-t border-gray-800">
         <div className="flex items-center gap-3">
@@ -1820,8 +1500,8 @@ export function ProjectsSection({
         </h3>
         <p className="text-xs text-gray-500 mb-4">
           {singleProjectMode
-            ? 'Configure install/build commands, session startup, secrets, visibility, and lifecycle settings for this project.'
-            : 'Configure install/build commands, session startup, secrets, visibility, and lifecycle settings for each project.'}
+            ? 'Configure install/build commands, session startup, secrets, and lifecycle settings for this project.'
+            : 'Configure install/build commands, session startup, secrets, and lifecycle settings for each project.'}
         </p>
       </div>
 
@@ -3303,7 +2983,7 @@ function ChannelMapEditor({ bot, agents, onSaved }: any) {
 
 // ─── Main SlackSection ─────────────────────────────────────────────────────────
 
-function SlackSection() {
+export function SlackSection() {
   const [bots, setBots] = useState<any[]>([]);
   const [liveStatus, setLiveStatus] = useState<any[]>([]); // live connection state from /status
   const [messages, setMessages] = useState<any[]>([]);
@@ -3795,6 +3475,17 @@ export function AgentConfigSection({
     systemPrompt: '',
     isDev: false,
   });
+  // `null` until the current context agent's AGENTS.md has loaded — this gates
+  // the editor so a stale value (e.g. project A's content lingering after the
+  // route switches to project B) can never be saved through the new agent id.
+  const [agentsMd, setAgentsMd] = useState<string | null>(null);
+  const [agentsMdLoading, setAgentsMdLoading] = useState(false);
+  const [agentsMdError, setAgentsMdError] = useState(false);
+  const [agentsMdReload, setAgentsMdReload] = useState(0);
+  const [identityByAgent, setIdentityByAgent] = useState<Record<string, string | null>>({});
+  const [identityLoading, setIdentityLoading] = useState<Record<string, boolean>>({});
+  const [identityError, setIdentityError] = useState<Record<string, boolean>>({});
+  const [identityReload, setIdentityReload] = useState<Record<string, number>>({});
 
   useEffect(() => {
     setAgents(initialAgents);
@@ -3805,6 +3496,62 @@ export function AgentConfigSection({
     if (projectId) list = list.filter((agent: any) => agent.projectId === projectId);
     return list;
   }, [agents, projectId]);
+  const contextAgentId = configurableAgents[0]?.id || '';
+
+  useEffect(() => {
+    // Clear stale content synchronously so the panel gates on load rather than
+    // rendering the previous agent's AGENTS.md as editable.
+    setAgentsMd(null);
+    setAgentsMdError(false);
+    if (!contextAgentId || !projectId) {
+      setAgentsMdLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setAgentsMdLoading(true);
+    api
+      .getContext(contextAgentId)
+      .then((data: any) => {
+        if (cancelled) return;
+        setAgentsMd(typeof data?.['AGENTS.md'] === 'string' ? data['AGENTS.md'] : '');
+        setAgentsMdLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAgentsMdError(true);
+        setAgentsMdLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contextAgentId, projectId, agentsMdReload]);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const agentId = expanded;
+    setIdentityByAgent((prev) => ({ ...prev, [agentId]: null }));
+    setIdentityError((prev) => ({ ...prev, [agentId]: false }));
+    setIdentityLoading((prev) => ({ ...prev, [agentId]: true }));
+    let cancelled = false;
+    api
+      .getContext(agentId)
+      .then((data: any) => {
+        if (cancelled) return;
+        setIdentityByAgent((prev) => ({
+          ...prev,
+          [agentId]: typeof data?.['IDENTITY.md'] === 'string' ? data['IDENTITY.md'] : '',
+        }));
+        setIdentityLoading((prev) => ({ ...prev, [agentId]: false }));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setIdentityError((prev) => ({ ...prev, [agentId]: true }));
+        setIdentityLoading((prev) => ({ ...prev, [agentId]: false }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, identityReload]);
 
   useEffect(() => {
     api
@@ -4149,6 +3896,24 @@ export function AgentConfigSection({
           {showNew ? 'Cancel' : '+ New Agent'}
         </button>
       </div>
+
+      {contextAgentId && projectId ? (
+        <div className="mb-4">
+          <p className="text-xs text-gray-500 mb-2">
+            Shared instructions for every agent in this project.
+          </p>
+          <ContextFilePanel
+            filename="AGENTS.md"
+            content={agentsMd}
+            agentId={contextAgentId}
+            defaultExpanded
+            loading={agentsMdLoading}
+            error={agentsMdError}
+            onRetry={() => setAgentsMdReload((n) => n + 1)}
+            onSaved={(_name: any, next: any) => setAgentsMd(next)}
+          />
+        </div>
+      ) : null}
 
       {agents.length > 0 && modelConfig && (
         <div className="bg-gray-800/80 rounded-xl p-4 mb-4 space-y-3 border border-gray-700/50">
@@ -4600,6 +4365,24 @@ export function AgentConfigSection({
                     />
                   </div>
 
+                  <ContextFilePanel
+                    filename="IDENTITY.md"
+                    content={identityByAgent[agent.id] ?? null}
+                    agentId={agent.id}
+                    hint="Who this agent is. Injected into every session."
+                    loading={identityLoading[agent.id] ?? false}
+                    error={identityError[agent.id] ?? false}
+                    onRetry={() =>
+                      setIdentityReload((prev) => ({
+                        ...prev,
+                        [agent.id]: (prev[agent.id] ?? 0) + 1,
+                      }))
+                    }
+                    onSaved={(_name: any, next: any) =>
+                      setIdentityByAgent((prev) => ({ ...prev, [agent.id]: next }))
+                    }
+                  />
+
                   <div className="border-t border-gray-700 pt-3">
                     {(() => {
                       const lockedOn = isAutonomyLockedOn(agent);
@@ -4644,148 +4427,6 @@ export function AgentConfigSection({
                                 ? ' Out-of-band role — never receives autonomous tickets.'
                                 : ' Turn OFF to stop autonomous tickets from routing here.'}
                           </p>
-                        </>
-                      );
-                    })()}
-                  </div>
-
-                  <div className="border-t border-gray-700 pt-3">
-                    {(() => {
-                      const projRow = projects.find((pr: any) => pr.id === agent.projectId);
-                      const inheritedOff = projRow?.browserToolsDefaultEnabled === false;
-                      const toggleOn =
-                        edit.browserToolsEnabled !== undefined
-                          ? edit.browserToolsEnabled
-                          : agent.browserToolsEnabled !== undefined
-                            ? agent.browserToolsEnabled
-                            : !inheritedOff;
-                      const browserToolsOnForAgent = toggleOn !== false;
-                      const vw =
-                        edit.browserViewportWidth !== undefined
-                          ? edit.browserViewportWidth
-                          : agent.browserViewportWidth;
-                      const vh =
-                        edit.browserViewportHeight !== undefined
-                          ? edit.browserViewportHeight
-                          : agent.browserViewportHeight;
-                      const bto =
-                        edit.browserPageLoadTimeoutMs !== undefined
-                          ? edit.browserPageLoadTimeoutMs
-                          : agent.browserPageLoadTimeoutMs;
-                      return (
-                        <>
-                          <div className="flex items-center gap-2 mb-2 flex-wrap">
-                            <Globe size={14} className="text-sky-400 shrink-0" />
-                            <Monitor size={14} className="text-sky-400 shrink-0" />
-                            <label className="text-xs text-gray-400 font-medium">
-                              Browser Tools
-                            </label>
-                            <button
-                              type="button"
-                              data-testid="agent-browser-tools-toggle"
-                              onClick={() => {
-                                setEdit(agent.id, 'browserToolsEnabled', !browserToolsOnForAgent);
-                              }}
-                              className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                                browserToolsOnForAgent
-                                  ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
-                                  : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                              }`}
-                            >
-                              {browserToolsOnForAgent ? 'ON' : 'OFF'}
-                            </button>
-                          </div>
-                          <p className="text-xs text-gray-500 mb-2">
-                            When ON, the enriched prompt documents{' '}
-                            <code className="font-mono">{'{"tool":"browser",...}'}</code> in{' '}
-                            <code className="font-mono">&lt;agenthub:react&gt;</code> and the host
-                            runs Playwright steps against the public web. When OFF, public{' '}
-                            <code className="font-mono">browser</code> actions are stripped. Preview
-                            screenshot/navigate still work on every engine when a dev server is
-                            configured. Uses the project default when this agent has no explicit
-                            setting
-                            {projRow?.browserToolsDefaultEnabled === false
-                              ? ' (this project defaults to OFF).'
-                              : '.'}
-                          </p>
-                          {browserToolsOnForAgent && (
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                              <div>
-                                <label className={labelClass}>Viewport width (optional)</label>
-                                <input
-                                  type="number"
-                                  min={320}
-                                  max={3840}
-                                  placeholder={
-                                    projRow?.browserViewportWidth != null
-                                      ? `Project: ${projRow.browserViewportWidth}`
-                                      : '1280 default'
-                                  }
-                                  value={vw != null ? String(vw) : ''}
-                                  onChange={(e: any) => {
-                                    const t = e.target.value.trim();
-                                    if (t === '') setEdit(agent.id, 'browserViewportWidth', null);
-                                    else {
-                                      const n = parseInt(t, 10);
-                                      if (Number.isFinite(n))
-                                        setEdit(agent.id, 'browserViewportWidth', n);
-                                    }
-                                  }}
-                                  className={inputClass}
-                                />
-                              </div>
-                              <div>
-                                <label className={labelClass}>Viewport height (optional)</label>
-                                <input
-                                  type="number"
-                                  min={240}
-                                  max={2160}
-                                  placeholder={
-                                    projRow?.browserViewportHeight != null
-                                      ? `Project: ${projRow.browserViewportHeight}`
-                                      : '720 default'
-                                  }
-                                  value={vh != null ? String(vh) : ''}
-                                  onChange={(e: any) => {
-                                    const t = e.target.value.trim();
-                                    if (t === '') setEdit(agent.id, 'browserViewportHeight', null);
-                                    else {
-                                      const n = parseInt(t, 10);
-                                      if (Number.isFinite(n))
-                                        setEdit(agent.id, 'browserViewportHeight', n);
-                                    }
-                                  }}
-                                  className={inputClass}
-                                />
-                              </div>
-                              <div>
-                                <label className={labelClass}>Max page load timeout (ms)</label>
-                                <input
-                                  type="number"
-                                  min={1000}
-                                  max={120000}
-                                  step={500}
-                                  placeholder={
-                                    projRow?.browserPageLoadTimeoutMs != null
-                                      ? `Project: ${projRow.browserPageLoadTimeoutMs}`
-                                      : '30000 default'
-                                  }
-                                  value={bto != null ? String(bto) : ''}
-                                  onChange={(e: any) => {
-                                    const t = e.target.value.trim();
-                                    if (t === '')
-                                      setEdit(agent.id, 'browserPageLoadTimeoutMs', null);
-                                    else {
-                                      const n = parseInt(t, 10);
-                                      if (Number.isFinite(n))
-                                        setEdit(agent.id, 'browserPageLoadTimeoutMs', n);
-                                    }
-                                  }}
-                                  className={inputClass}
-                                />
-                              </div>
-                            </div>
-                          )}
                         </>
                       );
                     })()}
@@ -4914,18 +4555,6 @@ export function AgentConfigSection({
                         </>
                       );
                     })()}
-                  </div>
-
-                  <div>
-                    <label className={labelClass}>
-                      PR Reviewer (GitHub username — overrides project default)
-                    </label>
-                    <input
-                      value={edit.reviewer || ''}
-                      onChange={(e: any) => setEdit(agent.id, 'reviewer', e.target.value)}
-                      placeholder="github-username"
-                      className={inputClass}
-                    />
                   </div>
 
                   <div className="flex items-center justify-between pt-2">
@@ -5786,215 +5415,6 @@ function ServerLogsSection({ wsRef }: any) {
 }
 
 /**
- * Minimal counts-by-error-type view for TOOL_ERROR self-reports. Stub for the
- * future Session Health dashboard — just enough UI to see whether the new
- * agent-hub skill actually reduces tool-error rates.
- */
-export function ToolErrorsSection({ projects }: any) {
-  const defaultProjectId = projects?.[0]?.id || '';
-  const [projectId, setProjectId] = useState(defaultProjectId);
-  const [sinceDays, setSinceDays] = useState(30);
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<any>(null);
-
-  useEffect(() => {
-    if (!projectId) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    const since = sinceDays
-      ? new Date(Date.now() - sinceDays * 86400000).toISOString().slice(0, 10)
-      : undefined;
-    api
-      .getToolErrors(projectId, { since, limit: 200 })
-      .then((res: any) => {
-        if (!cancelled) setData(res);
-      })
-      .catch((err: any) => {
-        if (!cancelled) setError(err.message || 'Failed to load tool errors');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, sinceDays]);
-
-  if (!projects?.length) {
-    return (
-      <p className="text-sm text-gray-500">No projects yet — create one to see tool errors.</p>
-    );
-  }
-
-  const entries = (obj: any) => Object.entries(obj || {}).sort((a: any, b: any) => b[1] - a[1]);
-
-  const byType = data ? entries(data.countsByErrorType) : [];
-  const byTool = data ? entries(data.countsByTool) : [];
-  const maxTypeCount = Math.max(...byType.map(([, n]: any) => n), 1);
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
-          <AlertTriangle size={18} className="text-amber-400" />
-          Tool Errors
-        </h3>
-        <p className="text-xs text-gray-500 mb-4">
-          TOOL_ERROR self-reports parsed from daily notes. This is a stub for the future Session
-          Health dashboard — counts only, no resolution tracking.
-        </p>
-
-        <div className="flex flex-wrap gap-3 mb-4">
-          <label className="flex items-center gap-2 text-sm">
-            <span className="text-gray-400">Project:</span>
-            <select
-              value={projectId}
-              onChange={(e: any) => setProjectId(e.target.value)}
-              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm"
-            >
-              {projects.map((p: any) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <span className="text-gray-400">Window:</span>
-            <select
-              value={sinceDays}
-              onChange={(e: any) => setSinceDays(Number(e.target.value))}
-              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm"
-            >
-              <option value={7}>Last 7 days</option>
-              <option value={30}>Last 30 days</option>
-              <option value={90}>Last 90 days</option>
-              <option value={0}>All time</option>
-            </select>
-          </label>
-        </div>
-      </div>
-
-      {loading && <p className="text-sm text-gray-500">Loading…</p>}
-      {error && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-sm text-red-400">
-          {error}
-        </div>
-      )}
-
-      {data && !loading && (
-        <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="bg-gray-800 rounded-xl p-4">
-              <p className="text-xs text-gray-500 uppercase tracking-wider">Total</p>
-              <p className="text-2xl font-bold text-amber-400 mt-1">{data.total}</p>
-            </div>
-            <div className="bg-gray-800 rounded-xl p-4">
-              <p className="text-xs text-gray-500 uppercase tracking-wider">Distinct Types</p>
-              <p className="text-2xl font-bold text-gray-200 mt-1">{byType.length}</p>
-            </div>
-            <div className="bg-gray-800 rounded-xl p-4">
-              <p className="text-xs text-gray-500 uppercase tracking-wider">Distinct Tools</p>
-              <p className="text-2xl font-bold text-gray-200 mt-1">{byTool.length}</p>
-            </div>
-            <div className="bg-gray-800 rounded-xl p-4">
-              <p className="text-xs text-gray-500 uppercase tracking-wider">Since</p>
-              <p className="text-sm font-mono text-gray-200 mt-2">{data.since || 'all time'}</p>
-            </div>
-          </div>
-
-          {data.total === 0 ? (
-            <p className="text-sm text-gray-500">
-              No TOOL_ERROR entries found in this window. Either nothing is failing, or agents
-              aren&apos;t self-reporting yet.
-            </p>
-          ) : (
-            <>
-              <div>
-                <h4 className="text-sm font-semibold text-gray-300 mb-2">By error type</h4>
-                <div className="bg-gray-800 rounded-xl p-4 space-y-1.5">
-                  {byType.map(([type, count]: any) => {
-                    const pct = (count / maxTypeCount) * 100;
-                    return (
-                      <div key={type} className="flex items-center gap-3">
-                        <span
-                          className="text-xs font-mono text-gray-400 w-40 truncate"
-                          title={type}
-                        >
-                          {type}
-                        </span>
-                        <div className="flex-1 h-4 bg-gray-900 rounded overflow-hidden">
-                          <div
-                            className="h-full bg-amber-600/60 rounded"
-                            style={{ width: `${Math.max(pct, 2)}%` }}
-                          />
-                        </div>
-                        <span className="text-xs text-gray-400 font-mono w-10 text-right">
-                          {count}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <h4 className="text-sm font-semibold text-gray-300 mb-2">By tool</h4>
-                <div className="bg-gray-800 rounded-xl p-3 flex flex-wrap gap-2">
-                  {byTool.map(([tool, count]: any) => (
-                    <span
-                      key={tool}
-                      className="text-xs bg-gray-900 border border-gray-700 rounded px-2 py-1"
-                    >
-                      <span className="text-gray-300 font-mono">{tool}</span>
-                      <span className="text-gray-500 ml-2">{count}</span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <h4 className="text-sm font-semibold text-gray-300 mb-2">
-                  Recent entries
-                  {data.truncated && (
-                    <span className="text-xs text-gray-500 font-normal ml-2">
-                      (showing first {data.returned} of {data.total})
-                    </span>
-                  )}
-                </h4>
-                <div className="bg-gray-800 rounded-xl overflow-hidden">
-                  <div className="divide-y divide-gray-700/50 max-h-96 overflow-y-auto">
-                    {data.errors.slice(0, 50).map((e: any, i: any) => (
-                      <div key={i} className="px-3 py-2 text-xs">
-                        <div className="flex items-center gap-2 mb-0.5">
-                          <span className="font-mono text-gray-500">{e.timestamp}</span>
-                          <span className="font-mono text-indigo-300">{e.tool}</span>
-                          <span className="font-mono text-amber-300">{e.errorType}</span>
-                        </div>
-                        <p className="text-gray-300 truncate" title={e.summary}>
-                          {e.summary}
-                        </p>
-                        {e.action && (
-                          <p className="text-gray-500 font-mono truncate" title={e.action}>
-                            {e.action}
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-/**
  * Settings tabs for the left sidebar (flat list — no section groupings).
  */
 const SETTINGS_TABS = [
@@ -6010,10 +5430,8 @@ const SETTINGS_TABS = [
   { id: 'claude-auth', iconName: 'Key', text: 'Global API Keys' },
   { id: 'global-skills', iconName: 'Globe', text: 'Global Skills' },
   { id: 'github', iconName: 'GitBranch', text: 'GitHub' },
-  { id: 'slack', iconName: 'MessageSquare', text: 'Slack' },
   { id: 'usage', iconName: 'BarChart3', text: 'Usage' },
-  { id: 'tool-errors', iconName: 'AlertTriangle', text: 'Tool Errors' },
-  // Host-wide background job queue admin surface — Admin/Owner-only (gated
+  // Host-wide background job queue admin surface — Admin/Owner-only (gated)
   // in `visibleSettingsTabs` below, same as the other operator tabs).
   { id: 'jobs', iconName: 'Activity', text: 'Background Jobs' },
   { id: 'backup', iconName: 'HardDrive', text: 'Backup' },
@@ -6033,7 +5451,6 @@ const SETTINGS_ICONS = {
   MessageSquare,
   BarChart3,
   Activity,
-  AlertTriangle,
   HardDrive,
   FileText,
   FolderGit2,
@@ -6072,16 +5489,25 @@ export default function SettingsPage({
   wsRef,
 }: any) {
   const [tab, setTab] = useState(
-    initialTab === 'integrations' ? 'general' : initialTab || 'general',
+    initialTab === 'integrations' || initialTab === 'tool-errors' || initialTab === 'slack'
+      ? 'general'
+      : initialTab || 'general',
   );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  // Legacy `?tab=integrations` deep-link falls back to the General tab
-  // (handled by the `tab` initializer above).
+  // Legacy `?tab=integrations` / `?tab=tool-errors` / `?tab=slack` deep-links
+  // fall back to the General tab (handled by the `tab` initializer above).
 
   // When navigating directly to a specific tab (e.g. from OrgSwitcher)
   useEffect(() => {
-    if (initialTab && initialTab !== 'integrations') setTab(initialTab);
+    if (
+      initialTab &&
+      initialTab !== 'integrations' &&
+      initialTab !== 'tool-errors' &&
+      initialTab !== 'slack'
+    ) {
+      setTab(initialTab);
+    }
   }, [initialTab]);
 
   // Browser deep-links can still target `?tab=orgs` even though we no
@@ -6136,7 +5562,7 @@ export default function SettingsPage({
     }
   }, [tab, isAdminPlus]);
 
-  // Preview & Finalize moved to the per-project sidebar (Preview / Runners).
+  // Preview & Finalize moved to the per-project sidebar (Previews / Finalize CI).
   // Agents, Project settings, and Cron Jobs moved to the
   // per-project sidebar menu — fall back when old deep links land here.
   useEffect(() => {
@@ -6146,7 +5572,9 @@ export default function SettingsPage({
       tab === 'agents' ||
       tab === 'projects' ||
       tab === 'heartbeats' ||
-      tab === 'crons'
+      tab === 'crons' ||
+      tab === 'tool-errors' ||
+      tab === 'slack'
     ) {
       setTab('general');
     }
@@ -6250,9 +5678,7 @@ export default function SettingsPage({
               {tab === 'github' && <GitHubSection />}
               {tab === 'orgs' && electronShell && <OrganizationsSection />}
 
-              {tab === 'slack' && <SlackSection />}
               {tab === 'usage' && <UsageSection />}
-              {tab === 'tool-errors' && <ToolErrorsSection projects={projects} />}
               {tab === 'jobs' && isAdminPlus && <JobQueueSection />}
               {tab === 'backup' && (
                 <>

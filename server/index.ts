@@ -119,7 +119,7 @@ import {
 import { HostWorktreeIo, type SessionWorktreeIo } from './session-env/worktree-io.js';
 import { setSessionWorktreeIoResolver } from './session-worktree-io.js';
 import { setSessionProjectResolver } from './session-checkpoint-rewind.js';
-import { getProjectSessionStartupCommands } from './session-env/session-startup-hooks.js';
+import { resolveSessionStartupCommands } from './session-env/session-startup-hooks.js';
 import {
   emitSessionStartupProgress,
   emitSessionEnvLaunchProgress,
@@ -163,7 +163,6 @@ import { uriDecodeGuard, uriErrorHandler } from './uri-error-handler.js';
 import { publicCorsErrorHandler } from './public-cors-error-handler.js';
 import { jsonBodyErrorHandler } from './json-body-error-handler.js';
 import createNoteRoutes from './routes/notes.js';
-import createToolErrorRoutes from './routes/tool-errors.js';
 import createWikiRoutes from './routes/wiki.js';
 import createCodeRagRoutes from './routes/code-rag.js';
 import createLogSourceRoutes from './routes/log-sources.js';
@@ -1411,12 +1410,12 @@ const sessionEnvManager = new SessionEnvManager({
     const project = session ? findAgent(session.agent_id)?.project : null;
     return resolveSessionEnvAdapterForSession({ project, session });
   },
-  resolveStartupCommands: (sessionId) => {
+  resolveStartupCommands: (sessionId, kind) => {
     const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
     if (!session || session.deleted_at) return [];
     const project = findAgent(session.agent_id)?.project;
     if (!project) return [];
-    return getProjectSessionStartupCommands(project);
+    return resolveSessionStartupCommands(project, kind);
   },
   onStartupProgress: (update) => {
     emitSessionStartupProgress({
@@ -1992,7 +1991,6 @@ app.use('/api/projects/:projectId', createProjectVisibilityGate({ findProject })
 
 app.use(createMemoryRoutes(routeDeps));
 app.use(createNoteRoutes(routeDeps));
-app.use(createToolErrorRoutes(routeDeps));
 app.use(createWikiRoutes(routeDeps));
 app.use(createCodeRagRoutes(routeDeps));
 app.use(createLogSourceRoutes(routeDeps));

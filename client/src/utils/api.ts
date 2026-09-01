@@ -2090,10 +2090,15 @@ export const api = {
     fetchJSON(`/projects/${projectId}/skills/${encodeURIComponent(skillId)}`),
   getSkill: (agentId: any, skillId: any) => fetchJSON(`/agents/${agentId}/skills/${skillId}`),
   getContext: (agentId: any) => fetchJSON(`/agents/${agentId}/context`),
-  saveContext: (agentId: any, filename: any, content: any) =>
+  saveContext: (agentId: any, filename: any, content: any, expectedPrevious?: any) =>
     fetchJSON(`/agents/${agentId}/context/${filename}`, {
       method: 'PUT',
-      body: JSON.stringify({ content }),
+      // `expectedPrevious` (the content the edit was based on) enables the
+      // server's compare-and-swap so a stale/out-of-order save cannot clobber a
+      // newer commit on disk. Sent only when the caller supplies it.
+      body: JSON.stringify(
+        expectedPrevious === undefined ? { content } : { content, expectedPrevious },
+      ),
     }),
 
   createProjectSkill: (projectId: any, body: any) =>
@@ -3113,17 +3118,6 @@ export const api = {
     fetchJSON(`/projects/${projectId}/notes/processings${limit ? '?limit=' + limit : ''}`),
   getNoteProcessingsByDate: (projectId: any, date: any) =>
     fetchJSON(`/projects/${projectId}/notes/${date}/processings`),
-
-  // TOOL_ERROR aggregation (stub — Session Health epic will replace with a
-  // richer dashboard). Greps daily notes for TOOL_ERROR lines and returns
-  // structured JSON + count buckets.
-  getToolErrors: (projectId: any, { since, limit }: any = {}) => {
-    const params = new URLSearchParams();
-    if (since) params.set('since', since);
-    if (limit) params.set('limit', String(limit));
-    const qs = params.toString();
-    return fetchJSON(`/projects/${projectId}/tool-errors${qs ? '?' + qs : ''}`);
-  },
 
   // Background job queue (Admin observability surface)
   getJobs: ({ status, type, limit, offset }: any = {}) => {

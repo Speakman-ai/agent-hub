@@ -15,8 +15,6 @@ import {
   Loader2,
   Save,
   Puzzle,
-  ClipboardList,
-  FileText,
   Pencil,
   PenLine,
   ToggleLeft,
@@ -1147,110 +1145,6 @@ export function SkillCard({
   );
 }
 
-function ContextFilePanel({ filename, content, agentId, onSaved }: any) {
-  const [expanded, setExpanded] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [editContent, setEditContent] = useState(content || '');
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    setEditContent(content || '');
-  }, [content]);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await api.saveContext(agentId, filename, editContent);
-      setEditing(false);
-      if (onSaved) onSaved(filename, editContent);
-    } catch (err: any) {
-      console.error('Failed to save:', err);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (!content && content !== '') return null;
-
-  return (
-    <div className="bg-gray-800 rounded-xl overflow-hidden">
-      <div
-        className="p-3 cursor-pointer hover:bg-gray-750 transition-colors flex items-center justify-between"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span className="text-sm font-medium text-gray-300 flex items-center gap-1.5">
-          <FileText size={14} /> {filename}
-        </span>
-        <span className="text-gray-500 text-2xl leading-none flex items-center">
-          {expanded ? '▲' : '▼'}
-        </span>
-      </div>
-      {expanded && (
-        <div className="border-t border-gray-700 p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <button
-              onClick={(e: any) => {
-                e.stopPropagation();
-                setEditing(!editing);
-              }}
-              className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                editing
-                  ? 'bg-blue-800/50 text-blue-400'
-                  : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-              }`}
-            >
-              <span className="flex items-center gap-1">
-                {editing ? (
-                  <>
-                    <PenLine size={12} /> Editing
-                  </>
-                ) : (
-                  <>
-                    <Pencil size={12} /> Edit
-                  </>
-                )}
-              </span>
-            </button>
-            {editing && (
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                className="text-xs bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800 px-2.5 py-1 rounded-md transition-colors disabled:opacity-50"
-              >
-                <span className="flex items-center gap-1">
-                  {saving ? (
-                    <>
-                      <Loader2 size={12} className="animate-spin" /> Saving...
-                    </>
-                  ) : (
-                    <>
-                      <Save size={12} /> Save
-                    </>
-                  )}
-                </span>
-              </button>
-            )}
-          </div>
-          {editing ? (
-            <textarea
-              value={editContent}
-              onChange={(e: any) => setEditContent(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-100 font-mono focus:outline-none focus:border-gray-600 resize-y min-h-[200px]"
-              rows={15}
-            />
-          ) : (
-            <div className="prose prose-invert prose-sm max-w-none text-xs max-h-96 overflow-y-auto">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-                {content || '*(empty)*'}
-              </ReactMarkdown>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function SkillsPage({
   agents,
   projects,
@@ -1264,12 +1158,9 @@ export default function SkillsPage({
   const activeProjectIdRef = useLiveRef(activeProjectId);
   const [skills, setSkills] = useState<any[]>([]);
   const [improvements, setImprovements] = useState<any[]>([]);
-  const [context, setContext] = useState<Record<string, any>>({});
   const [overrides, setOverrides] = useState<any[]>([]);
   const [loadingSkills, setLoadingSkills] = useState(false);
-  const [loadingContext, setLoadingContext] = useState(false);
   const [skillsError, setSkillsError] = useState<any>(null);
-  const [contextError, setContextError] = useState<any>(null);
   const [reloadKey, setReloadKey] = useState(0);
   // Project default-on skills (auto-loaded into every session). Writes are
   // Admin-only server-side; `canManageDefaults` gates the UI affordance.
@@ -1289,14 +1180,14 @@ export default function SkillsPage({
     defaultSkills.projectId === activeProjectId ? defaultSkills.ids : EMPTY_STRING_ARRAY;
   const canManageDefaults = useMemo(() => hasRole('Admin'), []);
   // null = follow the default reference agent; otherwise the user-picked agent
-  // whose overrides + context this page is currently inspecting.
+  // whose skill overrides this page is currently inspecting.
   const [selectedAgentId, setSelectedAgentId] = useState<any>(null);
 
   const currentProject = (projects || []).find((p: any) => p.id === activeProjectId) || null;
 
   // Every active agent in this project, in a stable order. Per-agent skill
-  // overrides and context files are inspected/edited one agent at a time, so a
-  // multi-agent project needs a selector (below) to reach the others.
+  // overrides are inspected one agent at a time, so a multi-agent project
+  // needs a selector (below) to reach the others.
   const projectAgents = useMemo(
     () => (agents || []).filter((a: any) => a.projectId === activeProjectId && a.active !== false),
     [agents, activeProjectId],
@@ -1345,7 +1236,7 @@ export default function SkillsPage({
     setSelectedAgentId(null);
   }, [activeProjectId]);
 
-  // Load project skills + per-agent overrides + context for the reference agent.
+  // Load project skills + per-agent overrides for the reference agent.
   useEffect(() => {
     if (!activeProjectId) return;
     setLoadingSkills(true);
@@ -1366,25 +1257,9 @@ export default function SkillsPage({
 
     if (!referenceAgentId) {
       setOverrides([]);
-      setContext({});
-      setLoadingContext(false);
       return;
     }
 
-    setLoadingContext(true);
-    setContextError(null);
-    api
-      .getContext(referenceAgentId)
-      .then((data: any) => {
-        setContext(data);
-        setContextError(null);
-      })
-      .catch((err: any) => {
-        setContext({});
-        setContextError(err?.message || 'Unknown error loading context files');
-        console.error('Failed to load context:', err);
-      })
-      .finally(() => setLoadingContext(false));
     api
       .getSkillOverrides(referenceAgentId)
       .then(setOverrides)
@@ -1534,10 +1409,6 @@ export default function SkillsPage({
     [activeProjectId],
   );
 
-  const handleContextSaved = (filename: any, newContent: any) => {
-    setContext((prev: any) => ({ ...prev, [filename]: newContent }));
-  };
-
   // null = closed; { skill: null } = create; { skill } = edit existing.
   const [editorState, setEditorState] = useState<any>(null);
   const handleSkillSaved = useCallback(() => {
@@ -1549,7 +1420,7 @@ export default function SkillsPage({
     <div className="flex-1 overflow-y-auto p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
         <h2 className="text-2xl font-bold mb-2 flex items-center gap-2">
-          <BookOpen size={20} /> Skills & Context
+          <BookOpen size={20} /> Skills
         </h2>
         {currentProject ? (
           <p className="text-sm text-gray-500 mb-6" data-testid="skills-project-label">
@@ -1693,50 +1564,6 @@ export default function SkillsPage({
                 </div>
               )}
             </div>
-
-            {activeAgent ? (
-              <div>
-                <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                  <ClipboardList size={18} /> Context Files
-                  <span className="text-xs text-gray-500 font-normal">(workspace identity)</span>
-                </h3>
-                {projectAgents.length > 1 ? (
-                  <p className="text-[11px] text-gray-500 -mt-2 mb-3">
-                    Showing <span className="text-gray-400">{activeAgent.name}</span>&apos;s
-                    workspace files — use the agent selector above to switch.
-                  </p>
-                ) : null}
-                {loadingContext ? (
-                  <p className="text-sm text-gray-500">Loading context files...</p>
-                ) : contextError ? (
-                  <SkillsLoadError
-                    section="context files"
-                    message={contextError}
-                    onRetry={retryInstalledLoad}
-                  />
-                ) : Object.keys(context).length === 0 ? (
-                  <div className="bg-gray-800 rounded-xl p-6 text-center">
-                    <p className="text-gray-500 text-sm">No context files found</p>
-                    <p className="text-gray-600 text-xs mt-1">
-                      Add .md files to{' '}
-                      <code className="bg-gray-900 px-1 rounded">{activeAgent.workspace}/</code>
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {Object.entries(context).map(([filename, content]: any) => (
-                      <ContextFilePanel
-                        key={filename}
-                        filename={filename}
-                        content={content}
-                        agentId={referenceAgentId}
-                        onSaved={handleContextSaved}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : null}
           </>
         )}
 

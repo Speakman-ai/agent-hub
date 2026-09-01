@@ -17,11 +17,7 @@ export default function DevServerScreen({ route, navigation }: any) {
   const project = routeProject || projects?.find((p: any) => p.id === projectId);
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
-      <ProjectScreenHeader
-        title="Dev Server"
-        project={project}
-        onBack={() => navigation.goBack()}
-      />
+      <ProjectScreenHeader title="Previews" project={project} onBack={() => navigation.goBack()} />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <DevServerSection project={project} navigation={navigation} />
       </ScrollView>

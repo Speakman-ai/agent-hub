@@ -7,6 +7,7 @@ import {
   formatSessionStartupPromptSection,
   getSessionStartupStatus,
   normalizeSessionStartupCommands,
+  resolveSessionStartupCommands,
   runSessionStartupHooks,
   SESSION_STARTUP_STATUS_GUEST_ABS,
   SESSION_STARTUP_STATUS_REL,
@@ -157,6 +158,28 @@ beforeEach(() => {
 describe('normalizeSessionStartupCommands', () => {
   it('trims and drops empties', () => {
     expect(normalizeSessionStartupCommands(['  a  ', '', 'b', 3])).toEqual(['a', 'b']);
+  });
+});
+
+describe('resolveSessionStartupCommands', () => {
+  const project = {
+    sessionStartupCommandsAll: ['npm ci'],
+    sessionStartupCommands: ['python3 -m venv .venv'],
+  };
+
+  it('runs only all-session commands on host', () => {
+    expect(resolveSessionStartupCommands(project, 'host')).toEqual(['npm ci']);
+  });
+
+  it('runs all-session then VM commands on isolated adapters', () => {
+    expect(resolveSessionStartupCommands(project, 'firecracker')).toEqual([
+      'npm ci',
+      'python3 -m venv .venv',
+    ]);
+    expect(resolveSessionStartupCommands(project, 'container')).toEqual([
+      'npm ci',
+      'python3 -m venv .venv',
+    ]);
   });
 });
 

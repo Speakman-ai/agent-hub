@@ -286,7 +286,7 @@ export default function DevServerSection({ projects = [], onProjectsChange, onOp
       <div>
         <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
           <Terminal size={18} className="text-emerald-400" />
-          Dev server
+          Previews
         </h3>
         <p className="text-xs text-gray-500 max-w-2xl">
           Agent Hub runs your app as a managed long-lived process from the{' '}

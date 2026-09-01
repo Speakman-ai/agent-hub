@@ -742,9 +742,41 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     const paths = resolveProjectPaths(project, agent);
     const filePath = contextFilePath(paths, req.params.filename as string);
     if (!filePath) return res.status(400).json({ error: 'Cannot resolve file path' });
+
+    const body = (req.body ?? {}) as { content?: unknown; expectedPrevious?: unknown };
+    if (typeof body.content !== 'string') {
+      return res.status(400).json({ error: 'content must be a string' });
+    }
+    const nextContent = body.content;
+
     try {
+      // Compare-and-swap write ordering. The editor is a reused component shared
+      // across agents and repeat visits, so two saves for the SAME file can be
+      // in flight at once (e.g. a slow first save during an A -> B -> A
+      // round-trip). Client-side generation/token guards can suppress a stale
+      // `onSaved`, but only the server can stop a stale request from committing
+      // to disk out of order. When the caller sends the content its edit was
+      // based on (`expectedPrevious`), reject the write if the file no longer
+      // matches that base — a newer save already moved it. The read+write pair
+      // below is atomic within the single-process synchronous handler (no await
+      // between them), so it needs no extra lock.
+      if (Object.prototype.hasOwnProperty.call(body, 'expectedPrevious')) {
+        const expectedPrevious = body.expectedPrevious;
+        if (expectedPrevious !== null && typeof expectedPrevious !== 'string') {
+          return res.status(400).json({ error: 'expectedPrevious must be a string or null' });
+        }
+        const current = existsSync(filePath) ? readFileSync(filePath, 'utf-8') : '';
+        if ((expectedPrevious ?? '') !== current) {
+          return res.status(409).json({
+            error: 'stale_write',
+            message:
+              'This file changed since it was loaded (a newer save landed first). ' +
+              'Reload the file and reapply your edit.',
+          });
+        }
+      }
       mkdirSync(path.dirname(filePath), { recursive: true });
-      writeFileSync(filePath, (req.body as { content: string }).content, 'utf-8');
+      writeFileSync(filePath, nextContent, 'utf-8');
       res.json({ ok: true });
     } catch (err: unknown) {
       res.status(500).json({ error: (err as Error).message });

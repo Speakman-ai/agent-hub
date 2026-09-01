@@ -135,6 +135,20 @@ describe('Projects', () => {
       expect(res.body.sessionStartupCommands).toEqual(['python3 -m venv .venv']);
     });
 
+    it('creates project with sessionStartupCommandsAll', async () => {
+      const res = await request
+        .post('/api/projects')
+        .send({
+          id: 'proj-startup-all-create',
+          name: 'Startup All Project',
+          cwd: '/tmp',
+          sessionStartupCommandsAll: ['  npm ci  ', ''],
+        })
+        .expect(201);
+
+      expect(res.body.sessionStartupCommandsAll).toEqual(['npm ci']);
+    });
+
     it('creates project with checkHealCommands and checkHealMaxRounds', async () => {
       const res = await request
         .post('/api/projects')
@@ -755,6 +769,21 @@ describe('Projects', () => {
         .send({ sessionStartupCommands: [] })
         .expect(200);
       expect(cleared.body.sessionStartupCommands).toBeUndefined();
+    });
+
+    it('updates sessionStartupCommandsAll and clears when empty array', async () => {
+      const proj = await createProject();
+      const withHooks = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ sessionStartupCommandsAll: ['  npm ci  ', 'npm run build'] })
+        .expect(200);
+      expect(withHooks.body.sessionStartupCommandsAll).toEqual(['npm ci', 'npm run build']);
+
+      const cleared = await request
+        .patch(`/api/projects/${proj.id}`)
+        .send({ sessionStartupCommandsAll: [] })
+        .expect(200);
+      expect(cleared.body.sessionStartupCommandsAll).toBeUndefined();
     });
 
     it('updates checkHealCommands / checkHealMaxRounds and clears heal list with empty array', async () => {

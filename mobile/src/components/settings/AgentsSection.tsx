@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { api } from '../../utils/api';
 import { colors } from '../../theme/colors';
+import ContextFilePanel from '../ContextFilePanel';
 import {
   groupAgentsByProject,
   resolveNewAgentForm,
@@ -193,6 +194,17 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
   const [modelOverrides, setModelOverrides] = useState<any>({});
   const [engineOverrides, setEngineOverrides] = useState<any>({});
   const [overrideSaving, setOverrideSaving] = useState<any>({});
+  // `null` until the current context agent's AGENTS.md has loaded — this gates
+  // the editor so a stale value (e.g. the previous project's content lingering
+  // after the filter switches) can never be saved through the new agent id.
+  const [agentsMd, setAgentsMd] = useState<string | null>(null);
+  const [agentsMdLoading, setAgentsMdLoading] = useState(false);
+  const [agentsMdError, setAgentsMdError] = useState(false);
+  const [agentsMdReload, setAgentsMdReload] = useState(0);
+  const [identityByAgent, setIdentityByAgent] = useState<Record<string, string | null>>({});
+  const [identityLoading, setIdentityLoading] = useState<Record<string, boolean>>({});
+  const [identityError, setIdentityError] = useState<Record<string, boolean>>({});
+  const [identityReload, setIdentityReload] = useState<Record<string, number>>({});
   const loadOverrides = useCallback(async () => {
     try {
       const [modelBody, engineBody] = await Promise.all([
@@ -248,6 +260,62 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
         agents: g.agents.filter((a: any) => a.role !== 'reviewer'),
       }));
   }, [agents, projects, filterProjectId]);
+  const contextAgentId = filterProjectId ? groups[0]?.agents?.[0]?.id || '' : '';
+
+  useEffect(() => {
+    // Clear stale content synchronously so the panel gates on load rather than
+    // rendering the previous agent's AGENTS.md as editable.
+    setAgentsMd(null);
+    setAgentsMdError(false);
+    if (!contextAgentId) {
+      setAgentsMdLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setAgentsMdLoading(true);
+    api
+      .getContext(contextAgentId)
+      .then((data: any) => {
+        if (cancelled) return;
+        setAgentsMd(typeof data?.['AGENTS.md'] === 'string' ? data['AGENTS.md'] : '');
+        setAgentsMdLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAgentsMdError(true);
+        setAgentsMdLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contextAgentId, agentsMdReload]);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const agentId = expanded;
+    setIdentityByAgent((prev) => ({ ...prev, [agentId]: null }));
+    setIdentityError((prev) => ({ ...prev, [agentId]: false }));
+    setIdentityLoading((prev) => ({ ...prev, [agentId]: true }));
+    let cancelled = false;
+    api
+      .getContext(agentId)
+      .then((data: any) => {
+        if (cancelled) return;
+        setIdentityByAgent((prev) => ({
+          ...prev,
+          [agentId]: typeof data?.['IDENTITY.md'] === 'string' ? data['IDENTITY.md'] : '',
+        }));
+        setIdentityLoading((prev) => ({ ...prev, [agentId]: false }));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setIdentityError((prev) => ({ ...prev, [agentId]: true }));
+        setIdentityLoading((prev) => ({ ...prev, [agentId]: false }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, identityReload]);
   const handleExpand = (agent: any) => {
     if (expanded === agent.id) {
       setExpanded(null);
@@ -440,6 +508,22 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
         </TouchableOpacity>
       </View>
 
+      {contextAgentId ? (
+        <View style={{ marginBottom: 12 }}>
+          <Text style={styles.formHint}>Shared instructions for every agent in this project.</Text>
+          <ContextFilePanel
+            filename="AGENTS.md"
+            content={agentsMd}
+            agentId={contextAgentId}
+            defaultExpanded
+            loading={agentsMdLoading}
+            error={agentsMdError}
+            onRetry={() => setAgentsMdReload((n) => n + 1)}
+            onSaved={(_name: any, next: any) => setAgentsMd(next)}
+          />
+        </View>
+      ) : null}
+
       {loadError && (
         <View style={styles.errorBox}>
           <Text style={styles.errorBoxText}>{loadError}</Text>
@@ -613,6 +697,23 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
                         multiline
                         textAlignVertical="top"
                         placeholderTextColor={colors.gray500}
+                      />
+                      <ContextFilePanel
+                        filename="IDENTITY.md"
+                        content={identityByAgent[agent.id] ?? null}
+                        agentId={agent.id}
+                        hint="Who this agent is. Injected into every session."
+                        loading={identityLoading[agent.id] ?? false}
+                        error={identityError[agent.id] ?? false}
+                        onRetry={() =>
+                          setIdentityReload((prev) => ({
+                            ...prev,
+                            [agent.id]: (prev[agent.id] ?? 0) + 1,
+                          }))
+                        }
+                        onSaved={(_name: any, next: any) =>
+                          setIdentityByAgent((prev) => ({ ...prev, [agent.id]: next }))
+                        }
                       />
                       <DevToggle
                         value={editForm.isDev}

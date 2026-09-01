@@ -32,17 +32,13 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
   const project = routeProject || projects?.find((p: any) => p.id === projectId);
   const [name, setName] = useState(project?.name || '');
   const [color, setColor] = useState(project?.color || '#6366f1');
-  const [visibility, setVisibility] = useState(
-    project?.visibility === 'private' ? 'private' : 'shared',
-  );
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   useEffect(() => {
     if (!project) return;
     setName(project.name || '');
     setColor(project.color || '#6366f1');
-    setVisibility(project.visibility === 'private' ? 'private' : 'shared');
-  }, [project?.id, project?.name, project?.color, project?.visibility]);
+  }, [project?.id, project?.name, project?.color]);
   const saveField = useCallback(
     async (patch: any) => {
       if (!projectId) return;
@@ -58,10 +54,6 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
     },
     [projectId, refreshProjects],
   );
-  const handleModeChange = async (mode: any) => {
-    if (!project || (project.mode || 'dev') === mode) return;
-    await saveField({ mode });
-  };
   const handleSaveName = async () => {
     const trimmed = name.trim();
     if (!trimmed || trimmed === project?.name) return;
@@ -70,12 +62,6 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
   const handleColorChange = async (nextColor: any) => {
     setColor(nextColor);
     if (nextColor !== project?.color) await saveField({ color: nextColor });
-  };
-  const handleVisibilityChange = async (next: any) => {
-    setVisibility(next);
-    if (next !== (project?.visibility === 'private' ? 'private' : 'shared')) {
-      await saveField({ visibility: next });
-    }
   };
   const handleDelete = async () => {
     if (!confirmDelete) {
@@ -101,7 +87,6 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
       </SafeAreaView>
     );
   }
-  const mode = project.mode || 'dev';
   const githubRepo = project.githubRepo || '';
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
@@ -143,49 +128,6 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
         <Text style={styles.label}>GitHub repository</Text>
         <Text style={styles.readOnly}>{githubRepo ? githubRepo : 'No repo linked'}</Text>
 
-        <Text style={styles.label}>Visibility</Text>
-        <Text style={styles.hint}>
-          Shared: org-wide. Private: only you (Owners retain delete access).
-        </Text>
-        <View style={styles.modeRow}>
-          {['shared', 'private'].map((v: any) => {
-            const active = visibility === v;
-            return (
-              <TouchableOpacity
-                key={v}
-                style={[styles.modeBtn, active && styles.modeBtnActive]}
-                onPress={() => handleVisibilityChange(v)}
-              >
-                <Text style={[styles.modeBtnText, active && styles.modeBtnTextActive]}>
-                  {v === 'shared' ? 'Shared' : 'Private'}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        <Text style={styles.label}>Mode</Text>
-        <Text style={styles.hint}>
-          Dev: kanban lifecycle, worktrees, PR review. Workflow: checkout-only; PR flows off.
-        </Text>
-        <View style={styles.modeRow}>
-          {['dev', 'workflow'].map((m: any) => {
-            const active = mode === m;
-            return (
-              <TouchableOpacity
-                key={m}
-                style={[styles.modeBtn, active && styles.modeBtnActive]}
-                onPress={() => handleModeChange(m)}
-                disabled={saving}
-              >
-                <Text style={[styles.modeBtnText, active && styles.modeBtnTextActive]}>
-                  {m === 'dev' ? 'Dev' : 'Workflow'}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
         <View style={{ marginTop: 12 }}>
           <ProjectDefaultAutomationSection projectId={projectId} />
         </View>
@@ -217,7 +159,6 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.gray950 },
   content: { padding: 16, paddingBottom: 32 },
   label: { fontSize: 12, color: colors.gray400, marginBottom: 6, marginTop: 12 },
-  hint: { fontSize: 12, color: colors.gray500, marginBottom: 8, lineHeight: 16 },
   input: {
     backgroundColor: colors.gray900,
     borderWidth: 1,
@@ -241,21 +182,6 @@ const styles = StyleSheet.create({
   colorRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   colorBtn: { width: 32, height: 32, borderRadius: 8 },
   colorBtnActive: { borderWidth: 2, borderColor: colors.white },
-  modeRow: { flexDirection: 'row', gap: 8 },
-  modeBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.gray700,
-    backgroundColor: colors.gray800,
-  },
-  modeBtnActive: {
-    borderColor: colors.emerald400,
-    backgroundColor: colors.emerald800_50,
-  },
-  modeBtnText: { fontSize: 13, color: colors.gray400 },
-  modeBtnTextActive: { color: colors.emerald400, fontWeight: '600' },
   deleteSection: {
     marginTop: 24,
     paddingTop: 16,

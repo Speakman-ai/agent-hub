@@ -141,7 +141,7 @@ describe('CiRunsSection', () => {
     expect(stats).toHaveTextContent('Overall');
     expect(stats).toHaveTextContent('1m 30s');
     expect(stats).toHaveTextContent('25%');
-    expect(stats).toHaveTextContent('Tests in ci.yaml');
+    expect(stats).toHaveTextContent('Jobs');
     expect(stats).toHaveTextContent('test / server');
     expect(stats).toHaveTextContent('2m 0s');
     expect(stats).toHaveTextContent('33%');
@@ -425,6 +425,9 @@ describe('CiRunsSection', () => {
     (api.updateProject as any).mockResolvedValue({});
     const onProjectsChange = vi.fn();
     render(<CiRunsSection project={hostedProject} onProjectsChange={onProjectsChange} />);
+
+    expect(await screen.findByText(/does not block the merge/i)).toBeInTheDocument();
+    expect(screen.queryByText(/GitHub Actions on master/i)).toBeNull();
 
     fireEvent.click(await screen.findByTestId('ci-on-push-toggle' as any));
     await waitFor(() =>

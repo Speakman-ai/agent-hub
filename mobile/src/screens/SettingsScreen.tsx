@@ -43,12 +43,10 @@ import { hasRole, getUserRole } from '../utils/auth';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
-import SlackBotsSection from '../components/settings/SlackBotsSection';
 import MyCliKeysSection from '../components/settings/MyCliKeysSection';
 import PushNotificationsSection from '../components/settings/PushNotificationsSection';
 import GeneralSettingsSection from '../components/settings/GeneralSettingsSection';
 import GitHubSettingsSection from '../components/settings/GitHubSettingsSection';
-import ToolErrorsSection from '../components/settings/ToolErrorsSection';
 import JobQueueSection from '../components/settings/JobQueueSection';
 import ServerLogsSection from '../components/settings/ServerLogsSection';
 import MembersSection from '../components/settings/MembersSection';
@@ -999,7 +997,7 @@ function CronFormFields({ form, setForm, projects, modelConfig }: any) {
     </>
   );
 }
-function CronSection() {
+export function CronSection() {
   const [projects, setProjects] = useState<any[]>([]);
   const defaultCwd = projects[0]?.cwd || '';
   const [crons, setCrons] = useState<any[]>([]);
@@ -1475,7 +1473,7 @@ function CronSection() {
   );
 }
 // ─── Slack Tab ──────────────────────────────────────────────
-function SlackSection() {
+export function SlackSection() {
   const [status, setStatus] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [restarting, setRestarting] = useState(false);
@@ -2170,9 +2168,7 @@ const SETTINGS_TABS = [
   { id: 'account', label: 'Account' },
   { id: 'global-api-keys', label: 'Global API Keys' },
   { id: 'github', label: 'GitHub' },
-  { id: 'slack', label: 'Slack' },
   { id: 'usage', label: 'Usage' },
-  { id: 'tool-errors', label: 'Tool Errors' },
   { id: 'jobs', label: 'Background Jobs' },
   { id: 'backup', label: 'Backup' },
   { id: 'logs', label: 'Logs' },
@@ -2189,6 +2185,8 @@ const LEGACY_TAB_IDS = new Set([
   'finalize',
   'config',
   'preview',
+  'tool-errors',
+  'slack',
 ]);
 const SETTINGS_TAB_IDS = SETTINGS_TABS.map((t: any) => t.id);
 export default function SettingsScreen({ route }: any) {
@@ -2302,13 +2300,6 @@ export default function SettingsScreen({ route }: any) {
           {tab === 'global-api-keys' && <GlobalApiKeysSection />}
           {tab === 'github' && <GitHubSettingsSection />}
           {tab === 'usage' && <UsageSection />}
-          {tab === 'slack' && (
-            <>
-              <SlackBotsSection />
-              <SlackSection />
-            </>
-          )}
-          {tab === 'tool-errors' && <ToolErrorsSection />}
           {tab === 'jobs' && isAdminPlus && <JobQueueSection />}
           {tab === 'backup' && <ConfigBackupSection />}
           {tab === 'logs' && <ServerLogsSection />}

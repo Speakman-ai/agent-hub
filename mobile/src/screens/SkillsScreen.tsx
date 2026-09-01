@@ -811,68 +811,6 @@ export function SkillCard({
     </View>
   );
 }
-function ContextFilePanel({ filename, content, agentId, onSaved }: any) {
-  const [expanded, setExpanded] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [editContent, setEditContent] = useState(content || '');
-  const [saving, setSaving] = useState(false);
-  useEffect(() => {
-    setEditContent(content || '');
-  }, [content]);
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await api.saveContext(agentId, filename, editContent);
-      setEditing(false);
-      if (onSaved) onSaved(filename, editContent);
-    } catch (err: any) {
-      console.error('Failed to save:', err);
-    } finally {
-      setSaving(false);
-    }
-  };
-  if (!content && content !== '') return null;
-  return (
-    <View style={styles.card}>
-      <TouchableOpacity style={styles.contextHeader} onPress={() => setExpanded(!expanded)}>
-        <Text style={styles.contextFilename}>{filename}</Text>
-        <Text style={styles.expandIcon}>{expanded ? '▲' : '▼'}</Text>
-      </TouchableOpacity>
-      {expanded && (
-        <View style={styles.cardBody}>
-          <View style={styles.editButtons}>
-            <TouchableOpacity
-              style={[styles.editButton, editing && styles.editButtonActive]}
-              onPress={() => setEditing(!editing)}
-            >
-              <Text style={[styles.editButtonText, editing && styles.editButtonTextActive]}>
-                {editing ? 'Editing' : 'Edit'}
-              </Text>
-            </TouchableOpacity>
-            {editing && (
-              <TouchableOpacity style={styles.saveButton} onPress={handleSave} disabled={saving}>
-                <Text style={styles.saveButtonText}>{saving ? 'Saving...' : 'Save'}</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-          {editing ? (
-            <TextInput
-              value={editContent}
-              onChangeText={setEditContent}
-              multiline
-              style={styles.editTextarea}
-              textAlignVertical="top"
-            />
-          ) : (
-            <ScrollView style={styles.cardScroll} nestedScrollEnabled>
-              <Markdown style={markdownStyles as any}>{content || '*(empty)*'}</Markdown>
-            </ScrollView>
-          )}
-        </View>
-      )}
-    </View>
-  );
-}
 export default function SkillsScreen() {
   const {
     agents,
@@ -888,19 +826,17 @@ export default function SkillsScreen() {
   // their result when the active project changed while the request was pending.
   const activeProjectIdRef = useLiveRef(activeProjectId);
   // null = follow the default reference agent; otherwise the user-picked agent
-  // whose overrides + context this screen is inspecting.
+  // whose skill overrides this screen is inspecting.
   const [selectedAgentId, setSelectedAgentId] = useState<any>(null);
   const [skills, setSkills] = useState<any[]>([]);
   // Built-in (default) + shared (global) skills catalog — the same list the
   // web Settings → Global Skills page shows. Kept reachable on mobile so the
   // project/global split doesn't hide built-in/shared skills entirely.
   const [globalSkills, setGlobalSkills] = useState<any[]>([]);
-  const [context, setContext] = useState<any>({});
   const [overrides, setOverrides] = useState<any[]>([]);
   // Agent-suggested lessons awaiting review (project + global tiers).
   const [improvements, setImprovements] = useState<any[]>([]);
   const [loadingSkills, setLoadingSkills] = useState(false);
-  const [loadingContext, setLoadingContext] = useState(false);
   // Per-project default-on skills (auto-loaded into every session). Admin-only
   // writes; when the role is unknown we still render the toggle and let the
   // server surface a 403 (matches the PendingLessonsSection gating pattern).
@@ -1009,24 +945,10 @@ export default function SkillsScreen() {
       });
     if (!referenceAgentId) {
       setOverrides([]);
-      setContext({});
-      setLoadingContext(false);
       return () => {
         cancelled = true;
       };
     }
-    setLoadingContext(true);
-    api
-      .getContext(referenceAgentId)
-      .then((ctx: any) => {
-        if (!cancelled) setContext(ctx);
-      })
-      .catch(() => {
-        if (!cancelled) setContext({});
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingContext(false);
-      });
     api
       .getSkillOverrides(referenceAgentId)
       .then((rows: any) => {
@@ -1075,9 +997,6 @@ export default function SkillsScreen() {
     },
     [activeProjectId],
   );
-  const handleContextSaved = (filename: any, newContent: any) => {
-    setContext((prev: any) => ({ ...prev, [filename]: newContent }));
-  };
   const handleToggleDefault = useCallback(
     async (skillId: any, on: any) => {
       if (!activeProjectId) return;
@@ -1137,7 +1056,7 @@ export default function SkillsScreen() {
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-        <Text style={styles.pageTitle}>Skills & Context</Text>
+        <Text style={styles.pageTitle}>Skills</Text>
 
         {/* Project selector — multi-project users pick which project's skills to manage */}
         {visibleProjects.length > 1 ? (
@@ -1252,40 +1171,6 @@ export default function SkillsScreen() {
                     isDefaultOn={defaultSkillIds.includes(skill.id)}
                     onToggleDefault={canEditDefaults ? handleToggleDefault : undefined}
                     canManageCredentials={canEditDefaults}
-                  />
-                ))}
-              </View>
-            )}
-          </View>
-        ) : null}
-
-        {/* Context Files — needs a reference agent (workspace identity). */}
-        {activeProjectId && activeAgent ? (
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Context Files</Text>
-              <Text style={styles.sectionCount}>(workspace identity)</Text>
-            </View>
-            {loadingContext ? (
-              <ActivityIndicator
-                size="small"
-                color={colors.gray500}
-                style={{ marginVertical: 20 }}
-              />
-            ) : Object.keys(context).length === 0 ? (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyText}>No context files found</Text>
-                <Text style={styles.emptyHint}>Add .md files to {activeAgent.workspace}/</Text>
-              </View>
-            ) : (
-              <View style={styles.cardList}>
-                {Object.entries(context).map(([filename, content]: any) => (
-                  <ContextFilePanel
-                    key={filename}
-                    filename={filename}
-                    content={content}
-                    agentId={referenceAgentId}
-                    onSaved={handleContextSaved}
                   />
                 ))}
               </View>
@@ -2087,60 +1972,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.white,
     fontWeight: '500',
-  },
-  contextHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 12,
-  },
-  contextFilename: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: colors.gray300,
-  },
-  editButtons: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
-  },
-  editButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: colors.gray700,
-  },
-  editButtonActive: {
-    backgroundColor: 'rgba(30, 64, 175, 0.5)',
-  },
-  editButtonText: {
-    fontSize: 12,
-    color: colors.gray400,
-  },
-  editButtonTextActive: {
-    color: colors.blue400,
-  },
-  saveButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: colors.emerald800_50,
-  },
-  saveButtonText: {
-    fontSize: 12,
-    color: colors.emerald400,
-  },
-  editTextarea: {
-    backgroundColor: colors.gray900,
-    borderWidth: 1,
-    borderColor: colors.gray700,
-    borderRadius: 8,
-    padding: 10,
-    color: colors.gray100,
-    fontSize: 12,
-    fontFamily: 'monospace',
-    minHeight: 200,
-    textAlignVertical: 'top',
   },
   emptyCard: {
     backgroundColor: colors.gray800,

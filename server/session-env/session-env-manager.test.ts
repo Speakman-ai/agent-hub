@@ -110,7 +110,7 @@ function makeManager(
     failOnMount?: boolean;
     bootSweep?: Promise<unknown>;
     resolvePublishPorts?: (sessionId: string) => number[] | null;
-    resolveStartupCommands?: (sessionId: string) => string[];
+    resolveStartupCommands?: (sessionId: string, kind?: SessionEnvKind) => string[];
     slowStartupMs?: number;
     onEnvLaunchProgress?: (update: {
       sessionId: string;
@@ -584,14 +584,24 @@ describe('SessionEnvManager session startup hooks', () => {
     expect(getSessionStartupStatus('s1')?.status).toBe('ready');
   });
 
-  it('skips project startup hooks on the host adapter', async () => {
+  it('skips VM-only startup commands on the host adapter when the resolver returns none', async () => {
     const { manager, created } = makeManager({
       kind: 'host',
-      resolveStartupCommands: () => ['python3 -m venv .venv'],
+      resolveStartupCommands: (_id, kind) => (kind === 'host' ? [] : ['python3 -m venv .venv']),
     });
     await manager.ensure('s1', { waitForStartup: true });
     expect(getSessionStartupStatus('s1')).toBeNull();
     expect(created[0]?.spawnCalls).toEqual([]);
+  });
+
+  it('runs all-session startup commands on the host adapter', async () => {
+    const { manager, created } = makeManager({
+      kind: 'host',
+      resolveStartupCommands: () => ['echo all'],
+    });
+    await manager.ensure('s1', { waitForStartup: true });
+    expect(getSessionStartupStatus('s1')?.status).toBe('ready');
+    expect(created[0]?.spawnCalls.some((c) => c.includes('echo all'))).toBe(true);
   });
 
   it('runs project startup hooks on isolated adapters', async () => {

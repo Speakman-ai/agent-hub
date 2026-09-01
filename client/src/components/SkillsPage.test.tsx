@@ -95,19 +95,6 @@ describe('SkillsPage error surfacing', () => {
     expect(screen.queryByText(/No skills found/i)).not.toBeInTheDocument();
   });
 
-  it('renders an inline error when getContext rejects, separately from skills', async () => {
-    (api.getProjectSkills as any).mockResolvedValue([]);
-    (api.getContext as any).mockRejectedValue(new Error('ENOENT: workspace missing'));
-
-    render(<SkillsPage {...SKILLS_PAGE_PROPS} />);
-    await flush();
-
-    const alert = await screen.findByTestId('skills-load-error-context files');
-    expect(alert!).toBeInTheDocument();
-    expect((alert as any).textContent).toContain('Failed to load context files');
-    expect((alert as any).textContent).toContain('ENOENT: workspace missing');
-  });
-
   it('clicking Retry re-invokes getProjectSkills and clears the error on success', async () => {
     (api.getProjectSkills as any)
       .mockRejectedValueOnce(new Error('boom'))
@@ -160,14 +147,14 @@ describe('SkillsPage is skill management only', () => {
     });
   }
 
-  it('renders the Skills and Context Files sections', async () => {
+  it('renders the Skills section without context files', async () => {
     render(<SkillsPage {...SKILLS_PAGE_PROPS} />);
     await flush();
 
+    expect(screen.getByRole('heading', { name: /^Skills$/ })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Skills\s*\(\d+ total\)/ })).toBeInTheDocument();
-    expect(
-      screen.getByRole('heading', { name: /Context Files\s*\(workspace identity\)/ }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Context Files/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('SOUL.md')).not.toBeInTheDocument();
     expect(screen.getByText('Kanban')).toBeInTheDocument();
   });
 
@@ -328,7 +315,7 @@ describe('SkillsPage — per-agent override selector', () => {
 
     const selector = screen.getByTestId('skills-agent-selector');
     expect(selector).toBeInTheDocument();
-    // First load loads context + overrides for the default reference agent (A).
+    // First load loads skill overrides for the default reference agent (A).
     expect(api.getSkillOverrides).toHaveBeenCalledWith('agent-a');
     expect(screen.getByRole('tab', { name: /Agent A/ })).toHaveAttribute('aria-selected', 'true');
   });
@@ -340,9 +327,9 @@ describe('SkillsPage — per-agent override selector', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Agent B/ }));
     await flush();
 
-    // Switching agents reloads that agent's overrides + context.
+    // Switching agents reloads that agent's skill overrides.
     expect(api.getSkillOverrides).toHaveBeenCalledWith('agent-b');
-    expect(api.getContext).toHaveBeenCalledWith('agent-b');
+    expect(api.getContext).not.toHaveBeenCalled();
 
     // A toggle now writes against the newly-selected agent, not the default.
     const toggle = screen.getByTitle(/Disable for this agent|Enable for this agent/);

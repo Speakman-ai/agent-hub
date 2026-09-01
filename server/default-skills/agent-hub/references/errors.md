@@ -6,9 +6,6 @@ two or three recovery steps that usually unstick the common failures.
 
 Back to [SKILL.md](../SKILL.md).
 
-**Note:** `GET /api/projects/:projectId/tool-errors` is not yet
-registered in the OpenAPI spec — the `#tag/Audit` page covers the
-post-scaffold audit and roster surfaces, not tool-error self-reporting.
 This page is the *how* for the error-logging format itself.
 
 ## Contents
@@ -35,9 +32,8 @@ This page is the *how* for the error-logging format itself.
 ## TOOL_ERROR self-reporting
 
 When a tool call fails in a way that blocks progress, log a structured line
-into your daily notes so patterns are minable across sessions. The parser
-lives in `server/tool-errors.ts`; the Session Health dashboard consumes the
-same rows. Two wire formats are accepted during the transition window (see
+into your daily notes so patterns are minable across sessions. Two wire
+formats are accepted during the transition window (see
 [Migration — v1 → v2](#migration--v1--v2) below):
 
 - **v1** (legacy, 6 pipe-delimited fields) — still honoured by the parser.

@@ -66,8 +66,8 @@ import {
 import { FIRECRACKER_GUEST_WORKSPACE } from './session-env/firecracker/firecracker-vm-args.js';
 import {
   formatSessionStartupPromptSection,
-  getProjectSessionStartupCommands,
   getSessionStartupStatus,
+  resolveSessionStartupCommands,
 } from './session-env/session-startup-hooks.js';
 import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
@@ -922,11 +922,13 @@ You have access to a real Chromium browser in this session (host Playwright). Wh
 The generic \`browser\` tool is off for this agent, but you can still verify **this session's running preview** with a naked \`<agenthub:react>{"actions":[{"tool":"preview","op":"screenshot"}]}</agenthub:react>\` block (never a code fence). The host returns a saved image path plus visible page text. Do not probe localhost ports with Bash.`;
   }
 
-  // Background session-startup hooks (venv / npm install in guest, etc.).
-  // Host adapter never runs them — don't advertise a setup that will not happen.
-  if (options.sessionId && projectId && options.sessionEnvAdapter !== 'host') {
+  // Background session-startup hooks. Advertise only when this adapter will
+  // actually run them (all-session on host; all-session + VM-only elsewhere).
+  if (options.sessionId && projectId) {
     const startupProject = findProject(projectId);
-    const startupCmds = startupProject ? getProjectSessionStartupCommands(startupProject) : [];
+    const startupCmds = startupProject
+      ? resolveSessionStartupCommands(startupProject, options.sessionEnvAdapter)
+      : [];
     if (startupCmds.length > 0) {
       prompt += formatSessionStartupPromptSection(getSessionStartupStatus(options.sessionId), {
         commandsConfigured: true,
@@ -3510,12 +3512,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
       } else if (
         ensureSessionEnv &&
-        sessionEnvAdapter !== 'host' &&
-        getProjectSessionStartupCommands(project as ProjectWithCommands).length > 0
+        resolveSessionStartupCommands(project as ProjectWithCommands, sessionEnvAdapter).length > 0
       ) {
-        // Isolated adapters: SessionEnvManager.ensure is what starts project
-        // sessionStartupCommands. Without it, the enriched prompt advertises a
-        // permanent "pending" setup that never runs. Host skips these hooks.
+        // SessionEnvManager.ensure is what starts project startup commands.
+        // Without it, the enriched prompt advertises a permanent "pending"
+        // setup that never runs.
         try {
           sessionEnv = await ensureSessionEnv(sessionId, {
             waitForStartup: msg._fromAutonomousDispatch === true,

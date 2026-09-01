@@ -55,4 +55,15 @@ describe('browser-agent-settings', () => {
     expect(o.viewport).toEqual(DEFAULT_VIEWPORT);
     expect(o.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
   });
+
+  // Settings no longer exposes a browser opt-out control, but the agent/project
+  // APIs still accept and persist browserToolsEnabled / browserToolsDefaultEnabled.
+  // The dispatch-time gate MUST keep honoring a stored `false` so hiding the UI
+  // never silently re-enables Chromium for agents an operator disabled.
+  it('honors a persisted opt-out even though the UI control is hidden', () => {
+    expect(effectiveBrowserToolsEnabled({ browserToolsEnabled: false } as Agent)).toBe(false);
+    expect(effectiveBrowserToolsEnabled({} as Agent, { browserToolsDefaultEnabled: false })).toBe(
+      false,
+    );
+  });
 });

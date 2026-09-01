@@ -5,7 +5,7 @@
  * normal worktree-backed session in the mobile chat surface; this
  * section is the entry point:
  *   - project picker
- *   - "Set up Runner" button → POST /api/projects/:id/finalize/setup-wizard
+ *   - "Set up CI" button → POST /api/projects/:id/finalize/setup-wizard
  *   - on success, open the spawned chat session
  *
  * Pure state helpers live in `mobile/src/utils/finalizeWizard.js` so
@@ -95,13 +95,11 @@ export default function FinalizeSection({ navigation, fixedProjectId }: any) {
   }
   return (
     <View>
-      <Text style={styles.sectionTitle}>Runner</Text>
+      <Text style={styles.sectionTitle}>Finalize CI</Text>
       <Text style={styles.sectionDesc}>
-        Author <Text style={styles.mono}>.agent-hub/ci.yaml</Text> — the config that drives the
-        Runner pre-PR pipeline (lint, typecheck, tests, fixture data, etc.). Tap{' '}
-        <Text style={styles.boldText}>Set up Runner</Text> to spawn a normal worktree-backed session
-        that scans the repo, proposes a config, runs the configured steps to prove the pipeline,
-        then pushes and opens a PR for review.
+        Jobs in <Text style={styles.mono}>.agent-hub/ci.yaml</Text> run before a session ships —
+        lint, typecheck, tests, and so on. Tap <Text style={styles.boldText}>Set up CI</Text> to
+        scan the repo and draft a config in chat.
       </Text>
 
       {!fixedProjectId && (
@@ -138,10 +136,8 @@ export default function FinalizeSection({ navigation, fixedProjectId }: any) {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Guided setup walkthrough</Text>
         <Text style={styles.cardBody}>
-          Spawns a normal worktree-backed session loaded with the{' '}
-          <Text style={styles.mono}>finalize-setup</Text> skill. It reads README, package manifests,
-          and existing CI workflows, proposes a <Text style={styles.mono}>.agent-hub/ci.yaml</Text>,
-          runs the configured steps to prove the pipeline, then pushes and opens a PR for review.
+          Opens a chat session that reads the repo, proposes{' '}
+          <Text style={styles.mono}>.agent-hub/ci.yaml</Text>, tries the jobs, then opens a PR.
         </Text>
 
         {lastSessionId && (
@@ -163,7 +159,7 @@ export default function FinalizeSection({ navigation, fixedProjectId }: any) {
             <ActivityIndicator size="small" color={colors.white} />
           ) : (
             <Text style={styles.primaryButtonText}>
-              {lastSessionId ? 'Re-run wizard' : 'Set up Runner'}
+              {lastSessionId ? 'Set up CI again' : 'Set up CI'}
             </Text>
           )}
         </TouchableOpacity>
@@ -188,19 +184,13 @@ export default function FinalizeSection({ navigation, fixedProjectId }: any) {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>What lands in your repo</Text>
         <Text style={styles.bullet}>
-          • A single file at <Text style={styles.mono}>.agent-hub/ci.yaml</Text>.
+          • One file: <Text style={styles.mono}>.agent-hub/ci.yaml</Text>.
         </Text>
+        <Text style={styles.bullet}>• Written in the setup session, then opened as a PR.</Text>
         <Text style={styles.bullet}>
-          • Committed on a fresh branch in the setup session&apos;s own worktree, verified locally,
-          then pushed and opened as a PR for review.
+          • Jobs in that file run in parallel when you Finalize a session.
         </Text>
-        <Text style={styles.bullet}>
-          • One step per check you want to run before pushing — install, typecheck, lint, test, etc.
-          Hard cap: 4 hours of active time.
-        </Text>
-        <Text style={styles.bullet}>
-          • Re-run the wizard any time — it overwrites the existing file.
-        </Text>
+        <Text style={styles.bullet}>• Run setup again any time to propose a new config.</Text>
       </View>
     </View>
   );

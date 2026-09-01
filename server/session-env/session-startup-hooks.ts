@@ -3,19 +3,18 @@
  * `ensure()` does not wait for them by default (interactive chat / preview
  * can overlap). Autonomous dispatch passes `{ waitForStartup: true }`.
  *
- * Config lives on the Hub project (`sessionStartupCommands`). Commands run
- * via {@link SessionEnv.spawn} with cwd at the session worktree root (the same
- * workspace chat, terminal, and preview use — guest `/workspace` for
- * env-owned / container envs). The host adapter skips these hooks — there is
- * no ephemeral guest, so they would mutate the operator checkout. Status
- * is kept in-memory for the enriched prompt / spawn env and mirrored to a
- * status file **outside** the git worktree (`GUEST_RUNTIME_ROOT` in guests,
- * `$HOME/.agent-hub-runtime/…` on the host) so `git add -A` cannot pick it up.
+ * Two project fields:
+ *   - `sessionStartupCommandsAll` — every session, including host.
+ *   - `sessionStartupCommands` — VM/container/sysbox only (not host).
+ *
+ * Commands run via {@link SessionEnv.spawn} in the session worktree cwd.
+ * Status is kept in-memory for the prompt and mirrored to a file **outside**
+ * the git worktree so `git add -A` cannot pick it up.
  */
 import { randomUUID } from 'crypto';
 import { homedir } from 'os';
 import path from 'path';
-import type { SessionEnv } from './session-env.js';
+import type { SessionEnv, SessionEnvKind } from './session-env.js';
 import { GUEST_RUNTIME_ROOT } from './guest-cli-spawn.js';
 
 /** Progress-panel / progress_step label. */
@@ -83,10 +82,24 @@ export function normalizeSessionStartupCommands(value: unknown): string[] {
     .filter(Boolean);
 }
 
+/** VM-only commands (`sessionStartupCommands`). Prefer {@link resolveSessionStartupCommands}. */
 export function getProjectSessionStartupCommands(project: {
   sessionStartupCommands?: unknown;
 }): string[] {
   return normalizeSessionStartupCommands(project.sessionStartupCommands);
+}
+
+/**
+ * Commands that actually run for this adapter: all-session first, then VM-only
+ * extras when the session is not on the host adapter.
+ */
+export function resolveSessionStartupCommands(
+  project: { sessionStartupCommands?: unknown; sessionStartupCommandsAll?: unknown },
+  kind: SessionEnvKind | undefined,
+): string[] {
+  const all = normalizeSessionStartupCommands(project.sessionStartupCommandsAll);
+  const vm = kind === 'host' ? [] : normalizeSessionStartupCommands(project.sessionStartupCommands);
+  return [...all, ...vm];
 }
 
 function truncateDetail(stdout: string, stderr: string): string | null {

@@ -26,10 +26,10 @@ describe('FinalizeSettingsSection', () => {
     expect(screen.getByText(/no projects yet/i)).toBeInTheDocument();
   });
 
-  it('renders the Runner heading and the Set up Runner button', () => {
+  it('renders the Finalize CI heading and the Set up CI button', () => {
     render(<FinalizeSettingsSection projects={projects} />);
-    expect(screen.getByRole('heading', { name: 'Runner' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Set up Runner/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Finalize CI' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Set up CI/i })).toBeInTheDocument();
   });
 
   it('no longer renders the default-automation panel (moved to project settings)', () => {
@@ -46,7 +46,7 @@ describe('FinalizeSettingsSection', () => {
     const onOpenSession = vi.fn();
     render(<FinalizeSettingsSection projects={projects} onOpenSession={onOpenSession} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i } as any) as any);
+    fireEvent.click(screen.getByRole('button', { name: /Set up CI/i } as any) as any);
 
     await waitFor(() => {
       expect(api.startFinalizeWizard).toHaveBeenCalledWith('demo');
@@ -63,7 +63,7 @@ describe('FinalizeSettingsSection', () => {
     (api.startFinalizeWizard as any).mockRejectedValueOnce(new Error('boom'));
     render(<FinalizeSettingsSection projects={projects} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i } as any) as any);
+    fireEvent.click(screen.getByRole('button', { name: /Set up CI/i } as any) as any);
     await waitFor(() => {
       expect(screen.getByText('boom')).toBeInTheDocument();
     });
@@ -73,7 +73,7 @@ describe('FinalizeSettingsSection', () => {
     (api.startFinalizeWizard as any).mockResolvedValueOnce({});
     render(<FinalizeSettingsSection projects={projects} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i } as any) as any);
+    fireEvent.click(screen.getByRole('button', { name: /Set up CI/i } as any) as any);
     await waitFor(() => {
       expect(screen.getByText(/server did not return a wizard session id/i)).toBeInTheDocument();
     });
@@ -87,12 +87,12 @@ describe('FinalizeSettingsSection', () => {
     });
     render(<FinalizeSettingsSection projects={projects} onOpenSession={vi.fn()} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /Set up Runner/i } as any) as any);
+    fireEvent.click(screen.getByRole('button', { name: /Set up CI/i } as any) as any);
 
     await waitFor(() => {
-      expect(screen.getByText(/spawns a normal worktree-backed session/i)).toBeInTheDocument();
+      expect(screen.getByText(/opens a chat session that reads the repo/i)).toBeInTheDocument();
     });
-    expect(screen.getByText(/opens a PR for review/i)).toBeInTheDocument();
+    expect(screen.getByText(/then opens a PR/i)).toBeInTheDocument();
     // The setup session owns its worktree — no separate commit target UI.
     expect(screen.queryByText(/proposed commit target/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/no worktree-bearing session/i)).not.toBeInTheDocument();
@@ -106,5 +106,14 @@ describe('FinalizeSettingsSection', () => {
     // session). Make sure neither phrasing has snuck back.
     expect(screen.queryByText(/current session's worktree/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/your active session's worktree/i)).not.toBeInTheDocument();
+  });
+
+  it('does not describe the retired v1 pipeline', () => {
+    render(<FinalizeSettingsSection projects={projects} />);
+    expect(screen.queryByText(/v1 config/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no env:/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/session worktree/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/4 hours of active time/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/overwrites the existing file/i)).not.toBeInTheDocument();
   });
 });

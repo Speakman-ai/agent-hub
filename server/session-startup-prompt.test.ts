@@ -12,7 +12,8 @@ import {
 
 const tmpBase = path.join(os.tmpdir(), `session-startup-prompt-${Date.now()}`);
 
-const projectState: { sessionStartupCommands?: string[] } = {};
+const projectState: { sessionStartupCommands?: string[]; sessionStartupCommandsAll?: string[] } =
+  {};
 
 vi.mock('./db.js', () => ({
   db: {},
@@ -53,6 +54,7 @@ vi.mock('./project-model.js', () => ({
     ahw: tmpBase,
     agents: [],
     sessionStartupCommands: projectState.sessionStartupCommands,
+    sessionStartupCommandsAll: projectState.sessionStartupCommandsAll,
   }),
 }));
 
@@ -78,6 +80,7 @@ function makeProject() {
     ahw: tmpBase,
     agents: [],
     sessionStartupCommands: projectState.sessionStartupCommands,
+    sessionStartupCommandsAll: projectState.sessionStartupCommandsAll,
   };
 }
 
@@ -96,6 +99,7 @@ describe('buildEnrichedPrompt — session startup setup', () => {
     mkdirSync(tmpBase, { recursive: true });
     __resetSessionStartupStatusForTests();
     projectState.sessionStartupCommands = undefined;
+    projectState.sessionStartupCommandsAll = undefined;
   });
 
   afterEach(() => {
@@ -128,6 +132,16 @@ describe('buildEnrichedPrompt — session startup setup', () => {
       sessionEnvAdapter: 'host',
     });
     expect(prompt).not.toContain('Session Startup Setup');
+  });
+
+  it('includes the section on the host adapter when all-session commands are configured', () => {
+    projectState.sessionStartupCommandsAll = ['npm ci'];
+    const prompt = buildEnrichedPrompt(makeProject() as never, makeAgent() as never, {
+      sessionId: 'sess-1',
+      isFirstMessage: true,
+      sessionEnvAdapter: 'host',
+    });
+    expect(prompt).toContain('Session Startup Setup');
   });
 
   it('includes the section on an isolated adapter when commands are configured', () => {
