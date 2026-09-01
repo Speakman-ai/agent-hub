@@ -4766,9 +4766,12 @@ export default function App({ initialView }: any = {}) {
       );
       return;
     }
-    const session = await api.createSession(agentId, undefined, {
-      consultMode: agentId === activeAgentId ? sessionConsultMode : false,
-    });
+    // A brand-new session always starts at the project default mode. Consult is
+    // a per-session mode opted into via the session-control picker, not a sticky
+    // global — inheriting the previous session's consult flag here made
+    // "+ New Session" from a Consult session create another Consult session,
+    // overriding the project's default Finalize automation (e.g. auto-merge).
+    const session = await api.createSession(agentId, undefined);
     insertCreatedSession(agentId, session);
     // Pin the agent-change sessions-load effect to the session we just made.
     // A cross-project focus that targeted the already-active agent parks a
@@ -4860,9 +4863,9 @@ export default function App({ initialView }: any = {}) {
         return;
       }
       try {
-        const session = await api.createSession(agentId, undefined, {
-          consultMode: sessionConsultMode,
-        });
+        // New sessions start at the project default; Consult is opted into
+        // per-session (see handleNewSession), never inherited across creation.
+        const session = await api.createSession(agentId, undefined);
         // Same guard as handleNewSession: pin the agent-change load effect to
         // this new session so a stale foreign id in pendingSessionIdRef can't be
         // resolved as a cross-project deep-link and surface the wrong session.
@@ -4883,7 +4886,7 @@ export default function App({ initialView }: any = {}) {
         showToast(err?.message || 'Failed to start session', 'error', 4000);
       }
     },
-    [agents, sessionConsultMode, modelConfig, setActiveAgentId, insertCreatedSession, showToast],
+    [agents, modelConfig, setActiveAgentId, insertCreatedSession, showToast],
   );
 
   const defaultModelForEngine = useCallback(
@@ -5262,16 +5265,16 @@ export default function App({ initialView }: any = {}) {
     const targetAgentId = agentIdOverride ?? resolveTurnAgentId();
     let sessionId = sessionIdOverride ?? activeSessionIdRef.current;
     if (!sessionId) {
-      const coalesceKey = `${targetAgentId}:${sessionConsultMode ? 'consult' : 'run'}`;
+      // Implicit first-message create also starts at the project default —
+      // Consult is not inherited from the prior session (see handleNewSession).
+      const coalesceKey = targetAgentId;
       const session = await coalescePromiseByKey(implicitSessionCreateByKeyRef, coalesceKey, () =>
-        api
-          .createSession(targetAgentId, undefined, { consultMode: sessionConsultMode })
-          .then((s: any) => {
-            setSessions((prev: any) => prependSessionDeduped(prev, s));
-            setActiveSessionId(s.id);
-            activeSessionIdRef.current = s.id;
-            return s;
-          }),
+        api.createSession(targetAgentId, undefined).then((s: any) => {
+          setSessions((prev: any) => prependSessionDeduped(prev, s));
+          setActiveSessionId(s.id);
+          activeSessionIdRef.current = s.id;
+          return s;
+        }),
       );
       sessionId = session.id;
     }

@@ -1717,12 +1717,12 @@ export function AppProvider({ children }: any) {
   );
   const handleNewSession = useCallback(async () => {
     if (!activeAgentId) return;
-    // Propagate the current Ask Mode preference to the new session so a user
-    // who toggled "Ask (read-only)" before tapping `+` gets a read-only
-    // session. Matches the web client's behavior in App.jsx.
-    const session = await api.createSession(activeAgentId, undefined, {
-      consultMode: sessionConsultMode,
-    });
+    // A brand-new session always starts at the project default mode. Consult is
+    // a per-session mode opted into via the session-control picker, not a sticky
+    // global — inheriting the previous session's consult flag made tapping `+`
+    // from a Consult session create another Consult session, overriding the
+    // project's default Finalize automation. Matches the web client.
+    const session = await api.createSession(activeAgentId, undefined);
     setSessions((prev: any) =>
       prev.some((s: any) => s.id === session.id) ? prev : [session, ...prev],
     );
@@ -1735,7 +1735,7 @@ export function AppProvider({ children }: any) {
     setSessionConsultMode(isSessionConsultModeEnabled(session));
     setSessionReasoningEffort(session.reasoning_effort === 'pro' ? 'pro' : 'high');
     setMessages([]);
-  }, [activeAgentId, agents, sessionConsultMode]);
+  }, [activeAgentId, agents]);
   // Start a chat session with a SPECIFIC agent (not necessarily the active one)
   // and make it active. The caller navigates to the Chat screen. Used by the
   // Skills screen "Build a skill" button to open the project's Skill Builder
@@ -1745,9 +1745,9 @@ export function AppProvider({ children }: any) {
       if (!agentId) return;
       const agent = agents.find((a: any) => a.id === agentId);
       if (agent?.role === 'reviewer') return;
-      const session = await api.createSession(agentId, undefined, {
-        consultMode: sessionConsultMode,
-      });
+      // New sessions start at the project default; Consult is opted into
+      // per-session (see handleNewSession), never inherited across creation.
+      const session = await api.createSession(agentId, undefined);
       setActiveAgentId(agentId);
       setSessions((prev: any) =>
         prev.some((s: any) => s.id === session.id) ? prev : [session, ...prev],
@@ -1761,7 +1761,7 @@ export function AppProvider({ children }: any) {
       setSessionReasoningEffort(session.reasoning_effort === 'pro' ? 'pro' : 'high');
       setMessages([]);
     },
-    [agents, sessionConsultMode],
+    [agents],
   );
   const handleStartSkillBuilderMode = useCallback(
     async (projectId: any) => {
@@ -2078,18 +2078,18 @@ export function AppProvider({ children }: any) {
           : activeAgentId);
       let sessionId = sessionIdOverride ?? activeSessionIdRef.current;
       if (!sessionId) {
-        const coalesceKey = `${targetAgentId}:${sessionConsultMode ? 'consult' : 'run'}`;
+        // Implicit first-message create also starts at the project default —
+        // Consult is not inherited from the prior session (see handleNewSession).
+        const coalesceKey = targetAgentId;
         const session = await coalescePromiseByKey(implicitSessionCreateByKeyRef, coalesceKey, () =>
-          api
-            .createSession(targetAgentId, undefined, { consultMode: sessionConsultMode })
-            .then((s: any) => {
-              setSessions((prev: any) =>
-                prev.some((x: any) => x.id === s.id) ? prev : [s, ...prev],
-              );
-              setActiveSessionId(s.id);
-              activeSessionIdRef.current = s.id;
-              return s;
-            }),
+          api.createSession(targetAgentId, undefined).then((s: any) => {
+            setSessions((prev: any) =>
+              prev.some((x: any) => x.id === s.id) ? prev : [s, ...prev],
+            );
+            setActiveSessionId(s.id);
+            activeSessionIdRef.current = s.id;
+            return s;
+          }),
         );
         sessionId = session.id;
       }
@@ -2116,7 +2116,7 @@ export function AppProvider({ children }: any) {
         ...(interrupt ? { interrupt: true } : {}),
       });
     },
-    [activeAgentId, sessionConsultMode, send],
+    [activeAgentId, send],
   );
   const handleInterruptQueuedMessage = useCallback(
     (message: any) => {
