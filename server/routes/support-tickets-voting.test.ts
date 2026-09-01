@@ -5,7 +5,10 @@ import supertest from 'supertest';
 import createSupportTicketRoutes from './support-tickets.js';
 import { getDb, getStmts } from '../db.js';
 import { wipeTables } from '../test/destructive-db.js';
-import { recordSupportTicketInvestigation } from '../support-tickets-store.js';
+import {
+  recordSupportTicketInvestigation,
+  updateSupportTicketStatus,
+} from '../support-tickets-store.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { Project, RouteDeps } from '../types.js';
 
@@ -95,6 +98,25 @@ describe('GET /support-tickets/voting', () => {
     expect(res.body[0]).toHaveProperty('release_state');
     expect(res.body[0]).not.toHaveProperty('vote_score');
     expect(res.body[0]).not.toHaveProperty('my_vote');
+  });
+
+  it('excludes feature_request tickets that were converted to a card', async () => {
+    const app = makeApp();
+    const open = await createTicket(app, 'feature_request', 'still open');
+    const converted = await createTicket(app, 'feature_request', 'became a card');
+
+    // A converted ticket keeps whatever votes it accumulated, but should drop
+    // off the public voting feed once it is promoted to a kanban card.
+    await supertest(app)
+      .put(`/api/projects/${PROJECT.id}/support-tickets/${converted}/vote`)
+      .send({ voterKey: 'a', value: 1 })
+      .expect(200);
+    updateSupportTicketStatus(converted, 'converted');
+
+    const res = await supertest(app).get(votingPath()).expect(200);
+    const ids = res.body.map((row: { id: string }) => row.id);
+    expect(ids).toEqual([open]);
+    expect(ids).not.toContain(converted);
   });
 
   it('populates myVote for the given voterKey', async () => {

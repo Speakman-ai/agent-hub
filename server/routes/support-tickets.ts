@@ -329,9 +329,10 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
   );
 
   /**
-   * Score-ranked voting feed. Only `type=feature_request` tickets, joined
-   * with vote tallies and non-hidden comment counts. Optional `voterKey`
-   * fills `voting.myVote` for that identity; omitted/blank leaves it null.
+   * Score-ranked voting feed. Only `type=feature_request` tickets that have
+   * not been converted to a card (status !== 'converted'), joined with vote
+   * tallies and non-hidden comment counts. Optional `voterKey` fills
+   * `voting.myVote` for that identity; omitted/blank leaves it null.
    */
   router.get('/api/projects/:projectId/support-tickets/voting', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);

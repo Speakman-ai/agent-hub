@@ -6193,7 +6193,7 @@ function initDb(dataDir: string): void {
        ) c ON c.support_ticket_id = t.id
        LEFT JOIN support_ticket_votes mine
          ON mine.support_ticket_id = t.id AND mine.voter_key = ?
-       WHERE t.project_id = ? AND t.type = 'feature_request'
+       WHERE t.project_id = ? AND t.type = 'feature_request' AND t.status != 'converted'
        ORDER BY COALESCE(v.score, 0) DESC, t.created_at DESC, t.rowid DESC`,
     ),
 
