@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { Router, Request, Response } from 'express';
+import rateLimit, { type RateLimitInfo } from 'express-rate-limit';
 import type { RouteDeps, KanbanCardRow } from '../types.js';
 import {
   getSupportTicket,
@@ -168,6 +169,62 @@ async function withTicketVoteLock<T>(ticketId: string, task: () => Promise<T>): 
 }
 
 /**
+ * Per-IP rate limits for the public vote / comment write endpoints. Survey
+ * Tracker (and any future keyless surface) can drive these with an API key, so
+ * they need a per-IP flood guard.
+ *
+ * This uses `express-rate-limit` (as the auth routes do) rather than a
+ * hand-rolled `Map` bucket, on purpose. A hand-rolled map has two defects that
+ * bit the earlier iterations of this code: (1) it never evicts stale entries,
+ * so every previously-unseen public IP leaks a permanent entry — unbounded
+ * growth over the process lifetime; and (2) it invites re-implementing client
+ * IP resolution, which is easy to get wrong (trusting `X-Forwarded-For`
+ * unconditionally lets a client rotate the header to mint a fresh bucket every
+ * request). The library solves both at the root: its `MemoryStore` expires
+ * entries every `windowMs` (bounded memory), and the default key generator uses
+ * `req.ip`, which Express resolves only within the app's configured
+ * `trust proxy` boundary (`server/index.ts`). No sibling call site in this file
+ * should hand-roll a limiter.
+ */
+function rateLimitMax(envKey: string, fallback: number): number {
+  const raw = process.env[envKey];
+  if (raw === undefined) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+const RATE_WINDOW_MS = 60 * 1000;
+// Read per request so an env override (and tests) take effect without a restart.
+const voteRateMax = (): number => rateLimitMax('AGENT_HUB_VOTE_RATE_MAX', 60);
+const commentRateMax = (): number => rateLimitMax('AGENT_HUB_COMMENT_RATE_MAX', 10);
+
+/**
+ * Build a per-IP write limiter. `resource` shapes the structured 429 body;
+ * `limit` is resolved per request so env overrides apply live. Each call gets
+ * its own `MemoryStore`, so route instances (and per-test apps) stay isolated.
+ */
+function buildWriteRateLimiter(resource: string, limit: () => number) {
+  return rateLimit({
+    windowMs: RATE_WINDOW_MS,
+    limit,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    // Default keyGenerator omitted on purpose — it uses ipKeyGenerator(req.ip),
+    // which honors `trust proxy` and applies IPv6 subnet masking (see auth.ts).
+    handler: (req, res) => {
+      const info = (req as Request & { rateLimit?: RateLimitInfo }).rateLimit;
+      const resetMs = info?.resetTime?.getTime() ?? Date.now() + RATE_WINDOW_MS;
+      const retryAfterSeconds = Math.max(1, Math.ceil((resetMs - Date.now()) / 1000));
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      res.status(429).json({
+        error: `Too many ${resource} requests from this IP. Retry in ${retryAfterSeconds}s.`,
+        retryAfterSeconds,
+      });
+    },
+  });
+}
+
+/**
  * Support ticket queue routes. Tickets are persisted in their own
  * project-scoped queue (see `support_tickets`), separate from the kanban
  * board. The list endpoint returns rows ordered by severity (most severe
@@ -178,6 +235,11 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
   const uploadsDir = resolveUploadsDir(deps.config, deps.serverDir);
   const uploadStore = createUploadStore(deps.config, uploadsDir);
   const router = Router();
+
+  // Per-IP flood guards for the public write endpoints (mounted as route
+  // middleware below). One store each, created with the router.
+  const voteRateLimiter = buildWriteRateLimiter('vote', voteRateMax);
+  const commentRateLimiter = buildWriteRateLimiter('comment', commentRateMax);
 
   /**
    * Broadcast a support-ticket mutation, always stamping the project's current
@@ -925,6 +987,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
    */
   router.put(
     '/api/projects/:projectId/support-tickets/:id/vote',
+    voteRateLimiter,
     async (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
       if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -997,6 +1060,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
    */
   router.post(
     '/api/projects/:projectId/support-tickets/:id/comments',
+    commentRateLimiter,
     (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
       if (!project) return res.status(404).json({ error: 'Project not found' });

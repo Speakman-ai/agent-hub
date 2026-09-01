@@ -43470,9 +43470,10 @@ paths:
             type: string
             minLength: 1
             maxLength: 256
-            description: Opaque per-voter token. One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.
+            pattern: ^[\x21-\x7e]+$
+            description: Opaque per-voter token (printable ASCII, no whitespace, 1-256 chars). One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.
           required: false
-          description: Opaque per-voter token. One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.
+          description: Opaque per-voter token (printable ASCII, no whitespace, 1-256 chars). One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.
           name: voterKey
           in: query
       responses:
@@ -43968,7 +43969,8 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 256
-                  description: Opaque per-voter token. One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.
+                  pattern: ^[\x21-\x7e]+$
+                  description: Opaque per-voter token (printable ASCII, no whitespace, 1-256 chars). One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.
                 value:
                   anyOf:
                     - type: number

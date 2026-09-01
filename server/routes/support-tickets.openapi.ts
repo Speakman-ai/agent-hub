@@ -20,11 +20,21 @@ const RELEASE_STATES = ['fixed_pending_release', 'released_to_prod', 'customer_n
 const INVESTIGATION_ENGINES = ['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli'] as const;
 
 /** Opaque voter identity token. Callers that have a user email should pass
- *  SHA-256(server_salt + lowercased email) rather than the raw address. */
-const VoterKeySchema = z.string().trim().min(1).max(256).openapi({
-  description:
-    'Opaque per-voter token. One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.',
-});
+ *  SHA-256(server_salt + lowercased email) rather than the raw address. The
+ *  regex keeps the token opaque (hex, base64/base64url, UUIDs all pass) while
+ *  rejecting junk: whitespace and control characters can't be a stable id and
+ *  usually signal a malformed or hostile caller. No `.trim()` — the raw string
+ *  is validated as-is, so a whitespace-padded value like `" tok "` is rejected
+ *  rather than silently normalized to a colliding key. */
+export const VoterKeySchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(/^[\x21-\x7e]+$/, 'voterKey must not contain whitespace or control characters')
+  .openapi({
+    description:
+      'Opaque per-voter token (printable ASCII, no whitespace, 1-256 chars). One vote per (ticket, voterKey). Prefer SHA-256(server salt + lowercased email) when the caller knows the voter email; otherwise a stable device/session token. Never send a raw email.',
+  });
 
 export const SupportTicketVoteAggregateComponent = registerComponent(
   'SupportTicketVoteAggregate',
