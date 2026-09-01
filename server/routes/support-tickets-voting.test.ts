@@ -119,6 +119,36 @@ describe('GET /support-tickets/voting', () => {
     expect(ids).not.toContain(converted);
   });
 
+  it('excludes tickets in any terminal status (done/duplicate/wont_do/converted)', async () => {
+    const app = makeApp();
+    const open = await createTicket(app, 'feature_request', 'still open');
+    const closed = await createTicket(app, 'feature_request', 'shipped it');
+    const duplicate = await createTicket(app, 'feature_request', 'dupe request');
+    const wontDo = await createTicket(app, 'feature_request', 'not doing this');
+    const converted = await createTicket(app, 'feature_request', 'became a card');
+
+    // Terminal tickets keep whatever votes they accumulated, but every
+    // non-open status ("Done"/closed, duplicate, wont_do, converted) drops
+    // off the public voting feed and the voting API.
+    for (const id of [closed, duplicate, wontDo, converted]) {
+      await supertest(app)
+        .put(`/api/projects/${PROJECT.id}/support-tickets/${id}/vote`)
+        .send({ voterKey: 'a', value: 1 })
+        .expect(200);
+    }
+    updateSupportTicketStatus(closed, 'closed');
+    updateSupportTicketStatus(duplicate, 'duplicate');
+    updateSupportTicketStatus(wontDo, 'wont_do');
+    updateSupportTicketStatus(converted, 'converted');
+
+    const res = await supertest(app).get(votingPath()).expect(200);
+    const ids = res.body.map((row: { id: string }) => row.id);
+    expect(ids).toEqual([open]);
+    for (const id of [closed, duplicate, wontDo, converted]) {
+      expect(ids).not.toContain(id);
+    }
+  });
+
   it('populates myVote for the given voterKey', async () => {
     const app = makeApp();
     const ticket = await createTicket(app, 'feature_request', 'dark mode');

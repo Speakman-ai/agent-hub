@@ -255,8 +255,9 @@ function mapVotingSqlRow(row: VotingSqlRow): SupportTicketVotingListRow {
 /**
  * Feature-request tickets for a project, joined with vote tallies and
  * non-hidden comment counts, ordered by score DESC then created_at DESC.
- * Tickets already converted to a kanban card (status `converted`) are
- * excluded — once a request is picked up it drops off the public voting feed.
+ * Only open tickets (status `new` or `investigating`) appear in the feed.
+ * Any terminal status — `converted` (picked up as a kanban card), `closed`
+ * ("Done"), `duplicate`, or `wont_do` — drops off the public voting feed.
  * `myVote` is filled when `voterKey` is supplied; otherwise it is null.
  */
 export function listSupportTicketsForVoting(
