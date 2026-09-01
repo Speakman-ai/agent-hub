@@ -34,4 +34,28 @@ function sharedJsFallbackSpecifier(moduleName, originModulePath, sharedRoot) {
   return moduleName.slice(0, -'.js'.length);
 }
 
-module.exports = { sharedJsFallbackSpecifier };
+/**
+ * Prepend the mobile app's own `node_modules` to Metro's resolver roots.
+ *
+ * The app imports shared modules from `<repoRoot>/shared`, some of which
+ * `import 'react'`. On EAS only `mobile/` gets `npm install`, so Metro's
+ * hierarchical lookup up the `shared/` tree finds no `react` and the eager
+ * "Bundle JavaScript" phase fails with "Unable to resolve module react from
+ * shared/...". Adding the app dir as an explicit resolver root makes these
+ * repo-root imports fall back to the copy installed alongside the Expo app.
+ *
+ * This AUGMENTS hierarchical lookup — it never replaces the roots Metro/Expo
+ * already configured, so `expo`'s nested transitive deps still resolve. The
+ * app dir is placed first and de-duplicated so it is never listed twice.
+ *
+ * @param existingPaths the resolver's current `nodeModulesPaths` (may be
+ *   undefined when Expo leaves it unset)
+ * @param appNodeModules absolute path to `mobile/node_modules`
+ * @returns the new resolver-roots array with `appNodeModules` first
+ */
+function withAppNodeModulesResolverPaths(existingPaths, appNodeModules) {
+  const existing = Array.isArray(existingPaths) ? existingPaths : [];
+  return [appNodeModules, ...existing.filter((p) => p !== appNodeModules)];
+}
+
+module.exports = { sharedJsFallbackSpecifier, withAppNodeModulesResolverPaths };
