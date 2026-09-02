@@ -177,11 +177,27 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // GHSA-6g55-p6wh-862q (8.5.12) + GHSA-r28c-9q8g-f849 (8.5.18): sourceMappingURL
     // path traversal / arbitrary .map file disclosure.
     { pkg: 'postcss', min: '8.5.18', advisory: 'GHSA-r28c-9q8g-f849' },
-    // GHSA-4c8g-83qw-93j6 (3.1.3) + GHSA-v2hh-gcrm-f6hx (3.1.4) +
-    // GHSA-7p8r-x3mc-p8w7 (3.1.5): host confusion, most recently via a
-    // backslash authority introducer. Every copy sits under `ajv`'s
+    // Host-confusion / SSRF in the URI parser, patched line by line: 3.1.3
+    // (GHSA-4c8g-83qw-93j6), 3.1.4 (GHSA-v2hh-gcrm-f6hx), 3.1.5
+    // (GHSA-7p8r-x3mc-p8w7, backslash authority introducer), and four more all
+    // first patched on 3.1.6:
+    //   GHSA-f65p-4m7j-42xc  SSRF via malformed IPv6 normalization
+    //   GHSA-fph4-wmhf-6fwf  SSRF via repeated hostname percent-decoding
+    //   GHSA-jqff-g426-hqxp  host confusion via percent-encoded scheme normalization
+    //   GHSA-5jgf-p345-68v8  host confusion via skipped IDN canonicalization on
+    //                        scheme-relative references
+    // The 3.1.6 floor subsumes every earlier fix. Every copy sits under `ajv`'s
     // `fast-uri: ^3.0.1`, so each patch re-resolves in range with no override.
-    { pkg: 'fast-uri', min: '3.1.5', advisory: 'GHSA-7p8r-x3mc-p8w7' },
+    {
+      pkg: 'fast-uri',
+      min: '3.1.6',
+      advisory: [
+        'GHSA-f65p-4m7j-42xc',
+        'GHSA-fph4-wmhf-6fwf',
+        'GHSA-jqff-g426-hqxp',
+        'GHSA-5jgf-p345-68v8',
+      ],
+    },
     // GHSA-v245-v573-v5vm: quadratic-complexity DoS in the `mailto:` validator.
     { pkg: 'linkify-it', min: '5.0.2', advisory: 'GHSA-v245-v573-v5vm' },
     // GHSA-7g7r-gx96-252g: uncontrolled AppImage search path.
@@ -221,9 +237,19 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // on the 11.x line, so mobile's xcode@3 (uuid ^7) and server's
     // @langchain/core (uuid ^10) both need the `uuid` override to reach it.
     { pkg: 'uuid', min: '11.1.1', advisory: 'GHSA-w5hq-g745-h8pq' },
-    // GHSA-q8mj-m7cp-5q26: qs.stringify TypeError crash on null entries in
-    // comma-format arrays. Reached in-range once express@4 moved to `qs ~6.15.1`.
-    { pkg: 'qs', min: '6.15.2', advisory: 'GHSA-q8mj-m7cp-5q26' },
+    // GHSA-q8mj-m7cp-5q26 (6.15.2) qs.stringify TypeError crash on null entries
+    // in comma-format arrays, then two more first patched on 6.16.0:
+    //   GHSA-4mjr-xmp4-gh2g  DoS via an attacker-controlled isBuffer
+    //   GHSA-x5fp-wj9c-mxmx  array-limit bypass via bracket-key comma parsing
+    // The 6.16.0 floor subsumes 6.15.2. Root's copy sits under superagent's
+    // `^6.14.1` and re-resolves in range, but server's express@4 / body-parser
+    // pin `qs ~6.15.1` (`< 6.16.0`), so 6.16.0 is reachable there only through
+    // the server `qs` override asserted in OVERRIDE_FLOORS below.
+    {
+      pkg: 'qs',
+      min: '6.16.0',
+      advisory: ['GHSA-4mjr-xmp4-gh2g', 'GHSA-x5fp-wj9c-mxmx'],
+    },
     // GHSA-f38q-mgvj-vph7 (7.6.3) property shadowing + GHSA-j3f2-48v5-ccww
     // (7.6.5) infinite loop in .proto option parsing.
     { pkg: 'protobufjs', min: '7.6.5', advisory: 'GHSA-j3f2-48v5-ccww' },
@@ -349,6 +375,27 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // on mobile, and 3.3.17 left it returning a one-character id for size 0.
     // That is a correctness bug, not the DoS, so it does not raise the floor.
     { pkg: 'nanoid', min: '3.3.17', advisory: 'GHSA-2v37-7h3g-55p8', line: '3.x' },
+
+    // --- 20-finding audit (fast-uri / qs / @humanfs/node / @xmldom/xmldom) ---
+    // (fast-uri and qs floors were raised above rather than added here.)
+
+    // GHSA-p498-v437-472g: humanfs' recursive copy follows symlinked files and
+    // reads data from outside the source tree. Root-only: it arrives solely via
+    // eslint's `@humanfs/node: ^0.16.6`, a devDependency that never ships, and
+    // 0.16.8 re-resolves in that range with no override.
+    { pkg: '@humanfs/node', min: '0.16.8', advisory: 'GHSA-p498-v437-472g', only: ['root'] },
+    // GHSA-6gmq-8vp8-gcm6: XML fragment injection via an invalid
+    // EntityReference.nodeName during requireWellFormed serialization. Present
+    // in root (via `plist`) and mobile (via `plist` / `@expo/plist`), both
+    // declaring `@xmldom/xmldom: ^0.8.8`, so 0.8.15 re-resolves in range with no
+    // override. 0.8.15 is the 0.8.x-line patch; the 0.9.x line patches at 0.9.12
+    // but neither consumer's range admits 0.9.x.
+    {
+      pkg: '@xmldom/xmldom',
+      min: '0.8.15',
+      advisory: 'GHSA-6gmq-8vp8-gcm6',
+      only: ['root', 'mobile'],
+    },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
@@ -925,6 +972,16 @@ describe('override-backed advisory floors', () => {
       // @modelcontextprotocol/sdk declares `^1.19.9` and has no release that
       // accepts 2.x, so without the override npm resolves a vulnerable 1.x.
       parentRange: '^1.19.9',
+    },
+    {
+      manifest: 'server',
+      pkg: 'qs',
+      min: '6.16.0',
+      advisory: 'GHSA-x5fp-wj9c-mxmx',
+      // express@4 and its body-parser pin `qs ~6.15.1` (`< 6.16.0`), so without
+      // the override npm re-resolves the top-level copy back to 6.15.x, inside
+      // the GHSA-4mjr-xmp4-gh2g / GHSA-x5fp-wj9c-mxmx range.
+      parentRange: '~6.15.1',
     },
   ];
 
