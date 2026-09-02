@@ -66,13 +66,19 @@ describe('mobile engine picker constants', () => {
     expect(opus5.short).toBe('Opus');
     expect(ENGINE_DEFAULT_MODELS['claude-code']).toBe('claude-opus-5');
   });
-  it('still exposes claude-fable-5 for claude-code with a Fable 5 label', () => {
+  it('exposes claude-fable-5-1 for claude-code with a Fable 5.1 label and drops retired claude-fable-5', () => {
     const models = ENGINE_MODELS['claude-code'];
     const ids = models.map((m: any) => m.id);
-    expect(ids).toContain('claude-fable-5');
-    const fable = models.find((m: any) => m.id === 'claude-fable-5');
-    expect(fable.label).toBe('Fable 5');
+    expect(ids).toContain('claude-fable-5-1');
+    expect(ids).not.toContain('claude-fable-5');
+    const fable = models.find((m: any) => m.id === 'claude-fable-5-1');
+    expect(fable.label).toBe('Fable 5.1');
     expect(fable.short).toBe('Fable');
+  });
+  it('renders a clean historical label for the retired claude-fable-5', () => {
+    const out = modelDisplay('claude-fable-5');
+    expect(out.label).toBe('Fable 5');
+    expect(out.short).toBe('Fable');
   });
   it('exposes claude-sonnet-5 as the selectable Sonnet and drops retired claude-sonnet-4-6', () => {
     // Regression: claude-sonnet-4-6 is retired from the server allowlist. It

@@ -432,12 +432,14 @@ describe('config.ts — claude-code model defaults', () => {
     expect(cfg.defaultModel).toBe('claude-opus-5');
   });
 
-  it('still offers claude-fable-5 as a selectable claude-code model', async () => {
-    // Claude Fable 5 (API id `claude-fable-5`, released 2026-06-09) remains a
-    // selectable Mythos-class option below Opus 5.
+  it('offers claude-fable-5-1 as a selectable claude-code model and retires claude-fable-5', async () => {
+    // Claude Fable 5.1 (API id `claude-fable-5-1`, released 2026-09-01, Status:
+    // Active per platform.claude.com/docs/en/models/fable-5-1/overview) is the
+    // selectable Mythos-class option below Opus 5, superseding claude-fable-5.
     const cfg = await importDefaults();
-    expect(cfg.engineValidModels['claude-code']).toContain('claude-fable-5');
-    expect(cfg.allValidModels).toContain('claude-fable-5');
+    expect(cfg.engineValidModels['claude-code']).toContain('claude-fable-5-1');
+    expect(cfg.allValidModels).toContain('claude-fable-5-1');
+    expect(cfg.engineValidModels['claude-code']).not.toContain('claude-fable-5');
   });
 
   it('keeps the claude-code default in its valid model list', async () => {

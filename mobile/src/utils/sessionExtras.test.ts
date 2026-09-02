@@ -109,7 +109,7 @@ describe('formatInjectedBytes', () => {
 describe('normalizeSessionSummary', () => {
   it('flattens a full payload', () => {
     const data = {
-      session: { id: 's1', name: 'Fix bug', engine: 'claude-code', model: 'claude-fable-5' },
+      session: { id: 's1', name: 'Fix bug', engine: 'claude-code', model: 'claude-fable-5-1' },
       projectId: 'proj-1',
       linkedCard: {
         id: 'c1',
@@ -133,7 +133,7 @@ describe('normalizeSessionSummary', () => {
     const out = normalizeSessionSummary(data);
     expect(out.sessionName).toBe('Fix bug');
     expect(out.engine).toBe('claude-code');
-    expect(out.model).toBe('claude-fable-5');
+    expect(out.model).toBe('claude-fable-5-1');
     expect(out.linkedPrUrl).toBe('https://github.com/o/r/pull/42');
     expect(out.prNumber).toBe('42');
     expect(out.prBadge.key).toBe('approved');

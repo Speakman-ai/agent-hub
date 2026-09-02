@@ -14,7 +14,7 @@ export const ENGINE_OPTIONS = [
 export const ENGINE_MODELS: Record<string, any> = {
   'claude-code': [
     { id: 'claude-opus-5', label: 'Opus 5', short: 'Opus' },
-    { id: 'claude-fable-5', label: 'Fable 5', short: 'Fable' },
+    { id: 'claude-fable-5-1', label: 'Fable 5.1', short: 'Fable' },
     { id: 'claude-opus-4-8', label: 'Opus 4.8', short: 'Opus 4.8' },
     { id: 'claude-opus-4-7', label: 'Opus 4.7', short: 'Opus 4.7' },
     { id: 'claude-opus-4-6', label: 'Opus 4.6', short: 'Opus 4.6' },
@@ -60,6 +60,8 @@ export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
 // (selectable) in client/src/components/TopBar.tsx.
 export const HISTORICAL_MODEL_LABELS: Record<string, { label: string; short: string }> = {
   'claude-sonnet-4-6': { label: 'Sonnet 4.6', short: 'Sonnet 4.6' },
+  // Superseded by claude-fable-5-1 (Fable 5.1); label retained for history.
+  'claude-fable-5': { label: 'Fable 5', short: 'Fable' },
   // Retired from selection (rejected under ChatGPT OAuth).
   'gpt-5.3-codex': { label: 'GPT-5.3 Codex', short: '5.3 Codex' },
   'gpt-5.6': { label: 'GPT-5.6', short: '5.6' },

@@ -25,7 +25,8 @@ describe('systemBannerModel', () => {
     expect(modelPrimaryLabel('claude-opus-4-8')).toBe('Opus 4.8');
   });
 
-  it('maps claude-fable-5 to Fable 5', () => {
+  it('maps claude-fable-5-1 to Fable 5.1 and keeps claude-fable-5 as historical', () => {
+    expect(modelPrimaryLabel('claude-fable-5-1')).toBe('Fable 5.1');
     expect(modelPrimaryLabel('claude-fable-5')).toBe('Fable 5');
   });
 

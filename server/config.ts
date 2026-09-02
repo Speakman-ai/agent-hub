@@ -221,12 +221,16 @@ if (!existsSync(DEFAULT_PROJECTS_DIR) && existsSync(LEGACY_PROJECTS_DIR)) {
 const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // claude-opus-5: Anthropic's flagship Opus model (API id `claude-opus-5`).
   // Listed first as the most capable Claude Code option and the claude-code
-  // default. claude-fable-5 remains the Mythos-class option below it. Keep in
-  // sync with client TopBar.jsx MODEL_LABELS, shared systemBannerModel.js
+  // default. claude-fable-5-1 (Fable 5.1) is the Mythos-class option below it,
+  // replacing claude-fable-5 from selection; the old id's label is retained for
+  // historical sessions. API id and Active status verified against the official
+  // Claude Platform docs (released 2026-09-01, Status: Active/latest):
+  // https://platform.claude.com/docs/en/models/fable-5-1/overview
+  // Keep in sync with client TopBar.jsx MODEL_LABELS, shared systemBannerModel.js
   // MODEL_KNOWN_LABELS, and mobile engineOptions.js.
   'claude-code': [
     'claude-opus-5',
-    'claude-fable-5',
+    'claude-fable-5-1',
     'claude-opus-4-8',
     'claude-opus-4-7',
     'claude-opus-4-6',

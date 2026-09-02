@@ -28,6 +28,9 @@ const ENGINE_OPTIONS = [
 
 const MODEL_LABELS = {
   'claude-opus-5': { label: 'Opus 5', short: 'Opus' },
+  'claude-fable-5-1': { label: 'Fable 5.1', short: 'Fable' },
+  // Retired from selection (superseded by Fable 5.1) but retained so historical
+  // sessions/crons still render a clean label instead of a title-cased id.
   'claude-fable-5': { label: 'Fable 5', short: 'Fable' },
   'claude-opus-4-8': { label: 'Opus 4.8', short: 'Opus 4.8' },
   'claude-opus-4-7': { label: 'Opus 4.7', short: 'Opus 4.7' },
@@ -74,7 +77,7 @@ function fallbackModelsForEngine(engine: any) {
     return ['grok-4.6', 'grok-4.5', 'grok-build', 'grok-composer-2.5-fast'];
   return [
     'claude-opus-5',
-    'claude-fable-5',
+    'claude-fable-5-1',
     'claude-opus-4-8',
     'claude-opus-4-7',
     'claude-opus-4-6',
