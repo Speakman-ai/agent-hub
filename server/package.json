@@ -1,6 +1,6 @@
 {
   "name": "agent-hub-server",
-  "version": "2.31.117",
+  "version": "2.31.118",
   "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "type": "module",
