@@ -10,6 +10,25 @@ const composePath = path.join(
   'docker-compose.yml',
 );
 
+const guestDockerfilePath = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'session-env',
+  'firecracker',
+  'build',
+  'Dockerfile.guest',
+);
+
+// The exact claude-code CLI version both images must pin. Bump here (and in both
+// Dockerfiles) together — the tests assert all three agree.
+const EXPECTED_CLAUDE_CODE_PIN = '2.1.258';
+
+// Every `@anthropic-ai/claude-code[@spec]` occurrence in a Dockerfile, returning
+// the bare version each carries (`undefined` for an unpinned install).
+function claudeCodePins(dockerfile: string): Array<string | undefined> {
+  const specs = [...dockerfile.matchAll(/@anthropic-ai\/claude-code(?:@(\S+))?/g)];
+  return specs.map(([, version]) => version);
+}
+
 describe('server/Dockerfile', () => {
   it('avoids recursive chown over full /app (Docker Desktop perf regression)', () => {
     const dockerfile = readFileSync(dockerfilePath, 'utf8');
@@ -168,6 +187,49 @@ describe('server/Dockerfile', () => {
     for (const [engine, marker] of Object.entries(engineInstallMarkers)) {
       expect(runtimeStage, `expected runtime stage to install the ${engine} CLI`).toContain(marker);
     }
+  });
+
+  it('pins the claude-code CLI to an exact version (not a bare/unpinned install)', () => {
+    // Regression: an unpinned `npm install -g @anthropic-ai/claude-code` is
+    // frozen by Docker layer caching at whatever was latest when the layer
+    // first built, and never refreshes. Prod stranded on 2.1.243, which newer
+    // models reject ("version 2.1.251 or newer is required"). The install MUST
+    // pin an exact version so bumping the literal busts the cache and the floor
+    // is auditable. Update this expectation when you bump the pin.
+    const pins = claudeCodePins(readFileSync(dockerfilePath, 'utf8'));
+    expect(pins.length).toBeGreaterThan(0);
+    for (const pin of pins) {
+      expect(pin, 'claude-code install must pin an exact @x.y.z version').toBe(
+        EXPECTED_CLAUDE_CODE_PIN,
+      );
+    }
+  });
+});
+
+describe('firecracker guest Dockerfile', () => {
+  it('pins claude-code to the exact same version as server/Dockerfile (lockstep)', () => {
+    // The guest image mirrors the server runtime CLIs. It's not enough that the
+    // guest merely pins *some* exact version — a drifted pin would give the two
+    // images different CLIs. Assert both files agree, and that they agree on the
+    // ticket's expected value, so a bump to only one file fails here.
+    const serverPins = claudeCodePins(readFileSync(dockerfilePath, 'utf8'));
+    const guestPins = claudeCodePins(readFileSync(guestDockerfilePath, 'utf8'));
+
+    expect(serverPins.length).toBeGreaterThan(0);
+    expect(guestPins.length).toBeGreaterThan(0);
+
+    // Every pin across both files is the same exact version.
+    const allPins = [...serverPins, ...guestPins];
+    for (const pin of allPins) {
+      expect(pin, 'claude-code install must pin an exact @x.y.z version').toMatch(
+        /^\d+\.\d+\.\d+$/,
+      );
+    }
+    const unique = [...new Set(allPins)];
+    expect(
+      unique,
+      'server and guest Dockerfiles must pin the identical claude-code version',
+    ).toEqual([EXPECTED_CLAUDE_CODE_PIN]);
   });
 });
 

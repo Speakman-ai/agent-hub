@@ -97,7 +97,9 @@ RUN systemctl enable docker.service 2>/dev/null || true
 
 # Agent engine CLIs — chat turns under env-owned Firecracker run *inside* the
 # guest, so these must exist on PATH here (mirrors server/Dockerfile runtime).
-RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex \
+# Keep claude-code pinned in lockstep with server/Dockerfile — an unpinned
+# install here rots the same way (Docker layer cache freezes the version).
+RUN npm install -g @anthropic-ai/claude-code@2.1.258 @google/gemini-cli @openai/codex \
     && command -v claude \
     && command -v gemini \
     && command -v codex
