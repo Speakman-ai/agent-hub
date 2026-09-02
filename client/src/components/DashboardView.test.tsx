@@ -1130,7 +1130,7 @@ describe('DashboardView — Support issues panel', () => {
     expect(rows[0]).toHaveTextContent('new');
   });
 
-  it('deep-links a row into that project support queue', async () => {
+  it('deep-links a row into that project support queue AND focuses the clicked ticket', async () => {
     const onOpenProjectSupport = vi.fn();
     render(<DashboardView orgId="org-1" onOpenProjectSupport={onOpenProjectSupport} />);
 
@@ -1138,8 +1138,13 @@ describe('DashboardView — Support issues panel', () => {
       expect(screen.getAllByTestId('support-issue-row')).toHaveLength(3);
     });
 
+    // Row 0 is the critical ticket (tkt-critical) in proj-dash after the
+    // severity sort. The panel must forward BOTH the project id and the ticket
+    // id so the support page opens that ticket's detail on arrival — a row that
+    // only passes the project id lands the user on the list ("the board")
+    // without opening the ticket, the reported bug.
     fireEvent.click(screen.getAllByTestId('support-issue-row' as any)[0]);
-    expect(onOpenProjectSupport!).toHaveBeenCalledWith('proj-dash');
+    expect(onOpenProjectSupport!).toHaveBeenCalledWith('proj-dash', 'tkt-critical');
   });
 
   it('fetches only new, unread tickets (the needs-triage inbox)', async () => {

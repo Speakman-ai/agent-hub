@@ -6942,9 +6942,9 @@ export default function App({ initialView }: any = {}) {
                       onOpenExternalUrl={(url: any) => {
                         window.open(url, '_blank', 'noopener,noreferrer');
                       }}
-                      onOpenProjectSupport={(projectId: any) => {
+                      onOpenProjectSupport={(projectId: any, ticketId: any = null) => {
                         setSupportProjectId(projectId);
-                        setSupportTicketId(null);
+                        setSupportTicketId(ticketId);
                         setCurrentView('support');
                         setSidebarOpen(false);
                       }}

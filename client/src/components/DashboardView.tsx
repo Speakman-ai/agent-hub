@@ -60,7 +60,8 @@ import {
  * @param {(projectId: string) => void} [onOpenKanban] — open project board
  * @param {(projectId: string) => void} [onOpenPulls] — open project PR list
  * @param {(url: string) => void} [onOpenExternalUrl] — open GitHub etc. (Electron uses shell)
- * @param {(projectId: string) => void} [onOpenProjectSupport] — open a project's support queue
+ * @param {(projectId: string, ticketId?: string | null) => void} [onOpenProjectSupport] — open a
+ *   project's support queue, optionally focusing a specific ticket's detail on arrival
  */
 /** How often the dashboard silently re-polls while the tab is foregrounded. */
 const DASHBOARD_REFRESH_MS = 5000;
@@ -755,13 +756,14 @@ function sortSupportBySeverity(list: any) {
  * (critical → low) via `GET /support-tickets?status=new&unread=true`. This is a
  * "needs triage" inbox: once an operator opens a ticket (stamping `read_at`) or
  * moves it past `new`, it drops off the dashboard. Each row deep-links into
- * that project's support queue through `onOpenProjectSupport`.
+ * that project's support queue AND focuses the clicked ticket's detail through
+ * `onOpenProjectSupport(projectId, ticketId)`.
  *
  * This is the single consolidated support surface — it replaces the former
  * top-level "Support Issues" sidebar entry. Per-project Support links (with
  * unread badges) stay in the sidebar for drill-in.
  *
- * @param {(projectId: string) => void} [onOpenProjectSupport]
+ * @param {(projectId: string, ticketId?: string | null) => void} [onOpenProjectSupport]
  */
 function SupportIssuesPanel({ onOpenProjectSupport, onViewAll }: any) {
   const [tickets, setTickets] = useState<any[]>([]);
@@ -891,7 +893,7 @@ function SupportIssueRow({ ticket, onOpenProjectSupport }: any) {
         type="button"
         data-testid="support-issue-row"
         className={rowClass}
-        onClick={() => onOpenProjectSupport(String(ticket.project_id))}
+        onClick={() => onOpenProjectSupport(String(ticket.project_id), ticket.id)}
       >
         {inner}
       </button>
