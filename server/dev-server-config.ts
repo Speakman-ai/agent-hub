@@ -117,6 +117,30 @@ export const devServerConfigSchema = z
       .min(1, 'startCommand must be a non-empty string')
       .max(MAX_START_COMMAND_LEN)
       .default(DEV_SERVER_DEFAULT_START_COMMAND),
+    /**
+     * Optional teardown command run via `sh -c` from `cwd` whenever the Hub
+     * tears the dev server down — manual stop, idle reap, restart, and a
+     * failed start's rollback all route through it.
+     *
+     * It exists for one specific leak: when `startCommand` is
+     * `docker compose up`, the Hub only tracks the compose **CLI** process,
+     * but the containers it starts are children of the Docker daemon, not of
+     * that CLI. Signalling the CLI (SIGTERM/SIGKILL on stop or restart, or a
+     * pid that is already gone after a Hub restart) leaves the containers
+     * running, and they keep holding whatever host port the compose file
+     * published — so the next session's `docker compose up` dies with
+     * "Bind for 0.0.0.0:<port> failed: port is already allocated". A
+     * `stopCommand` of `docker compose down --remove-orphans` reliably removes
+     * the daemon-owned containers on every teardown path. Runs best-effort
+     * (a non-zero exit or timeout is logged, never blocks the teardown) with
+     * the same env + resolved secrets `startCommand` gets.
+     */
+    stopCommand: z
+      .string()
+      .trim()
+      .min(1, 'stopCommand must be a non-empty string')
+      .max(MAX_START_COMMAND_LEN)
+      .optional(),
     /** Non-secret env injected at spawn. Secrets go in `secretKeys`. */
     env: z.record(envKeySchema, z.string().max(MAX_ENV_VALUE_LEN)).default({}),
     /**

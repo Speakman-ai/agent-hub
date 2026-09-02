@@ -1581,3 +1581,169 @@ describe('DevServerRuntime react/snapshot surface', () => {
     expect(h.runtime.serverReachableUrlForPort(4500)).toBe('http://127.0.0.1:4500');
   });
 });
+
+describe('DevServerRuntime stopCommand teardown hook', () => {
+  function stopProject(): Project {
+    return makeProject({
+      startCommand: 'docker compose up',
+      stopCommand: 'docker compose down --remove-orphans',
+      cwd: 'frontend',
+      secretKeys: ['TOKEN'],
+    });
+  }
+
+  it('runs the stopCommand in the session env, with cwd + secrets + session id, on stop', async () => {
+    // The recurring bug: signalling the compose CLI leaves the daemon-owned
+    // containers holding their host port. The teardown command is what removes
+    // them, so it must actually run inside the same env the start used.
+    const shared = new FakeSessionEnv('session-shared', (p) => p);
+    const project = stopProject();
+    const h = makeHarness({
+      resolveSharedEnv: async () => shared,
+      getProject: (id) => (id === project.id ? project : null),
+    });
+
+    const started = await h.runtime.start('session-shared', project, '/worktree');
+    // The next spawn is the stop command; make it exit so teardown completes
+    // (a real `docker compose down` returns; the fake process would hang).
+    shared.preExitNextSpawn = { code: 0, signal: null };
+    await h.runtime.stop(started.devServerId);
+
+    // start spawn first, then the stop command — the hook runs before the
+    // process/env is released.
+    expect(shared.spawnCalls.map((c) => c.command)).toEqual([
+      'docker compose up',
+      'docker compose down --remove-orphans',
+    ]);
+    const stopCall = shared.spawnCalls[1];
+    expect(stopCall.opts.cwd).toBe('frontend');
+    expect(stopCall.opts.env).toMatchObject({
+      TOKEN: 'secret-value',
+      AGENT_HUB_SESSION_ID: 'session-shared',
+    });
+  });
+
+  it('spawns nothing extra when no stopCommand is configured', async () => {
+    const shared = new FakeSessionEnv('session-shared', (p) => p);
+    const project = makeProject({ startCommand: 'docker compose up' });
+    const h = makeHarness({
+      resolveSharedEnv: async () => shared,
+      getProject: () => project,
+    });
+
+    const started = await h.runtime.start('session-shared', project, '/worktree');
+    await h.runtime.stop(started.devServerId);
+
+    expect(shared.spawnCalls.map((c) => c.command)).toEqual(['docker compose up']);
+  });
+
+  it('runs the stopCommand when a restart replaces the running group', async () => {
+    // A restart is a full stop+start: `_start` stops the existing group before
+    // starting the new one, so the replaced stack must be `down`ed too or the
+    // old containers keep squatting the port the restart needs.
+    const shared = new FakeSessionEnv('session-shared', (p) => p);
+    const project = stopProject();
+    const h = makeHarness({
+      resolveSharedEnv: async () => shared,
+      getProject: (id) => (id === project.id ? project : null),
+    });
+
+    await h.runtime.start('session-shared', project, '/worktree');
+    // The stop of the outgoing group is the next spawn; make it exit so the
+    // restart's own start can proceed.
+    shared.preExitNextSpawn = { code: 0, signal: null };
+    await h.runtime.restart('session-shared', project, '/worktree');
+
+    expect(shared.spawnCalls.map((c) => c.command)).toEqual([
+      'docker compose up',
+      'docker compose down --remove-orphans',
+      'docker compose up',
+    ]);
+  });
+
+  it('runs the stopCommand when a failed start rolls back', async () => {
+    // A start that fails after the env is live (here: mountWorktree throws)
+    // rolls back — and a buildCommand can have launched daemon-owned resources
+    // by then, so the rollback must `down` them too. Assert the hook fires on
+    // that path, before the env is released.
+    const shared = new FakeSessionEnv('session-shared', (p) => p);
+    shared.mountWorktree = async () => {
+      throw new Error('mount failed');
+    };
+    const project = stopProject();
+    const h = makeHarness({
+      resolveSharedEnv: async () => shared,
+      getProject: (id) => (id === project.id ? project : null),
+    });
+
+    // The only spawn on this path is the stop command; make it exit.
+    shared.preExitNextSpawn = { code: 0, signal: null };
+    await expect(h.runtime.start('session-shared', project, '/worktree')).rejects.toThrow(
+      'mount failed',
+    );
+
+    expect(shared.spawnCalls.map((c) => c.command)).toEqual([
+      'docker compose down --remove-orphans',
+    ]);
+    // The rollback still dropped the group row.
+    expect(h.runtime.getActive('session-shared')).toBeNull();
+  });
+
+  it('runs the stopCommand when the idle reaper tears the group down', async () => {
+    // Idle reap is the exact path that leaks dead-session compose stacks, so it
+    // must route through the same teardown as a manual stop.
+    const shared = new FakeSessionEnv('session-shared', (p) => p);
+    const project = makeProject({
+      startCommand: 'docker compose up',
+      stopCommand: 'docker compose down --remove-orphans',
+      cwd: 'frontend',
+      idleTTL: 60,
+    });
+    const h = makeHarness({
+      resolveSharedEnv: async () => shared,
+      getProject: (id) => (id === project.id ? project : null),
+    });
+
+    await h.runtime.start('session-shared', project, '/worktree');
+    h.db
+      .prepare(
+        `UPDATE worktree_preview_groups SET last_active_at = datetime('now', '-120 seconds')`,
+      )
+      .run();
+    shared.preExitNextSpawn = { code: 0, signal: null };
+    const result = await h.runtime.reap(Date.now());
+
+    expect(result.reaped).toBe(1);
+    expect(shared.spawnCalls.map((c) => c.command)).toContain(
+      'docker compose down --remove-orphans',
+    );
+  });
+
+  it('resolves the session env to run the stopCommand for a restart-orphaned group', async () => {
+    // After a Hub restart the group row survives with no in-memory env. This is
+    // the "27h-old container" case: without re-resolving the env, the compose
+    // stack is never `down`ed and squats its port indefinitely.
+    const shared = new FakeSessionEnv('session-orphan', (p) => p);
+    const project = stopProject();
+    const h = makeHarness({
+      resolveSharedEnv: async () => shared,
+      getProject: (id) => (id === project.id ? project : null),
+      kill: () => {},
+    });
+
+    const started = await h.runtime.start('session-orphan', project, '/worktree');
+    h.db
+      .prepare(`UPDATE worktree_preview_processes SET pid = 4242 WHERE group_id = ?`)
+      .run(started.devServerId);
+    // Drop the in-memory record so stop() takes the restart-orphan path.
+    (h.runtime as unknown as { active: Map<string, unknown> }).active.clear();
+
+    shared.preExitNextSpawn = { code: 0, signal: null };
+    await h.runtime.stop(started.devServerId);
+
+    expect(shared.spawnCalls.map((c) => c.command)).toContain(
+      'docker compose down --remove-orphans',
+    );
+    expect(h.runtime.getById(started.devServerId)).toBeNull();
+  });
+});

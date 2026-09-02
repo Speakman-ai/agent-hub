@@ -98,7 +98,7 @@ const DevServerSetupApplyRequest = registerComponent(
     .object({
       devServer: z.record(z.string(), z.unknown()).openapi({
         description:
-          'The authored `prEnv.devServer` block (startCommand, env, secretKeys, portMap, healthPath, readyTimeoutMs, cwd, aptPackages). Validated by parseDevServerConfig; the first `prEnv.devServer.<path>` issue is returned as a 400.',
+          'The authored `prEnv.devServer` block (buildCommand, startCommand, stopCommand, env, secretKeys, portMap, healthPath, readyTimeoutMs, cwd, aptPackages). Validated by parseDevServerConfig; the first `prEnv.devServer.<path>` issue is returned as a 400.',
       }),
       secrets: z
         .object({

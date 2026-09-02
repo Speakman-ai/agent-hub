@@ -5179,7 +5179,7 @@ components:
           type: object
           additionalProperties:
             nullable: true
-          description: The authored `prEnv.devServer` block (startCommand, env, secretKeys, portMap, healthPath, readyTimeoutMs, cwd, aptPackages). Validated by parseDevServerConfig; the first `prEnv.devServer.<path>` issue is returned as a 400.
+          description: The authored `prEnv.devServer` block (buildCommand, startCommand, stopCommand, env, secretKeys, portMap, healthPath, readyTimeoutMs, cwd, aptPackages). Validated by parseDevServerConfig; the first `prEnv.devServer.<path>` issue is returned as a 400.
         secrets:
           type: object
           properties:

@@ -69,6 +69,12 @@ import {
   SYSTEM_DEPS_PROCESS_NAME,
 } from './dev-server-system-deps.js';
 import { runDevServerBuild, describeBuildExit, BUILD_PROCESS_NAME } from './dev-server-build.js';
+import {
+  runDevServerStopCommand,
+  describeStopExit,
+  DEFAULT_STOP_COMMAND_TIMEOUT_MS,
+  STOP_PROCESS_NAME,
+} from './dev-server-stop-command.js';
 import { withBootDiagnostic } from './preview-boot-diagnostics.js';
 import type { PreviewPortEntry } from './preview-runtime-lookup.js';
 
@@ -205,6 +211,9 @@ export interface DevServerRuntimeConfig {
   defaultIdleTtlSeconds?: number;
   /** Bound on waiting for a wedged prior start of the same session. */
   sessionLockTimeoutMs?: number;
+  /** Max ms a `devServer.stopCommand` may run on teardown before it is
+   *  killed. Default 2 min. */
+  stopCommandTimeoutMs?: number;
 }
 
 export interface DevServerRuntimeDeps {
@@ -423,6 +432,7 @@ export class DevServerRuntime {
   private readonly disposeGraceMs: number;
   private readonly defaultIdleTtlSeconds: number;
   private readonly sessionLockTimeoutMs: number;
+  private readonly stopCommandTimeoutMs: number;
   private readonly loadProjectEnv: DevServerRuntimeDeps['loadProjectEnv'];
   private readonly getProject: DevServerRuntimeDeps['getProject'];
   private readonly killFn: (pid: number, signal: NodeJS.Signals | 0) => void;
@@ -463,6 +473,8 @@ export class DevServerRuntime {
     this.defaultIdleTtlSeconds = deps.config?.defaultIdleTtlSeconds ?? DEFAULT_IDLE_TTL_SECONDS;
     this.sessionLockTimeoutMs =
       deps.config?.sessionLockTimeoutMs ?? DEFAULT_SESSION_LOCK_TIMEOUT_MS;
+    this.stopCommandTimeoutMs =
+      deps.config?.stopCommandTimeoutMs ?? DEFAULT_STOP_COMMAND_TIMEOUT_MS;
     this.loadProjectEnv = deps.loadProjectEnv;
     this.getProject = deps.getProject;
     this.killFn = deps.kill ?? ((pid, signal) => process.kill(pid, signal));
@@ -565,8 +577,13 @@ export class DevServerRuntime {
    */
   async stop(devServerId: string): Promise<void> {
     const row = this.db
-      .prepare(`SELECT id, runtime FROM worktree_preview_groups WHERE id = ?`)
-      .get(devServerId) as { id: string; runtime: string | null } | undefined;
+      .prepare(
+        `SELECT id, runtime, session_id AS sessionId, project_id AS projectId
+           FROM worktree_preview_groups WHERE id = ?`,
+      )
+      .get(devServerId) as
+      | { id: string; runtime: string | null; sessionId: string; projectId: string }
+      | undefined;
     if (!row) return;
     if (row.runtime !== DEV_SERVER_RUNTIME_KIND) {
       this.logger.warn(
@@ -575,8 +592,19 @@ export class DevServerRuntime {
       return;
     }
     const entry = this.active.get(devServerId);
+    // Mark stopping before anything can make the tracked process exit, so a
+    // stopCommand that ends the `docker compose up` (or the process's own
+    // teardown) is not misread as a crash by the exit handler.
+    if (entry) entry.stopping = true;
+
+    // Run the project's teardown command (e.g. `docker compose down`) while the
+    // env is still live. The tracked process may not own the resources the
+    // start created — compose containers are children of the Docker daemon, so
+    // signalling the compose CLI below leaves them running and holding their
+    // published host port. This is the step that reclaims them.
+    await this.runStopHook(devServerId, row.sessionId, row.projectId, entry?.env ?? null);
+
     if (entry) {
-      entry.stopping = true;
       await this.releaseEnv(entry, devServerId);
       this.active.delete(devServerId);
     } else {
@@ -597,6 +625,94 @@ export class DevServerRuntime {
     }
     // FK ON DELETE CASCADE removes the process rows + frees the ports.
     this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(devServerId);
+  }
+
+  /**
+   * Run `devServer.stopCommand` for a group being torn down, best-effort.
+   *
+   * Resolves the project config for the command + cwd, an env to run it in
+   * (the live one when the group is still tracked, else the session's own env
+   * after a Hub restart), and the same non-secret env + resolved secrets the
+   * start got. A missing config/command/env, a non-zero exit, a spawn
+   * failure, or a timeout are all logged and swallowed — teardown never blocks
+   * on cleanup.
+   */
+  private async runStopHook(
+    groupId: string,
+    sessionId: string,
+    projectId: string | null,
+    liveEnv: SessionEnv | null,
+  ): Promise<void> {
+    if (!projectId || !this.getProject) return;
+    const project = this.getProject(projectId);
+    const rawDevServer = project?.prEnv?.devServer;
+    if (!rawDevServer) return;
+    const parsed = parseDevServerConfig(rawDevServer);
+    if (!parsed.ok) return;
+    const cfg = parsed.value;
+    const stopCommand = cfg.stopCommand;
+    if (!stopCommand) return;
+
+    const env =
+      liveEnv && !liveEnv.disposed
+        ? liveEnv
+        : this.resolveSharedEnv
+          ? await this.resolveSharedEnv(sessionId).catch(() => null)
+          : null;
+    if (!env || env.disposed) {
+      this.logger.warn(
+        `[dev-server ${groupId}] stopCommand skipped: no live env to run it in ` +
+          `(session ${sessionId} may have ended). Daemon-owned resources it would ` +
+          `clean up (e.g. compose containers) may persist.`,
+      );
+      return;
+    }
+
+    let projectSecrets: Record<string, string> = {};
+    if (this.loadProjectEnv && cfg.secretKeys.length > 0) {
+      try {
+        projectSecrets = this.loadProjectEnv(projectId, { sessionId });
+      } catch (err) {
+        this.logger.warn(
+          `[dev-server ${groupId}] stopCommand loadProjectEnv failed: ${(err as Error).message}`,
+        );
+      }
+    }
+    const spawnEnv: Record<string, string> = { ...cfg.env };
+    for (const key of cfg.secretKeys) {
+      const value = projectSecrets[key];
+      if (value !== undefined) spawnEnv[key] = value;
+    }
+    // Guarantee the session id is present so a stack namespaced by it (e.g.
+    // COMPOSE_PROJECT_NAME=session-$AGENT_HUB_SESSION_ID) tears down the same
+    // project the start command created.
+    spawnEnv.AGENT_HUB_SESSION_ID = sessionId;
+
+    try {
+      const result = await runDevServerStopCommand({
+        env,
+        stopCommand,
+        cwd: cfg.cwd,
+        spawnEnv,
+        timeoutMs: this.stopCommandTimeoutMs,
+        onLine: (line, stream) => {
+          if (!this.notifyLog) return;
+          try {
+            this.notifyLog({ sessionId, groupId, processName: STOP_PROCESS_NAME, line, stream });
+          } catch (err) {
+            this.logger.warn(`[dev-server ${groupId}] notifyLog threw: ${(err as Error).message}`);
+          }
+        },
+      });
+      const summary = describeStopExit(result);
+      if (result.timedOut || result.exit.error || result.exit.signal || result.exit.code) {
+        this.logger.warn(`[dev-server ${groupId}] ${summary}`);
+      } else {
+        this.logger.log(`[dev-server ${groupId}] ${summary}`);
+      }
+    } catch (err) {
+      this.logger.warn(`[dev-server ${groupId}] stopCommand threw: ${(err as Error).message}`);
+    }
   }
 
   /**
@@ -1061,7 +1177,7 @@ export class DevServerRuntime {
         primary: true,
       });
     } catch (err) {
-      await this.rollbackStart(groupId, record);
+      await this.rollbackStart(groupId, record, project.id);
       throw err;
     }
 
@@ -1132,7 +1248,7 @@ export class DevServerRuntime {
           );
         }
       } catch (err) {
-        await this.rollbackStart(groupId, record);
+        await this.rollbackStart(groupId, record, project.id);
         throw err;
       }
     }
@@ -1177,7 +1293,7 @@ export class DevServerRuntime {
           );
         }
       } catch (err) {
-        await this.rollbackStart(groupId, record);
+        await this.rollbackStart(groupId, record, project.id);
         throw err;
       }
     }
@@ -1203,7 +1319,7 @@ export class DevServerRuntime {
         name: `dev-server:${sessionId}`,
       });
     } catch (err) {
-      await this.rollbackStart(groupId, record);
+      await this.rollbackStart(groupId, record, project.id);
       throw err;
     }
     record.proc = proc;
@@ -1276,8 +1392,18 @@ export class DevServerRuntime {
   }
 
   /** Undo a partially-started group: release the env, drop the rows. */
-  private async rollbackStart(groupId: string, record: ActiveDevServer): Promise<void> {
+  private async rollbackStart(
+    groupId: string,
+    record: ActiveDevServer,
+    projectId: string,
+  ): Promise<void> {
     record.stopping = true;
+    // Same teardown as a normal stop: a start that got far enough to launch
+    // daemon-owned resources (e.g. a `buildCommand` that runs `docker compose
+    // up -d` before a later step fails) must `down` them here, or they leak
+    // and squat the port exactly as an un-reaped stack would. Runs while the
+    // env is still live, before it is released.
+    await this.runStopHook(groupId, record.sessionId, projectId, record.env);
     await this.releaseEnv(record, groupId);
     this.active.delete(groupId);
     this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);
