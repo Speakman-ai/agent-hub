@@ -475,6 +475,7 @@ Config (env):
 - `server/finalize/runner-resource-profile.ts` — GitHub-parity CPU/memory cap resolution
 - `server/finalize/runner-image-versions.ts` — targeted Node/Docker/Compose/Buildx versions (mirrors the GitHub ubuntu-24.04 manifest; soft-pinned in the Dockerfile, drift-tested). Bump here + the Dockerfile ARGs together when GitHub updates the image.
 - `server/finalize/runner/entrypoint.sh` — starts inner dockerd
+- `server/docker/install-chromedriver.sh` — shared Chrome-for-Testing chromedriver installer (runner image: matches Google Chrome; server image: matches Playwright's pinned Chromium; never crosses the browser's major)
 
 ## Deployment
 

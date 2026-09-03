@@ -275,3 +275,39 @@ describe('docker-compose.yml Finalize runner bootstrap', () => {
     expect(runnerDockerfile).not.toMatch(/^COPY runner-agent\.mjs/m);
   });
 });
+
+describe('server/Dockerfile — chromedriver for Playwright Chromium', () => {
+  // Agent sessions run inside the Hub container. Selenium-style e2e suites need
+  // `chromedriver` on PATH and a browser it can find; Playwright/Stagehand never
+  // needed either (CDP), so both were missing and every such suite failed with
+  // "chromedriver not found". The driver must track the SAME pinned Chromium,
+  // read from playwright-core's browsers.json — never a hardcoded version.
+  it('installs chromedriver via the shared installer, versioned from browsers.json', () => {
+    const dockerfile = readFileSync(dockerfilePath, 'utf8');
+    expect(dockerfile).toMatch(
+      /jq -r '\.browsers\[\] \| select\(\.name == "chromium"\) \| \.browserVersion' node_modules\/playwright-core\/browsers\.json/,
+    );
+    expect(dockerfile).toMatch(
+      /\/app\/server\/docker\/install-chromedriver\.sh "\$chromium_version"/,
+    );
+    expect(dockerfile).not.toMatch(/install-chromedriver\.sh "?\d+\.\d+\.\d+\.\d+/);
+  });
+
+  it('exposes Playwright Chromium as `chromium` on PATH so chromedriver can find it', () => {
+    const dockerfile = readFileSync(dockerfilePath, 'utf8');
+    expect(dockerfile).toMatch(/require\("playwright"\)\.chromium\.executablePath\(\)/);
+    expect(dockerfile).toMatch(/ln -sfn "\$chromium_bin" \/usr\/local\/bin\/chromium\b/);
+    expect(dockerfile).toMatch(/ln -sfn "\$chromium_bin" \/usr\/local\/bin\/chromium-browser/);
+  });
+
+  it('runs the chromedriver install as root, before dropping to the node user', () => {
+    const dockerfile = readFileSync(dockerfilePath, 'utf8');
+    const install = dockerfile.indexOf('install-chromedriver.sh');
+    const userNode = dockerfile.indexOf('\nUSER node');
+    const copiedServerTree = dockerfile.indexOf(
+      'COPY --chown=node:node --from=build /app/server ./server',
+    );
+    expect(install).toBeGreaterThan(copiedServerTree); // the script comes from the copied tree
+    expect(install).toBeLessThan(userNode); // /usr/local/bin is root-owned
+  });
+});

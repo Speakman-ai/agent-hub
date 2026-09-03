@@ -185,10 +185,16 @@ describe('App — chat follow-state indicator', () => {
     // and scrollTop rose from the reset 0 without a downward move, so the
     // handler treats the container as no longer following the tail.
     setGeometry(container, { scrollTop: 500, scrollHeight: 2000, clientHeight: 300 });
-    await act(async () => {
-      fireEvent.scroll(container);
-    });
+    // A real user scroll is a burst of events, not a single one. The handler
+    // deliberately ignores scroll events while `programmaticScrollRef` is set
+    // (the initial tail pin clears it on the next animation frame, and a second
+    // pin is scheduled 100ms after mount), so a lone synthetic event can land in
+    // that window and be dropped — which made this assertion timing-dependent
+    // (green in isolation, red after the previous test warmed the module cache).
+    // Re-fire inside waitFor so the assertion tracks the first event that
+    // reaches the handler, exactly like a continuing wheel/trackpad scroll.
     await waitFor(() => {
+      fireEvent.scroll(container);
       const indicator = screen.getByTestId('chat-follow-indicator');
       expect(indicator.getAttribute('data-following')).toBe('false');
     });

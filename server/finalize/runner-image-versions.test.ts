@@ -133,3 +133,29 @@ describe('runner image versions — Dockerfile drift guard', () => {
     expect(df).toMatch(/no same-major fallback[\s\S]*exit 1/);
   });
 });
+
+describe('runner image — chromedriver alongside Google Chrome', () => {
+  // GitHub's ubuntu-24.04 image ships Chrome AND a matching chromedriver;
+  // Selenium suites that predate Selenium Manager need the latter on PATH.
+  // The driver must be resolved from the Chrome that was just installed (the
+  // apt repo only serves the current stable), never a hardcoded version.
+  it('ships the shared installer and runs it against the installed Chrome version', () => {
+    const df = readDockerfile();
+    expect(df).toMatch(
+      /^COPY server\/docker\/install-chromedriver\.sh \/usr\/local\/bin\/install-chromedriver\.sh$/m,
+    );
+    expect(df).toMatch(
+      /apt-get install -y --no-install-recommends google-chrome-stable \\\n\s+&& install-chromedriver\.sh "\$\(google-chrome --version \| grep -oE '\[0-9\]\+\(\\\.\[0-9\]\+\)\{3\}'\)"/,
+    );
+    expect(df).not.toMatch(/install-chromedriver\.sh "?\d+\.\d+\.\d+\.\d+/);
+  });
+
+  it('only installs chromedriver on the amd64 branch (no Chrome for Testing driver on arm64)', () => {
+    const df = readDockerfile();
+    const amd64 = df.indexOf('    amd64) \\');
+    const arm64 = df.indexOf('    arm64) \\');
+    const install = df.indexOf('&& install-chromedriver.sh');
+    expect(install).toBeGreaterThan(amd64);
+    expect(install).toBeLessThan(arm64);
+  });
+});

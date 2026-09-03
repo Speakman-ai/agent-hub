@@ -246,6 +246,26 @@ RUN mkdir -p /ms-playwright \
     && cd /app/server && npx playwright install-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
+# chromedriver + `chromium` shim, matched to the SAME pinned Playwright Chromium.
+#
+# Agent sessions run inside this container, so a project whose e2e suite is
+# Selenium/WebDriver-based (chromedriver on PATH, no Selenium Manager) has no
+# driver to launch — Playwright and Stagehand drive Chromium over CDP and never
+# needed one. The version is read from playwright-core's browsers.json, so a
+# Playwright bump re-resolves the driver on the next build; the shared installer
+# (server/docker/install-chromedriver.sh, also used by the Finalize runner image)
+# refuses to cross the browser's major line. `chromium` / `chromium-browser` on
+# PATH point at Playwright's binary so chromedriver's default browser lookup
+# finds it without a per-project `binary_location`. Runs as root (writes to
+# /usr/local/bin); the symlink target is filled by the Chromium download step
+# below. No-op on arm64, where CfT publishes no Linux driver.
+RUN cd /app/server \
+    && chromium_version="$(jq -r '.browsers[] | select(.name == "chromium") | .browserVersion' node_modules/playwright-core/browsers.json)" \
+    && /app/server/docker/install-chromedriver.sh "$chromium_version" \
+    && chromium_bin="$(node -e 'process.stdout.write(require("playwright").chromium.executablePath())')" \
+    && ln -sfn "$chromium_bin" /usr/local/bin/chromium \
+    && ln -sfn "$chromium_bin" /usr/local/bin/chromium-browser
+
 # Cursor Agent CLI — official installer drops the `agent` symlink at
 # ~/.local/bin/agent; config.ts defaults cursorBin there for HOME=/home/node so
 # Settings auth flows work without manual path overrides. Install URL:

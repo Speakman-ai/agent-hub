@@ -1,4 +1,4 @@
-# Finalize CI runner — ubuntu-24.04 with DinD, Compose, Buildx, Node LTS, Chrome.
+# Finalize CI runner — ubuntu-24.04 with DinD, Compose, Buildx, Node LTS, Chrome + chromedriver.
 # Production (GHA parity, linux amd64):
 #   docker build --platform linux/amd64 -f server/finalize/runner/Dockerfile -t agent-hub/finalize-runner:ubuntu-24.04 .
 # Local Apple Silicon dev (native arm64, faster Cypress):
@@ -200,8 +200,12 @@ RUN echo "Runner toolchain (targeted -> installed):" \
     && echo "  gh:      ${RUNNER_GH_VERSION} -> $(gh --version 2>/dev/null | head -n1 || echo '?')" \
     && echo "  aws:     ${RUNNER_AWSCLI_VERSION} -> $(aws --version 2>/dev/null || echo '?')"
 
-# Cypress E2E browser.
-#   amd64 (GHA parity / prod): Google Chrome stable from Google's apt repo.
+# E2E browser + WebDriver.
+#   amd64 (GHA parity / prod): Google Chrome stable from Google's apt repo, plus
+#     the matching chromedriver from Chrome for Testing — GitHub's ubuntu-24.04
+#     image ships both, and Selenium suites that predate Selenium Manager expect
+#     `chromedriver` on PATH. Resolved by the shared installer
+#     (server/docker/install-chromedriver.sh), which never crosses Chrome's major.
 #   arm64 (local Apple Silicon dev): Google does NOT ship Chrome for ARM Linux
 #     (no arm64 .deb; Chrome-for-Testing and Edge-for-Linux are x86-only too, and
 #     Ubuntu 24.04's chromium/firefox apt packages are snap stubs that can't run
@@ -210,13 +214,17 @@ RUN echo "Runner toolchain (targeted -> installed):" \
 #     We only install the shared libraries Electron/Chromium need at runtime.
 #     Run such repos with CYPRESS_BROWSER=electron / --browser electron.
 ARG TARGETARCH
-RUN case "${TARGETARCH}" in \
+COPY server/docker/install-chromedriver.sh /usr/local/bin/install-chromedriver.sh
+RUN chmod +x /usr/local/bin/install-chromedriver.sh \
+  && case "${TARGETARCH}" in \
     amd64) \
       curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
       && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
         > /etc/apt/sources.list.d/google-chrome.list \
       && apt-get update \
       && apt-get install -y --no-install-recommends google-chrome-stable \
+      && install-chromedriver.sh "$(google-chrome --version | grep -oE '[0-9]+(\.[0-9]+){3}')" \
+      && echo "  chrome:  $(google-chrome --version) / $(chromedriver --version)" \
       ;; \
     arm64) \
       apt-get update \
