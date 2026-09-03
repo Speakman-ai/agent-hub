@@ -1603,6 +1603,23 @@ export function detectReActBlock(text: string): string | null {
   return detectTagBlockInLastFence(text, 'agenthub:react');
 }
 
+/**
+ * Element operand for `click` / `type` actions. The documented field is
+ * `target`, but models routinely emit `selector` (or the older
+ * `selector_or_description`) instead — accept all three so a naming slip
+ * does not silently drop the whole action list (the agent then tends to
+ * assume the step ran and reports a login/click it never performed).
+ */
+const REACT_TARGET_OPERAND_ALIASES = ['target', 'selector', 'selector_or_description'] as const;
+
+function resolveReActTargetOperand(a: Record<string, unknown>): string | undefined {
+  for (const key of REACT_TARGET_OPERAND_ALIASES) {
+    const v = a[key];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
 export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed {
   if (typeof raw !== 'string' || !raw.trim()) {
     return { error: 'malformed', detail: 'Empty react block payload' };
@@ -1674,12 +1691,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
         };
       }
       const url = typeof a.url === 'string' ? a.url : undefined;
-      const targetRaw =
-        (typeof a.target === 'string' ? a.target : undefined) ||
-        (typeof (a as { selector_or_description?: unknown }).selector_or_description === 'string'
-          ? String((a as { selector_or_description: string }).selector_or_description)
-          : undefined);
-      const target = targetRaw?.trim() || undefined;
+      const target = resolveReActTargetOperand(a);
       const text = typeof a.text === 'string' ? a.text : undefined;
       const instruction = typeof a.instruction === 'string' ? a.instruction : undefined;
       const direction = typeof a.direction === 'string' ? a.direction : undefined;
@@ -1699,7 +1711,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       if ((op === 'click' || op === 'type') && !target) {
         return {
           error: 'malformed',
-          detail: `browser ${op} requires target (or selector_or_description)`,
+          detail: `browser ${op} requires target (aliases: selector, selector_or_description)`,
         };
       }
       if (op === 'type' && text === undefined) {
@@ -1740,7 +1752,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       }
       const route = typeof a.route === 'string' ? a.route.trim() : undefined;
       const reason = typeof a.reason === 'string' ? a.reason.trim() : undefined;
-      const target = (typeof a.target === 'string' ? a.target : undefined)?.trim() || undefined;
+      const target = resolveReActTargetOperand(a);
       const text = typeof a.text === 'string' ? a.text : undefined;
       const instruction = typeof a.instruction === 'string' ? a.instruction : undefined;
       const direction = typeof a.direction === 'string' ? a.direction : undefined;
@@ -1769,7 +1781,10 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
         };
       }
       if ((op === 'click' || op === 'type') && !target) {
-        return { error: 'malformed', detail: `preview ${op} requires target` };
+        return {
+          error: 'malformed',
+          detail: `preview ${op} requires target (aliases: selector, selector_or_description)`,
+        };
       }
       if (op === 'type' && text === undefined) {
         return { error: 'malformed', detail: 'preview type requires text' };
@@ -5513,7 +5528,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             if (rawReactBlock) {
               const parsedReact = parseReActBlock(rawReactBlock);
               if ('error' in parsedReact) {
-                reactObservations.push(`- ReAct block malformed: ${parsedReact.detail}`);
+                reactObservations.push(
+                  `- ReAct block malformed: ${parsedReact.detail}. No action from that block ran — fix the payload and re-emit it before reporting progress.`,
+                );
               } else {
                 actions.push(...parsedReact.actions);
                 // Same assistant message may also include legacy blocks; merge so

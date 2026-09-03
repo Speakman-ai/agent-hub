@@ -496,6 +496,56 @@ describe('ReAct block parse', () => {
     }
   });
 
+  it('accepts selector as an alias of target for browser type/click (regression: dropped login steps)', () => {
+    // A real session emitted `selector` instead of `target`; the whole block
+    // was rejected, no browser_tool_activity fired, and the agent later
+    // reported a login it never performed.
+    const payload = JSON.stringify({
+      actions: [
+        { tool: 'browser', op: 'type', selector: 'input[name=username]', text: 'admin' },
+        { tool: 'browser', op: 'click', selector: 'button[type=submit]' },
+      ],
+    });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    expect(parsed).not.toMatchObject({ error: 'malformed' });
+    if (!('error' in parsed)) {
+      expect(parsed.actions).toHaveLength(2);
+      expect(parsed.actions[0]).toMatchObject({
+        tool: 'browser',
+        op: 'type',
+        target: 'input[name=username]',
+        text: 'admin',
+      });
+      expect(parsed.actions[1]).toMatchObject({
+        tool: 'browser',
+        op: 'click',
+        target: 'button[type=submit]',
+      });
+    }
+  });
+
+  it('prefers target over selector aliases and ignores blank aliases', () => {
+    const payload = JSON.stringify({
+      actions: [
+        { tool: 'browser', op: 'click', target: '#a', selector: '#b' },
+        { tool: 'browser', op: 'click', selector: '   ', selector_or_description: '#c' },
+      ],
+    });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    expect(parsed).not.toMatchObject({ error: 'malformed' });
+    if (!('error' in parsed)) {
+      expect(parsed.actions[0]).toMatchObject({ target: '#a' });
+      expect(parsed.actions[1]).toMatchObject({ target: '#c' });
+    }
+  });
+
+  it('still rejects browser click with no target under any alias', () => {
+    const payload = JSON.stringify({ actions: [{ tool: 'browser', op: 'click' }] });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    expect(parsed).toMatchObject({ error: 'malformed' });
+    if ('error' in parsed) expect(parsed.detail).toContain('selector');
+  });
+
   it('rejects browser extract with schema but no instruction', () => {
     const payload = JSON.stringify({
       actions: [
@@ -616,6 +666,25 @@ describe('planAutoContinuationRetry', () => {
 });
 
 describe('ReAct block parse — preview tool', () => {
+  it('accepts selector as an alias of target for preview click/type', () => {
+    const payload = JSON.stringify({
+      actions: [
+        { tool: 'preview', op: 'type', selector: '#email', text: 'a@b.c' },
+        { tool: 'preview', op: 'click', selector_or_description: 'the save button' },
+      ],
+    });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    expect(parsed).not.toMatchObject({ error: 'malformed' });
+    if (!('error' in parsed)) {
+      expect(parsed.actions[0]).toMatchObject({ tool: 'preview', op: 'type', target: '#email' });
+      expect(parsed.actions[1]).toMatchObject({
+        tool: 'preview',
+        op: 'click',
+        target: 'the save button',
+      });
+    }
+  });
+
   it('parses observe ops with defaults and tail clamping to integer', () => {
     const payload = JSON.stringify({
       actions: [
