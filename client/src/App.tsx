@@ -4708,10 +4708,7 @@ export default function App({ initialView }: any = {}) {
   });
   const terminalRequested =
     !!activeSessionId && terminalPaneOpenBySession[activeSessionId] === true;
-  const browserRequested =
-    !!activeSessionId &&
-    !chatProjectIsWorkflow &&
-    browserPaneOpenBySession[activeSessionId] === true;
+  const browserRequested = !!activeSessionId && browserPaneOpenBySession[activeSessionId] === true;
   const {
     showSessionTerminalPane,
     showSessionDiffPane,
@@ -7726,7 +7723,6 @@ export default function App({ initialView }: any = {}) {
                                   icon: Globe,
                                   title:
                                     "Watch and act in the agent's public-web browser (separate from the dev preview)",
-                                  hidden: chatProjectIsWorkflow,
                                   pressed: showSessionBrowserPane,
                                   onSelect: () => {
                                     const opening =

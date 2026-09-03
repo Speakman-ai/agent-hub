@@ -158,6 +158,13 @@ const PROJECT_FIXTURE = [
   },
 ];
 
+const WORKFLOW_PROJECT_FIXTURE = [
+  {
+    ...PROJECT_FIXTURE[0],
+    mode: 'workflow',
+  },
+];
+
 const ONE_SESSION = [{ id: 's-1', name: 'S1', agent_id: 'agent-1', engine: 'claude-code' }];
 
 import App from './App';
@@ -173,11 +180,11 @@ function mockFetch() {
   });
 }
 
-async function openSession() {
+async function openSession(projects: any = PROJECT_FIXTURE) {
   render(<App initialView="chat" />);
   await waitFor(() => expect(typeof ctl.resolveProjects).toBe('function'), { timeout: 3000 });
   await act(async () => {
-    ctl.resolveProjects(PROJECT_FIXTURE);
+    ctl.resolveProjects(projects);
   });
   await waitFor(() => expect(typeof ctl.resolveSessionsByAgent['agent-1']).toBe('function'), {
     timeout: 3000,
@@ -261,5 +268,22 @@ describe('App — Agent browser pane auto-open', () => {
     });
     expect(screen.queryByTestId('session-browser-pane')).toBeNull();
     expect(screen.getByTestId('reopen-browser-pane')).toBeInTheDocument();
+  });
+
+  // Regression: the Agent browser used to be hidden for workflow-mode projects
+  // even though the server permits the browser tool there (consult/hub prompts
+  // advertise it). The toggle and pane must be available for workflow projects.
+  it('shows the Agent browser toggle and auto-opens the pane for a workflow project', async () => {
+    await openSession(WORKFLOW_PROJECT_FIXTURE);
+
+    // Workflow sessions render the actions inline, so the toggle is directly
+    // present (not hidden) rather than behind the Actions dropdown.
+    expect(await screen.findByTestId('toggle-browser-pane')).toBeInTheDocument();
+
+    // First browser action opens the pane, same as a dev project.
+    await act(async () => {
+      (ctl.onMessage as any)(browserStarted(1));
+    });
+    await screen.findByTestId('session-browser-pane');
   });
 });
