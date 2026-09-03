@@ -1896,10 +1896,10 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
-  addSessionAgent: (sessionId: any, agentId: any, model: any = null) =>
+  addSessionAgent: (sessionId: any, agentId: any, model: any = null, engine: any = null) =>
     fetchJSON(`/sessions/${sessionId}/agents`, {
       method: 'POST',
-      body: JSON.stringify({ agentId, model: model || null }),
+      body: JSON.stringify({ agentId, model: model || null, engine: engine || null }),
     }),
   removeSessionAgent: (sessionId: any, participantId: any) =>
     fetchJSON(`/sessions/${sessionId}/agents/${participantId}`, { method: 'DELETE' }),
@@ -1907,6 +1907,11 @@ export const api = {
     fetchJSON(`/sessions/${sessionId}/agents/${participantId}/model`, {
       method: 'PUT',
       body: JSON.stringify({ model: model || null }),
+    }),
+  setSessionAgentEngine: (sessionId: any, participantId: any, engine: any) =>
+    fetchJSON(`/sessions/${sessionId}/agents/${participantId}/engine`, {
+      method: 'PUT',
+      body: JSON.stringify({ engine: engine || null }),
     }),
   setSessionEngine: (sessionId: any, engine: any) =>
     fetchJSON(`/sessions/${sessionId}/engine`, {

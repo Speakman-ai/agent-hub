@@ -236,6 +236,7 @@ function initDb(dataDir: string): void {
       session_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
       model TEXT,
+      engine TEXT,
       position INTEGER NOT NULL DEFAULT 0,
       added_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -2433,6 +2434,16 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS idx_session_agents_session ON session_agents(session_id);
   `);
+
+  // Per-participant engine override. NULL → resolve the engine from the agent's
+  // own config (and per-user override) at spawn time; a concrete value forces
+  // that CLI for this advisor instance, so the same agent can be added as a
+  // Claude, Codex, Cursor, or Grok participant to cross-verify in a session.
+  try {
+    db.prepare('SELECT engine FROM session_agents LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE session_agents ADD COLUMN engine TEXT');
+  }
 
   // Drop legacy conference room tables (replaced by multi-agent sessions).
   const legacyRoomTables = [
@@ -5013,12 +5024,17 @@ function initDb(dataDir: string): void {
       'SELECT * FROM session_agents WHERE session_id = ? ORDER BY position ASC',
     ),
     addSessionAgent: db.prepare(
-      `INSERT INTO session_agents (id, session_id, agent_id, model, position)
-       VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_agents WHERE session_id = ?))`,
+      `INSERT INTO session_agents (id, session_id, agent_id, model, engine, position)
+       VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM session_agents WHERE session_id = ?))`,
     ),
     removeSessionAgent: db.prepare('DELETE FROM session_agents WHERE session_id = ? AND id = ?'),
     updateSessionAgentModel: db.prepare(
       'UPDATE session_agents SET model = ? WHERE session_id = ? AND id = ?',
+    ),
+    // Engine change resets the per-participant model override: a model valid
+    // for the old engine is almost never valid for the new one.
+    updateSessionAgentEngine: db.prepare(
+      'UPDATE session_agents SET engine = ?, model = NULL WHERE session_id = ? AND id = ?',
     ),
 
     // Designs

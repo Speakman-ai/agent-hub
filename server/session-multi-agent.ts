@@ -5,13 +5,15 @@ import { spawn, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
-import { resolveEffectiveEngineAndModel } from './effective-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
 import { getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { createStreamParser } from './stream-parser.js';
-import { buildSessionMultiSpawnArgs, normalizeSessionMultiEngine } from './session-multi-engine.js';
+import {
+  buildSessionMultiSpawnArgs,
+  resolveAdvisorEngineAndModel,
+} from './session-multi-engine.js';
 import { sessionUsesWorktree } from './project-mode.js';
 import {
   getSessionWorktreeLockOwner,
@@ -102,6 +104,8 @@ type TurnKind = 'executor_initial' | 'advisor' | 'executor_followup';
 type PlannedAgent = EnrichedAgent & {
   sessionParticipantId?: string;
   sessionModel?: string | null;
+  /** Per-participant engine override (null → inherit the agent's engine). */
+  sessionEngine?: string | null;
 };
 
 interface PlannedTurn {
@@ -143,6 +147,7 @@ export function materializeSessionAdvisors(
       ...agent,
       sessionParticipantId: row.id,
       sessionModel: row.model,
+      sessionEngine: row.engine?.trim() || null,
     });
   }
   return advisors;
@@ -449,12 +454,15 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
 
   // No org-owner fallback — only the authenticated WS user.
   const roomOwnerId = getWsAuthUserId(ws as unknown as AuthStampedWs | null) ?? null;
-  const { engine, model } = resolveEffectiveEngineAndModel(config, {
+  // Same resolver drives the reported roster engine (see listSessionAgents), so
+  // the UI's model picker never diverges from the CLI that actually runs.
+  const { engine, model } = resolveAdvisorEngineAndModel(config, {
     agentId: advisor.id,
-    agentEngine: normalizeSessionMultiEngine(advisor.engine),
+    agentEngine: advisor.engine,
     agentModel: advisor.model as string | undefined,
+    sessionEngine: advisor.sessionEngine,
+    sessionModel: advisor.sessionModel,
     ownerUserId: roomOwnerId,
-    explicitModel: advisor.sessionModel,
   });
 
   d.broadcast({

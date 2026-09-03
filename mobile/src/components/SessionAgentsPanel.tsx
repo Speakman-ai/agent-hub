@@ -11,6 +11,19 @@ import {
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { filterAgentsForPicker, groupAgentsByProject } from '../utils/sessionAgentPicker';
+import { ENGINE_OPTIONS } from '../utils/engineOptions';
+
+const ENGINE_LABELS: Record<string, string> = Object.fromEntries(
+  ENGINE_OPTIONS.map((e) => [e.id, e.label]),
+);
+
+// Engines the Hub advertises with at least one authenticated model. Mirrors the
+// web `hubSelectableEngines` (gemini-cli is RAG-only, never a chat engine).
+function selectableEngines(modelConfig: any): string[] {
+  const ev = modelConfig?.engineValidModels;
+  if (!ev || typeof ev !== 'object') return [];
+  return Object.keys(ev).filter((e) => e !== 'gemini-cli' && (ev[e]?.length ?? 0) > 0);
+}
 /** Minimal multi-agent roster panel for mobile chat. Advisors may come from any project. */
 export default function SessionAgentsPanel({
   sessionId,
@@ -24,6 +37,7 @@ export default function SessionAgentsPanel({
   const [busy, setBusy] = useState(false);
   const [addSearch, setAddSearch] = useState('');
   const [addModels, setAddModels] = useState<Record<string, string>>({});
+  const [addEngines, setAddEngines] = useState<Record<string, string>>({});
   const executor = sessionAgents.find((a: any) => a.role === 'executor');
   const advisors = sessionAgents.filter((a: any) => a.role === 'advisor');
   const executorProjectId = executor?.projectId;
@@ -31,8 +45,12 @@ export default function SessionAgentsPanel({
     const filtered = filterAgentsForPicker(agents, { query: addSearch });
     return groupAgentsByProject(filtered);
   }, [agents, addSearch]);
-  const modelsForAgent = (agent: any): string[] =>
-    modelConfig?.engineValidModels?.[agent.engine || 'claude-code'] || [];
+  const engines = useMemo<string[]>(() => selectableEngines(modelConfig), [modelConfig]);
+  const modelsForEngine = (engine: string): string[] =>
+    modelConfig?.engineValidModels?.[engine] || [];
+  const modelsForAgent = (agent: any): string[] => modelsForEngine(agent.engine || 'claude-code');
+  const addEngineFor = (agent: any): string =>
+    addEngines[agent.id] || agent.engine || 'claude-code';
   if (!sessionId) return null;
   const refresh = async () => {
     const detail = await api.getSessionDetail(sessionId);
@@ -47,7 +65,11 @@ export default function SessionAgentsPanel({
     const doAdd = async () => {
       setBusy(true);
       try {
-        await api.addSessionAgent(sessionId, agentId, addModels[agentId] || null);
+        // The add-row engine chip is authoritative: always send the displayed
+        // engine explicitly so the shown engine is exactly what is stored and
+        // spawned (a null send would let a per-user override silently diverge).
+        const engineOverride = addEngines[agentId] || agent?.engine || 'claude-code';
+        await api.addSessionAgent(sessionId, agentId, addModels[agentId] || null, engineOverride);
         await refresh();
       } catch (err: any) {
         console.warn('addSessionAgent failed', err);
@@ -88,6 +110,18 @@ export default function SessionAgentsPanel({
       await refresh();
     } catch (err: any) {
       console.warn('setSessionAgentModel failed', err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const setAgentEngine = async (participantId: string, engine: string | null) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.setSessionAgentEngine(sessionId, participantId, engine);
+      await refresh();
+    } catch (err: any) {
+      console.warn('setSessionAgentEngine failed', err);
     } finally {
       setBusy(false);
     }
@@ -144,6 +178,29 @@ export default function SessionAgentsPanel({
                   <Text style={styles.remove}>Remove</Text>
                 </TouchableOpacity>
               </View>
+              {engines.length > 0 && (
+                <View style={styles.modelRow}>
+                  {[null, ...engines].map((engine: string | null) => {
+                    const selected = (a.engineOverride || null) === engine;
+                    return (
+                      <TouchableOpacity
+                        key={engine || 'agent-engine'}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Use ${
+                          engine ? ENGINE_LABELS[engine] || engine : 'agent engine'
+                        } for ${a.name}`}
+                        onPress={() => setAgentEngine(a.participantId, engine)}
+                        disabled={busy}
+                        style={[styles.modelBtn, selected && styles.modelBtnActive]}
+                      >
+                        <Text style={selected ? styles.modelTextActive : styles.modelText}>
+                          {engine ? ENGINE_LABELS[engine] || engine : 'Agent engine'}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
               <View style={styles.modelRow}>
                 {[null, ...modelsForAgent(a)].map((model: string | null) => {
                   const selected = (a.model || null) === model;
@@ -184,31 +241,66 @@ export default function SessionAgentsPanel({
                     <View style={styles.addRow}>
                       {group.agents.map((a: any) => (
                         <View key={a.id} style={styles.addCard}>
-                          <View style={styles.modelRow}>
-                            {[null, ...modelsForAgent(a)].map((model: string | null) => {
-                              const selected = (addModels[a.id] || null) === model;
-                              return (
-                                <TouchableOpacity
-                                  key={model || 'default'}
-                                  accessibilityRole="button"
-                                  accessibilityLabel={`Use ${model || 'agent default'} for new ${a.name}`}
-                                  onPress={() =>
-                                    setAddModels((current) => ({
-                                      ...current,
-                                      [a.id]: model || '',
-                                    }))
-                                  }
-                                  disabled={busy}
-                                  style={[styles.modelBtn, selected && styles.modelBtnActive]}
-                                >
-                                  <Text
-                                    style={selected ? styles.modelTextActive : styles.modelText}
+                          {engines.length > 0 && (
+                            <View style={styles.modelRow}>
+                              {engines.map((engine: string) => {
+                                const selected = addEngineFor(a) === engine;
+                                return (
+                                  <TouchableOpacity
+                                    key={engine}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`Use ${
+                                      ENGINE_LABELS[engine] || engine
+                                    } for new ${a.name}`}
+                                    onPress={() => {
+                                      setAddEngines((current) => ({ ...current, [a.id]: engine }));
+                                      // Drop a stale model pick from the prior engine.
+                                      setAddModels((current) => {
+                                        const next = { ...current };
+                                        delete next[a.id];
+                                        return next;
+                                      });
+                                    }}
+                                    disabled={busy}
+                                    style={[styles.modelBtn, selected && styles.modelBtnActive]}
                                   >
-                                    {model || 'Default'}
-                                  </Text>
-                                </TouchableOpacity>
-                              );
-                            })}
+                                    <Text
+                                      style={selected ? styles.modelTextActive : styles.modelText}
+                                    >
+                                      {ENGINE_LABELS[engine] || engine}
+                                    </Text>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                          )}
+                          <View style={styles.modelRow}>
+                            {[null, ...modelsForEngine(addEngineFor(a))].map(
+                              (model: string | null) => {
+                                const selected = (addModels[a.id] || null) === model;
+                                return (
+                                  <TouchableOpacity
+                                    key={model || 'default'}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`Use ${model || 'agent default'} for new ${a.name}`}
+                                    onPress={() =>
+                                      setAddModels((current) => ({
+                                        ...current,
+                                        [a.id]: model || '',
+                                      }))
+                                    }
+                                    disabled={busy}
+                                    style={[styles.modelBtn, selected && styles.modelBtnActive]}
+                                  >
+                                    <Text
+                                      style={selected ? styles.modelTextActive : styles.modelText}
+                                    >
+                                      {model || 'Default'}
+                                    </Text>
+                                  </TouchableOpacity>
+                                );
+                              },
+                            )}
                           </View>
                           <TouchableOpacity
                             style={styles.addBtn}

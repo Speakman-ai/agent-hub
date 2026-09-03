@@ -171,6 +171,12 @@ export interface SessionAgentRow {
   session_id: string;
   agent_id: string;
   model: string | null;
+  /**
+   * Per-participant engine override. NULL → resolve from the agent's config
+   * (and per-user override) at spawn; a concrete engine forces that CLI for
+   * this advisor instance.
+   */
+  engine: string | null;
   position: number;
   added_at: string;
 }
@@ -805,7 +811,13 @@ export interface SessionAgentDetail {
   id: string;
   name: string;
   color: string;
+  /** Effective engine (override if set, else the agent's configured engine). */
   engine: string;
+  /**
+   * The per-participant engine override, or null when this advisor inherits
+   * the agent's engine. Lets the UI show "Agent default" vs. a forced engine.
+   */
+  engineOverride?: string | null;
   model: string | null;
   position: number;
   role: 'executor' | 'advisor';
@@ -2234,6 +2246,7 @@ export interface Stmts {
   addSessionAgent: Stmt;
   removeSessionAgent: Stmt;
   updateSessionAgentModel: Stmt;
+  updateSessionAgentEngine: Stmt;
 
   // Designs
   listDesigns: Stmt;

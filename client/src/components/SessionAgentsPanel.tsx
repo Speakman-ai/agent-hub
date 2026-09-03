@@ -6,8 +6,18 @@ import {
   filterAgentsForPicker,
   groupAgentsByProject,
 } from '../utils/sessionAgentPicker';
+import { ENGINE_LABELS, hubModelsForEngine, hubSelectableEngines } from './HubModelPicker';
 
-function AgentChip({ agent, onRemove, onModelChange, models = [], busy, showProject }: any) {
+function AgentChip({
+  agent,
+  onRemove,
+  onModelChange,
+  onEngineChange,
+  models = [],
+  engines = [],
+  busy,
+  showProject,
+}: any) {
   const project = showProject ? agentProjectLabel(agent) : '';
   return (
     <div className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-1.5 text-sm max-w-full">
@@ -20,6 +30,22 @@ function AgentChip({ agent, onRemove, onModelChange, models = [], busy, showProj
         <span className="text-[10px] text-gray-500 truncate" title={project}>
           {project}
         </span>
+      ) : null}
+      {onEngineChange && engines.length > 0 ? (
+        <select
+          aria-label={`Engine for ${agent.name}`}
+          value={agent.engineOverride || ''}
+          disabled={busy}
+          onChange={(event: any) => onEngineChange(agent.participantId, event.target.value || null)}
+          className="min-w-0 max-w-40 rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-300 disabled:opacity-40"
+        >
+          <option value="">Agent engine</option>
+          {engines.map((engine: string) => (
+            <option key={engine} value={engine}>
+              {ENGINE_LABELS[engine] || engine}
+            </option>
+          ))}
+        </select>
       ) : null}
       {onModelChange && models.length > 0 ? (
         <select
@@ -67,6 +93,7 @@ export default function SessionAgentsPanel({
   const [busy, setBusy] = useState(false);
   const [addSearch, setAddSearch] = useState('');
   const [addModels, setAddModels] = useState<Record<string, string>>({});
+  const [addEngines, setAddEngines] = useState<Record<string, string>>({});
 
   const executor = sessionAgents.find((a: any) => a.role === 'executor');
   const advisors = sessionAgents.filter((a: any) => a.role === 'advisor');
@@ -79,8 +106,15 @@ export default function SessionAgentsPanel({
     return groupAgentsByProject(filtered);
   }, [agents, addSearch]);
 
-  const modelsForAgent = (agent: any): string[] =>
-    modelConfig?.engineValidModels?.[agent.engine || 'claude-code'] || [];
+  const selectableEngines = useMemo(() => hubSelectableEngines(modelConfig), [modelConfig]);
+
+  // Effective engine for an already-added advisor is `engine` (override or the
+  // agent's own). For the add row, the pending engine pick wins over the
+  // agent's configured engine.
+  const modelsForEngine = (engine: string): string[] => hubModelsForEngine(modelConfig, engine);
+  const modelsForAgent = (agent: any): string[] => modelsForEngine(agent.engine || 'claude-code');
+  const addEngineFor = (agent: any): string =>
+    addEngines[agent.id] || agent.engine || 'claude-code';
 
   const refresh = async () => {
     if (!sessionId) return;
@@ -106,10 +140,28 @@ export default function SessionAgentsPanel({
     }
     setBusy(true);
     try {
-      await api.addSessionAgent(sessionId, agentId, addModels[agentId] || null);
+      // The add-row engine select is authoritative: always send the displayed
+      // engine explicitly so what the user sees is exactly what gets stored and
+      // spawned. Sending null here would let a per-user engine override silently
+      // diverge the spawn (and the model validation) from the shown engine.
+      const engineOverride = addEngines[agentId] || agent?.engine || 'claude-code';
+      await api.addSessionAgent(sessionId, agentId, addModels[agentId] || null, engineOverride);
       await refresh();
     } catch (err: any) {
       console.error('addSessionAgent failed:', err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleEngineChange = async (participantId: string, engine: string | null) => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      await api.setSessionAgentEngine(sessionId, participantId, engine);
+      await refresh();
+    } catch (err: any) {
+      console.error('setSessionAgentEngine failed:', err);
     } finally {
       setBusy(false);
     }
@@ -214,7 +266,9 @@ export default function SessionAgentsPanel({
                     showProject={!!executorProjectId && a.projectId !== executorProjectId}
                     onRemove={handleRemove}
                     onModelChange={handleModelChange}
+                    onEngineChange={handleEngineChange}
                     models={modelsForAgent(a)}
+                    engines={selectableEngines}
                   />
                 ))}
                 {advisors.length === 0 && (
@@ -246,7 +300,8 @@ export default function SessionAgentsPanel({
                           </p>
                           <div className="flex flex-wrap gap-2">
                             {group.agents.map((a: any) => {
-                              const models = modelsForAgent(a);
+                              const addEngine = addEngineFor(a);
+                              const models = modelsForEngine(addEngine);
                               return (
                                 <div
                                   key={a.id}
@@ -257,6 +312,34 @@ export default function SessionAgentsPanel({
                                     style={{ backgroundColor: a.color }}
                                   />
                                   <span className="text-sm text-gray-300">{a.name}</span>
+                                  {selectableEngines.length > 0 ? (
+                                    <select
+                                      aria-label={`Engine for new ${a.name}`}
+                                      value={addEngine}
+                                      disabled={busy}
+                                      onChange={(event: any) => {
+                                        const nextEngine = event.target.value;
+                                        // Engine drives the model list; drop a
+                                        // stale model pick from the prior engine.
+                                        setAddEngines((current) => ({
+                                          ...current,
+                                          [a.id]: nextEngine,
+                                        }));
+                                        setAddModels((current) => {
+                                          const next = { ...current };
+                                          delete next[a.id];
+                                          return next;
+                                        });
+                                      }}
+                                      className="min-w-0 max-w-40 rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-300 disabled:opacity-40"
+                                    >
+                                      {selectableEngines.map((engine: string) => (
+                                        <option key={engine} value={engine}>
+                                          {ENGINE_LABELS[engine] || engine}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : null}
                                   {models.length > 0 ? (
                                     <select
                                       aria-label={`Model for new ${a.name}`}

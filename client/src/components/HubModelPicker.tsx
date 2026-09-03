@@ -1,4 +1,4 @@
-const ENGINE_LABELS: Record<string, string> = {
+export const ENGINE_LABELS: Record<string, string> = {
   'claude-code': 'Claude Code',
   'cursor-agent': 'Cursor',
   'codex-cli': 'Codex',

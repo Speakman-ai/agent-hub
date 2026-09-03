@@ -20,6 +20,7 @@ import {
   FollowUpSessionRequestSchema,
   AddSessionAgentRequestSchema,
   PutSessionAgentModelRequestSchema,
+  PutSessionAgentEngineRequestSchema,
 } from './sessions.openapi.js';
 import {
   normalizeSessionMode,
@@ -784,7 +785,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (!session) return res.status(404).json({ error: 'Session not found' });
     const sessionProject = findAgent(session.agent_id)?.project ?? null;
     res.json({
-      ...enrichSessionWithAgents(session, stmts, getEnrichedAgent, sessionProject),
+      ...enrichSessionWithAgents(session, stmts, getEnrichedAgent, sessionProject, config),
       orchestrationMeta: parseOrchestrationMetaJson(session.orchestration_meta ?? null),
     });
   });
@@ -1767,7 +1768,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     const session = stmts.getSession.get(sessionId) as SessionRow;
-    const enriched = enrichSessionWithAgents(session, stmts, getEnrichedAgent, sessionProject);
+    const enriched = enrichSessionWithAgents(
+      session,
+      stmts,
+      getEnrichedAgent,
+      sessionProject,
+      config,
+    );
     deps.broadcast({ type: 'session-updated', session: enriched });
     res.json(enriched);
   });
@@ -1955,7 +1962,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   router.post('/api/sessions/:sessionId/agents', (req: Request, res: Response) => {
     const parsed = parseBody(AddSessionAgentRequestSchema, req, res);
     if (!parsed) return;
-    const { agentId, model = null } = parsed;
+    const { agentId, model = null, engine: engineOverride = null } = parsed;
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
     const found = findAgent(agentId);
@@ -1968,12 +1975,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       return res.status(403).json({ error: 'Reviewer agents cannot join multi-agent sessions' });
     }
     const ownerUserId = session.owner_user_id ?? (req as AuthenticatedRequest).authUserId ?? null;
-    const { engine } = resolveEffectiveEngineAndModel(config, {
+    const resolved = resolveEffectiveEngineAndModel(config, {
       agentId,
       agentEngine: found.agent.engine || 'claude-code',
       agentModel: found.agent.model ?? null,
       ownerUserId,
     });
+    // An explicit override forces this participant's engine; otherwise validate
+    // the model against the agent's resolved engine.
+    const engine = engineOverride || resolved.engine;
     if (model) {
       const staticAllowed = config.engineValidModels[engine] || [];
       const allowed =
@@ -1989,13 +1999,20 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         });
       }
     }
-    stmts.addSessionAgent.run(uuidv4(), req.params.sessionId, agentId, model, req.params.sessionId);
+    stmts.addSessionAgent.run(
+      uuidv4(),
+      req.params.sessionId,
+      agentId,
+      model,
+      engineOverride,
+      req.params.sessionId,
+    );
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     deps.broadcast({
       type: 'session-updated',
-      session: enrichSessionWithAgents(updated, stmts, getEnrichedAgent),
+      session: enrichSessionWithAgents(updated, stmts, getEnrichedAgent, undefined, config),
     });
-    res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent));
+    res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent, undefined, config));
   });
 
   router.delete('/api/sessions/:sessionId/agents/:participantId', (req: Request, res: Response) => {
@@ -2008,9 +2025,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     deps.broadcast({
       type: 'session-updated',
-      session: enrichSessionWithAgents(updated, stmts, getEnrichedAgent),
+      session: enrichSessionWithAgents(updated, stmts, getEnrichedAgent, undefined, config),
     });
-    res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent));
+    res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent, undefined, config));
   });
 
   router.put(
@@ -2024,18 +2041,22 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         stmts.getSessionAgents.all(req.params.sessionId) as Array<{
           id: string;
           agent_id: string;
+          engine: string | null;
         }>
       ).find((row) => row.id === req.params.participantId);
       if (!participant) return res.status(404).json({ error: 'Session participant not found' });
       const found = findAgent(participant.agent_id);
       if (!found) return res.status(404).json({ error: 'Agent not found' });
       const ownerUserId = session.owner_user_id ?? (req as AuthenticatedRequest).authUserId ?? null;
-      const { engine } = resolveEffectiveEngineAndModel(config, {
+      const resolved = resolveEffectiveEngineAndModel(config, {
         agentId: participant.agent_id,
         agentEngine: found.agent.engine || 'claude-code',
         agentModel: found.agent.model ?? null,
         ownerUserId,
       });
+      // Validate the model against this participant's effective engine — the
+      // stored override wins over the agent's resolved engine.
+      const engine = participant.engine?.trim() || resolved.engine;
       if (parsed.model) {
         const staticAllowed = config.engineValidModels[engine] || [];
         const allowed =
@@ -2059,9 +2080,36 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
       deps.broadcast({
         type: 'session-updated',
-        session: enrichSessionWithAgents(updated, stmts, getEnrichedAgent),
+        session: enrichSessionWithAgents(updated, stmts, getEnrichedAgent, undefined, config),
       });
-      res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent));
+      res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent, undefined, config));
+    },
+  );
+
+  router.put(
+    '/api/sessions/:sessionId/agents/:participantId/engine',
+    (req: Request, res: Response) => {
+      const parsed = parseBody(PutSessionAgentEngineRequestSchema, req, res);
+      if (!parsed) return;
+      const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+      const participant = (
+        stmts.getSessionAgents.all(req.params.sessionId) as Array<{ id: string }>
+      ).find((row) => row.id === req.params.participantId);
+      if (!participant) return res.status(404).json({ error: 'Session participant not found' });
+      // Engine change resets the participant model (updateSessionAgentEngine
+      // nulls it): a model valid for the prior engine rarely maps across.
+      stmts.updateSessionAgentEngine.run(
+        parsed.engine,
+        req.params.sessionId,
+        req.params.participantId,
+      );
+      const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
+      deps.broadcast({
+        type: 'session-updated',
+        session: enrichSessionWithAgents(updated, stmts, getEnrichedAgent, undefined, config),
+      });
+      res.json(enrichSessionWithAgents(updated, stmts, getEnrichedAgent, undefined, config));
     },
   );
 

@@ -272,19 +272,29 @@ export const PatchSessionRequestSchema = z.object({
   ask_mode: z.boolean().optional(),
 });
 
+const EngineEnum = z.enum(['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli', 'grok-cli'], {
+  error: 'Invalid engine. Must be claude-code, cursor-agent, gemini-cli, codex-cli, or grok-cli',
+});
+
 export const AddSessionAgentRequestSchema = z.object({
   agentId: z.string().min(1, 'agentId is required'),
   model: z.string().min(1, 'model must not be empty').nullable().optional(),
+  // Optional per-participant engine override so the same agent can be added as
+  // a Claude / Codex / Cursor / Grok instance for cross-verification.
+  engine: EngineEnum.nullable().optional(),
 });
 
 export const PutSessionAgentModelRequestSchema = z.object({
   model: z.string().min(1, 'model must not be empty').nullable(),
 });
 
+export const PutSessionAgentEngineRequestSchema = z.object({
+  // null clears the override and re-inherits the agent's engine.
+  engine: EngineEnum.nullable(),
+});
+
 export const PutSessionEngineRequestSchema = z.object({
-  engine: z.enum(['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli', 'grok-cli'], {
-    error: 'Invalid engine. Must be claude-code, cursor-agent, gemini-cli, codex-cli, or grok-cli',
-  }),
+  engine: EngineEnum,
 });
 
 export const PutSessionModelRequestSchema = z.object({
@@ -962,6 +972,25 @@ registerPath({
   responses: {
     200: { description: 'Updated session with roster.', content: jsonContent(SessionComponent) },
     400: errorResponse('Model is invalid for the agent engine.'),
+    404: errorResponse('Session or participant not found.'),
+  },
+});
+
+// PUT /api/sessions/:sessionId/agents/:participantId/engine
+registerPath({
+  method: 'put',
+  path: '/api/sessions/{sessionId}/agents/{participantId}/engine',
+  tags: ['Sessions'],
+  summary: 'Set the engine override for one advisor participant instance',
+  description:
+    'Session owner only. Forces a specific CLI engine for this advisor instance (so the same agent can run as a Claude / Codex / Cursor / Grok participant). Changing the engine resets that participant instance model to the engine default. Pass null to clear the override and re-inherit the agent engine.',
+  request: {
+    params: sessionParticipantIdParams,
+    body: { content: jsonContent(PutSessionAgentEngineRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated session with roster.', content: jsonContent(SessionComponent) },
+    400: errorResponse('Invalid engine.'),
     404: errorResponse('Session or participant not found.'),
   },
 });

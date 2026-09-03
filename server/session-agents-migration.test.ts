@@ -6,7 +6,13 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb, getStmts, initDb } from './db.js';
 
 let columns: string[] = [];
-let rows: Array<{ id: string; session_id: string; agent_id: string; model: string | null }> = [];
+let rows: Array<{
+  id: string;
+  session_id: string;
+  agent_id: string;
+  model: string | null;
+  engine: string | null;
+}> = [];
 
 beforeAll(() => {
   const sourceDir = mkdtempSync(path.join(tmpdir(), 'ah-session-agents-source-'));
@@ -49,9 +55,16 @@ beforeAll(() => {
   columns = (
     upgraded.prepare('PRAGMA table_info(session_agents)').all() as Array<{ name: string }>
   ).map((column) => column.name);
-  getStmts().addSessionAgent.run('participant-2', 'session-1', 'agent-2', 'model-b', 'session-1');
+  getStmts().addSessionAgent.run(
+    'participant-2',
+    'session-1',
+    'agent-2',
+    'model-b',
+    'codex-cli',
+    'session-1',
+  );
   rows = upgraded
-    .prepare('SELECT id, session_id, agent_id, model FROM session_agents ORDER BY position')
+    .prepare('SELECT id, session_id, agent_id, model, engine FROM session_agents ORDER BY position')
     .all() as typeof rows;
 });
 
@@ -63,11 +76,19 @@ describe('session_agents participant-instance migration', () => {
     expect(rows[0]!.agent_id).toBe('agent-2');
     expect(rows[0]!.id).toBeTruthy();
     expect(rows[0]!.model).toBeNull();
+    // Legacy advisor rows migrate in with no engine override (inherit the agent).
+    expect(rows[0]!.engine).toBeNull();
     expect(rows[1]).toMatchObject({
       id: 'participant-2',
       session_id: 'session-1',
       agent_id: 'agent-2',
       model: 'model-b',
     });
+  });
+
+  it('adds the nullable engine column and stores a per-participant override', () => {
+    expect(columns).toContain('engine');
+    // The override lets the same agent run as a different CLI for cross-check.
+    expect(rows[1]!.engine).toBe('codex-cli');
   });
 });

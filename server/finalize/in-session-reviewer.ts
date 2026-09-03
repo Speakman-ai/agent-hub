@@ -248,7 +248,7 @@ export async function runReviewerTurn(
   // and read `agents` to refresh the multi-agent roster panel.
   const broadcastRoster = (): void => {
     try {
-      const agents = listSessionAgents(deps.stmts, sessionRow, deps.getEnrichedAgent);
+      const agents = listSessionAgents(deps.stmts, sessionRow, deps.getEnrichedAgent, config);
       deps.broadcast({
         type: 'session-updated',
         session: {
@@ -275,6 +275,7 @@ export async function runReviewerTurn(
       reviewerParticipantId,
       sessionId,
       reviewerAgent.id,
+      null,
       null,
       sessionId,
     );

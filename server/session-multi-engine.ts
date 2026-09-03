@@ -19,6 +19,7 @@ import {
 import { resolveGrokSpawnModel } from './config.js';
 import { withLocalCommitReminder } from './local-commit-reminder.js';
 import type { AppConfig } from './types.js';
+import { resolveEffectiveEngineAndModel } from './effective-model.js';
 
 export const SESSION_MULTI_ENGINES = [
   'claude-code',
@@ -38,6 +39,47 @@ export function normalizeSessionMultiEngine(engine: string | null | undefined): 
   const e = typeof engine === 'string' ? engine.trim() : '';
   if (e && isSessionMultiEngine(e)) return e;
   return 'claude-code';
+}
+
+export interface AdvisorEngineResolutionOpts {
+  agentId: string;
+  /** The advisor agent's shared/configured engine. */
+  agentEngine: string | null | undefined;
+  /** The advisor agent's shared/configured model. */
+  agentModel?: string | null;
+  /** Per-participant engine override (session_agents.engine); null → inherit. */
+  sessionEngine?: string | null;
+  /** Per-participant model override (session_agents.model). */
+  sessionModel?: string | null;
+  /** Session owner's user id, so per-user engine/model overrides apply. */
+  ownerUserId?: string | null;
+}
+
+/**
+ * Single source of truth for the engine + model an advisor turn spawns with.
+ * Precedence (highest first): per-participant override → per-user override →
+ * agent's configured engine. The **same** resolution must drive both the
+ * runtime spawn (`runAdvisorTurn`) and the reported roster engine
+ * (`listSessionAgents`) — otherwise the UI's model picker can be seeded from a
+ * different engine than the CLI actually runs (e.g. reported Claude, spawned
+ * Codex via a per-user override).
+ */
+export function resolveAdvisorEngineAndModel(
+  config: AppConfig,
+  opts: AdvisorEngineResolutionOpts,
+): { engine: SessionMultiEngine; model: string } {
+  const { engine, model } = resolveEffectiveEngineAndModel(config, {
+    agentId: opts.agentId,
+    agentEngine: normalizeSessionMultiEngine(opts.agentEngine),
+    agentModel: opts.agentModel ?? undefined,
+    ownerUserId: opts.ownerUserId,
+    // A per-participant engine override forces that CLI for this advisor
+    // instance (the swarm cross-verification case); null falls through to the
+    // per-user override and then the agent's engine.
+    explicitEngine: opts.sessionEngine ? normalizeSessionMultiEngine(opts.sessionEngine) : null,
+    explicitModel: opts.sessionModel,
+  });
+  return { engine: normalizeSessionMultiEngine(engine), model };
 }
 
 export interface SessionSpawnBins {

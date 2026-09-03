@@ -15,6 +15,7 @@ const apiMock = vi.hoisted(() => ({
   addSessionAgent: vi.fn(),
   removeSessionAgent: vi.fn(),
   setSessionAgentModel: vi.fn(),
+  setSessionAgentEngine: vi.fn(),
   getSessionDetail: vi.fn(),
   updateSession: vi.fn(),
 }));
@@ -84,7 +85,78 @@ describe('SessionAgentsPanel mobile', () => {
       await renderer.root.findByProps({ accessibilityLabel: 'Add Helper' }).props.onPress();
     });
 
-    expect(apiMock.addSessionAgent).toHaveBeenCalledWith('session-1', 'agent-2', 'model-b');
+    // The displayed add-row engine is authoritative: it is sent explicitly (the
+    // agent's own engine here) so a per-user override cannot silently diverge
+    // the spawn from what was shown.
+    expect(apiMock.addSessionAgent).toHaveBeenCalledWith(
+      'session-1',
+      'agent-2',
+      'model-b',
+      'claude-code',
+    );
+  });
+
+  it('adds a duplicate agent with an engine override', async () => {
+    let renderer!: ReactTestRenderer;
+    await TestRenderer.act(async () => {
+      renderer = TestRenderer.create(
+        React.createElement(SessionAgentsPanel, {
+          sessionId: 'session-1',
+          sessionAgents,
+          agents,
+          modelConfig: {
+            engineValidModels: {
+              'claude-code': ['model-a', 'model-b'],
+              'codex-cli': ['gpt-5.6-sol'],
+            },
+          },
+        }),
+      );
+    });
+    await TestRenderer.act(async () => {
+      renderer.root.findByProps({ accessibilityLabel: 'Toggle session agents' }).props.onPress();
+    });
+    await TestRenderer.act(async () => {
+      renderer.root.findByProps({ accessibilityLabel: 'Use Codex for new Helper' }).props.onPress();
+    });
+    await TestRenderer.act(async () => {
+      await renderer.root.findByProps({ accessibilityLabel: 'Add Helper' }).props.onPress();
+    });
+
+    expect(apiMock.addSessionAgent).toHaveBeenCalledWith('session-1', 'agent-2', null, 'codex-cli');
+  });
+
+  it('changes an existing advisor engine by participant id', async () => {
+    let renderer!: ReactTestRenderer;
+    await TestRenderer.act(async () => {
+      renderer = TestRenderer.create(
+        React.createElement(SessionAgentsPanel, {
+          sessionId: 'session-1',
+          sessionAgents,
+          agents,
+          modelConfig: {
+            engineValidModels: {
+              'claude-code': ['model-a', 'model-b'],
+              'codex-cli': ['gpt-5.6-sol'],
+            },
+          },
+        }),
+      );
+    });
+    await TestRenderer.act(async () => {
+      renderer.root.findByProps({ accessibilityLabel: 'Toggle session agents' }).props.onPress();
+    });
+    await TestRenderer.act(async () => {
+      await renderer.root
+        .findByProps({ accessibilityLabel: 'Use Codex for Helper' })
+        .props.onPress();
+    });
+
+    expect(apiMock.setSessionAgentEngine).toHaveBeenCalledWith(
+      'session-1',
+      'participant-1',
+      'codex-cli',
+    );
   });
 
   it('updates one duplicate participant by participant id', async () => {

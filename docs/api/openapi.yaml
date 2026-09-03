@@ -22634,6 +22634,16 @@ paths:
                   type: string
                   nullable: true
                   minLength: 1
+                engine:
+                  type: string
+                  nullable: true
+                  enum:
+                    - claude-code
+                    - cursor-agent
+                    - gemini-cli
+                    - codex-cli
+                    - grok-cli
+                    - null
               required:
                 - agentId
       responses:
@@ -22737,6 +22747,64 @@ paths:
                 $ref: "#/components/schemas/Session"
         "400":
           description: Model is invalid for the agent engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session or participant not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/agents/{participantId}/engine:
+    put:
+      tags:
+        - Sessions
+      summary: Set the engine override for one advisor participant instance
+      description: Session owner only. Forces a specific CLI engine for this advisor instance (so the same agent can run as a Claude / Codex / Cursor / Grok participant). Changing the engine resets that participant instance model to the engine default. Pass null to clear the override and re-inherit the agent engine.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Advisor participant instance ID.
+          required: true
+          description: Advisor participant instance ID.
+          name: participantId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                engine:
+                  type: string
+                  nullable: true
+                  enum:
+                    - claude-code
+                    - cursor-agent
+                    - gemini-cli
+                    - codex-cli
+                    - grok-cli
+                    - null
+              required:
+                - engine
+      responses:
+        "200":
+          description: Updated session with roster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Invalid engine.
           content:
             application/json:
               schema:

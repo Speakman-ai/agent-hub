@@ -121,6 +121,7 @@ describe('materializeSessionAdvisors', () => {
         session_id: 'session-1',
         agent_id: agent.id,
         model: 'model-a',
+        engine: null,
         position: 0,
         added_at: '',
       },
@@ -129,6 +130,7 @@ describe('materializeSessionAdvisors', () => {
         session_id: 'session-1',
         agent_id: agent.id,
         model: 'model-b',
+        engine: 'codex-cli',
         position: 1,
         added_at: '',
       },
@@ -142,6 +144,9 @@ describe('materializeSessionAdvisors', () => {
       'participant-2',
     ]);
     expect(participants.map((item) => item.sessionModel)).toEqual(['model-a', 'model-b']);
+    // Per-participant engine override is carried through so the spawn can force
+    // that CLI; a null override inherits the agent's engine.
+    expect(participants.map((item) => item.sessionEngine)).toEqual([null, 'codex-cli']);
   });
 });
 
