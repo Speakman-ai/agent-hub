@@ -24,8 +24,13 @@ class FakeCdp {
   readonly sent: Array<{ method: string; params?: object }> = [];
   readonly handlers = new Map<string, Set<(p: unknown) => void>>();
   detached = 0;
+  /** When set, `Page.captureScreenshot` resolves with this base64 payload. */
+  captureScreenshotData: string | null = null;
   async send(method: string, params?: object): Promise<unknown> {
     this.sent.push({ method, params });
+    if (method === 'Page.captureScreenshot' && this.captureScreenshotData) {
+      return { data: this.captureScreenshotData };
+    }
     return {};
   }
   on(event: string, handler: (p: unknown) => void): void {
@@ -155,6 +160,48 @@ describe('browser screencast feed', () => {
     detachB();
     await vi.waitFor(() => expect(cdp.sent.map((c) => c.method)).toContain('Page.stopScreencast'));
     await vi.waitFor(() => expect(cdp.detached).toBe(1));
+  });
+
+  it('seeds one captured frame on attach so a static, already-loaded page is not blank', async () => {
+    const { session, cdp } = makeFakeSession('chat-seed');
+    cdp.captureScreenshotData = 'SEEDFRAME';
+    __registerBrowserSessionForTests(session);
+    const v = makeViewer('seed');
+    attachBrowserScreencastViewer('chat-seed', v.viewer);
+    await vi.waitFor(() => expect(v.states.at(-1)?.status).toBe('live'));
+
+    // No Page.screencastFrame event is ever emitted (the page is static), yet
+    // the viewer must still paint from the forced capture.
+    await vi.waitFor(() => expect(v.frames).toHaveLength(1));
+    expect(cdp.sent.map((c) => c.method)).toContain('Page.captureScreenshot');
+    expect(v.frames[0]).toMatchObject({
+      data: 'SEEDFRAME',
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      url: 'https://example.com/',
+    });
+
+    // A real screencast frame supersedes the seed rather than duplicating it.
+    cdp.emit('Page.screencastFrame', {
+      data: 'REALFRAME',
+      metadata: { deviceWidth: 1280, deviceHeight: 720 },
+      sessionId: 3,
+    });
+    expect(v.frames).toHaveLength(2);
+    expect(v.frames[1]).toMatchObject({ data: 'REALFRAME' });
+  });
+
+  it('does not seed a frame when CDP cannot produce a screenshot (no capture data)', async () => {
+    const { session, cdp } = makeFakeSession('chat-noseed');
+    // captureScreenshotData stays null → send() returns {} with no data.
+    __registerBrowserSessionForTests(session);
+    const v = makeViewer('noseed');
+    attachBrowserScreencastViewer('chat-noseed', v.viewer);
+    await vi.waitFor(() => expect(v.states.at(-1)?.status).toBe('live'));
+    // Give any pending seed a chance to run, then assert it produced nothing.
+    await Promise.resolve();
+    expect(v.frames).toHaveLength(0);
+    void cdp;
   });
 
   it('holds the browser open while a viewer is attached and releases on detach', async () => {

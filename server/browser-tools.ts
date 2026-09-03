@@ -226,6 +226,33 @@ export function looksLikeSelectorTarget(raw: string): boolean {
   return /^[#.[\w*]/.test(t);
 }
 
+/**
+ * Minimal Playwright `Locator` surface. `first()` / `filter()` are optional so
+ * the Stagehand-shaped test fakes (which return a bare `{ click, fill }`) still
+ * satisfy the type; production Playwright locators implement both.
+ */
+export type LocatorLike = {
+  click: (opts?: object) => Promise<void>;
+  fill: (text: string) => Promise<void>;
+  first?: () => LocatorLike;
+  filter?: (opts: { visible?: boolean }) => LocatorLike;
+};
+
+/**
+ * Resolve a CSS/XPath selector to a single editable target. Prefer the first
+ * *visible* match: login forms often carry hidden autofill mirror inputs and
+ * duplicated controls, so a bare `locator(sel).fill()` either throws Playwright
+ * strict-mode (multiple matches) or silently drives an off-screen mirror. When
+ * the underlying locator lacks `filter`/`first` (unit fakes), fall back to the
+ * bare locator so existing behavior is unchanged.
+ */
+export function resolveEditableLocator(page: HubPage, selector: string): LocatorLike {
+  let loc: LocatorLike = page.locator(selector);
+  if (typeof loc.filter === 'function') loc = loc.filter({ visible: true });
+  if (typeof loc.first === 'function') loc = loc.first();
+  return loc;
+}
+
 /** Playwright Page surface (production) plus the Stagehand-shaped test fakes. */
 export type HubPage = {
   url(): string;
@@ -234,10 +261,7 @@ export type HubPage = {
     opts?: { waitUntil?: string; timeout?: number; timeoutMs?: number },
   ): Promise<unknown>;
   screenshot(opts?: { type?: string; quality?: number }): Promise<Buffer | Uint8Array>;
-  locator(selector: string): {
-    click: (opts?: object) => Promise<void>;
-    fill: (text: string) => Promise<void>;
-  };
+  locator(selector: string): LocatorLike;
   evaluate(script: string): Promise<unknown>;
   waitForLoadState?: (state: string, opts?: { timeout?: number } | number) => Promise<void>;
   waitForSelector?: (sel: string, opts?: object) => Promise<void>;
@@ -690,7 +714,7 @@ export async function browserClick(host: unknown, target: string): Promise<Brows
   try {
     const page = getActivePage(host);
     if (looksLikeSelectorTarget(t)) {
-      await page.locator(t).click();
+      await resolveEditableLocator(page, t).click();
       return result('click', true, { method: 'locator' });
     }
     if (typeof page.getByText === 'function') {
@@ -728,7 +752,7 @@ export async function browserType(
   try {
     const page = getActivePage(host);
     if (looksLikeSelectorTarget(t)) {
-      await page.locator(t).fill(String(text));
+      await resolveEditableLocator(page, t).fill(String(text));
       return result('type', true, { method: 'locator' });
     }
     if (typeof page.getByLabel === 'function') {

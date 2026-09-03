@@ -215,6 +215,69 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.markdown).toContain('"method": "locator"');
   });
 
+  it('type: CSS selector fills the first visible match, skipping hidden mirror inputs', async () => {
+    const page = makeMockPage();
+    const stagehand = makeMockStagehand(page);
+    const fillMirror = vi.fn(async () => {});
+    const fillVisible = vi.fn(async () => {});
+    // .first() on the visible-filtered set → the real, on-screen input.
+    const visibleFirst = { click: vi.fn(async () => {}), fill: fillVisible };
+    const visibleSet = {
+      click: vi.fn(async () => {}),
+      fill: vi.fn(async () => {}),
+      first: () => visibleFirst,
+    };
+    // The unfiltered locator matches [hidden mirror, visible input]; a bare
+    // .fill() here is the buggy path that drives the mirror / strict-throws.
+    const allMatches = {
+      click: vi.fn(async () => {}),
+      fill: fillMirror,
+      filter: vi.fn((opts: { visible?: boolean }) => (opts.visible ? visibleSet : allMatches)),
+    };
+    page.locator = vi.fn(() => allMatches);
+    __registerBrowserSessionForTests({
+      id: 'type-visible',
+      stagehand,
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('type-visible', {
+      op: 'type',
+      target: 'input[formcontrolname="username"]',
+      text: 'admin',
+    });
+    expect(r.hostExit).toBe(0);
+    expect(page.locator).toHaveBeenCalledWith('input[formcontrolname="username"]');
+    expect(allMatches.filter).toHaveBeenCalledWith({ visible: true });
+    expect(fillVisible).toHaveBeenCalledWith('admin');
+    expect(fillMirror).not.toHaveBeenCalled();
+    expect(r.markdown).toContain('"method": "locator"');
+  });
+
+  it('type: falls back to the bare locator when filter/first are unavailable (fake page)', async () => {
+    const page = makeMockPage();
+    const stagehand = makeMockStagehand(page);
+    const fillFn = vi.fn(async () => {});
+    // Minimal locator (no filter/first) — must still be filled directly.
+    page.locator = vi.fn(() => ({ click: vi.fn(async () => {}), fill: fillFn }));
+    __registerBrowserSessionForTests({
+      id: 'type-fallback',
+      stagehand,
+      createdAt: Date.now(),
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      close: async () => {},
+    });
+    const r = await runBrowserReActStep('type-fallback', {
+      op: 'type',
+      target: '#username',
+      text: 'admin',
+    });
+    expect(r.hostExit).toBe(0);
+    expect(page.locator).toHaveBeenCalledWith('#username');
+    expect(fillFn).toHaveBeenCalledWith('admin');
+  });
+
   it('navigate: prefers sessionLaunchOpts.timeoutMs over cached BrowserSession.timeoutMs', async () => {
     const page = makeMockPage();
     __registerBrowserSessionForTests({

@@ -274,6 +274,9 @@ class ScreencastFeed {
     if (this.status === 'live') {
       viewer.onState(this.currentState());
       if (this.lastFrame) viewer.onFrame(this.lastFrame);
+      // Live feed but no frame captured yet (e.g. the page went static before
+      // any repaint) — force one so this viewer paints instead of hanging.
+      else void this.seedInitialFrame();
       return;
     }
     void this.start();
@@ -358,6 +361,52 @@ class ScreencastFeed {
     this.status = 'live';
     this.acquireHold();
     this.broadcastState();
+    // `Page.startScreencast` only emits on repaint, so a viewer that attaches
+    // to an already-loaded, static page would otherwise see nothing until
+    // something moves. Force one frame so the pane paints immediately.
+    await this.seedInitialFrame();
+  }
+
+  /**
+   * Grab a single frame via CDP `Page.captureScreenshot` and fan it out, so a
+   * newly-live feed is never blank on a static page. No-op when a real
+   * screencast frame has already arrived (that content is fresher) or when the
+   * CDP layer can't produce a JPEG (unit fake).
+   */
+  private async seedInitialFrame(): Promise<void> {
+    const cdp = this.cdp;
+    if (!cdp || this.viewers.size === 0 || this.lastFrame) return;
+    let data: string | null = null;
+    try {
+      const shot = (await cdp.send('Page.captureScreenshot', {
+        format: 'jpeg',
+        quality: this.params.quality,
+      })) as { data?: unknown } | null;
+      if (shot && typeof shot.data === 'string' && shot.data) data = shot.data;
+    } catch {
+      /* best-effort seed — a real repaint will paint the pane instead */
+    }
+    // A real screencast frame may have raced in while we captured; prefer it.
+    if (!data || this.lastFrame) return;
+    const session = this.session;
+    const page = session ? pageOf(session) : null;
+    const vp = viewportOf(page);
+    const frame: ScreencastFrame = {
+      data,
+      width: vp?.width ?? 0,
+      height: vp?.height ?? 0,
+      viewportWidth: vp?.width ?? 0,
+      viewportHeight: vp?.height ?? 0,
+      url: safeUrl(page),
+    };
+    this.lastFrame = frame;
+    for (const v of Array.from(this.viewers.values())) {
+      try {
+        v.onFrame(frame);
+      } catch {
+        /* viewer gone */
+      }
+    }
   }
 
   private async restartScreencast(): Promise<void> {
