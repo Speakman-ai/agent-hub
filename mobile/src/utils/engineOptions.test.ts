@@ -31,10 +31,10 @@ describe('mobile engine picker constants', () => {
     expect(codex).toBeTruthy();
     expect(codex.label).toBe('Codex');
   });
-  it('defaults codex-cli to gpt-5.6-sol', () => {
-    expect(ENGINE_DEFAULT_MODELS['codex-cli']).toBe('gpt-5.6-sol');
+  it('defaults codex-cli to gpt-6-astra', () => {
+    expect(ENGINE_DEFAULT_MODELS['codex-cli']).toBe('gpt-6-astra');
     const allowed = ENGINE_MODELS['codex-cli'].map((m: any) => m.id);
-    expect(allowed).toContain('gpt-5.6-sol');
+    expect(allowed).toContain('gpt-6-astra');
     // The bare gpt-5.6 id and deprecated gpt-5.3-codex must not be selectable.
     expect(allowed).not.toContain('gpt-5.6');
     expect(allowed).not.toContain('gpt-5.3-codex');
@@ -46,7 +46,14 @@ describe('mobile engine picker constants', () => {
     // with server/config.ts → engineValidModels['codex-cli'] and with the
     // ChatGPT allowlist in server/codex-auth.ts.
     const models = ENGINE_MODELS['codex-cli'].map((m: any) => m.id);
-    expect(models).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2']);
+    expect(models).toEqual([
+      'gpt-6-astra',
+      'gpt-5.6-sol',
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+      'gpt-5.2',
+    ]);
     expect(models).not.toContain('gpt-5');
     expect(models).not.toContain('gpt-5-mini');
     expect(models).not.toContain('gpt-5-codex');

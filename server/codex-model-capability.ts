@@ -42,8 +42,11 @@ import {
  *
  * NOTE: the real Codex IDs are `gpt-5.6-sol` / `-terra` / `-luna`, NOT a bare
  * `gpt-5.6` — the tiered GA (2026-07-09) never shipped an unsuffixed id.
+ * `gpt-6-astra` is OpenAI's GPT-6 Astra flagship (2026-09-03), also shipped for
+ * Codex; it leads the list so it is the preferred default when advertised.
  */
 export const CODEX_CAPABILITY_MODELS: readonly string[] = [
+  'gpt-6-astra',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',

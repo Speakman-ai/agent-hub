@@ -31,6 +31,7 @@ export const ENGINE_MODELS: Record<string, any> = {
   // The gpt-5.6 family is capability-gated by the server. This is only the
   // offline fallback; the live list comes from GET /api/config/models.
   'codex-cli': [
+    { id: 'gpt-6-astra', label: 'GPT-6 Astra', short: 'Astra' },
     { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', short: '5.6 Sol' },
     { id: 'gpt-5.5', label: 'GPT-5.5', short: '5.5' },
     { id: 'gpt-5.4', label: 'GPT-5.4', short: '5.4' },
@@ -49,7 +50,7 @@ export const ENGINE_MODELS: Record<string, any> = {
 export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
   'claude-code': 'claude-opus-5',
   'cursor-agent': 'cursor-grok-4.6-high',
-  'codex-cli': 'gpt-5.6-sol',
+  'codex-cli': 'gpt-6-astra',
   'grok-cli': 'grok-4.6',
 };
 // Display labels for models that are no longer selectable but may still appear

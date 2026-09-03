@@ -363,7 +363,7 @@ describe('config.ts — codex-cli model defaults', () => {
     return (await import('./config.js')).default;
   }
 
-  it('offers the baseline Codex models and configures Sol as the default', async () => {
+  it('offers the baseline Codex models and configures GPT-6 Astra as the default', async () => {
     const cfg = await importDefaults();
     expect(cfg.engineValidModels['codex-cli']).toEqual([
       'gpt-5.5',
@@ -371,13 +371,13 @@ describe('config.ts — codex-cli model defaults', () => {
       'gpt-5.4-mini',
       'gpt-5.2',
     ]);
-    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.6-sol');
+    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-6-astra');
   });
 
   it('keeps the capability-gated default out of the static baseline', async () => {
     const cfg = await importDefaults();
-    expect(cfg.engineValidModels['codex-cli']).not.toContain('gpt-5.6-sol');
-    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.6-sol');
+    expect(cfg.engineValidModels['codex-cli']).not.toContain('gpt-6-astra');
+    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-6-astra');
   });
 
   it('forwards the Codex default only when capability metadata advertises it', async () => {
@@ -394,7 +394,7 @@ describe('config.ts — codex-cli model defaults', () => {
     const cfg = await importDefaults();
     expect(cfg.engineValidModels['codex-cli']).not.toContain('gpt-5.3-codex');
     expect(cfg.engineDefaultModels['codex-cli']).not.toBe('gpt-5.3-codex');
-    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.6-sol');
+    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-6-astra');
   });
 });
 

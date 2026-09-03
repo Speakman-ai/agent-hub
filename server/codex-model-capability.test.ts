@@ -122,6 +122,15 @@ describe('codex-model-capability', () => {
       ]);
     });
 
+    it('leads with GPT-6 Astra when the CLI advertises it (2026-09-03 host)', () => {
+      const home = join(dir, 'astra');
+      writeCache(home, ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.5'], '0.146.0');
+      const out = resolveSelectableCodexModels(BASELINE, readCodexModelsCache(home));
+      expect(out[0]).toBe('gpt-6-astra');
+      expect(out[0]).toBe(CODEX_DEFAULT_MODEL);
+      expect(out).toEqual(['gpt-6-astra', 'gpt-5.6-sol', ...BASELINE]);
+    });
+
     it('de-duplicates if a gated model somehow appears in the baseline', () => {
       const home = join(dir, 'dup');
       writeCache(home, ['gpt-5.6-sol']);
@@ -143,13 +152,18 @@ describe('codex-model-capability', () => {
     });
   });
 
-  it('CODEX_CAPABILITY_MODELS are the real tiered gpt-5.6 ids (not a bare gpt-5.6)', () => {
-    expect(CODEX_CAPABILITY_MODELS).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
+  it('CODEX_CAPABILITY_MODELS lead with GPT-6 Astra, then the real tiered gpt-5.6 ids (not a bare gpt-5.6)', () => {
+    expect(CODEX_CAPABILITY_MODELS).toEqual([
+      'gpt-6-astra',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+    ]);
     expect(CODEX_CAPABILITY_MODELS).not.toContain('gpt-5.6');
   });
 
-  it('CODEX_DEFAULT_MODEL is Sol — the newest capability-gated model', () => {
-    expect(CODEX_DEFAULT_MODEL).toBe('gpt-5.6-sol');
+  it('CODEX_DEFAULT_MODEL is GPT-6 Astra — the newest capability-gated model', () => {
+    expect(CODEX_DEFAULT_MODEL).toBe('gpt-6-astra');
     // The default must stay the head of the picker list: capability resolution
     // prepends advertised gated models newest-first, so a default further down
     // would leave the picker's top entry disagreeing with the default.

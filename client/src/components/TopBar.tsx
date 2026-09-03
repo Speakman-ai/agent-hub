@@ -46,6 +46,7 @@ const MODEL_LABELS = {
   // ChatGPT OAuth); labels retained so historical sessions render cleanly.
   'gpt-5.3-codex': { label: 'GPT-5.3 Codex', short: '5.3 Codex' },
   'gpt-5.6': { label: 'GPT-5.6', short: '5.6' },
+  'gpt-6-astra': { label: 'GPT-6 Astra', short: 'Astra' },
   'gpt-5.6-sol': { label: 'GPT-5.6 Sol', short: '5.6 Sol' },
   'gpt-5.6-terra': { label: 'GPT-5.6 Terra', short: '5.6 Terra' },
   'gpt-5.6-luna': { label: 'GPT-5.6 Luna', short: '5.6 Luna' },
@@ -72,7 +73,7 @@ function fallbackModelsForEngine(engine: any) {
   if (engine === 'cursor-agent')
     return ['cursor-grok-4.6-high', 'composer-2.5', 'cursor-grok-4.5-high'];
   if (engine === 'codex-cli')
-    return ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
+    return ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
   if (engine === 'grok-cli')
     return ['grok-4.6', 'grok-4.5', 'grok-build', 'grok-composer-2.5-fast'];
   return [
