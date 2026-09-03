@@ -11,6 +11,7 @@ import { render, act, waitFor, cleanup, screen, fireEvent } from '@testing-libra
 const ctl = vi.hoisted(() => ({
   resolveProjects: null as any,
   resolveSessionsByAgent: {} as Record<string, any>,
+  wsMessage: null as any,
 }));
 
 (vi as any).mock('./utils/orgs.js', () => ({
@@ -42,12 +43,15 @@ const ctl = vi.hoisted(() => ({
 }));
 
 (vi as any).mock('./hooks/useWebSocket.js', () => ({
-  useWebSocket: () => ({
-    send: vi.fn(),
-    connected: true,
-    reconnecting: false,
-    wsRef: { current: null },
-  }),
+  useWebSocket: (onMessage: any) => {
+    ctl.wsMessage = onMessage;
+    return {
+      send: vi.fn(),
+      connected: true,
+      reconnecting: false,
+      wsRef: { current: null },
+    };
+  },
 }));
 (vi as any).mock('./hooks/useDesktopNotifications.js', () => ({
   useDesktopNotifications: () => ({ notify: vi.fn() }),
@@ -162,6 +166,7 @@ describe('App — chat follow-state indicator', () => {
     vi.clearAllMocks();
     ctl.resolveProjects = null;
     ctl.resolveSessionsByAgent = {};
+    ctl.wsMessage = null;
     localStorage.clear();
     globalThis.window.electronAPI = undefined;
     mockFetch();
@@ -200,5 +205,153 @@ describe('App — chat follow-state indicator', () => {
     });
     const indicator = screen.getByTestId('chat-follow-indicator');
     expect(indicator.textContent).toContain('Scroll to bottom');
+  });
+
+  it('stays following when a content shrink clamps scrollTop down at a turn boundary', async () => {
+    // Regression: "new turns stop the session from auto-scrolling". When the
+    // thinking indicator unmounts or the streaming tail is swapped for the final
+    // message, the column shrinks, the browser clamps scrollTop to the new max
+    // and fires a scroll event. scrollTop < lastScrollTop was misread as the
+    // user scrolling up, so follow detached on nearly every turn.
+    const container = await mountChat();
+    // Detach once via a real scroll-up so we know the handler is processing
+    // events (the programmatic guard is clear from here on).
+    setGeometry(container, { scrollTop: 500, scrollHeight: 2000, clientHeight: 300 });
+    await waitFor(() => {
+      fireEvent.scroll(container);
+      expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe(
+        'false',
+      );
+    });
+    // User scrolls back to the tail → following again, lastScrollTop = 1700.
+    setGeometry(container, { scrollTop: 1700, scrollHeight: 2000, clientHeight: 300 });
+    await act(async () => {
+      fireEvent.scroll(container);
+    });
+    expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe('true');
+    // Content shrinks by 200px: the browser clamps scrollTop 1700 → 1500 and the
+    // viewport is still flush with the bottom. This must not detach.
+    setGeometry(container, { scrollTop: 1500, scrollHeight: 1800, clientHeight: 300 });
+    await act(async () => {
+      fireEvent.scroll(container);
+    });
+    expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe('true');
+    // A genuine scroll-up afterwards still detaches.
+    setGeometry(container, { scrollTop: 1400, scrollHeight: 1800, clientHeight: 300 });
+    await act(async () => {
+      fireEvent.scroll(container);
+    });
+    expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe(
+      'false',
+    );
+  });
+
+  it('re-arms follow when a new turn starts after the viewport detached', async () => {
+    const container = await mountChat();
+    setGeometry(container, { scrollTop: 500, scrollHeight: 2000, clientHeight: 300 });
+    await waitFor(() => {
+      fireEvent.scroll(container);
+      expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe(
+        'false',
+      );
+    });
+
+    act(() => {
+      ctl.wsMessage({
+        type: 'thinking',
+        sessionId: 's-a',
+        messageId: 'turn-2',
+        engine: 'claude-code',
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe(
+        'true',
+      );
+    });
+    expect(container.scrollTop).toBe(container.scrollHeight);
+  });
+
+  it('re-arms follow as soon as the new user message arrives', async () => {
+    const container = await mountChat();
+    setGeometry(container, { scrollTop: 500, scrollHeight: 2000, clientHeight: 300 });
+    await waitFor(() => {
+      fireEvent.scroll(container);
+      expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe(
+        'false',
+      );
+    });
+
+    act(() => {
+      ctl.wsMessage({
+        type: 'message',
+        message: {
+          id: 'turn-2',
+          session_id: 's-a',
+          role: 'user',
+          content: 'continue',
+          created_at: '',
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe(
+        'true',
+      );
+    });
+    expect(container.scrollTop).toBe(container.scrollHeight);
+  });
+
+  it('does not re-arm again on thinking after the user detached during the same turn', async () => {
+    const container = await mountChat();
+    setGeometry(container, { scrollTop: 500, scrollHeight: 2000, clientHeight: 300 });
+    await waitFor(() => {
+      fireEvent.scroll(container);
+      expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe(
+        'false',
+      );
+    });
+
+    act(() => {
+      ctl.wsMessage({
+        type: 'message',
+        message: {
+          id: 'turn-2-user',
+          session_id: 's-a',
+          role: 'user',
+          content: 'continue',
+          created_at: '',
+        },
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe(
+        'true',
+      );
+    });
+
+    setGeometry(container, { scrollTop: 500, scrollHeight: 2000, clientHeight: 300 });
+    await waitFor(() => {
+      fireEvent.scroll(container);
+      expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe(
+        'false',
+      );
+    });
+
+    act(() => {
+      ctl.wsMessage({
+        type: 'thinking',
+        sessionId: 's-a',
+        messageId: 'turn-2-assistant',
+        engine: 'claude-code',
+      });
+    });
+
+    expect(screen.getByTestId('chat-follow-indicator').getAttribute('data-following')).toBe(
+      'false',
+    );
+    expect(container.scrollTop).toBe(500);
   });
 });

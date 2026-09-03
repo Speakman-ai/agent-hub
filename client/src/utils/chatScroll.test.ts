@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   isNearBottom,
   CHAT_STICK_TO_BOTTOM_THRESHOLD_PX,
+  distanceFromBottom,
   forcePinChatTailScroll,
   shouldFollowTailAfterScroll,
   pinChatToBottom,
@@ -126,5 +127,61 @@ describe('shouldFollowTailAfterScroll', () => {
     expect(
       shouldFollowTailAfterScroll({ prevScrollTop: 900.4, scrollTop: 900, nearBottom: true }),
     ).toBe(true);
+  });
+
+  it('keeps following when scrollTop dropped because content shrank (browser clamp at the tail)', () => {
+    // Regression: at every turn boundary (thinking indicator unmount, streaming
+    // tail replaced by the final message) the browser clamped scrollTop down and
+    // the resulting scroll event was misread as a user scroll-up, detaching
+    // auto-follow. A user scrolling up can never end flush with the bottom.
+    expect(
+      shouldFollowTailAfterScroll({
+        prevScrollTop: 1700,
+        scrollTop: 1500,
+        nearBottom: true,
+        distanceFromBottom: 0,
+      }),
+    ).toBe(true);
+  });
+
+  it('tolerates fractional clamp offsets when deciding the viewport is flush with the tail', () => {
+    expect(
+      shouldFollowTailAfterScroll({
+        prevScrollTop: 1700,
+        scrollTop: 1499.5,
+        nearBottom: true,
+        distanceFromBottom: 0.5,
+      }),
+    ).toBe(true);
+  });
+
+  it('still breaks follow on an upward scroll that leaves a gap below the viewport', () => {
+    expect(
+      shouldFollowTailAfterScroll({
+        prevScrollTop: 1700,
+        scrollTop: 1650,
+        nearBottom: true,
+        distanceFromBottom: 50,
+      }),
+    ).toBe(false);
+  });
+
+  it('breaks follow on an upward scroll when no distance is supplied (legacy callers)', () => {
+    expect(
+      shouldFollowTailAfterScroll({ prevScrollTop: 1700, scrollTop: 1650, nearBottom: true }),
+    ).toBe(false);
+  });
+});
+
+describe('distanceFromBottom', () => {
+  it('returns 0 for a missing container', () => {
+    expect(distanceFromBottom(null)).toBe(0);
+  });
+
+  it('measures the gap between the viewport bottom edge and the content end', () => {
+    expect(distanceFromBottom({ scrollHeight: 2000, scrollTop: 1500, clientHeight: 300 })).toBe(
+      200,
+    );
+    expect(distanceFromBottom({ scrollHeight: 1800, scrollTop: 1500, clientHeight: 300 })).toBe(0);
   });
 });

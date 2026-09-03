@@ -144,6 +144,7 @@ import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate';
 import { coalescePromiseByKey } from '@shared/utils/coalesceInFlight';
 import {
   isNearBottom,
+  distanceFromBottom,
   forcePinChatTailScroll,
   shouldFollowTailAfterScroll,
   pinChatToBottom,
@@ -1427,6 +1428,10 @@ export default function App({ initialView }: any = {}) {
   // Tracks whether a programmatic scroll is in progress so we don't
   // interpret the resulting scroll events as the user scrolling away.
   const programmaticScrollRef = useRef(false);
+  // The active turn for which a user-message or fallback `thinking` event has
+  // already re-armed follow. Later `thinking` events in that same turn (for
+  // example an advisor starting) must not override a deliberate scroll-up.
+  const followRearmedTurnSessionRef = useRef<string | null>(null);
 
   const checkNearBottom = useCallback(() => isNearBottom(scrollContainerRef.current), []);
 
@@ -1497,11 +1502,15 @@ export default function App({ initialView }: any = {}) {
     // An upward user scroll breaks follow immediately — even within the
     // near-bottom band — so a live-growing block (Finalize CI checks) can't
     // yank the viewport back to the tail while the user reads earlier messages.
+    // A scrollTop drop that leaves the viewport flush with the tail is the
+    // browser clamping after content shrank (turn boundaries: thinking indicator
+    // unmount, streaming tail → final message), not the user scrolling up.
     const following = el
       ? shouldFollowTailAfterScroll({
           prevScrollTop: lastScrollTopRef.current,
           scrollTop: el.scrollTop,
           nearBottom,
+          distanceFromBottom: distanceFromBottom(el),
         })
       : nearBottom;
     if (el) lastScrollTopRef.current = el.scrollTop;
@@ -1592,6 +1601,7 @@ export default function App({ initialView }: any = {}) {
   useLayoutEffect(() => {
     initialScrollRef.current = true;
     isNearBottomRef.current = true;
+    followRearmedTurnSessionRef.current = null;
     lastScrollTopRef.current = 0;
     setFollowing(true);
     setSelectedTimelineAnchor(null);
@@ -1948,6 +1958,14 @@ export default function App({ initialView }: any = {}) {
         case 'message':
           if (msgForActiveSession && data.message?.id) {
             const msg = data.message;
+            // A user message starts a new turn. Re-arm tail-follow even if a
+            // prior turn briefly detached, so the new response cannot begin
+            // streaming below the fold. The user can still scroll up again
+            // during this turn to deliberately detach.
+            if (msg.role === 'user') {
+              followRearmedTurnSessionRef.current = msg.session_id;
+              scrollToBottom();
+            }
             const appendable =
               msg.role === 'user' ||
               msg.role === 'system' ||
@@ -1987,6 +2005,13 @@ export default function App({ initialView }: any = {}) {
             },
           }));
           if (forActiveSession) {
+            // Fall back to `thinking` when this client missed the user-message
+            // broadcast. If that message already re-armed this turn, preserve
+            // any deliberate detach that happened after it arrived.
+            if (followRearmedTurnSessionRef.current !== data.sessionId) {
+              followRearmedTurnSessionRef.current = data.sessionId;
+              scrollToBottom();
+            }
             setThinking(true);
             setStreamingMsgId(data.messageId);
             setStreamingEngine(data.engine || null);
@@ -2189,6 +2214,9 @@ export default function App({ initialView }: any = {}) {
           break;
         }
         case 'done':
+          if (followRearmedTurnSessionRef.current === data.sessionId) {
+            followRearmedTurnSessionRef.current = null;
+          }
           setActiveTasks((prev: any) => {
             const next = { ...prev };
             delete next[data.sessionId];
@@ -2483,6 +2511,9 @@ export default function App({ initialView }: any = {}) {
           break;
         }
         case 'error':
+          if (followRearmedTurnSessionRef.current === data.sessionId) {
+            followRearmedTurnSessionRef.current = null;
+          }
           if (data.sessionId) {
             setActiveTasks((prev: any) => {
               const next = { ...prev };
@@ -2510,6 +2541,9 @@ export default function App({ initialView }: any = {}) {
           }
           break;
         case 'interrupted':
+          if (followRearmedTurnSessionRef.current === data.sessionId) {
+            followRearmedTurnSessionRef.current = null;
+          }
           if (forActiveSession) {
             pinChatTail(streamingMsgIdRef.current);
             setThinking(false);
@@ -3675,6 +3709,7 @@ export default function App({ initialView }: any = {}) {
       reloadActiveAgentSkills,
       showToast,
       pinChatTail,
+      scrollToBottom,
       refreshDiffFileCount,
       bumpDiffReloadToken,
       refreshSecurityOpenCounts,

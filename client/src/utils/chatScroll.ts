@@ -2,6 +2,13 @@
 export const CHAT_STICK_TO_BOTTOM_THRESHOLD_PX = 150;
 
 /**
+ * Max distance from the bottom still treated as "flush with the tail" when the
+ * browser clamps `scrollTop` after content shrinks. Absorbs fractional scroll
+ * offsets at non-100% zoom levels.
+ */
+export const CHAT_CLAMP_AT_BOTTOM_EPSILON_PX = 2;
+
+/**
  * @param {HTMLElement | null} el
  * @param {number} [thresholdPx]
  * @returns {boolean}
@@ -24,13 +31,44 @@ export function isNearBottom(el: any, thresholdPx: any = CHAT_STICK_TO_BOTTOM_TH
  * Downward or same-position scrolls fall back to the near-bottom test, so
  * following resumes once the user scrolls back to the tail.
  *
- * @param {{prevScrollTop: number, scrollTop: number, nearBottom: boolean}} o
+ * A dropped `scrollTop` is **not** a user scroll when the container is still
+ * flush with its bottom edge: the browser clamps `scrollTop` whenever content
+ * shrinks (the thinking indicator unmounting, the streaming tail being replaced
+ * by the final message, tool blocks collapsing at `done`) and dispatches a
+ * scroll event for that clamp outside the programmatic-scroll guard. A person
+ * scrolling *up* can never land exactly on the tail, so pass
+ * `distanceFromBottom` to keep follow armed across those layout shrinks —
+ * without it every turn boundary silently detached auto-scroll.
+ *
+ * @param {{prevScrollTop: number, scrollTop: number, nearBottom: boolean, distanceFromBottom?: number}} o
  * @returns {boolean} next value for "is following the tail"
  */
-export function shouldFollowTailAfterScroll({ prevScrollTop, scrollTop, nearBottom }: any) {
+export function shouldFollowTailAfterScroll({
+  prevScrollTop,
+  scrollTop,
+  nearBottom,
+  distanceFromBottom,
+}: any) {
   // 1px epsilon absorbs sub-pixel jitter from trackpads / zoom levels.
-  if (scrollTop < prevScrollTop - 1) return false;
+  if (scrollTop < prevScrollTop - 1) {
+    return (
+      typeof distanceFromBottom === 'number' &&
+      distanceFromBottom <= CHAT_CLAMP_AT_BOTTOM_EPSILON_PX
+    );
+  }
   return nearBottom;
+}
+
+/**
+ * Distance (px) between the viewport's bottom edge and the end of the scrollable
+ * content. `0` means the container is pinned flush to the tail.
+ *
+ * @param {HTMLElement | null} el
+ * @returns {number}
+ */
+export function distanceFromBottom(el: any) {
+  if (!el) return 0;
+  return el.scrollHeight - el.scrollTop - el.clientHeight;
 }
 
 /**
