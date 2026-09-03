@@ -94,6 +94,11 @@ import {
   whenSessionEnvSelectionReady,
 } from './session-env/sysbox-capability.js';
 import { reconcileSysboxSessionEnvs } from './session-env/sysbox-reconcile.js';
+import { runDockerCommand } from './session-env/sysbox-session-env.js';
+import {
+  makeSessionLivenessCheck,
+  sweepOrphanedComposeStacks,
+} from './preview/compose-stack-reaper.js';
 import { runSessionEnvBootSweep } from './session-env/session-env-boot-sweep.js';
 import { probeFirecrackerCapability } from './session-env/firecracker/firecracker-capability.js';
 import { reconcileFirecrackerHost } from './session-env/firecracker/firecracker-slots.js';
@@ -1189,9 +1194,20 @@ export const activeProcesses = new Map<
 // "starting". See resolvePreviewHealthHost.
 const previewHealthHost = resolvePreviewHealthHost() ?? undefined;
 const previewUrlBase = createPreviewUrlBase(config.publicUrl);
+// Hub-owned compose stack reaping (containers/networks on group stop, volumes
+// too on archive/delete) shells out to `docker`. Off on docker-less hosts and
+// in tests, where teardown falls back to the project's `stopCommand` alone.
+// See server/preview/compose-stack-reaper.ts.
+const previewComposeRunDocker =
+  process.env.NODE_ENV !== 'test' &&
+  !process.env.AGENT_HUB_TEST_MODE &&
+  resolveDockerAvailability().enabled
+    ? runDockerCommand
+    : null;
 const { devServerRuntime } = createPreviewRuntimes({
   db: getDb(),
   getProject: (id) => findProject(id) ?? null,
+  runDocker: previewComposeRunDocker,
   // Containerized sessions must run their preview in the boundary the
   // session already owns; on the host adapter there is no boundary, so the
   // runtime keeps its own env and its reserved-port allocator.
@@ -1588,6 +1604,26 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
       },
       { name: 'finalize-reaper' },
     );
+
+    // Compose stacks previews left on the daemon for sessions that are now
+    // archived or purged — containers squatting pool ports, networks, and
+    // per-session database volumes that fill the root disk. Per-session
+    // teardown handles the live path; this sweep is the GC-parity backstop
+    // for archives that ran while the Hub was down or whose teardown failed.
+    // Only Hub-shaped `session-<id8>` projects are ever touched, and a live
+    // session's stack is skipped even when its preview is stopped.
+    // See server/preview/compose-stack-reaper.ts.
+    const sweepComposeStacks = () =>
+      sweepOrphanedComposeStacks({
+        run: runDockerCommand,
+        isSessionLive: makeSessionLivenessCheck(getDb()),
+      }).catch((err) => {
+        console.warn('[compose-reaper] sweep failed:', (err as Error).message);
+      });
+    void sweepComposeStacks();
+    cron.schedule(FINALIZE_REAPER_CRON, () => void sweepComposeStacks(), {
+      name: 'compose-stack-reaper',
+    });
   }
 
   // Staging checkouts for sessions whose worktree lives in their own env. Kept

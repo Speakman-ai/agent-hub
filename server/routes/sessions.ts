@@ -537,6 +537,17 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   }
 
+  /** Archive/delete only — see `RouteDeps.getDevServerRuntime`. Best-effort. */
+  async function purgeSessionComposeStack(sessionId: string): Promise<void> {
+    const devServerRuntime = deps.getDevServerRuntime?.();
+    if (!devServerRuntime?.purgeSessionComposeStack) return;
+    try {
+      await devServerRuntime.purgeSessionComposeStack(sessionId);
+    } catch (err: unknown) {
+      console.warn(`[sessions] compose stack purge failed (${sessionId}):`, (err as Error).message);
+    }
+  }
+
   /**
    * Full session runtime teardown for archive/delete: preview, background
    * shells, ephemeral Bash notices, and the session environment itself.
@@ -553,7 +564,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     // The session will never take another turn, so nothing will consume its
     // pending native-background-Bash notice. Drop it rather than leak the rows.
     clearEphemeralBackgroundBash(sessionId);
-    const tasks: Promise<unknown>[] = [stopPreviewOnlyForSession(sessionId)];
+    // Stop the preview, then purge what the daemon still holds for it: the
+    // session is gone for good, so its compose volumes (a full restored DB per
+    // session on some projects) would otherwise sit on the root disk forever.
+    const tasks: Promise<unknown>[] = [
+      stopPreviewOnlyForSession(sessionId).then(() => purgeSessionComposeStack(sessionId)),
+    ];
     const backgroundShellRuntime = deps.getBackgroundShellRuntime?.();
     if (backgroundShellRuntime) {
       // Drop the watcher's in-memory pending wakes before the kill. The

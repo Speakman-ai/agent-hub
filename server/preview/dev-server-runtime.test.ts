@@ -22,6 +22,7 @@ import type {
   SessionEnvWorktreeMount,
 } from '../session-env/session-env.js';
 import type { SessionEnvPortRouting } from '../session-env/container-routing.js';
+import type { SysboxRunFn, SysboxRunResult } from '../session-env/sysbox-session-env.js';
 import { HostWorktreeIo, type SessionWorktreeIo } from '../session-env/worktree-io.js';
 import type { Clock } from './preview-runtime-primitives.js';
 import { resolveDevServerPortClientUrl } from './preview-public-url.js';
@@ -273,6 +274,8 @@ function makeHarness(
     isPortFree?: (port: number) => Promise<boolean>;
     kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
     resolveSharedEnv?: ResolveSharedSessionEnvFn;
+    /** Fake `docker` runner for the Hub-owned compose stack reaper. */
+    runDocker?: SysboxRunFn;
     /** Stands in for AGENT_HUB_PREVIEW_HEALTH_HOST on a dockerized Hub. */
     healthUrlBase?: (port: number) => string;
   } = {},
@@ -304,6 +307,7 @@ function makeHarness(
     isPortFree: opts.isPortFree ?? (async () => true),
     ...(opts.kill ? { kill: opts.kill } : {}),
     ...(opts.resolveSharedEnv ? { resolveSharedEnv: opts.resolveSharedEnv } : {}),
+    ...(opts.runDocker ? { runDocker: opts.runDocker } : {}),
     loadProjectEnv,
     getProject: opts.getProject,
     notifyLog: opts.notifyLog,
@@ -506,6 +510,9 @@ describe('DevServerRuntime lifecycle', () => {
             NODE_ENV: 'development',
             NPM_CONFIG_INCLUDE: 'dev',
             AGENT_HUB_HOST_PORT: '4500',
+            // Hub-owned compose project name: `session-` + first 8 chars of
+            // the session id (a uuid in prod; 'session-1' here).
+            COMPOSE_PROJECT_NAME: 'session-session-',
             PORT: '4500',
           },
           name: 'dev-server:session-1',
@@ -1745,5 +1752,182 @@ describe('DevServerRuntime stopCommand teardown hook', () => {
       'docker compose down --remove-orphans',
     );
     expect(h.runtime.getById(started.devServerId)).toBeNull();
+  });
+});
+
+describe('DevServerRuntime Hub-owned compose stack reaping', () => {
+  // The recurring prod failure: a project with a `docker compose up` start and
+  // NO stopCommand. Stopping the group killed only the compose CLI; the
+  // containers kept the published host port (which the pool then handed to
+  // the next session → "port is already allocated") and the per-session
+  // postgres volume stayed on disk until the root filesystem filled.
+  const SESSION_ID = 'dfcb608c-d8ba-479f-8d60-5b9bc6f34c86';
+  const FILTER = 'label=com.docker.compose.project=session-dfcb608c';
+
+  function makeRunDocker() {
+    const calls: string[][] = [];
+    const run: SysboxRunFn = async (argv): Promise<SysboxRunResult> => {
+      calls.push(argv);
+      if (argv[1] === 'ps' && argv.includes(FILTER))
+        return { ok: true, stdout: 'c1\n', stderr: '' };
+      if (argv[1] === 'network' && argv[2] === 'ls' && argv.includes(FILTER)) {
+        return { ok: true, stdout: 'n1\n', stderr: '' };
+      }
+      if (argv[1] === 'volume' && argv[2] === 'ls' && argv.includes(FILTER)) {
+        return { ok: true, stdout: 'session-dfcb608c_preview-postgres-data\n', stderr: '' };
+      }
+      return { ok: true, stdout: '', stderr: '' };
+    };
+    return { run, calls };
+  }
+
+  it('publishes COMPOSE_PROJECT_NAME=session-<id8> to the start spawn env', async () => {
+    const shared = new FakeSessionEnv(SESSION_ID, (p) => p);
+    const project = makeProject({ startCommand: 'docker compose up' });
+    const h = makeHarness({ resolveSharedEnv: async () => shared, getProject: () => project });
+
+    await h.runtime.start(SESSION_ID, project, '/worktree');
+
+    expect(shared.spawnCalls[0].opts.env).toMatchObject({
+      COMPOSE_PROJECT_NAME: 'session-dfcb608c',
+    });
+  });
+
+  it('lets a config-pinned COMPOSE_PROJECT_NAME win (the project then owns teardown)', async () => {
+    const shared = new FakeSessionEnv(SESSION_ID, (p) => p);
+    const project = makeProject({
+      startCommand: 'docker compose up',
+      stopCommand: 'docker compose down',
+      env: { COMPOSE_PROJECT_NAME: 'shared-stack' },
+    });
+    const h = makeHarness({ resolveSharedEnv: async () => shared, getProject: () => project });
+
+    const started = await h.runtime.start(SESSION_ID, project, '/worktree');
+    shared.preExitNextSpawn = { code: 0, signal: null };
+    await h.runtime.stop(started.devServerId);
+
+    expect(shared.spawnCalls[0].opts.env?.COMPOSE_PROJECT_NAME).toBe('shared-stack');
+    // The stopCommand sees the same pinned name, not the Hub default.
+    expect(shared.spawnCalls[1].opts.env?.COMPOSE_PROJECT_NAME).toBe('shared-stack');
+  });
+
+  it('gives the stopCommand the same Hub project name the start got', async () => {
+    const shared = new FakeSessionEnv(SESSION_ID, (p) => p);
+    const project = makeProject({
+      startCommand: 'docker compose up',
+      stopCommand: 'docker compose down --remove-orphans',
+    });
+    const h = makeHarness({ resolveSharedEnv: async () => shared, getProject: () => project });
+
+    const started = await h.runtime.start(SESSION_ID, project, '/worktree');
+    shared.preExitNextSpawn = { code: 0, signal: null };
+    await h.runtime.stop(started.devServerId);
+
+    expect(shared.spawnCalls[1].command).toBe('docker compose down --remove-orphans');
+    expect(shared.spawnCalls[1].opts.env?.COMPOSE_PROJECT_NAME).toBe('session-dfcb608c');
+  });
+
+  it('removes the stack containers + networks on stop with no stopCommand, keeping named volumes', async () => {
+    const shared = new FakeSessionEnv(SESSION_ID, (p) => p);
+    const project = makeProject({ startCommand: 'docker compose up' });
+    const docker = makeRunDocker();
+    const h = makeHarness({
+      resolveSharedEnv: async () => shared,
+      getProject: () => project,
+      runDocker: docker.run,
+    });
+
+    const started = await h.runtime.start(SESSION_ID, project, '/worktree');
+    expect(docker.calls).toEqual([]);
+    await h.runtime.stop(started.devServerId);
+
+    expect(docker.calls).toEqual([
+      ['docker', 'ps', '-aq', '--filter', FILTER],
+      ['docker', 'rm', '-f', '-v', 'c1'],
+      ['docker', 'network', 'ls', '-q', '--filter', FILTER],
+      ['docker', 'network', 'rm', 'n1'],
+    ]);
+    // Only the start was spawned in the env — reaping needs no stopCommand.
+    expect(shared.spawnCalls.map((c) => c.command)).toEqual(['docker compose up']);
+  });
+
+  it('reaps the stack for a restart-orphaned row even when no session env is live', async () => {
+    // After a Hub restart there is no env to run a stopCommand in (the hook
+    // is skipped with a warning). The label-based reap goes straight to the
+    // daemon, so the squatted port is still reclaimed.
+    const project = makeProject({ startCommand: 'docker compose up' });
+    const docker = makeRunDocker();
+    const h = makeHarness({ getProject: () => project, runDocker: docker.run, kill: () => {} });
+    const started = await h.runtime.start(SESSION_ID, project, '/worktree');
+    h.db
+      .prepare(`UPDATE worktree_preview_processes SET pid = 4242 WHERE group_id = ?`)
+      .run(started.devServerId);
+    // Drop the in-memory record so stop() takes the restart-orphan path.
+    (h.runtime as unknown as { active: Map<string, unknown> }).active.clear();
+
+    await h.runtime.stop(started.devServerId);
+
+    expect(docker.calls).toContainEqual(['docker', 'rm', '-f', '-v', 'c1']);
+    expect(docker.calls).toContainEqual(['docker', 'network', 'rm', 'n1']);
+    expect(docker.calls.some((c) => c[1] === 'volume')).toBe(false);
+    expect(h.runtime.getById(started.devServerId)).toBeNull();
+  });
+
+  it('purgeSessionComposeStack removes the named volumes too (archive / delete)', async () => {
+    const docker = makeRunDocker();
+    const h = makeHarness({ runDocker: docker.run });
+
+    const result = await h.runtime.purgeSessionComposeStack(SESSION_ID);
+
+    expect(result).toMatchObject({
+      projectName: 'session-dfcb608c',
+      containersRemoved: 1,
+      networksRemoved: 1,
+      volumesRemoved: 1,
+      errors: [],
+    });
+    expect(docker.calls.at(-1)).toEqual([
+      'docker',
+      'volume',
+      'rm',
+      'session-dfcb608c_preview-postgres-data',
+    ]);
+  });
+
+  it('is a no-op (null) when no docker runner is wired', async () => {
+    const h = makeHarness();
+    await expect(h.runtime.purgeSessionComposeStack(SESSION_ID)).resolves.toBeNull();
+  });
+});
+
+describe('DevServerRuntime compose stack reaping on failed-start rollback', () => {
+  it('reaps containers + networks when a start rolls back, keeping volumes', async () => {
+    // A buildCommand can have run `docker compose up -d db` before a later
+    // step fails; without a stopCommand those containers would squat the port.
+    const SESSION_ID = 'dfcb608c-d8ba-479f-8d60-5b9bc6f34c86';
+    const FILTER = 'label=com.docker.compose.project=session-dfcb608c';
+    const calls: string[][] = [];
+    const run: SysboxRunFn = async (argv): Promise<SysboxRunResult> => {
+      calls.push(argv);
+      if (argv[1] === 'ps' && argv.includes(FILTER))
+        return { ok: true, stdout: 'db1\n', stderr: '' };
+      return { ok: true, stdout: '', stderr: '' };
+    };
+    const shared = new FakeSessionEnv(SESSION_ID, (p) => p);
+    shared.mountWorktree = async () => {
+      throw new Error('mount failed');
+    };
+    const project = makeProject({ startCommand: 'docker compose up' });
+    const h = makeHarness({
+      resolveSharedEnv: async () => shared,
+      getProject: () => project,
+      runDocker: run,
+    });
+
+    await expect(h.runtime.start(SESSION_ID, project, '/worktree')).rejects.toThrow('mount failed');
+
+    expect(calls).toContainEqual(['docker', 'rm', '-f', '-v', 'db1']);
+    expect(calls).toContainEqual(['docker', 'network', 'ls', '-q', '--filter', FILTER]);
+    expect(calls.some((c) => c[1] === 'volume')).toBe(false);
   });
 });

@@ -4416,6 +4416,12 @@ export interface RouteDeps {
   touchSessionEnv?: (sessionId: string) => void;
   getDevServerRuntime?: () => {
     stopBySessionId: (sessionId: string) => Promise<number>;
+    /**
+     * Archive/delete only: also remove the session's compose containers,
+     * networks and named volumes (Hub-owned `session-<id8>` project). A plain
+     * preview stop must NOT call this — the volumes are reused on restart.
+     */
+    purgeSessionComposeStack?: (sessionId: string) => Promise<unknown>;
   } | null;
   /**
    * Hub-owned background shells (long-running commands monitorable across

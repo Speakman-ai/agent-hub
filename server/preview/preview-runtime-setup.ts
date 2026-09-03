@@ -28,6 +28,7 @@ import {
   type ResolveSharedSessionEnvFn,
 } from './dev-server-runtime.js';
 import type { Project } from '../types.js';
+import type { SysboxRunFn } from '../session-env/sysbox-session-env.js';
 
 export interface CreatePreviewRuntimesDeps {
   db: Database;
@@ -60,6 +61,11 @@ export interface CreatePreviewRuntimesDeps {
    * (guest daemons do not count as Hub-visible live processes).
    */
   onSessionActivity?: (sessionId: string) => void;
+  /**
+   * `docker` runner for Hub-owned compose stack reaping on group stop and
+   * session archive/delete. Null on docker-less hosts and in tests.
+   */
+  runDocker?: SysboxRunFn | null;
 }
 
 export interface CreatePreviewRuntimesResult {
@@ -101,6 +107,7 @@ export function createPreviewRuntimes(
     config: deps.devServerConfig,
     ...(deps.resolveSharedEnv ? { resolveSharedEnv: deps.resolveSharedEnv } : {}),
     ...(deps.onSessionActivity ? { onSessionActivity: deps.onSessionActivity } : {}),
+    runDocker: deps.runDocker ?? null,
   });
 
   const portMin = deps.devServerConfig?.portRange?.min ?? DEFAULT_PREVIEW_PORT_RANGE.min;

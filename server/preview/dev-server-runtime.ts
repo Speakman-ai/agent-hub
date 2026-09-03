@@ -76,6 +76,12 @@ import {
   STOP_PROCESS_NAME,
 } from './dev-server-stop-command.js';
 import { withBootDiagnostic } from './preview-boot-diagnostics.js';
+import {
+  composeProjectNameForSession,
+  reapComposeStack,
+  type ComposeStackReapResult,
+} from './compose-stack-reaper.js';
+import type { SysboxRunFn } from '../session-env/sysbox-session-env.js';
 import type { PreviewPortEntry } from './preview-runtime-lookup.js';
 
 // ─── Types & contracts ──────────────────────────────────────────────────
@@ -250,6 +256,12 @@ export interface DevServerRuntimeDeps {
    * tests inject a stub to stay hermetic.
    */
   isPortFree?: IsPortFreeFn;
+  /**
+   * One-shot `docker` invocation for Hub-owned compose stack reaping (see
+   * `compose-stack-reaper.ts`). Null / omitted on docker-less hosts and in
+   * tests: teardown then relies on the project's `stopCommand` alone.
+   */
+  runDocker?: SysboxRunFn | null;
   notifyLog?: DevServerNotifyLogFn;
   notifyStatus?: DevServerNotifyStatusFn;
   /**
@@ -349,6 +361,14 @@ export function buildDevServerSpawnEnv(opts: {
    * sessions on the same host collide on ("port is already allocated").
    */
   hostPort?: number;
+  /**
+   * Hub-owned compose project name (`session-<id8>`), published as
+   * `COMPOSE_PROJECT_NAME` unless the config pins its own. Scopes every
+   * container / network / volume a `docker compose` start creates to this
+   * session, which is what lets the Hub reap them by label after the group
+   * or the session is gone. See `compose-stack-reaper.ts`.
+   */
+  composeProjectName?: string;
 }): BuildDevServerSpawnEnvResult {
   const env: Record<string, string> = { ...opts.config.env };
   const missingSecretKeys: string[] = [];
@@ -370,6 +390,9 @@ export function buildDevServerSpawnEnv(opts: {
   }
   if (opts.hostPort !== undefined) {
     env.AGENT_HUB_HOST_PORT = String(opts.hostPort);
+  }
+  if (opts.composeProjectName && !('COMPOSE_PROJECT_NAME' in opts.config.env)) {
+    env.COMPOSE_PROJECT_NAME = opts.composeProjectName;
   }
   env.PORT = String(opts.envPort);
   return { env, missingSecretKeys };
@@ -437,6 +460,7 @@ export class DevServerRuntime {
   private readonly getProject: DevServerRuntimeDeps['getProject'];
   private readonly killFn: (pid: number, signal: NodeJS.Signals | 0) => void;
   private readonly isPortFree: IsPortFreeFn;
+  private readonly runDocker: SysboxRunFn | null;
   private readonly notifyLog: DevServerNotifyLogFn | null;
   private readonly notifyStatus: DevServerNotifyStatusFn | null;
 
@@ -479,6 +503,7 @@ export class DevServerRuntime {
     this.getProject = deps.getProject;
     this.killFn = deps.kill ?? ((pid, signal) => process.kill(pid, signal));
     this.isPortFree = deps.isPortFree ?? isHostPortFree;
+    this.runDocker = deps.runDocker ?? null;
     this.notifyLog = deps.notifyLog ?? null;
     this.notifyStatus = deps.notifyStatus ?? null;
     this.onSessionActivity = deps.onSessionActivity ?? null;
@@ -603,6 +628,12 @@ export class DevServerRuntime {
     // signalling the compose CLI below leaves them running and holding their
     // published host port. This is the step that reclaims them.
     await this.runStopHook(devServerId, row.sessionId, row.projectId, entry?.env ?? null);
+    // Hub-owned backstop for daemon-owned resources, independent of whether a
+    // stopCommand exists or the env is still live: remove this session's
+    // compose containers + networks by label so the host port they published
+    // is actually free when the pool hands it to the next session. Named
+    // volumes stay so a restart can reuse them; archive/delete purges those.
+    await this.reapSessionComposeStack(row.sessionId, devServerId, { removeVolumes: false });
 
     if (entry) {
       await this.releaseEnv(entry, devServerId);
@@ -625,6 +656,39 @@ export class DevServerRuntime {
     }
     // FK ON DELETE CASCADE removes the process rows + frees the ports.
     this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(devServerId);
+  }
+
+  /**
+   * Session archive / delete teardown: remove every compose container,
+   * network, AND named volume the session's previews created under the
+   * Hub-owned project name. The session will never restart its preview, so
+   * the volumes (a restored database per session on some projects) are pure
+   * leak from here on. Best-effort; resolves null when reaping is disabled
+   * (no `runDocker`).
+   */
+  async purgeSessionComposeStack(sessionId: string): Promise<ComposeStackReapResult | null> {
+    return this.reapSessionComposeStack(sessionId, null, { removeVolumes: true });
+  }
+
+  private async reapSessionComposeStack(
+    sessionId: string,
+    groupId: string | null,
+    opts: { removeVolumes: boolean },
+  ): Promise<ComposeStackReapResult | null> {
+    if (!this.runDocker) return null;
+    const tag = groupId ? `[dev-server ${groupId}]` : `[dev-server session ${sessionId}]`;
+    try {
+      return await reapComposeStack({
+        run: this.runDocker,
+        projectName: composeProjectNameForSession(sessionId),
+        removeVolumes: opts.removeVolumes,
+        log: (m) => this.logger.log(`${tag} ${m}`),
+        warn: (m) => this.logger.warn(`${tag} ${m}`),
+      });
+    } catch (err) {
+      this.logger.warn(`${tag} compose stack reap threw: ${(err as Error).message}`);
+      return null;
+    }
   }
 
   /**
@@ -687,6 +751,11 @@ export class DevServerRuntime {
     // COMPOSE_PROJECT_NAME=session-$AGENT_HUB_SESSION_ID) tears down the same
     // project the start command created.
     spawnEnv.AGENT_HUB_SESSION_ID = sessionId;
+    // Same project name the start got, so a `docker compose down` stopCommand
+    // targets the stack this session created rather than the cwd default.
+    if (!('COMPOSE_PROJECT_NAME' in cfg.env)) {
+      spawnEnv.COMPOSE_PROJECT_NAME = composeProjectNameForSession(sessionId);
+    }
 
     try {
       const result = await runDevServerStopCommand({
@@ -1199,6 +1268,7 @@ export class DevServerRuntime {
       projectSecrets,
       envPort: primaryEnvPort,
       hostPort: primaryEntry.hostPort,
+      composeProjectName: composeProjectNameForSession(sessionId),
       // Only when it is the env's own address. A loopback mapping means the
       // Hub reaches the process over the gateway translation it already has
       // configured, so overriding it here would name the wrong side.
@@ -1404,6 +1474,7 @@ export class DevServerRuntime {
     // and squat the port exactly as an un-reaped stack would. Runs while the
     // env is still live, before it is released.
     await this.runStopHook(groupId, record.sessionId, projectId, record.env);
+    await this.reapSessionComposeStack(record.sessionId, groupId, { removeVolumes: false });
     await this.releaseEnv(record, groupId);
     this.active.delete(groupId);
     this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);

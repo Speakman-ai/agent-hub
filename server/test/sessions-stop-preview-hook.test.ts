@@ -53,4 +53,31 @@ describe('session preview teardown', () => {
     // Soft-delete archives keep the worktree; dispose must not forget disks.
     expect(dispose).toHaveBeenCalledWith(session.id, { forgetWorkspace: false });
   });
+
+  it('purges the compose stack (volumes included) on archive, but not on a plain preview stop', async () => {
+    // The disk leak: archived sessions left `session-<id>_preview-postgres-data`
+    // volumes behind (~4 GB each on surveytracker) because nothing removed
+    // daemon-owned resources after the preview process was gone. A plain
+    // preview stop must keep them — a restart reuses the restored database.
+    const project = await createProject({ id: 'purge-compose-project', cwd: '/tmp' });
+    const agent = await createAgent({ projectId: project.id as string, id: 'purge-compose-agent' });
+    const session = await createSession({ agentId: agent.id as string });
+    const { routeDeps } = await import('../index.js');
+    const stop = vi.fn().mockResolvedValue(1);
+    const purge = vi.fn().mockResolvedValue({ volumesRemoved: 1 });
+    routeDeps.getDevServerRuntime = () => ({
+      stopBySessionId: stop,
+      purgeSessionComposeStack: purge,
+    });
+    routeDeps.disposeSessionEnv = vi.fn().mockResolvedValue(undefined);
+
+    await request.post(`/api/sessions/${session.id}/preview/stop`).expect(200);
+    expect(purge).not.toHaveBeenCalled();
+
+    await request.delete(`/api/sessions/${session.id}`).expect(200);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(purge).toHaveBeenCalledWith(session.id);
+    // Containers must be gone before their volumes can be removed: stop first.
+    expect(stop.mock.invocationCallOrder.at(-1)).toBeLessThan(purge.mock.invocationCallOrder[0]);
+  });
 });
