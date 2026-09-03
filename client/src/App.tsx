@@ -1405,7 +1405,11 @@ export default function App({ initialView }: any = {}) {
   // after each programmatic pin so the next user scroll compares against the
   // real resting position.
   const lastScrollTopRef = useRef(0);
-  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  // Reactive mirror of isNearBottomRef so the "Following" / "Scroll to bottom"
+  // footer indicator can render the live follow state. `following === true`
+  // means the view is pinned to the tail and new content auto-scrolls; false
+  // means the user has scrolled away and the tail is detached.
+  const [following, setFollowing] = useState(true);
 
   // Tracks whether a programmatic scroll is in progress so we don't
   // interpret the resulting scroll events as the user scrolling away.
@@ -1489,7 +1493,7 @@ export default function App({ initialView }: any = {}) {
       : nearBottom;
     if (el) lastScrollTopRef.current = el.scrollTop;
     isNearBottomRef.current = following;
-    setShowScrollBtn(!following);
+    setFollowing(following);
   }, [checkNearBottom, loadOlderMessages]);
 
   /** Snap to the tail. Always instant — smooth scroll cannot keep up with streaming tokens. */
@@ -1503,7 +1507,7 @@ export default function App({ initialView }: any = {}) {
       armFollow: (scrollTop: number) => {
         lastScrollTopRef.current = scrollTop;
         isNearBottomRef.current = true;
-        setShowScrollBtn(false);
+        setFollowing(true);
       },
       endProgrammatic: () => {
         programmaticScrollRef.current = false;
@@ -1515,7 +1519,7 @@ export default function App({ initialView }: any = {}) {
     const container = scrollContainerRef.current;
     if (!container || !anchorId) return;
     isNearBottomRef.current = false;
-    setShowScrollBtn(true);
+    setFollowing(false);
     setSelectedTimelineAnchor(anchorId);
     // Let blocks that collapse content (review file groups) expand the group
     // owning this anchor first, so the scroll target is actually in the DOM.
@@ -1552,7 +1556,7 @@ export default function App({ initialView }: any = {}) {
 
   const pinChatTail = useCallback((messageId: any) => {
     isNearBottomRef.current = true;
-    setShowScrollBtn(false);
+    setFollowing(true);
     const el = scrollContainerRef.current;
     forcePinChatTailScroll(el, (container: any) => {
       programmaticScrollRef.current = true;
@@ -1576,7 +1580,7 @@ export default function App({ initialView }: any = {}) {
     initialScrollRef.current = true;
     isNearBottomRef.current = true;
     lastScrollTopRef.current = 0;
-    setShowScrollBtn(false);
+    setFollowing(true);
     setSelectedTimelineAnchor(null);
   }, [activeSessionId]);
 
@@ -1636,7 +1640,7 @@ export default function App({ initialView }: any = {}) {
         requestAnimationFrame(() => {
           programmaticScrollRef.current = false;
           isNearBottomRef.current = true;
-          setShowScrollBtn(false);
+          setFollowing(true);
         });
       },
     });
@@ -7422,10 +7426,23 @@ export default function App({ initialView }: any = {}) {
                             })()}
                           </div>
 
-                          {/* Scroll to bottom button */}
-                          {showScrollBtn && (
+                          {/* Follow-state footer: "Following" pill while pinned to
+                              the tail, "Scroll to bottom" button once detached. */}
+                          {following ? (
+                            <div
+                              data-testid="chat-follow-indicator"
+                              data-following="true"
+                              className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/70 border border-gray-600/40 text-gray-400 text-xs px-3 py-1.5 rounded-full shadow-lg backdrop-blur-sm z-10 pointer-events-none select-none"
+                              style={{ width: 'fit-content' }}
+                            >
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                              Following
+                            </div>
+                          ) : (
                             <button
                               onClick={() => scrollToBottom()}
+                              data-testid="chat-follow-indicator"
+                              data-following="false"
                               className="sticky bottom-4 left-1/2 -translate-x-1/2 mx-auto flex items-center gap-1.5 bg-gray-800/90 hover:bg-gray-700 border border-gray-600/50 text-gray-300 text-xs px-3 py-2 rounded-full shadow-lg backdrop-blur-sm transition-all hover:text-white z-10"
                               style={{ width: 'fit-content', display: 'flex' }}
                             >
