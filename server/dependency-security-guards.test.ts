@@ -376,6 +376,21 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // That is a correctness bug, not the DoS, so it does not raise the floor.
     { pkg: 'nanoid', min: '3.3.17', advisory: 'GHSA-2v37-7h3g-55p8', line: '3.x' },
 
+    // --- 7-finding audit (fflate; extract-zip / image-size / provider-utils contained) ---
+
+    // GHSA-px8p-9vwx-vf98 (CVE-2026-45820): fflate's unzipSync enters an
+    // infinite loop on a malformed ZIP64 archive. The advisory patches each
+    // live line separately -- `>=0.8.0 <0.8.3` -> 0.8.3 and `>=0.4.5 <0.4.9`
+    // -> 0.4.9 -- and both lines are in the tree, so neither floor covers the
+    // other. The 0.8.x copies (server via @smithy/middleware-compression, and
+    // client's top-level via jspdf) resolve to 0.8.3; the 0.4.x copy (client's
+    // @rrweb/packer, `fflate: ^0.4.4`) re-resolves in range to 0.4.9 with no
+    // override. Server's parent pins `fflate: 0.8.1` exactly, so 0.8.3 is
+    // reachable there only through the server `fflate` override asserted in
+    // OVERRIDE_FLOORS below.
+    { pkg: 'fflate', min: '0.8.3', advisory: 'GHSA-px8p-9vwx-vf98', line: '0.8.x' },
+    { pkg: 'fflate', min: '0.4.9', advisory: 'GHSA-px8p-9vwx-vf98', line: '0.4.x' },
+
     // --- 20-finding audit (fast-uri / qs / @humanfs/node / @xmldom/xmldom) ---
     // (fast-uri and qs floors were raised above rather than added here.)
 
@@ -982,6 +997,16 @@ describe('override-backed advisory floors', () => {
       // the override npm re-resolves the top-level copy back to 6.15.x, inside
       // the GHSA-4mjr-xmp4-gh2g / GHSA-x5fp-wj9c-mxmx range.
       parentRange: '~6.15.1',
+    },
+    {
+      manifest: 'server',
+      pkg: 'fflate',
+      min: '0.8.3',
+      advisory: 'GHSA-px8p-9vwx-vf98',
+      // @smithy/middleware-compression pins `fflate: 0.8.1` exactly, so without
+      // the override npm re-resolves back to 0.8.1, inside the vulnerable
+      // `>=0.8.0 <0.8.3` range.
+      parentRange: '0.8.1',
     },
   ];
 
