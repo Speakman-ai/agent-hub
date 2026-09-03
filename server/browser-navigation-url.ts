@@ -162,3 +162,24 @@ export function validateBrowserNavigationUrl(
 
   return { ok: true, href: u.href };
 }
+
+/**
+ * Refusal messages produced by {@link validateBrowserNavigationUrl} that mean
+ * "this is a local / private target". The generic `browser` tool appends a
+ * pointer to the `preview` tool for these so the agent's recovery is one step.
+ */
+export function isLocalTargetRefusal(error: string | undefined): boolean {
+  if (!error) return false;
+  return (
+    error.includes('Navigation to localhost is not allowed') ||
+    error.includes('private, loopback, or restricted addresses')
+  );
+}
+
+/** Hint appended to the generic browser tool's local-target refusals. */
+export const BROWSER_LOCAL_TARGET_HINT =
+  'This is the public-web browser (surface: web). To open this session\'s dev preview use the preview tool instead: {"tool":"preview","op":"navigate","route":"/…"} (a route path, not a URL).';
+
+/** Hint appended when the preview drive browser leaves its pinned origin. */
+export const PREVIEW_OFF_ORIGIN_HINT =
+  'The preview tool only ever shows this session\'s dev preview (surface: preview). For public-web pages use the generic browser tool: {"tool":"browser","op":"navigate","url":"https://…"}.';

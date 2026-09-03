@@ -139,7 +139,9 @@ auto-continue the same turn:
 - `skill` (`name`) — load a registered skill.
 - `web` (`query`) — live web search (requires `SERPER_API_KEY` / `WEB_SEARCH_API_KEY` on the server).
 - `browser` (`op` + operands) — host Chromium via Stagehand (`navigate`, `click`, `type`, `extract`, `screenshot`, `read_page`, …). Egress policy blocks private/loopback/metadata targets on explicit `navigate` and `back`/`forward`, but not on every act-driven transition — plan isolation accordingly.
+  The `browser` Chromium is the **public-web surface**: every observation ends with a `Surface: web … · URL: …` trailer, and humans watch it live (and can click/type/navigate in it) through the **Agent browser** pane, fed by the dedicated `/api/sessions/:id/browser/ws` screencast channel (`server/browser-screencast.ts`, `server/browser-screencast-websocket.ts`). Human input is refused while an agent step is in flight and runs the same URL policy as the agent's `navigate`. Local-target refusals point at the `preview` tool.
 - `preview` (`op` + operands) — observe, start, and drive **this session's dev preview** (`start`, `state`, `logs`, `screenshot`, `navigate` by route, …). Agents can boot via `op: "start"` (same path as the toolbar); stop stays human-only.
+  The `preview` drive Chromium is a separate, origin-pinned **preview surface** (`preview:<sessionId>` in the browser registry): observations end with `Surface: preview (… pinned to <origin>) · URL: …`, and an origin escape points back at the `browser` tool for public URLs. It is never screencast — the preview pane is the human's own iframe of that app.
 
 ### Talking to the Hub API — use the bundled wrappers, not raw curl
 The kanban / wiki / sessions / board helper scripts (`server.sh`, `board.sh`,

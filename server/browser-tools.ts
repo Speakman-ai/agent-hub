@@ -10,6 +10,8 @@
 
 import {
   validateBrowserNavigationUrl,
+  isLocalTargetRefusal,
+  BROWSER_LOCAL_TARGET_HINT,
   type BrowserNavigationPolicyOpts,
 } from './browser-navigation-url.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
@@ -383,6 +385,33 @@ export function pageSnapshotObservationLines(snap: {
   ];
 }
 
+/**
+ * One-line trailer naming which Chromium an observation came from, so an agent
+ * that uses both tools in one turn never has to guess which world a result
+ * belongs to. `web` is the generic public-internet browser (mirrored live in
+ * the human's **Agent browser** pane); `preview` is the origin-pinned drive
+ * browser for this session's dev preview.
+ */
+export function surfaceObservationLines(
+  surface: 'web' | 'preview',
+  url: string | null,
+  extra?: string,
+): string[] {
+  const label =
+    surface === 'web'
+      ? 'Surface: web (agent browser — public internet; humans see it live in the Agent browser pane)'
+      : `Surface: preview (this session's dev preview${extra ? `, pinned to ${extra}` : ''})`;
+  return ['', `${label} · URL: ${url ?? '(no page yet)'}`];
+}
+
+export function currentPageUrlOf(host: unknown): string | null {
+  try {
+    return getActivePage(host).url();
+  } catch {
+    return null;
+  }
+}
+
 type PageWithMainSession = HubPage & { mainSession?: CdpSessionLike };
 
 async function resolveCdpSession(host: unknown, page: HubPage): Promise<CdpSessionLike | null> {
@@ -610,6 +639,12 @@ function result(op: BrowserToolOp, ok: boolean, data?: unknown, error?: string):
   return r;
 }
 
+/** Generic-browser refusals of local targets point the agent at the preview tool. */
+function withLocalTargetHint(error: string, policyOpts?: BrowserNavigationPolicyOpts): string {
+  if (policyOpts?.allowOrigins?.length) return error;
+  return isLocalTargetRefusal(error) ? `${error}. ${BROWSER_LOCAL_TARGET_HINT}` : error;
+}
+
 export async function browserNavigate(
   host: unknown,
   url: string,
@@ -620,7 +655,7 @@ export async function browserNavigate(
   if (!u) return result('navigate', false, undefined, 'url is required');
   const policy = validateBrowserNavigationUrl(u, policyOpts);
   if (!policy.ok) {
-    return result('navigate', false, undefined, policy.error);
+    return result('navigate', false, undefined, withLocalTargetHint(policy.error, policyOpts));
   }
   try {
     const page = getActivePage(host);
@@ -639,7 +674,7 @@ export async function browserNavigate(
         'navigate',
         false,
         undefined,
-        `Navigation landed on a disallowed URL: ${landed.error}`,
+        withLocalTargetHint(`Navigation landed on a disallowed URL: ${landed.error}`, policyOpts),
       );
     }
     return result('navigate', true, { url: finalUrl });
@@ -1115,7 +1150,14 @@ export async function runBrowserReActStep(
   const fmt = (r: BrowserToolResult, title: string) => {
     const { imageBase64, ...rest } = shrinkBrowserToolResultForMarkdown(r);
     const display = { ...rest, imageBase64: imageBase64 ? '<omitted>' : undefined };
-    return [`## ${title}`, '', '```json', JSON.stringify(display, null, 2), '```'].join('\n');
+    return [
+      `## ${title}`,
+      '',
+      '```json',
+      JSON.stringify(display, null, 2),
+      '```',
+      ...surfaceObservationLines('web', r.op === 'close' ? null : currentPageUrlOf(host)),
+    ].join('\n');
   };
 
   incrementBrowserToolOpEntered(chatSessionId);
@@ -1227,6 +1269,7 @@ export async function runBrowserReActStep(
           '```json',
           JSON.stringify(lean, null, 2),
           '```',
+          ...surfaceObservationLines('web', currentPageUrlOf(host)),
         ];
         let screenshotWsUrl: string | undefined;
         if (r.ok && imageBase64) {
@@ -1332,6 +1375,7 @@ export async function runBrowserReActStep(
           '```json',
           JSON.stringify(lean, null, 2),
           '```',
+          ...surfaceObservationLines('web', currentPageUrlOf(host)),
         ];
         const preview = snippet.length <= 520 ? snippet : `${snippet.slice(0, 519)}…`;
         return finish({

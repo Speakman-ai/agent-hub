@@ -31,6 +31,7 @@ function isSharedReadableSession(sessionId: string): boolean {
 }
 import { parsePreviewProxySessionId } from './preview/preview-proxy.js';
 import { parseTerminalWebSocketSessionId } from './terminal/terminal-websocket.js';
+import { parseBrowserScreencastWebSocketSessionId } from './browser-screencast-websocket.js';
 import { canViewProject } from './project-visibility.js';
 import {
   queryLogRecordsSince,
@@ -130,7 +131,11 @@ export default function createWebSocket(
     socket: import('node:stream').Duplex,
     head: Buffer,
   ): void => {
-    if (parsePreviewProxySessionId(request.url) || parseTerminalWebSocketSessionId(request.url)) {
+    if (
+      parsePreviewProxySessionId(request.url) ||
+      parseTerminalWebSocketSessionId(request.url) ||
+      parseBrowserScreencastWebSocketSessionId(request.url)
+    ) {
       return;
     }
     wss.handleUpgrade(request, socket, head, (ws) => {

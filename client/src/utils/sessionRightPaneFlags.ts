@@ -19,6 +19,8 @@ export interface SessionRightPaneRequests {
   terminalRequested: boolean;
   diffRequested: boolean;
   artifactsRequested: boolean;
+  /** Live Agent browser (public-web screencast) pane requested. */
+  browserRequested?: boolean;
 }
 
 export interface SessionRightPaneFlags {
@@ -27,6 +29,7 @@ export interface SessionRightPaneFlags {
   showSessionTerminalPane: boolean;
   showSessionDiffPane: boolean;
   showSessionArtifactsPane: boolean;
+  showSessionBrowserPane: boolean;
   footerTab: SessionPreviewFooterTab;
 }
 
@@ -36,6 +39,7 @@ export function resolveSessionRightPaneFlags({
   terminalRequested,
   diffRequested,
   artifactsRequested,
+  browserRequested = false,
 }: SessionRightPaneRequests): SessionRightPaneFlags {
   // Footer tabs only exist once the iframe is up. While starting/failed/
   // unavailable (or closed), a requested terminal still takes the full slot.
@@ -45,6 +49,15 @@ export function resolveSessionRightPaneFlags({
   // Changes wins if somehow both Changes and Artifacts are flagged.
   const showSessionArtifactsPane =
     !showSessionDiffPane && !showSessionTerminalPane && artifactsRequested;
+  // The Agent browser pane is a distinct surface from the preview (public web
+  // vs. the origin-pinned dev app) and takes the slot ahead of it, so a human
+  // who opens it while a preview is up sees the agent's browser; closing it
+  // returns the preview. Explicit Changes / Artifacts / Terminal still win.
+  const showSessionBrowserPane =
+    !showSessionDiffPane &&
+    !showSessionArtifactsPane &&
+    !showSessionTerminalPane &&
+    browserRequested;
   // Restore `!showSessionTerminalPane`: when preview is ready that flag is
   // already false, so the iframe+footer path is unchanged. When preview is
   // starting/failed/unavailable and Terminal is requested, preview yields.
@@ -52,6 +65,7 @@ export function resolveSessionRightPaneFlags({
     !showSessionDiffPane &&
     !showSessionArtifactsPane &&
     !showSessionTerminalPane &&
+    !showSessionBrowserPane &&
     previewEligible;
 
   return {
@@ -60,6 +74,7 @@ export function resolveSessionRightPaneFlags({
     showSessionTerminalPane,
     showSessionDiffPane,
     showSessionArtifactsPane,
+    showSessionBrowserPane,
     footerTab: terminalRequested ? 'terminal' : 'boot',
   };
 }

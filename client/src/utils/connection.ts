@@ -129,6 +129,29 @@ export function getTerminalWsUrl(sessionId: string) {
 }
 
 /**
+ * Build the dedicated agent-browser (screencast) WebSocket URL for a session.
+ *
+ * Mirrors `getTerminalWsUrl()`: `/api/sessions/:id/browser/ws`, same
+ * local-dev / same-origin / remote-server resolution and browser auth.
+ */
+export function getBrowserWsUrl(sessionId: string) {
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/browser/ws`;
+  const config = getConnectionConfig();
+  let wsUrl: string;
+
+  if (config.mode === 'remote' && config.remoteUrl) {
+    wsUrl = config.remoteUrl.trim().replace(/\/+$/, '').replace(/^http/, 'ws') + path;
+  } else if (import.meta.env.VITE_API_PORT) {
+    wsUrl = `ws://${window.location.hostname}:${import.meta.env.VITE_API_PORT}${path}`;
+  } else {
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    wsUrl = `${wsProto}//${window.location.host}${path}`;
+  }
+
+  return appendAuthToWsUrl(wsUrl);
+}
+
+/**
  * Rebase a server-issued absolute WebSocket URL onto the origin the browser
  * is actually talking to.
  *

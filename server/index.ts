@@ -339,6 +339,8 @@ import { PtyHost } from './terminal/pty-host.js';
 import { PtySession } from './terminal/pty-session.js';
 import { buildTerminalShellEnv } from './terminal/terminal-shell-env.js';
 import { attachTerminalWebSocket } from './terminal/terminal-websocket.js';
+import { attachBrowserScreencastWebSocket } from './browser-screencast-websocket.js';
+import { effectiveBrowserToolsEnabled } from './browser-agent-settings.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import { previewSubdomainRewrittenUrl } from './preview/preview-public-url.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
@@ -2205,6 +2207,28 @@ const terminalWebSocket = attachTerminalWebSocket(server, {
   },
 });
 
+// Live mirror of the session's public-web Chromium (the `browser` ReAct tool)
+// for the Agent browser pane. Same auth + ownership handshake as the terminal.
+const browserScreencastWebSocket = attachBrowserScreencastWebSocket(server, {
+  sessionExists: (sessionId) => {
+    try {
+      const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+      return Boolean(session && !session.deleted_at);
+    } catch {
+      return false;
+    }
+  },
+  browserToolsEnabled: (sessionId) => {
+    try {
+      const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+      const found = session ? findAgent(session.agent_id) : null;
+      return found ? effectiveBrowserToolsEnabled(found.agent, found.project) : false;
+    } catch {
+      return false;
+    }
+  },
+});
+
 recoverInFlightDeployments({
   broadcast,
   orgId: getActiveOrgId(),
@@ -2696,6 +2720,7 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     if (!terminalShutdownStarted) {
       terminalShutdownStarted = true;
       terminalWebSocket.close();
+      browserScreencastWebSocket.close();
       ptyHost.disposeAll();
       void sessionEnvManager.disposeAll().catch((err: unknown) => {
         console.warn(

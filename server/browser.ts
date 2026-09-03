@@ -232,6 +232,44 @@ const idleCloseTimerBySessionId = new Map<string, NodeJS.Timeout>();
 /** In-flight host browser (`runBrowserReActStep`) nesting — idle close defers until zero. */
 const activeBrowserToolOpsBySessionId = new Map<string, number>();
 
+// ─── Lifecycle listeners ────────────────────────────────────────
+
+export type BrowserSessionLifecycleEvent =
+  | { type: 'registered'; id: string; session: BrowserSession }
+  | { type: 'closed'; id: string };
+
+const lifecycleListeners = new Set<(ev: BrowserSessionLifecycleEvent) => void>();
+
+/**
+ * Observe browser sessions entering / leaving the registry. Used by the live
+ * screencast feed so a viewer pane opened before the agent's first `browser`
+ * action attaches the moment Chromium comes up, and drops cleanly when the
+ * session closes (idle timeout, explicit `close` op, shutdown).
+ */
+export function subscribeBrowserSessionLifecycle(
+  listener: (ev: BrowserSessionLifecycleEvent) => void,
+): () => void {
+  lifecycleListeners.add(listener);
+  return () => {
+    lifecycleListeners.delete(listener);
+  };
+}
+
+function emitBrowserSessionLifecycle(ev: BrowserSessionLifecycleEvent): void {
+  for (const l of Array.from(lifecycleListeners)) {
+    try {
+      l(ev);
+    } catch (err) {
+      console.warn(`[browser] lifecycle listener failed: ${String(err)}`);
+    }
+  }
+}
+
+/** Number of in-flight agent `browser` steps against `id` (0 when idle or unknown). */
+export function browserToolOpsInFlight(id: string): number {
+  return activeBrowserToolOpsBySessionId.get(id) ?? 0;
+}
+
 function clearBrowserIdleTimer(id: string): void {
   const t = idleCloseTimerBySessionId.get(id);
   if (t) clearTimeout(t);
@@ -463,7 +501,8 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
       close: async () => {
         clearBrowserIdleTimer(id);
         activeBrowserToolOpsBySessionId.delete(id);
-        sessions.delete(id);
+        const wasRegistered = sessions.delete(id);
+        if (wasRegistered) emitBrowserSessionLifecycle({ type: 'closed', id });
         try {
           await launchedPage.close?.();
         } catch {
@@ -483,6 +522,7 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
     };
     sessions.set(id, session);
     scheduleBrowserIdleClose(id);
+    emitBrowserSessionLifecycle({ type: 'registered', id, session });
     return session;
   } finally {
     pendingBrowserConstruction--;
@@ -525,6 +565,7 @@ export async function closeAllBrowserSessions(): Promise<void> {
   idleCloseTimerBySessionId.clear();
   const snapshot = Array.from(sessions.values());
   sessions.clear();
+  for (const s of snapshot) emitBrowserSessionLifecycle({ type: 'closed', id: s.id });
   pendingBrowserConstruction = 0;
   activeBrowserToolOpsBySessionId.clear();
   await Promise.allSettled(
@@ -561,7 +602,7 @@ export function __resetBrowserRegistryForTests(): void {
 export function __unregisterBrowserSessionForTests(id: string): void {
   clearBrowserIdleTimer(id);
   activeBrowserToolOpsBySessionId.delete(id);
-  sessions.delete(id);
+  if (sessions.delete(id)) emitBrowserSessionLifecycle({ type: 'closed', id });
 }
 
 /**
@@ -571,4 +612,5 @@ export function __unregisterBrowserSessionForTests(id: string): void {
  */
 export function __registerBrowserSessionForTests(session: BrowserSession): void {
   sessions.set(session.id, session);
+  emitBrowserSessionLifecycle({ type: 'registered', id: session.id, session });
 }

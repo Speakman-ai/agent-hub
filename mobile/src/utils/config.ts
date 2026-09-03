@@ -80,6 +80,18 @@ export function getTerminalWsUrl(sessionId: string) {
   }
   return wsUrl;
 }
+/** Dedicated agent-browser (screencast) WebSocket URL — `/api/sessions/:id/browser/ws`. */
+export function getBrowserWsUrl(sessionId: string) {
+  if (!_cachedConfig?.remoteUrl) return '';
+  let wsUrl = `${_cachedConfig.remoteUrl.replace(/\/+$/, '').replace(/^http/, 'ws')}/api/sessions/${encodeURIComponent(sessionId)}/browser/ws`;
+  const jwt = getJwtToken();
+  if (jwt) {
+    wsUrl += `?token=${encodeURIComponent(jwt)}`;
+  } else if (_cachedConfig.apiKey) {
+    wsUrl += `?apiKey=${encodeURIComponent(_cachedConfig.apiKey)}`;
+  }
+  return wsUrl;
+}
 /** Get auth headers for API requests. JWT takes precedence over legacy apiKey. */
 export function getAuthHeaders() {
   const jwt = getJwtToken();

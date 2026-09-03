@@ -171,3 +171,40 @@ describe('resolveSessionRightPaneFlags', () => {
     }
   });
 });
+
+describe('resolveSessionRightPaneFlags — Agent browser pane', () => {
+  it('shows the agent browser pane when requested and nothing else is open', () => {
+    const result = flags({ browserRequested: true });
+    expect(result.showSessionBrowserPane).toBe(true);
+    expect(shown(result)).toEqual([]);
+  });
+
+  it('takes the slot ahead of a ready preview (distinct surface), preview returns when closed', () => {
+    const open = flags({ previewEligible: true, previewKind: 'preview', browserRequested: true });
+    expect(open.showSessionBrowserPane).toBe(true);
+    expect(open.showSessionPreviewPane).toBe(false);
+    const closed = flags({
+      previewEligible: true,
+      previewKind: 'preview',
+      browserRequested: false,
+    });
+    expect(closed.showSessionBrowserPane).toBe(false);
+    expect(closed.showSessionPreviewPane).toBe(true);
+  });
+
+  it('yields to explicit Changes / Artifacts / Terminal requests', () => {
+    expect(flags({ browserRequested: true, diffRequested: true }).showSessionBrowserPane).toBe(
+      false,
+    );
+    expect(flags({ browserRequested: true, artifactsRequested: true }).showSessionBrowserPane).toBe(
+      false,
+    );
+    expect(flags({ browserRequested: true, terminalRequested: true }).showSessionBrowserPane).toBe(
+      false,
+    );
+  });
+
+  it('defaults to hidden when the request flag is omitted', () => {
+    expect(flags().showSessionBrowserPane).toBe(false);
+  });
+});

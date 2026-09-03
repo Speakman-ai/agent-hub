@@ -42,11 +42,15 @@ import {
   pageSnapshotObservationLines,
   installPersistentDocumentNavigationGuard,
   shrinkBrowserToolResultForMarkdown,
+  surfaceObservationLines,
   BROWSER_ACTIVITY_SCREENSHOT_WS_MAX_CHARS,
   type BrowserReActStepOutcome,
   type BrowserToolResult,
 } from '../browser-tools.js';
-import type { BrowserNavigationPolicyOpts } from '../browser-navigation-url.js';
+import {
+  PREVIEW_OFF_ORIGIN_HINT,
+  type BrowserNavigationPolicyOpts,
+} from '../browser-navigation-url.js';
 import {
   resolveScreenshotDataDir,
   saveBrowserScreenshot,
@@ -268,9 +272,22 @@ function outcome(
   };
 }
 
-function fmtResult(r: BrowserToolResult, title: string): string {
+function fmtResult(
+  r: BrowserToolResult,
+  title: string,
+  surface?: { host: unknown; origin: string },
+): string {
   const display = shrinkBrowserToolResultForMarkdown(r);
-  return [`## ${title}`, '', '```json', JSON.stringify(display, null, 2), '```'].join('\n');
+  return [
+    `## ${title}`,
+    '',
+    '```json',
+    JSON.stringify(display, null, 2),
+    '```',
+    ...(surface
+      ? surfaceObservationLines('preview', currentPageUrl(surface.host), surface.origin)
+      : []),
+  ].join('\n');
 }
 
 function currentPageUrl(host: unknown): string | null {
@@ -610,7 +627,8 @@ export async function runPreviewReActStep(
       op: r.op,
       error:
         `Action navigated off the preview origin (to ${landedOrigin}); the preview drive ` +
-        'browser is pinned to the preview app, so the navigation was reverted to the preview root.',
+        'browser is pinned to the preview app, so the navigation was reverted to the preview root. ' +
+        PREVIEW_OFF_ORIGIN_HINT,
     };
   };
 
@@ -618,7 +636,7 @@ export async function runPreviewReActStep(
     const route = (input.route ?? '').trim();
     if (!route.startsWith('/')) {
       return outcome(
-        '## Preview tool error\n`navigate` requires a `route` starting with `/` (a path within the preview app — full URLs are not accepted).',
+        `## Preview tool error\n\`navigate\` requires a \`route\` starting with \`/\` (a path within the preview app — full URLs are not accepted). ${PREVIEW_OFF_ORIGIN_HINT}`,
         1,
         'bad_route',
         'Invalid preview route',
@@ -629,7 +647,7 @@ export async function runPreviewReActStep(
     // either way.
     const r = await guardEscape(await navigateOnPin(origin + route));
     return outcome(
-      fmtResult(r, 'Preview: navigate'),
+      fmtResult(r, 'Preview: navigate', { host, origin }),
       r.ok ? 0 : 1,
       r.ok ? `navigate:${route.slice(0, 120)}` : (r.error ?? 'navigate_failed'),
       r.ok ? `Preview opened ${route.slice(0, 120)}` : 'Preview navigation failed',
@@ -658,7 +676,7 @@ export async function runPreviewReActStep(
     case 'click': {
       const r = await guardEscape(await browserClick(host, input.target ?? ''));
       return outcome(
-        fmtResult(r, 'Preview: click'),
+        fmtResult(r, 'Preview: click', { host, origin }),
         r.ok ? 0 : 1,
         r.ok ? 'click' : (r.error ?? 'click_failed'),
         r.ok ? 'Preview click completed' : 'Preview click failed',
@@ -668,7 +686,7 @@ export async function runPreviewReActStep(
     case 'type': {
       const r = await guardEscape(await browserType(host, input.target ?? '', input.text ?? ''));
       return outcome(
-        fmtResult(r, 'Preview: type'),
+        fmtResult(r, 'Preview: type', { host, origin }),
         r.ok ? 0 : 1,
         r.ok ? 'type' : (r.error ?? 'type_failed'),
         r.ok ? 'Typed into preview field' : 'Preview type failed',
@@ -678,7 +696,7 @@ export async function runPreviewReActStep(
     case 'scroll': {
       const r = await guardEscape(await browserScroll(host, input.direction ?? ''));
       return outcome(
-        fmtResult(r, 'Preview: scroll'),
+        fmtResult(r, 'Preview: scroll', { host, origin }),
         r.ok ? 0 : 1,
         r.ok ? `scroll:${input.direction ?? ''}` : (r.error ?? 'scroll_failed'),
         r.ok ? `Preview scrolled ${(input.direction ?? '').trim()}` : 'Preview scroll failed',
@@ -688,7 +706,7 @@ export async function runPreviewReActStep(
     case 'wait': {
       const r = await guardEscape(await browserWaitFixed(host, input.condition ?? '', opTimeoutMs));
       return outcome(
-        fmtResult(r, 'Preview: wait'),
+        fmtResult(r, 'Preview: wait', { host, origin }),
         r.ok ? 0 : 1,
         r.ok ? 'wait' : (r.error ?? 'wait_failed'),
         r.ok ? 'Preview wait finished' : 'Preview wait timed out',
@@ -701,7 +719,7 @@ export async function runPreviewReActStep(
       // to the foreign page — the escape result drops it.
       const r = await guardEscape(await browserReadPage(host));
       return outcome(
-        fmtResult(r, 'Preview: read_page'),
+        fmtResult(r, 'Preview: read_page', { host, origin }),
         r.ok ? 0 : 1,
         r.ok ? 'read_page' : (r.error ?? 'read_page_failed'),
         r.ok ? 'Read preview page text' : 'Preview read_page failed',
@@ -711,7 +729,7 @@ export async function runPreviewReActStep(
     case 'extract': {
       const r = await guardEscape(await browserExtract(host, input.instruction, input.schema));
       return outcome(
-        fmtResult(r, 'Preview: extract'),
+        fmtResult(r, 'Preview: extract', { host, origin }),
         r.ok ? 0 : 1,
         r.ok ? 'extract' : (r.error ?? 'extract_failed'),
         r.ok ? 'Extracted preview page data' : 'Preview extract failed',
@@ -742,7 +760,14 @@ export async function runPreviewReActStep(
         data: r.ok ? { ...(r.data as object | undefined), savedPath: saved?.absPath } : r.data,
         imageBase64: captured ? (saved ? '<saved to file>' : '<capture not persisted>') : undefined,
       };
-      const lines = ['## Preview: screenshot', '', '```json', JSON.stringify(lean, null, 2), '```'];
+      const lines = [
+        '## Preview: screenshot',
+        '',
+        '```json',
+        JSON.stringify(lean, null, 2),
+        '```',
+        ...surfaceObservationLines('preview', currentPageUrl(host), origin),
+      ];
       let screenshotWsUrl: string | undefined;
       if (captured) {
         lines.push(...screenshotObservationLines(saved, mime));

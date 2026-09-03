@@ -30,7 +30,8 @@ import SessionDesignFilesPanel from '../components/SessionDesignFilesPanel';
 import SessionArtifactsPanel from '../components/SessionArtifactsPanel';
 import SessionTimelinePanel from '../components/SessionTimelinePanel';
 import MobileTerminalPane from '../components/MobileTerminalPane';
-import { ChevronDown, History, SquareTerminal } from 'lucide-react-native';
+import MobileBrowserPane from '../components/MobileBrowserPane';
+import { ChevronDown, Globe, History, SquareTerminal } from 'lucide-react-native';
 import { useFinalizeRunPoll } from '../hooks/useFinalizeRunPoll';
 import { useSessionCommittable } from '../hooks/useSessionCommittable';
 import { isWorkflowProject } from '../utils/project-mode';
@@ -115,6 +116,7 @@ export default function ChatScreen({
   const flatListRef = useRef<any>(null);
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [showBrowser, setShowBrowser] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const [showHubModelPicker, setShowHubModelPicker] = useState(false);
@@ -489,6 +491,18 @@ export default function ChatScreen({
                   </Text>
                 </TouchableOpacity>
               ) : null}
+              <TouchableOpacity
+                testID="toggle-mobile-browser"
+                accessibilityRole="button"
+                accessibilityState={{ expanded: showBrowser }}
+                onPress={() => setShowBrowser((open) => !open)}
+                style={[styles.actionRow, showBrowser && styles.actionRowActive]}
+              >
+                <Globe size={14} color={showBrowser ? colors.sky300 : colors.gray300} />
+                <Text style={styles.terminalToggleText}>
+                  {showBrowser ? 'Hide agent browser' : 'Agent browser'}
+                </Text>
+              </TouchableOpacity>
             </View>
           ) : null}
           {showTimeline ? (
@@ -513,6 +527,9 @@ export default function ChatScreen({
               sessionId={activeSessionId}
               onClose={() => setShowTerminal(false)}
             />
+          ) : null}
+          {showBrowser ? (
+            <MobileBrowserPane sessionId={activeSessionId} onClose={() => setShowBrowser(false)} />
           ) : null}
         </>
       ) : null}

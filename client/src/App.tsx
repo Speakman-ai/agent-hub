@@ -40,6 +40,7 @@ import SessionScopingModePane from './components/SessionScopingModePane';
 const SessionChangesPane = lazy(() => import('./components/SessionChangesPane'));
 const SessionArtifactsPane = lazy(() => import('./components/SessionArtifactsPane'));
 const SessionTerminalPane = lazy(() => import('./components/SessionTerminalPane'));
+const SessionBrowserPane = lazy(() => import('./components/SessionBrowserPane'));
 import { RunInTerminalProvider } from './components/RunInTerminalContext';
 import { sendCommandToTerminal } from './utils/terminalCommandBus';
 import LinkDesignModal from './components/LinkDesignModal';
@@ -197,6 +198,7 @@ import {
   SquareTerminal,
   PanelLeftOpen,
   History,
+  Globe,
 } from 'lucide-react';
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarCollapse';
 import {
@@ -446,6 +448,17 @@ export default function App({ initialView }: any = {}) {
   /** Per-session Changes (code diff) pane open flag. When true the diff pane
    * replaces the preview pane on the right (the two are mutually exclusive). */
   const [diffPaneOpenBySession, setDiffPaneOpenBySession] = useState<Record<string, any>>({});
+  // Agent browser (public-web screencast) pane. `undefined` = never decided
+  // (auto-opens on the session's first `browser` action), `true`/`false` =
+  // explicit human choice that auto-open must not override.
+  const [browserPaneOpenBySession, setBrowserPaneOpenBySession] = useState<
+    Record<string, boolean | undefined>
+  >({});
+  // Mirror for the WS handler: the auto-open decision has to read the human's
+  // current choice synchronously and also clear the competing right-slot
+  // requests, which a single functional updater cannot do.
+  const browserPaneOpenBySessionRef = useRef(browserPaneOpenBySession);
+  browserPaneOpenBySessionRef.current = browserPaneOpenBySession;
   /** Per-session changed-file count, lifted from the diff pane to badge the
    * "Changes" toolbar button. */
   const [diffFileCountBySession, setDiffFileCountBySession] = useState<Record<string, any>>({});
@@ -2083,6 +2096,29 @@ export default function App({ initialView }: any = {}) {
                 },
               };
             });
+          }
+
+          // First `browser` action in a session pops the Agent browser pane
+          // open (like the preview does on start). A human who closed it
+          // stays closed — only the undecided state auto-opens.
+          if (event?.type === 'browser_tool_activity' && event.phase === 'started') {
+            const sid = data.sessionId;
+            if (sid && browserPaneOpenBySessionRef.current[sid] === undefined) {
+              // Decide once, synchronously, so a burst of activity events in
+              // the same tick cannot re-run the auto-open.
+              browserPaneOpenBySessionRef.current = {
+                ...browserPaneOpenBySessionRef.current,
+                [sid]: true,
+              };
+              setBrowserPaneOpenBySession((prev) => ({ ...prev, [sid]: true }));
+              // Take the right-hand slot the same way the manual toggle does:
+              // Changes / Artifacts / Terminal have priority in
+              // resolveSessionRightPaneFlags, so an open one would otherwise
+              // hide the pane the first browser action is meant to reveal.
+              setDiffPaneOpenBySession((prev: any) => ({ ...prev, [sid]: false }));
+              setArtifactsPaneOpenBySession((prev: any) => ({ ...prev, [sid]: false }));
+              setTerminalPaneOpenBySession((prev: any) => ({ ...prev, [sid]: false }));
+            }
           }
 
           // Track rate-limit throttle state per session
@@ -4637,11 +4673,16 @@ export default function App({ initialView }: any = {}) {
   });
   const terminalRequested =
     !!activeSessionId && terminalPaneOpenBySession[activeSessionId] === true;
+  const browserRequested =
+    !!activeSessionId &&
+    !chatProjectIsWorkflow &&
+    browserPaneOpenBySession[activeSessionId] === true;
   const {
     showSessionTerminalPane,
     showSessionDiffPane,
     showSessionArtifactsPane,
     showSessionPreviewPane,
+    showSessionBrowserPane,
     footerTab: previewFooterTab,
   } = resolveSessionRightPaneFlags({
     previewEligible,
@@ -4649,6 +4690,7 @@ export default function App({ initialView }: any = {}) {
     terminalRequested,
     diffRequested: !!activeSessionId && diffPaneOpenBySession[activeSessionId] === true,
     artifactsRequested: !!activeSessionId && artifactsPaneOpenBySession[activeSessionId] === true,
+    browserRequested,
   });
   const showSessionTimeline =
     !!activeSessionId &&
@@ -7471,12 +7513,17 @@ export default function App({ initialView }: any = {}) {
                       {activeSessionId &&
                         !chatProjectIsWorkflow &&
                         activePreviewEvent &&
-                        previewPaneOpenBySession[activeSessionId] === false && (
+                        (previewPaneOpenBySession[activeSessionId] === false ||
+                          (previewEligible && showSessionBrowserPane)) && (
                           <div className="px-3 md:px-6 pb-1">
                             <button
                               type="button"
                               data-testid="reopen-preview-pane"
                               onClick={() => {
+                                setBrowserPaneOpenBySession((prev) => ({
+                                  ...prev,
+                                  [activeSessionId]: false,
+                                }));
                                 setPreviewPaneOpenBySession((prev: any) => ({
                                   ...prev,
                                   [activeSessionId]: true,
@@ -7491,6 +7538,40 @@ export default function App({ initialView }: any = {}) {
                               className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-sky-800/60 hover:bg-sky-700/70 text-sky-100 border border-sky-700/60"
                             >
                               <ArrowLeftRight size={12} /> Show preview
+                            </button>
+                          </div>
+                        )}
+
+                      {/* Show-agent-browser pill — the human closed the live
+                        pane for this session; one-click reopen. */}
+                      {activeSessionId &&
+                        !chatProjectIsWorkflow &&
+                        browserPaneOpenBySession[activeSessionId] === false && (
+                          <div className="px-3 md:px-6 pb-1">
+                            <button
+                              type="button"
+                              data-testid="reopen-browser-pane"
+                              onClick={() => {
+                                setBrowserPaneOpenBySession((prev) => ({
+                                  ...prev,
+                                  [activeSessionId]: true,
+                                }));
+                                setDiffPaneOpenBySession((prev: any) => ({
+                                  ...prev,
+                                  [activeSessionId]: false,
+                                }));
+                                setArtifactsPaneOpenBySession((prev: any) => ({
+                                  ...prev,
+                                  [activeSessionId]: false,
+                                }));
+                                setTerminalPaneOpenBySession((prev: any) => ({
+                                  ...prev,
+                                  [activeSessionId]: false,
+                                }));
+                              }}
+                              className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-sky-800/60 hover:bg-sky-700/70 text-sky-100 border border-sky-700/60"
+                            >
+                              <Globe size={12} /> Show agent browser
                             </button>
                           </div>
                         )}
@@ -7597,6 +7678,38 @@ export default function App({ initialView }: any = {}) {
                                         [activeSessionId]: false,
                                       }));
                                       setArtifactsPaneOpenBySession((prev: any) => ({
+                                        ...prev,
+                                        [activeSessionId]: false,
+                                      }));
+                                    }
+                                  },
+                                },
+                                {
+                                  id: 'browser',
+                                  testId: 'toggle-browser-pane',
+                                  label: 'Agent browser',
+                                  icon: Globe,
+                                  title:
+                                    "Watch and act in the agent's public-web browser (separate from the dev preview)",
+                                  hidden: chatProjectIsWorkflow,
+                                  pressed: showSessionBrowserPane,
+                                  onSelect: () => {
+                                    const opening =
+                                      browserPaneOpenBySession[activeSessionId] !== true;
+                                    setBrowserPaneOpenBySession((prev) => ({
+                                      ...prev,
+                                      [activeSessionId]: opening,
+                                    }));
+                                    if (opening) {
+                                      setDiffPaneOpenBySession((prev: any) => ({
+                                        ...prev,
+                                        [activeSessionId]: false,
+                                      }));
+                                      setArtifactsPaneOpenBySession((prev: any) => ({
+                                        ...prev,
+                                        [activeSessionId]: false,
+                                      }));
+                                      setTerminalPaneOpenBySession((prev: any) => ({
                                         ...prev,
                                         [activeSessionId]: false,
                                       }));
@@ -7745,6 +7858,25 @@ export default function App({ initialView }: any = {}) {
                           ) : null
                         }
                       />
+                    )}
+                    {showSessionBrowserPane && (
+                      <Suspense
+                        fallback={
+                          <aside className="hidden lg:flex items-center justify-center shrink-0 border-l border-gray-800 bg-gray-950 w-[640px]">
+                            <Loader2 size={18} className="animate-spin text-sky-300" />
+                          </aside>
+                        }
+                      >
+                        <SessionBrowserPane
+                          sessionId={activeSessionId}
+                          onClose={() =>
+                            setBrowserPaneOpenBySession((prev) => ({
+                              ...prev,
+                              [activeSessionId]: false,
+                            }))
+                          }
+                        />
+                      </Suspense>
                     )}
                     {showSessionDiffPane && (
                       <Suspense
