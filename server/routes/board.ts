@@ -2086,6 +2086,35 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       stmts.setKanbanEpicAssignedUser.run(normalizedAssignedUser, id);
     }
     const createdEpicFinal = stmts.getKanbanEpic.get(id) as KanbanEpicRow;
+    // Auto-link a scoping session to the epic it just created. A scope-from-notes
+    // session starts with no `linked_epic_id`; when its agent creates the epic the
+    // scoping pane should select it immediately rather than waiting on the
+    // client-side board-diff heuristic (SessionScopingModePane). Only fires while
+    // the caller session is in scoping mode, has no epic linked yet, and lives on
+    // THIS project's board (mirrors PUT /linked-epic's cross-project guard).
+    const callerSessionId = resolveCardSessionId(
+      req,
+      (req.body as { sessionId?: string | null } | undefined)?.sessionId,
+    );
+    if (callerSessionId) {
+      const callerSession = stmts.getSession.get(callerSessionId) as SessionRow | undefined;
+      if (
+        callerSession &&
+        callerSession.session_mode === 'scoping' &&
+        !callerSession.linked_epic_id &&
+        findAgent(callerSession.agent_id)?.project?.id === req.params.projectId
+      ) {
+        stmts.updateSessionLinkedEpic.run(id, callerSessionId);
+        const updatedSession = stmts.getSession.get(callerSessionId) as SessionRow;
+        // Go through `deps.broadcast` (not the destructured `broadcast`) so this
+        // session-updated emission is observable via `vi.spyOn(routeDeps,
+        // 'broadcast')` — the scoping pane selects the epic off this event.
+        deps.broadcast({
+          type: 'session-updated',
+          session: enrichSessionForClient(updatedSession, stmts),
+        });
+      }
+    }
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json(createdEpicFinal);
   });

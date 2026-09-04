@@ -598,6 +598,11 @@ export const CreateEpicRequestSchema = z.preprocess(
     assignedUserId: z.string().nullable().optional(),
     color: z.string().optional(),
     prBaseBranch: z.string().nullable().optional(),
+    // Caller session (agents may instead send the `X-Agent-Hub-Session-Id`
+    // header or spawn creds). When the resolved session is in scoping mode with
+    // no epic linked yet, the new epic is linked to it so the scoping pane
+    // selects it on creation. `null` opts out.
+    sessionId: z.string().nullable().optional(),
   }),
 );
 

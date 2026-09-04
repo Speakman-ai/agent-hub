@@ -20311,6 +20311,9 @@ paths:
                 prBaseBranch:
                   type: string
                   nullable: true
+                sessionId:
+                  type: string
+                  nullable: true
               required:
                 - name
       responses:

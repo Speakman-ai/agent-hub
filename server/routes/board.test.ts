@@ -1,6 +1,13 @@
 import type supertest from 'supertest';
-import { beforeAll, describe, it, expect } from 'vitest';
-import { getRequest, createProject, createCard, createSession } from '../test/helpers.js';
+import { beforeAll, describe, it, expect, vi, afterEach } from 'vitest';
+import {
+  getRequest,
+  createProject,
+  createAgent,
+  createCard,
+  createSession,
+} from '../test/helpers.js';
+import { routeDeps } from '../index.js';
 
 let request: supertest.Agent;
 let projectId: string;
@@ -281,5 +288,106 @@ describe('POST /board/cards — dedup signalling header', () => {
       .expect(200);
     expect(optOut.headers['x-agent-hub-card-deduplicated']).toBeUndefined();
     expect((optOut.body as { id: string }).id).not.toBe(firstId);
+  });
+});
+
+describe('POST /board/epics — auto-link scoping session to the new epic', () => {
+  let localProject: string;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  beforeAll(async () => {
+    const project = await createProject();
+    localProject = project.id as string;
+  });
+
+  async function makeScopingSession(
+    mode: string,
+    projectId: string = localProject,
+  ): Promise<string> {
+    const agent = await createAgent({ projectId });
+    const session = await createSession({
+      agentId: agent.id as string,
+      session_mode: mode,
+    });
+    return session.id as string;
+  }
+
+  async function linkedEpicId(sessionId: string): Promise<string | null> {
+    const res = await request.get(`/api/sessions/${sessionId}`).expect(200);
+    return (res.body as { linked_epic_id: string | null }).linked_epic_id;
+  }
+
+  it('links the created epic to a scoping session and emits session-updated', async () => {
+    const sessionId = await makeScopingSession('scoping');
+    expect(await linkedEpicId(sessionId)).toBeNull();
+
+    const spy = vi.spyOn(routeDeps, 'broadcast');
+    const res = await request
+      .post(`/api/projects/${localProject}/board/epics`)
+      .send({ name: 'Scoped epic', sessionId })
+      .expect(200);
+    const epicId = (res.body as { id: string }).id;
+
+    expect(await linkedEpicId(sessionId)).toBe(epicId);
+    // The pane selects the epic off this broadcast, so linkage without it would
+    // leave the client stuck on "Select epic…" until a manual refresh.
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session-updated',
+        session: expect.objectContaining({ id: sessionId, linked_epic_id: epicId }),
+      }),
+    );
+  });
+
+  it('leaves a scoping session on a different project unlinked (cross-project guard)', async () => {
+    const otherProject = await createProject();
+    const foreignSessionId = await makeScopingSession('scoping', otherProject.id as string);
+
+    // Create an epic on localProject while claiming the foreign session. The
+    // session's agent belongs to otherProject, so the project guard must refuse
+    // to link a foreign board's epic onto it.
+    const res = await request
+      .post(`/api/projects/${localProject}/board/epics`)
+      .send({ name: 'Cross-project epic', sessionId: foreignSessionId })
+      .expect(200);
+    expect((res.body as { id: string }).id).toBeTruthy();
+    expect(await linkedEpicId(foreignSessionId)).toBeNull();
+  });
+
+  it('does not overwrite an already-linked scoping session', async () => {
+    const sessionId = await makeScopingSession('scoping');
+    const first = await request
+      .post(`/api/projects/${localProject}/board/epics`)
+      .send({ name: 'First epic', sessionId })
+      .expect(200);
+    const firstEpicId = (first.body as { id: string }).id;
+    expect(await linkedEpicId(sessionId)).toBe(firstEpicId);
+
+    // A second create from the same session must not steal the link.
+    await request
+      .post(`/api/projects/${localProject}/board/epics`)
+      .send({ name: 'Second epic', sessionId })
+      .expect(200);
+    expect(await linkedEpicId(sessionId)).toBe(firstEpicId);
+  });
+
+  it('leaves a non-scoping (chat) session unlinked', async () => {
+    const sessionId = await makeScopingSession('chat');
+    await request
+      .post(`/api/projects/${localProject}/board/epics`)
+      .send({ name: 'Chat epic', sessionId })
+      .expect(200);
+    expect(await linkedEpicId(sessionId)).toBeNull();
+  });
+
+  it('creates the epic without error when no session is supplied', async () => {
+    const res = await request
+      .post(`/api/projects/${localProject}/board/epics`)
+      .send({ name: 'Sessionless epic' })
+      .expect(200);
+    expect((res.body as { id: string }).id).toBeTruthy();
   });
 });
