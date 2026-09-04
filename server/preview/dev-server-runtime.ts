@@ -133,6 +133,8 @@ export interface DevServerReapResult {
   scanned: number;
   reaped: number;
   orphaned: number;
+  /** Live stacks torn down by the LRU concurrency cap (not by idle TTL). */
+  evicted: number;
   notes: string[];
 }
 
@@ -213,8 +215,15 @@ export interface DevServerRuntimeConfig {
   healthUrlBase?: (port: number) => string;
   /** SIGTERM → SIGKILL grace on teardown. Default 5000. */
   disposeGraceMs?: number;
-  /** Fallback idle TTL for `reap` when the project sets none. Default 4 h. */
+  /** Fallback idle TTL for `reap` when the project sets none. Default 30 min. */
   defaultIdleTtlSeconds?: number;
+  /**
+   * Cap on concurrent live (starting+ready) dev-server preview stacks across the
+   * Hub. When a `reap` tick finds more, the least-recently-active `ready` stacks
+   * are torn down (LRU) until at the cap. 0 = unlimited. Default 3. Protects the
+   * host page cache from being squeezed by too many heavy preview frontends.
+   */
+  maxLiveStacks?: number;
   /** Bound on waiting for a wedged prior start of the same session. */
   sessionLockTimeoutMs?: number;
   /** Max ms a `devServer.stopCommand` may run on teardown before it is
@@ -281,7 +290,21 @@ const DEFAULT_HEALTH_INTERVAL_MS = 1_000;
 /** Shared log-tail depth for late joiners. */
 const DEFAULT_LOG_TAIL_LINES = DEFAULT_PREVIEW_LOG_TAIL_LINES;
 const DEFAULT_DISPOSE_GRACE_MS = 5_000;
-const DEFAULT_IDLE_TTL_SECONDS = 14_400;
+/**
+ * Fallback idle TTL when a project sets no `devServer.idleTTL`. 30 min, matching
+ * the compose-era default. The previous 4 h fallback let idle preview stacks
+ * pile up on the Hub host: each frontend can hold multiple GB of RSS, and enough
+ * live-but-idle stacks push the SQLite working set out of page cache, which
+ * disk-bound the Hub's synchronous SQLite reads and 504'd prod (2026-09-04).
+ */
+const DEFAULT_IDLE_TTL_SECONDS = 1_800;
+/**
+ * Fallback cap on concurrent live (starting+ready) dev-server preview stacks
+ * across the whole Hub. The reaper sheds the least-recently-active `ready`
+ * stacks (LRU) down to this when exceeded. 0 = unlimited. This is the hard
+ * backstop for the page-cache squeeze above, independent of idle time.
+ */
+const DEFAULT_MAX_LIVE_STACKS = 3;
 const DEFAULT_SESSION_LOCK_TIMEOUT_MS = 120_000;
 
 /**
@@ -295,7 +318,70 @@ export const DEFAULT_DEV_SERVER_PORT_ENTRY: DevServerPortMapEntry = {
   primary: true,
 };
 
+/**
+ * Thrown by a start when the Hub is already at `maxLiveStacks` live previews and
+ * no `ready` stack can be evicted to free room (the excess is all mid-boot).
+ * Rejecting is what makes the cap a real invariant rather than a soft target —
+ * see `DevServerRuntime.admitWithinCap`. Carries `code` so callers can map it to
+ * a retryable 503-style response instead of a generic failure.
+ */
+export class DevServerCapReachedError extends Error {
+  readonly code = 'preview_capacity_reached';
+  constructor(public readonly maxLiveStacks: number) {
+    super(
+      `Preview capacity reached: the Hub already has ${maxLiveStacks} live preview(s) ` +
+        `starting up and none are idle enough to reclaim. Stop a preview or retry shortly.`,
+    );
+    this.name = 'DevServerCapReachedError';
+  }
+}
+
 // ─── Pure helpers (exported for tests) ──────────────────────────────────
+
+/**
+ * Coerce a configured `maxLiveStacks` to a sane integer. Non-finite or negative
+ * values fall back to the default cap; an explicit 0 means "unlimited" and is
+ * preserved. Keeps the reaper from either doing nothing (bad NaN) or evicting
+ * everything (negative) on a mis-set env var.
+ */
+export function normalizeMaxLiveStacks(raw: number | undefined): number {
+  if (raw === undefined) return DEFAULT_MAX_LIVE_STACKS;
+  if (!Number.isFinite(raw)) return DEFAULT_MAX_LIVE_STACKS;
+  if (raw < 0) return DEFAULT_MAX_LIVE_STACKS;
+  return Math.floor(raw);
+}
+
+export interface LiveStackRow {
+  id: string;
+  /** 'starting' | 'ready' | 'failed' (only starting/ready count as live). */
+  status: string;
+  last_active_at: string;
+}
+
+/**
+ * Pick which `ready` stacks to evict so the live (starting+ready) count drops to
+ * at most `keepAtMost`. `keepAtMost` is a literal target, not the config value:
+ * `0` evicts every `ready` stack, negative is treated as `0`. The "0 = unlimited"
+ * config policy lives in the runtime, which never calls this when the cap is
+ * disabled.
+ *
+ * Only `ready` stacks are evictable — a `starting` row is mid-boot and killing it
+ * would waste a slow container build and race the health check. `starting` rows
+ * still count toward the live total, so this alone cannot guarantee the cap when
+ * the excess is all mid-boot; the runtime's admission gate (`admitWithinCap`)
+ * closes that hole by refusing a new start when no `ready` victim can free room.
+ * Eviction order is least-recently-active first (LRU by `last_active_at`).
+ */
+export function selectOverCapStacksToEvict(rows: LiveStackRow[], keepAtMost: number): string[] {
+  const cap = Number.isFinite(keepAtMost) ? Math.max(0, Math.floor(keepAtMost)) : 0;
+  const live = rows.filter((r) => r.status === 'starting' || r.status === 'ready');
+  const overBy = live.length - cap;
+  if (overBy <= 0) return [];
+  const evictable = live
+    .filter((r) => r.status === 'ready')
+    .sort((a, b) => (parseDbTime(a.last_active_at) ?? 0) - (parseDbTime(b.last_active_at) ?? 0));
+  return evictable.slice(0, overBy).map((r) => r.id);
+}
 
 /**
  * Resolve the effective portMap: the configured entries, or the single
@@ -454,6 +540,7 @@ export class DevServerRuntime {
   private readonly healthUrlBase: (port: number) => string;
   private readonly disposeGraceMs: number;
   private readonly defaultIdleTtlSeconds: number;
+  private readonly maxLiveStacks: number;
   private readonly sessionLockTimeoutMs: number;
   private readonly stopCommandTimeoutMs: number;
   private readonly loadProjectEnv: DevServerRuntimeDeps['loadProjectEnv'];
@@ -495,6 +582,7 @@ export class DevServerRuntime {
     this.healthUrlBase = deps.config?.healthUrlBase ?? ((p) => `http://127.0.0.1:${p}`);
     this.disposeGraceMs = deps.config?.disposeGraceMs ?? DEFAULT_DISPOSE_GRACE_MS;
     this.defaultIdleTtlSeconds = deps.config?.defaultIdleTtlSeconds ?? DEFAULT_IDLE_TTL_SECONDS;
+    this.maxLiveStacks = normalizeMaxLiveStacks(deps.config?.maxLiveStacks);
     this.sessionLockTimeoutMs =
       deps.config?.sessionLockTimeoutMs ?? DEFAULT_SESSION_LOCK_TIMEOUT_MS;
     this.stopCommandTimeoutMs =
@@ -1041,7 +1129,13 @@ export class DevServerRuntime {
    * cron and tests share one code path.
    */
   async reap(nowMs: number): Promise<DevServerReapResult> {
-    const result: DevServerReapResult = { scanned: 0, reaped: 0, orphaned: 0, notes: [] };
+    const result: DevServerReapResult = {
+      scanned: 0,
+      reaped: 0,
+      orphaned: 0,
+      evicted: 0,
+      notes: [],
+    };
     const rows = this.db
       .prepare(
         `SELECT id, project_id, last_active_at FROM worktree_preview_groups
@@ -1086,12 +1180,120 @@ export class DevServerRuntime {
         this.logger.warn(`[dev-server] ${note}`);
       }
     }
-    if (result.reaped > 0 || result.orphaned > 0) {
+    // Concurrency cap: after the idle/orphan sweep, shed the least-recently
+    // active `ready` stacks so the Hub never holds more than `maxLiveStacks`
+    // heavy preview frontends at once (the page-cache backstop). Re-query so the
+    // count reflects rows the idle loop just stopped.
+    const cap = await this.enforceConcurrencyCap();
+    result.evicted += cap.evicted;
+    result.notes.push(...cap.notes);
+
+    if (result.reaped > 0 || result.orphaned > 0 || result.evicted > 0) {
       this.logger.log(
-        `[dev-server-reaper] tick: scanned=${result.scanned} reaped=${result.reaped} orphaned=${result.orphaned}`,
+        `[dev-server-reaper] tick: scanned=${result.scanned} reaped=${result.reaped} orphaned=${result.orphaned} evicted=${result.evicted}`,
       );
     }
     return result;
+  }
+
+  /** Live (starting+ready) dev-server group rows — the cap's working set. */
+  private liveStackRows(): LiveStackRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, status, last_active_at FROM worktree_preview_groups
+          WHERE runtime = ? AND status IN ('starting','ready')`,
+      )
+      .all(DEV_SERVER_RUNTIME_KIND) as LiveStackRow[];
+  }
+
+  /**
+   * Evict LRU `ready` stacks until at most `keepAtMost` live stacks remain, then
+   * report how many are still live. Shared by the reaper backstop and the start
+   * admission gate. Never throws — a stack that fails to stop stays counted, and
+   * the caller decides what an unmet target means (a backstop shrugs; admission
+   * refuses).
+   */
+  private async shedReadyStacksTo(
+    keepAtMost: number,
+    reason: string,
+  ): Promise<{ evicted: number; remaining: number; notes: string[] }> {
+    const out = { evicted: 0, remaining: 0, notes: [] as string[] };
+    for (const id of selectOverCapStacksToEvict(this.liveStackRows(), keepAtMost)) {
+      try {
+        await this.stop(id);
+        out.evicted++;
+        out.notes.push(`evicted ${id} (${reason})`);
+      } catch (err) {
+        const note = `failed to evict ${id}: ${(err as Error).message}`;
+        out.notes.push(note);
+        this.logger.warn(`[dev-server] ${note}`);
+      }
+    }
+    out.remaining = this.liveStackRows().length;
+    return out;
+  }
+
+  /**
+   * Reaper backstop: bring the Hub down to `maxLiveStacks` live stacks by
+   * shedding LRU `ready` ones. This alone cannot hold the cap when the excess is
+   * all mid-boot (`starting`) — that case is prevented up front by the start
+   * admission path (`makeRoomForNewStack` + `reserveStartingRow`). Here it just
+   * mops up rows that outlived a Hub restart or a cap lowered at runtime. Never
+   * throws.
+   */
+  private async enforceConcurrencyCap(): Promise<{ evicted: number; notes: string[] }> {
+    if (this.maxLiveStacks <= 0) return { evicted: 0, notes: [] };
+    const { evicted, notes } = await this.shedReadyStacksTo(
+      this.maxLiveStacks,
+      `over cap ${this.maxLiveStacks}, LRU`,
+    );
+    return { evicted, notes };
+  }
+
+  /**
+   * Admission step 1 (best-effort, async): evict LRU `ready` stacks to free room
+   * for one more preview, down to `maxLiveStacks - 1`. This does NOT decide
+   * admission — it only tries to make space; the atomic `reserveStartingRow` is
+   * the authority. Splitting the two is deliberate: the async teardown here must
+   * not sit between the capacity check and the INSERT (see `reserveStartingRow`).
+   * No-op when the cap is disabled.
+   */
+  private async makeRoomForNewStack(): Promise<void> {
+    if (this.maxLiveStacks <= 0) return;
+    const { evicted, notes } = await this.shedReadyStacksTo(
+      this.maxLiveStacks - 1,
+      `admission for new preview (cap ${this.maxLiveStacks}), LRU`,
+    );
+    for (const note of notes) this.logger.log(`[dev-server] ${note}`);
+    if (evicted > 0) {
+      this.logger.log(
+        `[dev-server] concurrency cap ${this.maxLiveStacks}: evicted ${evicted} stack(s) to admit a new preview`,
+      );
+    }
+  }
+
+  /**
+   * Admission step 2 (atomic): reserve a live slot and INSERT the new `starting`
+   * row, or return false without inserting when the Hub is already at
+   * `maxLiveStacks`. This is the whole-cap invariant, so it MUST stay fully
+   * synchronous — the capacity read and the INSERT run in a single event-loop
+   * turn with no `await` between them. better-sqlite3 is synchronous, so no other
+   * start can interleave here: two concurrent starts can never both observe free
+   * capacity and both reserve (the classic check-then-insert race the reviewer
+   * flagged). Inserting the `starting` row IS the reservation — the next
+   * admission counts it immediately. Do not add an `await` in this method.
+   */
+  private reserveStartingRow(groupId: string, sessionId: string, projectId: string): boolean {
+    if (this.maxLiveStacks > 0 && this.liveStackRows().length >= this.maxLiveStacks) {
+      return false;
+    }
+    this.db
+      .prepare(
+        `INSERT INTO worktree_preview_groups (id, session_id, project_id, status, runtime)
+         VALUES (?, ?, ?, 'starting', ?)`,
+      )
+      .run(groupId, sessionId, projectId, DEV_SERVER_RUNTIME_KIND);
+    return true;
   }
 
   // ─── Internals ──────────────────────────────────────────────────────
@@ -1132,13 +1334,21 @@ export class DevServerRuntime {
       this.logger.log(`[dev-server] reclaimed ${reclaimed} failed preview port(s)`);
     }
 
+    // Admission control — two steps whose ORDER is load-bearing:
+    //   1. best-effort: evict LRU `ready` stacks to make room (async teardown).
+    //   2. atomic: re-check capacity and INSERT the reservation row in one
+    //      synchronous step (`reserveStartingRow`). Keeping the async eviction
+    //      OUT of that step is what closes the check-then-insert race — two
+    //      concurrent starts for different sessions cannot both observe free
+    //      capacity, because the count+INSERT run in a single event-loop turn.
+    // When no `ready` victim can free room (cap full of mid-boot stacks) the
+    // reservation fails and the start is rejected rather than exceeding the cap.
+    // The same-session preview, if any, was already stopped above.
+    await this.makeRoomForNewStack();
     const groupId = randomUUID();
-    this.db
-      .prepare(
-        `INSERT INTO worktree_preview_groups (id, session_id, project_id, status, runtime)
-         VALUES (?, ?, ?, 'starting', ?)`,
-      )
-      .run(groupId, sessionId, project.id, DEV_SERVER_RUNTIME_KIND);
+    if (!this.reserveStartingRow(groupId, sessionId, project.id)) {
+      throw new DevServerCapReachedError(this.maxLiveStacks);
+    }
 
     // The env has to be resolved before any port is reserved: whether a
     // reservation should draw from the host pool at all depends on how the

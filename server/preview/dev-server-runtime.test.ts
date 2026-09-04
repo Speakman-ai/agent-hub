@@ -28,10 +28,14 @@ import type { Clock } from './preview-runtime-primitives.js';
 import { resolveDevServerPortClientUrl } from './preview-public-url.js';
 import {
   buildDevServerSpawnEnv,
+  DevServerCapReachedError,
   DevServerRuntime,
+  normalizeMaxLiveStacks,
   resolveDevServerPortEntries,
+  selectOverCapStacksToEvict,
   uniquePortEntryNames,
   type CreateDevServerEnvFn,
+  type LiveStackRow,
   type ResolveSharedSessionEnvFn,
   type DevServerNotifyLogFn,
   type DevServerNotifyStatusFn,
@@ -278,6 +282,8 @@ function makeHarness(
     runDocker?: SysboxRunFn;
     /** Stands in for AGENT_HUB_PREVIEW_HEALTH_HOST on a dockerized Hub. */
     healthUrlBase?: (port: number) => string;
+    /** Concurrency cap for the reaper's LRU eviction pass. */
+    maxLiveStacks?: number;
   } = {},
 ): Harness {
   const db = new Database(':memory:');
@@ -321,6 +327,7 @@ function makeHarness(
       urlBase: (port, sessionId) => `/api/sessions/${sessionId}/preview/proxy/${port}`,
       ...(opts.portClientUrl ? { portClientUrl: opts.portClientUrl } : {}),
       ...(opts.healthUrlBase ? { healthUrlBase: opts.healthUrlBase } : {}),
+      ...(opts.maxLiveStacks !== undefined ? { maxLiveStacks: opts.maxLiveStacks } : {}),
     },
     logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
   });
@@ -1175,6 +1182,271 @@ describe('DevServerRuntime lifecycle', () => {
       expect.stringContaining(orphan.devServerId),
     ]);
     expect(h.envs.every((env) => env.disposed)).toBe(true);
+  });
+
+  it('reap sheds over-cap ready stacks (LRU) that outlived a restart / cap change', async () => {
+    // Start-time admission control cannot produce an over-cap set on its own, so
+    // the reap-time cap is the backstop for rows that survived a Hub restart or a
+    // cap lowered at runtime. Seed three live `ready` rows directly, `a` oldest.
+    const h = makeHarness({ maxLiveStacks: 2 });
+    const seedReady = (id: string, secondsAgo: number) =>
+      h.db
+        .prepare(
+          `INSERT INTO worktree_preview_groups
+             (id, session_id, project_id, status, runtime, last_active_at)
+           VALUES (?, ?, 'project-1', 'ready', 'dev-server', datetime('now', ?))`,
+        )
+        .run(id, `sess-${id}`, `-${secondsAgo} seconds`);
+    seedReady('grp-a', 30);
+    seedReady('grp-b', 20);
+    seedReady('grp-c', 10);
+
+    const result = await h.runtime.reap(Date.now());
+
+    expect(result).toMatchObject({ reaped: 0, orphaned: 0, evicted: 1 });
+    expect(result.notes).toEqual([expect.stringContaining('grp-a')]);
+    const survivors = h.db
+      .prepare(`SELECT id FROM worktree_preview_groups ORDER BY id`)
+      .all() as Array<{ id: string }>;
+    expect(survivors.map((r) => r.id)).toEqual(['grp-b', 'grp-c']);
+  });
+
+  it('sheds the LRU ready stack at start time when a new preview exceeds the cap', async () => {
+    const h = makeHarness({ maxLiveStacks: 2, portRange: { min: 4500, max: 4599 } });
+    const a = await h.runtime.start('session-a', makeProject(), '/worktree/a');
+    const b = await h.runtime.start('session-b', makeProject(), '/worktree/b');
+    // Both existing stacks are ready, with `a` the least-recently-active.
+    h.db
+      .prepare(
+        `UPDATE worktree_preview_groups
+           SET status = 'ready', last_active_at = datetime('now', ?)
+         WHERE id = ?`,
+      )
+      .run('-30 seconds', a.devServerId);
+    h.db
+      .prepare(
+        `UPDATE worktree_preview_groups
+           SET status = 'ready', last_active_at = datetime('now', ?)
+         WHERE id = ?`,
+      )
+      .run('-20 seconds', b.devServerId);
+
+    // Starting a third preview would exceed the cap of 2 — admission control
+    // evicts the oldest (`a`) inside start(), with no reaper tick.
+    const c = await h.runtime.start('session-c', makeProject(), '/worktree/c');
+
+    expect(h.envs[0].disposed).toBe(true); // a evicted on admission
+    expect(h.envs[1].disposed).toBe(false); // b survives
+    expect(h.envs[2].disposed).toBe(false); // c (the new stack) survives
+    const survivors = h.db
+      .prepare(`SELECT id FROM worktree_preview_groups WHERE runtime = 'dev-server' ORDER BY id`)
+      .all() as Array<{ id: string }>;
+    expect(survivors.map((r) => r.id).sort()).toEqual([b.devServerId, c.devServerId].sort());
+  });
+
+  it('rejects a new start when the cap is full of mid-boot stacks (no ready victim)', async () => {
+    // The cap is a hard invariant, not a soft target: when the only live stacks
+    // are still booting (no `ready` victim to reclaim), admission must refuse the
+    // new preview rather than let `starting` rows grow past the cap.
+    const h = makeHarness({ maxLiveStacks: 1 });
+    h.db
+      .prepare(
+        `INSERT INTO worktree_preview_groups (id, session_id, project_id, status, runtime)
+         VALUES ('grp-booting', 'sess-booting', 'project-1', 'starting', 'dev-server')`,
+      )
+      .run();
+
+    await expect(h.runtime.start('session-new', makeProject(), '/worktree/new')).rejects.toThrow(
+      DevServerCapReachedError,
+    );
+
+    // No new row was inserted and no env was created — the Hub stays capped.
+    const rows = h.db.prepare(`SELECT id FROM worktree_preview_groups ORDER BY id`).all() as Array<{
+      id: string;
+    }>;
+    expect(rows.map((r) => r.id)).toEqual(['grp-booting']);
+    expect(h.envs).toHaveLength(0);
+  });
+
+  it('evicts an LRU ready stack to admit a new start and stays at the cap', async () => {
+    // Cap is full but a `ready` victim exists → admission reclaims it (LRU) and
+    // admits the newcomer, leaving the Hub at exactly the cap.
+    const h = makeHarness({ maxLiveStacks: 2, portRange: { min: 4500, max: 4599 } });
+    const seedReady = (id: string, secondsAgo: number) =>
+      h.db
+        .prepare(
+          `INSERT INTO worktree_preview_groups
+             (id, session_id, project_id, status, runtime, last_active_at)
+           VALUES (?, ?, 'project-1', 'ready', 'dev-server', datetime('now', ?))`,
+        )
+        .run(id, `sess-${id}`, `-${secondsAgo} seconds`);
+    seedReady('grp-old', 40);
+    seedReady('grp-new', 10);
+
+    const started = await h.runtime.start('session-fresh', makeProject(), '/worktree/fresh');
+
+    const live = h.db
+      .prepare(`SELECT id FROM worktree_preview_groups WHERE status IN ('starting','ready')`)
+      .all() as Array<{ id: string }>;
+    // grp-old (LRU) reclaimed; grp-new + the freshly started one remain = cap.
+    expect(live.map((r) => r.id).sort()).toEqual(['grp-new', started.devServerId].sort());
+    expect(live).toHaveLength(2);
+  });
+
+  it('holds the cap under concurrent starts (only one of two wins the last slot)', async () => {
+    // The check-then-insert race: two different-session starts observe free
+    // capacity at the same time. The atomic reserve (synchronous count+INSERT)
+    // must let exactly one through with a cap of 1.
+    const h = makeHarness({ maxLiveStacks: 1, portRange: { min: 4500, max: 4599 } });
+
+    const results = await Promise.allSettled([
+      h.runtime.start('session-x', makeProject(), '/worktree/x'),
+      h.runtime.start('session-y', makeProject(), '/worktree/y'),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toBeInstanceOf(DevServerCapReachedError);
+    const live = h.db
+      .prepare(`SELECT id FROM worktree_preview_groups WHERE status IN ('starting','ready')`)
+      .all() as Array<{ id: string }>;
+    expect(live).toHaveLength(1);
+  });
+
+  it('admits many concurrent starts only up to the cap, rejecting the rest', async () => {
+    const h = makeHarness({ maxLiveStacks: 2, portRange: { min: 4500, max: 4599 } });
+
+    const results = await Promise.allSettled(
+      ['a', 'b', 'c', 'd', 'e'].map((s) =>
+        h.runtime.start(`session-${s}`, makeProject(), `/worktree/${s}`),
+      ),
+    );
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(rejected).toHaveLength(3);
+    expect(rejected.every((r) => r.reason instanceof DevServerCapReachedError)).toBe(true);
+    const live = h.db
+      .prepare(`SELECT id FROM worktree_preview_groups WHERE status IN ('starting','ready')`)
+      .all() as Array<{ id: string }>;
+    expect(live).toHaveLength(2);
+  });
+
+  it('reap does not kill mid-boot (starting) survivors — admission holds the cap instead', async () => {
+    // Reap is only a backstop; it deliberately will not SIGKILL a container that
+    // is still building. Two `starting` rows over a cap of 1 is a state that
+    // admission now prevents from forming (see the reject test above); if it ever
+    // arises from restart survivors, reap leaves the mid-boot rows to finish or
+    // time out to `failed` rather than culling them.
+    const h = makeHarness({ maxLiveStacks: 1 });
+    const seedStarting = (id: string) =>
+      h.db
+        .prepare(
+          `INSERT INTO worktree_preview_groups (id, session_id, project_id, status, runtime)
+           VALUES (?, ?, 'project-1', 'starting', 'dev-server')`,
+        )
+        .run(id, `sess-${id}`);
+    seedStarting('grp-a');
+    seedStarting('grp-b');
+
+    const result = await h.runtime.reap(Date.now());
+
+    expect(result.evicted).toBe(0);
+    const survivors = h.db
+      .prepare(`SELECT id FROM worktree_preview_groups ORDER BY id`)
+      .all() as Array<{ id: string }>;
+    expect(survivors.map((r) => r.id)).toEqual(['grp-a', 'grp-b']);
+  });
+
+  it('does not evict when maxLiveStacks is 0 (unlimited)', async () => {
+    const h = makeHarness({ maxLiveStacks: 0 });
+    const seedReady = (id: string) =>
+      h.db
+        .prepare(
+          `INSERT INTO worktree_preview_groups (id, session_id, project_id, status, runtime)
+           VALUES (?, ?, 'project-1', 'ready', 'dev-server')`,
+        )
+        .run(id, `sess-${id}`);
+    seedReady('grp-a');
+    seedReady('grp-b');
+    seedReady('grp-c');
+
+    const result = await h.runtime.reap(Date.now());
+
+    expect(result.evicted).toBe(0);
+    const survivors = h.db.prepare(`SELECT id FROM worktree_preview_groups`).all() as Array<{
+      id: string;
+    }>;
+    expect(survivors).toHaveLength(3);
+  });
+});
+
+describe('selectOverCapStacksToEvict', () => {
+  const row = (id: string, status: string, secondsAgo: number): LiveStackRow => ({
+    id,
+    status,
+    last_active_at: new Date(Date.now() - secondsAgo * 1000).toISOString(),
+  });
+
+  it('returns [] when at or under the cap', () => {
+    const rows = [row('a', 'ready', 30), row('b', 'ready', 10)];
+    expect(selectOverCapStacksToEvict(rows, 2)).toEqual([]);
+    expect(selectOverCapStacksToEvict(rows, 5)).toEqual([]);
+  });
+
+  it('evicts the oldest ready rows first, enough to reach the cap', () => {
+    const rows = [
+      row('newest', 'ready', 5),
+      row('oldest', 'ready', 60),
+      row('middle', 'ready', 30),
+    ];
+    expect(selectOverCapStacksToEvict(rows, 1)).toEqual(['oldest', 'middle']);
+    expect(selectOverCapStacksToEvict(rows, 2)).toEqual(['oldest']);
+  });
+
+  it('counts starting rows toward the total but never evicts them', () => {
+    const rows = [
+      row('boot', 'starting', 90),
+      row('ready-a', 'ready', 30),
+      row('ready-b', 'ready', 10),
+    ];
+    // 3 live, cap 1 → over by 2, but only 2 ready rows are evictable.
+    expect(selectOverCapStacksToEvict(rows, 1)).toEqual(['ready-a', 'ready-b']);
+  });
+
+  it('ignores failed rows entirely (they are not live)', () => {
+    const rows = [row('dead', 'failed', 90), row('live', 'ready', 10)];
+    // Only one live row, keep-1 target already met → nothing to evict.
+    expect(selectOverCapStacksToEvict(rows, 1)).toEqual([]);
+    expect(selectOverCapStacksToEvict([...rows, row('live2', 'ready', 5)], 1)).toEqual(['live']);
+  });
+
+  it('treats keepAtMost 0 as evict-every-ready and clamps negatives to 0', () => {
+    const rows = [row('a', 'ready', 30), row('b', 'ready', 10)];
+    // 0 is a literal target here (the "0 = unlimited" config policy lives in the
+    // runtime, which never calls this when the cap is disabled).
+    expect(selectOverCapStacksToEvict(rows, 0)).toEqual(['a', 'b']);
+    expect(selectOverCapStacksToEvict(rows, -3)).toEqual(['a', 'b']);
+  });
+});
+
+describe('normalizeMaxLiveStacks', () => {
+  it('defaults to 3 when unset', () => {
+    expect(normalizeMaxLiveStacks(undefined)).toBe(3);
+  });
+
+  it('preserves an explicit 0 (unlimited)', () => {
+    expect(normalizeMaxLiveStacks(0)).toBe(0);
+  });
+
+  it('floors a positive value and rejects garbage', () => {
+    expect(normalizeMaxLiveStacks(5)).toBe(5);
+    expect(normalizeMaxLiveStacks(2.9)).toBe(2);
+    expect(normalizeMaxLiveStacks(-1)).toBe(3);
+    expect(normalizeMaxLiveStacks(Number.NaN)).toBe(3);
+    expect(normalizeMaxLiveStacks(Number.POSITIVE_INFINITY)).toBe(3);
   });
 });
 

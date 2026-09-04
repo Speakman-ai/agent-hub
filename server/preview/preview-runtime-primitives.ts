@@ -37,6 +37,21 @@ export type HealthFetchFn = (
 export const PREVIEW_REAPER_CRON = '* * * * *';
 
 /**
+ * Parse a non-negative integer env var (e.g. a TTL or a stack cap). Returns
+ * undefined for unset/blank/negative/non-integer input so the caller falls back
+ * to its own default rather than acting on a garbage value. An explicit `0` is
+ * preserved (callers treat it as "unlimited" / "off").
+ */
+export function parseNonNegativeIntEnv(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === '') return undefined;
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n < 0) return undefined;
+  return n;
+}
+
+/**
  * Parse the `datetime('now')` / ISO format that SQLite emits without a
  * trailing Z. Returns null on missing/unparseable input so callers can
  * skip the row instead of NaN-bombing the comparison.

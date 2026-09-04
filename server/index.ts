@@ -344,7 +344,10 @@ import { effectiveBrowserToolsEnabled } from './browser-agent-settings.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import { previewSubdomainRewrittenUrl } from './preview/preview-public-url.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
-import { PREVIEW_REAPER_CRON } from './preview/preview-runtime-primitives.js';
+import {
+  PREVIEW_REAPER_CRON,
+  parseNonNegativeIntEnv,
+} from './preview/preview-runtime-primitives.js';
 import { runFinalizeReaper, FINALIZE_REAPER_CRON } from './finalize/finalize-reaper.js';
 import { reapFinalizeSourceCheckouts } from './finalize/session-source.js';
 import { runStuckRunReaper, STUCK_RUN_REAPER_CRON } from './finalize/stuck-run-reaper.js';
@@ -1206,6 +1209,16 @@ const previewComposeRunDocker =
   resolveDockerAvailability().enabled
     ? runDockerCommand
     : null;
+// Env overrides for the preview reaper's page-cache backstop. Both parse to a
+// non-negative integer or undefined (fall back to the runtime defaults: 1800s
+// idle TTL, 3 concurrent stacks). AGENT_HUB_PREVIEW_MAX_LIVE_STACKS=0 disables
+// the concurrency cap entirely.
+const previewIdleTtlSecondsOverride = parseNonNegativeIntEnv(
+  process.env.AGENT_HUB_PREVIEW_IDLE_TTL_SECONDS,
+);
+const previewMaxLiveStacksOverride = parseNonNegativeIntEnv(
+  process.env.AGENT_HUB_PREVIEW_MAX_LIVE_STACKS,
+);
 const { devServerRuntime } = createPreviewRuntimes({
   db: getDb(),
   getProject: (id) => findProject(id) ?? null,
@@ -1249,6 +1262,14 @@ const { devServerRuntime } = createPreviewRuntimes({
     },
     ...(previewHealthHost
       ? { healthUrlBase: (port: number) => `http://${previewHealthHost}:${port}` }
+      : {}),
+    // Ops levers for the preview page-cache backstop (2026-09-04 prod outage):
+    // shorten the idle TTL or tighten the concurrent-stack cap live, no deploy.
+    ...(previewIdleTtlSecondsOverride !== undefined
+      ? { defaultIdleTtlSeconds: previewIdleTtlSecondsOverride }
+      : {}),
+    ...(previewMaxLiveStacksOverride !== undefined
+      ? { maxLiveStacks: previewMaxLiveStacksOverride }
       : {}),
   },
   notifyLog: ({ sessionId, groupId, processName, line, stream }) => {
