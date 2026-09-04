@@ -55,6 +55,8 @@ const testPrefix = `ef-${randomUUID().slice(0, 8)}`;
 let binDir: string;
 let usageLimitBin: string;
 let contextOverflowBin: string;
+let codexUsageLimitBin: string;
+let grokSuccessBin: string;
 
 beforeAll(() => {
   binDir = mkdtempSync(path.join(tmpdir(), 'engine-failover-'));
@@ -71,6 +73,37 @@ beforeAll(() => {
     '#!/bin/sh\ncat > /dev/null 2>&1\necho "prompt is too long: 250000 tokens > 200000 maximum" >&2\nexit 1\n',
   );
   chmodSync(contextOverflowBin, 0o755);
+
+  // Codex surfaces usage exhaustion as a `turn.failed` JSONL event on stdout
+  // (not a stderr line like Claude), so the codex-format path must be exercised
+  // with a codex-shaped stub. See server/stream-parser.ts normalizeCodex.
+  codexUsageLimitBin = path.join(binDir, 'codex-usage-limit.sh');
+  const codexEvent = JSON.stringify({
+    type: 'turn.failed',
+    error: { message: 'You have hit your usage limit. Try again later.' },
+  });
+  writeFileSync(
+    codexUsageLimitBin,
+    `#!/bin/sh\ncat > /dev/null 2>&1\ncat <<'JSON'\n${codexEvent}\nJSON\nexit 1\n`,
+  );
+  chmodSync(codexUsageLimitBin, 0o755);
+
+  // Healthy Grok stub: emits a codex-shaped agent_message + clean turn.completed
+  // and exits 0. (grok-cli and codex-cli share the JSONL event shape.)
+  grokSuccessBin = path.join(binDir, 'grok-success.sh');
+  const okMsg = JSON.stringify({
+    type: 'item.completed',
+    item: { id: 'm1', type: 'agent_message', text: 'done on grok' },
+  });
+  const okDone = JSON.stringify({
+    type: 'turn.completed',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  });
+  writeFileSync(
+    grokSuccessBin,
+    `#!/bin/sh\ncat > /dev/null 2>&1\ncat <<'JSON'\n${okMsg}\n${okDone}\nJSON\nexit 0\n`,
+  );
+  chmodSync(grokSuccessBin, 0o755);
 });
 
 afterAll(() => {
@@ -246,5 +279,110 @@ describe('in-session engine failover', () => {
       (m) => !!m.metadata && JSON.parse(m.metadata).kind === 'engine_failover_unavailable',
     )!;
     expect(notice.content).toContain('no fallback engine is available');
+  });
+});
+
+/**
+ * Cross-turn failover memory. Regression for the support report "if you max out
+ * Codex it does not switch to grok": a session already sitting on Codex (moved
+ * there by an earlier Claude→Codex failover) that maxes out Codex must fail
+ * over DIRECTLY to grok, not bounce back onto claude-code — which the earlier
+ * failover already proved is exhausted. Without the persisted skip-list the
+ * Codex chain (codex → claude → grok → cursor) re-selects the dead claude first.
+ */
+describe('cross-turn engine-exhaustion memory', () => {
+  function makeDepsPerEngine(
+    agentId: string,
+    bins: { claude: string; codex: string; grok: string; cursor: string },
+  ): ChatHandlerDeps {
+    const base = makeDeps(agentId, bins.codex);
+    return {
+      ...base,
+      getClaudeBin: () => bins.claude,
+      getCodexBin: () => bins.codex,
+      getGrokBin: () => bins.grok,
+      getCursorBin: () => bins.cursor,
+      getGeminiBin: () => bins.claude,
+    };
+  }
+
+  function seedCodexSession(
+    suffix: string,
+    exhausted: string | null,
+  ): { agentId: string; sessionId: string } {
+    const agentId = `${testPrefix}-xt-agent-${suffix}`;
+    const sessionId = `${testPrefix}-xt-sess-${suffix}`;
+    getStmts().createSession.run(
+      sessionId,
+      agentId,
+      'x-turn test',
+      'codex-cli',
+      'gpt-5-codex',
+      0,
+      0,
+      1,
+    );
+    if (exhausted) getStmts().updateSessionFailoverExhausted.run(exhausted, sessionId);
+    return { agentId, sessionId };
+  }
+
+  it('skips an already-exhausted engine and fails over directly to grok', async () => {
+    // Claude + Codex are both authenticated (the availability probe cannot see
+    // usage exhaustion), so a naive walk would pick claude-code first.
+    availableEngines = ['claude-code', 'codex-cli', 'grok-cli', 'cursor-agent'];
+    // A prior turn's Claude→Codex failover recorded claude-code as exhausted.
+    const { agentId, sessionId } = seedCodexSession(
+      'direct',
+      JSON.stringify({ 'claude-code': Date.now() }),
+    );
+    const { handleChat } = createChatHandler(
+      makeDepsPerEngine(agentId, {
+        claude: usageLimitBin,
+        codex: codexUsageLimitBin,
+        grok: grokSuccessBin,
+        cursor: usageLimitBin,
+      }),
+    );
+
+    await handleChat(null, { type: 'chat', agentId, sessionId, content: 'do work' });
+
+    await waitFor(() => session(sessionId).engine === 'grok-cli');
+    const row = session(sessionId);
+    expect(row.engine).toBe('grok-cli');
+
+    // Exactly one failover hop, straight from codex to grok — claude-code was
+    // skipped, not visited.
+    const hops = systemMessages(sessionId)
+      .filter((m) => !!m.metadata && JSON.parse(m.metadata).kind === 'engine_failover')
+      .map((m) => {
+        const md = JSON.parse(m.metadata!);
+        return `${md.from}->${md.to}`;
+      });
+    expect(hops).toEqual(['codex-cli->grok-cli']);
+
+    // The clean turn on grok cleared grok from the skip-list; the codex hop
+    // recorded codex-cli; claude-code stays marked.
+    const map = JSON.parse(row.failover_exhausted_engines ?? '{}');
+    expect(Object.keys(map).sort()).toEqual(['claude-code', 'codex-cli']);
+  });
+
+  it('records the engine a usage failover moved off for the next turn', async () => {
+    availableEngines = ['codex-cli', 'grok-cli'];
+    const { agentId, sessionId } = seedCodexSession('record', null);
+    const { handleChat } = createChatHandler(
+      makeDepsPerEngine(agentId, {
+        claude: usageLimitBin,
+        codex: codexUsageLimitBin,
+        grok: grokSuccessBin,
+        cursor: usageLimitBin,
+      }),
+    );
+
+    await handleChat(null, { type: 'chat', agentId, sessionId, content: 'do work' });
+
+    await waitFor(() => session(sessionId).engine === 'grok-cli');
+    const map = JSON.parse(session(sessionId).failover_exhausted_engines ?? '{}');
+    // codex-cli is recorded (usage-exhausted); grok-cli is NOT (clean turn cleared it).
+    expect(Object.keys(map)).toEqual(['codex-cli']);
   });
 });

@@ -141,6 +141,14 @@ export interface SessionRow {
    */
   last_turn_error?: string | null;
   /**
+   * Cross-turn engine-exhaustion memory for in-session failover. JSON
+   * `{ "<engine>": <epochMs> }` of engines a `usage-exhausted` / `engine-auth`
+   * failover moved off, so a later turn's failover walk skips straight past a
+   * dead engine instead of bouncing back onto it. Cleared per-engine when a
+   * turn completes cleanly on that engine. See server/session-failover-memory.ts.
+   */
+  failover_exhausted_engines?: string | null;
+  /**
    * Number of consecutive automatic post-restart resume attempts for this
    * session that have NOT yet been followed by a clean turn completion.
    * Incremented in `reconcileOrphanedTasks` each boot before re-spawning an
@@ -2137,6 +2145,7 @@ export interface Stmts {
   upsertUserProjectDefaultFinalizeAutomation: Stmt;
   updateSessionState: Stmt;
   updateSessionLastTurnError: Stmt;
+  updateSessionFailoverExhausted: Stmt;
   incrementSessionResumeAttempts: Stmt;
   resetSessionResumeAttempts: Stmt;
   updateSessionWorktree: Stmt;

@@ -2222,6 +2222,18 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN last_turn_error TEXT DEFAULT NULL');
   }
 
+  // Cross-turn engine-exhaustion memory for in-session failover. JSON
+  // `{ "<engine>": <epochMs> }` of engines a usage/auth failover moved off,
+  // so a later turn's failover walk skips straight past a dead engine instead
+  // of bouncing back onto it (e.g. Codex → grok directly, not Codex → Claude →
+  // grok when Claude is itself exhausted). Cleared per-engine on a clean turn.
+  // See server/session-failover-memory.ts.
+  try {
+    db.prepare('SELECT failover_exhausted_engines FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN failover_exhausted_engines TEXT DEFAULT NULL');
+  }
+
   // Soft-delete ("archive") column. When set, the session is hidden from the
   // live `getSessions` list but remains in the DB for up to 24 hours so users
   // can restore it via POST /api/sessions/:sessionId/restore.
@@ -4744,6 +4756,9 @@ function initDb(dataDir: string): void {
     // Turn-error flag — intentionally does NOT touch `updated_at` (set/cleared
     // around every spawn; must not churn the session sort order).
     updateSessionLastTurnError: db.prepare('UPDATE sessions SET last_turn_error = ? WHERE id = ?'),
+    updateSessionFailoverExhausted: db.prepare(
+      'UPDATE sessions SET failover_exhausted_engines = ? WHERE id = ?',
+    ),
     // Post-restart resume-attempt counter — intentionally does NOT touch
     // `updated_at` (boot-time / process-exit bookkeeping must not churn sort).
     incrementSessionResumeAttempts: db.prepare(

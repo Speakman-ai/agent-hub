@@ -108,6 +108,13 @@ import {
   buildNoFailoverEngineNotice,
   formatFailoverLogLine,
 } from './engine-failover.js';
+import {
+  parseExhaustedEngines,
+  serializeExhaustedEngines,
+  activeExhaustedEngines,
+  recordExhaustedEngine,
+  clearExhaustedEngine,
+} from './session-failover-memory.js';
 import { createCursorChatBounded } from './cursor-create-chat.js';
 import { warmCursorAuthForSpawn } from './cursor-auth-warm.js';
 import { probeAllEngineAvailability, type SupportedEngine } from './engine-availability.js';
@@ -2353,11 +2360,24 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     try {
       const ownerUserId = getSessionOwner(sessionId);
       const availability = await probeAllEngineAvailability(config, { userId: ownerUserId });
+
+      // Fold in engines this SESSION already exhausted on earlier turns. The
+      // `triedEngines` argument only remembers the current message chain; the
+      // persisted map is what stops a fresh turn from failing over back onto an
+      // engine that a prior turn's usage/auth failover already moved off (e.g.
+      // Codex → grok directly, not Codex → Claude → grok when Claude is dead).
+      const sessionRow = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      const exhaustedMap = parseExhaustedEngines(sessionRow?.failover_exhausted_engines ?? null);
+      const nowMs = Date.now();
+      const mergedTried = [
+        ...new Set([...triedEngines, ...activeExhaustedEngines(exhaustedMap, nowMs)]),
+      ];
+
       const plan = planEngineFailover({
         errorText,
         currentEngine,
         transientRetries,
-        triedEngines,
+        triedEngines: mergedTried,
         availability,
       });
 
@@ -2381,12 +2401,27 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         projectMode: failoverProjectMode,
       });
 
+      // Durably mark the engine we're leaving as exhausted so a later turn's
+      // failover skips it, but ONLY for quota/credential death — a
+      // `transient-exhausted` switch means the provider was flaky, not that the
+      // engine is unusable, so re-selecting it next turn is correct.
+      const nextExhausted =
+        plan.trigger === 'usage-exhausted' || plan.trigger === 'engine-auth'
+          ? recordExhaustedEngine(exhaustedMap, plan.fromEngine, nowMs)
+          : exhaustedMap;
+
       getDb().transaction(() => {
         stmts.updateSessionEngine.run(plan.toEngine, sessionId);
         stmts.updateSessionModel.run(toModel, sessionId);
         // A resume id is engine-specific — carrying it across would make the
         // new CLI fail to resume a conversation it never had.
         stmts.updateSessionEngineSessionId.run(null, sessionId);
+        if (nextExhausted !== exhaustedMap) {
+          stmts.updateSessionFailoverExhausted.run(
+            serializeExhaustedEngines(nextExhausted),
+            sessionId,
+          );
+        }
       })();
 
       const noticeInput = {
@@ -5437,6 +5472,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           // automation stays blocked until this verifiably clean exit.
           try {
             S.updateSessionLastTurnError.run(null, sessionId);
+          } catch {}
+          // A clean turn on this engine proves its quota/credentials recovered,
+          // so drop it from the cross-turn failover skip-list. Keeps the map
+          // from permanently blacklisting an engine whose window has reset.
+          try {
+            const row = S.getSession.get(sessionId) as SessionRow | undefined;
+            const map = parseExhaustedEngines(row?.failover_exhausted_engines ?? null);
+            const cleared = clearExhaustedEngine(map, engine);
+            if (cleared !== map) {
+              S.updateSessionFailoverExhausted.run(serializeExhaustedEngines(cleared), sessionId);
+            }
           } catch {}
         }
 
