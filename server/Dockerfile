@@ -202,9 +202,10 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.258
 # See https://geminicli.com/docs/ for install + auth details.
 RUN npm install -g @google/gemini-cli
 
-# OpenAI Codex CLI — places `codex` on npm's global PATH (`/usr/local/bin` on
-# official Node images), matching `codexBin` static fallback in server/config.ts.
-RUN npm install -g @openai/codex
+# OpenAI Codex CLI. Pinning makes model support auditable and ensures a version
+# bump invalidates Docker's cached install layer. Version 0.153.4 fixes Astra
+# visibility and makes it the bundled default.
+RUN npm install -g @openai/codex@0.153.4
 
 WORKDIR /app
 

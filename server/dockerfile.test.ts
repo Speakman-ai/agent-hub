@@ -21,11 +21,17 @@ const guestDockerfilePath = path.join(
 // The exact claude-code CLI version both images must pin. Bump here (and in both
 // Dockerfiles) together — the tests assert all three agree.
 const EXPECTED_CLAUDE_CODE_PIN = '2.1.258';
+const EXPECTED_CODEX_PIN = '0.153.4';
 
 // Every `@anthropic-ai/claude-code[@spec]` occurrence in a Dockerfile, returning
 // the bare version each carries (`undefined` for an unpinned install).
 function claudeCodePins(dockerfile: string): Array<string | undefined> {
   const specs = [...dockerfile.matchAll(/@anthropic-ai\/claude-code(?:@(\S+))?/g)];
+  return specs.map(([, version]) => version);
+}
+
+function codexPins(dockerfile: string): Array<string | undefined> {
+  const specs = [...dockerfile.matchAll(/@openai\/codex(?:@(\S+))?/g)];
   return specs.map(([, version]) => version);
 }
 
@@ -204,6 +210,14 @@ describe('server/Dockerfile', () => {
       );
     }
   });
+
+  it('pins the Codex CLI to the Astra-compatible release', () => {
+    const pins = codexPins(readFileSync(dockerfilePath, 'utf8'));
+    expect(pins.length).toBeGreaterThan(0);
+    for (const pin of pins) {
+      expect(pin, 'Codex install must pin the Astra-compatible release').toBe(EXPECTED_CODEX_PIN);
+    }
+  });
 });
 
 describe('firecracker guest Dockerfile', () => {
@@ -230,6 +244,15 @@ describe('firecracker guest Dockerfile', () => {
       unique,
       'server and guest Dockerfiles must pin the identical claude-code version',
     ).toEqual([EXPECTED_CLAUDE_CODE_PIN]);
+  });
+
+  it('pins Codex to the exact same Astra-compatible version as server/Dockerfile', () => {
+    const serverPins = codexPins(readFileSync(dockerfilePath, 'utf8'));
+    const guestPins = codexPins(readFileSync(guestDockerfilePath, 'utf8'));
+
+    expect(serverPins.length).toBeGreaterThan(0);
+    expect(guestPins.length).toBeGreaterThan(0);
+    expect([...new Set([...serverPins, ...guestPins])]).toEqual([EXPECTED_CODEX_PIN]);
   });
 });
 
