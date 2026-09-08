@@ -2763,6 +2763,15 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ severity }),
     }),
+  // Approve / deny a feature request (Admin only). status is
+  // 'approved' | 'denied' | 'pending'. Only approved requests appear in the
+  // main support queue when the project's voting system is on. Returns the
+  // updated ticket and emits a support_ticket_updated WebSocket event.
+  setSupportTicketApproval: (projectId: any, id: any, status: any) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/approval`, {
+      method: 'POST',
+      body: JSON.stringify({ status }),
+    }),
   // Promote a support ticket to a To Do kanban card. The source ticket is
   // RETAINED and flagged `converted` (it leaves the default open queue but is
   // not deleted). Returns { card, ticket, ticketId, converted: true }.

@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -128,6 +129,23 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
         <Text style={styles.label}>GitHub repository</Text>
         <Text style={styles.readOnly}>{githubRepo ? githubRepo : 'No repo linked'}</Text>
 
+        <View style={styles.toggleRow}>
+          <View style={styles.toggleTextCol}>
+            <Text style={styles.toggleTitle}>Feature request approval</Text>
+            <Text style={styles.toggleDesc}>
+              When on, submitted feature requests stay out of the support queue until an Admin
+              approves them; customers can still vote on them. Off (default) sends them straight in.
+            </Text>
+          </View>
+          <Switch
+            testID={`project-voting-enabled-${projectId}`}
+            value={!!project.voting?.enabled}
+            disabled={saving}
+            onValueChange={(next: boolean) => saveField({ voting: { enabled: next } })}
+            trackColor={{ true: colors.emerald600, false: colors.gray600 }}
+          />
+        </View>
+
         <View style={{ marginTop: 12 }}>
           <ProjectDefaultAutomationSection projectId={projectId} />
         </View>
@@ -179,6 +197,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.gray800,
   },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 16,
+  },
+  toggleTextCol: { flex: 1 },
+  toggleTitle: { fontSize: 14, color: colors.gray200 },
+  toggleDesc: { fontSize: 12, color: colors.gray500, marginTop: 2 },
   colorRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   colorBtn: { width: 32, height: 32, borderRadius: 8 },
   colorBtnActive: { borderWidth: 2, borderColor: colors.white },

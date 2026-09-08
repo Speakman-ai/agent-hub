@@ -141,6 +141,15 @@ export function serializeSupportTicket(
       : maskReporterEmail(ticket.reporter_email),
     reporter_email_masked: hasEmail && !opts.canReadReporterEmail,
     release_state: deriveSupportTicketReleaseState(ticket),
+    // Legacy feature requests predate the approval column (approval_status
+    // NULL). Present them as 'pending' so the approval gate/badge and the
+    // Admin approve/deny controls treat them like any un-decided request —
+    // enabling the toggle can't strand an existing request with no way to
+    // approve it. Non-feature tickets keep their NULL.
+    approval_status:
+      ticket.type === 'feature_request'
+        ? (ticket.approval_status ?? 'pending')
+        : ticket.approval_status,
     converted_card:
       opts.convertedCard !== undefined
         ? opts.convertedCard

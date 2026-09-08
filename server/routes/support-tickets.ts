@@ -16,11 +16,14 @@ import {
   markSupportTicketUnread,
   markAllSupportTicketsRead,
   countUnreadSupportTickets,
+  setSupportTicketApproval,
   SUPPORT_TICKET_STATUSES,
   SUPPORT_TICKET_OPEN_STATUSES,
   SUPPORT_TICKET_TYPES,
   SUPPORT_TICKET_SEVERITIES,
+  SUPPORT_TICKET_APPROVAL_STATUSES,
 } from '../support-tickets-store.js';
+import { requireRole } from '../roles.js';
 import type {
   SupportTicketStatus,
   SupportTicketType,
@@ -313,9 +316,16 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     }
 
     const tickets = listSupportTickets(project.id, { statuses, type });
+    // Approval gate: when the project has the voting/approval system enabled,
+    // feature requests stay out of the main queue until an Admin approves them.
+    // Non-feature tickets are never gated. When the system is off (default),
+    // feature requests behave classically and appear immediately.
+    const gated = project.voting?.enabled
+      ? tickets.filter((t) => t.type !== 'feature_request' || t.approval_status === 'approved')
+      : tickets;
     // Batched on purpose: a per-ticket serialize would re-query the converted
     // card (and re-resolve the caller's email visibility) once per row.
-    res.json(serializeSupportTicketsForRequest(req, tickets));
+    res.json(serializeSupportTicketsForRequest(req, gated));
   });
 
   // Registered before the `/:id` route so the literal path wins the match.
@@ -633,6 +643,51 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         }
         res.status(400).json({ error: (err as Error).message });
       }
+    },
+  );
+
+  // Admin approve/deny a feature request. Gated to Admin+ (requireRole reads
+  // req.authRole; the break-glass owner API key from a consuming app counts as
+  // Owner, so approval also works "via API"). Only feature_request tickets
+  // participate — any other type is a 400. Approval never kicks off any work;
+  // it only flips visibility on the main support queue / voting feed.
+  router.post(
+    '/api/projects/:projectId/support-tickets/:id/approval',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const existing = getSupportTicket(req.params.id as string);
+      if (!existing || existing.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+      if (existing.type !== 'feature_request') {
+        return res
+          .status(400)
+          .json({ error: 'Only feature_request tickets can be approved or denied' });
+      }
+
+      const { status } = req.body as { status?: string };
+      if (
+        typeof status !== 'string' ||
+        !(SUPPORT_TICKET_APPROVAL_STATUSES as readonly string[]).includes(status)
+      ) {
+        return res.status(400).json({
+          error: `status must be one of: ${SUPPORT_TICKET_APPROVAL_STATUSES.join(', ')}`,
+        });
+      }
+
+      const authed = req as AuthenticatedRequest;
+      const actorId = authed.authUserId ?? (authed.authViaApiKey ? 'api-key' : null);
+      const ticket = setSupportTicketApproval(
+        existing.id,
+        status as (typeof SUPPORT_TICKET_APPROVAL_STATUSES)[number],
+        actorId,
+      );
+      if (!ticket) return res.status(404).json({ error: 'Support ticket not found' });
+      broadcastTicket('support_ticket_updated', ticket.project_id, { ticket });
+      res.json(serializeForRequest(req, ticket));
     },
   );
 

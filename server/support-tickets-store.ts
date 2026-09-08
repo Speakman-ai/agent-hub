@@ -19,6 +19,7 @@ import type {
   SupportTicketType,
   SupportTicketSeverity,
   SupportTicketStatus,
+  SupportTicketApprovalStatus,
 } from './types.js';
 
 export const SUPPORT_TICKET_TYPES = [
@@ -62,8 +63,19 @@ export const SUPPORT_TICKET_OPEN_STATUSES = [
   'investigating',
 ] as const satisfies readonly SupportTicketStatus[];
 
+export const SUPPORT_TICKET_APPROVAL_STATUSES = [
+  'pending',
+  'approved',
+  'denied',
+] as const satisfies readonly SupportTicketApprovalStatus[];
+
 function isType(v: unknown): v is SupportTicketType {
   return typeof v === 'string' && (SUPPORT_TICKET_TYPES as readonly string[]).includes(v);
+}
+function isApprovalStatus(v: unknown): v is SupportTicketApprovalStatus {
+  return (
+    typeof v === 'string' && (SUPPORT_TICKET_APPROVAL_STATUSES as readonly string[]).includes(v)
+  );
 }
 function isSeverity(v: unknown): v is SupportTicketSeverity {
   return typeof v === 'string' && (SUPPORT_TICKET_SEVERITIES as readonly string[]).includes(v);
@@ -151,6 +163,10 @@ export function createSupportTicket(input: CreateSupportTicketInput): SupportTic
     reporterEmail,
     input.replayRef ?? null,
     input.screenshotRef ?? null,
+    // Feature requests enter the approval workflow as 'pending'; the project's
+    // voting toggle decides whether that gate is enforced at read time. Other
+    // ticket types leave approval_status NULL.
+    type === 'feature_request' ? 'pending' : null,
   );
   return getSupportTicket(id)!;
 }
@@ -297,6 +313,28 @@ export function updateSupportTicketType(
   }
   if (!getSupportTicket(id)) return null;
   getStmts().updateSupportTicketType.run(type, id);
+  return getSupportTicket(id);
+}
+
+/**
+ * Set a feature-request ticket's approval decision (pending / approved /
+ * denied). `actorId` is stamped as approved_by for approved/denied and cleared
+ * on a reset to pending. Returns the updated row, or null if the ticket doesn't
+ * exist. Throws on an invalid status. The route enforces that the ticket is a
+ * feature_request and that the caller is an Admin.
+ */
+export function setSupportTicketApproval(
+  id: string,
+  status: SupportTicketApprovalStatus,
+  actorId: string | null,
+): SupportTicketRow | null {
+  if (!isApprovalStatus(status)) {
+    throw new Error(
+      `approval status must be one of: ${SUPPORT_TICKET_APPROVAL_STATUSES.join(', ')}`,
+    );
+  }
+  if (!getSupportTicket(id)) return null;
+  getStmts().setSupportTicketApproval.run(status, status, status, actorId ?? null, id);
   return getSupportTicket(id);
 }
 

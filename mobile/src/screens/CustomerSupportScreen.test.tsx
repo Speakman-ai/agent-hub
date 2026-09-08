@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const apiMocks = vi.hoisted(() => ({
   getVotingItems: vi.fn(),
   castVote: vi.fn(),
+  setSupportTicketApproval: vi.fn(),
   getSupportTicketComments: vi.fn(),
   addSupportTicketComment: vi.fn(),
   hideSupportTicketComment: vi.fn(),
@@ -97,6 +98,8 @@ vi.mock('react-native', () => ({
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: host('main') }));
 vi.mock('../utils/api', () => ({ api: apiMocks }));
+const authMocks = vi.hoisted(() => ({ hasRole: vi.fn(() => false) }));
+vi.mock('../utils/auth', () => ({ hasRole: authMocks.hasRole }));
 vi.mock('../utils/time', () => ({ relativeTime: () => 'just now' }));
 vi.mock('@shared/utils/convertedCardLabel', () => ({
   convertedCardLabel: () => null,
@@ -187,6 +190,7 @@ describe('CustomerSupportScreen — VotingTab', () => {
     vi.clearAllMocks();
     store.clear();
     appState.lastSupportTicketEvent = null;
+    authMocks.hasRole.mockReturnValue(false);
     apiMocks.getVotingItems.mockResolvedValue([]);
     apiMocks.castVote.mockResolvedValue({ score: 1, upvotes: 1, downvotes: 0, myVote: 1 });
     apiMocks.getSupportTickets.mockResolvedValue([]);
@@ -261,6 +265,93 @@ describe('CustomerSupportScreen — VotingTab', () => {
       container.querySelector('[data-testid="vote-up-f1"]')?.getAttribute('data-selected'),
     ).toBeNull();
 
+    flushSync(() => root.unmount());
+  });
+
+  it('hides approve/deny for non-admins but shows the approval badge', async () => {
+    authMocks.hasRole.mockReturnValue(false);
+    apiMocks.getVotingItems.mockResolvedValue([
+      votingItem({ id: 'f1', approval_status: 'pending' }),
+    ]);
+    const { container, root } = mount();
+    flushSync(() => root.render(<VotingTab projectId="p1" onOpen={vi.fn()} />));
+    await flush();
+
+    expect(container.querySelector('[data-testid="approval-badge-pending"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="approve-f1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="deny-f1"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it('lets an admin approve a pending request and patches the row', async () => {
+    authMocks.hasRole.mockReturnValue(true);
+    apiMocks.getVotingItems.mockResolvedValue([
+      votingItem({ id: 'f1', approval_status: 'pending' }),
+    ]);
+    apiMocks.setSupportTicketApproval.mockResolvedValue({
+      id: 'f1',
+      approval_status: 'approved',
+      approved_at: '2026-09-08 00:00:00',
+      approved_by: 'u1',
+    });
+    const { container, root } = mount();
+    flushSync(() => root.render(<VotingTab projectId="p1" onOpen={vi.fn()} />));
+    await flush();
+
+    click(container.querySelector('[data-testid="approve-f1"]'));
+    await flush();
+
+    expect(apiMocks.setSupportTicketApproval).toHaveBeenCalledWith('p1', 'f1', 'approved');
+    expect(container.querySelector('[data-testid="approval-badge-approved"]')).toBeTruthy();
+    // Approve is now disabled; Deny stays actionable.
+    expect(
+      container.querySelector('[data-testid="approve-f1"]')?.getAttribute('disabled'),
+    ).not.toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it('drops a denied request from the voting feed', async () => {
+    authMocks.hasRole.mockReturnValue(true);
+    apiMocks.getVotingItems.mockResolvedValue([
+      votingItem({ id: 'f1', approval_status: 'pending' }),
+    ]);
+    apiMocks.setSupportTicketApproval.mockResolvedValue({
+      id: 'f1',
+      approval_status: 'denied',
+      approved_at: '2026-09-08 00:00:00',
+      approved_by: 'u1',
+    });
+    const { container, root } = mount();
+    flushSync(() => root.render(<VotingTab projectId="p1" onOpen={vi.fn()} />));
+    await flush();
+
+    click(container.querySelector('[data-testid="deny-f1"]'));
+    await flush();
+
+    expect(apiMocks.setSupportTicketApproval).toHaveBeenCalledWith('p1', 'f1', 'denied');
+    // Denied → the row leaves the mounted feed immediately.
+    expect(container.querySelector('[data-testid="voting-item"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it('surfaces an alert and preserves the row when an approval request fails', async () => {
+    authMocks.hasRole.mockReturnValue(true);
+    apiMocks.getVotingItems.mockResolvedValue([
+      votingItem({ id: 'f1', approval_status: 'pending' }),
+    ]);
+    apiMocks.setSupportTicketApproval.mockRejectedValue(new Error('network down'));
+    const { container, root } = mount();
+    flushSync(() => root.render(<VotingTab projectId="p1" onOpen={vi.fn()} />));
+    await flush();
+
+    click(container.querySelector('[data-testid="approve-f1"]'));
+    await flush();
+
+    // The admin is told the decision was not saved...
+    expect(Alert.alert).toHaveBeenCalledWith('Could not approve request', 'network down');
+    // ...and the request stays in the feed (not optimistically removed/changed).
+    expect(container.querySelector('[data-testid="voting-item"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="approval-badge-pending"]')).toBeTruthy();
     flushSync(() => root.unmount());
   });
 

@@ -26,6 +26,7 @@ import { api } from '../utils/api';
     getSupportUnreadCount: vi.fn().mockResolvedValue({ count: 0 }),
     getVotingItems: vi.fn().mockResolvedValue([]),
     castVote: vi.fn(),
+    setSupportTicketApproval: vi.fn(),
     getSupportTicketComments: vi.fn().mockResolvedValue([]),
     addSupportTicketComment: vi.fn(),
     hideSupportTicketComment: vi.fn().mockResolvedValue({ ok: true }),
@@ -38,6 +39,9 @@ import { api } from '../utils/api';
 (vi as any).mock('../utils/connection.js', () => ({
   getServerBase: () => 'https://hub.example.com',
 }));
+
+const authMock = vi.hoisted(() => ({ hasRole: vi.fn(() => false) }));
+(vi as any).mock('../utils/auth', () => ({ hasRole: authMock.hasRole }));
 
 function ticket(overrides: any = {}) {
   return {
@@ -1911,5 +1915,74 @@ describe('CustomerSupportPage — voting scaffolder launcher', () => {
     expect(onOpenSession).not.toHaveBeenCalled();
     expect(onNotify).toHaveBeenCalled();
     expect(screen.getByTestId('voting-setup-modal')).toBeInTheDocument();
+  });
+});
+
+describe('CustomerSupportPage — Voting tab admin approval', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    authMock.hasRole.mockReturnValue(false);
+  });
+
+  it('shows the approval badge but hides approve/deny for non-admins', async () => {
+    authMock.hasRole.mockReturnValue(false);
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({ id: 'f1', subject: 'Pending idea', approval_status: 'pending' }),
+    ]);
+    await openVotingTab();
+
+    await waitFor(() => expect(screen.getByText('Pending idea')).toBeInTheDocument());
+    expect(screen.getByTestId('approval-badge-pending')).toBeInTheDocument();
+    expect(screen.queryByTestId('approve-f1')).toBeNull();
+    expect(screen.queryByTestId('deny-f1')).toBeNull();
+  });
+
+  it('lets an admin approve a pending request and patches the row in place', async () => {
+    authMock.hasRole.mockReturnValue(true);
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({ id: 'f1', subject: 'Pending idea', approval_status: 'pending' }),
+    ]);
+    (api.setSupportTicketApproval as any).mockResolvedValue({
+      id: 'f1',
+      approval_status: 'approved',
+      approved_at: '2026-09-08 00:00:00',
+      approved_by: 'u1',
+    });
+    const onNotify = vi.fn();
+    await openVotingTab({ onNotify });
+
+    fireEvent.click(await screen.findByTestId('approve-f1'));
+
+    await waitFor(() =>
+      expect(api.setSupportTicketApproval).toHaveBeenCalledWith('proj-1', 'f1', 'approved'),
+    );
+    await waitFor(() => expect(screen.getByTestId('approval-badge-approved')).toBeInTheDocument());
+    // Approve is now disabled (already approved); Deny stays actionable.
+    expect(screen.getByTestId('approve-f1')).toBeDisabled();
+    expect(screen.getByTestId('deny-f1')).not.toBeDisabled();
+    expect(onNotify).toHaveBeenCalledWith('Feature request approved', 'success');
+  });
+
+  it('drops a denied request from the voting feed', async () => {
+    authMock.hasRole.mockReturnValue(true);
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({ id: 'f1', subject: 'Pending idea', approval_status: 'pending' }),
+    ]);
+    (api.setSupportTicketApproval as any).mockResolvedValue({
+      id: 'f1',
+      approval_status: 'denied',
+      approved_at: '2026-09-08 00:00:00',
+      approved_by: 'u1',
+    });
+    await openVotingTab();
+
+    fireEvent.click(await screen.findByTestId('deny-f1'));
+
+    await waitFor(() =>
+      expect(api.setSupportTicketApproval).toHaveBeenCalledWith('proj-1', 'f1', 'denied'),
+    );
+    // Denied → the row leaves the mounted feed immediately.
+    await waitFor(() => expect(screen.queryByTestId('voting-item')).toBeNull());
+    expect(screen.queryByText('Pending idea')).toBeNull();
   });
 });

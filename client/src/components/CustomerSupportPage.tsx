@@ -21,6 +21,7 @@ import {
   MessageCircle,
 } from 'lucide-react';
 import { convertedCardId, convertedCardLabel } from '@shared/utils/convertedCardLabel';
+import { hasRole } from '../utils/auth';
 import { api } from '../utils/api';
 import { getVoterKey, computeOptimisticVote } from '../utils/voting';
 import { getServerBase } from '../utils/connection';
@@ -1682,10 +1683,33 @@ function SupportTicketDetailModal({
 // choice (`myVote`) highlights the matching arrow. Votes are optimistic —
 // applied locally, then reconciled with the server aggregate (and the
 // support_ticket_vote_updated WebSocket echo for cross-client sync).
-function VotingItemCard({ item, onVote, onOpen }: any) {
+// Compact approval badge shown on a voting card when the project's approval
+// system is on (i.e. the item carries an approval_status). Pending is the
+// state that keeps a request out of the main queue.
+function ApprovalBadge({ status }: { status: string }) {
+  const styles: Record<string, string> = {
+    approved: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
+    denied: 'border-rose-500/40 bg-rose-500/10 text-rose-300',
+    pending: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
+  };
+  const label = status.charAt(0).toUpperCase() + status.slice(1);
+  return (
+    <span
+      data-testid={`approval-badge-${status}`}
+      className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide border ${
+        styles[status] || 'border-gray-700 text-gray-400'
+      }`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function VotingItemCard({ item, onVote, onOpen, isAdmin, onApprove }: any) {
   const voting = item.voting || { score: 0, upvotes: 0, downvotes: 0, myVote: null };
   const myVote = voting.myVote;
   const commentCount = Number(voting.comment_count) || 0;
+  const approval = item.approval_status as string | null | undefined;
   return (
     <div
       data-testid="voting-item"
@@ -1740,6 +1764,7 @@ function VotingItemCard({ item, onVote, onOpen }: any) {
         <div className="flex items-center gap-2">
           <Lightbulb size={13} className="flex-shrink-0 text-emerald-400" />
           <h3 className="truncate text-sm font-medium text-gray-100">{item.subject}</h3>
+          {approval ? <ApprovalBadge status={approval} /> : null}
         </div>
         {item.body?.trim() ? (
           <p className="mt-1 line-clamp-2 text-xs text-gray-400 break-words">{item.body}</p>
@@ -1752,6 +1777,33 @@ function VotingItemCard({ item, onVote, onOpen }: any) {
           </span>
         </div>
       </button>
+
+      {/* Admin approve/deny column. Server enforces the Admin role; this only
+          hides the affordance from non-admins. */}
+      {isAdmin && approval ? (
+        <div className="flex flex-shrink-0 flex-col gap-1">
+          <button
+            type="button"
+            data-testid={`approve-${item.id}`}
+            disabled={approval === 'approved'}
+            onClick={() => onApprove?.(item, 'approved')}
+            className="inline-flex items-center gap-1 rounded-md border border-emerald-600/50 px-2 py-1 text-[11px] font-medium text-emerald-300 hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Check size={12} />
+            Approve
+          </button>
+          <button
+            type="button"
+            data-testid={`deny-${item.id}`}
+            disabled={approval === 'denied'}
+            onClick={() => onApprove?.(item, 'denied')}
+            className="inline-flex items-center gap-1 rounded-md border border-rose-600/50 px-2 py-1 text-[11px] font-medium text-rose-300 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <X size={12} />
+            Deny
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1769,6 +1821,9 @@ function VotingTab({ projectId, agents = [], onNotify, onOpenCard }: any) {
   // same comment thread and operator action row (convert / assign / auto-merge).
   const [openItem, setOpenItem] = useState<any>(null);
   const voterKey = useMemo(() => getVoterKey(), []);
+  // Approve/deny is Admin-only (the server enforces requireRole('Admin'); this
+  // just hides the affordance from lower-privilege viewers).
+  const isAdmin = useMemo(() => hasRole('Admin'), []);
   // Per-ticket vote queue. Only ONE castVote PUT is ever in flight per ticket:
   // rapid clicks update `desired` (the latest target value) and the in-flight
   // worker resends it once the current request settles. Serializing on the
@@ -1918,6 +1973,32 @@ function VotingTab({ projectId, agents = [], onNotify, onOpenCard }: any) {
     );
   };
 
+  // Admin approve/deny. Denied requests leave the voting feed immediately
+  // (matching the server feed filter, which excludes denied); approved/pending
+  // stay, with the row patched in place (keeping its tally) so the badge and
+  // disabled state update without a refetch.
+  const handleApprove = async (item: any, status: 'approved' | 'denied') => {
+    try {
+      const updated = await api.setSupportTicketApproval(projectId, item.id, status);
+      if (updated.approval_status === 'denied') {
+        removeItem(item.id);
+      } else {
+        updateItem({
+          id: item.id,
+          approval_status: updated.approval_status,
+          approved_at: updated.approved_at,
+          approved_by: updated.approved_by,
+        });
+      }
+      onNotify?.(
+        status === 'approved' ? 'Feature request approved' : 'Feature request denied',
+        'success',
+      );
+    } catch (err: any) {
+      onNotify?.(err?.message || 'Could not update approval', 'error');
+    }
+  };
+
   return (
     <div className="flex-1 overflow-y-auto" data-testid="voting-tab-body">
       {loading ? (
@@ -1942,7 +2023,14 @@ function VotingTab({ projectId, agents = [], onNotify, onOpenCard }: any) {
       ) : (
         <div className="mx-auto max-w-5xl space-y-2 p-3">
           {items.map((item: any) => (
-            <VotingItemCard key={item.id} item={item} onVote={handleVote} onOpen={setOpenItem} />
+            <VotingItemCard
+              key={item.id}
+              item={item}
+              onVote={handleVote}
+              onOpen={setOpenItem}
+              isAdmin={isAdmin}
+              onApprove={handleApprove}
+            />
           ))}
         </div>
       )}

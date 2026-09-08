@@ -32,6 +32,7 @@ import { SidebarContext } from '../context/SidebarContext';
 import { convertedCardLabel } from '@shared/utils/convertedCardLabel';
 import { computeOptimisticVote, sortVotingItems } from '@shared/utils/voting';
 import { getVoterKey } from '../utils/voterKey';
+import { hasRole } from '../utils/auth';
 import VotingScaffolderModal from './VotingScaffolderModal';
 const SEVERITY_COLOR: Record<string, any> = {
   critical: colors.red500,
@@ -692,9 +693,17 @@ export function CommentThread({ projectId, ticketId }: any) {
 // status action row unchanged. `myVote` highlights the matching arrow. Votes are
 // optimistic — applied locally, then reconciled with the server aggregate (and
 // the support_ticket_vote_updated WebSocket echo for cross-client sync).
-export function VotingItemCard({ item, projectId, onVote, ticketHandlers = {} }: any) {
+export function VotingItemCard({
+  item,
+  projectId,
+  onVote,
+  ticketHandlers = {},
+  isAdmin = false,
+  onApprove,
+}: any) {
   const voting = item.voting || { score: 0, upvotes: 0, downvotes: 0, myVote: null };
   const myVote = voting.myVote;
+  const approval = item.approval_status as string | null | undefined;
   return (
     <View testID="voting-item" style={styles.votingItem}>
       <View style={styles.voteColumn}>
@@ -719,7 +728,38 @@ export function VotingItemCard({ item, projectId, onVote, ticketHandlers = {} }:
         </TouchableOpacity>
       </View>
       <View style={styles.votingItemBody}>
+        {approval ? (
+          <Text testID={`approval-badge-${approval}`} style={styles.approvalBadge}>
+            {approval.toUpperCase()}
+          </Text>
+        ) : null}
         <TicketCard item={item} projectId={projectId} {...ticketHandlers} />
+        {isAdmin && approval ? (
+          <View style={styles.approvalRow}>
+            <TouchableOpacity
+              testID={`approve-${item.id}`}
+              disabled={approval === 'approved'}
+              onPress={() => onApprove?.(item, 'approved')}
+              style={[
+                styles.approvalButton,
+                approval === 'approved' && styles.approvalButtonDisabled,
+              ]}
+            >
+              <Text style={styles.approveText}>Approve</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID={`deny-${item.id}`}
+              disabled={approval === 'denied'}
+              onPress={() => onApprove?.(item, 'denied')}
+              style={[
+                styles.approvalButton,
+                approval === 'denied' && styles.approvalButtonDisabled,
+              ]}
+            >
+              <Text style={styles.denyText}>Deny</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
       </View>
     </View>
   );
@@ -878,6 +918,41 @@ export function VotingTab({ projectId, onOpen, onOpenReplay, ticketHandlers = {}
     setItems((prev: any) => prev.filter((it: any) => it.id !== ticketId));
   };
 
+  // Approve/deny is Admin-only (the server enforces requireRole('Admin')).
+  // Denied requests leave the voting feed immediately (matching the server feed
+  // filter); approved/pending stay with the row patched in place.
+  const isAdmin = hasRole('Admin');
+  const handleApprove = async (item: any, status: 'approved' | 'denied') => {
+    try {
+      const updated = await api.setSupportTicketApproval(projectId, item.id, status);
+      if (updated.approval_status === 'denied') {
+        removeItem(item.id);
+        return;
+      }
+      setItems((prev: any) =>
+        sortVotingItems(
+          prev.map((it: any) =>
+            it.id === item.id
+              ? {
+                  ...it,
+                  approval_status: updated.approval_status,
+                  approved_at: updated.approved_at,
+                  approved_by: updated.approved_by,
+                }
+              : it,
+          ),
+        ),
+      );
+    } catch (err: any) {
+      // Surface the failure — connectivity/authorization/server error — so the
+      // admin knows their decision was not saved. The row is left untouched.
+      Alert.alert(
+        status === 'approved' ? 'Could not approve request' : 'Could not deny request',
+        err?.message || 'Failed to update approval',
+      );
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.centerState}>
@@ -922,6 +997,8 @@ export function VotingTab({ projectId, onOpen, onOpenReplay, ticketHandlers = {}
           projectId={projectId}
           onVote={handleVote}
           ticketHandlers={itemHandlers}
+          isAdmin={isAdmin}
+          onApprove={handleApprove}
         />
       )}
     />
@@ -2058,6 +2135,24 @@ const styles = StyleSheet.create({
   voteArrowDownActive: { color: colors.rose400 },
   voteScore: { fontSize: 13, fontWeight: '700', color: colors.gray200, paddingVertical: 2 },
   votingItemBody: { flex: 1 },
+  approvalBadge: {
+    alignSelf: 'flex-start',
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.amber400,
+    marginBottom: 4,
+  },
+  approvalRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  approvalButton: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  approvalButtonDisabled: { opacity: 0.4 },
+  approveText: { fontSize: 12, fontWeight: '600', color: colors.emerald300 },
+  denyText: { fontSize: 12, fontWeight: '600', color: colors.rose400 },
   commentSection: { marginTop: 16, gap: 8 },
   commentSectionTitle: {
     fontSize: 11,

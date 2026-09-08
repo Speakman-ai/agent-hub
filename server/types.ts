@@ -1542,6 +1542,13 @@ export type SupportTicketReleaseState =
   | 'fixed_pending_release'
   | 'released_to_prod'
   | 'customer_notified';
+// Approval workflow for feature_request tickets. When a project enables the
+// voting/approval system (Project.voting.enabled), new feature requests start
+// 'pending' and are hidden from the main support queue until an Admin approves
+// them. 'denied' requests drop off both the queue and the public voting feed.
+// Non-feature tickets leave this NULL. Legacy feature_request rows are NULL and
+// treated as 'pending' when the owning project has the system enabled.
+export type SupportTicketApprovalStatus = 'pending' | 'approved' | 'denied';
 
 export interface SupportTicketRow {
   id: string;
@@ -1585,6 +1592,14 @@ export interface SupportTicketRow {
   // support_tickets_set_resolved_at_* triggers; drives the per-project Stats
   // "support tickets resolved" bucketing.
   resolved_at: string | null;
+  // Approval workflow for feature_request tickets. NULL for non-feature tickets
+  // and for legacy feature requests (treated as 'pending' when the owning
+  // project has the voting/approval system enabled). approved_by holds the
+  // acting user's id (or 'api-key' for the break-glass owner key); approved_at
+  // is the decision timestamp.
+  approval_status: SupportTicketApprovalStatus | null;
+  approved_at: string | null;
+  approved_by: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -2543,6 +2558,7 @@ export interface Stmts {
   listSupportTicketsByProjectAndStatus: Stmt;
   updateSupportTicketStatus: Stmt;
   updateSupportTicketType: Stmt;
+  setSupportTicketApproval: Stmt;
   updateSupportTicketSeverity: Stmt;
   updateSupportTicketInvestigation: Stmt;
   setSupportTicketReplayRef: Stmt;
@@ -3359,6 +3375,19 @@ export interface Project {
    * `server/git-host/push-ci.ts` and the Runners settings section.
    */
   ciOnPush?: { enabled?: boolean };
+  /**
+   * Feature-request voting / approval system. When `enabled`, submitted
+   * `feature_request` support tickets require an Admin to approve them before
+   * they appear in the main support queue: new requests start
+   * `approval_status: 'pending'`, an Admin approves/denies (on the Hub or via
+   * the owner API key from a consuming app), and only approved requests show in
+   * the queue. Denied requests drop off the queue and the public voting feed;
+   * pending requests stay on the voting feed so customers can keep voting to
+   * inform the decision. Approval never auto-runs any work. Default OFF —
+   * projects opt in, preserving the classic "feature requests appear
+   * immediately" behavior. See `server/routes/support-tickets.ts`.
+   */
+  voting?: { enabled?: boolean };
   /**
    * Dependabot-style auto-PR for the dependency security audit (Agent
    * Hub-hosted projects only). When `enabled`, a scan that persists findings

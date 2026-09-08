@@ -14756,6 +14756,23 @@ components:
           type: string
           nullable: true
           description: Timestamp the ticket was first read, or null when unread.
+        approval_status:
+          type: string
+          nullable: true
+          enum:
+            - pending
+            - approved
+            - denied
+            - null
+          description: Feature-request approval state. 'pending' until an Admin approves/denies; only 'approved' requests appear in the main support queue when the project's voting/approval system is on. Null for non-feature tickets.
+        approved_at:
+          type: string
+          nullable: true
+          description: Timestamp of the approve/deny decision, or null.
+        approved_by:
+          type: string
+          nullable: true
+          description: User id of the deciding Admin, 'api-key' for the owner key, or null.
         release_notifications:
           type: array
           items:
@@ -14790,6 +14807,9 @@ components:
         - release_deployment_id
         - customer_notified_at
         - read_at
+        - approval_status
+        - approved_at
+        - approved_by
         - created_at
         - updated_at
       description: A single support ticket row.
@@ -43916,6 +43936,74 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SupportTicket"
+        "404":
+          description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/{id}/approval:
+    post:
+      tags:
+        - Support
+      summary: Approve or deny a feature request (Admin only)
+      description: Set a feature_request ticket's approval state. Requires the Admin role or higher (the break-glass owner API key counts as Owner, so a consuming app can approve via API). Only feature_request tickets are eligible. Approval never starts any work — it only controls queue/feed visibility.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum:
+                    - pending
+                    - approved
+                    - denied
+                  description: Approval decision for a feature request. 'approved' surfaces it in the main support queue; 'denied' drops it from the queue and the public voting feed; 'pending' resets it.
+              required:
+                - status
+              description: Admin approve/deny decision for a feature-request ticket.
+      responses:
+        "200":
+          description: Updated ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicket"
+        "400":
+          description: Invalid approval status, or ticket is not a feature_request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
         "404":
           description: Project or ticket not found.
           content:

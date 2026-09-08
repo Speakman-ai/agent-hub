@@ -695,6 +695,25 @@ describe('SettingsPage — sidebar navigation', () => {
     updateSpy.mockRestore();
   });
 
+  it('exposes a Feature request approval toggle that defaults off and persists via updateProject', async () => {
+    const { api } = await import('../utils/api.js');
+    const updateSpy = vi.spyOn(api, 'updateProject').mockResolvedValue({} as any);
+    const onProjectsChange = vi.fn();
+    const projects = [
+      { id: 'p1', name: 'Acme', color: '#ff0000', cwd: '/tmp/a', githubRepo: '', agents: [] },
+    ];
+    const { getByTestId } = render(
+      <ProjectsSection projects={projects} projectId="p1" onProjectsChange={onProjectsChange} />,
+    );
+    const toggle = getByTestId('project-voting-enabled-p1');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(toggle as any);
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith('p1', { voting: { enabled: true } });
+    });
+    updateSpy.mockRestore();
+  });
+
   it('does NOT render the project list on the GitHub tab anymore', async () => {
     const projects = [
       { id: 'p1', name: 'Acme', color: '#ff0000', cwd: '/tmp/a', githubRepo: '', agents: [] },

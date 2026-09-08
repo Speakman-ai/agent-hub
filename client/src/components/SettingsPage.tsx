@@ -1259,6 +1259,8 @@ export function ProjectsSection({
   const [awsSaving, setAwsSaving] = useState<Record<string, any>>({});
   // Per-project Infrastructure-enabled toggle (in-flight guard while persisting).
   const [infraSaving, setInfraSaving] = useState<Record<string, any>>({});
+  // Per-project feature-request voting/approval toggle (in-flight guard).
+  const [votingSaving, setVotingSaving] = useState<Record<string, any>>({});
 
   // Project delete confirmation (inline toggle pattern)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState<any>(null);
@@ -1303,6 +1305,21 @@ export function ProjectsSection({
       else alert(msg);
     } finally {
       setInfraSaving((prev: any) => ({ ...prev, [project.id]: false }));
+    }
+  };
+
+  const toggleVotingEnabled = async (project: any) => {
+    const next = !project.voting?.enabled;
+    setVotingSaving((prev: any) => ({ ...prev, [project.id]: true }));
+    try {
+      await api.updateProject(project.id, { voting: { enabled: next } });
+      if (onProjectsChange) onProjectsChange();
+    } catch (err: any) {
+      const msg = String(err?.message || err || 'Failed to update');
+      if (showToast) showToast(msg, 'error');
+      else alert(msg);
+    } finally {
+      setVotingSaving((prev: any) => ({ ...prev, [project.id]: false }));
     }
   };
 
@@ -1433,6 +1450,35 @@ export function ProjectsSection({
           <span
             className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
               p.infraEnabled ? 'translate-x-4' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+
+      {/* Feature-request voting/approval toggle — when on, submitted feature
+          requests are held for Admin approval before they appear in the
+          support queue. Off (default) = they appear immediately (classic). */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <span className="text-sm text-gray-200">Feature request approval</span>
+          <p className="text-xs text-gray-500">
+            When on, submitted feature requests stay out of the support queue until an{' '}
+            <strong>Admin</strong> approves them; customers can still vote on them in the Voting
+            tab. Off (default) sends them straight into the queue.
+          </p>
+        </div>
+        <button
+          onClick={() => toggleVotingEnabled(p)}
+          disabled={votingSaving[p.id]}
+          data-testid={`project-voting-enabled-${p.id}`}
+          aria-pressed={!!p.voting?.enabled}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+            p.voting?.enabled ? 'bg-emerald-600' : 'bg-gray-600'
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+              p.voting?.enabled ? 'translate-x-4' : 'translate-x-0.5'
             }`}
           />
         </button>

@@ -17,6 +17,7 @@ const TYPES = ['bug', 'question', 'feature_request', 'incident', 'other'] as con
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
 const STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do'] as const;
 const RELEASE_STATES = ['fixed_pending_release', 'released_to_prod', 'customer_notified'] as const;
+const APPROVAL_STATUSES = ['pending', 'approved', 'denied'] as const;
 const INVESTIGATION_ENGINES = ['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli'] as const;
 
 /** Opaque voter identity token. Callers that have a user email should pass
@@ -151,6 +152,17 @@ export const SupportTicketComponent = registerComponent(
         .string()
         .nullable()
         .openapi({ description: 'Timestamp the ticket was first read, or null when unread.' }),
+      approval_status: z.enum(APPROVAL_STATUSES).nullable().openapi({
+        description:
+          "Feature-request approval state. 'pending' until an Admin approves/denies; only 'approved' requests appear in the main support queue when the project's voting/approval system is on. Null for non-feature tickets.",
+      }),
+      approved_at: z
+        .string()
+        .nullable()
+        .openapi({ description: 'Timestamp of the approve/deny decision, or null.' }),
+      approved_by: z.string().nullable().openapi({
+        description: "User id of the deciding Admin, 'api-key' for the owner key, or null.",
+      }),
       release_notifications: z
         .array(SupportTicketReleaseNotificationComponent)
         .optional()
@@ -476,6 +488,35 @@ registerPath({
   responses: {
     200: { description: 'Updated ticket.', content: jsonContent(SupportTicketComponent) },
     400: errorResponse('Invalid status, type, or severity.'),
+    404: errorResponse('Project or ticket not found.'),
+  },
+});
+
+export const SupportTicketApprovalRequestSchema = z
+  .object({
+    status: z.enum(APPROVAL_STATUSES).openapi({
+      description:
+        "Approval decision for a feature request. 'approved' surfaces it in the main support queue; 'denied' drops it from the queue and the public voting feed; 'pending' resets it.",
+    }),
+  })
+  .openapi({ description: 'Admin approve/deny decision for a feature-request ticket.' });
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/support-tickets/{id}/approval',
+  tags: ['Support'],
+  summary: 'Approve or deny a feature request (Admin only)',
+  description:
+    "Set a feature_request ticket's approval state. Requires the Admin role or higher (the break-glass owner API key counts as Owner, so a consuming app can approve via API). Only feature_request tickets are eligible. Approval never starts any work — it only controls queue/feed visibility.",
+  request: {
+    params: ticketParams,
+    body: { content: jsonContent(SupportTicketApprovalRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated ticket.', content: jsonContent(SupportTicketComponent) },
+    400: errorResponse('Invalid approval status, or ticket is not a feature_request.'),
+    401: errorResponse('Authentication required.'),
+    403: errorResponse('Admin role required.'),
     404: errorResponse('Project or ticket not found.'),
   },
 });

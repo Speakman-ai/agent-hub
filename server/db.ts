@@ -863,6 +863,14 @@ function initDb(dataDir: string): void {
       -- Stats page can bucket "tickets resolved" by day/week/month. Cleared if
       -- the ticket is reopened to new/investigating.
       resolved_at TEXT,
+      -- Approval workflow for feature_request tickets (Project.voting.enabled).
+      -- NULL for non-feature tickets and legacy feature requests (treated as
+      -- 'pending' when the owning project has the system on). See migration
+      -- block below for existing installs.
+      approval_status TEXT
+        CHECK(approval_status IS NULL OR approval_status IN ('pending','approved','denied')),
+      approved_at TEXT,
+      approved_by TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -1903,6 +1911,25 @@ function initDb(dataDir: string): void {
       } finally {
         handle.pragma('foreign_keys = ON');
       }
+    }
+  }
+
+  // Feature-request approval workflow columns (Project.voting.enabled). Added
+  // after the CHECK-widening rebuild above so a legacy rebuild — which recreates
+  // support_tickets without these columns — can't drop them. Each is a no-op
+  // once present (fresh installs get them from the CREATE TABLE above).
+  for (const [column, ddl] of [
+    [
+      'approval_status',
+      "ALTER TABLE support_tickets ADD COLUMN approval_status TEXT CHECK(approval_status IS NULL OR approval_status IN ('pending','approved','denied'))",
+    ],
+    ['approved_at', 'ALTER TABLE support_tickets ADD COLUMN approved_at TEXT'],
+    ['approved_by', 'ALTER TABLE support_tickets ADD COLUMN approved_by TEXT'],
+  ] as const) {
+    try {
+      db.prepare(`SELECT ${column} FROM support_tickets LIMIT 1`).get();
+    } catch {
+      db.exec(ddl);
     }
   }
 
@@ -6046,8 +6073,8 @@ function initDb(dataDir: string): void {
     // newest, via a CASE rank since SQLite has no native enum ordering.
     createSupportTicket: db.prepare(
       `INSERT INTO support_tickets
-         (id, project_id, type, severity, status, subject, body, reporter, reporter_email, replay_ref, screenshot_ref)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, project_id, type, severity, status, subject, body, reporter, reporter_email, replay_ref, screenshot_ref, approval_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     getSupportTicket: db.prepare('SELECT * FROM support_tickets WHERE id = ?'),
     listSupportTicketsByProject: db.prepare(
@@ -6079,6 +6106,16 @@ function initDb(dataDir: string): void {
     ),
     updateSupportTicketType: db.prepare(
       `UPDATE support_tickets SET type = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    // Feature-request approval decision. approved_at/approved_by are stamped for
+    // approved/denied and cleared when reset to pending.
+    setSupportTicketApproval: db.prepare(
+      `UPDATE support_tickets
+         SET approval_status = ?,
+             approved_at = CASE WHEN ? IN ('approved','denied') THEN datetime('now') ELSE NULL END,
+             approved_by = CASE WHEN ? IN ('approved','denied') THEN ? ELSE NULL END,
+             updated_at = datetime('now')
+       WHERE id = ?`,
     ),
     updateSupportTicketSeverity: db.prepare(
       `UPDATE support_tickets SET severity = ?, updated_at = datetime('now') WHERE id = ?`,
@@ -6225,6 +6262,9 @@ function initDb(dataDir: string): void {
        LEFT JOIN support_ticket_votes mine
          ON mine.support_ticket_id = t.id AND mine.voter_key = ?
        WHERE t.project_id = ? AND t.type = 'feature_request' AND t.status IN ('new', 'investigating')
+         -- Denied feature requests drop off the public voting feed; pending +
+         -- approved stay votable so customers can keep informing the decision.
+         AND (t.approval_status IS NULL OR t.approval_status != 'denied')
        ORDER BY COALESCE(v.score, 0) DESC, t.created_at DESC, t.rowid DESC`,
     ),
 
