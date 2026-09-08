@@ -33,6 +33,7 @@ function ticket(overrides: Partial<SupportTicketRow> = {}): SupportTicketRow {
     approval_status: null,
     approved_at: null,
     approved_by: null,
+    voting_paused: 0,
     created_at: '2026-06-14 00:00:00',
     updated_at: '2026-06-14 00:00:00',
     ...overrides,

@@ -19,6 +19,8 @@ import {
   ThumbsUp,
   ThumbsDown,
   MessageCircle,
+  Pause,
+  Play,
 } from 'lucide-react';
 import { convertedCardId, convertedCardLabel } from '@shared/utils/convertedCardLabel';
 import { hasRole } from '../utils/auth';
@@ -1705,11 +1707,13 @@ function ApprovalBadge({ status }: { status: string }) {
   );
 }
 
-function VotingItemCard({ item, onVote, onOpen, isAdmin, onApprove }: any) {
+function VotingItemCard({ item, onVote, onOpen, isAdmin, onApprove, onTogglePause }: any) {
   const voting = item.voting || { score: 0, upvotes: 0, downvotes: 0, myVote: null };
   const myVote = voting.myVote;
   const commentCount = Number(voting.comment_count) || 0;
   const approval = item.approval_status as string | null | undefined;
+  // Paused items stay on the feed but can't be voted on (the server 409s).
+  const paused = Boolean(item.voting_paused);
   return (
     <div
       data-testid="voting-item"
@@ -1723,8 +1727,9 @@ function VotingItemCard({ item, onVote, onOpen, isAdmin, onApprove }: any) {
           data-testid={`vote-up-${item.id}`}
           aria-pressed={myVote === 1}
           aria-label="Upvote"
+          disabled={paused}
           onClick={() => onVote(item, 'up')}
-          className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${
+          className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
             myVote === 1
               ? 'border-emerald-500/50 bg-emerald-500/20 text-emerald-300'
               : 'border-gray-700 text-gray-500 hover:text-gray-200 hover:border-gray-600'
@@ -1743,8 +1748,9 @@ function VotingItemCard({ item, onVote, onOpen, isAdmin, onApprove }: any) {
           data-testid={`vote-down-${item.id}`}
           aria-pressed={myVote === -1}
           aria-label="Downvote"
+          disabled={paused}
           onClick={() => onVote(item, 'down')}
-          className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors ${
+          className={`flex h-7 w-7 items-center justify-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
             myVote === -1
               ? 'border-rose-500/50 bg-rose-500/20 text-rose-300'
               : 'border-gray-700 text-gray-500 hover:text-gray-200 hover:border-gray-600'
@@ -1765,6 +1771,14 @@ function VotingItemCard({ item, onVote, onOpen, isAdmin, onApprove }: any) {
           <Lightbulb size={13} className="flex-shrink-0 text-emerald-400" />
           <h3 className="truncate text-sm font-medium text-gray-100">{item.subject}</h3>
           {approval ? <ApprovalBadge status={approval} /> : null}
+          {paused ? (
+            <span
+              data-testid={`voting-paused-badge-${item.id}`}
+              className="rounded border border-gray-600 bg-gray-700/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-300"
+            >
+              Voting paused
+            </span>
+          ) : null}
         </div>
         {item.body?.trim() ? (
           <p className="mt-1 line-clamp-2 text-xs text-gray-400 break-words">{item.body}</p>
@@ -1801,6 +1815,16 @@ function VotingItemCard({ item, onVote, onOpen, isAdmin, onApprove }: any) {
           >
             <X size={12} />
             Deny
+          </button>
+          <button
+            type="button"
+            data-testid={`toggle-pause-${item.id}`}
+            aria-pressed={paused}
+            onClick={() => onTogglePause?.(item, !paused)}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-600/60 px-2 py-1 text-[11px] font-medium text-gray-300 hover:bg-gray-500/10"
+          >
+            {paused ? <Play size={12} /> : <Pause size={12} />}
+            {paused ? 'Resume' : 'Pause'}
           </button>
         </div>
       ) : null}
@@ -1999,6 +2023,18 @@ function VotingTab({ projectId, agents = [], onNotify, onOpenCard }: any) {
     }
   };
 
+  // Admin pause/resume voting. Patches voting_paused in place (keeping the
+  // tally) so the badge and disabled vote controls update without a refetch.
+  const handleTogglePause = async (item: any, paused: boolean) => {
+    try {
+      const updated = await api.setSupportTicketVotingPause(projectId, item.id, paused);
+      updateItem({ id: item.id, voting_paused: updated.voting_paused });
+      onNotify?.(paused ? 'Voting paused' : 'Voting resumed', 'success');
+    } catch (err: any) {
+      onNotify?.(err?.message || 'Could not update voting pause', 'error');
+    }
+  };
+
   return (
     <div className="flex-1 overflow-y-auto" data-testid="voting-tab-body">
       {loading ? (
@@ -2030,6 +2066,7 @@ function VotingTab({ projectId, agents = [], onNotify, onOpenCard }: any) {
               onOpen={setOpenItem}
               isAdmin={isAdmin}
               onApprove={handleApprove}
+              onTogglePause={handleTogglePause}
             />
           ))}
         </div>

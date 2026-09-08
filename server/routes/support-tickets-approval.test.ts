@@ -119,6 +119,54 @@ describe('feature-request approval workflow', () => {
     expect(reset.body.approved_by).toBeNull();
   });
 
+  it("denying moves the request into the Won't Do pile; re-approving restores it", async () => {
+    const projectId = await newProjectId();
+    const featureId = await createFeatureRequest(projectId);
+
+    // Deny → status flips to wont_do (preserved, not lost) with a reason, and
+    // the request surfaces under the wont_do filter rather than vanishing.
+    const denied = await request
+      .post(`/api/projects/${projectId}/support-tickets/${featureId}/approval`)
+      .send({ status: 'denied' })
+      .expect(200);
+    expect(denied.body.approval_status).toBe('denied');
+    expect(denied.body.status).toBe('wont_do');
+    expect(denied.body.wont_do_reason).toBe('Feature request denied');
+
+    const wontDoIds = await request
+      .get(`/api/projects/${projectId}/support-tickets?status=wont_do`)
+      .expect(200)
+      .then((r) => r.body.map((t: { id: string }) => t.id));
+    expect(wontDoIds).toContain(featureId);
+
+    // Re-approving pulls it back to the open queue and clears the reason, keeping
+    // the wont_do_reason invariant (non-null only while status is wont_do).
+    const approved = await request
+      .post(`/api/projects/${projectId}/support-tickets/${featureId}/approval`)
+      .send({ status: 'approved' })
+      .expect(200);
+    expect(approved.body.approval_status).toBe('approved');
+    expect(approved.body.status).toBe('new');
+    expect(approved.body.wont_do_reason).toBeNull();
+    expect(await listIds(projectId)).toContain(featureId);
+  });
+
+  it('denying a converted request does not clobber its terminal status', async () => {
+    const projectId = await newProjectId();
+    const featureId = await createFeatureRequest(projectId);
+    // Drive it to a terminal, non-wont_do status directly.
+    getDb().prepare("UPDATE support_tickets SET status = 'converted' WHERE id = ?").run(featureId);
+
+    const denied = await request
+      .post(`/api/projects/${projectId}/support-tickets/${featureId}/approval`)
+      .send({ status: 'denied' })
+      .expect(200);
+    expect(denied.body.approval_status).toBe('denied');
+    // Still converted — a denial never rewrites an already-terminal lifecycle.
+    expect(denied.body.status).toBe('converted');
+    expect(denied.body.wont_do_reason).toBeNull();
+  });
+
   it('rejects approval on a non-feature ticket and an invalid status', async () => {
     const projectId = await newProjectId();
     const bug = await request

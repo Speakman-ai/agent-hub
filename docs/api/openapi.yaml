@@ -14773,6 +14773,9 @@ components:
           type: string
           nullable: true
           description: User id of the deciding Admin, 'api-key' for the owner key, or null.
+        voting_paused:
+          type: boolean
+          description: True when an operator has paused voting on this feature request. A paused item stays on the voting feed but is not votable (the vote endpoint returns 409); consuming apps disable their vote controls while true.
         release_notifications:
           type: array
           items:
@@ -14810,6 +14813,7 @@ components:
         - approval_status
         - approved_at
         - approved_by
+        - voting_paused
         - created_at
         - updated_at
       description: A single support ticket row.
@@ -14869,6 +14873,9 @@ components:
           type: string
         body:
           type: string
+        voting_paused:
+          type: boolean
+          description: True when an operator has paused voting on this item. It stays on the feed but is not votable (the vote endpoint returns 409); a consuming app should disable its vote controls while true.
         voting:
           $ref: "#/components/schemas/SupportTicketVotingTally"
       required:
@@ -14878,6 +14885,7 @@ components:
         - status
         - subject
         - body
+        - voting_paused
         - voting
       description: "External-safe voting item returned to Survey-Tracker. Any API-key request qualifies — the global X-API-Key or a per-user `ahub_*` key — as opposed to an interactive Hub operator session. The shape is exactly the public contract: id + subject/body/type/severity/status + the voting tally (score/upvotes/downvotes/myVote/comment_count). No project_id or timestamps; every operator-only field is stripped by construction."
     RunSupportTicketInvestigationResponse:
@@ -44010,6 +44018,70 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/{id}/voting-pause:
+    post:
+      tags:
+        - Support
+      summary: Pause or resume voting on a feature request (Admin only)
+      description: Toggle a feature_request ticket's voting pause. Requires the Admin role or higher (the break-glass owner API key counts as Owner, so a consuming app can toggle it via API). Only feature_request tickets are eligible. A paused item stays on the voting feed but is not votable — the vote endpoint returns 409, and the ticket's `voting_paused` flag turns true so consuming apps disable their vote controls. Broadcasts `support_ticket_updated`.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paused:
+                  type: boolean
+                  description: true pauses voting on the feature request (stays on the feed, not votable); false resumes it.
+              required:
+                - paused
+              description: Admin pause/resume voting for a feature-request ticket.
+      responses:
+        "200":
+          description: Updated ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicket"
+        "400":
+          description: paused is not a boolean, or ticket is not a feature_request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "404":
+          description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
   /api/projects/{projectId}/support-tickets/{id}/convert:
     post:
       tags:
@@ -44201,6 +44273,12 @@ paths:
                 $ref: "#/components/schemas/SupportTicketErrorResponse"
         "404":
           description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "409":
+          description: Voting is paused for this feature request.
           content:
             application/json:
               schema:

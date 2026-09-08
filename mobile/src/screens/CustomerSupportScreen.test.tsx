@@ -8,6 +8,7 @@ const apiMocks = vi.hoisted(() => ({
   getVotingItems: vi.fn(),
   castVote: vi.fn(),
   setSupportTicketApproval: vi.fn(),
+  setSupportTicketVotingPause: vi.fn(),
   getSupportTicketComments: vi.fn(),
   addSupportTicketComment: vi.fn(),
   hideSupportTicketComment: vi.fn(),
@@ -331,6 +332,48 @@ describe('CustomerSupportScreen — VotingTab', () => {
     expect(apiMocks.setSupportTicketApproval).toHaveBeenCalledWith('p1', 'f1', 'denied');
     // Denied → the row leaves the mounted feed immediately.
     expect(container.querySelector('[data-testid="voting-item"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it('disables vote controls and hides the pause toggle for a paused item (non-admin)', async () => {
+    authMocks.hasRole.mockReturnValue(false);
+    apiMocks.getVotingItems.mockResolvedValue([
+      votingItem({ id: 'f1', approval_status: 'pending', voting_paused: true }),
+    ]);
+    const { container, root } = mount();
+    flushSync(() => root.render(<VotingTab projectId="p1" onOpen={vi.fn()} />));
+    await flush();
+
+    expect(container.querySelector('[data-testid="voting-paused-badge-f1"]')).toBeTruthy();
+    expect(
+      container.querySelector('[data-testid="vote-up-f1"]')?.getAttribute('disabled'),
+    ).not.toBeNull();
+    expect(container.querySelector('[data-testid="toggle-pause-f1"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it('lets an admin pause voting and patches the row', async () => {
+    authMocks.hasRole.mockReturnValue(true);
+    apiMocks.getVotingItems.mockResolvedValue([
+      votingItem({ id: 'f1', approval_status: 'pending', voting_paused: false }),
+    ]);
+    apiMocks.setSupportTicketVotingPause.mockResolvedValue({ id: 'f1', voting_paused: true });
+    const { container, root } = mount();
+    flushSync(() => root.render(<VotingTab projectId="p1" onOpen={vi.fn()} />));
+    await flush();
+
+    // Active first: vote control enabled, no paused badge.
+    expect(
+      container.querySelector('[data-testid="vote-up-f1"]')?.getAttribute('disabled'),
+    ).toBeNull();
+    click(container.querySelector('[data-testid="toggle-pause-f1"]'));
+    await flush();
+
+    expect(apiMocks.setSupportTicketVotingPause).toHaveBeenCalledWith('p1', 'f1', true);
+    expect(container.querySelector('[data-testid="voting-paused-badge-f1"]')).toBeTruthy();
+    expect(
+      container.querySelector('[data-testid="vote-up-f1"]')?.getAttribute('disabled'),
+    ).not.toBeNull();
     flushSync(() => root.unmount());
   });
 

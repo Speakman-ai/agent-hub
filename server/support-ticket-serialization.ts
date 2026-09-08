@@ -27,12 +27,14 @@ import type {
   SupportTicketVotingTally,
 } from './support-ticket-voting-store.js';
 
-export type SupportTicketResponse = SupportTicketRow & {
+export type SupportTicketResponse = Omit<SupportTicketRow, 'voting_paused'> & {
   reporter_email_masked: boolean;
   release_state: SupportTicketReleaseState | null;
   release_notifications?: ReleaseNotificationHistoryItem[];
   /** Board-facing identity of `converted_card_id`, or null when unset/deleted. */
   converted_card: ConvertedCardSummary | null;
+  /** Voting paused for this feature request — consumers disable vote controls. */
+  voting_paused: boolean;
 };
 
 export interface LinkedSupportTicketMetadata {
@@ -150,6 +152,7 @@ export function serializeSupportTicket(
       ticket.type === 'feature_request'
         ? (ticket.approval_status ?? 'pending')
         : ticket.approval_status,
+    voting_paused: Boolean(ticket.voting_paused),
     converted_card:
       opts.convertedCard !== undefined
         ? opts.convertedCard
@@ -269,6 +272,9 @@ export interface SupportTicketVotingExternalItem {
   status: SupportTicketStatus;
   subject: string;
   body: string;
+  // Voting paused for this item. A paused request stays on the feed but is not
+  // votable (the vote endpoint 409s); consuming apps disable their controls.
+  voting_paused: boolean;
   voting: SupportTicketVotingTally;
 }
 
@@ -287,6 +293,7 @@ function projectVotingItemExternal(
     status: ticket.status,
     subject: ticket.subject,
     body: ticket.body,
+    voting_paused: Boolean(ticket.voting_paused),
     voting,
   };
 }

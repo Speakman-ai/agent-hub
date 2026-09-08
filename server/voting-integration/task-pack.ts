@@ -39,7 +39,7 @@ import { MAX_ASSIGNMENT_COMMENT_LEN } from '../routes/board.openapi.js';
  * stamps this onto the session so we can tell which contract a scaffold
  * targeted.
  */
-export const VOTING_TASK_PACK_VERSION = '1.0.0';
+export const VOTING_TASK_PACK_VERSION = '1.1.0';
 
 /** Comment body cap, sourced from the route validator so it can't drift. */
 export const VOTING_COMMENT_MAX_LEN = MAX_ASSIGNMENT_COMMENT_LEN;
@@ -80,7 +80,16 @@ export const VOTING_API_ENDPOINTS: {
     path: '/api/projects/{projectId}/support-tickets/voting',
     summary: 'Feature-request tickets ranked by vote score (highest first, then newest).',
     queryParams: ['voterKey'],
-    responseFields: ['id', 'subject', 'body', 'type', 'severity', 'status', 'voting'],
+    responseFields: [
+      'id',
+      'subject',
+      'body',
+      'type',
+      'severity',
+      'status',
+      'voting_paused',
+      'voting',
+    ],
   },
   castVote: {
     method: 'PUT',
@@ -230,10 +239,17 @@ All requests send the Hub API key as the \`X-API-Key\` header (see §2).
 ${list.summary}
 - Optional query param \`voterKey\` populates \`voting.myVote\` for the current user.
 - Returns an array. External (API-key) callers get the allowlisted shape:
-  \`{ id, type, severity, status, subject, body, voting }\` where
+  \`{ id, type, severity, status, subject, body, voting_paused, voting }\` where
   \`voting = { score, upvotes, downvotes, myVote, comment_count }\`.
   \`score = SUM(value)\`; \`myVote\` is \`1 | -1 | null\`.
 - Already sorted by \`score\` DESC, then \`created_at\` DESC — render in order.
+- \`voting_paused\` is a boolean. When \`true\`, an operator has paused voting on
+  that item: keep it in the list but **disable the up/down controls** (render
+  them read-only / greyed out with a short "Voting paused" note) and do not send
+  a vote for it. The server also enforces this — a vote on a paused item returns
+  **409** — so treat the flag as the source of truth. It can change between
+  loads, so re-read it whenever you refetch the feed (and if a vote 409s, mark
+  that item paused and refresh).
 
 ### Cast / change / retract a vote — \`${vote.method} ${pathFor(vote, projectId)}\`
 ${vote.summary}

@@ -1794,6 +1794,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ status }),
     }),
+  // Pause / resume voting on a feature request (Admin only). A paused item stays
+  // on the voting feed but is not votable (the vote endpoint 409s) and carries
+  // voting_paused:true.
+  setSupportTicketVotingPause: (projectId: any, id: any, paused: boolean) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/voting-pause`, {
+      method: 'POST',
+      body: JSON.stringify({ paused }),
+    }),
   // Promote a support ticket to a To Do kanban card. The source ticket is
   // RETAINED and flagged `converted`; re-converting 409s.
   convertSupportTicketToCard: (projectId: any, id: any, opts: any = {}) => {

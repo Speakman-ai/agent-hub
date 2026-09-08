@@ -308,6 +308,7 @@ describe('support-tickets routes', () => {
         approval_status: null,
         approved_at: null,
         approved_by: null,
+        voting_paused: 0,
         created_at: '2026-06-29 00:00:00',
         updated_at: '2026-06-29 00:00:00',
       },

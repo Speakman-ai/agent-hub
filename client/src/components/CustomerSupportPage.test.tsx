@@ -27,6 +27,7 @@ import { api } from '../utils/api';
     getVotingItems: vi.fn().mockResolvedValue([]),
     castVote: vi.fn(),
     setSupportTicketApproval: vi.fn(),
+    setSupportTicketVotingPause: vi.fn(),
     getSupportTicketComments: vi.fn().mockResolvedValue([]),
     addSupportTicketComment: vi.fn(),
     hideSupportTicketComment: vi.fn().mockResolvedValue({ ok: true }),
@@ -1984,5 +1985,58 @@ describe('CustomerSupportPage — Voting tab admin approval', () => {
     // Denied → the row leaves the mounted feed immediately.
     await waitFor(() => expect(screen.queryByTestId('voting-item')).toBeNull());
     expect(screen.queryByText('Pending idea')).toBeNull();
+  });
+});
+
+describe('CustomerSupportPage — Voting tab pause control', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    authMock.hasRole.mockReturnValue(false);
+  });
+
+  it('hides the pause control from non-admins but shows the paused state', async () => {
+    authMock.hasRole.mockReturnValue(false);
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({
+        id: 'f1',
+        subject: 'Paused idea',
+        approval_status: 'pending',
+        voting_paused: true,
+      }),
+    ]);
+    await openVotingTab();
+
+    await waitFor(() => expect(screen.getByText('Paused idea')).toBeInTheDocument());
+    expect(screen.getByTestId('voting-paused-badge-f1')).toBeInTheDocument();
+    // Vote controls are disabled while paused, and there's no admin toggle.
+    expect(screen.getByTestId('vote-up-f1')).toBeDisabled();
+    expect(screen.getByTestId('vote-down-f1')).toBeDisabled();
+    expect(screen.queryByTestId('toggle-pause-f1')).toBeNull();
+  });
+
+  it('lets an admin pause voting and patches the row in place', async () => {
+    authMock.hasRole.mockReturnValue(true);
+    (api.getVotingItems as any).mockResolvedValue([
+      votingItem({
+        id: 'f1',
+        subject: 'Active idea',
+        approval_status: 'pending',
+        voting_paused: false,
+      }),
+    ]);
+    (api.setSupportTicketVotingPause as any).mockResolvedValue({ id: 'f1', voting_paused: true });
+    const onNotify = vi.fn();
+    await openVotingTab({ onNotify });
+
+    // Active: vote controls enabled, button reads "Pause".
+    expect(await screen.findByTestId('vote-up-f1')).not.toBeDisabled();
+    fireEvent.click(screen.getByTestId('toggle-pause-f1'));
+
+    await waitFor(() =>
+      expect(api.setSupportTicketVotingPause).toHaveBeenCalledWith('proj-1', 'f1', true),
+    );
+    await waitFor(() => expect(screen.getByTestId('voting-paused-badge-f1')).toBeInTheDocument());
+    expect(screen.getByTestId('vote-up-f1')).toBeDisabled();
+    expect(onNotify).toHaveBeenCalledWith('Voting paused', 'success');
   });
 });

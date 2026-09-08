@@ -700,18 +700,26 @@ export function VotingItemCard({
   ticketHandlers = {},
   isAdmin = false,
   onApprove,
+  onTogglePause,
 }: any) {
   const voting = item.voting || { score: 0, upvotes: 0, downvotes: 0, myVote: null };
   const myVote = voting.myVote;
   const approval = item.approval_status as string | null | undefined;
+  // Paused items stay on the feed but can't be voted on (the server 409s).
+  const paused = Boolean(item.voting_paused);
   return (
     <View testID="voting-item" style={styles.votingItem}>
       <View style={styles.voteColumn}>
         <TouchableOpacity
           testID={`vote-up-${item.id}`}
-          accessibilityState={{ selected: myVote === 1 }}
+          accessibilityState={{ selected: myVote === 1, disabled: paused }}
+          disabled={paused}
           onPress={() => onVote(item, 'up')}
-          style={[styles.voteButton, myVote === 1 && styles.voteButtonUpActive]}
+          style={[
+            styles.voteButton,
+            myVote === 1 && styles.voteButtonUpActive,
+            paused && styles.voteButtonDisabled,
+          ]}
         >
           <Text style={[styles.voteArrow, myVote === 1 && styles.voteArrowUpActive]}>▲</Text>
         </TouchableOpacity>
@@ -720,9 +728,14 @@ export function VotingItemCard({
         </Text>
         <TouchableOpacity
           testID={`vote-down-${item.id}`}
-          accessibilityState={{ selected: myVote === -1 }}
+          accessibilityState={{ selected: myVote === -1, disabled: paused }}
+          disabled={paused}
           onPress={() => onVote(item, 'down')}
-          style={[styles.voteButton, myVote === -1 && styles.voteButtonDownActive]}
+          style={[
+            styles.voteButton,
+            myVote === -1 && styles.voteButtonDownActive,
+            paused && styles.voteButtonDisabled,
+          ]}
         >
           <Text style={[styles.voteArrow, myVote === -1 && styles.voteArrowDownActive]}>▼</Text>
         </TouchableOpacity>
@@ -731,6 +744,11 @@ export function VotingItemCard({
         {approval ? (
           <Text testID={`approval-badge-${approval}`} style={styles.approvalBadge}>
             {approval.toUpperCase()}
+          </Text>
+        ) : null}
+        {paused ? (
+          <Text testID={`voting-paused-badge-${item.id}`} style={styles.pausedBadge}>
+            VOTING PAUSED
           </Text>
         ) : null}
         <TicketCard item={item} projectId={projectId} {...ticketHandlers} />
@@ -757,6 +775,14 @@ export function VotingItemCard({
               ]}
             >
               <Text style={styles.denyText}>Deny</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID={`toggle-pause-${item.id}`}
+              accessibilityState={{ selected: paused }}
+              onPress={() => onTogglePause?.(item, !paused)}
+              style={styles.approvalButton}
+            >
+              <Text style={styles.pauseText}>{paused ? 'Resume' : 'Pause'}</Text>
             </TouchableOpacity>
           </View>
         ) : null}
@@ -953,6 +979,24 @@ export function VotingTab({ projectId, onOpen, onOpenReplay, ticketHandlers = {}
     }
   };
 
+  // Admin pause/resume voting. Patches voting_paused in place (keeping the
+  // tally) so the badge and disabled vote controls update without a refetch.
+  const handleTogglePause = async (item: any, paused: boolean) => {
+    try {
+      const updated = await api.setSupportTicketVotingPause(projectId, item.id, paused);
+      setItems((prev: any) =>
+        prev.map((it: any) =>
+          it.id === item.id ? { ...it, voting_paused: updated.voting_paused } : it,
+        ),
+      );
+    } catch (err: any) {
+      Alert.alert(
+        paused ? 'Could not pause voting' : 'Could not resume voting',
+        err?.message || 'Failed to update voting pause',
+      );
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.centerState}>
@@ -999,6 +1043,7 @@ export function VotingTab({ projectId, onOpen, onOpenReplay, ticketHandlers = {}
           ticketHandlers={itemHandlers}
           isAdmin={isAdmin}
           onApprove={handleApprove}
+          onTogglePause={handleTogglePause}
         />
       )}
     />
@@ -2130,6 +2175,7 @@ const styles = StyleSheet.create({
   },
   voteButtonUpActive: { borderColor: colors.emerald500, backgroundColor: colors.gray900 },
   voteButtonDownActive: { borderColor: colors.rose400, backgroundColor: colors.gray900 },
+  voteButtonDisabled: { opacity: 0.4 },
   voteArrow: { fontSize: 12, color: colors.gray500 },
   voteArrowUpActive: { color: colors.emerald300 },
   voteArrowDownActive: { color: colors.rose400 },
@@ -2153,6 +2199,14 @@ const styles = StyleSheet.create({
   approvalButtonDisabled: { opacity: 0.4 },
   approveText: { fontSize: 12, fontWeight: '600', color: colors.emerald300 },
   denyText: { fontSize: 12, fontWeight: '600', color: colors.rose400 },
+  pauseText: { fontSize: 12, fontWeight: '600', color: colors.gray200 },
+  pausedBadge: {
+    alignSelf: 'flex-start',
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.gray300,
+    marginBottom: 4,
+  },
   commentSection: { marginTop: 16, gap: 8 },
   commentSectionTitle: {
     fontSize: 11,

@@ -17,6 +17,7 @@ import {
   markAllSupportTicketsRead,
   countUnreadSupportTickets,
   setSupportTicketApproval,
+  setSupportTicketVotingPaused,
   SUPPORT_TICKET_STATUSES,
   SUPPORT_TICKET_OPEN_STATUSES,
   SUPPORT_TICKET_TYPES,
@@ -680,11 +681,63 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
 
       const authed = req as AuthenticatedRequest;
       const actorId = authed.authUserId ?? (authed.authViaApiKey ? 'api-key' : null);
-      const ticket = setSupportTicketApproval(
+      let ticket = setSupportTicketApproval(
         existing.id,
         status as (typeof SUPPORT_TICKET_APPROVAL_STATUSES)[number],
         actorId,
       );
+      if (!ticket) return res.status(404).json({ error: 'Support ticket not found' });
+
+      // Rejected feature requests land in the "Won't Do" pile so they're
+      // preserved and findable rather than silently dropping off every surface.
+      // Only move an OPEN request (new/investigating) — never clobber a ticket
+      // that's already converted/closed/duplicate. Reversing the decision
+      // (approve/pending) pulls it back to the open queue, clearing the reason
+      // to keep the wont_do_reason invariant (non-null only while wont_do).
+      if (status === 'denied' && (ticket.status === 'new' || ticket.status === 'investigating')) {
+        ticket = updateSupportTicketStatus(ticket.id, 'wont_do')!;
+        ticket = setSupportTicketWontDoReason(ticket.id, 'Feature request denied')!;
+      } else if (
+        (status === 'approved' || status === 'pending') &&
+        ticket.status === 'wont_do' &&
+        ticket.wont_do_reason === 'Feature request denied'
+      ) {
+        ticket = updateSupportTicketStatus(ticket.id, 'new')!;
+        ticket = setSupportTicketWontDoReason(ticket.id, null)!;
+      }
+
+      broadcastTicket('support_ticket_updated', ticket.project_id, { ticket });
+      res.json(serializeForRequest(req, ticket));
+    },
+  );
+
+  // Admin pause / resume voting on a feature request. Gated to Admin+ (the
+  // break-glass owner API key counts as Owner, so a consuming app can toggle it
+  // "via API"). Only feature_request tickets participate. A paused item stays on
+  // the voting feed (so it's not lost) but is not votable — the vote endpoint
+  // 409s and the API response carries voting_paused:true so consuming apps can
+  // disable their controls.
+  router.post(
+    '/api/projects/:projectId/support-tickets/:id/voting-pause',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const existing = getSupportTicket(req.params.id as string);
+      if (!existing || existing.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+      if (existing.type !== 'feature_request') {
+        return res.status(400).json({ error: 'Only feature_request tickets support voting pause' });
+      }
+
+      const { paused } = req.body as { paused?: unknown };
+      if (typeof paused !== 'boolean') {
+        return res.status(400).json({ error: 'paused must be a boolean' });
+      }
+
+      const ticket = setSupportTicketVotingPaused(existing.id, paused);
       if (!ticket) return res.status(404).json({ error: 'Support ticket not found' });
       broadcastTicket('support_ticket_updated', ticket.project_id, { ticket });
       res.json(serializeForRequest(req, ticket));
@@ -1056,6 +1109,9 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         return res.status(400).json({
           error: 'Voting is only available on feature_request tickets',
         });
+      }
+      if (ticket.voting_paused) {
+        return res.status(409).json({ error: 'Voting is paused for this feature request' });
       }
 
       const parsed = CastVoteRequestSchema.safeParse(req.body ?? {});

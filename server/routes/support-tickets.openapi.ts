@@ -163,6 +163,10 @@ export const SupportTicketComponent = registerComponent(
       approved_by: z.string().nullable().openapi({
         description: "User id of the deciding Admin, 'api-key' for the owner key, or null.",
       }),
+      voting_paused: z.boolean().openapi({
+        description:
+          'True when an operator has paused voting on this feature request. A paused item stays on the voting feed but is not votable (the vote endpoint returns 409); consuming apps disable their vote controls while true.',
+      }),
       release_notifications: z
         .array(SupportTicketReleaseNotificationComponent)
         .optional()
@@ -330,6 +334,10 @@ export const SupportTicketVotingItemExternalComponent = registerComponent(
       status: z.enum(STATUSES),
       subject: z.string(),
       body: z.string(),
+      voting_paused: z.boolean().openapi({
+        description:
+          'True when an operator has paused voting on this item. It stays on the feed but is not votable (the vote endpoint returns 409); a consuming app should disable its vote controls while true.',
+      }),
       voting: SupportTicketVotingTallyComponent,
     })
     .openapi({
@@ -521,6 +529,35 @@ registerPath({
   },
 });
 
+export const SupportTicketVotingPauseRequestSchema = z
+  .object({
+    paused: z.boolean().openapi({
+      description:
+        'true pauses voting on the feature request (stays on the feed, not votable); false resumes it.',
+    }),
+  })
+  .openapi({ description: 'Admin pause/resume voting for a feature-request ticket.' });
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/support-tickets/{id}/voting-pause',
+  tags: ['Support'],
+  summary: 'Pause or resume voting on a feature request (Admin only)',
+  description:
+    "Toggle a feature_request ticket's voting pause. Requires the Admin role or higher (the break-glass owner API key counts as Owner, so a consuming app can toggle it via API). Only feature_request tickets are eligible. A paused item stays on the voting feed but is not votable — the vote endpoint returns 409, and the ticket's `voting_paused` flag turns true so consuming apps disable their vote controls. Broadcasts `support_ticket_updated`.",
+  request: {
+    params: ticketParams,
+    body: { content: jsonContent(SupportTicketVotingPauseRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated ticket.', content: jsonContent(SupportTicketComponent) },
+    400: errorResponse('paused is not a boolean, or ticket is not a feature_request.'),
+    401: errorResponse('Authentication required.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or ticket not found.'),
+  },
+});
+
 const ConvertSupportTicketResponse = registerComponent(
   'ConvertSupportTicketResponse',
   z
@@ -685,6 +722,7 @@ registerPath({
       'Invalid body, or the ticket is not a feature_request (voting is only allowed on feature requests).',
     ),
     404: errorResponse('Project or ticket not found.'),
+    409: errorResponse('Voting is paused for this feature request.'),
   },
 });
 

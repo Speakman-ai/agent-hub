@@ -1600,6 +1600,12 @@ export interface SupportTicketRow {
   approval_status: SupportTicketApprovalStatus | null;
   approved_at: string | null;
   approved_by: string | null;
+  // Per-item voting pause (0/1). When set, the feature request stays visible on
+  // the voting feed but is not votable: the cast-vote endpoint rejects with 409
+  // and the API response carries `voting_paused: true` so a consuming app can
+  // disable its vote controls. Operator-toggled; independent of the
+  // project-level Project.voting.enabled gate.
+  voting_paused: number;
   created_at: string;
   updated_at: string;
 }
@@ -2559,6 +2565,7 @@ export interface Stmts {
   updateSupportTicketStatus: Stmt;
   updateSupportTicketType: Stmt;
   setSupportTicketApproval: Stmt;
+  setSupportTicketVotingPaused: Stmt;
   updateSupportTicketSeverity: Stmt;
   updateSupportTicketInvestigation: Stmt;
   setSupportTicketReplayRef: Stmt;

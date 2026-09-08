@@ -241,11 +241,14 @@ describe('GET /support-tickets/voting external projection', () => {
     const item = res.body[0];
     expect(item.id).toBe(id);
     expect(Object.keys(item).sort()).toEqual(
-      ['id', 'type', 'severity', 'status', 'subject', 'body', 'voting'].sort(),
+      ['id', 'type', 'severity', 'status', 'subject', 'body', 'voting_paused', 'voting'].sort(),
     );
     for (const field of OPERATOR_ONLY_FIELDS) {
       expect(item).not.toHaveProperty(field);
     }
+    // The pause flag is part of the public contract so consumers can disable
+    // their vote controls; it's a plain boolean, not an operator-only field.
+    expect(item.voting_paused).toBe(false);
     expect(item.voting).toEqual({
       score: 1,
       upvotes: 1,
@@ -266,7 +269,7 @@ describe('GET /support-tickets/voting external projection', () => {
     const res = await supertest(perUserKey).get(votingPath()).expect(200);
     const item = res.body.find((row: { id: string }) => row.id === id);
     expect(Object.keys(item).sort()).toEqual(
-      ['id', 'type', 'severity', 'status', 'subject', 'body', 'voting'].sort(),
+      ['id', 'type', 'severity', 'status', 'subject', 'body', 'voting_paused', 'voting'].sort(),
     );
     for (const field of OPERATOR_ONLY_FIELDS) {
       expect(item).not.toHaveProperty(field);

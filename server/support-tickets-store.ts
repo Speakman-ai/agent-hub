@@ -339,6 +339,19 @@ export function setSupportTicketApproval(
 }
 
 /**
+ * Pause or resume voting on a feature-request ticket. A paused item stays on
+ * the voting feed (so it isn't lost) but is not votable: the cast-vote endpoint
+ * rejects with 409 and the serialized response carries `voting_paused: true` so
+ * a consuming app can disable its vote controls. Returns the updated row, or
+ * null if the ticket doesn't exist. The route enforces feature_request + Admin.
+ */
+export function setSupportTicketVotingPaused(id: string, paused: boolean): SupportTicketRow | null {
+  if (!getSupportTicket(id)) return null;
+  getStmts().setSupportTicketVotingPaused.run(paused ? 1 : 0, id);
+  return getSupportTicket(id);
+}
+
+/**
  * Change a ticket's severity. Returns the updated row, or null if the ticket
  * doesn't exist. Throws on an invalid severity. Severity drives queue ordering
  * and the priority a converted kanban card inherits, so operators need to be

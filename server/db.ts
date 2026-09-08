@@ -871,6 +871,11 @@ function initDb(dataDir: string): void {
         CHECK(approval_status IS NULL OR approval_status IN ('pending','approved','denied')),
       approved_at TEXT,
       approved_by TEXT,
+      -- Per-item voting pause (0/1). When 1 the feature request stays on the
+      -- voting feed but is not votable (the vote endpoint 409s) and the API
+      -- response carries voting_paused:true. See migration block below for
+      -- existing installs.
+      voting_paused INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -1925,6 +1930,10 @@ function initDb(dataDir: string): void {
     ],
     ['approved_at', 'ALTER TABLE support_tickets ADD COLUMN approved_at TEXT'],
     ['approved_by', 'ALTER TABLE support_tickets ADD COLUMN approved_by TEXT'],
+    [
+      'voting_paused',
+      'ALTER TABLE support_tickets ADD COLUMN voting_paused INTEGER NOT NULL DEFAULT 0',
+    ],
   ] as const) {
     try {
       db.prepare(`SELECT ${column} FROM support_tickets LIMIT 1`).get();
@@ -6116,6 +6125,10 @@ function initDb(dataDir: string): void {
              approved_by = CASE WHEN ? IN ('approved','denied') THEN ? ELSE NULL END,
              updated_at = datetime('now')
        WHERE id = ?`,
+    ),
+    // Per-item voting pause toggle. 1 = paused (not votable), 0 = active.
+    setSupportTicketVotingPaused: db.prepare(
+      `UPDATE support_tickets SET voting_paused = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     updateSupportTicketSeverity: db.prepare(
       `UPDATE support_tickets SET severity = ?, updated_at = datetime('now') WHERE id = ?`,
