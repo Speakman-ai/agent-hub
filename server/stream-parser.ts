@@ -1393,6 +1393,30 @@ function normalizeGrok(
 //
 // Codex does not stream token-level deltas today — agent_message arrives as a
 // whole item on `item.completed`, mirroring Gemini's non-partial behavior.
+
+// Codex surfaces config/sandbox deprecation notices through the same `error`
+// channel it uses for real turn failures (both the item-level `error` item and
+// the top-level `error` event). The one we hit, from codex-cli on a host that
+// falls back to the legacy Linux sandbox:
+//   "`[features].use_legacy_landlock` is deprecated and will be removed soon.
+//    (Remove this setting to stop opting into the legacy Linux sandbox behavior.)"
+// This is a warning, not a turn failure — the turn keeps going. If we let it
+// through as a `codex item error:` / `codex error:` unknown event it (1) renders
+// as a scary "unhandled event" block and (2) gets latched as the turn's
+// `streamErrorMessage` in chat.ts, flagging a successful turn as failed.
+//
+// The match targets the specific warning *wording*, not just a token that
+// appears in it. Any substring test misclassifies genuine failures that happen
+// to share a token — "This model is deprecated and cannot be used" (only the
+// deprecation phrase) or "Failed to apply use_legacy_landlock configuration"
+// (only the setting name) are real errors that must stay visible. So require
+// BOTH the setting name AND the deprecation phrasing, which co-occur only in
+// the actual notice; a genuine failure carries at most one.
+function isBenignCodexNotice(message: string | undefined): boolean {
+  if (!message) return false;
+  return /use_legacy_landlock/i.test(message) && /is deprecated and will be removed/i.test(message);
+}
+
 function normalizeCodex(
   raw: Record<string, unknown>,
   fileChangeToolUseIssued?: Set<string>,
@@ -1565,6 +1589,7 @@ function normalizeCodex(
         case 'error': {
           if (type !== 'item.completed') return [];
           const msg = (item.message as string) ?? 'unknown codex item error';
+          if (isBenignCodexNotice(msg)) return [];
           return [{ type: 'unknown', text: `codex item error: ${msg}` }];
         }
 
@@ -1612,8 +1637,11 @@ function normalizeCodex(
       ];
     }
 
-    case 'error':
-      return [{ type: 'unknown', text: `codex error: ${(raw.message as string) ?? ''}` }];
+    case 'error': {
+      const message = (raw.message as string) ?? '';
+      if (isBenignCodexNotice(message)) return [];
+      return [{ type: 'unknown', text: `codex error: ${message}` }];
+    }
 
     default:
       return [{ type: 'unknown', text: `unhandled codex event: ${type ?? 'undefined'}` }];

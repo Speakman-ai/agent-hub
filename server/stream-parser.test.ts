@@ -2344,6 +2344,115 @@ describe('createStreamParser — Codex CLI', () => {
     expect(events[0].type).toBe('unknown');
   });
 
+  it('surfaces a genuine item-level error as an unknown codex item error', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.completed',
+        item: { id: 'err_1', type: 'error', message: 'tool crashed' },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('unknown');
+    expect((events[0] as { text: string }).text).toBe('codex item error: tool crashed');
+  });
+
+  it('drops a benign deprecation notice arriving as an item-level error', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'err_2',
+          type: 'error',
+          message:
+            '`[features].use_legacy_landlock` is deprecated and will be removed soon. ' +
+            '(Remove this setting to stop opting into the legacy Linux sandbox behavior.)',
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(0);
+  });
+
+  it('drops a benign deprecation notice arriving as a top-level error event', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'error',
+        message: '`[features].use_legacy_landlock` is deprecated and will be removed soon.',
+      }),
+    ]);
+    expect(events).toHaveLength(0);
+  });
+
+  it('still surfaces a genuine top-level error event', () => {
+    const events = parse([JSON.stringify({ type: 'error', message: 'stream interrupted' })]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('unknown');
+    expect((events[0] as { text: string }).text).toBe('codex error: stream interrupted');
+  });
+
+  it('keeps an item-level failure that merely mentions "deprecated" visible', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'err_3',
+          type: 'error',
+          message: 'This model is deprecated and cannot be used',
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('unknown');
+    expect((events[0] as { text: string }).text).toBe(
+      'codex item error: This model is deprecated and cannot be used',
+    );
+  });
+
+  it('keeps a top-level failure that merely mentions "deprecated" visible', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'error',
+        message: 'This model is deprecated and cannot be used',
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('unknown');
+    expect((events[0] as { text: string }).text).toBe(
+      'codex error: This model is deprecated and cannot be used',
+    );
+  });
+
+  it('keeps an item-level failure that names use_legacy_landlock visible', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'err_4',
+          type: 'error',
+          message: 'Failed to apply use_legacy_landlock configuration',
+        },
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('unknown');
+    expect((events[0] as { text: string }).text).toBe(
+      'codex item error: Failed to apply use_legacy_landlock configuration',
+    );
+  });
+
+  it('keeps a top-level failure that names use_legacy_landlock visible', () => {
+    const events = parse([
+      JSON.stringify({
+        type: 'error',
+        message: 'Failed to apply use_legacy_landlock configuration',
+      }),
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('unknown');
+    expect((events[0] as { text: string }).text).toBe(
+      'codex error: Failed to apply use_legacy_landlock configuration',
+    );
+  });
+
   it('extracts agenthub:ask fenced blocks from agent_message text', () => {
     const text =
       'Need your input:\n\n```agenthub:ask\n[{"question": "Library?","header": "Library","multiSelect": false,"options": [{"label": "A","description": "a"}, {"label": "B","description": "b"}]}]\n```';
