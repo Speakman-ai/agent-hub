@@ -352,3 +352,59 @@ describe('isExplicitEmptyWrite', () => {
     expect(isExplicitEmptyWrite('Read', { content: '' })).toBe(false);
   });
 });
+
+describe('Codex changes discovered on completion', () => {
+  it('renders files when item.started had an empty change list', () => {
+    const merged = mergeEditInputWithToolResult(
+      { changes: [] },
+      {
+        output: JSON.stringify([
+          { path: 'file.ts', kind: 'update', unified_diff: '@@ -1 +1 @@\n-before\n+after' },
+        ]),
+      },
+    );
+    const diff = parseDiffLines('Edit', merged);
+    expect(diff.removals).toEqual(['before']);
+    expect(diff.additions).toContain('after');
+  });
+});
+
+describe('Codex recovered content presence', () => {
+  it.each(['', ' \t', '\n \n'])(
+    'preserves recovered content %j through merging and rendering',
+    (content) => {
+      const change = { path: 'file.txt', kind: 'add' };
+      const input = { changes: [change] };
+      const merged = mergeEditInputWithToolResult(input, {
+        output: JSON.stringify([{ ...change, content }]),
+      });
+      expect(merged.changes[0].content).toBe(content);
+      expect(input.changes[0]).not.toHaveProperty('content');
+      expect(parseDiffLines('Edit', merged).additions).toEqual([
+        'add  file.txt',
+        ...(content === '' ? ['(empty file)'] : content.split('\n')),
+      ]);
+    },
+  );
+
+  it.each(['', ' \t', '\n \n'])('renders supplied content %j as present', (content) => {
+    const input = { changes: [{ path: 'file.txt', kind: 'add', content }] };
+    expect(parseDiffLines('Edit', input).additions).toEqual([
+      'add  file.txt',
+      ...(content === '' ? ['(empty file)'] : content.split('\n')),
+    ]);
+    expect(diffHasDisplayableLines('Edit', input)).toBe(true);
+  });
+
+  it.each([undefined, null])('keeps the unavailable hint for missing content %j', (content) => {
+    const change = { path: 'file.txt', kind: 'add' };
+    const merged = mergeEditInputWithToolResult(
+      { changes: [change] },
+      {
+        output: JSON.stringify([{ ...change, content }]),
+      },
+    );
+    expect(merged.changes[0]).not.toHaveProperty('content');
+    expect(parseDiffLines('Edit', merged).additions[0]).toContain('line-level diff not included');
+  });
+});

@@ -1534,7 +1534,8 @@ function normalizeCodex(
             out.push({
               type: 'tool_result',
               toolUseId: id,
-              output: stringifyToolResult(changes),
+              // File changes are records, not text/image content blocks.
+              output: JSON.stringify(changes),
               isError: item.status === 'failed',
             });
             return out;

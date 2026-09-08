@@ -42,15 +42,20 @@ function parseCodexFileChanges(changes: any) {
     const p = c?.path ?? '';
     const kind = String(c?.kind ?? '').toLowerCase();
     const label = kind === 'add' ? 'add' : kind === 'delete' ? 'delete' : 'update';
-    if (typeof c?.unified_diff === 'string' && c.unified_diff.trim()) {
-      const parsed = parseApplyPatchContent(c.unified_diff);
+    const patch = getCodexPatchText(c);
+    if (patch) {
+      const parsed = parseApplyPatchContent(patch);
       removals.push(...parsed.removals);
       additions.push(`${label}  ${p}`);
       additions.push(...parsed.additions);
-    } else if (typeof c?.content === 'string' && c.content.trim()) {
+    } else if (typeof c?.content === 'string') {
       additions.push(`${label}  ${p}`);
-      for (const line of c.content.split('\n')) {
-        additions.push(line);
+      if (c.content === '') {
+        additions.push('(empty file)');
+      } else {
+        for (const line of c.content.split('\n')) {
+          additions.push(line);
+        }
       }
     } else {
       additions.push(
@@ -72,6 +77,78 @@ function parseCodexFileChanges(changes: any) {
     additions,
   };
 }
+function getCodexPatchText(change: any) {
+  if (!change || typeof change !== 'object') return '';
+  for (const key of [
+    'unified_diff',
+    'unifiedDiff',
+    'diff',
+    'patch',
+    'patchContent',
+    'patch_content',
+  ]) {
+    if (typeof change[key] === 'string' && change[key].trim()) {
+      return change[key];
+    }
+  }
+  return '';
+}
+
+export function mergeEditInputWithToolResult(input: any, toolResult: any) {
+  if (!input || typeof input !== 'object') return input;
+  const changes = input.changes;
+  if (!Array.isArray(changes)) return input;
+  const rawOut = toolResult?.output;
+  if (typeof rawOut !== 'string' || !rawOut.trim()) return input;
+  let completed: any;
+  try {
+    completed = JSON.parse(rawOut);
+  } catch {
+    return input;
+  }
+  if (!Array.isArray(completed)) return input;
+
+  const byPath = new Map();
+  for (const ch of completed) {
+    if (ch && typeof ch === 'object' && typeof ch.path === 'string') {
+      byPath.set(ch.path, ch);
+    }
+  }
+
+  let touched = false;
+  const mergedChanges = changes.map((st: any) => {
+    if (!st || typeof st !== 'object') return st;
+    const p = st.path;
+    if (typeof p !== 'string') return st;
+    const fin = byPath.get(p);
+    if (!fin || typeof fin !== 'object') return st;
+    const next: Record<string, any> = { ...st };
+    const patch = getCodexPatchText(fin);
+    if (patch) {
+      next.unified_diff = patch;
+      touched = true;
+    }
+    if (typeof fin.content === 'string') {
+      next.content = fin.content;
+      touched = true;
+    }
+    if (typeof fin.kind === 'string' && fin.kind) {
+      next.kind = fin.kind;
+      touched = true;
+    }
+    return next;
+  });
+
+  for (const [filePath, change] of byPath) {
+    if (!changes.some((started: any) => started?.path === filePath)) {
+      mergedChanges.push(change);
+      touched = true;
+    }
+  }
+
+  return touched ? { ...input, changes: mergedChanges } : input;
+}
+
 function parseApplyPatchContent(patch: any) {
   if (typeof patch !== 'string' || !patch.trim()) {
     return { removals: [], additions: [] };

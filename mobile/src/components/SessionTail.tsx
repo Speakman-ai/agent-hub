@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Image, Linking } 
 import Markdown from 'react-native-markdown-display';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
-import { isFileModifyingTool } from '../utils/diff';
+import { isFileModifyingTool, mergeEditInputWithToolResult } from '../utils/diff';
 import { eventsToBlocks, describeTool } from '../utils/sessionTailBlocks';
 import { shouldAutoLoadEvents } from '../utils/shouldAutoLoadEvents';
 import { applyLazyMessageEventsResult } from '../utils/sessionTailEventsLoad';
@@ -650,7 +650,10 @@ function SessionTail({
                     {!hasResult && <Text style={styles.runningBadge}>running…</Text>}
                     {hasResult && isError && <Text style={styles.errorBadge}>error</Text>}
                   </View>
-                  <DiffView tool={use.tool} input={use.input} />
+                  <DiffView
+                    tool={use.tool}
+                    input={mergeEditInputWithToolResult(use.input, block.result)}
+                  />
                   {hasResult && isError && block.result?.output ? (
                     <View style={styles.diffErrorOutput}>
                       <Text style={styles.codeLabel}>error</Text>

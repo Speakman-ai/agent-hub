@@ -288,3 +288,47 @@ describe('DiffView — preview / expand', () => {
     expect(screen.queryByTestId('diff-view-expand')).toBeNull();
   });
 });
+
+describe('Codex tool result diff recovery', () => {
+  it('replaces the filename-only card with recovered code when the result arrives', () => {
+    const use = {
+      type: 'tool_use',
+      id: 'file_1',
+      tool: 'Edit',
+      input: { changes: [{ path: '/workspace/research/test.py', kind: 'add' }] },
+    };
+    const { rerender } = render(<ToolCard use={use} result={undefined} />);
+    expect(screen.getByText(/line-level diff not included/)).toBeTruthy();
+    rerender(
+      <ToolCard
+        use={use}
+        result={{
+          isError: false,
+          output: JSON.stringify([
+            { ...use.input.changes[0], content: 'def test_annotation():\n    assert True' },
+          ]),
+        }}
+      />,
+    );
+    expect(screen.getByText('def test_annotation():')).toBeTruthy();
+    expect(screen.queryByText(/line-level diff not included/)).toBeNull();
+    expect(screen.queryByText('running…')).toBeNull();
+  });
+});
+
+describe('Codex empty file recovery', () => {
+  it('replaces the unavailable hint with an empty-file label on completion', () => {
+    const change = { path: '/workspace/empty.txt', kind: 'add' };
+    const use = { type: 'tool_use', id: 'empty_file', tool: 'Edit', input: { changes: [change] } };
+    const { rerender } = render(<ToolCard use={use} result={undefined} />);
+    expect(screen.getByText(/line-level diff not included/)).toBeTruthy();
+    rerender(
+      <ToolCard
+        use={use}
+        result={{ isError: false, output: JSON.stringify([{ ...change, content: '' }]) }}
+      />,
+    );
+    expect(screen.getByText('(empty file)')).toBeTruthy();
+    expect(screen.queryByText(/line-level diff not included/)).toBeNull();
+  });
+});

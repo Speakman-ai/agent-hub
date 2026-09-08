@@ -19,9 +19,9 @@ export function shortenPath(filePath: any) {
 
 /**
  * Codex CLI (`codex exec --json`) emits `file_change` items with a `changes`
- * array. `item.started` may only include `{ path, kind }`; `unified_diff` often
- * arrives on `item.completed` (merged into the tool card via
- * `mergeEditInputWithToolResult` + `tool_result.output` JSON).
+ * array. When Codex only supplies `{ path, kind }`, the Hub recovers workspace
+ * diffs in the completed result. `mergeEditInputWithToolResult` merges that
+ * JSON payload into the tool card.
  *
  * @param {Array<{ path?: string, kind?: string, unified_diff?: string, unifiedDiff?: string, diff?: string, patch?: string, patchContent?: string, patch_content?: string, content?: string }>} changes
  */
@@ -54,10 +54,14 @@ function parseCodexFileChanges(changes: any) {
       removals.push(...parsed.removals);
       additions.push(`${label}  ${p}`);
       additions.push(...parsed.additions);
-    } else if (typeof c?.content === 'string' && c.content.trim()) {
+    } else if (typeof c?.content === 'string') {
       additions.push(`${label}  ${p}`);
-      for (const line of c.content.split('\n')) {
-        additions.push(line);
+      if (c.content === '') {
+        additions.push('(empty file)');
+      } else {
+        for (const line of c.content.split('\n')) {
+          additions.push(line);
+        }
       }
     } else {
       additions.push(
@@ -115,10 +119,8 @@ function isDiffPlusLeader(line: any) {
 }
 
 /**
- * Codex `file_change` often emits `item.started` with `{ path, kind }` only, then
- * `item.completed` repeats the same paths with `unified_diff` in `tool_result.output`
- * (JSON array). DiffView reads the paired `tool_use.input`; merge completed hunks in
- * so line-level diffs render after the turn finishes.
+ * DiffView reads `tool_use.input`; merge the completed Codex change records
+ * (including Hub-recovered patches) so line-level diffs render as they arrive.
  *
  * @param {Record<string, unknown> | null | undefined} input
  * @param {{ output?: string } | null | undefined} toolResult
@@ -126,7 +128,7 @@ function isDiffPlusLeader(line: any) {
 export function mergeEditInputWithToolResult(input: any, toolResult: any) {
   if (!input || typeof input !== 'object') return input;
   const changes = input.changes;
-  if (!Array.isArray(changes) || changes.length === 0) return input;
+  if (!Array.isArray(changes)) return input;
   const rawOut = toolResult?.output;
   if (typeof rawOut !== 'string' || !rawOut.trim()) return input;
   let completed: any;
@@ -157,7 +159,7 @@ export function mergeEditInputWithToolResult(input: any, toolResult: any) {
       next.unified_diff = patch;
       touched = true;
     }
-    if (typeof fin.content === 'string' && fin.content.trim()) {
+    if (typeof fin.content === 'string') {
       next.content = fin.content;
       touched = true;
     }
@@ -167,6 +169,13 @@ export function mergeEditInputWithToolResult(input: any, toolResult: any) {
     }
     return next;
   });
+
+  for (const [filePath, change] of byPath) {
+    if (!changes.some((started: any) => started?.path === filePath)) {
+      mergedChanges.push(change);
+      touched = true;
+    }
+  }
 
   return touched ? { ...input, changes: mergedChanges } : input;
 }

@@ -170,7 +170,10 @@ import {
   appendCodexExecSandboxFlags,
   appendCodexShellEnvironmentPolicyArgs,
 } from './codex-exec-sandbox.js';
-import { enrichCodexFileChangeDiffs } from './codex-file-change-diff.js';
+import {
+  createCodexFileChangeEventHandler,
+  type CodexDiffOptions,
+} from './codex-file-change-diff.js';
 import { type ProjectAwsFiles, writeProjectAwsFiles } from './project-aws-config-file.js';
 import { resolveCodexModelSelection } from './codex-model-selection.js';
 import { codexReasoningArgs } from './codex-reasoning.js';
@@ -4529,8 +4532,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       let cliIo: CliIo;
       let activeHandle: ActiveChatProcess;
       let spawnPid: number | null = null;
-      /** Absolute path used for host-side diff enrichment; guest uses seed path. */
-      const hostDiffCwd = effectiveCwd;
+      let codexDiffCwd = effectiveCwd;
+      let codexDiffOptions: CodexDiffOptions = {
+        worktreeRoot: session!.worktree_path || effectiveCwd,
+      };
 
       if (envOwned && sessionEnv) {
         let guestBin = bin;
@@ -4554,6 +4559,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           });
           const hostWorktree = session!.worktree_path || effectiveCwd;
           guestCwdRel = hostCwdToWorktreeRelative(effectiveCwd, hostWorktree);
+          if (engine === 'codex-cli') {
+            const mount = await sessionEnv.mountWorktree();
+            codexDiffCwd = path.posix.resolve(mount.envPath, guestCwdRel);
+            codexDiffOptions = {
+              worktreeIo: sessionEnv.worktreeIo,
+              worktreeRoot: mount.envPath,
+            };
+          }
 
           if (engine === 'claude-code') {
             const idx = guestArgs.indexOf('--system-prompt-file');
@@ -5014,18 +5027,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // "Failed to spawn codex: spawn /usr/local/bin/codex ENOENT" error with
       // the cryptic "codex-cli exited with code -2".
       let spawnErrored = false;
-      const codexFileChangeToolUseIds = new Set<string>();
+      const codexEventHandler =
+        engine === 'codex-cli'
+          ? createCodexFileChangeEventHandler(codexDiffCwd, handleEvent, codexDiffOptions)
+          : null;
 
       function handleParsedEvents(events: StreamEvent[]): void {
-        // Codex file-change enrichment reads the host seed checkout; under
-        // env-owned sharing the live edits exist only in the guest, so skip.
-        const enriched =
-          engine === 'codex-cli' && !envOwned
-            ? enrichCodexFileChangeDiffs(events, hostDiffCwd, {
-                fileChangeToolUseIds: codexFileChangeToolUseIds,
-              })
-            : events;
-        for (const event of enriched) handleEvent(event);
+        if (codexEventHandler) codexEventHandler.enqueue(events);
+        else for (const event of events) handleEvent(event);
       }
 
       cliIo.onStdout((chunk: string) => {
@@ -5037,6 +5046,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       });
 
       cliIo.onClose(async (code: number | null, signal: NodeJS.Signals | null) => {
+        handleParsedEvents(parser.flush());
+        await codexEventHandler?.drain();
         activeProcesses.delete(sessionId);
         // Best-effort cleanup of the per-spawn system-prompt temp file
         // (claude-code only — see writeSystemPromptFile in
@@ -5096,8 +5107,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           chainElapsedMs: Date.now() - chainStartedAtMs,
           detail: isAutoContinuation ? 'auto_continuation' : 'user_turn',
         });
-
-        handleParsedEvents(parser.flush());
 
         const assembled = (finalText || partialFallback).trim();
 

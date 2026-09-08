@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
 import {
+  mergeEditInputWithToolResult,
   isFileModifyingTool,
   shortenPath,
   parseDiffLines,
@@ -174,5 +175,92 @@ describe('isExplicitEmptyWrite', () => {
   });
   it('returns false for Edit (Edit-no-content stays on the pending placeholder)', () => {
     expect(isExplicitEmptyWrite('Edit', { path: 'f.ts', strReplace: {} })).toBe(false);
+  });
+});
+
+describe('completed Codex file changes', () => {
+  it('renders recovered added-file contents after merging the tool result', () => {
+    const input = { changes: [{ path: 'research/test.py', kind: 'add' }] };
+    const result = {
+      output: JSON.stringify([
+        { ...input.changes[0], content: 'def test_annotation():\n    assert True' },
+      ]),
+    };
+    const diff = parseDiffLines('Edit', mergeEditInputWithToolResult(input, result));
+    expect(diff.additions).toContain('def test_annotation():');
+    expect(diff.additions.join('\n')).not.toContain('line-level diff not included');
+  });
+  it('renders completed updates and deletions from patch aliases', () => {
+    const input = {
+      changes: [
+        { path: 'a.ts', kind: 'update' },
+        { path: 'b.ts', kind: 'delete' },
+      ],
+    };
+    const result = {
+      output: JSON.stringify([
+        { ...input.changes[0], patch: '@@ -1 +1 @@\n-before\n+after' },
+        { ...input.changes[1], unified_diff: '@@ -1 +0,0 @@\n-deleted' },
+      ]),
+    };
+    const diff = parseDiffLines('Edit', mergeEditInputWithToolResult(input, result));
+    expect(diff.removals).toEqual(['before', '', 'deleted']);
+    expect(diff.additions).toContain('after');
+  });
+});
+
+describe('Codex changes discovered on completion', () => {
+  it('renders files when item.started had an empty change list', () => {
+    const merged = mergeEditInputWithToolResult(
+      { changes: [] },
+      {
+        output: JSON.stringify([
+          { path: 'file.ts', kind: 'update', unified_diff: '@@ -1 +1 @@\n-before\n+after' },
+        ]),
+      },
+    );
+    const diff = parseDiffLines('Edit', merged);
+    expect(diff.removals).toEqual(['before']);
+    expect(diff.additions).toContain('after');
+  });
+});
+
+describe('Codex recovered content presence', () => {
+  it.each(['', ' \t', '\n \n'])(
+    'preserves recovered content %j through merging and rendering',
+    (content) => {
+      const change = { path: 'file.txt', kind: 'add' };
+      const input = { changes: [change] };
+      const merged = mergeEditInputWithToolResult(input, {
+        output: JSON.stringify([{ ...change, content }]),
+      });
+      expect(merged.changes[0].content).toBe(content);
+      expect(input.changes[0]).not.toHaveProperty('content');
+      expect(parseDiffLines('Edit', merged).additions).toEqual([
+        'add  file.txt',
+        ...(content === '' ? ['(empty file)'] : content.split('\n')),
+      ]);
+    },
+  );
+
+  it.each(['', ' \t', '\n \n'])('renders supplied content %j as present', (content) => {
+    const input = { changes: [{ path: 'file.txt', kind: 'add', content }] };
+    expect(parseDiffLines('Edit', input).additions).toEqual([
+      'add  file.txt',
+      ...(content === '' ? ['(empty file)'] : content.split('\n')),
+    ]);
+    expect(diffHasDisplayableLines('Edit', input)).toBe(true);
+  });
+
+  it.each([undefined, null])('keeps the unavailable hint for missing content %j', (content) => {
+    const change = { path: 'file.txt', kind: 'add' };
+    const merged = mergeEditInputWithToolResult(
+      { changes: [change] },
+      {
+        output: JSON.stringify([{ ...change, content }]),
+      },
+    );
+    expect(merged.changes[0]).not.toHaveProperty('content');
+    expect(parseDiffLines('Edit', merged).additions[0]).toContain('line-level diff not included');
   });
 });

@@ -2222,6 +2222,9 @@ describe('createStreamParser — Codex CLI', () => {
     expect(toolUse.tool).toBe('Edit');
     expect(toolUse.id).toBe('fc_1');
     expect(toolUse.input.changes).toEqual([{ path: 'README.md', kind: 'update' }]);
+    expect(JSON.parse((events[1] as { output: string }).output)).toEqual([
+      { path: 'README.md', kind: 'update' },
+    ]);
     expect(events[1].type).toBe('tool_result');
     expect((events[1] as { toolUseId: string }).toolUseId).toBe('fc_1');
     expect((events[1] as { isError: boolean }).isError).toBe(false);
