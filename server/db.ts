@@ -6761,18 +6761,31 @@ function initDb(dataDir: string): void {
         LIMIT 1`,
     ),
     // Post-Finalize-push lock for the native-PR auto-review path. Given a
-    // native PR URL, find a pushed Finalize run that shipped it. Keyed on the
-    // PR (project_id + pr_url), NOT the head sha, so it stays correct across a
-    // Finalize rebase-before-push (which mints a new sha the sha-exact
-    // `getValidatedFinalizeRunForSha` passthrough would miss). If this returns
-    // a row, the PR already shipped through Finalize and its pushing session is
-    // terminal — auto-review must not dispatch another review onto it.
-    getPushedFinalizeRunForProjectPrUrl: db.prepare(
+    // native PR URL AND the branch's current head sha, find a pushed Finalize
+    // run that shipped *this exact head*. The pushed sha is recorded as
+    // `validated_head_sha` (push-run.ts pushes `currentHead`, which is what
+    // `claimFinalizeRunPush` stamps), so a Finalize rebase-before-push is
+    // covered — the rebased sha IS validated_head_sha. `head_sha` matches only
+    // as a fallback for legacy rows that reached 'pushed' before
+    // validated_head_sha was recorded (validated_head_sha IS NULL): when a run
+    // carries a validated_head_sha, that is the sha it actually shipped, so its
+    // (pre-rebase) head_sha must NOT lock — a branch sitting at that original
+    // sha is a different state that has to re-review. No mode filter, so it
+    // also covers a phase-scoped ('checks'/'review') run that shipped, which the
+    // mode='full' `getValidatedFinalizeRunForSha` passthrough would miss.
+    //
+    // Keyed on the head sha (not the PR alone) so the lock RELEASES once a
+    // genuinely new commit advances the branch past the shipped sha: those
+    // post-ship pushes must re-review. If this returns a row, the current head
+    // is exactly what already shipped and its pushing session is terminal —
+    // auto-review must not dispatch another review onto it.
+    getPushedFinalizeRunForProjectPrUrlAtSha: db.prepare(
       `SELECT *
          FROM finalize_runs
         WHERE project_id = ?
           AND pr_url = ?
           AND status = 'pushed'
+          AND (validated_head_sha = ? OR (validated_head_sha IS NULL AND head_sha = ?))
         ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
         LIMIT 1`,
     ),

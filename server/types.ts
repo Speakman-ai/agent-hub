@@ -2771,11 +2771,13 @@ export interface Stmts {
   getPushedFinalizeRunForSession: Stmt;
   /**
    * Pushed `finalize_runs` row that shipped a given native PR (project_id +
-   * pr_url), status `pushed`. Keyed on the PR, not the head sha, so it holds
-   * across a Finalize rebase-before-push. Used by the native-PR auto-review
-   * path to skip reviewing a PR that already shipped through Finalize.
+   * pr_url) at a specific head sha (matched against validated_head_sha, or
+   * head_sha for legacy rows), status `pushed`. Keyed on the head sha so the
+   * auto-review post-push lock releases once a new commit advances the branch
+   * past the shipped sha. Used by the native-PR auto-review path to skip
+   * reviewing the exact head that already shipped through Finalize.
    */
-  getPushedFinalizeRunForProjectPrUrl: Stmt;
+  getPushedFinalizeRunForProjectPrUrlAtSha: Stmt;
   /**
    * Most-recent `finalize_runs` row for a session that exercised the CI
    * checks phase — `mode IN ('checks', 'full')`. Drives the "Tested"

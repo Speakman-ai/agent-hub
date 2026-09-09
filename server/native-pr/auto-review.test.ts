@@ -498,12 +498,11 @@ describe('maybeRunPrAutoReview', () => {
     expect(handleChat).not.toHaveBeenCalled();
   });
 
-  it('skips when the PR already shipped through Finalize, even after a rebase changed the head sha', async () => {
-    // Regression: a Finalize run that rebased before pushing mints a NEW head
-    // sha. The sha-exact `getValidatedFinalizeRunForSha` passthrough is keyed on
-    // the sha it validated, so the pushed (rebased) sha slips past it and a
-    // redundant reviewer fires on a session that already shipped and is locked.
-    // The PR-keyed post-push lock must catch it regardless of sha.
+  it('skips a head that Finalize already shipped, and manual overrides the lock', async () => {
+    // A Finalize run that shipped THIS PR at THIS head. The push records the
+    // shipped sha as validated_head_sha (push-run.ts pushes `currentHead`), so
+    // the branch head equals it after the ship. The post-push lock suppresses a
+    // redundant reviewer onto that already-shipped, locked session.
     const { project, branch, headSha } = await hostedPrProject();
     const { buildNativePrUrl } = await import('./url.js');
     const prNumber = 412;
@@ -516,8 +515,7 @@ describe('maybeRunPrAutoReview', () => {
       handleChat: handleChat as RouteDeps['handleChat'],
     };
 
-    // A pushed Finalize run for THIS PR, but validated under a DIFFERENT (pre
-    // rebase) sha — the sha-exact passthrough would not match the current head.
+    // A pushed Finalize run for THIS PR that shipped the current head sha.
     const runId = `fin-${uuidv4().slice(0, 8)}`;
     stmts.insertFinalizeRun.run(
       runId,
@@ -525,7 +523,7 @@ describe('maybeRunPrAutoReview', () => {
       null,
       project.id,
       branch,
-      'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+      headSha,
       `t|${runId}`,
       'queued',
       null,
@@ -538,14 +536,10 @@ describe('maybeRunPrAutoReview', () => {
       Date.now(),
       'full',
     );
-    stmts.markFinalizeRunReadyToPush.run('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', runId);
-    stmts.claimFinalizeRunPush.run(runId, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+    stmts.markFinalizeRunReadyToPush.run(headSha, runId);
+    stmts.claimFinalizeRunPush.run(runId, headSha);
     stmts.updateFinalizeRunPrUrl.run(prUrl, runId);
     stmts.markFinalizeRunPushed.run(runId);
-
-    // Sanity: the sha-exact passthrough does NOT cover the current head sha,
-    // so only the PR-keyed lock can suppress this dispatch.
-    expect(stmts.getValidatedFinalizeRunForSha.get(project.id, headSha)).toBeUndefined();
 
     await maybeRunPrAutoReview(
       project,
@@ -563,6 +557,193 @@ describe('maybeRunPrAutoReview', () => {
       { force: true, trigger: 'manual_request', pushedByUserId: 'ryan' },
     );
     expect(handleChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-reviews a new commit pushed AFTER a Finalize ship (head advanced past the shipped sha)', async () => {
+    // Regression: once a PR shipped through Finalize, subsequent commits pushed
+    // to the head branch used to be permanently `finalize_locked` because the
+    // lock keyed on (project_id, pr_url) alone. The lock is now keyed on the
+    // shipped head sha, so a genuinely new commit — one that advances the
+    // branch past what Finalize pushed — dispatches a fresh review.
+    const { project, branch, headSha } = await hostedPrProject();
+    const { buildNativePrUrl } = await import('./url.js');
+    const prNumber = 413;
+    const prUrl = buildNativePrUrl(project.id, prNumber);
+    const handleChat = vi.fn();
+    const deps = {
+      stmts,
+      config,
+      broadcast: vi.fn(),
+      handleChat: handleChat as RouteDeps['handleChat'],
+    };
+
+    // A pushed Finalize run for THIS PR that shipped an OLDER sha; the branch
+    // head (headSha) has since moved forward to a new commit.
+    const shippedSha = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+    expect(shippedSha).not.toBe(headSha);
+    const runId = `fin-${uuidv4().slice(0, 8)}`;
+    stmts.insertFinalizeRun.run(
+      runId,
+      'card',
+      null,
+      project.id,
+      branch,
+      shippedSha,
+      `t|${runId}`,
+      'queued',
+      null,
+      'ui_button',
+      null,
+      'u',
+      'U',
+      'u@x',
+      null,
+      Date.now(),
+      'full',
+    );
+    stmts.markFinalizeRunReadyToPush.run(shippedSha, runId);
+    stmts.claimFinalizeRunPush.run(runId, shippedSha);
+    stmts.updateFinalizeRunPrUrl.run(prUrl, runId);
+    stmts.markFinalizeRunPushed.run(runId);
+
+    // Sanity: the current head is neither the shipped sha nor Finalize-validated.
+    expect(
+      stmts.getPushedFinalizeRunForProjectPrUrlAtSha.get(project.id, prUrl, headSha, headSha),
+    ).toBeUndefined();
+    expect(stmts.getValidatedFinalizeRunForSha.get(project.id, headSha)).toBeUndefined();
+
+    await maybeRunPrAutoReview(
+      project,
+      { number: prNumber, head_branch: branch, status: 'open', author: 'ryan' },
+      deps,
+      { force: true, trigger: 'head_update', pushedByUserId: 'ryan' },
+    );
+    expect(handleChat).toHaveBeenCalledOnce();
+    const msg = handleChat.mock.calls[0]![1] as { agentId: string; content: string };
+    expect(msg.agentId).toBe(`${project.id}-reviewer`);
+    expect(msg.content).toContain(`/projects/${project.id}/pulls/${prNumber}`);
+  });
+
+  it('does not lock the original head_sha when a different validated_head_sha actually shipped', async () => {
+    // A Finalize run that rebased before pushing shipped `validated_head_sha`,
+    // NOT its original (pre-rebase) `head_sha`. The lock must key on the sha
+    // that actually landed on the ref (validated_head_sha). If the branch sits
+    // at the original head_sha, that is a different state Finalize never shipped
+    // and it must re-review — the head_sha fallback is for legacy rows without a
+    // validated_head_sha only.
+    const { project, branch, headSha } = await hostedPrProject();
+    const { buildNativePrUrl } = await import('./url.js');
+    const prNumber = 414;
+    const prUrl = buildNativePrUrl(project.id, prNumber);
+    const handleChat = vi.fn();
+    const deps = {
+      stmts,
+      config,
+      broadcast: vi.fn(),
+      handleChat: handleChat as RouteDeps['handleChat'],
+    };
+
+    // Original (pre-rebase) head_sha == the current branch head; the run shipped
+    // a DIFFERENT validated (rebased) sha.
+    const shippedSha = 'feedfacefeedfacefeedfacefeedfacefeedface';
+    expect(shippedSha).not.toBe(headSha);
+    const runId = `fin-${uuidv4().slice(0, 8)}`;
+    stmts.insertFinalizeRun.run(
+      runId,
+      'card',
+      null,
+      project.id,
+      branch,
+      headSha, // original head_sha
+      `t|${runId}`,
+      'queued',
+      null,
+      'ui_button',
+      null,
+      'u',
+      'U',
+      'u@x',
+      null,
+      Date.now(),
+      'full',
+    );
+    stmts.markFinalizeRunReadyToPush.run(shippedSha, runId); // validated_head_sha != head_sha
+    stmts.claimFinalizeRunPush.run(runId, shippedSha);
+    stmts.updateFinalizeRunPrUrl.run(prUrl, runId);
+    stmts.markFinalizeRunPushed.run(runId);
+
+    // The lock keys on validated_head_sha; the original head_sha must not match.
+    expect(
+      stmts.getPushedFinalizeRunForProjectPrUrlAtSha.get(project.id, prUrl, headSha, headSha),
+    ).toBeUndefined();
+    // The validated sha that shipped still locks.
+    expect(
+      stmts.getPushedFinalizeRunForProjectPrUrlAtSha.get(project.id, prUrl, shippedSha, shippedSha),
+    ).toBeTruthy();
+
+    await maybeRunPrAutoReview(
+      project,
+      { number: prNumber, head_branch: branch, status: 'open', author: 'ryan' },
+      deps,
+      { force: true, trigger: 'head_update', pushedByUserId: 'ryan' },
+    );
+    expect(handleChat).toHaveBeenCalledOnce();
+  });
+
+  it('locks a legacy pushed run (no validated_head_sha) via the head_sha fallback', async () => {
+    // Back-compat: rows that reached 'pushed' before validated_head_sha was
+    // recorded carry only head_sha. For those the head_sha fallback still locks
+    // the shipped head.
+    const { project, branch, headSha } = await hostedPrProject();
+    const { buildNativePrUrl } = await import('./url.js');
+    const prNumber = 415;
+    const prUrl = buildNativePrUrl(project.id, prNumber);
+    const handleChat = vi.fn();
+    const deps = {
+      stmts,
+      config,
+      broadcast: vi.fn(),
+      handleChat: handleChat as RouteDeps['handleChat'],
+    };
+
+    const runId = `fin-${uuidv4().slice(0, 8)}`;
+    stmts.insertFinalizeRun.run(
+      runId,
+      'card',
+      null,
+      project.id,
+      branch,
+      headSha,
+      `t|${runId}`,
+      'pushed', // legacy path: straight to pushed with no validated_head_sha stamped
+      null,
+      'ui_button',
+      null,
+      'u',
+      'U',
+      'u@x',
+      null,
+      Date.now(),
+      'full',
+    );
+    stmts.updateFinalizeRunPrUrl.run(prUrl, runId);
+
+    const row = stmts.getPushedFinalizeRunForProjectPrUrlAtSha.get(
+      project.id,
+      prUrl,
+      headSha,
+      headSha,
+    ) as { validated_head_sha: string | null } | undefined;
+    expect(row).toBeTruthy();
+    expect(row!.validated_head_sha).toBeNull();
+
+    await maybeRunPrAutoReview(
+      project,
+      { number: prNumber, head_branch: branch, status: 'open', author: 'ryan' },
+      deps,
+      { force: true, trigger: 'head_update', pushedByUserId: 'ryan' },
+    );
+    expect(handleChat).not.toHaveBeenCalled();
   });
 
   it('still dispatches for an external push when no pushed Finalize run shipped this PR', async () => {

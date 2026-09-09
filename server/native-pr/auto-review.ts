@@ -149,27 +149,31 @@ export async function maybeRunPrAutoReview(
       return { dispatched: false, reason: 'no_reviewer' };
     }
 
-    // Post-Finalize-push lock: if this PR already shipped through Finalize, the
-    // pushing session is terminal (lockSessionAfterFinalizePush set ask_mode=1
-    // and finalize_automation='manual') and its pre-push in-hub reviewer verdict
-    // is authoritative. Dispatching another review here would re-open an
-    // already-shipped, locked session. Keyed on the PR (not the head sha) so it
-    // stays correct across a Finalize rebase-before-push, which mints a new sha
-    // the sha-exact passthrough below would miss. A manual "Request review" is
-    // explicit human intent and overrides this.
+    const repoPath = bareRepoPath(project.id);
+    const headSha = await revParse(repoPath, `refs/heads/${pr.head_branch}`);
+    if (!headSha) return { dispatched: false, reason: 'branch_gone' }; // branch gone
+
+    // Post-Finalize-push lock: if this PR shipped THIS exact head through
+    // Finalize, the pushing session is terminal (lockSessionAfterFinalizePush
+    // set ask_mode=1 and finalize_automation='manual') and its pre-push in-hub
+    // reviewer verdict is authoritative. Dispatching another review would
+    // re-open an already-shipped, locked session. Keyed on the head sha (the
+    // pushed run records the shipped sha as validated_head_sha, so a Finalize
+    // rebase-before-push is covered) so the lock RELEASES the moment a
+    // genuinely new commit advances the branch past the shipped sha — those
+    // post-ship pushes must re-review. A manual "Request review" is explicit
+    // human intent and overrides this.
     if (
       !manual &&
-      deps.stmts.getPushedFinalizeRunForProjectPrUrl.get(
+      deps.stmts.getPushedFinalizeRunForProjectPrUrlAtSha.get(
         project.id,
         buildNativePrUrl(project.id, pr.number),
+        headSha,
+        headSha,
       )
     ) {
       return { dispatched: false, reason: 'finalize_locked' };
     }
-
-    const repoPath = bareRepoPath(project.id);
-    const headSha = await revParse(repoPath, `refs/heads/${pr.head_branch}`);
-    if (!headSha) return { dispatched: false, reason: 'branch_gone' }; // branch gone
 
     // Session-validation passthrough: Finalize already reviewed this sha.
     // A manual request overrides this — the human asked for a fresh review.
