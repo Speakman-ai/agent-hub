@@ -260,7 +260,25 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // GHSA-8j4g-w8fx-2239 (4.12.34) quadratic backtracking in the hono/cors
     // preflight parser. The last one is behaviour-preserving on outputs, so it
     // gets the CPU-footprint guard further down as well as this floor.
-    { pkg: 'hono', min: '4.12.34', advisory: 'GHSA-8j4g-w8fx-2239' },
+    //
+    // Three more first patched on 4.13.5:
+    //   GHSA-gqvv-2mrq-wpjv  toSSG() still writes files outside the output dir
+    //   GHSA-g6gw-c38x-mqfc  unbounded dot-notation nesting in parseBody() OOM
+    //   GHSA-crvj-82cr-hjcx  query parser reads params after the URL fragment
+    // All three cover `< 4.13.5` with no backport, so the floor is raised to
+    // 4.13.5 (it subsumes the 4.12.34 fix). hono is transitive via
+    // @hono/node-server (`^4`) and @modelcontextprotocol/sdk (`^4.11.4`), both
+    // of which admit 4.13.x, so this is a plain re-resolve with no override.
+    {
+      pkg: 'hono',
+      min: '4.13.5',
+      advisory: [
+        'GHSA-8j4g-w8fx-2239',
+        'GHSA-gqvv-2mrq-wpjv',
+        'GHSA-g6gw-c38x-mqfc',
+        'GHSA-crvj-82cr-hjcx',
+      ],
+    },
     // GHSA-frvp-7c67-39w9: serve-static path traversal via encoded backslash.
     // The advisory covers `< 2.0.5` with no backport, so the whole 1.x line is
     // affected. Its sole consumer, @modelcontextprotocol/sdk, declares
@@ -330,8 +348,27 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // re-resolve with no override. Re-resolving also hoisted mobile's 4.x copy
     // out of @expo/xcpretty to the root, which the coherence check below
     // validates.
-    { pkg: 'js-yaml', min: '3.15.1', advisory: 'GHSA-5p4m-2wfm-xmqj', line: '3.x' },
-    { pkg: 'js-yaml', min: '4.3.1', advisory: 'GHSA-5p4m-2wfm-xmqj', line: '4.x' },
+    //
+    // GHSA-2883-xcg3-v3hh (CVE-2026-84375) is the follow-up: `maxTotalMergeKeys`
+    // capped the number of merge keys but not the CPU spent on *empty* merge
+    // sources, so a document of many `<<:` merges pointing at empty maps still
+    // burned quadratic time. Patched per line as well -- `>=3.0.0 <3.15.2` ->
+    // 3.15.2 and `>=4.0.0 <4.3.2` -> 4.3.2 -- and both patched versions sit
+    // inside the same parent ranges, so this too is a plain re-resolve. The
+    // floors are raised to the stricter GHSA-2883 constraint; it subsumes the
+    // GHSA-5p4m fix on each line.
+    {
+      pkg: 'js-yaml',
+      min: '3.15.2',
+      advisory: ['GHSA-5p4m-2wfm-xmqj', 'GHSA-2883-xcg3-v3hh'],
+      line: '3.x',
+    },
+    {
+      pkg: 'js-yaml',
+      min: '4.3.2',
+      advisory: ['GHSA-5p4m-2wfm-xmqj', 'GHSA-2883-xcg3-v3hh'],
+      line: '4.x',
+    },
     // Five advisories against mermaid:
     //   GHSA-2v8p-3f2j-5mp7  infinite-loop DoS in XY charts
     //   GHSA-6x64-9x62-f2gx  CSS injection reaching the diagram's siblings
@@ -410,6 +447,48 @@ describe('dependency security guards (high-severity advisory floors)', () => {
       min: '0.8.15',
       advisory: 'GHSA-6gmq-8vp8-gcm6',
       only: ['root', 'mobile'],
+    },
+
+    // --- 28-finding audit (js-yaml / nodemailer / vitest / hono /
+    //     @ai-sdk/provider-utils; extract-zip & image-size contained) ---
+    // (js-yaml and hono floors were raised above rather than added here.)
+
+    // Four advisories against nodemailer, all first patched by 9.1.1:
+    //   GHSA-2x7j-588g-ccc2  (high) quadratic addressparser DoS   (9.1.0)
+    //   GHSA-cc9r-2j5m-2m83  recipient-domain validation bypass    (9.1.0)
+    //   GHSA-wmmp-3585-3rmp  IDN/Punycode allow-list bypass        (9.1.0)
+    //   GHSA-8m3c-c648-2xjj  resolveContent() disableFileAccess bypass (9.1.1)
+    // 9.1.1 subsumes the 9.1.0 set. Server declares `nodemailer: ^9.0.1`, which
+    // admits 9.1.1, so this is a plain re-resolve with no override. Server-only.
+    {
+      pkg: 'nodemailer',
+      min: '9.1.1',
+      advisory: [
+        'GHSA-2x7j-588g-ccc2',
+        'GHSA-cc9r-2j5m-2m83',
+        'GHSA-wmmp-3585-3rmp',
+        'GHSA-8m3c-c648-2xjj',
+      ],
+      only: ['server'],
+    },
+    // GHSA-82fw-gwwq-j7x9 (CVE-2026-84373): path traversal / arbitrary file read
+    // via @vitest/mocker's redirect-mock resolution. Patched at 4.1.11 on the
+    // 4.x line. vitest is a direct devDependency in every workspace (`^4.1.11`)
+    // and @vitest/mocker rides it transitively, so both re-resolve in range with
+    // no override. Both are dev-only (test tooling), never in a shipped artifact.
+    { pkg: 'vitest', min: '4.1.11', advisory: 'GHSA-82fw-gwwq-j7x9' },
+    { pkg: '@vitest/mocker', min: '4.1.11', advisory: 'GHSA-82fw-gwwq-j7x9' },
+    // GHSA-866g-f22w-33x8 (low): uncontrolled resource consumption in
+    // `createJsonResponseHandler`, first patched at 3.0.28 on the 3.x line.
+    // The first-party @ai-sdk family pins provider-utils to an exact 3.0.23, so
+    // the fix is reachable only through the server override asserted in
+    // OVERRIDE_FLOORS. The override is upper-bounded (<3.0.31): the undici-window
+    // guard further down explains why, and asserts the ceiling. Server-only.
+    {
+      pkg: '@ai-sdk/provider-utils',
+      min: '3.0.28',
+      advisory: 'GHSA-866g-f22w-33x8',
+      only: ['server'],
     },
   ];
 
@@ -981,6 +1060,17 @@ describe('override-backed advisory floors', () => {
   }> = [
     {
       manifest: 'server',
+      pkg: '@ai-sdk/provider-utils',
+      min: '3.0.28',
+      advisory: 'GHSA-866g-f22w-33x8',
+      // The first-party `ai` / `@ai-sdk/*` family pins provider-utils to an
+      // exact version (3.0.23), so without the override npm keeps the
+      // vulnerable 3.0.23 in place. See the undici-window note below for why
+      // the override is upper-bounded at <3.0.31 rather than an open `^3.0.28`.
+      parentRange: '3.0.23',
+    },
+    {
+      manifest: 'server',
       pkg: '@hono/node-server',
       min: '2.0.5',
       advisory: 'GHSA-frvp-7c67-39w9',
@@ -1064,7 +1154,10 @@ describe('unpatched advisories (containment guards)', () => {
     why: string;
   }> = [
     // Vulnerable range `<= 2.0.1`; 2.0.1 is the newest version extract-zip has
-    // ever published. Symlink path traversal while unpacking a zip -- only
+    // ever published. Two advisories of the same shape -- symlink path traversal
+    // while unpacking a zip (GHSA-jmr9-qjv8-65gv arbitrary write,
+    // GHSA-7pqw-9j4j-h8q3 arbitrary file write via symlink entries) -- both
+    // `first_patched_version: null`, so there is nothing to upgrade to. Only
     // exploitable by an archive an attacker controls.
     //
     // Escaping it needs a parent that drops the dependency outright:
@@ -1073,7 +1166,7 @@ describe('unpatched advisories (containment guards)', () => {
     {
       workspace: 'root',
       pkg: 'extract-zip',
-      advisory: ['GHSA-jmr9-qjv8-65gv'],
+      advisory: ['GHSA-jmr9-qjv8-65gv', 'GHSA-7pqw-9j4j-h8q3'],
       vulnerableRange: '<= 2.0.1',
       dependents: ['electron'],
       // devDependency: it runs at `npm install` time to unpack the Electron
@@ -1085,7 +1178,7 @@ describe('unpatched advisories (containment guards)', () => {
     {
       workspace: 'server',
       pkg: 'extract-zip',
-      advisory: ['GHSA-jmr9-qjv8-65gv'],
+      advisory: ['GHSA-jmr9-qjv8-65gv', 'GHSA-7pqw-9j4j-h8q3'],
       vulnerableRange: '<= 2.0.1',
       dependents: ['@puppeteer/browsers'],
       // Optional throughout: @browserbasehq/stagehand -> puppeteer-core ->
@@ -1162,26 +1255,74 @@ describe('unpatched advisories (containment guards)', () => {
 
   /**
    * GHSA-866g-f22w-33x8 (low): uncontrolled resource consumption in
-   * `createJsonResponseHandler`. Vulnerable range `<= 3.0.97` while the stable
-   * 3.x line tops out at 3.0.32, so every published 3.x is inside it. The
-   * reachable sink parses responses from configured, trusted LLM provider
-   * endpoints, not attacker-controlled hosts.
+   * `createJsonResponseHandler`. The reachable sink parses responses from
+   * configured, trusted LLM provider endpoints, not attacker-controlled hosts.
    *
-   * Containment is asserted on the one fact a lockfile can actually settle:
-   * the first-party `ai` / `@ai-sdk/*` family pins provider-utils to an *exact*
-   * version. An override to 4.x/5.x therefore does not merely sit outside a
-   * declared range, it contradicts an exact pin -- satisfying a scanner while
-   * breaking the stack at runtime, the trap documented in
-   * `security-bump-prs-hand-edited-lockfiles-break-installs`.
+   * FIXED via an upper-bounded override -- but the bound is the whole point, so
+   * it gets its own guard rather than a bare FLOORS floor. Two facts pull
+   * against each other:
    *
-   * Deliberately not asserted: that every consumer's *range* stays inside
-   * `<= 3.0.97`. It does not, and should not be forced to -- the third-party
+   *   1. The advisory is first patched at **3.0.28** on the 3.x line. The
+   *      first-party `ai` / `@ai-sdk/*` family pins provider-utils to an *exact*
+   *      version (3.0.23), so a plain re-resolve leaves 3.0.23 in place; the fix
+   *      is reachable only through the server `@ai-sdk/provider-utils` override.
+   *   2. From **3.0.31** onward the package intermittently declares a hard
+   *      runtime dependency on `undici@^5.29.0` (present in 3.0.31-33, 3.0.35+;
+   *      absent in 3.0.28-30 and, oddly, 3.0.34). undici 5.29.0 is the top of
+   *      the 5.x line and is affected by three *unpatched-on-5.x* HIGH
+   *      advisories -- GHSA-vxpw-j846-p89q (WebSocket fragment-count DoS),
+   *      GHSA-vrm6-8vpv-qv8q (permessage-deflate memory exhaustion),
+   *      GHSA-v9p9-hfj2-hcw8 (WebSocket unhandled exception) -- all first patched
+   *      only on undici 6.x. So an open `^3.0.28` override would clear one LOW
+   *      advisory and import three HIGH ones.
+   *
+   * The override is therefore bounded to the contiguous undici-free patched
+   * window `>=3.0.28 <3.0.31` (resolves to 3.0.30). 3.0.34 is also undici-free
+   * but is an island between undici-carrying releases, so the ceiling stays at
+   * the clean run rather than reaching for it. The FLOORS entry above asserts
+   * the >=3.0.28 patch; the guard below asserts the <3.0.31 ceiling AND that no
+   * `undici` node exists in the server tree -- the two together are what keep
+   * the fix from silently regressing into the undici-carrying line.
+   *
+   * The `pins exactly` assertion records the fact that makes the override
+   * necessary in the first place: if the first-party family ever stops pinning
+   * exactly, a plain bump becomes possible and the override can be revisited.
+   *
+   * Not asserted: that every consumer's *range* stays inside the advisory. It
+   * does not, and should not be forced to -- the third-party
    * `ollama-ai-provider-v2` declares `^3.0.17`, which formally admits 3.1.0+.
-   * That range only resolves inside the advisory because the 3.1.0 line is
-   * still prerelease-only, which is a registry fact of today rather than a
-   * property of this repo, so encoding it here would make the suite fail on an
-   * upstream publish that changed nothing about our exposure.
    */
+  it('server: @ai-sdk/provider-utils stays in the undici-free patched window (>=3.0.28 <3.0.31)', () => {
+    const packages = lockPackages('./package-lock.json');
+
+    const copies = Object.entries(packages).filter(
+      ([key, meta]) => packageNameOf(key) === '@ai-sdk/provider-utils' && meta.version,
+    );
+    expect(
+      copies.length,
+      'expected at least one @ai-sdk/provider-utils copy in the server lockfile',
+    ).toBeGreaterThan(0);
+    for (const [key, meta] of copies) {
+      expect(
+        satisfies(meta.version as string, '>=3.0.28 <3.0.31'),
+        `${key}@${meta.version} is outside the undici-free patched window >=3.0.28 <3.0.31 ` +
+          `(>=3.0.28 clears GHSA-866g-f22w-33x8; <3.0.31 keeps the undici@5.x HIGH advisories ` +
+          `GHSA-vxpw-j846-p89q / GHSA-vrm6-8vpv-qv8q / GHSA-v9p9-hfj2-hcw8 out of the tree)`,
+      ).toBe(true);
+    }
+
+    // The upper bound only matters because the undici-carrying releases pull a
+    // vulnerable transport in. Assert the outcome directly: no undici anywhere
+    // in the server tree. If a re-resolve ever lands provider-utils on an
+    // undici-carrying version this fails here as well as on the version window.
+    const undici = Object.keys(packages).filter((k) => packageNameOf(k) === 'undici');
+    expect(
+      undici,
+      'undici appeared in the server tree; @ai-sdk/provider-utils >=3.0.31 pulls undici@^5.29.0, ' +
+        'which carries unpatched-on-5.x HIGH advisories. Keep the override below 3.0.31.',
+    ).toEqual([]);
+  });
+
   it('server: the first-party @ai-sdk family pins @ai-sdk/provider-utils exactly', () => {
     const packages = lockPackages('./package-lock.json');
     const ranged: string[] = [];
