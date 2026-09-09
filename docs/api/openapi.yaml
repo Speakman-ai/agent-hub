@@ -21354,7 +21354,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/KanbanPhase"
         "400":
-          description: Phase could not be started.
+          description: Phase could not be started, including when an earlier phase is incomplete.
           content:
             application/json:
               schema:

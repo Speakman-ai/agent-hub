@@ -124,6 +124,7 @@ function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
   return {
     getAutonomousEpic: { get: vi.fn(() => null) },
     getAutonomousPhases: { all: vi.fn(() => []) },
+    getKanbanPhasesByEpic: { all: vi.fn(() => []) },
     getEligibleAutonomousCards: { all: vi.fn(() => []) },
     getEligibleAutonomousSpikeCards: { all: vi.fn(() => []) },
     getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
@@ -316,6 +317,7 @@ describe('runAutonomousLoop — dispatch', () => {
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => null) },
       getAutonomousPhases: { all: vi.fn(() => [phase]) },
+      getKanbanPhase: { get: vi.fn(() => phase) },
       getKanbanEpic: { get: vi.fn(() => ({ ...ACTIVE_EPIC, autonomous: 0 })) },
       getEligibleAutonomousCardsByPhase: { all: vi.fn(() => [card]) },
       getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
@@ -903,6 +905,140 @@ describe('runAutonomousLoop — dispatch', () => {
     });
   }
 
+  it.each(['col-todo', 'col-progress', 'col-review'])(
+    'rejects a manual start while a predecessor has a card in %s',
+    async (column_id) => {
+      const first = makePhase({ autonomous: 0, autonomous_running: 0 });
+      const second = makePhase({ id: 'phase-2', position: 1, autonomous_running: 0 });
+      const stmts = makePhaseAdvanceStmts(first, second);
+      stmts.getKanbanCardsByPhase!.all.mockReturnValue([makeCard({ column_id })]);
+      const deps = makeDeps(stmts);
+      deps.findProject.mockReturnValue(makeProject());
+      mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+      initAutonomous(deps as never);
+
+      await expect(startAutonomousPhase('proj-1', second.id, 'owner-1')).rejects.toThrow(
+        /Phase 1.*complete/,
+      );
+      expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalled();
+      expect(stmts.setPhaseAutonomousEnabledBy!.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['phase', 'board', 'epic'])(
+    '%s dispatch cannot bypass an incomplete predecessor, even without card blockers',
+    async (trigger) => {
+      const first = makePhase({ autonomous_running: 0 });
+      const second = makePhase({ id: 'phase-2', position: 1 });
+      const unfinished = makeCard({ id: 'first', phase_id: first.id, column_id: 'col-review' });
+      const ready = makeCard({ id: 'second', phase_id: second.id });
+      const stmts = makePhaseAdvanceStmts(first, second);
+      stmts.getKanbanCardsByPhase!.all.mockImplementation((id) =>
+        id === first.id ? [unfinished] : [ready],
+      );
+      stmts.getKanbanCardsByEpic.all.mockReturnValue([unfinished, ready]);
+      stmts.getEligibleAutonomousCardsByPhase!.all.mockReturnValue([ready]);
+      stmts.getEligibleAutonomousCards.all.mockReturnValue([ready]);
+      stmts.getAutonomousEpic.get.mockReturnValue({ ...ACTIVE_EPIC, autonomous_max_concurrent: 5 });
+      stmts.getAutonomousPhases!.all.mockReturnValue([second]);
+      const deps = makeDeps(stmts);
+      deps.findProject.mockReturnValue(makeProject());
+      mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+      initAutonomous(deps as never);
+
+      if (trigger === 'phase') await runAutonomousLoopForPhase('proj-1', second.id);
+      else if (trigger === 'board') await runAutonomousLoop('proj-1');
+      else await runAutonomousLoopForEpic('proj-1', 'epic-1');
+
+      expect(stmts.createSession.run).not.toHaveBeenCalled();
+      expect(stmts.markCardDispatchedByAutonomous.run).not.toHaveBeenCalled();
+      if (trigger !== 'epic') {
+        expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(0, second.id);
+      }
+    },
+  );
+
+  it('does not cascade from an already-complete later phase past unfinished earlier work', async () => {
+    const first = makePhase();
+    const second = makePhase({ id: 'phase-2', position: 1 });
+    const third = makePhase({ id: 'phase-3', position: 2, autonomous_running: 0 });
+    const stmts = makePhaseAdvanceStmts(first, second);
+    stmts.getKanbanPhasesByEpic!.all.mockReturnValue([first, second, third]);
+    stmts.getKanbanCardsByPhase!.all.mockImplementation((id) => [
+      makeCard({
+        column_id: id === second.id ? 'col-done' : 'col-todo',
+      }),
+    ]);
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', second.id);
+
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalledWith(1, third.id);
+  });
+
+  it.each(['phase', 'epic'])(
+    '%s dispatch proceeds after all predecessor cards are Done',
+    async (trigger) => {
+      const first = makePhase({ autonomous_running: 0 });
+      const second = makePhase({ id: 'phase-2', position: 1 });
+      const ready = makeCard({ id: 'ready', phase_id: second.id });
+      const stmts = makePhaseAdvanceStmts(first, second);
+      stmts.getEligibleAutonomousCardsByPhase!.all.mockReturnValue([ready]);
+      stmts.getEligibleAutonomousCards.all.mockReturnValue([ready]);
+      const deps = makeDeps(stmts);
+      deps.findProject.mockReturnValue(makeProject());
+      mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+      initAutonomous(deps as never);
+
+      if (trigger === 'phase') await runAutonomousLoopForPhase('proj-1', second.id);
+      else await runAutonomousLoopForEpic('proj-1', 'epic-1');
+
+      expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith(ready.id);
+      expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('rechecks predecessor completion when claiming a card after an await', async () => {
+    const first = makePhase({ autonomous_running: 0 });
+    const second = makePhase({ id: 'phase-2', position: 1 });
+    const ready = makeCard({ id: 'ready', phase_id: second.id });
+    const stmts = makePhaseAdvanceStmts(first, second);
+    stmts.getEligibleAutonomousCardsByPhase!.all.mockReturnValue([ready]);
+    const deps = makeDeps(stmts);
+    deps.getDb.mockImplementation(() => {
+      stmts.getKanbanCardsByPhase!.all.mockReturnValue([makeCard({ column_id: 'col-review' })]);
+      return makeFakeDb();
+    });
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', second.id);
+
+    expect(deps.getDb).toHaveBeenCalled();
+    expect(stmts.markCardDispatchedByAutonomous.run).not.toHaveBeenCalled();
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+  });
+
+  it('does not treat an empty earlier phase as completed work', async () => {
+    const first = makePhase();
+    const second = makePhase({ id: 'phase-2', position: 1, autonomous_running: 0 });
+    const stmts = makePhaseAdvanceStmts(first, second);
+    stmts.getKanbanCardsByPhase!.all.mockReturnValue([]);
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await expect(startAutonomousPhase('proj-1', second.id, 'owner-1')).rejects.toThrow(
+      /Phase 1.*complete/,
+    );
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalled();
+  });
+
   it('auto-starts the next armed phase when a phase completes, inheriting the owner', async () => {
     const phase1 = makePhase();
     const phase2 = makePhase({
@@ -1006,12 +1142,9 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(byIdStmts.setPhaseAutonomousEnabledBy!.run).not.toHaveBeenCalled();
   });
 
-  it('starts a later ready phase when the running phase is fully cross-phase-blocked', async () => {
-    // Inverted-order epic: the "front" phase runs first by position but every
-    // one of its cards is blocked by a card in the "foundation" phase authored
-    // last. Positional advance deadlocks (front never completes → cascade never
-    // reaches foundation). Readiness-aware advance must start foundation so the
-    // epic makes forward progress.
+  it('keeps later phases stopped when the running phase is fully cross-phase-blocked', async () => {
+    // The reported bug: a blocked first phase used to start arbitrary ready
+    // siblings every tick. Invalid ordering must be corrected during scoping.
     const front = makePhase({
       id: 'phase-front',
       name: 'Front',
@@ -1083,17 +1216,9 @@ describe('runAutonomousLoop — dispatch', () => {
 
     await runAutonomousLoopForPhase('proj-1', 'phase-front');
 
-    // The foundation phase, which has a ready card, is started with the
-    // inherited owner so the cascade advances instead of deadlocking on the
-    // stuck front phase.
-    expect(stmts.setPhaseAutonomousEnabledBy!.run).toHaveBeenCalledWith(
-      'owner-1',
-      'phase-foundation',
-    );
-    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(1, 'phase-foundation');
-    // The front phase is never disarmed/advanced positionally — it stays running
-    // and its blocked card is untouched (no dispatch of front-card).
-    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalledWith(1, 'phase-front');
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).not.toHaveBeenCalled();
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalled();
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
   });
 
   it('does NOT start a later ready phase while the running phase has a card in flight', async () => {

@@ -74,6 +74,15 @@ autonomous pool, which is almost never what you want.
 Epics group cards; autonomous epics (`autonomous: true`) drive dispatch.
 Blockers (`kanban_card_blockers`) cycle-check on insert.
 
+Phases run sequentially in saved order: every card in an earlier phase must
+reach Done before a later phase starts. Parallel work belongs within a phase.
+When scoping, put prerequisites first and record actual ticket dependencies as
+blockers. After changing tickets or blockers, call
+`POST /api/projects/<projectId>/board/phases/reorder` with
+`{"epicId":"<epic-id>","sortByDependencies":true}` to verify and save dependency
+order before declaring the epic ready. If the phase graph has a cycle, split
+or regroup tickets and retry. Do not start later phases to bypass blockers.
+
 ## Done-state contract
 
 A card may move to **Done** only when:
@@ -85,7 +94,7 @@ A card may move to **Done** only when:
 
 Otherwise the card stays in **In Progress** or **Review**. The
 end-of-session announcement must state the user-visible delta. Full rules:
-wiki page *Kanban Done-State Contract — When a Card May Move to Done*.
+wiki page _Kanban Done-State Contract — When a Card May Move to Done_.
 
 ## Column IDs are per-project
 

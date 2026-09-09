@@ -69,6 +69,12 @@ export function buildScopingModePreamble(args: {
     '- **Ticket** — a kanban card in To Do, linked to the epic and its phase.',
     '',
     'Use **blockers** between tickets to express dependency order (not parent/child).',
+    'Phases run sequentially in their saved order. Phase 2 must not start until every card in Phase 1 is Done, and the same rule applies to every later phase. Parallel work belongs within a phase.',
+    'Create prerequisite phases first and record actual ticket dependencies as blockers. An earlier phase must never depend on unfinished work in a later phase.',
+    'After creating or changing tickets and blockers, verify the saved order with `POST /api/projects/' +
+      (projectId || '{projectId}') +
+      '/board/phases/reorder` using `{ "epicId": "<epic-id>", "sortByDependencies": true }` before declaring the epic ready. If the phase graph has a cycle, split or regroup the tickets into sequential phases and retry; do not bypass dependencies by starting later phases.',
+
     '',
     '### Spec decisions (real — not placeholders)',
     '',

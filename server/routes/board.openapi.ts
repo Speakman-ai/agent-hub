@@ -1559,7 +1559,9 @@ registerPath({
   request: { params: projectPhaseIdParams },
   responses: {
     200: { description: 'The phase, now running.', content: jsonContent(KanbanPhaseComponent) },
-    400: errorResponse('Phase could not be started.'),
+    400: errorResponse(
+      'Phase could not be started, including when an earlier phase is incomplete.',
+    ),
   },
 });
 

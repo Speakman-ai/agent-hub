@@ -20,14 +20,7 @@ import {
 } from './epic-spec.js';
 import { lastDispatchedReviewId } from './review-feedback-dedup.js';
 import { resolveEffectiveModel } from './effective-model.js';
-import {
-  loadBoardBlockers,
-  hasUnresolvedBlockers,
-  isColumnCancelled,
-  isColumnDone,
-  isColumnNotStarted,
-  type BoardBlockerIndex,
-} from './kanban-blockers.js';
+import { loadBoardBlockers, hasUnresolvedBlockers, isColumnDone } from './kanban-blockers.js';
 import { pickAgentForCard, pickLead } from './routing.js';
 import { agentAcceptsAutonomousTickets } from './agent-autonomy.js';
 import type {
@@ -700,6 +693,7 @@ async function maybeAdvanceToNextPhase(
     );
     return;
   }
+  if (findIncompletePredecessor(epic, next.id)) return;
   if (next.autonomous_running) return; // already running — nothing to do
 
   const owner = next.autonomous_enabled_by ?? completedPhase.autonomous_enabled_by ?? null;
@@ -720,64 +714,22 @@ async function maybeAdvanceToNextPhase(
   );
 }
 
-/**
- * Readiness-aware resilience for phase ordering. A phase run advances the
- * cascade only when the phase *completes* (all cards Done). If a running phase
- * is stuck because all of its cards are blocked by cards in a LATER phase
- * (phases authored in narrative order while dependencies live in blocker
- * edges), that phase never completes and the cascade never reaches the phase
- * that holds the unblocking work — a self-unresolvable deadlock.
- *
- * This helper breaks the deadlock without depending on phase ordering: when the
- * current phase has no dispatchable card, it starts the earliest armed,
- * not-yet-running phase in the epic that has at least one READY (unblocked, To
- * Do, unassigned) card. Once started, that phase's own runner dispatches its
- * ready card, which unblocks the stuck phase on a later tick. Starting an
- * already-running phase is a no-op, and a phase stops being "ready" once its
- * card is dispatched, so this converges instead of thrashing. Mirrors the owner
- * and arming gates of `maybeAdvanceToNextPhase`.
- *
- * Returns true if it started a phase.
- */
-async function maybeStartEarliestReadyPhase(
-  projectId: string,
+/** Every earlier phase must finish, regardless of its armed/running flags. */
+function findIncompletePredecessor(
   epic: KanbanEpicRow,
-  currentPhase: KanbanPhaseRow,
-  blockerIndex: BoardBlockerIndex,
-): Promise<boolean> {
+  phaseId: string,
+): KanbanPhaseRow | undefined {
   const d = getDeps();
   const phases = d.stmts.getKanbanPhasesByEpic.all(epic.id) as KanbanPhaseRow[];
-  for (const p of phases) {
-    if (p.id === currentPhase.id) continue;
-    if (!p.autonomous) continue; // not armed for auto-dispatch
-    if (p.autonomous_running) continue; // already running — nothing to kick
-
-    const buildCards = d.stmts.getEligibleAutonomousCardsByPhase.all(p.id) as KanbanCardRow[];
-    const spikeCards = d.stmts.getEligibleAutonomousSpikeCardsByPhase.all(p.id) as KanbanCardRow[];
-    const hasReadyCard =
-      buildCards.some((c) => !hasUnresolvedBlockers(c.id, blockerIndex)) ||
-      spikeCards.some((c) => !hasUnresolvedBlockers(c.id, blockerIndex));
-    if (!hasReadyCard) continue;
-
-    const owner = p.autonomous_enabled_by ?? currentPhase.autonomous_enabled_by ?? null;
-    if (!owner) {
-      console.log(
-        `[Autonomous] phase "${currentPhase.name}" has no dispatchable cards — cannot start ready phase "${p.name}": no resolvable owner for credential resolution`,
-      );
-      continue;
-    }
-
-    d.stmts.setPhaseAutonomousEnabledBy.run(owner, p.id);
-    d.stmts.setPhaseAutonomousRunning.run(1, p.id);
-    const started = d.stmts.getKanbanPhase.get(p.id) as KanbanPhaseRow;
-    scheduleAutonomousPhase(projectId, started);
-    d.broadcast({ type: 'kanban_update', projectId });
-    console.log(
-      `[Autonomous] phase "${currentPhase.name}" has no dispatchable cards (all blocked) — started ready phase "${p.name}" to make forward progress`,
-    );
-    return true;
-  }
-  return false;
+  const index = phases.findIndex((p) => p.id === phaseId);
+  if (index <= 0) return undefined;
+  const columns = d.stmts.getKanbanColumns.all(epic.board_id) as KanbanColumnRow[];
+  const names = new Map(columns.map((c) => [c.id, c.name]));
+  return phases.slice(0, index).find((p) => {
+    const cards = d.stmts.getKanbanCardsByPhase.all(p.id) as KanbanCardRow[];
+    // Match the completion gate: an empty phase is not a completed scope.
+    return cards.length === 0 || cards.some((c) => !isColumnDone(names.get(c.column_id)));
+  });
 }
 
 async function runAutonomousLoopInner(
@@ -791,6 +743,22 @@ async function runAutonomousLoopInner(
 
   const boardData = getOrCreateBoard(d.stmts, projectId);
   if (!boardData?.board) return;
+
+  // All entry points (including board sweeps and restored crons) share this
+  // gate. Clear stale later-phase runs so completion can restart them in order.
+  if (phase) {
+    const current = d.stmts.getKanbanPhase.get(phase.id) as KanbanPhaseRow | undefined;
+    if (!current?.autonomous_running) return;
+    phase = current;
+    const predecessor = findIncompletePredecessor(epic, phase.id);
+    if (predecessor) {
+      stopAutonomousPhase(projectId, phase.id);
+      console.log(
+        `[Autonomous] Phase "${phase.name}" is waiting for phase "${predecessor.name}" to complete`,
+      );
+      return;
+    }
+  }
 
   // Scope the open-spec dispatch gate to the unit being dispatched. For a phase
   // run, only the phase's own (and epic-wide unphased) decisions may hold back
@@ -901,6 +869,8 @@ async function runAutonomousLoopInner(
   const filterEligibleCards = (cards: KanbanCardRow[]): KanbanCardRow[] => {
     const result: KanbanCardRow[] = [];
     for (const card of cards) {
+      // Epic-wide dispatch must obey the same sequence as phase dispatch.
+      if (card.phase_id && findIncompletePredecessor(epic, card.phase_id)) continue;
       if (hasUnresolvedBlockers(card.id, blockerIndex)) {
         const unresolvedLinks = (blockerIndex.blockersByCard.get(card.id) ?? []).filter(
           (b) => !b.done,
@@ -956,43 +926,6 @@ async function runAutonomousLoopInner(
     console.log(
       `[Autonomous] No eligible cards for ${scopeLabel} (all assigned, done, or blocked)`,
     );
-    // Readiness-aware resilience — but ONLY on a genuine cross-phase deadlock,
-    // not on the normal "my card is in flight" lull. `eligible.length === 0` is
-    // also true when this phase already dispatched its card and it's now In
-    // Progress / Review (not yet Done): that's healthy forward progress, and
-    // the cascade advances via `maybeAdvanceToNextPhase` once the card lands in
-    // Done. Kicking the next armed phase here would run every phase at once
-    // while their predecessors are still in flight (the "phases start all at
-    // once" bug).
-    //
-    // The deadlock signature needs BOTH halves:
-    //   1. Nothing in this phase is in flight. A started-but-not-Done card means
-    //      the phase is progressing on its own, so there is nothing to heal.
-    //      This is the half that was missing, and the common shape (dispatched
-    //      card sitting In Progress with its follow-up card blocked behind it)
-    //      kicked every armed sibling phase awake on the very next tick.
-    //   2. A To Do candidate is held back by a blocker OUTSIDE this phase. An
-    //      intra-phase blocker clears when this phase's own runner works through
-    //      its cards, so starting a sibling phase does nothing for it.
-    if (phase) {
-      const phaseCardIds = new Set(allScopeCards.map((c) => c.id));
-      const hasInFlightCard = allScopeCards.some((c) => {
-        const columnName = colNameByIdForEpic[c.column_id];
-        return (
-          !isColumnDone(columnName) &&
-          !isColumnCancelled(columnName) &&
-          !isColumnNotStarted(columnName)
-        );
-      });
-      const hasCrossPhaseBlockedCandidate = [...rawEligible, ...rawSpikeEligible].some((c) =>
-        (blockerIndex.blockersByCard.get(c.id) ?? []).some(
-          (b) => !b.done && !phaseCardIds.has(b.id),
-        ),
-      );
-      if (!hasInFlightCard && hasCrossPhaseBlockedCandidate) {
-        await maybeStartEarliestReadyPhase(projectId, epic, phase, blockerIndex);
-      }
-    }
     return;
   }
 
@@ -1326,6 +1259,12 @@ async function runAutonomousLoopInner(
           (fresh.assignee != null && String(fresh.assignee).trim() !== '') ||
           fresh.column_id !== card.column_id
         ) {
+          return 'ineligible';
+        }
+        // Recheck order inside the claim transaction: an earlier card can be
+        // reopened or phases reordered while credential/branch work awaits.
+        const dispatchPhaseId = phase?.id ?? card.phase_id;
+        if (dispatchPhaseId && findIncompletePredecessor(epic, dispatchPhaseId)) {
           return 'ineligible';
         }
         // Re-read the SAME scope the loop-top count used: phase-local when
@@ -1773,6 +1712,13 @@ export async function startAutonomousPhase(
   if (!operatorUserId) {
     throw new Error(
       'Authentication required to run a phase — no resolvable owner for credential resolution (run while logged in)',
+    );
+  }
+  const predecessor = findIncompletePredecessor(epic, phaseId);
+  if (predecessor) {
+    throw new Error(
+      `Phase "${predecessor.name}" must complete before "${phase.name}" can run. ` +
+        'Finish its cards or correct the phase order and dependencies.',
     );
   }
   d.stmts.setPhaseAutonomousEnabledBy.run(operatorUserId, phaseId);
