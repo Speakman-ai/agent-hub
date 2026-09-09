@@ -1,14 +1,20 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  buildForwardedSessionTitle,
   buildTitleTranscript,
   DEFAULT_TITLE_ANTHROPIC_MODEL,
   deriveHeuristicTitle,
+  FORWARDED_TITLE_SUFFIX,
   generateLlmTitle,
+  hasForwardedTitleSuffix,
   pickInitialSessionTitle,
   pickTurnSessionTitle,
+  preserveForwardedTitleSuffix,
   scheduleTitleUpgrade,
   shouldPersistTurnSessionTitlePick,
+  stripForwardedTitleMarkers,
   titleSourceForPick,
+  withForwardedTitleSuffix,
   isRealUserTitleTurn,
   type LlmTitleOptions,
 } from './session-title.js';
@@ -70,6 +76,19 @@ describe('deriveHeuristicTitle', () => {
     expect(deriveHeuristicTitle('Add a settings page.')).toBe('Add a settings page');
     expect(deriveHeuristicTitle('Is the build green?')).toBe('Is the build green?');
     expect(deriveHeuristicTitle('Ship it!')).toBe('Ship it!');
+  });
+
+  it('skips a forwarded transcript header and role labels to reach real content', () => {
+    const blob = [
+      '--- Forwarded from session with Survey Tracker Dev ---',
+      '',
+      '[User]:',
+      'Investigate the job assignment failures',
+      '[Assistant]:',
+      'Looking into it now.',
+      '--- End of forwarded context ---',
+    ].join('\n');
+    expect(deriveHeuristicTitle(blob)).toBe('Investigate the job assignment failures');
   });
 
   it('falls back to the raw text when filler eats the whole sentence', () => {
@@ -1108,5 +1127,168 @@ describe('isRealUserTitleTurn', () => {
 
   it('rejects an auto-continuation turn', () => {
     expect(isRealUserTitleTurn({ isAutoContinuation: true })).toBe(false);
+  });
+});
+
+describe('forwarded-session title helpers', () => {
+  it('detects and strips the trailing (fwd) marker', () => {
+    expect(hasForwardedTitleSuffix('Fix the parser (fwd)')).toBe(true);
+    expect(hasForwardedTitleSuffix('Fix the parser')).toBe(false);
+    expect(stripForwardedTitleMarkers('Fix the parser (fwd)')).toBe('Fix the parser');
+  });
+
+  it('strips only the legacy "[Fwd]" marker, preserving topic colons', () => {
+    // Legacy session format "[Fwd] <agent>: <source>" — the "[Fwd]" token is
+    // removed; the agent-name colon is left as topic (auto-title refines it).
+    expect(stripForwardedTitleMarkers('[Fwd] Survey Tracker Dev: Investigate failures')).toBe(
+      'Survey Tracker Dev: Investigate failures',
+    );
+    expect(stripForwardedTitleMarkers('[Fwd] Survey Tracker Dev: Investigate failures (fwd)')).toBe(
+      'Survey Tracker Dev: Investigate failures',
+    );
+  });
+
+  it('normalizes both legacy thread formats without eating a topic colon', () => {
+    // Legacy thread format "[Fwd] <thread name>" with no colon at all.
+    expect(stripForwardedTitleMarkers('[Fwd] Release planning')).toBe('Release planning');
+    // Legacy thread name that itself contains a colon — the colon is part of
+    // the topic and must survive.
+    expect(stripForwardedTitleMarkers('[Fwd] Parser: handle escapes')).toBe(
+      'Parser: handle escapes',
+    );
+    // "[Fwd]" with no trailing space is still stripped.
+    expect(stripForwardedTitleMarkers('[Fwd]Release planning')).toBe('Release planning');
+  });
+
+  it('appends the marker idempotently within the length cap', () => {
+    expect(withForwardedTitleSuffix('Fix the parser')).toBe('Fix the parser (fwd)');
+    // Re-applying never doubles the marker.
+    expect(withForwardedTitleSuffix('Fix the parser (fwd)')).toBe('Fix the parser (fwd)');
+    const long = 'A'.repeat(200);
+    const out = withForwardedTitleSuffix(long);
+    expect(out.length).toBeLessThanOrEqual(60);
+    expect(out.endsWith(FORWARDED_TITLE_SUFFIX)).toBe(true);
+  });
+
+  it('preserves the marker only when the current title had it', () => {
+    expect(preserveForwardedTitleSuffix('New topic', 'Old topic (fwd)')).toBe('New topic (fwd)');
+    expect(preserveForwardedTitleSuffix('New topic', 'Old topic')).toBe('New topic');
+    // Never doubles when the new title already carries it.
+    expect(preserveForwardedTitleSuffix('New topic (fwd)', 'Old topic (fwd)')).toBe(
+      'New topic (fwd)',
+    );
+  });
+
+  it('builds an initial title from the forwarding prompt, marker at the end', () => {
+    const title = buildForwardedSessionTitle({
+      prompt: 'Please investigate the job assignment failures in dev',
+      sourceTitle: 'Investigating Job Assignment Issues in Dev Environment',
+    });
+    expect(title).not.toContain('[Fwd]');
+    expect(title.endsWith(FORWARDED_TITLE_SUFFIX)).toBe(true);
+    expect(title.toLowerCase()).toContain('investigate the job assignment failures');
+  });
+
+  it('falls back to the source topic (marker at end) when no prompt is given', () => {
+    const title = buildForwardedSessionTitle({
+      prompt: undefined,
+      sourceTitle: 'Investigating Job Assignment Issues in Dev Environment',
+    });
+    expect(title).not.toContain('[Fwd]');
+    expect(title.endsWith(FORWARDED_TITLE_SUFFIX)).toBe(true);
+    expect(title.toLowerCase()).toContain('investigating job assignment');
+  });
+
+  it('does not stack markers/prefix when re-forwarding an already-forwarded title', () => {
+    const title = buildForwardedSessionTitle({
+      prompt: undefined,
+      sourceTitle: '[Fwd] Survey Tracker Dev: Investigate failures (fwd)',
+    });
+    // No leading "[Fwd]" prefix, exactly one trailing marker.
+    expect(title).not.toContain('[Fwd]');
+    expect(title.endsWith(' (fwd)')).toBe(true);
+    expect(title.match(/\(fwd\)/g)).toHaveLength(1);
+    expect(title.toLowerCase()).toContain('investigate failures');
+  });
+
+  it('peels nested legacy session provenance, leaving no stacked [Fwd]', () => {
+    // Old session route could nest: forwarding an already-forwarded session.
+    expect(stripForwardedTitleMarkers('[Fwd] Agent B: [Fwd] Agent A: Fix parser')).toBe(
+      'Agent A: Fix parser',
+    );
+    // Deeper nesting is fully peeled too.
+    expect(stripForwardedTitleMarkers('[Fwd] C: [Fwd] B: [Fwd] A: Rewrite the tokenizer')).toBe(
+      'A: Rewrite the tokenizer',
+    );
+    // A nested chain whose innermost topic has a real colon keeps that colon.
+    expect(stripForwardedTitleMarkers('[Fwd] Agent B: [Fwd] Parser: handle escapes')).toBe(
+      'Parser: handle escapes',
+    );
+  });
+
+  it('strips stacked trailing (fwd) markers (sibling to the nested-prefix peeler)', () => {
+    expect(hasForwardedTitleSuffix('Fix parser (fwd) (fwd)')).toBe(true);
+    expect(stripForwardedTitleMarkers('Fix parser (fwd) (fwd)')).toBe('Fix parser');
+    // Re-applying collapses any stack back to a single marker.
+    expect(withForwardedTitleSuffix('Fix parser (fwd) (fwd)')).toBe('Fix parser (fwd)');
+  });
+
+  it('re-forwards a nested legacy session title to a single clean (fwd) title', () => {
+    const title = buildForwardedSessionTitle({
+      prompt: undefined,
+      sourceTitle: '[Fwd] Agent B: [Fwd] Agent A: Fix parser (fwd)',
+    });
+    expect(title).not.toContain('[Fwd]');
+    expect(title.endsWith(' (fwd)')).toBe(true);
+    expect(title.match(/\(fwd\)/g)).toHaveLength(1);
+    expect(title.toLowerCase()).toContain('fix parser');
+  });
+
+  it('re-forwards a legacy thread title without stacking or eating the topic', () => {
+    // Old thread format "[Fwd] <thread name>" with a colon in the topic.
+    const withColon = buildForwardedSessionTitle({
+      prompt: undefined,
+      sourceTitle: '[Fwd] Parser: handle escapes',
+    });
+    expect(withColon).toBe('Parser: handle escapes (fwd)');
+
+    // Old thread format with no colon.
+    const noColon = buildForwardedSessionTitle({
+      prompt: undefined,
+      sourceTitle: '[Fwd] Release planning',
+    });
+    expect(noColon).toBe('Release planning (fwd)');
+    expect(noColon).not.toContain('[Fwd]');
+  });
+
+  it('pickTurnSessionTitle keeps the (fwd) marker across an auto rename', () => {
+    const pick = pickTurnSessionTitle({
+      currentTitle: 'Old topic (fwd)',
+      currentTitleSource: 'auto',
+      content: 'Now rewrite the migration script',
+      priorUserMessages: ['earlier message'],
+    });
+    expect(pick?.title).toBe('Rewrite the migration script (fwd)');
+  });
+
+  it('scheduleTitleUpgrade re-applies the (fwd) marker to the LLM title', async () => {
+    let stored = 'Rewrite the migration script (fwd)';
+    const ok = await scheduleTitleUpgrade({
+      sessionId: 's1',
+      heuristicTitle: 'Rewrite the migration script (fwd)',
+      content: 'irrelevant',
+      config: { anthropicApiKey: 'k', openaiApiKey: null },
+      generate: async () => 'Database Migration Rework',
+      getSessionName: () => stored,
+      getSessionTitleSource: () => 'auto',
+      updateSessionName: (title, _id, expected) => {
+        if (stored !== expected) return false;
+        stored = title;
+        return true;
+      },
+      onUpgrade: () => {},
+    });
+    expect(ok).toBe(true);
+    expect(stored).toBe('Database Migration Rework (fwd)');
   });
 });

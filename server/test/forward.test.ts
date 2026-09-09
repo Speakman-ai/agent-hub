@@ -93,8 +93,13 @@ describe('POST /api/sessions/:sessionId/forward', () => {
     expect(res.body).toHaveProperty('session');
     expect(res.body).toHaveProperty('forwardedMessageId');
     expect(res.body.session.agent_id).toBe(agentB.id);
-    expect(res.body.session.name).toContain('[Fwd]');
-    expect(res.body.session.name).toContain('Agent Alpha');
+    // No legacy "[Fwd] <agent>:" prefix; the name reflects the forked work
+    // (here the source topic, since no forwarding prompt was given) with a
+    // trailing "(fwd)" marker and is owned by the auto-title flow.
+    expect(res.body.session.name).not.toContain('[Fwd]');
+    expect(res.body.session.name).toMatch(/\(fwd\)$/);
+    expect(res.body.session.name.toLowerCase()).toContain('test session');
+    expect(res.body.session.title_source).toBe('auto');
 
     // The new session should contain the forwarded message
     const msgRes = await request.get(`/api/sessions/${res.body.session.id}/messages`).expect(200);
@@ -341,7 +346,7 @@ describe('POST /api/sessions/:sessionId/forward', () => {
     expect(msgRes.body[0].content).toContain('Cross-project hello');
   });
 
-  it('session name is truncated for long agent names', async () => {
+  it('session name stays bounded regardless of source/agent name length', async () => {
     const longNameAgent = await createAgent({
       projectId: project.id as string,
       id: 'agent-long-name',
@@ -353,10 +358,15 @@ describe('POST /api/sessions/:sessionId/forward', () => {
 
     const res = await request
       .post(`/api/sessions/${srcSession.id}/forward`)
-      .send({ targetAgentId: longNameAgent.id })
+      .send({
+        targetAgentId: longNameAgent.id,
+        prompt: 'Please '.repeat(40) + 'refactor the parser',
+      })
       .expect(201);
 
-    expect(res.body.session.name.length).toBeLessThanOrEqual(100);
+    // buildForwardedSessionTitle caps the whole name (base + marker) at 60.
+    expect(res.body.session.name.length).toBeLessThanOrEqual(60);
+    expect(res.body.session.name).toMatch(/\(fwd\)$/);
   });
 });
 

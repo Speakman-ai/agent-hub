@@ -97,6 +97,7 @@ import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
 import { buildExtractSkillKickoffPrompt, buildExtractSkillSessionName } from '../skill-extract.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
+import { buildForwardedSessionTitle } from '../session-title.js';
 import { checkWorktreeChanges } from '../auto-git.js';
 import { hasPublishableChanges, makeNetDiffProbe } from '../finalize/net-diff.js';
 import { syncLinkedCardToSessionStatus } from '../session-card-status.js';
@@ -3221,12 +3222,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
       const forwardedContent = parts.join('\n');
 
-      // Create a new session for the target agent
+      // Create a new session for the target agent. Name it after the forked
+      // work (the forwarding prompt, else the source topic) with a trailing
+      // `(fwd)` marker — never the legacy `[Fwd] <agent>:` prefix.
       const newSessionId = uuidv4();
-      const truncatedName = `[Fwd] ${sourceAgentName}: ${sourceSession.name || 'Session'}`.slice(
-        0,
-        100,
-      );
+      const forwardedName = buildForwardedSessionTitle({
+        prompt,
+        sourceTitle: sourceSession.name,
+        fallback: `Forwarded from ${sourceAgentName}`,
+      });
       const engine = targetAgent.engine || 'claude-code';
       // Optional per-fork model override (lets the user pick which model the new
       // copy of the agent runs). Validate against the engine's allowlist so a
@@ -3250,7 +3254,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         projectMode: getProjectMode(targetFound.project),
       });
       const wt = defaultSessionUseWorktreeFlag(targetFound.project);
-      stmts.createSession.run(newSessionId, targetAgentId, truncatedName, engine, model, wt, 0, 1);
+      stmts.createSession.run(newSessionId, targetAgentId, forwardedName, engine, model, wt, 0, 1);
+      // Mark the auto-title flow as owner so it keeps refining the name from the
+      // actual forked work (preserving the `(fwd)` marker) on the first turn.
+      stmts.updateSessionNameWithTitleSource.run(forwardedName, 'auto', newSessionId);
       // Forwarded session inherits ownership from the source — the caller
       // must own the source (gated by the prefix middleware above), and the
       // forwarded transcript should stay strictly with that same user.

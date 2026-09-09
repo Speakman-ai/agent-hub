@@ -96,6 +96,31 @@ function stripLeadingFiller(input: string): string {
   return s.trim();
 }
 
+// A forwarded message leads with framing chrome — a `--- Forwarded from … ---`
+// divider and `[User]:` / `[Assistant]:` role labels — none of which make a
+// good title. Match those so we can skip past them to the first real content
+// line. Divider = a line that is (mostly) a run of separator glyphs; label = a
+// bare role tag on its own line.
+const TRANSCRIPT_CHROME_LINE_RE =
+  /^(?:[-–—=_*]{3,}.*|\[(?:user|assistant|system|tool)\]\s*:?\s*)$/i;
+
+function stripLeadingTranscriptChrome(input: string): string {
+  const lines = input.split(/\r?\n/);
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    if (line === '' || TRANSCRIPT_CHROME_LINE_RE.test(line)) {
+      i += 1;
+      continue;
+    }
+    break;
+  }
+  const rest = lines.slice(i).join('\n').trim();
+  // If the whole thing was chrome, fall back to the original so we never return
+  // empty and the caller's existing empty-handling still applies.
+  return rest || input.trim();
+}
+
 function firstSentence(input: string): string {
   // Treat newlines as hard breaks so a one-liner intro followed by a code block
   // doesn't pull the code into the title. Note: `.split` with limit 1 returns
@@ -293,15 +318,25 @@ export function pickTurnSessionTitle(
   if (card) return { title: card, source: 'card', usedHeuristic: false };
 
   if (isFirstUserMessage) {
-    return pickInitialSessionTitle({
+    const pick = pickInitialSessionTitle({
       content: input.content,
       explicitTitle: input.explicitTitle,
       linkedCardTitle: input.linkedCardTitle,
     });
+    // Only heuristic titles carry the forwarded marker forward; an explicit
+    // hint/card title is authoritative and replaces the marker.
+    if (pick.source === 'heuristic') {
+      pick.title = preserveForwardedTitleSuffix(pick.title, currentTitle);
+    }
+    return pick;
   }
 
-  const heuristicTitle = deriveHeuristicTitle(input.content);
-  if (heuristicTitle === currentTitle || isGenericFollowUpTitle(heuristicTitle)) return null;
+  const rawHeuristic = deriveHeuristicTitle(input.content);
+  // Test generic-ness on the bare title so the forwarded marker never masks a
+  // "fix it" / "continue" follow-up that should be ignored.
+  if (isGenericFollowUpTitle(rawHeuristic)) return null;
+  const heuristicTitle = preserveForwardedTitleSuffix(rawHeuristic, currentTitle);
+  if (heuristicTitle === currentTitle) return null;
 
   return {
     title: heuristicTitle,
@@ -329,22 +364,27 @@ export function deriveHeuristicTitle(content: string): string {
     return truncateAtWordBoundary(normalized, MAX_TITLE_LEN) || 'New chat';
   }
 
+  // Skip a forwarded transcript's leading framing (divider + role labels) so a
+  // no-prompt forward titles from the first real content line, not the
+  // `--- Forwarded from … ---` header.
+  const deChromed = stripLeadingTranscriptChrome(normalized);
+
   // Strip leading conversational filler from the *raw first line* first so the
   // sentence-boundary logic operates on the real content. For "Hi! Please fix
   // X." the filler strip removes "Hi! Please " and leaves "fix X." for the
   // first-sentence pick — which is what we want as the title.
-  const firstLine = normalized.split(/\r?\n/, 1)[0] ?? '';
+  const firstLine = deChromed.split(/\r?\n/, 1)[0] ?? '';
   let candidate = stripLeadingFiller(firstLine);
 
   if (!candidate) {
     // Filler stripping consumed the whole line — fall back to the first
-    // sentence of the raw input.
-    candidate = firstSentence(normalized);
+    // sentence of the (de-chromed) input.
+    candidate = firstSentence(deChromed);
   } else {
     candidate = firstSentence(candidate);
   }
   if (!candidate) {
-    candidate = normalized;
+    candidate = deChromed;
   }
 
   candidate = capitalize(candidate);
@@ -353,6 +393,121 @@ export function deriveHeuristicTitle(content: string): string {
   candidate = candidate.replace(/^["'`*_]+|["'`*_]+$/g, '').trim();
 
   return candidate || 'New chat';
+}
+
+// ---------------------------------------------------------------------------
+// Forwarded-session titles
+// ---------------------------------------------------------------------------
+
+/**
+ * Compact marker appended to a forwarded session's title so it stays
+ * recognisable as a fork without stealing the front of the name. Lives at the
+ * END on purpose — the title itself must describe the forked work, not the
+ * provenance.
+ */
+export const FORWARDED_TITLE_SUFFIX = ' (fwd)';
+
+// Match one or more stacked trailing "(fwd)" markers so a re-strip never leaves
+// a residual copy behind (symmetric with the nested-prefix peeler below).
+const FORWARDED_SUFFIX_RE = /(?:\s*\(fwd\))+\s*$/i;
+// One leading "[Fwd]" token.
+const LEADING_FWD_TOKEN_RE = /^\s*\[fwd\]\s*/i;
+// An "<agent>: " provenance segment that is *confirmed* to be a forwarding
+// delimiter because another "[Fwd]" marker immediately follows it. The char
+// class excludes ':' and brackets so it can neither span into the nested
+// marker nor swallow a legitimate topic colon.
+const NESTED_FWD_AGENT_SEG_RE = /^[^:[\]]*:\s*(?=\[fwd\])/i;
+
+export function hasForwardedTitleSuffix(title: string | null | undefined): boolean {
+  return FORWARDED_SUFFIX_RE.test(title ?? '');
+}
+
+/**
+ * Strip every legacy forwarding marker from a title so re-forwarding neither
+ * stacks provenance nor mangles the source topic.
+ *
+ * Two historical shapes produced these markers, and the old *session* route
+ * could nest them when a forwarded session was itself forwarded:
+ *   - session: "[Fwd] <agent>: <source title>"  (and nested,
+ *              e.g. "[Fwd] Agent B: [Fwd] Agent A: Fix parser")
+ *   - thread:  "[Fwd] <thread name>"             (name may contain a colon,
+ *              e.g. "[Fwd] Parser: handle escapes")
+ *
+ * The peeler removes:
+ *   - every leading "[Fwd]" token, and
+ *   - each "<agent>: " segment ONLY when another "[Fwd]" follows it — that is
+ *     the proof it is a forwarding delimiter rather than a thread-topic colon.
+ *
+ * The outermost/last "<agent>: " (not followed by "[Fwd]") is indistinguishable
+ * from a real topic colon, so it is preserved — losing "Parser:" from
+ * "Parser: handle escapes" is worse than keeping a transient "<agent>: " that
+ * the auto-title flow (title_source='auto') refines away on the first turn.
+ */
+export function stripForwardedTitleMarkers(title: string | null | undefined): string {
+  let s = (title ?? '').replace(FORWARDED_SUFFIX_RE, '');
+  for (;;) {
+    const marker = s.match(LEADING_FWD_TOKEN_RE);
+    if (!marker) break;
+    let rest = s.slice(marker[0].length);
+    const agentSeg = rest.match(NESTED_FWD_AGENT_SEG_RE);
+    if (agentSeg) rest = rest.slice(agentSeg[0].length);
+    s = rest;
+  }
+  return s.trim();
+}
+
+/**
+ * Append the forwarded marker to a title, keeping the whole thing within
+ * `MAX_TITLE_LEN` by trimming the base on a word boundary. Idempotent: an
+ * existing marker is stripped first so re-applying never doubles it.
+ */
+export function withForwardedTitleSuffix(title: string): string {
+  const base = stripForwardedTitleMarkers(title);
+  const room = MAX_TITLE_LEN - FORWARDED_TITLE_SUFFIX.length;
+  const clippedBase = base.length > room ? truncateAtWordBoundary(base, room) : base;
+  return `${clippedBase}${FORWARDED_TITLE_SUFFIX}`;
+}
+
+/**
+ * When an auto-managed title carried the forwarded marker, keep the marker on
+ * the regenerated title. Only fires for titles that already had it, so it never
+ * marks a non-forwarded session.
+ */
+export function preserveForwardedTitleSuffix(
+  newTitle: string,
+  currentTitle: string | null | undefined,
+): string {
+  if (!newTitle) return newTitle;
+  if (hasForwardedTitleSuffix(currentTitle) && !hasForwardedTitleSuffix(newTitle)) {
+    return withForwardedTitleSuffix(newTitle);
+  }
+  return newTitle;
+}
+
+export interface ForwardedSessionTitleInput {
+  /** Optional "extra instructions" the user gave the target agent. */
+  prompt?: string | null;
+  /** Source session/thread name to fall back to when no prompt is given. */
+  sourceTitle?: string | null;
+  /** Last-resort base when neither prompt nor source yields anything usable. */
+  fallback?: string;
+}
+
+/**
+ * Initial name for a forwarded session. Derives a topic from the forwarding
+ * prompt when present (that IS the forked work), else from the source title
+ * (its own markers stripped so re-forwarding stays clean), then appends the
+ * `(fwd)` marker at the end. Never emits the legacy `[Fwd] <agent>:` prefix.
+ *
+ * Written with `title_source='auto'` by the caller so the standard turn-title
+ * flow keeps refining it from the actual forked work while
+ * `preserveForwardedTitleSuffix` retains the marker.
+ */
+export function buildForwardedSessionTitle(input: ForwardedSessionTitleInput): string {
+  const prompt = (input.prompt ?? '').trim();
+  const source = stripForwardedTitleMarkers(input.sourceTitle);
+  const base = prompt || source || (input.fallback ?? 'Forwarded session');
+  return withForwardedTitleSuffix(deriveHeuristicTitle(base));
 }
 
 /**
@@ -607,15 +762,18 @@ export async function scheduleTitleUpgrade(opts: ScheduleTitleUpgradeOptions): P
       anthropicApiKey: opts.config.anthropicApiKey ?? null,
       openaiApiKey: opts.config.openaiApiKey ?? null,
     });
-    if (!llmTitle || llmTitle === opts.heuristicTitle) return false;
+    // Keep the forwarded marker if the synchronous title we are upgrading had
+    // one, so the LLM refinement still reads as a fork.
+    const finalTitle = preserveForwardedTitleSuffix(llmTitle ?? '', opts.heuristicTitle);
+    if (!finalTitle || finalTitle === opts.heuristicTitle) return false;
     const currentName = opts.getSessionName(opts.sessionId);
     if (currentName !== opts.heuristicTitle) return false;
     if (opts.getSessionTitleSource && opts.getSessionTitleSource(opts.sessionId) !== 'auto') {
       return false;
     }
-    const updated = opts.updateSessionName(llmTitle, opts.sessionId, opts.heuristicTitle);
+    const updated = opts.updateSessionName(finalTitle, opts.sessionId, opts.heuristicTitle);
     if (!updated) return false;
-    opts.onUpgrade(llmTitle);
+    opts.onUpgrade(finalTitle);
     return true;
   } catch {
     return false;

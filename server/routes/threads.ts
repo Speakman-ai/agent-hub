@@ -5,6 +5,7 @@ import type { AuthenticatedRequest } from '../auth.js';
 import { resolveEffectiveModel } from '../effective-model.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
+import { buildForwardedSessionTitle } from '../session-title.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
@@ -201,7 +202,13 @@ export default function createThreadRoutes(deps: RouteDeps): Router {
 
       const targetAgent = targetFound.agent;
       const newSessionId = uuidv4();
-      const truncatedName = `[Fwd] ${thread.name}`.slice(0, 100);
+      // Name the session after the forked work (the forwarding prompt, else the
+      // thread topic) with a trailing `(fwd)` marker — never a leading prefix.
+      const forwardedName = buildForwardedSessionTitle({
+        prompt,
+        sourceTitle: thread.name,
+        fallback: `Forwarded from ${thread.name}`,
+      });
       const engine = targetAgent.engine || 'claude-code';
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const model = resolveEffectiveModel(config, engine, {
@@ -213,13 +220,16 @@ export default function createThreadRoutes(deps: RouteDeps): Router {
       stmts.createSession.run(
         newSessionId,
         targetAgentId,
-        truncatedName,
+        forwardedName,
         engine,
         model,
         useWorktree,
         0,
         1,
       );
+      // Auto-title owns the name so it refines from the forked work while
+      // keeping the `(fwd)` marker.
+      stmts.updateSessionNameWithTitleSource.run(forwardedName, 'auto', newSessionId);
       setSessionOwner(newSessionId, ownerUid);
 
       // When autoStart is true, handleChat stores the user message itself, so

@@ -44,7 +44,12 @@ describe('POST /api/threads/:threadId/entries/:entryId/forward', () => {
 
     expect(res.body.session).toBeTruthy();
     expect(res.body.session.agent_id).toBe(agent.id);
-    expect(res.body.session.name).toContain('[Fwd]');
+    // Title reflects the forked work (here the forwarding prompt) with a
+    // trailing "(fwd)" marker — never the legacy "[Fwd] <thread>" prefix.
+    expect(res.body.session.name).not.toContain('[Fwd]');
+    expect(res.body.session.name).toMatch(/\(fwd\)$/);
+    expect(res.body.session.name.toLowerCase()).toContain('summarize');
+    expect(res.body.session.title_source).toBe('auto');
     expect(typeof res.body.forwardedMessageId).toBe('string');
 
     // The forwarded user message must be pre-stored (autoStart was false) and
