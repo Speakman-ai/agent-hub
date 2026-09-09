@@ -261,6 +261,95 @@ describe('feature-request approval workflow', () => {
   });
 });
 
+describe('main-queue approval filter (?approval=)', () => {
+  // Helper: list ids with an explicit status + approval bucket.
+  function listIdsWith(
+    projectId: string,
+    query: { status?: string; approval?: string },
+  ): Promise<string[]> {
+    const params = new URLSearchParams();
+    if (query.status) params.set('status', query.status);
+    if (query.approval) params.set('approval', query.approval);
+    return request
+      .get(`/api/projects/${projectId}/support-tickets?${params.toString()}`)
+      .expect(200)
+      .then((r) => r.body.map((t: { id: string }) => t.id));
+  }
+
+  it('defaults to approved and switches buckets when voting is enabled', async () => {
+    const projectId = await newProjectId();
+    const pendingId = await createFeatureRequest(projectId, 'pending req');
+    const approvedId = await createFeatureRequest(projectId, 'approved req');
+    const bug = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ type: 'bug', body: 'crash' })
+      .expect(201);
+    const bugId = bug.body.id as string;
+
+    await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ voting: { enabled: true } })
+      .expect(200);
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${approvedId}/approval`)
+      .send({ status: 'approved' })
+      .expect(200);
+
+    // Default (no approval param) = approved bucket + all non-feature tickets.
+    const def = await listIdsWith(projectId, {});
+    expect(def).toContain(approvedId);
+    expect(def).toContain(bugId);
+    expect(def).not.toContain(pendingId);
+
+    // ?approval=approved is identical to the default.
+    expect(await listIdsWith(projectId, { approval: 'approved' })).toEqual(def);
+
+    // ?approval=pending swaps to pending feature requests; the bug (non-feature)
+    // is never gated so it still shows, and the approved one drops out.
+    const pending = await listIdsWith(projectId, { approval: 'pending' });
+    expect(pending).toContain(pendingId);
+    expect(pending).toContain(bugId);
+    expect(pending).not.toContain(approvedId);
+  });
+
+  it('surfaces denied (rejected) feature requests under the Won’t Do status', async () => {
+    const projectId = await newProjectId();
+    const featureId = await createFeatureRequest(projectId, 'denied req');
+    await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ voting: { enabled: true } })
+      .expect(200);
+    // Deny moves the open request to wont_do (terminal), so it needs the
+    // wont_do status scope combined with the denied approval bucket.
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${featureId}/approval`)
+      .send({ status: 'denied' })
+      .expect(200);
+
+    expect(await listIdsWith(projectId, { status: 'wont_do', approval: 'denied' })).toContain(
+      featureId,
+    );
+    // The approved bucket over the same status scope excludes it.
+    expect(await listIdsWith(projectId, { status: 'wont_do', approval: 'approved' })).not.toContain(
+      featureId,
+    );
+  });
+
+  it('ignores the approval param entirely when voting is off', async () => {
+    const projectId = await newProjectId();
+    const pendingId = await createFeatureRequest(projectId, 'classic req');
+    // Voting off (default): a pending feature request appears regardless of the
+    // approval param — no gating at all.
+    expect(await listIdsWith(projectId, { approval: 'approved' })).toContain(pendingId);
+    expect(await listIdsWith(projectId, { approval: 'denied' })).toContain(pendingId);
+  });
+
+  it('rejects an invalid approval value with 400', async () => {
+    const projectId = await newProjectId();
+    await request.get(`/api/projects/${projectId}/support-tickets?approval=sideways`).expect(400);
+  });
+});
+
 describe('feature-request approval — Admin role gate', () => {
   let originalApiKey: string | null;
   let projectId: string;

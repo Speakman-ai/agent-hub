@@ -43437,7 +43437,7 @@ paths:
       tags:
         - Support
       summary: List a project’s support tickets, ordered by severity
-      description: Defaults to the open states (new, investigating) — terminal tickets (converted/closed/duplicate/wont_do) are hidden until requested. Pass a comma-separated `status` list (e.g. `converted,closed`) and/or a single `type` to filter.
+      description: Defaults to the open states (new, investigating) — terminal tickets (converted/closed/duplicate/wont_do) are hidden until requested. Pass a comma-separated `status` list (e.g. `converted,closed`) and/or a single `type` to filter. When the project’s voting/approval system is enabled, `approval` selects which approval bucket of feature requests to include (default `approved`); it is ignored when voting is off.
       parameters:
         - schema:
             type: string
@@ -43465,6 +43465,17 @@ paths:
           required: false
           description: Filter to a single request type (e.g. bug, feature_request).
           name: type
+          in: query
+        - schema:
+            type: string
+            enum:
+              - pending
+              - approved
+              - denied
+            description: "Only when the project’s voting/approval system is enabled: which approval bucket of feature requests to show (pending | approved | denied). Defaults to `approved`. Non-feature tickets are never gated. Ignored when voting is off."
+          required: false
+          description: "Only when the project’s voting/approval system is enabled: which approval bucket of feature requests to show (pending | approved | denied). Defaults to `approved`. Non-feature tickets are never gated. Ignored when voting is off."
+          name: approval
           in: query
       responses:
         "200":

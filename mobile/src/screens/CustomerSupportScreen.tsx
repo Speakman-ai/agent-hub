@@ -81,6 +81,14 @@ const TYPE_FILTERS = [
   { key: 'other', label: 'Other' },
 ];
 const TYPE_OPTIONS = TYPE_FILTERS.filter((f: any) => f.key !== 'all');
+// Approval buckets for the Issues queue, shown only when the project's voting/
+// approval system is on. Defaults to "approved" — the classic gated view. The
+// UI label "Rejected" maps to the server's `denied` value.
+const APPROVAL_FILTERS = [
+  { key: 'approved', label: 'Approved' },
+  { key: 'pending', label: 'Pending' },
+  { key: 'denied', label: 'Rejected' },
+];
 // Queue ordering toggle. "Priority" (default) sorts severity-first then newest;
 // "Date" ignores severity and orders purely by creation date (newest first).
 const SORT_MODES = [
@@ -1073,6 +1081,16 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
   // Default to the "Open" group; terminal tickets are retained but hidden.
   const [statusFilter, setStatusFilter] = useState('open');
   const [typeFilter, setTypeFilter] = useState('all');
+  // Approval bucket for the Issues queue (only surfaced when voting is on).
+  // Defaults to "approved" so the queue matches its classic gated view.
+  const [approvalFilter, setApprovalFilter] = useState('approved');
+  // Per-project voting/approval system. When ON, the Voting tab appears and the
+  // approval filter gates feature requests; OFF (default) means no Voting page
+  // and feature requests flow straight into the queue. Seeded from the project
+  // record; toggling never touches existing votes/comments.
+  const isAdmin = hasRole('Admin');
+  const [votingEnabled, setVotingEnabled] = useState<boolean>(!!project?.voting?.enabled);
+  const [votingSaving, setVotingSaving] = useState(false);
   // Queue ordering: 'priority' (default) sorts severity-first then newest;
   // 'date' ignores severity and sorts purely by creation date (newest first).
   const [sortMode, setSortMode] = useState<'priority' | 'date'>('priority');
@@ -1087,8 +1105,13 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
   const [severityTicket, setSeverityTicket] = useState<any>(null);
   const activeStatusFilter =
     STATUS_FILTERS.find((f: any) => f.key === statusFilter) || STATUS_FILTERS[0];
+  // Monotonic request id so an earlier, slower fetch can't overwrite a newer
+  // one's result. This matters when the voting flag flips (the approval bucket
+  // sent to the server changes): only the latest request's response is applied.
+  const loadSeqRef = useRef(0);
   const load = useCallback(async () => {
     if (!projectId) return;
+    const seq = (loadSeqRef.current += 1);
     setLoading(true);
     setError(null);
     try {
@@ -1096,17 +1119,52 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
         projectId,
         activeStatusFilter.statuses.join(','),
         typeFilter === 'all' ? undefined : typeFilter,
+        votingEnabled ? approvalFilter : undefined,
       );
+      if (seq !== loadSeqRef.current) return; // superseded by a newer load
       setTickets(sortTickets(Array.isArray(data) ? data : []));
     } catch (err: any) {
+      if (seq !== loadSeqRef.current) return;
       setError(err.message || 'Failed to load support requests');
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
-  }, [projectId, activeStatusFilter, typeFilter]);
+  }, [projectId, activeStatusFilter, typeFilter, votingEnabled, approvalFilter]);
   useEffect(() => {
     load();
   }, [load]);
+  // Keep the local voting flag in step with the project record (it may load
+  // after mount, or change from the settings screen).
+  useEffect(() => {
+    setVotingEnabled(!!project?.voting?.enabled);
+  }, [project?.voting?.enabled]);
+  // Turning voting off must not strand the user on a now-hidden Voting tab.
+  useEffect(() => {
+    if (!votingEnabled && activeTab === 'voting') setActiveTab('issues');
+  }, [votingEnabled, activeTab]);
+  // Admin-only voting on/off toggle. Backed by the same PATCH /projects field as
+  // the settings-screen control. Toggling never deletes votes/comments — it only
+  // flips visibility.
+  //
+  // `votingEnabled` flips only AFTER the PATCH resolves, never optimistically: it
+  // drives which approval bucket `load` requests, so flipping it early fires a
+  // fetch that races the persistence (reaching the server before the setting
+  // changed, returning the wrong rows). Flipping post-persistence re-runs `load`
+  // against the confirmed setting, and the loadSeqRef guard drops any earlier
+  // in-flight response.
+  const toggleVoting = useCallback(async () => {
+    if (votingSaving) return;
+    const next = !votingEnabled;
+    setVotingSaving(true);
+    try {
+      await api.updateProject(projectId, { voting: { enabled: next } });
+      setVotingEnabled(next); // apply only once the server confirms the change
+    } catch (err: any) {
+      Alert.alert('Could not update voting', err?.message || 'Failed to update voting');
+    } finally {
+      setVotingSaving(false);
+    }
+  }, [votingSaving, votingEnabled, projectId]);
   // Seed the drawer's unread badge from the server on mount / project change so
   // it's correct on a cold load; WebSocket unreadCount keeps it live after.
   useEffect(() => {
@@ -1129,13 +1187,24 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
     if (!ticket) return;
     setTickets((prev: any) => {
       const without = prev.filter((t: any) => t.id !== ticket.id);
-      // A status/type change can move a ticket out of the active filter.
+      // A status/type/approval change can move a ticket out of the active filter.
       const statusOk = activeStatusFilter.statuses.includes(ticket.status);
       const typeOk = typeFilter === 'all' || ticket.type === typeFilter;
-      if (!statusOk || !typeOk) return without;
+      const approvalOk =
+        !votingEnabled ||
+        ticket.type !== 'feature_request' ||
+        (ticket.approval_status ?? 'pending') === approvalFilter;
+      if (!statusOk || !typeOk || !approvalOk) return without;
       return sortTickets([...without, ticket]);
     });
-  }, [lastSupportTicketEvent, projectId, activeStatusFilter, typeFilter]);
+  }, [
+    lastSupportTicketEvent,
+    projectId,
+    activeStatusFilter,
+    typeFilter,
+    votingEnabled,
+    approvalFilter,
+  ]);
   const openReplay = useCallback((ref: any) => {
     const url = resolveReplayUrl(ref);
     if (url) Linking.openURL(url).catch(() => {});
@@ -1177,7 +1246,11 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
       const without = prev.filter((t: any) => t.id !== updated.id);
       const statusOk = activeStatusFilter.statuses.includes(updated.status);
       const typeOk = typeFilter === 'all' || updated.type === typeFilter;
-      if (!statusOk || !typeOk) return without;
+      const approvalOk =
+        !votingEnabled ||
+        updated.type !== 'feature_request' ||
+        (updated.approval_status ?? 'pending') === approvalFilter;
+      if (!statusOk || !typeOk || !approvalOk) return without;
       return sortTickets([...without, updated]);
     });
     // Keep an open detail sheet in lock-step with the list. Every mutation
@@ -1527,7 +1600,9 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
       <View style={styles.tabRow}>
         {[
           { key: 'issues', label: 'Issues' },
-          { key: 'voting', label: 'Voting' },
+          // The Voting tab only exists while the project's voting system is on;
+          // off (default) means no voting page at all.
+          ...(votingEnabled ? [{ key: 'voting', label: 'Voting' }] : []),
         ].map((t: any) => (
           <TouchableOpacity
             key={t.key}
@@ -1541,6 +1616,22 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
             </Text>
           </TouchableOpacity>
         ))}
+        {/* Admin-only voting on/off toggle. Enabling reveals the Voting tab and
+            gates feature requests through approval; disabling hides the tab
+            without destroying any existing votes/comments. */}
+        {isAdmin ? (
+          <TouchableOpacity
+            testID="support-voting-toggle"
+            accessibilityState={{ selected: votingEnabled }}
+            disabled={votingSaving}
+            onPress={toggleVoting}
+            style={[styles.votingToggle, votingEnabled && styles.votingToggleActive]}
+          >
+            <Text style={[styles.votingToggleText, votingEnabled && styles.votingToggleTextActive]}>
+              Voting {votingEnabled ? 'on' : 'off'}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
         {activeTab === 'voting' ? (
           <TouchableOpacity
             testID="voting-setup-launcher"
@@ -1597,6 +1688,31 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
               </TouchableOpacity>
             ))}
           </View>
+
+          {/* Approval bucket — only relevant while the voting/approval system
+              is on. Defaults to Approved (the classic gated queue). */}
+          {votingEnabled ? (
+            <View style={styles.typeFilterRow} testID="approval-filter-group">
+              <Text style={styles.sortLabel}>Approval</Text>
+              {APPROVAL_FILTERS.map((f: any) => (
+                <TouchableOpacity
+                  key={f.key}
+                  testID={`approval-filter-${f.key}`}
+                  onPress={() => setApprovalFilter(f.key)}
+                  style={[
+                    styles.typeFilterButton,
+                    approvalFilter === f.key && styles.filterButtonActive,
+                  ]}
+                >
+                  <Text
+                    style={[styles.filterText, approvalFilter === f.key && styles.filterTextActive]}
+                  >
+                    {f.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          ) : null}
 
           <View style={styles.sortRow}>
             <Text style={styles.sortLabel}>Sort</Text>
@@ -2152,6 +2268,16 @@ const styles = StyleSheet.create({
     borderColor: colors.gray700,
   },
   votingSetupLauncherText: { fontSize: 11, color: colors.gray300, fontWeight: '600' },
+  votingToggle: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+  },
+  votingToggleActive: { borderColor: colors.emerald600, backgroundColor: colors.emerald900_40 },
+  votingToggleText: { fontSize: 11, color: colors.gray400, fontWeight: '600' },
+  votingToggleTextActive: { color: colors.emerald300 },
   votingItem: {
     flexDirection: 'row',
     gap: 8,

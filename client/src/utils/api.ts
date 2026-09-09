@@ -2727,10 +2727,14 @@ export const api = {
   // `status` is a comma-separated list of lifecycle states (new | investigating
   // | converted | closed | duplicate | wont_do); omit it to get the default
   // open view. `type` optionally narrows to a single request type (e.g. bug).
-  getSupportTickets: (projectId: any, status: any, type: any) => {
+  // `approval` (approved | pending | denied) selects which approval bucket of
+  // feature requests to show; only meaningful when the project's voting/approval
+  // system is enabled, and ignored server-side otherwise.
+  getSupportTickets: (projectId: any, status: any, type: any, approval?: any) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     if (type) params.set('type', type);
+    if (approval) params.set('approval', approval);
     const qs = params.toString() ? `?${params}` : '';
     return fetchJSON(`/projects/${projectId}/support-tickets${qs}`);
   },

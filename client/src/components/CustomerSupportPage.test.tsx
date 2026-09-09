@@ -32,6 +32,8 @@ import { api } from '../utils/api';
     addSupportTicketComment: vi.fn(),
     hideSupportTicketComment: vi.fn().mockResolvedValue({ ok: true }),
     getProjects: vi.fn().mockResolvedValue([]),
+    getProject: vi.fn().mockResolvedValue({ id: 'proj-1', voting: { enabled: false } }),
+    updateProject: vi.fn().mockResolvedValue({ id: 'proj-1', voting: { enabled: true } }),
     getAgents: vi.fn().mockResolvedValue([]),
     startVotingScaffolder: vi.fn(),
   },
@@ -1214,12 +1216,23 @@ describe('CustomerSupportPage — filters', () => {
     render(<CustomerSupportPage projectId="proj-1" />);
     await waitFor(() => expect(screen.getByText('Filterable')).toBeInTheDocument());
 
-    // Initial load uses the default Open status group and no type filter.
-    expect(api.getSupportTickets).toHaveBeenCalledWith('proj-1', 'new,investigating', undefined);
+    // Initial load uses the default Open status group and no type filter. The
+    // 4th arg (approval) is undefined because voting is off for this project.
+    expect(api.getSupportTickets).toHaveBeenCalledWith(
+      'proj-1',
+      'new,investigating',
+      undefined,
+      undefined,
+    );
 
     fireEvent.click(screen.getByTestId('type-filter-bug' as any) as any);
     await waitFor(() =>
-      expect(api.getSupportTickets).toHaveBeenCalledWith('proj-1', 'new,investigating', 'bug'),
+      expect(api.getSupportTickets).toHaveBeenCalledWith(
+        'proj-1',
+        'new,investigating',
+        'bug',
+        undefined,
+      ),
     );
   });
 
@@ -1230,8 +1243,144 @@ describe('CustomerSupportPage — filters', () => {
 
     fireEvent.click(screen.getByTestId('status-filter-done' as any) as any);
     await waitFor(() =>
-      expect(api.getSupportTickets).toHaveBeenCalledWith('proj-1', 'converted,closed', undefined),
+      expect(api.getSupportTickets).toHaveBeenCalledWith(
+        'proj-1',
+        'converted,closed',
+        undefined,
+        undefined,
+      ),
     );
+  });
+});
+
+describe('CustomerSupportPage — voting toggle & approval filter', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    authMock.hasRole.mockReturnValue(false);
+    (api.getSupportTickets as any).mockResolvedValue([]);
+    (api.getProject as any).mockResolvedValue({ id: 'proj-1', voting: { enabled: false } });
+  });
+
+  it('hides the Voting tab and approval filter when voting is off (default)', async () => {
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(api.getSupportTickets).toHaveBeenCalled());
+    expect(screen.getByTestId('support-tab-issues')).toBeInTheDocument();
+    expect(screen.queryByTestId('support-tab-voting')).toBeNull();
+    expect(screen.queryByTestId('approval-filter-group')).toBeNull();
+  });
+
+  it('shows the Voting tab and an Approved-by-default approval filter when voting is on', async () => {
+    (api.getProject as any).mockResolvedValue({ id: 'proj-1', voting: { enabled: true } });
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByTestId('support-tab-voting')).toBeInTheDocument());
+    expect(screen.getByTestId('approval-filter-group')).toBeInTheDocument();
+
+    // The list fetch carries the default 'approved' bucket.
+    await waitFor(() =>
+      expect(api.getSupportTickets).toHaveBeenCalledWith(
+        'proj-1',
+        'new,investigating',
+        undefined,
+        'approved',
+      ),
+    );
+    expect(screen.getByTestId('approval-filter-approved')).toHaveAttribute('class');
+  });
+
+  it('refetches with the selected approval bucket (Rejected → denied)', async () => {
+    (api.getProject as any).mockResolvedValue({ id: 'proj-1', voting: { enabled: true } });
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByTestId('approval-filter-denied')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('approval-filter-denied'));
+    await waitFor(() =>
+      expect(api.getSupportTickets).toHaveBeenCalledWith(
+        'proj-1',
+        'new,investigating',
+        undefined,
+        'denied',
+      ),
+    );
+  });
+
+  it('shows the admin toggle only to admins and persists the change via updateProject', async () => {
+    authMock.hasRole.mockReturnValue(true);
+    (api.updateProject as any).mockResolvedValue({ id: 'proj-1', voting: { enabled: true } });
+    const onNotify = vi.fn();
+    render(<CustomerSupportPage projectId="proj-1" onNotify={onNotify} />);
+    await waitFor(() => expect(api.getSupportTickets).toHaveBeenCalled());
+
+    const toggle = screen.getByTestId('support-voting-toggle');
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    // The Voting tab is not shown until voting is enabled.
+    expect(screen.queryByTestId('support-tab-voting')).toBeNull();
+
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('proj-1', { voting: { enabled: true } }),
+    );
+    // Optimistic flip reveals the Voting tab.
+    await waitFor(() => expect(screen.getByTestId('support-tab-voting')).toBeInTheDocument());
+    expect(screen.getByTestId('support-voting-toggle')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('does not render the admin toggle for non-admins', async () => {
+    authMock.hasRole.mockReturnValue(false);
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(api.getSupportTickets).toHaveBeenCalled());
+    expect(screen.queryByTestId('support-voting-toggle')).toBeNull();
+  });
+
+  it('waits for persistence before refetching, then ignores a stale in-flight response', async () => {
+    authMock.hasRole.mockReturnValue(true);
+    (api.getProject as any).mockResolvedValue({ id: 'proj-1', voting: { enabled: true } });
+
+    // Control each queue fetch so we can drive resolution order.
+    const calls: Array<{ approval: any; resolve: (v: any) => void }> = [];
+    (api.getSupportTickets as any).mockImplementation(
+      (_p: any, _s: any, _t: any, approval: any) =>
+        new Promise<any>((resolve) => {
+          calls.push({ approval, resolve });
+        }),
+    );
+    // Delay the project update so we can prove nothing refetches before it lands.
+    let resolveUpdate!: (v: any) => void;
+    (api.updateProject as any).mockImplementation(
+      () =>
+        new Promise((r) => {
+          resolveUpdate = r;
+        }),
+    );
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    // Initial gated fetch: voting on → approval='approved'.
+    await waitFor(() => expect(calls.length).toBe(1));
+    expect(calls[0].approval).toBe('approved');
+
+    // Disable voting. The queue must NOT refetch until the PATCH resolves —
+    // a premature fetch would hit the server while it still gates feature
+    // requests to approved-only.
+    fireEvent.click(screen.getByTestId('support-voting-toggle'));
+    await waitFor(() => expect(api.updateProject).toHaveBeenCalled());
+    expect(calls.length).toBe(1);
+
+    // Persist → refetch against the confirmed (off) setting, which omits the
+    // approval param so pending requests are no longer gated out.
+    resolveUpdate({ id: 'proj-1', voting: { enabled: false } });
+    await waitFor(() => expect(calls.length).toBe(2));
+    expect(calls[1].approval).toBeUndefined();
+
+    // The post-persistence response is applied...
+    calls[1].resolve([ticket({ id: 'fresh', type: 'feature_request', subject: 'Fresh classic' })]);
+    await waitFor(() => expect(screen.getByText('Fresh classic')).toBeInTheDocument());
+
+    // ...and the stale initial (gated) response arriving late must not replace it.
+    calls[0].resolve([ticket({ id: 'stale', type: 'feature_request', subject: 'Stale gated' })]);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('Stale gated')).toBeNull();
+    expect(screen.getByText('Fresh classic')).toBeInTheDocument();
   });
 });
 
@@ -1367,6 +1516,8 @@ function votingItem(overrides: any = {}) {
 }
 
 async function openVotingTab(props: any = {}) {
+  // The Voting tab only exists while the project's voting system is enabled.
+  (api.getProject as any).mockResolvedValue({ id: 'proj-1', voting: { enabled: true } });
   render(<CustomerSupportPage projectId="proj-1" {...props} />);
   await waitFor(() => expect(screen.getByTestId('support-tab-voting')).toBeInTheDocument());
   fireEvent.click(screen.getByTestId('support-tab-voting'));

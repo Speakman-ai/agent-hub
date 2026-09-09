@@ -29,6 +29,7 @@ import type {
   SupportTicketStatus,
   SupportTicketType,
   SupportTicketSeverity,
+  SupportTicketApprovalStatus,
   SupportTicketRow,
 } from '../types.js';
 import { intakeSupportTicket, setGuardedReplayRef } from '../support-ticket-intake.js';
@@ -316,13 +317,38 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       type = rawType as SupportTicketType;
     }
 
+    // `approval` selects which approval bucket of feature requests to show when
+    // the voting/approval system is on. Single-valued; defaults to `approved`
+    // (the classic gated view). Only meaningful when voting is enabled — it is
+    // ignored otherwise. An array (repeated key) or unknown value is a 400.
+    const rawApproval = req.query.approval;
+    let approval: SupportTicketApprovalStatus | undefined;
+    if (rawApproval !== undefined) {
+      if (
+        typeof rawApproval !== 'string' ||
+        !(SUPPORT_TICKET_APPROVAL_STATUSES as readonly string[]).includes(rawApproval)
+      ) {
+        return res.status(400).json({
+          error: `approval must be one of: ${SUPPORT_TICKET_APPROVAL_STATUSES.join(', ')}`,
+        });
+      }
+      approval = rawApproval as SupportTicketApprovalStatus;
+    }
+
     const tickets = listSupportTickets(project.id, { statuses, type });
     // Approval gate: when the project has the voting/approval system enabled,
-    // feature requests stay out of the main queue until an Admin approves them.
-    // Non-feature tickets are never gated. When the system is off (default),
-    // feature requests behave classically and appear immediately.
+    // feature requests are filtered to the requested approval bucket (default
+    // `approved`, so the queue's classic view is unchanged). Non-feature tickets
+    // are never gated. A legacy feature request with a NULL approval_status is
+    // treated as `pending` (matching the serializer's normalization). When the
+    // system is off (default), feature requests behave classically and appear
+    // immediately regardless of any approval param.
+    const approvalFilter: SupportTicketApprovalStatus = approval ?? 'approved';
     const gated = project.voting?.enabled
-      ? tickets.filter((t) => t.type !== 'feature_request' || t.approval_status === 'approved')
+      ? tickets.filter(
+          (t) =>
+            t.type !== 'feature_request' || (t.approval_status ?? 'pending') === approvalFilter,
+        )
       : tickets;
     // Batched on purpose: a per-ticket serialize would re-query the converted
     // card (and re-resolve the caller's email visibility) once per row.

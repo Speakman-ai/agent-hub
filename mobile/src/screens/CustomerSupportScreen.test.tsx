@@ -17,6 +17,7 @@ const apiMocks = vi.hoisted(() => ({
   getProjects: vi.fn(),
   getAgents: vi.fn(),
   startVotingScaffolder: vi.fn(),
+  updateProject: vi.fn(),
 }));
 
 // AsyncStorage-backed voter key: resolve immediately with no stored token so
@@ -537,7 +538,8 @@ describe('CustomerSupportScreen — CommentThread', () => {
 });
 
 const SCAFFOLD_PROJECTS = [
-  { id: 'proj-1', name: 'Hub' },
+  // Voting enabled so the Voting tab (and its scaffolder launcher) is available.
+  { id: 'proj-1', name: 'Hub', voting: { enabled: true } },
   { id: 'acme-app', name: 'Acme' },
 ];
 const SCAFFOLD_AGENTS = [
@@ -725,5 +727,154 @@ describe('CustomerSupportScreen — Set up voting in an app launcher', () => {
     expect(nav.navigate).not.toHaveBeenCalled();
     expect(appState.setActiveSessionId).not.toHaveBeenCalled();
     expect(appState.setActiveAgentId).not.toHaveBeenCalled();
+  });
+});
+
+describe('CustomerSupportScreen — voting toggle & approval filter', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    store.clear();
+    appState.lastSupportTicketEvent = null;
+    appState.agents = [];
+    authMocks.hasRole.mockReturnValue(false);
+    apiMocks.getVotingItems.mockResolvedValue([]);
+    apiMocks.getSupportTickets.mockResolvedValue([]);
+    apiMocks.updateProject.mockResolvedValue({ id: 'proj-1', voting: { enabled: true } });
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  async function renderScreen() {
+    const { container, root } = mount();
+    flushSync(() =>
+      root.render(
+        <CustomerSupportScreen
+          route={{ params: { projectId: 'proj-1' } }}
+          navigation={{ navigate: vi.fn() }}
+        />,
+      ),
+    );
+    await flush();
+    return { container, root };
+  }
+
+  it('hides the Voting tab, approval filter, and admin toggle when voting is off', async () => {
+    appState.projects = [{ id: 'proj-1', name: 'Hub' }];
+    authMocks.hasRole.mockReturnValue(true);
+    const { container, root } = await renderScreen();
+    expect(container.querySelector('[data-testid="support-tab-voting"]')).toBeNull();
+    expect(container.querySelector('[data-testid="approval-filter-group"]')).toBeNull();
+    // Admin still sees the toggle so they can turn voting on.
+    expect(container.querySelector('[data-testid="support-voting-toggle"]')).toBeTruthy();
+    flushSync(() => root.unmount());
+  });
+
+  it('shows the Voting tab and Approved-by-default approval filter when voting is on', async () => {
+    appState.projects = [{ id: 'proj-1', name: 'Hub', voting: { enabled: true } }];
+    const { container, root } = await renderScreen();
+    expect(container.querySelector('[data-testid="support-tab-voting"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="approval-filter-group"]')).toBeTruthy();
+    expect(apiMocks.getSupportTickets).toHaveBeenCalledWith(
+      'proj-1',
+      'new,investigating',
+      undefined,
+      'approved',
+    );
+    flushSync(() => root.unmount());
+  });
+
+  it('refetches with the selected approval bucket (Rejected → denied)', async () => {
+    appState.projects = [{ id: 'proj-1', name: 'Hub', voting: { enabled: true } }];
+    const { container, root } = await renderScreen();
+    click(container.querySelector('[data-testid="approval-filter-denied"]'));
+    await flush();
+    expect(apiMocks.getSupportTickets).toHaveBeenCalledWith(
+      'proj-1',
+      'new,investigating',
+      undefined,
+      'denied',
+    );
+    flushSync(() => root.unmount());
+  });
+
+  it('admin toggle persists the change via updateProject and reveals the tab', async () => {
+    appState.projects = [{ id: 'proj-1', name: 'Hub' }];
+    authMocks.hasRole.mockReturnValue(true);
+    const { container, root } = await renderScreen();
+    expect(container.querySelector('[data-testid="support-tab-voting"]')).toBeNull();
+
+    click(container.querySelector('[data-testid="support-voting-toggle"]'));
+    await flush();
+    expect(apiMocks.updateProject).toHaveBeenCalledWith('proj-1', { voting: { enabled: true } });
+    // The flag flips (revealing the Voting tab) once the PATCH resolves.
+    expect(container.querySelector('[data-testid="support-tab-voting"]')).toBeTruthy();
+    flushSync(() => root.unmount());
+  });
+
+  it('refetches against the confirmed setting after a delayed update and ignores a stale response', async () => {
+    appState.projects = [{ id: 'proj-1', name: 'Hub', voting: { enabled: true } }];
+    authMocks.hasRole.mockReturnValue(true);
+
+    const calls: Array<{ approval: any; resolve: (v: any) => void }> = [];
+    apiMocks.getSupportTickets.mockImplementation(
+      (_p: any, _s: any, _t: any, approval: any) =>
+        new Promise((resolve) => {
+          calls.push({ approval, resolve });
+        }),
+    );
+    let resolveUpdate!: (v: any) => void;
+    apiMocks.updateProject.mockImplementation(
+      () =>
+        new Promise((r) => {
+          resolveUpdate = r;
+        }),
+    );
+
+    const { container, root } = await renderScreen();
+    // Initial gated fetch (voting on → approval='approved').
+    expect(calls.length).toBe(1);
+    expect(calls[0].approval).toBe('approved');
+
+    // Disable voting; no refetch until the PATCH resolves.
+    click(container.querySelector('[data-testid="support-voting-toggle"]'));
+    await flush();
+    expect(apiMocks.updateProject).toHaveBeenCalled();
+    expect(calls.length).toBe(1);
+
+    // Persist → refetch against the confirmed (off) setting (approval omitted).
+    resolveUpdate({ id: 'proj-1', voting: { enabled: false } });
+    await flush();
+    expect(calls.length).toBe(2);
+    expect(calls[1].approval).toBeUndefined();
+
+    // Newer response applies; the stale earlier one is dropped by the seq guard.
+    calls[1].resolve([
+      {
+        id: 'fresh',
+        type: 'feature_request',
+        subject: 'Fresh classic',
+        severity: 'low',
+        status: 'new',
+        created_at: '2026-01-02 00:00:00',
+      },
+    ]);
+    await flush();
+    expect(container.textContent).toContain('Fresh classic');
+    calls[0].resolve([
+      {
+        id: 'stale',
+        type: 'feature_request',
+        subject: 'Stale gated',
+        severity: 'low',
+        status: 'new',
+        created_at: '2026-01-01 00:00:00',
+      },
+    ]);
+    await flush();
+    expect(container.textContent).not.toContain('Stale gated');
+    expect(container.textContent).toContain('Fresh classic');
+    flushSync(() => root.unmount());
   });
 });

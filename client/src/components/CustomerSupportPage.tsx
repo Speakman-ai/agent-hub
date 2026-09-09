@@ -160,6 +160,16 @@ const TYPE_OPTIONS = TYPE_FILTERS.filter((f: any) => f.key !== 'all').map((f: an
   label: f.label,
 }));
 
+// Approval buckets for the Issues queue, shown only when the project's voting/
+// approval system is on. Defaults to "approved" — the classic gated view — so
+// pending/rejected feature requests are reviewed on demand. The UI label
+// "Rejected" maps to the server's `denied` value.
+const APPROVAL_FILTERS = [
+  { key: 'approved', label: 'Approved' },
+  { key: 'pending', label: 'Pending' },
+  { key: 'denied', label: 'Rejected' },
+] as const;
+
 // Queue ordering toggle. "Priority" is the default (severity first, then newest);
 // "Date" ignores severity and orders purely by creation date (newest first).
 const SORT_MODES = [
@@ -2103,6 +2113,20 @@ function CustomerSupportPageInner(
   // wont_do) are retained but hidden until their filter is selected.
   const [statusFilter, setStatusFilter] = useState('open');
   const [typeFilter, setTypeFilter] = useState('all');
+  // Approval bucket for the Issues queue (only surfaced when voting is on).
+  // Defaults to "approved" so the queue matches its classic gated view.
+  const [approvalFilter, setApprovalFilter] = useState<'approved' | 'pending' | 'denied'>(
+    'approved',
+  );
+  // Per-project voting/approval system. When ON, the Voting tab appears and the
+  // approval filter gates feature requests; when OFF (default) there is no
+  // Voting page and feature requests flow straight into the queue. The flag is
+  // read once on mount (existing vote data is never touched by toggling). The
+  // on-page toggle is Admin-only, mirroring the project-settings control.
+  const [votingEnabled, setVotingEnabled] = useState(false);
+  const [votingLoaded, setVotingLoaded] = useState(false);
+  const [votingSaving, setVotingSaving] = useState(false);
+  const isAdmin = useMemo(() => hasRole('Admin'), []);
   // Queue ordering. 'priority' (default) sorts severity-first then newest;
   // 'date' ignores severity and sorts purely by creation date (newest first).
   const [sortMode, setSortMode] = useState<'priority' | 'date'>('priority');
@@ -2121,7 +2145,63 @@ function CustomerSupportPageInner(
   const activeStatusFilter =
     STATUS_FILTERS.find((f: any) => f.key === statusFilter) || STATUS_FILTERS[0];
 
+  // Read the project's voting/approval flag once on mount so we know whether to
+  // show the Voting tab + approval filter and which approval bucket to request.
   useEffect(() => {
+    let cancelled = false;
+    setVotingLoaded(false);
+    api
+      .getProject(projectId)
+      .then((p: any) => {
+        if (!cancelled) setVotingEnabled(!!p?.voting?.enabled);
+      })
+      .catch(() => {
+        /* default OFF; the queue still works without the flag */
+      })
+      .finally(() => {
+        if (!cancelled) setVotingLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  // Turning voting off must not leave the user stranded on a now-hidden Voting
+  // tab — fall back to the Issues queue.
+  useEffect(() => {
+    if (!votingEnabled && activeTab === 'voting') setActiveTab('issues');
+  }, [votingEnabled, activeTab]);
+
+  // Admin-only on-page toggle for the project's voting/approval system. Backed
+  // by the same PATCH /projects field as the settings-page control. Toggling
+  // never deletes votes/comments — it only flips visibility, so a project can
+  // re-enable and pick up where it left off.
+  //
+  // `votingEnabled` is flipped only AFTER the PATCH resolves, never optimistically:
+  // it drives which approval bucket the queue fetch requests, and flipping it
+  // early would fire a fetch that races the persistence — reaching the server
+  // before the setting changed and returning the wrong (still-gated) rows. Since
+  // the flip happens post-persistence, the queue effect re-runs against the
+  // confirmed setting, and its cancel guard drops any earlier in-flight response.
+  const toggleVoting = async () => {
+    if (votingSaving) return;
+    const next = !votingEnabled;
+    setVotingSaving(true);
+    try {
+      await api.updateProject(projectId, { voting: { enabled: next } });
+      setVotingEnabled(next); // apply only once the server confirms the change
+      onNotify?.(next ? 'Voting enabled for this project' : 'Voting disabled', 'success');
+    } catch (err: any) {
+      onNotify?.(err?.message || 'Could not update voting', 'error');
+    } finally {
+      setVotingSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    // Hold the ticket fetch until we know the voting flag, so the very first
+    // request already carries the right approval bucket (no wrong-filter flash).
+    if (!votingLoaded) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -2131,6 +2211,7 @@ function CustomerSupportPageInner(
         projectId,
         activeStatusFilter.statuses.join(','),
         typeFilter === 'all' ? undefined : typeFilter,
+        votingEnabled ? approvalFilter : undefined,
       )
       .then((data: any) => {
         if (!cancelled) setTickets(sortTickets(Array.isArray(data) ? data : []));
@@ -2145,12 +2226,25 @@ function CustomerSupportPageInner(
     return () => {
       cancelled = true;
     };
-  }, [projectId, statusFilter, typeFilter, activeStatusFilter]);
+  }, [
+    projectId,
+    statusFilter,
+    typeFilter,
+    activeStatusFilter,
+    votingLoaded,
+    votingEnabled,
+    approvalFilter,
+  ]);
 
   // ── WebSocket-driven live updates (pushed from App.jsx via the ref) ──
   const matchesFilter = (ticket: any) =>
     activeStatusFilter.statuses.includes(ticket.status) &&
-    (typeFilter === 'all' || ticket.type === typeFilter);
+    (typeFilter === 'all' || ticket.type === typeFilter) &&
+    // Approval gate mirrors the server: only when voting is on, and only for
+    // feature requests (a NULL approval_status reads as "pending").
+    (!votingEnabled ||
+      ticket.type !== 'feature_request' ||
+      (ticket.approval_status ?? 'pending') === approvalFilter);
 
   const upsertTicket = (ticket: any) => {
     if (!ticket) return;
@@ -2259,10 +2353,10 @@ function CustomerSupportPageInner(
       // queue; flag our loaded rows read without a refetch.
       markAllRead: markAllReadLocally,
     }),
-    // statusFilter/typeFilter are read inside upsertTicket (via matchesFilter);
-    // rebuild the handle when either changes.
+    // statusFilter/typeFilter/approvalFilter/votingEnabled are read inside
+    // upsertTicket (via matchesFilter); rebuild the handle when any changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [statusFilter, typeFilter],
+    [statusFilter, typeFilter, approvalFilter, votingEnabled],
   );
 
   return (
@@ -2271,11 +2365,13 @@ function CustomerSupportPageInner(
       <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-800 bg-gray-900/50">
         <LifeBuoy size={16} className="text-blue-400" />
         <h2 className="text-sm font-medium text-gray-200">Customer Support</h2>
-        {/* Issues | Voting tab switcher */}
+        {/* Issues | Voting tab switcher. The Voting tab only exists while the
+            project's voting system is enabled; off (default) means no voting
+            page at all. */}
         <div className="flex items-center gap-0.5 rounded-md border border-gray-800 bg-gray-900/60 p-0.5">
           {[
             { key: 'issues', label: 'Issues' },
-            { key: 'voting', label: 'Voting' },
+            ...(votingEnabled ? [{ key: 'voting', label: 'Voting' }] : []),
           ].map((t: any) => (
             <button
               key={t.key}
@@ -2293,6 +2389,31 @@ function CustomerSupportPageInner(
             </button>
           ))}
         </div>
+        {/* Admin-only voting on/off toggle. Enabling reveals the Voting tab and
+            gates feature requests through the approval workflow; disabling hides
+            the tab without destroying any existing votes/comments. */}
+        {isAdmin ? (
+          <button
+            type="button"
+            onClick={toggleVoting}
+            disabled={votingSaving || !votingLoaded}
+            data-testid="support-voting-toggle"
+            aria-pressed={votingEnabled}
+            title={
+              votingEnabled
+                ? 'Voting is on — feature requests need Admin approval and the Voting page is visible. Click to turn off (votes are kept).'
+                : 'Voting is off — no Voting page. Click to turn on (feature requests will need approval).'
+            }
+            className={`inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+              votingEnabled
+                ? 'border-emerald-600/50 text-emerald-300 hover:bg-emerald-500/10'
+                : 'border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 hover:bg-gray-800'
+            }`}
+          >
+            <ThumbsUp size={12} />
+            Voting {votingEnabled ? 'on' : 'off'}
+          </button>
+        ) : null}
         {activeTab === 'voting' ? (
           <div className="ml-auto flex items-center">
             <button
@@ -2365,6 +2486,30 @@ function CustomerSupportPageInner(
                 {f.label}
               </button>
             ))}
+            {/* Approval bucket — only relevant while the voting/approval system
+                is on. Defaults to Approved (the classic gated queue). */}
+            {votingEnabled ? (
+              <div
+                className="flex items-center gap-1 ml-3 pl-3 border-l border-gray-800"
+                data-testid="approval-filter-group"
+              >
+                <span className="text-[11px] text-gray-600 mr-1">Approval</span>
+                {APPROVAL_FILTERS.map((f) => (
+                  <button
+                    key={f.key}
+                    onClick={() => setApprovalFilter(f.key)}
+                    data-testid={`approval-filter-${f.key}`}
+                    className={`text-[11px] px-2 py-1 rounded transition-colors ${
+                      approvalFilter === f.key
+                        ? 'bg-gray-700 text-gray-200'
+                        : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div className="flex items-center gap-1 ml-auto">
               <span className="text-[11px] text-gray-600 mr-1">Sort</span>
               {SORT_MODES.map((s: any) => (

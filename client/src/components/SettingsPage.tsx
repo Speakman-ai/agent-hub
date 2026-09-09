@@ -1455,16 +1455,19 @@ export function ProjectsSection({
         </button>
       </div>
 
-      {/* Feature-request voting/approval toggle — when on, submitted feature
-          requests are held for Admin approval before they appear in the
-          support queue. Off (default) = they appear immediately (classic). */}
+      {/* Feature-request voting/approval toggle — when on, the Voting page is
+          shown and submitted feature requests are held for Admin approval before
+          they appear in the support queue. Off (default) = no Voting page and
+          requests appear immediately (classic). Can also be toggled from the
+          Customer Support page header. */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <span className="text-sm text-gray-200">Feature request approval</span>
+          <span className="text-sm text-gray-200">Voting &amp; feature-request approval</span>
           <p className="text-xs text-gray-500">
-            When on, submitted feature requests stay out of the support queue until an{' '}
-            <strong>Admin</strong> approves them; customers can still vote on them in the Voting
-            tab. Off (default) sends them straight into the queue.
+            When on, the <strong>Voting</strong> page appears and submitted feature requests stay
+            out of the support queue until an <strong>Admin</strong> approves them (customers can
+            still vote on them). Off (default) hides the Voting page and sends requests straight
+            into the queue. Existing votes are kept when toggled off.
           </p>
         </div>
         <button

@@ -242,7 +242,7 @@ registerPath({
   tags: ['Support'],
   summary: 'List a project’s support tickets, ordered by severity',
   description:
-    'Defaults to the open states (new, investigating) — terminal tickets (converted/closed/duplicate/wont_do) are hidden until requested. Pass a comma-separated `status` list (e.g. `converted,closed`) and/or a single `type` to filter.',
+    'Defaults to the open states (new, investigating) — terminal tickets (converted/closed/duplicate/wont_do) are hidden until requested. Pass a comma-separated `status` list (e.g. `converted,closed`) and/or a single `type` to filter. When the project’s voting/approval system is enabled, `approval` selects which approval bucket of feature requests to include (default `approved`); it is ignored when voting is off.',
   request: {
     params: projectIdParams,
     query: z.object({
@@ -254,6 +254,10 @@ registerPath({
         .enum(TYPES)
         .optional()
         .openapi({ description: 'Filter to a single request type (e.g. bug, feature_request).' }),
+      approval: z.enum(APPROVAL_STATUSES).optional().openapi({
+        description:
+          'Only when the project’s voting/approval system is enabled: which approval bucket of feature requests to show (pending | approved | denied). Defaults to `approved`. Non-feature tickets are never gated. Ignored when voting is off.',
+      }),
     }),
   },
   responses: {
