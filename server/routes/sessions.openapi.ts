@@ -464,9 +464,13 @@ export const ForwardSessionRequestSchema = z.object({
   autoStart: z.boolean().optional().openapi({
     description: 'When true, immediately send the forwarded message to the target agent’s CLI.',
   }),
+  engine: z.string().optional().openapi({
+    description:
+      'Override the engine the new session runs. Must be a known engine with a non-empty model allowlist, otherwise 400. Defaults to the target agent’s own engine. Lets the fork run on a different engine than the target agent’s default (e.g. a claude-code agent forked onto a Codex model).',
+  }),
   model: z.string().optional().openapi({
     description:
-      'Override the model the new session runs. Must be valid for the target agent’s engine, otherwise 400. Defaults to the target agent’s own effective model.',
+      'Override the model the new session runs. Must be valid for the resolved engine, otherwise 400. Defaults to the target agent’s own effective model.',
   }),
 });
 

@@ -208,7 +208,7 @@ export const api = {
   // Returns { session, forwardedMessageId }.
   forwardSession: (
     sessionId: any,
-    { targetAgentId, messageIds, prompt, autoStart, model }: any = {},
+    { targetAgentId, messageIds, prompt, autoStart, model, engine }: any = {},
   ) =>
     fetchJSON(`/sessions/${sessionId}/forward`, {
       method: 'POST',
@@ -218,6 +218,7 @@ export const api = {
         ...(prompt ? { prompt } : {}),
         ...(autoStart != null ? { autoStart: !!autoStart } : {}),
         ...(model ? { model } : {}),
+        ...(engine ? { engine } : {}),
       }),
     }),
   // Start a follow-up session from an existing one. Unlike forward, the target

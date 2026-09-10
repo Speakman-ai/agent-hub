@@ -1982,7 +1982,7 @@ export const api = {
     }),
   forwardSession: (
     sessionId: any,
-    { targetAgentId, messageIds, prompt, autoStart, model }: any = {},
+    { targetAgentId, messageIds, prompt, autoStart, model, engine }: any = {},
   ) =>
     fetchJSON(`/sessions/${sessionId}/forward`, {
       method: 'POST',
@@ -1992,6 +1992,7 @@ export const api = {
         ...(prompt ? { prompt } : {}),
         ...(autoStart != null ? { autoStart: !!autoStart } : {}),
         ...(model ? { model } : {}),
+        ...(engine ? { engine } : {}),
       }),
       timeout: 30000,
     }),

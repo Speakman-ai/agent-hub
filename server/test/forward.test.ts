@@ -226,6 +226,49 @@ describe('POST /api/sessions/:sessionId/forward', () => {
     expect(res.body.error).toMatch(/not valid for engine/i);
   });
 
+  it('forks onto an overridden engine + model (cross-engine forward)', async () => {
+    const { session: srcSession } = await createSessionWithMessages(agentA.id as string, [
+      { role: 'user', content: 'Fork this claude-code agent onto a Codex model' },
+    ]);
+
+    // agentA is claude-code, but the fork targets a Codex model via the engine
+    // override. The gpt-5.4 model is now valid because the engine is codex-cli.
+    const res = await request
+      .post(`/api/sessions/${srcSession.id}/forward`)
+      .send({ targetAgentId: agentA.id, engine: 'codex-cli', model: 'gpt-5.4' })
+      .expect(201);
+
+    expect(res.body.session.engine).toBe('codex-cli');
+    expect(res.body.session.model).toBe('gpt-5.4');
+  });
+
+  it('returns 400 for an unknown engine override', async () => {
+    const { session: srcSession } = await createSessionWithMessages(agentA.id as string, [
+      { role: 'user', content: 'Invalid engine' },
+    ]);
+
+    const res = await request
+      .post(`/api/sessions/${srcSession.id}/forward`)
+      .send({ targetAgentId: agentA.id, engine: 'not-a-real-engine' })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/not a valid engine/i);
+  });
+
+  it('rejects a model that does not belong to the overridden engine', async () => {
+    const { session: srcSession } = await createSessionWithMessages(agentA.id as string, [
+      { role: 'user', content: 'Mismatched engine/model' },
+    ]);
+
+    // codex-cli engine with a claude model → 400 against the resolved engine.
+    const res = await request
+      .post(`/api/sessions/${srcSession.id}/forward`)
+      .send({ targetAgentId: agentA.id, engine: 'codex-cli', model: 'claude-opus-5' })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/not valid for engine codex-cli/i);
+  });
+
   // ─── Validation ────────────────────────────────────────────────
 
   it('returns 400 when targetAgentId is missing', async () => {

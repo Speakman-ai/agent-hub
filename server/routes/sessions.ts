@@ -3087,6 +3087,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     prompt?: string;
     autoStart?: boolean;
     model?: string;
+    engine?: string;
   }
 
   /**
@@ -3105,9 +3106,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
    *                                Note: if the CLI spawn fails after the 201 response, the
    *                                session exists but the agent won't be running. Clients can
    *                                detect this via the normal WebSocket session status events.
+   *   engine         (optional) — override the engine the new session runs. Must be a known engine
+   *                                with a non-empty model allowlist (400 otherwise). Defaults to the
+   *                                target agent's own engine. Lets the fork run on a different engine
+   *                                than the target agent's default (e.g. forward a claude-code agent
+   *                                onto a Codex model).
    *   model          (optional) — override the model the new session runs. Must be valid for the
-   *                                target agent's engine (400 otherwise). Defaults to the target
-   *                                agent's own effective model.
+   *                                resolved engine (400 otherwise). Defaults to the target agent's
+   *                                own effective model.
    *
    * Limits: prompt max 50k chars; without messageIds only last 200 messages are forwarded;
    *         with messageIds, 400 if count exceeds 200 or content exceeds 500 KB.
@@ -3122,6 +3128,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         prompt,
         autoStart,
         model: requestedModel,
+        engine: requestedEngine,
       } = req.body as ForwardBody;
 
       if (!targetAgentId) {
@@ -3231,11 +3238,20 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         sourceTitle: sourceSession.name,
         fallback: `Forwarded from ${sourceAgentName}`,
       });
-      const engine = targetAgent.engine || 'claude-code';
+      // Optional per-fork engine override. Lets the fork run on a different
+      // engine than the target agent's default (e.g. forward a claude-code
+      // agent onto a Codex model). Validate against the known engine allowlist
+      // so a client cannot seed a session with an arbitrary/unusable engine; an
+      // empty/absent value falls through to the target agent's own engine.
+      const overrideEngine = typeof requestedEngine === 'string' ? requestedEngine.trim() : '';
+      if (overrideEngine && (config.engineValidModels?.[overrideEngine]?.length ?? 0) === 0) {
+        return res.status(400).json({ error: `engine "${overrideEngine}" is not a valid engine` });
+      }
+      const engine = overrideEngine || targetAgent.engine || 'claude-code';
       // Optional per-fork model override (lets the user pick which model the new
-      // copy of the agent runs). Validate against the engine's allowlist so a
-      // client cannot seed a session with an arbitrary model id; an empty/absent
-      // value falls through to the agent's own effective model as before.
+      // copy of the agent runs). Validate against the resolved engine's
+      // allowlist so a client cannot seed a session with an arbitrary model id;
+      // an empty/absent value falls through to the agent's own effective model.
       const overrideModel = typeof requestedModel === 'string' ? requestedModel.trim() : '';
       if (overrideModel) {
         const allowed = config.engineValidModels?.[engine] || [];

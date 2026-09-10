@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Send, X, ArrowLeftRight } from 'lucide-react';
-import { hubModelsForEngine, defaultHubModelForEngine } from './HubModelPicker';
+import {
+  hubModelsForEngine,
+  defaultHubModelForEngine,
+  hubSelectableEngines,
+  ENGINE_LABELS,
+} from './HubModelPicker';
 
 /**
  * Filter the flat agent list down to the subset that can be forwarded to
@@ -83,35 +88,53 @@ export default function ForwardSessionModal({
     () => candidates.find((a: any) => a.id === selectedAgentId) || null,
     [candidates, selectedAgentId],
   );
-  // The new copy keeps the target agent's engine; only the model is picked
-  // here. Models depend on the engine, so the list follows the selected agent.
+  // The fork defaults to the target agent's engine, but the picker lists every
+  // authenticated engine's models so a user can fork onto a different engine
+  // (e.g. a claude-code agent onto a Codex model). The target engine's group is
+  // listed first so the common case stays at the top.
   const selectedEngine = selectedAgent?.engine || 'claude-code';
-  const modelOptions = useMemo(
-    () => hubModelsForEngine(modelConfig, selectedEngine),
-    [modelConfig, selectedEngine],
-  );
+  const orderedEngines = useMemo(() => {
+    const engines = hubSelectableEngines(modelConfig).filter(
+      (e) => hubModelsForEngine(modelConfig, e).length > 0,
+    );
+    if (!engines.includes(selectedEngine)) return engines;
+    return [selectedEngine, ...engines.filter((e) => e !== selectedEngine)];
+  }, [modelConfig, selectedEngine]);
+
+  const hasAnyModels = orderedEngines.length > 0;
+
+  // Resolve which engine a model id belongs to. Ids are unique across engines
+  // in practice; if one ever collides, the target agent's engine (listed first)
+  // wins, matching the default-selection intent.
+  const engineForModel = (mdl: string): string => {
+    for (const e of orderedEngines) {
+      if (hubModelsForEngine(modelConfig, e).includes(mdl)) return e;
+    }
+    return selectedEngine;
+  };
 
   // Default model for the currently-selected target: its own configured model
-  // when valid, else the engine default. Derived, not stored.
+  // when valid for its engine, else that engine's default. Derived, not stored.
   const defaultModel = useMemo(() => {
-    if (!selectedAgent || modelOptions.length === 0) return '';
+    if (!selectedAgent || !hasAnyModels) return '';
+    const engineModels = hubModelsForEngine(modelConfig, selectedEngine);
     const agentModel = selectedAgent.model;
-    return agentModel && modelOptions.includes(agentModel)
+    return agentModel && engineModels.includes(agentModel)
       ? agentModel
       : defaultHubModelForEngine(modelConfig, selectedEngine);
-  }, [selectedAgent, selectedEngine, modelOptions, modelConfig]);
+  }, [selectedAgent, selectedEngine, hasAnyModels, modelConfig]);
 
-  // The effective model, computed synchronously each render. An override only
-  // counts when it was picked for the *current* target and is still valid for
-  // its engine; otherwise we fall back to the default. This is what both the
-  // select value and the submitted payload read, so there is no window where a
-  // prior target's model can be forwarded.
-  const model =
+  // The effective engine/model, computed synchronously each render. An override
+  // only counts when it was picked for the *current* target and is still valid
+  // for its engine; otherwise we fall back to the target agent's engine and
+  // default model. This is what both the select value and the submitted payload
+  // read, so there is no window where a prior target's choice can be forwarded.
+  const choiceValid =
     modelChoice &&
     modelChoice.agentId === selectedAgentId &&
-    modelOptions.includes(modelChoice.model)
-      ? modelChoice.model
-      : defaultModel;
+    hubModelsForEngine(modelConfig, modelChoice.engine).includes(modelChoice.model);
+  const engine = choiceValid ? modelChoice.engine : selectedEngine;
+  const model = choiceValid ? modelChoice.model : defaultModel;
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -136,6 +159,9 @@ export default function ForwardSessionModal({
         prompt: prompt.trim() || undefined,
         autoStart,
         model: model || undefined,
+        // Only send an engine override when the pick moves off the target
+        // agent's own engine; otherwise the server keeps inheriting it.
+        engine: engine && engine !== selectedEngine ? engine : undefined,
       });
       if (typeof onForwarded === 'function') onForwarded(result);
       onClose();
@@ -247,7 +273,7 @@ export default function ForwardSessionModal({
               })}
             </div>
             <div className="px-4 py-3 border-t border-gray-800 space-y-3">
-              {selectedAgent && modelOptions.length > 0 && (
+              {selectedAgent && hasAnyModels && (
                 <div>
                   <label
                     htmlFor="forward-model"
@@ -260,16 +286,30 @@ export default function ForwardSessionModal({
                     data-testid="forward-model-select"
                     value={model}
                     onChange={(e: any) =>
-                      setModelChoice({ agentId: selectedAgentId, model: e.target.value })
+                      setModelChoice({
+                        agentId: selectedAgentId,
+                        engine: engineForModel(e.target.value),
+                        model: e.target.value,
+                      })
                     }
                     className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
                   >
-                    {modelOptions.map((id: string) => (
-                      <option key={id} value={id}>
-                        {id}
-                      </option>
+                    {orderedEngines.map((eng: string) => (
+                      <optgroup key={eng} label={ENGINE_LABELS[eng] || eng}>
+                        {hubModelsForEngine(modelConfig, eng).map((id: string) => (
+                          <option key={`${eng}:${id}`} value={id}>
+                            {id}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
+                  {engine !== selectedEngine && (
+                    <p className="mt-1 text-[11px] text-amber-400">
+                      Forks onto {ENGINE_LABELS[engine] || engine} instead of the{' '}
+                      {ENGINE_LABELS[selectedEngine] || selectedEngine} the agent normally runs.
+                    </p>
+                  )}
                 </div>
               )}
               <div>

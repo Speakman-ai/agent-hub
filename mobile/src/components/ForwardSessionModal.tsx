@@ -14,7 +14,11 @@ import {
 import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 import { filterForwardTargets } from '../utils/forwardTargets';
-import { modelsForEngine, ENGINE_DEFAULT_MODELS } from '../utils/engineOptions';
+import {
+  modelsForEngine,
+  ENGINE_DEFAULT_MODELS,
+  engineOptionsFromConfig,
+} from '../utils/engineOptions';
 // Re-export for convenience so callers can import both the modal and the
 // filter from a single module (matches the web client's shape).
 export { filterForwardTargets };
@@ -47,36 +51,44 @@ export default function ForwardSessionModal({
     () => candidates.find((a: any) => a.id === selectedAgentId) || null,
     [candidates, selectedAgentId],
   );
-  // The new copy keeps the target agent's engine; only the model is picked
-  // here. Models follow the selected agent's engine.
+  // The fork defaults to the target agent's engine, but the picker lists every
+  // authenticated engine's models grouped by engine, so a user can fork onto a
+  // different engine (e.g. a claude-code agent onto a Codex model). The target
+  // engine's group is listed first so the common case stays at the top.
   const selectedEngine = selectedAgent?.engine || 'claude-code';
-  const modelOptions = useMemo<any>(
-    () => modelsForEngine(selectedEngine, modelConfig),
-    [selectedEngine, modelConfig],
-  );
+  const orderedEngines = useMemo<any[]>(() => {
+    const opts = engineOptionsFromConfig(modelConfig).filter(
+      (o: any) => modelsForEngine(o.id, modelConfig).length > 0,
+    );
+    const idx = opts.findIndex((o: any) => o.id === selectedEngine);
+    if (idx <= 0) return opts;
+    const [own] = opts.splice(idx, 1);
+    return [own, ...opts];
+  }, [modelConfig, selectedEngine]);
+  const hasAnyModels = orderedEngines.length > 0;
   // Default model for the currently-selected target: its own configured model
-  // when valid, else the configured/engine default. Derived, not stored.
+  // when valid for its engine, else the configured/engine default. Derived.
   const defaultModel = useMemo<string>(() => {
-    if (!selectedAgent || modelOptions.length === 0) return '';
-    const ids = modelOptions.map((m: any) => m.id);
+    if (!selectedAgent || !hasAnyModels) return '';
+    const ids = modelsForEngine(selectedEngine, modelConfig).map((m: any) => m.id);
     const agentModel = selectedAgent.model;
     if (agentModel && ids.includes(agentModel)) return agentModel;
     const configured = modelConfig?.engineDefaultModels?.[selectedEngine];
     if (configured && ids.includes(configured)) return configured;
     const fallback = ENGINE_DEFAULT_MODELS[selectedEngine];
     return fallback && ids.includes(fallback) ? fallback : ids[0];
-  }, [selectedAgent, selectedEngine, modelOptions, modelConfig]);
-  // Effective model, computed synchronously each render. An override only counts
-  // when it was picked for the *current* target and is still valid for its
-  // engine; otherwise fall back to the default. Both the rendered selection and
-  // the submitted payload read this, so no window can forward a prior target's
-  // model.
-  const model =
+  }, [selectedAgent, selectedEngine, hasAnyModels, modelConfig]);
+  // Effective engine/model, computed synchronously each render. An override only
+  // counts when it was picked for the *current* target and is still valid for
+  // its engine; otherwise fall back to the target agent's engine and default
+  // model. Both the rendered selection and the submitted payload read this, so
+  // no window can forward a prior target's choice.
+  const choiceValid =
     modelChoice &&
     modelChoice.agentId === selectedAgentId &&
-    modelOptions.some((m: any) => m.id === modelChoice.model)
-      ? modelChoice.model
-      : defaultModel;
+    modelsForEngine(modelChoice.engine, modelConfig).some((m: any) => m.id === modelChoice.model);
+  const engine = choiceValid ? modelChoice.engine : selectedEngine;
+  const model = choiceValid ? modelChoice.model : defaultModel;
   const reset = () => {
     setSelectedAgentId(null);
     setPrompt('');
@@ -100,6 +112,9 @@ export default function ForwardSessionModal({
         prompt: prompt.trim() || undefined,
         autoStart,
         model: model || undefined,
+        // Only send an engine override when the pick moves off the target
+        // agent's own engine; otherwise the server keeps inheriting it.
+        engine: engine && engine !== selectedEngine ? engine : undefined,
       });
       onForwarded?.(result);
       reset();
@@ -174,31 +189,48 @@ export default function ForwardSessionModal({
               </ScrollView>
 
               <View style={styles.controls}>
-                {selectedAgent && modelOptions.length > 0 && (
+                {selectedAgent && hasAnyModels && (
                   <View style={styles.modelSection}>
                     <Text style={styles.label}>Model</Text>
-                    <View style={styles.modelChips}>
-                      {modelOptions.map((m: any) => {
-                        const active = m.id === model;
-                        return (
-                          <TouchableOpacity
-                            key={m.id}
-                            style={[styles.modelChip, active && styles.modelChipActive]}
-                            accessibilityRole="button"
-                            accessibilityLabel={`Use model ${m.label}`}
-                            onPress={() =>
-                              setModelChoice({ agentId: selectedAgentId, model: m.id })
-                            }
-                          >
-                            <Text
-                              style={[styles.modelChipText, active && styles.modelChipTextActive]}
-                            >
-                              {m.short || m.label}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
+                    {orderedEngines.map((eng: any) => (
+                      <View key={eng.id} style={styles.modelEngineGroup}>
+                        <Text style={styles.modelEngineLabel}>{eng.label || eng.id}</Text>
+                        <View style={styles.modelChips}>
+                          {modelsForEngine(eng.id, modelConfig).map((m: any) => {
+                            const active = m.id === model && eng.id === engine;
+                            return (
+                              <TouchableOpacity
+                                key={`${eng.id}:${m.id}`}
+                                style={[styles.modelChip, active && styles.modelChipActive]}
+                                accessibilityRole="button"
+                                accessibilityLabel={`Use ${eng.label || eng.id} model ${m.label}`}
+                                onPress={() =>
+                                  setModelChoice({
+                                    agentId: selectedAgentId,
+                                    engine: eng.id,
+                                    model: m.id,
+                                  })
+                                }
+                              >
+                                <Text
+                                  style={[
+                                    styles.modelChipText,
+                                    active && styles.modelChipTextActive,
+                                  ]}
+                                >
+                                  {m.short || m.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    ))}
+                    {engine !== selectedEngine && (
+                      <Text style={styles.modelEngineHint}>
+                        Forks onto {engine} instead of the agent's {selectedEngine}.
+                      </Text>
+                    )}
                   </View>
                 )}
                 <Text style={styles.label}>Extra instructions (optional)</Text>
@@ -369,6 +401,22 @@ const styles = StyleSheet.create({
   },
   modelSection: {
     marginBottom: 10,
+  },
+  modelEngineGroup: {
+    marginBottom: 8,
+  },
+  modelEngineLabel: {
+    color: colors.gray500,
+    fontSize: 10,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  modelEngineHint: {
+    color: '#fbbf24',
+    fontSize: 11,
+    marginTop: 2,
   },
   modelChips: {
     flexDirection: 'row',

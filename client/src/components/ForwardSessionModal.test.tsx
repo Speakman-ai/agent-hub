@@ -258,6 +258,61 @@ describe('<ForwardSessionModal />', () => {
     expect(onForward!).toHaveBeenCalledWith(
       expect.objectContaining({ targetAgentId: 'sib-a', model: 'claude-haiku-4-6' }),
     );
+    // Same-engine pick sends no engine override (server keeps inheriting it).
+    expect((onForward.mock.calls[0] as any[])[0].engine).toBeUndefined();
+  });
+
+  it('lists models from every engine, grouped, with the target engine first', () => {
+    render(
+      <ForwardSessionModal
+        sourceAgent={source}
+        agents={[source, { ...siblingA, model: 'claude-opus-5' }]}
+        sessionId="session-1"
+        modelConfig={modelConfig}
+        onClose={() => {}}
+        onForward={() => Promise.resolve({})}
+      />,
+    );
+    fireEvent.click(screen.getByText('Hub Backend' as any) as any);
+    const select = screen.getByTestId('forward-model-select') as HTMLSelectElement;
+    // Cross-engine models are present, not just the target agent's claude ids.
+    const values = Array.from(select.querySelectorAll('option')).map((o: any) => o.value);
+    expect(values).toContain('claude-opus-5');
+    expect(values).toContain('gpt-5.4');
+    expect(values).toContain('gpt-5.2');
+    // Grouped by engine, target engine (claude-code) first.
+    const groups = Array.from(select.querySelectorAll('optgroup')).map(
+      (g: any) => g.label as string,
+    );
+    expect(groups[0]).toBe('Claude Code');
+    expect(groups).toContain('Codex');
+  });
+
+  it('forwards on the picked model’s engine when it differs from the target agent', () => {
+    const onForward = vi.fn(() => Promise.resolve({ session: { id: 'fwd' } }));
+    render(
+      <ForwardSessionModal
+        sourceAgent={source}
+        agents={[source, { ...siblingA, model: 'claude-opus-5' }]}
+        sessionId="session-1"
+        modelConfig={modelConfig}
+        onClose={() => {}}
+        onForward={onForward}
+      />,
+    );
+    fireEvent.click(screen.getByText('Hub Backend' as any) as any);
+    const select = screen.getByTestId('forward-model-select') as HTMLSelectElement;
+    // Pick a Codex model even though the target agent is claude-code.
+    fireEvent.change(select, { target: { value: 'gpt-5.2' } } as any);
+    expect(select.value).toBe('gpt-5.2');
+    fireEvent.click(screen.getByRole('button', { name: /forward/i } as any) as any);
+    expect(onForward!).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetAgentId: 'sib-a',
+        model: 'gpt-5.2',
+        engine: 'codex-cli',
+      }),
+    );
   });
 
   it('does not carry a prior target’s model after switching agents (no stale-effect race)', () => {
