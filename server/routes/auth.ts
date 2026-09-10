@@ -28,6 +28,10 @@ import { Router, Request, Response } from 'express';
 import { existsSync } from 'fs';
 import rateLimit, { type Options as RateLimitOptions } from 'express-rate-limit';
 import config from '../config.js';
+import {
+  readCodexModelsCacheForUser,
+  resolveSelectableCodexModels,
+} from '../codex-model-capability.js';
 import { signJwt } from '../jwt.js';
 import { hashPassword, verifyPassword } from '../password.js';
 import {
@@ -2170,6 +2174,7 @@ function verifyUserMfaCode(userId: string, code: string): MfaCodeVerification {
  */
 function sanitizeAgentEngineOverridesFromBody(
   body: Record<string, { engine: string; model?: string }>,
+  userId?: string | null,
 ):
   | { ok: true; agentEngineOverrides: Record<string, AgentEngineOverride> }
   | { ok: false; error: string } {
@@ -2187,7 +2192,7 @@ function sanitizeAgentEngineOverridesFromBody(
     }
     const model = typeof raw?.model === 'string' ? raw.model.trim() : '';
     if (model) {
-      const allowed = config.engineValidModels[engine] || [];
+      const allowed = allowedModelsForEngine(engine, userId);
       if (!allowed.includes(model)) {
         return {
           ok: false,
@@ -2209,13 +2214,14 @@ function sanitizeAgentEngineOverridesFromBody(
  */
 function filterStoredAgentEngineOverrides(
   stored: Record<string, AgentEngineOverride> | undefined,
+  userId?: string | null,
 ): Record<string, AgentEngineOverride> {
   if (!stored) return {};
   const out: Record<string, AgentEngineOverride> = {};
   for (const [agentId, entry] of Object.entries(stored)) {
     if (!entry?.engine) continue;
-    const allowed = config.engineValidModels[entry.engine];
-    if (!Array.isArray(allowed)) continue;
+    if (!Array.isArray(config.engineValidModels[entry.engine])) continue;
+    const allowed = allowedModelsForEngine(entry.engine, userId);
     if (entry.model && !allowed.includes(entry.model)) {
       // Model is now invalid for this engine — keep the engine override,
       // drop the model so the spawn falls back through per-engine defaults.
@@ -2229,11 +2235,33 @@ function filterStoredAgentEngineOverrides(
   return out;
 }
 
-/** Models that are valid for at least one configured engine. */
-function allKnownModels(): Set<string> {
+/**
+ * Selectable model ids for an engine, keyed by the requesting user.
+ *
+ * The static `config.engineValidModels` is the baseline. Codex's newer,
+ * capability-gated models (gpt-6-astra / gpt-5.6-sol / -terra / -luna) live
+ * outside that list — they're advertised at runtime only when the installed
+ * codex-cli's `models_cache.json` lists the slug, and `/api/config/models`
+ * resolves them per-user via `resolveSelectableCodexModels`. Mirror that exact
+ * resolution here so override validation accepts precisely what the picker
+ * offered the user. Without it the picker offers gpt-5.6-sol but the save 400s
+ * and the pick never persists ("can't use gpt-5.6 for codex").
+ */
+function allowedModelsForEngine(engine: string, userId?: string | null): string[] {
+  const staticAllowed = config.engineValidModels[engine];
+  if (!Array.isArray(staticAllowed)) return [];
+  if (engine !== 'codex-cli') return staticAllowed;
+  return resolveSelectableCodexModels(
+    staticAllowed,
+    readCodexModelsCacheForUser(userId ?? null, config.dataDir),
+  );
+}
+
+/** Models that are valid for at least one configured engine (see above). */
+function allKnownModels(userId?: string | null): Set<string> {
   const out = new Set<string>();
-  for (const list of Object.values(config.engineValidModels)) {
-    if (Array.isArray(list)) for (const m of list) out.add(m);
+  for (const engine of Object.keys(config.engineValidModels)) {
+    for (const m of allowedModelsForEngine(engine, userId)) out.add(m);
   }
   return out;
 }
@@ -2245,9 +2273,10 @@ function allKnownModels(): Set<string> {
  */
 function sanitizeAgentModelOverridesFromBody(
   body: Record<string, string>,
+  userId?: string | null,
 ): { ok: true; agentModelOverrides: Record<string, string> } | { ok: false; error: string } {
   const cleaned: Record<string, string> = {};
-  const known = allKnownModels();
+  const known = allKnownModels(userId);
   for (const [agentId, raw] of Object.entries(body)) {
     const id = typeof agentId === 'string' ? agentId.trim() : '';
     if (!id) continue;
@@ -2267,9 +2296,10 @@ function sanitizeAgentModelOverridesFromBody(
  */
 function filterStoredAgentModelOverrides(
   stored: Record<string, string> | undefined,
+  userId?: string | null,
 ): Record<string, string> {
   if (!stored) return {};
-  const known = allKnownModels();
+  const known = allKnownModels(userId);
   const out: Record<string, string> = {};
   for (const [agentId, model] of Object.entries(stored)) {
     if (typeof model === 'string' && known.has(model)) out[agentId] = model;
@@ -3323,7 +3353,9 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       return;
     }
     const stored = getUserPreferencesRow(authedReq.authUserId).agentEngineOverrides;
-    res.json({ agentEngineOverrides: filterStoredAgentEngineOverrides(stored) });
+    res.json({
+      agentEngineOverrides: filterStoredAgentEngineOverrides(stored, authedReq.authUserId),
+    });
   });
 
   router.put('/api/auth/me/agent-engine-overrides', (req: Request, res: Response) => {
@@ -3342,7 +3374,10 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json(formatZodError(parsed.error));
       return;
     }
-    const checked = sanitizeAgentEngineOverridesFromBody(parsed.data.agentEngineOverrides ?? {});
+    const checked = sanitizeAgentEngineOverridesFromBody(
+      parsed.data.agentEngineOverrides ?? {},
+      authedReq.authUserId,
+    );
     if (!checked.ok) {
       res.status(400).json({ error: checked.error });
       return;
@@ -3365,7 +3400,9 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       return;
     }
     const stored = getUserPreferencesRow(authedReq.authUserId).agentModelOverrides;
-    res.json({ agentModelOverrides: filterStoredAgentModelOverrides(stored) });
+    res.json({
+      agentModelOverrides: filterStoredAgentModelOverrides(stored, authedReq.authUserId),
+    });
   });
 
   router.put('/api/auth/me/agent-model-overrides', (req: Request, res: Response) => {
@@ -3384,7 +3421,10 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json(formatZodError(parsed.error));
       return;
     }
-    const checked = sanitizeAgentModelOverridesFromBody(parsed.data.agentModelOverrides ?? {});
+    const checked = sanitizeAgentModelOverridesFromBody(
+      parsed.data.agentModelOverrides ?? {},
+      authedReq.authUserId,
+    );
     if (!checked.ok) {
       res.status(400).json({ error: checked.error });
       return;
@@ -3426,14 +3466,14 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json({ error: 'model is required (use DELETE to clear)' });
       return;
     }
-    if (!allKnownModels().has(model)) {
+    if (!allKnownModels(authedReq.authUserId).has(model)) {
       res.status(400).json({ error: `Unknown model "${model}"` });
       return;
     }
     const current = getUserPreferencesRow(authedReq.authUserId).agentModelOverrides ?? {};
     const next = { ...current, [agentId]: model };
     mergeUserPreferencesJson(authedReq.authUserId, { agentModelOverrides: next });
-    res.json({ agentModelOverrides: filterStoredAgentModelOverrides(next) });
+    res.json({ agentModelOverrides: filterStoredAgentModelOverrides(next, authedReq.authUserId) });
   });
 
   router.delete('/api/auth/me/agent-model-overrides/:agentId', (req: Request, res: Response) => {
@@ -3455,7 +3495,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     const next = { ...current };
     delete next[agentId];
     mergeUserPreferencesJson(authedReq.authUserId, { agentModelOverrides: next });
-    res.json({ agentModelOverrides: filterStoredAgentModelOverrides(next) });
+    res.json({ agentModelOverrides: filterStoredAgentModelOverrides(next, authedReq.authUserId) });
   });
 
   router.put('/api/auth/me/agent-engine-overrides/:agentId', (req: Request, res: Response) => {
@@ -3483,7 +3523,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json({ error: `Unknown engine "${engine}"` });
       return;
     }
-    const allowed = config.engineValidModels[engine] ?? [];
+    const allowed = allowedModelsForEngine(engine, authedReq.authUserId);
     const current = getUserPreferencesRow(authedReq.authUserId).agentEngineOverrides ?? {};
     const existing = current[agentId];
     // Model resolution: an explicit `model` in the body wins; otherwise PRESERVE
@@ -3507,7 +3547,9 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     const entry: AgentEngineOverride = model ? { engine, model } : { engine };
     const next = { ...current, [agentId]: entry };
     mergeUserPreferencesJson(authedReq.authUserId, { agentEngineOverrides: next });
-    res.json({ agentEngineOverrides: filterStoredAgentEngineOverrides(next) });
+    res.json({
+      agentEngineOverrides: filterStoredAgentEngineOverrides(next, authedReq.authUserId),
+    });
   });
 
   router.delete('/api/auth/me/agent-engine-overrides/:agentId', (req: Request, res: Response) => {
@@ -3529,7 +3571,9 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     const next = { ...current };
     delete next[agentId];
     mergeUserPreferencesJson(authedReq.authUserId, { agentEngineOverrides: next });
-    res.json({ agentEngineOverrides: filterStoredAgentEngineOverrides(next) });
+    res.json({
+      agentEngineOverrides: filterStoredAgentEngineOverrides(next, authedReq.authUserId),
+    });
   });
 
   // ── Sidebar collapsed projects (per-user UI state) ──────────────────────
