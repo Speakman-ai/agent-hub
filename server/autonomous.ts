@@ -20,7 +20,12 @@ import {
 } from './epic-spec.js';
 import { lastDispatchedReviewId } from './review-feedback-dedup.js';
 import { resolveEffectiveModel } from './effective-model.js';
-import { loadBoardBlockers, hasUnresolvedBlockers, isColumnDone } from './kanban-blockers.js';
+import {
+  loadBoardBlockers,
+  hasUnresolvedBlockers,
+  isColumnDone,
+  isColumnCancelled,
+} from './kanban-blockers.js';
 import { pickAgentForCard, pickLead } from './routing.js';
 import { agentAcceptsAutonomousTickets } from './agent-autonomy.js';
 import type {
@@ -684,8 +689,20 @@ async function maybeAdvanceToNextPhase(
   const d = getDeps();
   const phases = d.stmts.getKanbanPhasesByEpic.all(epic.id) as KanbanPhaseRow[];
   const idx = phases.findIndex((p) => p.id === completedPhase.id);
-  const next = idx >= 0 ? phases[idx + 1] : undefined;
-  if (!next) return; // last phase in the epic — nothing to advance to
+  const columns = d.stmts.getKanbanColumns.all(epic.board_id) as KanbanColumnRow[];
+  const colNames = new Map(columns.map((c) => [c.id, c.name]));
+  // Skip later phases with no live work (empty, all-Done, or all-Cancelled)
+  // when picking what to advance to. Such a phase never reaches a state that
+  // cascades, so landing on one would strand the epic. `findIncompletePredecessor`
+  // still enforces ordering against any live work in between.
+  const next =
+    idx >= 0
+      ? phases.slice(idx + 1).find((p) => {
+          const cards = d.stmts.getKanbanCardsByPhase.all(p.id) as KanbanCardRow[];
+          return cards.some((c) => !isCardSettled(colNames.get(c.column_id)));
+        })
+      : undefined;
+  if (!next) return; // no later phase with live work — nothing to advance to
 
   if (!next.autonomous) {
     console.log(
@@ -714,6 +731,19 @@ async function maybeAdvanceToNextPhase(
   );
 }
 
+/**
+ * A card is "settled" once it reaches a terminal lane — Done **or** Cancelled.
+ * Cancelled cards are dropped work, not live tickets: they never move to Done,
+ * so a phase-completion gate that only counts `isColumnDone` treats a phase
+ * whose remaining cards are Cancelled as incomplete *forever*, permanently
+ * deadlocking every later phase (the reported bug: P0 sat at 28 Done + 2
+ * Cancelled and blocked the whole epic). Only a card that is neither Done nor
+ * Cancelled represents live, unfinished work.
+ */
+function isCardSettled(columnName: string | null | undefined): boolean {
+  return isColumnDone(columnName) || isColumnCancelled(columnName);
+}
+
 /** Every earlier phase must finish, regardless of its armed/running flags. */
 function findIncompletePredecessor(
   epic: KanbanEpicRow,
@@ -727,8 +757,12 @@ function findIncompletePredecessor(
   const names = new Map(columns.map((c) => [c.id, c.name]));
   return phases.slice(0, index).find((p) => {
     const cards = d.stmts.getKanbanCardsByPhase.all(p.id) as KanbanCardRow[];
-    // Match the completion gate: an empty phase is not a completed scope.
-    return cards.length === 0 || cards.some((c) => !isColumnDone(names.get(c.column_id)));
+    // An earlier phase blocks its successors only while it holds at least one
+    // card that is still live (neither Done nor Cancelled). An empty phase, an
+    // all-Done phase, and an all-Cancelled phase all have no live work, so none
+    // of them block — otherwise a phase that can never reach a pure-Done state
+    // (empty, or with dropped/Cancelled cards) would deadlock the epic forever.
+    return cards.some((c) => !isCardSettled(names.get(c.column_id)));
   });
 }
 
@@ -790,9 +824,14 @@ async function runAutonomousLoopInner(
   const allScopeCards = (
     phase ? d.stmts.getKanbanCardsByPhase.all(phase.id) : d.stmts.getKanbanCardsByEpic.all(epic.id)
   ) as KanbanCardRow[];
+  // A scope is complete once every card is settled (Done or Cancelled) — a
+  // Cancelled card is finished, dropped work, so a phase left at "all Done + a
+  // few Cancelled" must still count as complete (else it never disarms and
+  // never advances). `length > 0` keeps a not-yet-scoped empty phase from
+  // declaring itself done.
   const scopeWorkComplete =
     allScopeCards.length > 0 &&
-    allScopeCards.every((c) => isColumnDone(colNameByIdForEpic[c.column_id]));
+    allScopeCards.every((c) => isCardSettled(colNameByIdForEpic[c.column_id]));
 
   if (scopeWorkComplete && settings.autonomous) {
     if (epic.pr_base_branch && !epic.pr_base_branch.startsWith(AUTONOMOUS_BRANCH_PREFIX)) {

@@ -248,6 +248,7 @@ const BOARD_COLS = [
   { id: 'col-progress', name: 'In Progress' },
   { id: 'col-review', name: 'Review' },
   { id: 'col-done', name: 'Done' },
+  { id: 'col-canceled', name: 'Canceled' },
 ];
 
 const ACTIVE_EPIC: KanbanEpicRow = {
@@ -925,6 +926,133 @@ describe('runAutonomousLoop — dispatch', () => {
     },
   );
 
+  it('allows a manual start when an earlier phase is empty (no cards)', async () => {
+    // Regression: an empty mid-order phase can never reach "complete", so
+    // treating it as an incomplete predecessor permanently deadlocked every
+    // later phase's Run button. An empty earlier phase has no work to wait on
+    // and must not block.
+    const first = makePhase({ autonomous: 0, autonomous_running: 0 });
+    const second = makePhase({ id: 'phase-2', position: 1, autonomous_running: 0 });
+    const stmts = makePhaseAdvanceStmts(first, second);
+    stmts.getKanbanCardsByPhase!.all.mockImplementation((id: string) =>
+      id === first.id ? [] : [makeCard({ phase_id: second.id, column_id: 'col-todo' })],
+    );
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await expect(startAutonomousPhase('proj-1', second.id, 'owner-1')).resolves.toBeUndefined();
+    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(1, second.id);
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).toHaveBeenCalledWith('owner-1', second.id);
+  });
+
+  it.each(['col-done', 'col-canceled'])(
+    'allows a manual start when an earlier phase holds only settled cards (%s)',
+    async (column_id) => {
+      // The reported bug: P0 sat at 28 Done + 2 Cancelled. A Cancelled card
+      // never reaches Done, so the gate (which only counted isColumnDone)
+      // treated P0 as incomplete forever and blocked every later phase's Run
+      // button. Cancelled is a terminal, settled state — it must not block.
+      const first = makePhase({ autonomous: 0, autonomous_running: 0 });
+      const second = makePhase({ id: 'phase-2', position: 1, autonomous_running: 0 });
+      const stmts = makePhaseAdvanceStmts(first, second);
+      stmts.getKanbanCardsByPhase!.all.mockImplementation((id: string) =>
+        id === first.id
+          ? [
+              makeCard({ id: 'p1-done', phase_id: first.id, column_id: 'col-done' }),
+              makeCard({ id: 'p1-settled', phase_id: first.id, column_id }),
+            ]
+          : [makeCard({ phase_id: second.id, column_id: 'col-todo' })],
+      );
+      const deps = makeDeps(stmts);
+      deps.findProject.mockReturnValue(makeProject());
+      mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+      initAutonomous(deps as never);
+
+      await expect(startAutonomousPhase('proj-1', second.id, 'owner-1')).resolves.toBeUndefined();
+      expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(1, second.id);
+    },
+  );
+
+  it('still blocks a manual start when an earlier phase has a live (non-settled) card', async () => {
+    // Guard the other direction: a Cancelled sibling must not make a phase with
+    // real open work look complete.
+    const first = makePhase({ autonomous: 0, autonomous_running: 0 });
+    const second = makePhase({ id: 'phase-2', position: 1, autonomous_running: 0 });
+    const stmts = makePhaseAdvanceStmts(first, second);
+    stmts.getKanbanCardsByPhase!.all.mockImplementation((id: string) =>
+      id === first.id
+        ? [
+            makeCard({ id: 'p1-canceled', phase_id: first.id, column_id: 'col-canceled' }),
+            makeCard({ id: 'p1-open', phase_id: first.id, column_id: 'col-progress' }),
+          ]
+        : [makeCard({ phase_id: second.id, column_id: 'col-todo' })],
+    );
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await expect(startAutonomousPhase('proj-1', second.id, 'owner-1')).rejects.toThrow(
+      /Phase 1.*complete/,
+    );
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalled();
+  });
+
+  it('auto-advance skips an empty intermediate phase to start the next phase with work', async () => {
+    // Same root cause on the auto-advance path: landing on an empty phase would
+    // strand the epic because an empty phase never completes and can't cascade.
+    const first = makePhase();
+    const empty = makePhase({ id: 'phase-empty', name: 'Empty', position: 1 });
+    const third = makePhase({
+      id: 'phase-3',
+      name: 'Phase 3',
+      position: 2,
+      autonomous: 1,
+      autonomous_running: 0,
+      autonomous_enabled_by: null, // inherits from the completed phase
+    });
+    const byId: Record<string, KanbanPhaseRow> = {
+      [first.id]: first,
+      [empty.id]: empty,
+      [third.id]: third,
+    };
+    const stmts = makeStmts({
+      getKanbanEpic: { get: vi.fn(() => ({ ...ACTIVE_EPIC, id: 'epic-1', autonomous: 1 })) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanPhase: { get: vi.fn((id: string) => byId[id]) },
+      getKanbanPhasesByEpic: { all: vi.fn(() => [first, empty, third]) },
+      getKanbanCardsByPhase: {
+        all: vi.fn((id: string) => {
+          if (id === first.id) return [makeCard({ phase_id: first.id, column_id: 'col-done' })];
+          if (id === empty.id) return [];
+          return [makeCard({ phase_id: third.id, column_id: 'col-todo' })];
+        }),
+      },
+      getEligibleAutonomousCardsByPhase: { all: vi.fn(() => []) },
+      getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
+      updateKanbanPhase: { run: vi.fn() },
+      setPhaseAutonomousEnabledBy: { run: vi.fn() },
+      setPhaseAutonomousRunning: {
+        run: vi.fn((val: number, id: string) => {
+          if (byId[id]) byId[id] = { ...byId[id], autonomous_running: val };
+        }),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', first.id);
+
+    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(0, first.id);
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalledWith(1, empty.id);
+    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(1, third.id);
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).toHaveBeenCalledWith('owner-1', third.id);
+  });
+
   it.each(['phase', 'board', 'epic'])(
     '%s dispatch cannot bypass an incomplete predecessor, even without card blockers',
     async (trigger) => {
@@ -1023,22 +1151,6 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(stmts.createSession.run).not.toHaveBeenCalled();
   });
 
-  it('does not treat an empty earlier phase as completed work', async () => {
-    const first = makePhase();
-    const second = makePhase({ id: 'phase-2', position: 1, autonomous_running: 0 });
-    const stmts = makePhaseAdvanceStmts(first, second);
-    stmts.getKanbanCardsByPhase!.all.mockReturnValue([]);
-    const deps = makeDeps(stmts);
-    deps.findProject.mockReturnValue(makeProject());
-    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
-    initAutonomous(deps as never);
-
-    await expect(startAutonomousPhase('proj-1', second.id, 'owner-1')).rejects.toThrow(
-      /Phase 1.*complete/,
-    );
-    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalled();
-  });
-
   it('auto-starts the next armed phase when a phase completes, inheriting the owner', async () => {
     const phase1 = makePhase();
     const phase2 = makePhase({
@@ -1061,6 +1173,39 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(0, 'phase-1');
     // Next phase-2 inherits phase-1's owner and is started.
     expect(stmts.setPhaseAutonomousEnabledBy!.run).toHaveBeenCalledWith('owner-1', 'phase-2');
+    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(1, 'phase-2');
+  });
+
+  it('treats a phase of Done + Cancelled cards as complete and advances', async () => {
+    // A running phase left at "all Done + a few Cancelled" must self-disarm and
+    // hand off — a Cancelled card is settled, dropped work, not a reason to stay
+    // armed forever.
+    const phase1 = makePhase();
+    const phase2 = makePhase({
+      id: 'phase-2',
+      name: 'Phase 2',
+      position: 1,
+      autonomous: 1,
+      autonomous_running: 0,
+      autonomous_enabled_by: null,
+    });
+    const stmts = makePhaseAdvanceStmts(phase1, phase2);
+    stmts.getKanbanCardsByPhase!.all.mockImplementation((id: string) =>
+      id === phase1.id
+        ? [
+            makeCard({ id: 'p1-done', phase_id: phase1.id, column_id: 'col-done' }),
+            makeCard({ id: 'p1-canceled', phase_id: phase1.id, column_id: 'col-canceled' }),
+          ]
+        : [makeCard({ id: 'p2-todo', phase_id: phase2.id, column_id: 'col-todo' })],
+    );
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(0, 'phase-1');
     expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(1, 'phase-2');
   });
 
