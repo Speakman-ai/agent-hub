@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -477,7 +477,15 @@ export function PhaseCard({
 
 export default function EpicDetailScreen({ route, navigation }: any) {
   const { projectId, project, epicId } = route.params || {};
-  const { setActiveAgentId, setActiveSessionId } = useApp();
+  const {
+    setActiveAgentId,
+    setActiveSessionId,
+    kanbanRefreshKey,
+    kanbanRefreshProjectIds,
+    acknowledgeKanbanRefresh,
+  } = useApp();
+  const pendingRefreshProjectsRef = useRef<Set<string> | undefined>(kanbanRefreshProjectIds);
+  pendingRefreshProjectsRef.current = kanbanRefreshProjectIds;
   const [board, setBoard] = useState<any>(null);
   const [modelConfig, setModelConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -509,6 +517,20 @@ export default function EpicDetailScreen({ route, navigation }: any) {
     setLoading(true);
     loadBoard();
   }, [loadBoard]);
+
+  // Consume the coalesced board signal without navigating away from the scope.
+  const firstRefreshRef = useRef(true);
+  useEffect(() => {
+    const pending = pendingRefreshProjectsRef.current?.has(projectId);
+    if (firstRefreshRef.current) {
+      firstRefreshRef.current = false;
+      if (pending) acknowledgeKanbanRefresh(projectId);
+      return;
+    }
+    if (!pending) return;
+    acknowledgeKanbanRefresh(projectId);
+    loadBoard();
+  }, [kanbanRefreshKey, acknowledgeKanbanRefresh, projectId, loadBoard]);
 
   useEffect(() => {
     api

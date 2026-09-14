@@ -720,6 +720,7 @@ export default function App({ initialView }: any = {}) {
           : null);
   const kanbanContextProjectIdRef = useRef<string | null>(kanbanContextProjectId);
   kanbanContextProjectIdRef.current = kanbanContextProjectId;
+  const scopingProjectIdRef = useRef<string | null>(null);
   const kanbanRefreshScheduler = useMemo(
     () => createRefreshScheduler(() => setKanbanRefreshKey((key: any) => key + 1)),
     [],
@@ -3003,7 +3004,10 @@ export default function App({ initialView }: any = {}) {
           break;
 
         case 'kanban_update':
-          if (kanbanEventTargetsProject(data.projectId, kanbanContextProjectIdRef.current)) {
+          if (
+            kanbanEventTargetsProject(data.projectId, kanbanContextProjectIdRef.current) ||
+            kanbanEventTargetsProject(data.projectId, scopingProjectIdRef.current)
+          ) {
             kanbanRefreshScheduler.schedule();
           }
           if (
@@ -5522,6 +5526,9 @@ export default function App({ initialView }: any = {}) {
                 : 'chat';
   const designModeActive = sessionMode === 'design';
   const scopingModeActive = sessionMode === 'scoping';
+  // The scoping pane consumes board updates while the main view is chat.
+  scopingProjectIdRef.current =
+    currentView === 'chat' && scopingModeActive ? (activeChatProject?.id ?? null) : null;
   // Skill Builder mode is purely conversational (the coach runs in chat and
   // writes skills via the API) — it has no dedicated side pane like Design /
   // Scoping, so there is no `skillBuilderModeActive` flag to render here.
