@@ -11,7 +11,11 @@ export type AutopilotErrorCode =
   | 'stale_lease'
   | 'resume_revalidation_failed'
   | 'cancel_failed'
-  | 'conflict';
+  | 'conflict'
+  | 'containment_unavailable'
+  | 'authority_denied'
+  | 'envelope_exhausted'
+  | 'stage_retries_exhausted';
 
 export class AutopilotError extends Error {
   readonly code: AutopilotErrorCode;
@@ -29,6 +33,7 @@ function statusForCode(code: AutopilotErrorCode): number {
   switch (code) {
     case 'server_disabled':
     case 'not_enabled':
+    case 'authority_denied':
       return 403;
     case 'invalid_config':
       return 400;
@@ -43,6 +48,9 @@ function statusForCode(code: AutopilotErrorCode): number {
     case 'resume_revalidation_failed':
     case 'cancel_failed':
     case 'conflict':
+    case 'containment_unavailable':
+    case 'envelope_exhausted':
+    case 'stage_retries_exhausted':
       return 409;
     default:
       return 400;

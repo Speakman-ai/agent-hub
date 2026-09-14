@@ -6,6 +6,7 @@ import type {
   AutopilotCancelFailure,
   AutopilotCancelRefs,
   AutopilotCancelSideEffects,
+  AutopilotEvaluatorPolicy,
   AutopilotLimits,
   AutopilotOperationRecord,
   AutopilotProjectConfig,
@@ -14,8 +15,18 @@ import type {
   AutopilotRunSnapshot,
   AutopilotStage,
   AutopilotTarget,
+  AutopilotUsage,
 } from './types.js';
-import { DEFAULT_AUTOPILOT_LIMITS, DEFAULT_AUTOPILOT_USAGE } from './types.js';
+import {
+  DEFAULT_AUTOPILOT_EVALUATOR_POLICY,
+  DEFAULT_AUTOPILOT_LIMITS,
+  DEFAULT_AUTOPILOT_USAGE,
+} from './types.js';
+import { assertAutopilotContainment } from './containment.js';
+import type {
+  IssueAutopilotWorkerCredential,
+  RevokeAutopilotWorkerCredential,
+} from './worker-authority.js';
 
 export interface AutopilotActor {
   userId: string | null;
@@ -26,6 +37,7 @@ export interface PutAutopilotConfigInput {
   brief?: string | null;
   target?: Partial<AutopilotTarget> | null;
   limits?: Partial<AutopilotLimits> | null;
+  evaluatorPolicy?: Partial<AutopilotEvaluatorPolicy> | null;
   credentialOwnerUserId?: string | null;
 }
 
@@ -62,11 +74,15 @@ export interface AutopilotControllerDeps {
   cancelSideEffects?: AutopilotCancelSideEffects;
   getDeployedRevision?: (targetId: string) => string | null;
   credentialOwnerExists?: (userId: string) => boolean;
+  assertContainment?: () => void;
+  issueWorkerCredential?: IssueAutopilotWorkerCredential;
+  revokeWorkerCredential?: RevokeAutopilotWorkerCredential;
 }
 
 const BRIEF_MAX = 100_000;
 const STAGE_TIMEOUT_MIN_MS = 1_000;
 const WALL_TIME_MIN_MS = 1_000;
+export const AUTOPILOT_DEADLINE_SWEEP_MS = 5_000;
 
 function defaultNow(): Date {
   return new Date();
@@ -158,7 +174,21 @@ export function parseAutopilotLimits(raw: unknown): AutopilotLimits {
   if (!Number.isInteger(maxRetriesPerStage) || maxRetriesPerStage < 0 || maxRetriesPerStage > 2) {
     throw new AutopilotError('invalid_config', 'maxRetriesPerStage must be 0, 1, or 2');
   }
-  return { cycleMode, maxCycles, maxWallTimeMs, maxStageTimeoutMs, maxRetriesPerStage };
+  let maxCostUsd: number | null =
+    typeof input.maxCostUsd === 'number' ? input.maxCostUsd : DEFAULT_AUTOPILOT_LIMITS.maxCostUsd;
+  if (maxCostUsd != null) {
+    if (!Number.isFinite(maxCostUsd) || maxCostUsd <= 0) {
+      throw new AutopilotError('invalid_config', 'maxCostUsd must be a positive number or null');
+    }
+  }
+  return {
+    cycleMode,
+    maxCycles,
+    maxWallTimeMs,
+    maxStageTimeoutMs,
+    maxRetriesPerStage,
+    maxCostUsd,
+  };
 }
 
 export function parseAutopilotTarget(raw: unknown): AutopilotTarget | null {
@@ -195,6 +225,38 @@ function normalizeBrief(raw: unknown): string {
   return brief;
 }
 
+export function parseAutopilotEvaluatorPolicy(raw: unknown): AutopilotEvaluatorPolicy {
+  if (raw == null) return { ...DEFAULT_AUTOPILOT_EVALUATOR_POLICY };
+  if (typeof raw !== 'object') {
+    throw new AutopilotError('invalid_config', 'evaluatorPolicy must be an object');
+  }
+  const input = raw as Partial<AutopilotEvaluatorPolicy>;
+  const version =
+    typeof input.version === 'number'
+      ? Math.floor(input.version)
+      : DEFAULT_AUTOPILOT_EVALUATOR_POLICY.version;
+  if (!Number.isInteger(version) || version < 1) {
+    throw new AutopilotError('invalid_config', 'evaluatorPolicy.version must be an integer >= 1');
+  }
+  return { version };
+}
+
+function elapsedSince(startedAt: string, now: Date): number | null {
+  const started = Date.parse(startedAt.replace(' ', 'T') + 'Z');
+  if (!Number.isFinite(started)) return null;
+  return now.getTime() - started;
+}
+
+function isEnvelopeHaltReason(reason: string | null): boolean {
+  if (!reason) return false;
+  return (
+    reason.includes('wall-time') ||
+    reason.includes('cost envelope') ||
+    reason.includes('stage timeout') ||
+    reason.includes('finite cycle')
+  );
+}
+
 export class AutopilotController {
   private readonly store: AutopilotStore;
   private readonly now: () => Date;
@@ -204,6 +266,9 @@ export class AutopilotController {
   private readonly cancelSideEffects: AutopilotCancelSideEffects;
   private readonly getDeployedRevision?: (targetId: string) => string | null;
   private readonly credentialOwnerExists?: (userId: string) => boolean;
+  private readonly assertContainment: () => void;
+  private readonly issueWorkerCredential?: IssueAutopilotWorkerCredential;
+  private readonly revokeWorkerCredential?: RevokeAutopilotWorkerCredential;
 
   constructor(deps: AutopilotControllerDeps) {
     this.store = new AutopilotStore(deps.db);
@@ -214,6 +279,9 @@ export class AutopilotController {
     this.cancelSideEffects = deps.cancelSideEffects ?? (async () => undefined);
     this.getDeployedRevision = deps.getDeployedRevision;
     this.credentialOwnerExists = deps.credentialOwnerExists;
+    this.assertContainment = deps.assertContainment ?? assertAutopilotContainment;
+    this.issueWorkerCredential = deps.issueWorkerCredential;
+    this.revokeWorkerCredential = deps.revokeWorkerCredential;
   }
 
   private timestamp(): string {
@@ -352,6 +420,7 @@ export class AutopilotController {
   }
 
   private requireProjectDispatchable(projectId: string): AutopilotProjectConfig {
+    this.assertContainment();
     const config = this.requireNotDisabling(projectId);
     if (!config.enabled) {
       throw new AutopilotError('not_enabled', 'Autopilot is not enabled for this project');
@@ -372,6 +441,9 @@ export class AutopilotController {
       targetId: config.target?.targetId ?? null,
       targetJson: JSON.stringify(config.target ?? {}),
       limitsJson: JSON.stringify(config.limits ?? {}),
+      evaluatorPolicyJson: JSON.stringify(
+        config.evaluatorPolicy ?? DEFAULT_AUTOPILOT_EVALUATOR_POLICY,
+      ),
       credentialOwnerUserId: config.credentialOwnerUserId,
       updatedAt: this.timestamp(),
       updatedBy: actor.userId,
@@ -481,6 +553,13 @@ export class AutopilotController {
             ...(existing.limits ?? DEFAULT_AUTOPILOT_LIMITS),
             ...input.limits,
           });
+    const evaluatorPolicy =
+      input.evaluatorPolicy === undefined
+        ? existing.evaluatorPolicy
+        : parseAutopilotEvaluatorPolicy({
+            ...(existing.evaluatorPolicy ?? DEFAULT_AUTOPILOT_EVALUATOR_POLICY),
+            ...input.evaluatorPolicy,
+          });
     const credentialOwnerUserId =
       input.credentialOwnerUserId === undefined
         ? existing.credentialOwnerUserId
@@ -513,6 +592,7 @@ export class AutopilotController {
         targetId: target?.targetId ?? null,
         targetJson: JSON.stringify(target ?? {}),
         limitsJson: JSON.stringify(limits ?? {}),
+        evaluatorPolicyJson: JSON.stringify(evaluatorPolicy ?? DEFAULT_AUTOPILOT_EVALUATOR_POLICY),
         credentialOwnerUserId,
         updatedAt,
         updatedBy: actor.userId,
@@ -549,6 +629,13 @@ export class AutopilotController {
   ): AutopilotRunSnapshot {
     this.requireServerEnabled();
     this.requireNotDisabling(projectId);
+    this.assertContainment();
+    if (!this.issueWorkerCredential) {
+      throw new AutopilotError(
+        'authority_denied',
+        'Autopilot cannot start without scoped worker credentials',
+      );
+    }
     if (this.store.getActiveRun(projectId)) {
       throw new AutopilotError(
         'already_active',
@@ -566,6 +653,7 @@ export class AutopilotController {
     const hasOverlays = Boolean(
       input.brief || input.target || input.limits || input.credentialOwnerUserId,
     );
+    let issuedKey: { projectId: string; runId: string; ownerUserId: string } | null = null;
 
     try {
       this.store.transaction(() => {
@@ -607,6 +695,13 @@ export class AutopilotController {
           );
         }
         const limits = config.limits ?? DEFAULT_AUTOPILOT_LIMITS;
+        const ownerUserId = config.credentialOwnerUserId!;
+        const issued = this.issueWorkerCredential!({
+          projectId,
+          runId,
+          ownerUserId,
+        });
+        issuedKey = { projectId, runId, ownerUserId };
         this.store.insertRun({
           id: runId,
           projectId,
@@ -620,6 +715,7 @@ export class AutopilotController {
           targetId: config.target?.targetId ?? null,
           limitsJson: JSON.stringify(limits),
           usageJson: JSON.stringify(DEFAULT_AUTOPILOT_USAGE),
+          workerAuthorityJson: JSON.stringify({ keyName: issued.keyName, keyId: issued.keyId }),
           startedBy: actor.userId,
           startedAt: now,
           updatedAt: now,
@@ -665,12 +761,19 @@ export class AutopilotController {
           cycleId,
           operationId,
           type: 'run_started',
-          payload: { stage, briefRevision: config.briefRevision },
+          payload: { stage, briefRevision: config.briefRevision, workerKeyName: issued.keyName },
           fencingGeneration,
           createdAt: now,
         });
       });
     } catch (err) {
+      if (issuedKey) {
+        try {
+          this.revokeWorkerCredential?.(issuedKey);
+        } catch {
+          /* best-effort */
+        }
+      }
       if (err instanceof AutopilotError && err.code === 'already_active') {
         throw err;
       }
@@ -811,18 +914,8 @@ export class AutopilotController {
     if (this.credentialOwnerExists && !this.credentialOwnerExists(resumeOwner)) {
       return 'credential owner is no longer valid';
     }
-    const started = Date.parse(run.startedAt.replace(' ', 'T') + 'Z');
-    if (Number.isFinite(started)) {
-      const elapsed = this.now().getTime() - started;
-      if (elapsed >= run.limits.maxWallTimeMs) {
-        return 'run wall-time envelope is exhausted';
-      }
-    }
-    if (run.limits.cycleMode === 'finite' && run.limits.maxCycles != null) {
-      if (run.cycleNumber > run.limits.maxCycles) {
-        return 'finite cycle envelope is exhausted';
-      }
-    }
+    const envelope = this.envelopeFailure(run);
+    if (envelope) return envelope;
     if (this.store.listInFlightOperations(run.id).length > 0) {
       return 'outstanding in-flight operations must drain or be stopped before resume';
     }
@@ -836,6 +929,162 @@ export class AutopilotController {
       }
       if (deployed !== run.lastVerifiedSha) {
         return 'deployed revision does not match the last verified SHA';
+      }
+    }
+    return null;
+  }
+
+  private envelopeFailure(run: AutopilotRunRecord): string | null {
+    const elapsed = elapsedSince(run.startedAt, this.now());
+    const wallTimeMs = elapsed != null && elapsed > 0 ? elapsed : run.usage.wallTimeMs;
+    if (wallTimeMs >= run.limits.maxWallTimeMs) {
+      return 'run wall-time envelope is exhausted';
+    }
+    if (run.limits.cycleMode === 'finite' && run.limits.maxCycles != null) {
+      if (run.cycleNumber > run.limits.maxCycles) {
+        return 'finite cycle envelope is exhausted';
+      }
+    }
+    if (run.limits.maxCostUsd != null) {
+      if (!run.usage.costAvailable || run.usage.costUsd == null) {
+        return null;
+      }
+      if (run.usage.costUsd >= run.limits.maxCostUsd) {
+        return 'run cost envelope is exhausted';
+      }
+    }
+    return null;
+  }
+
+  private writeUsage(run: AutopilotRunRecord, usage: AutopilotUsage): AutopilotUsage {
+    this.store.updateRun(run.id, {
+      usageJson: JSON.stringify(usage),
+      updatedAt: this.timestamp(),
+    });
+    return usage;
+  }
+
+  private refreshWallTime(run: AutopilotRunRecord): AutopilotUsage {
+    const elapsed = elapsedSince(run.startedAt, this.now()) ?? run.usage.wallTimeMs;
+    return this.writeUsage(run, {
+      wallTimeMs: elapsed > 0 ? elapsed : run.usage.wallTimeMs,
+      costUsd: run.usage.costUsd,
+      costAvailable: run.usage.costAvailable,
+    });
+  }
+
+  private addOperationCost(run: AutopilotRunRecord, delta: number): AutopilotUsage {
+    if (!Number.isFinite(delta) || delta < 0) {
+      throw new AutopilotError(
+        'invalid_config',
+        'operation costUsd must be a non-negative finite number',
+      );
+    }
+    const wall = this.refreshWallTime(run);
+    const latest = this.store.getRun(run.id) ?? { ...run, usage: wall };
+    const current = latest.usage.costUsd ?? 0;
+    return this.writeUsage(latest, {
+      wallTimeMs: latest.usage.wallTimeMs,
+      costUsd: current + delta,
+      costAvailable: true,
+    });
+  }
+
+  private reportCumulativeCost(run: AutopilotRunRecord, total: number): AutopilotUsage {
+    if (!Number.isFinite(total) || total < 0) {
+      throw new AutopilotError(
+        'invalid_config',
+        'reported costUsd must be a non-negative finite number',
+      );
+    }
+    const wall = this.refreshWallTime(run);
+    const latest = this.store.getRun(run.id) ?? { ...run, usage: wall };
+    return this.writeUsage(latest, {
+      wallTimeMs: latest.usage.wallTimeMs,
+      costUsd: total,
+      costAvailable: true,
+    });
+  }
+
+  private async haltForEnvelope(run: AutopilotRunRecord, reason: string): Promise<never> {
+    await this.expireRun(run, reason);
+    throw new AutopilotError('envelope_exhausted', reason);
+  }
+
+  /**
+   * Pause a run for an envelope/timeout breach and cancel outstanding
+   * sessions/Finalize/deploy work. Bumps the fencing generation so a hung
+   * worker cannot complete after the deadline.
+   */
+  private async expireRun(run: AutopilotRunRecord, reason: string): Promise<AutopilotRunSnapshot> {
+    const now = this.timestamp();
+    const fencingGeneration = this.store.transaction(() => {
+      const next = this.bumpHeldGeneration(run, now);
+      this.store.updateRun(run.id, {
+        fencingGeneration: next,
+        updatedAt: now,
+      });
+      return next;
+    });
+    const current = this.store.getRun(run.id);
+    if (!current) throw new AutopilotError('not_found', 'Autopilot run not found');
+    const cancellable = this.store.listCancellableOperations(current.id);
+    this.parkRun(current, now, reason);
+    const { confirmed, failures } = await this.confirmCancellations(cancellable);
+    const cancelledAt = this.timestamp();
+    this.markOperationsCancelled(confirmed, cancelledAt);
+    if (failures.length > 0) {
+      this.throwCancelFailed(current.id, fencingGeneration, failures);
+    }
+    const after = this.store.getRun(current.id);
+    if (after && this.store.listInFlightOperations(after.id).length === 0) {
+      this.store.updateRun(after.id, { controlState: 'paused', updatedAt: cancelledAt });
+    }
+    return this.snapshot(current.id);
+  }
+
+  async enforceDeadlines(): Promise<AutopilotRunSnapshot[]> {
+    const snapshots: AutopilotRunSnapshot[] = [];
+    for (const run of this.store.listActiveRuns()) {
+      if (run.controlState === 'stopped' || run.controlState === 'stopping') continue;
+      try {
+        this.requireHeldLease(run.projectId, run);
+      } catch {
+        continue;
+      }
+      this.refreshWallTime(run);
+      const latest = this.store.getRun(run.id) ?? run;
+      const reason = this.envelopeFailure(latest) ?? this.stageTimeoutFailure(latest);
+      const leftover = this.store.listCancellableOperations(latest.id);
+      const parkedEnvelope =
+        leftover.length > 0 &&
+        Boolean(latest.pauseReason) &&
+        (latest.controlState === 'pausing' || latest.controlState === 'paused') &&
+        isEnvelopeHaltReason(latest.pauseReason);
+      if (latest.controlState === 'running' && reason) {
+        snapshots.push(await this.expireRun(latest, reason));
+      } else if (parkedEnvelope && latest.pauseReason) {
+        snapshots.push(await this.expireRun(latest, latest.pauseReason));
+      }
+    }
+    return snapshots;
+  }
+
+  private stageTimeoutFailure(run: AutopilotRunRecord): string | null {
+    const cycle = this.store.getCycle(run.id, run.cycleNumber);
+    if (cycle) {
+      const open = this.store.getOpenStage(cycle.id);
+      if (open?.startedAt && (open.status === 'in_progress' || open.status === 'pending')) {
+        const elapsed = elapsedSince(open.startedAt, this.now());
+        if (elapsed != null && elapsed >= run.limits.maxStageTimeoutMs) {
+          return 'stage timeout envelope is exhausted';
+        }
+      }
+    }
+    for (const op of this.store.listInFlightOperations(run.id)) {
+      const elapsed = elapsedSince(op.createdAt, this.now());
+      if (elapsed != null && elapsed >= run.limits.maxStageTimeoutMs) {
+        return 'stage timeout envelope is exhausted';
       }
     }
     return null;
@@ -907,6 +1156,18 @@ export class AutopilotController {
       stoppedAt: now,
       updatedAt: now,
     });
+    const stopped = this.store.getRun(runId);
+    if (stopped?.workerAuthority.keyName) {
+      try {
+        this.revokeWorkerCredential?.({
+          projectId: stopped.projectId,
+          runId: stopped.id,
+          ownerUserId: stopped.credentialOwnerUserId,
+        });
+      } catch {
+        /* best-effort: stop still settles */
+      }
+    }
     this.store.insertEvent({
       runId,
       type: 'stopped',
@@ -930,7 +1191,7 @@ export class AutopilotController {
     return this.finishDisable(projectId, actor);
   }
 
-  beginOperation(input: BeginOperationInput): AutopilotOperationRecord {
+  async beginOperation(input: BeginOperationInput): Promise<AutopilotOperationRecord> {
     this.requireServerEnabled();
     this.requireProjectDispatchable(input.projectId);
     const run = this.store.getActiveRun(input.projectId);
@@ -947,9 +1208,18 @@ export class AutopilotController {
     if (input.fencingGeneration != null && input.fencingGeneration !== run.fencingGeneration) {
       throw new AutopilotError('stale_generation', 'Operation fencing generation is stale');
     }
+    this.refreshWallTime(run);
+    const latest = this.store.getRun(run.id) ?? run;
+    const envelope = this.envelopeFailure(latest) ?? this.stageTimeoutFailure(latest);
+    if (envelope) {
+      await this.haltForEnvelope(latest, envelope);
+    }
     const now = this.timestamp();
     const id = this.randomId();
     const cycle = this.store.getCycle(run.id, run.cycleNumber);
+    if (this.store.countActiveCycles(run.id) > 1) {
+      throw new AutopilotError('conflict', 'Only one Autopilot cycle may run at a time');
+    }
     this.store.insertOperation({
       id,
       runId: run.id,
@@ -963,6 +1233,24 @@ export class AutopilotController {
       deploymentId: input.deploymentId ?? null,
       createdAt: now,
     });
+    if (cycle) {
+      const open = this.store.getOpenStage(cycle.id);
+      if (open) {
+        const linked = open.operationId ? this.store.getOperation(open.operationId) : null;
+        const linkedSettled =
+          !linked ||
+          linked.status === 'failed' ||
+          linked.status === 'cancelled' ||
+          linked.status === 'succeeded';
+        if (!open.operationId || linkedSettled) {
+          this.store.updateStage(open.id, {
+            status: 'in_progress',
+            operationId: id,
+            startedAt: open.startedAt ?? now,
+          });
+        }
+      }
+    }
     this.store.insertEvent({
       runId: run.id,
       cycleId: cycle?.id ?? null,
@@ -977,7 +1265,7 @@ export class AutopilotController {
     return op;
   }
 
-  completeOperation(input: CompleteOperationInput): AutopilotOperationRecord {
+  async completeOperation(input: CompleteOperationInput): Promise<AutopilotOperationRecord> {
     const op = this.store.getOperation(input.operationId);
     if (!op) {
       throw new AutopilotError('not_found', 'Operation not found');
@@ -1003,6 +1291,24 @@ export class AutopilotController {
     }
 
     const now = this.timestamp();
+    const resultCostRaw =
+      input.result &&
+      typeof input.result === 'object' &&
+      'costUsd' in (input.result as object) &&
+      (input.result as { costUsd?: unknown }).costUsd !== undefined
+        ? (input.result as { costUsd: unknown }).costUsd
+        : undefined;
+    if (resultCostRaw !== undefined) {
+      if (typeof resultCostRaw !== 'number') {
+        throw new AutopilotError(
+          'invalid_config',
+          'operation costUsd must be a non-negative finite number',
+        );
+      }
+      this.addOperationCost(run, resultCostRaw);
+    } else {
+      this.refreshWallTime(run);
+    }
     this.store.updateOperation(op.id, {
       status: input.outcome,
       resultJson: JSON.stringify(input.result ?? {}),
@@ -1018,6 +1324,19 @@ export class AutopilotController {
       createdAt: now,
     });
 
+    if (input.outcome === 'failed') {
+      await this.recordStageFailure(run, op.id, now, input.result);
+    } else if (input.outcome === 'succeeded') {
+      const stage = this.store.getStageByOperationId(op.id);
+      if (stage) {
+        this.store.updateStage(stage.id, {
+          status: 'succeeded',
+          completedAt: now,
+          resultJson: JSON.stringify(input.result ?? {}),
+        });
+      }
+    }
+
     if (input.outcome === 'ambiguous') {
       this.parkRun(run, now, 'ambiguous_operation_outcome');
     } else if (run.controlState === 'pausing') {
@@ -1032,9 +1351,126 @@ export class AutopilotController {
       }
     }
 
+    const afterCost = this.store.getRun(run.id) ?? run;
+    const envelope = this.envelopeFailure(afterCost);
+    if (envelope && afterCost.controlState === 'running') {
+      await this.expireRun(afterCost, envelope);
+    }
+
     const updated = this.store.getOperation(op.id);
     if (!updated) throw new AutopilotError('not_found', 'Operation not found');
     return updated;
+  }
+
+  private async recordStageFailure(
+    run: AutopilotRunRecord,
+    operationId: string,
+    now: string,
+    result: unknown,
+  ): Promise<void> {
+    const stage = this.store.getStageByOperationId(operationId);
+    if (!stage) return;
+    this.store.updateStage(stage.id, {
+      status: 'failed',
+      completedAt: now,
+      resultJson: JSON.stringify(result ?? {}),
+    });
+    const canRetry = stage.attempt <= run.limits.maxRetriesPerStage;
+    if (!canRetry) {
+      await this.expireRun(run, 'stage_retries_exhausted');
+      this.store.insertEvent({
+        runId: run.id,
+        cycleId: stage.cycleId,
+        operationId,
+        type: 'stage_retries_exhausted',
+        payload: { stage: stage.stage, attempt: stage.attempt },
+        fencingGeneration: run.fencingGeneration,
+        createdAt: now,
+      });
+      return;
+    }
+    const cycle = this.store.getCycle(run.id, run.cycleNumber);
+    if (!cycle) return;
+    this.store.insertStage({
+      id: this.randomId(),
+      cycleId: cycle.id,
+      stage: stage.stage,
+      status: 'pending',
+      attempt: stage.attempt + 1,
+      operationId: null,
+      startedAt: null,
+    });
+    this.store.insertEvent({
+      runId: run.id,
+      cycleId: cycle.id,
+      operationId,
+      type: 'stage_retry_scheduled',
+      payload: { stage: stage.stage, nextAttempt: stage.attempt + 1 },
+      fencingGeneration: run.fencingGeneration,
+      createdAt: now,
+    });
+  }
+
+  async openNextCycle(projectId: string): Promise<AutopilotRunSnapshot> {
+    this.requireServerEnabled();
+    this.requireProjectDispatchable(projectId);
+    const run = this.store.getActiveRun(projectId);
+    if (!run) {
+      throw new AutopilotError('no_active_run', 'No active Autopilot run');
+    }
+    if (run.controlState !== 'running') {
+      throw new AutopilotError('conflict', `Cannot open a cycle while run is ${run.controlState}`);
+    }
+    this.requireHeldLease(projectId, run);
+    const current = this.store.getCycle(run.id, run.cycleNumber);
+    if (current && current.status === 'active') {
+      throw new AutopilotError('conflict', 'Only one Autopilot cycle may run at a time');
+    }
+    if (run.limits.cycleMode === 'finite' && run.limits.maxCycles != null) {
+      if (run.cycleNumber >= run.limits.maxCycles) {
+        await this.haltForEnvelope(run, 'finite cycle envelope is exhausted');
+      }
+    }
+    const now = this.timestamp();
+    const nextNumber = run.cycleNumber + 1;
+    const cycleId = this.randomId();
+    this.store.insertCycle({
+      id: cycleId,
+      runId: run.id,
+      cycleNumber: nextNumber,
+      briefRevision: run.briefRevision ?? 1,
+      createdAt: now,
+    });
+    this.store.updateRun(run.id, { cycleNumber: nextNumber, updatedAt: now });
+    this.store.insertEvent({
+      runId: run.id,
+      cycleId,
+      type: 'cycle_opened',
+      payload: { cycleNumber: nextNumber },
+      fencingGeneration: run.fencingGeneration,
+      createdAt: now,
+    });
+    return this.snapshot(run.id);
+  }
+
+  async recordUsage(
+    projectId: string,
+    input: { costUsd?: number | null },
+  ): Promise<AutopilotUsage> {
+    const run = this.store.getActiveRun(projectId);
+    if (!run) {
+      throw new AutopilotError('no_active_run', 'No active Autopilot run');
+    }
+    const usage =
+      input.costUsd === undefined || input.costUsd === null
+        ? this.refreshWallTime(run)
+        : this.reportCumulativeCost(run, input.costUsd);
+    const latest = this.store.getRun(run.id) ?? { ...run, usage };
+    const envelope = this.envelopeFailure(latest);
+    if (envelope) {
+      await this.haltForEnvelope(latest, envelope);
+    }
+    return usage;
   }
 
   async reconcileAfterRestart(): Promise<AutopilotRunSnapshot[]> {

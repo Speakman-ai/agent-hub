@@ -82,6 +82,7 @@ export const AppConfigComponent = registerComponent(
       anthropicApiKey: z.string(),
       anthropicApiKeySet: z.boolean(),
       codexDangerBypass: z.boolean().optional(),
+      cursorSandboxBypass: z.boolean().optional(),
       emailLogoEnabled: z.boolean().optional().openapi({
         description:
           'Whether deployment/release notification emails render the Agent Hub logo in the HTML header. Default true. Configurable via `emailLogoEnabled` in config.json, `PATCH /api/config`, or env `AGENT_HUB_EMAIL_LOGO_ENABLED`.',
@@ -352,6 +353,7 @@ export const PatchConfigRequestSchema = z
     }),
     publicUrl: z.string().optional(),
     codexDangerBypass: z.boolean().optional(),
+    cursorSandboxBypass: z.boolean().optional(),
     emailLogoEnabled: z.boolean().optional().openapi({
       description:
         'Enable/disable the Agent Hub logo in deployment/release notification email headers. Default true.',
@@ -567,7 +569,7 @@ registerPath({
   tags: ['Config'],
   summary: 'Update one or more config fields',
   description:
-    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `codexProfile`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
+    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `cursorSandboxBypass`, `codexProfile`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
   request: { body: { content: jsonContent(PatchConfigRequestSchema) } },
   responses: {
     200: {

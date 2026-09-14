@@ -9,6 +9,7 @@ import {
   appendCodexShellEnvironmentPolicyArgs,
 } from './codex-exec-sandbox.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { cursorSandboxArgs } from './cursor-sandbox-args.js';
 import {
   applyArgvPromptCap,
   logArgvCapTruncation,
@@ -106,6 +107,11 @@ export interface BuildSessionMultiSpawnArgsInput {
   logTag?: string;
   codexDangerBypass?: boolean;
   /**
+   * Pass `--sandbox disabled` to cursor-agent (config `cursorSandboxBypass`,
+   * default true). Undefined keeps the default — see cursor-sandbox-args.ts.
+   */
+  cursorSandboxBypass?: boolean;
+  /**
    * Optional Codex CLI profile name. When set, advisor turns on the
    * codex-cli engine get `--profile <name>` appended so the CLI loads the
    * matching profile from `~/.codex/config.toml`. Empty / unset = no flag.
@@ -170,6 +176,7 @@ export function buildSessionMultiSpawnArgs(
     bins,
     logTag,
     codexDangerBypass,
+    cursorSandboxBypass,
     codexProfile,
     advisory = false,
     reviewerReadOnly = false,
@@ -183,7 +190,13 @@ export function buildSessionMultiSpawnArgs(
   const withTailReminder = (prompt: string): string =>
     tailReminder ? `${prompt}\n\n${tailReminder}` : prompt;
 
-  const systemWithCorpus = reviewCorpus ? `${systemPrompt}\n\n${reviewCorpus}` : systemPrompt;
+  // Corpus first: Cursor always-apply rules plus a large enriched prompt
+  // can drown later context (Cursor does not hard-cap the file; the model
+  // just misses the tail). The local diff used to ride last, so reviewers
+  // saw identity + containment patches, treated controller/routes as
+  // "omitted", tried sandbox `cat` (bwrap / empty host terminal), and
+  // requested changes with no code defect. Primacy keeps the diff.
+  const systemWithCorpus = reviewCorpus ? `${reviewCorpus}\n\n${systemPrompt}` : systemPrompt;
 
   if (engine === 'cursor-agent') {
     if (!cursorChatId) {
@@ -244,6 +257,10 @@ export function buildSessionMultiSpawnArgs(
         // stray tool call cannot stall headless; the corpus is already
         // attached and edits stay forbidden by the system prompt.
         ...(advisory && !reviewerReadOnly ? [] : ['--force']),
+        // Without this the reviewer cannot read a single file: Cursor's bwrap
+        // sandbox cannot create a user namespace in a container, so every
+        // Read / cat of an omitted patch fails and the review stalls.
+        ...cursorSandboxArgs(cursorSandboxBypass),
         '--model',
         model,
         '--resume',

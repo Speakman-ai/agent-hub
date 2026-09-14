@@ -14,6 +14,7 @@ export const AUTOPILOT_SCHEMA = `
     target_id TEXT,
     target_json TEXT NOT NULL DEFAULT '{}',
     limits_json TEXT NOT NULL DEFAULT '{}',
+    evaluator_policy_json TEXT NOT NULL DEFAULT '{}',
     credential_owner_user_id TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_by TEXT
@@ -54,6 +55,7 @@ export const AUTOPILOT_SCHEMA = `
     target_id TEXT,
     limits_json TEXT NOT NULL DEFAULT '{}',
     usage_json TEXT NOT NULL DEFAULT '{}',
+    worker_authority_json TEXT NOT NULL DEFAULT '{}',
     started_by TEXT,
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
     stopped_at TEXT,
@@ -164,6 +166,20 @@ export function ensureAutopilotSchema(db: { exec: (sql: string) => unknown }): v
   }
   try {
     db.exec('ALTER TABLE autopilot_events ADD COLUMN seq INTEGER');
+  } catch {
+    /* column already present */
+  }
+  try {
+    db.exec(
+      `ALTER TABLE autopilot_project_config ADD COLUMN evaluator_policy_json TEXT NOT NULL DEFAULT '{}'`,
+    );
+  } catch {
+    /* column already present */
+  }
+  try {
+    db.exec(
+      `ALTER TABLE autopilot_runs ADD COLUMN worker_authority_json TEXT NOT NULL DEFAULT '{}'`,
+    );
   } catch {
     /* column already present */
   }

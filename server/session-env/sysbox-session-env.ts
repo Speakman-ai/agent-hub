@@ -65,6 +65,13 @@ import {
   type ContainerIsolation,
 } from './sysbox-exec-args.js';
 import { resolveSessionEnvPortRouting, type SessionEnvPortRouting } from './container-routing.js';
+import {
+  assertAutopilotWorkerLaunch,
+  authorizedSysboxContainmentMounts,
+  probeDockerResourceControllers,
+  type AutopilotWorkerLaunch,
+  type DockerResourceControllerCapability,
+} from '../autopilot/containment.js';
 
 export interface SysboxRunResult {
   ok: boolean;
@@ -230,6 +237,11 @@ export interface SysboxSessionEnvDeps {
   spawn?: HostSpawnFn;
   /** One-shot docker runner for lifecycle ops. */
   runDocker?: SysboxRunFn;
+  /**
+   * Host Docker resource-controller capability (MemoryLimit / SwapLimit / CPU CFS).
+   * Default probes `docker info`. Tests inject a mocked snapshot.
+   */
+  getDockerResourceControllers?: () => Promise<DockerResourceControllerCapability | null>;
   /** PTY factory for the `docker exec -it` client. */
   openPty?: HostPtyFactory;
   /** Host-port allocator (the 4100–4999 pool in production). Default identity. */
@@ -276,6 +288,7 @@ export class SysboxSessionEnv implements SessionEnv {
   #lastActivityAtMs: number;
   #startPromise: Promise<void> | null = null;
   #started = false;
+  #containmentLaunch: AutopilotWorkerLaunch | null = null;
 
   private readonly worktreePath: string;
   private readonly image: string;
@@ -283,6 +296,7 @@ export class SysboxSessionEnv implements SessionEnv {
   private readonly baseEnv: Record<string, string>;
   private readonly spawnFn: HostSpawnFn;
   private readonly runDocker: SysboxRunFn;
+  private readonly getDockerResourceControllers: () => Promise<DockerResourceControllerCapability | null>;
   private readonly ptyFactory: HostPtyFactory;
   private readonly allocateHostPort: (internalPort: number) => number | Promise<number>;
   private readonly releaseHostPort: ((hostPort: number) => void) | null;
@@ -318,6 +332,8 @@ export class SysboxSessionEnv implements SessionEnv {
     this.baseEnv = deps.baseEnv ?? {};
     this.spawnFn = deps.spawn ?? (nodeSpawn as unknown as HostSpawnFn);
     this.runDocker = deps.runDocker ?? runDockerCommand;
+    this.getDockerResourceControllers =
+      deps.getDockerResourceControllers ?? (() => probeDockerResourceControllers(this.runDocker));
     this.ptyFactory = deps.openPty ?? defaultPtyFactory;
     this.allocateHostPort = deps.allocateHostPort ?? ((internalPort) => internalPort);
     this.releaseHostPort = deps.releaseHostPort ?? null;
@@ -397,7 +413,15 @@ export class SysboxSessionEnv implements SessionEnv {
    */
   ensureStarted(): Promise<void> {
     this.#assertLive('ensureStarted');
-    if (this.#startPromise) return this.#startPromise;
+    if (this.#started) {
+      this.verifyRuntimeContainment();
+      return Promise.resolve();
+    }
+    if (this.#startPromise) {
+      return this.#startPromise.then(() => {
+        this.verifyRuntimeContainment();
+      });
+    }
     const starting = this.#doStart();
     this.#startPromise = starting;
     // A failed start must not wedge the env — allow a retry.
@@ -405,6 +429,12 @@ export class SysboxSessionEnv implements SessionEnv {
       if (this.#startPromise === starting) this.#startPromise = null;
     });
     return starting;
+  }
+
+  verifyRuntimeContainment(): void {
+    this.#assertLive('verifyRuntimeContainment');
+    if (!this.#containmentLaunch || this.isolation !== 'sysbox-runc') return;
+    assertAutopilotWorkerLaunch('sysbox', this.#containmentLaunch);
   }
 
   async #doStart(): Promise<void> {
@@ -478,17 +508,30 @@ export class SysboxSessionEnv implements SessionEnv {
 
         const owner = await this.statWorkspaceOwner(this.worktreePath);
 
-        const run = await this.runDocker(
-          buildStartSysboxContainerArgv({
-            sessionId: this.sessionId,
-            containerName: this.containerName,
-            image: this.image,
+        const argv = buildStartSysboxContainerArgv({
+          sessionId: this.sessionId,
+          containerName: this.containerName,
+          image: this.image,
+          worktreePath: this.worktreePath,
+          ports,
+          isolation: this.isolation,
+          env: { ...this.containerEnv, ...workspaceOwnerEnv(owner) },
+        });
+        const launch: AutopilotWorkerLaunch = {
+          kind: 'docker-run',
+          argv,
+          authorizedMounts: authorizedSysboxContainmentMounts({
             worktreePath: this.worktreePath,
-            ports,
-            isolation: this.isolation,
-            env: { ...this.containerEnv, ...workspaceOwnerEnv(owner) },
+            containerName: this.containerName,
           }),
-        );
+          resourceControllers: await this.getDockerResourceControllers(),
+        };
+        this.#containmentLaunch = launch;
+        if (this.isolation === 'sysbox-runc') {
+          assertAutopilotWorkerLaunch('sysbox', launch);
+        }
+
+        const run = await this.runDocker(argv);
         // Docker now owns the published ports (or the attempt failed). Drop the
         // Hub-side reservation so the numbers can be reused after stop / retry.
         releasePorts();

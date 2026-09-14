@@ -71,6 +71,7 @@ import {
   parseMessagesPageSize,
   toAscendingPage,
 } from '../session-messages-pagination.js';
+import { cursorSandboxArgs } from '../cursor-sandbox-args.js';
 import type {
   RouteDeps,
   AppConfig,
@@ -302,6 +303,7 @@ export function buildSummarizeSpawnArgs(
       args: [
         '--print',
         '--force',
+        ...cursorSandboxArgs(config.cursorSandboxBypass),
         '--model',
         model || DEFAULT_MODEL,
         '--system-prompt',

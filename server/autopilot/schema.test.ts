@@ -86,6 +86,13 @@ describe('autopilot schema', () => {
       (c) => c.name,
     );
     expect(cols).toContain('disabling');
+    expect(cols).toContain('evaluator_policy_json');
+  });
+
+  it('stores worker authority on runs', () => {
+    ensureAutopilotSchema(db);
+    const cols = (db.pragma('table_info(autopilot_runs)') as TableInfoRow[]).map((c) => c.name);
+    expect(cols).toContain('worker_authority_json');
   });
 
   it('stores a monotonic event sequence', () => {

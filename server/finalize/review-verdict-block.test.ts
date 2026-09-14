@@ -26,6 +26,8 @@ import {
   detectReviewVerdictBlock,
   sanitiseThreadInputs,
   stripReviewVerdictBlock,
+  isReviewEnvironmentFinding,
+  allFindingsAreReviewEnvironmentOnly,
 } from './review-verdict-block.js';
 
 describe('detectReviewVerdictBlock — happy path', () => {
@@ -363,5 +365,35 @@ describe('stripReviewVerdictBlock', () => {
 followup prose`;
     // Only the trailing block is stripped; a mid-message block stays.
     expect(stripReviewVerdictBlock(text)).toBe(text);
+  });
+});
+
+describe('review-environment findings', () => {
+  it('recognizes a failed sandbox/host-terminal read as environment-only', () => {
+    const body =
+      'Review incomplete: local reads failed because the sandbox could not create a namespace; the host terminal returned no file contents. I could not inspect the 18 omitted files. No code defect is asserted from inaccessible files.';
+    expect(isReviewEnvironmentFinding(body)).toBe(true);
+    expect(allFindingsAreReviewEnvironmentOnly([{ body }])).toBe(true);
+  });
+
+  it("recognizes this round's access-failure wording as environment-only", () => {
+    const body =
+      'Review incomplete: the shell failed before reading files (`bwrap` namespace creation error), and the host terminal action returned no contents. This is an access failure, not evidence of missing implementation. No concrete code defect is asserted from inaccessible files. The review needs a working read-only file channel before approval; there are no scored code findings.';
+    expect(isReviewEnvironmentFinding(body)).toBe(true);
+  });
+
+  it('does not treat a real correctness finding as environment-only', () => {
+    const body = '**[6/10]** Race on config.bin — overlapping writes from heartbeat + cron.';
+    expect(isReviewEnvironmentFinding(body)).toBe(false);
+    expect(allFindingsAreReviewEnvironmentOnly([{ body }])).toBe(false);
+  });
+
+  it('requires every thread to be environment-only', () => {
+    expect(
+      allFindingsAreReviewEnvironmentOnly([
+        { body: 'Review incomplete: local reads failed (bwrap).' },
+        { body: '**[6/10]** Missing caller for mintAutopilotWorkerCredential.' },
+      ]),
+    ).toBe(false);
   });
 });

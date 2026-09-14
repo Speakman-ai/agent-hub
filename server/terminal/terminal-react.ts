@@ -235,8 +235,12 @@ export async function runTerminalReActStep(
 ): Promise<BrowserReActStepOutcome> {
   const opRaw = typeof input.op === 'string' ? input.op.trim().toLowerCase() : '';
   if (!opRaw || !TERMINAL_REACT_OP_SET.has(opRaw)) {
+    const execHint =
+      opRaw === 'exec'
+        ? ' `op: exec` is not a file-read channel (ops are state/read/inject on a human-opened PTY). For a Finalize local-diff review, read the worktree with your own Read/Bash tools. A read that still fails is an access failure, not an implementation defect — report it and still emit your verdict.'
+        : '';
     return outcome(
-      `## Terminal tool error\nUnsupported or missing op "${opRaw}"`,
+      `## Terminal tool error\nUnsupported or missing op "${opRaw}".${execHint}`,
       1,
       'bad_op',
       'Unsupported terminal action',

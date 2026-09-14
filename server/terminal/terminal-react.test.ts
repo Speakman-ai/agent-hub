@@ -176,6 +176,19 @@ describe('runTerminalReActStep', () => {
     expect(r.hostDetail).toBe('bad_op');
   });
 
+  it('tells Finalize reviewers that op exec is not a file-read channel', async () => {
+    const r = await runTerminalReActStep(
+      SESSION_ID,
+      { op: 'exec', command: 'cat server/autopilot/controller.ts' },
+      deps(makeView()),
+    );
+    expect(r.hostExit).toBe(1);
+    expect(r.hostDetail).toBe('bad_op');
+    expect(r.markdown).toContain('not a file-read channel');
+    expect(r.markdown).toContain('access failure');
+    expect(r.markdown).not.toContain('must not produce `changes_requested`');
+  });
+
   it('reports runtime unavailable when no host is wired', async () => {
     const r = await runTerminalReActStep(SESSION_ID, { op: 'state' }, { runtime: null });
     expect(r.hostExit).toBe(2);

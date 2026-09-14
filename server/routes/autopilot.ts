@@ -10,6 +10,10 @@ import {
 } from '../autopilot/controller.js';
 import { isAutopilotError } from '../autopilot/errors.js';
 import type { AutopilotCancelSideEffects } from '../autopilot/types.js';
+import {
+  mintAutopilotWorkerCredential,
+  revokeMintedAutopilotWorkerCredential,
+} from '../autopilot/worker-authority.js';
 import type { RouteDeps } from '../types.js';
 import {
   CompleteAutopilotOperationRequestSchema,
@@ -24,6 +28,9 @@ export interface AutopilotRouteOptions {
   credentialOwnerExists?: (userId: string) => boolean;
   holderId?: string;
   getController?: () => AutopilotController;
+  assertContainment?: () => void;
+  issueWorkerCredential?: AutopilotControllerDeps['issueWorkerCredential'];
+  revokeWorkerCredential?: AutopilotControllerDeps['revokeWorkerCredential'];
 }
 
 function sendAutopilotError(res: Response, err: unknown): void {
@@ -46,6 +53,9 @@ export function buildAutopilotControllerDeps(
     getDeployedRevision: options.getDeployedRevision,
     credentialOwnerExists: options.credentialOwnerExists,
     holderId: options.holderId,
+    assertContainment: options.assertContainment,
+    issueWorkerCredential: options.issueWorkerCredential ?? mintAutopilotWorkerCredential,
+    revokeWorkerCredential: options.revokeWorkerCredential ?? revokeMintedAutopilotWorkerCredential,
   };
 }
 
@@ -196,7 +206,7 @@ export default function createAutopilotRoutes(
   router.post(
     '/api/projects/:projectId/autopilot/operations/:operationId/complete',
     requireRole('Admin'),
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const projectId = resolveProject(req, res);
       if (!projectId) return;
       const parsed = CompleteAutopilotOperationRequestSchema.safeParse(req.body ?? {});
@@ -204,7 +214,7 @@ export default function createAutopilotRoutes(
         return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
       }
       try {
-        const op = controllerFor().completeOperation({
+        const op = await controllerFor().completeOperation({
           operationId: req.params.operationId as string,
           fencingGeneration: parsed.data.fencingGeneration,
           outcome: parsed.data.outcome,

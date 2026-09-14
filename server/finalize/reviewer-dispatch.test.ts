@@ -53,6 +53,8 @@ import {
   DIFF_MARKER_RESERVE_BYTES,
   formatThreadsForDispatchBody,
   runReviewerDispatch,
+  formatReviewerDiffCorpus,
+  orderUnifiedDiffForReviewCorpus,
   type ReviewerDispatchDeps,
   type ReviewerLocalDiffInputs,
   type ReviewerRunResult,
@@ -1064,46 +1066,52 @@ describe('buildLocalDiffReviewerPrompt', () => {
 
   // Regression: support ticket 5dcd7790 "Grok Review Looping". A large diff
   // (36 of 58 patches omitted) made the reviewer request changes because it
-  // "cannot confirm the change is complete from the supplied diff"; the diff
-  // never shrinks, so the review looped every round. The reviewer runs in the
-  // worktree with read-only file access, so truncation must point it at the
-  // worktree, not fail the change.
-  describe('truncated diff does not send the reviewer to tools', () => {
-    it('omitted patches: forbids failing solely for the omission or a tool-read failure', () => {
+  // "cannot confirm the change is complete from the supplied diff". Budget-
+  // trimmed diffs are partial: tell the reviewer to read the omitted patches,
+  // and that a read that still fails is an access failure it reports — never a
+  // defect, and never a reason to end the turn without a verdict (that is the
+  // `review_failed` stall this wording exists to prevent).
+  describe('truncated diff is partial, not a completed review', () => {
+    it('omitted patches: access failure is reported, not scored, and never skips the verdict', () => {
       const prompt = buildLocalDiffReviewerPrompt({
         inputs: { ...fakeInputs, omittedFileCount: 36 },
         card: fakeCard,
         project: fakeProject,
       });
       expect(prompt).toContain('36 file patch(es) were omitted');
-      expect(prompt).toContain('Do **not** use shell');
+      expect(prompt).toContain('Read the omitted patches');
       expect(prompt).toContain('review-environment');
-      expect(prompt).toContain('not a coverage gap or a code defect');
-      expect(prompt).toContain('bwrap');
+      expect(prompt).toContain('do not score unread files as unmet criteria');
       expect(prompt).not.toContain('Scope your findings to what is visible');
       expect(prompt).not.toContain('The diff below is the complete input.');
       expect(prompt).toContain('The attached corpus is **partial**');
+      expect(prompt).toContain('access failure');
+      // The stall: a reviewer told an access failure is neither verdict emits
+      // no block at all, which the orchestrator scores `review_failed`.
+      expect(prompt).toContain('**Always end with the verdict');
+      expect(prompt).not.toContain('Do not return `approved` solely');
     });
 
-    it('severed patch also forbids tool-read fallback', () => {
+    it('severed patch also distinguishes access failure from defects and approval', () => {
       const prompt = buildLocalDiffReviewerPrompt({
         inputs: { ...fakeInputs, severedPatch: true, omittedFileCount: 2 },
         card: fakeCard,
         project: fakeProject,
       });
       expect(prompt).toContain('cut off mid-file');
-      expect(prompt).toContain('Do **not** use shell');
-      expect(prompt).toContain('not a coverage gap or a code defect');
+      expect(prompt).toContain('Read the omitted patches');
+      expect(prompt).toContain('**Always end with the verdict');
     });
 
-    it('degraded (stat-only) diff also forbids tool-read fallback', () => {
+    it('degraded (stat-only) diff also distinguishes access failure from defects and approval', () => {
       const prompt = buildLocalDiffReviewerPrompt({
         inputs: { ...fakeInputs, diffDegraded: true },
         card: fakeCard,
         project: fakeProject,
       });
       expect(prompt).toContain('per-file summary rather than the full');
-      expect(prompt).toContain('Do **not** use shell');
+      expect(prompt).toContain('Read the omitted patches');
+      expect(prompt).toContain('**Always end with the verdict');
     });
 
     it('acceptance-criteria coverage cites the attached corpus when truncated', () => {
@@ -1994,6 +2002,44 @@ describe('truncateDiffAtFileBoundary', () => {
   });
 });
 
+describe('orderUnifiedDiffForReviewCorpus', () => {
+  const patch = (name: string, body: string) =>
+    `diff --git a/${name} b/${name}\n--- a/${name}\n+++ b/${name}\n${body}`;
+
+  it('puts implementation ahead of tests and generated OpenAPI', () => {
+    const yaml = patch('docs/api/openapi.yaml', '+generated\n');
+    const tests = patch('server/autopilot/containment.test.ts', '+describe\n');
+    const impl = patch('server/autopilot/controller.ts', '+export class AutopilotController {}\n');
+    const ordered = orderUnifiedDiffForReviewCorpus(yaml + tests + impl);
+
+    expect(ordered.indexOf('controller.ts')).toBeLessThan(ordered.indexOf('containment.test.ts'));
+    expect(ordered.indexOf('controller.ts')).toBeLessThan(ordered.indexOf('openapi.yaml'));
+  });
+
+  it('keeps a truncation marker after the reordered patches', () => {
+    const tests = patch('a.test.ts', '+t\n');
+    const impl = patch('a.ts', '+i\n');
+    const marker =
+      '\n[diff truncated to fit the reviewer\'s 100-byte budget: 1 file patch(es) omitted, and every patch shown above is complete; the full changed-file list is in "Changed files".]\n';
+    const ordered = orderUnifiedDiffForReviewCorpus(tests + impl + marker);
+    expect(ordered.endsWith(marker)).toBe(true);
+    expect(ordered.indexOf('a.ts')).toBeLessThan(ordered.indexOf('a.test.ts'));
+  });
+});
+
+describe('formatReviewerDiffCorpus', () => {
+  it('wraps the reordered diff and keeps a failed read from becoming a defect', () => {
+    const tests = `diff --git a/server/foo.test.ts b/server/foo.test.ts\n+test\n`;
+    const impl = `diff --git a/server/foo.ts b/server/foo.ts\n+impl\n`;
+    const corpus = formatReviewerDiffCorpus(tests + impl);
+    expect(corpus).toContain('## Review corpus — unified diff');
+    expect(corpus).toContain('Implementation files are listed first');
+    expect(corpus).toContain('do not score it as a code defect');
+    expect(corpus).toContain('still emit a verdict');
+    expect(corpus.indexOf('foo.ts')).toBeLessThan(corpus.indexOf('foo.test.ts'));
+  });
+});
+
 describe('renderChangedFileList', () => {
   it('bounds by UTF-8 bytes, not just file count', () => {
     // Regression: REVIEWER_FILE_LIST_CAP bounds the count only. A path may be
@@ -2138,8 +2184,9 @@ describe('buildLocalDiffReviewerPrompt — partial-input disclosure', () => {
     expect(prompt).toContain('42 file patch(es) were omitted');
     expect(prompt).toContain('Omitted patches');
     expect(prompt).toContain('server/autopilot/store.ts');
-    expect(prompt).toContain('file Read tool');
+    expect(prompt).toContain('when local reads work');
     expect(prompt).toContain('bwrap');
+    expect(prompt).toContain('access failure');
   });
 
   it('tells the reviewer when the only patch was cut mid-file', () => {

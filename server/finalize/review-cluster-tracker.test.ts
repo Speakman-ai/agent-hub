@@ -91,6 +91,26 @@ describe('computeRootCauseEscalation', () => {
     ];
     expect(computeRootCauseEscalation(history, 2)).toBeNull();
   });
+
+  it('does not escalate a recurring access-failure General review feedback cluster', () => {
+    const body =
+      'Review incomplete: the shell failed before reading files (bwrap). This is an access failure, not evidence of missing implementation.';
+    const history: ReviewRoundFindings[] = [
+      {
+        round: 1,
+        findings: [
+          { file_path: 'General review feedback', line_start: null, line_end: null, body },
+        ],
+      },
+      {
+        round: 2,
+        findings: [
+          { file_path: 'General review feedback', line_start: null, line_end: null, body },
+        ],
+      },
+    ];
+    expect(computeRootCauseEscalation(history, 2)).toBeNull();
+  });
 });
 
 describe('resolveRootCauseEscalationRounds', () => {

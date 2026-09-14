@@ -27,6 +27,7 @@ import { normalizeSmtpConfig } from './smtp-config.js';
 import { coerceSessionEnvAdapterMode } from './session-env/sysbox-capability.js';
 import { CODEX_DEFAULT_MODEL } from './codex-model-capability.js';
 import { sanitizeSpawnPythonEnv } from './spawn-python-env.js';
+import { applyAutopilotWorkerSpawnEnv } from './autopilot/worker-authority.js';
 import { deriveLocalDockerPreviewSubdomainBase } from './preview/preview-routing-mode.js';
 
 export { refreshShellPath, getCachedShellPath };
@@ -588,6 +589,20 @@ const config: AppConfig = {
     return coerceConfigBooleanLoose(fileConfig.codexDangerBypass, true);
   })(),
 
+  // Default true: Cursor's bubblewrap sandbox cannot create a user namespace
+  // in a typical container, so every shell/file tool call in a cursor-agent
+  // session fails. Opt out with AGENT_HUB_CURSOR_SANDBOX_BYPASS=false or
+  // `"cursorSandboxBypass": false` in config.json.
+  cursorSandboxBypass: (() => {
+    const k = 'AGENT_HUB_CURSOR_SANDBOX_BYPASS' as const;
+    if (process.env[k] !== undefined) {
+      if (envMeansFalse(k)) return false;
+      if (envMeansTrue(k)) return true;
+      return coerceConfigBooleanLoose(process.env[k], true);
+    }
+    return coerceConfigBooleanLoose(fileConfig.cursorSandboxBypass, true);
+  })(),
+
   // SessionEnv backend for per-session dev environments. 'auto' probes the
   // host at boot and takes the strongest available boundary (sysbox, then
   // container, then host); 'host' / 'sysbox' / 'container' force a backend.
@@ -830,6 +845,11 @@ export interface BuildSpawnEnvOptions {
    * safe for a specific CLI are injected exclusively through this gate.
    */
   engine?: string | null;
+  /**
+   * Scoped Autopilot worker credential. When set, replaces `AGENT_HUB_API_KEY`
+   * (including the global break-glass key) and strips cloud/socket credentials.
+   */
+  autopilotWorker?: { token: string; projectId: string; runId: string } | null;
 }
 
 /** Treat null / undefined / empty / whitespace-only as "not provided". */
@@ -1025,7 +1045,7 @@ export function buildSpawnEnv(
 
   const sessionId = presentString(opts.sessionId);
   const spawnCredsUserId = presentString(opts.spawnCredsUserId) ?? ownerUserId;
-  if (sessionId && spawnCredsUserId) {
+  if (!opts.autopilotWorker && sessionId && spawnCredsUserId) {
     ensureSpawnCredsForSession({ sessionId, ownerUserId: spawnCredsUserId, cfg });
   }
 
@@ -1049,6 +1069,10 @@ export function buildSpawnEnv(
   // Strip inherited venv relocation vars and pin npm/node-gyp at the image
   // Python so a leftover `.venv` cannot break native addon compiles.
   sanitizeSpawnPythonEnv(env);
+
+  if (opts.autopilotWorker) {
+    applyAutopilotWorkerSpawnEnv(env, opts.autopilotWorker);
+  }
 
   return env;
 }

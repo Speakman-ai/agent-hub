@@ -326,6 +326,12 @@ export interface SessionEnv {
    * failed and teardown did not complete). Default false.
    */
   retainAfterFailedEnsure(): boolean;
+  /**
+   * Re-check the launch this env actually started (or will start). Isolated
+   * adapters call this on reuse so a live runtime cannot skip containment.
+   * No-op until a launch exists. Host adapter omits this.
+   */
+  verifyRuntimeContainment?(): void;
   /** Bump {@link lastActivityAtMs} (e.g. on proxy traffic). */
   touch(): void;
   /** Register a hook fired exactly once when disposal completes. */

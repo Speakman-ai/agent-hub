@@ -21,6 +21,8 @@ export const STALE_REVIEWER_PROMPT_MARKERS = [
   'Do **not** fetch PR metadata, call `gh`, or hit Hub/GitHub PR APIs',
   // Severity mismatch with the shared rubric (`> 3` is the blocker cut).
   'blocking findings (7+)',
+  // Rubber-stamp of a budget-trimmed corpus; omitted defects could pass.
+  'verdict is `approved` even when some files were unread',
 ] as const;
 
 export function reviewerSystemPromptIsStale(prompt: string | undefined | null): boolean {
@@ -46,9 +48,9 @@ export function buildReviewerAgentSystemPrompt(projectName: string): string {
 
 ### Mode A — Finalize local-diff review (default)
 When the user prompt asks for an in-session \`<agenthub:review-verdict>\` (Finalize), and does **not** instruct you to POST a Hub/GitHub review:
-1. Review the **attached review corpus** (session rule / system-prompt file / stdin). Do **not** fetch PR metadata or call \`gh\` unless the user prompt explicitly requires it for this mode. Do **not** use shell \`cat\`, host terminal, or a file Read tool to fetch omitted patches. Tool-read failure is not a code defect.
+1. Review the **attached review corpus** (session rule / system-prompt file / stdin). Do **not** fetch PR metadata or call \`gh\` unless the user prompt explicitly requires it for this mode. If the prompt flags **Partial input**, read the omitted files — your Read/Bash tools work. A failed read (bwrap, empty terminal, missing \`op: exec\`) is an **access failure**: report it in prose, do not score it as an implementation defect, and do not request changes because a command errored. It never entitles you to skip the verdict block.
 2. A GitHub / Hub PR number is usually **not** present yet. That is expected. Missing PR number is **not** a reason to stop.
-3. Do not treat a missing inline diff as incomplete when a Review corpus section is attached.
+3. Do not treat a missing inline diff as incomplete when a Review corpus section is attached. An unread omitted file is not an unmet acceptance criterion; it is also not proof the change is clean.
 4. Cross-check against project conventions (CLAUDE.md, SOUL.md, AGENTS.md, wiki).
 5. Score every issue with the severity rubric below, then emit your verdict **in-session**. Write prose first, then end with a SINGLE structured tail block and nothing after it:
 
@@ -84,13 +86,14 @@ When the user prompt names a Hub PR URL and instructs you to \`POST\` \`$AGENT_H
 - When in doubt about a score, round UP, not down. Under-scoring to avoid blocking is the exact failure mode this rubric exists to prevent.
 
 ## Unmet acceptance criteria (both modes)
-- Walk the card's stated acceptance criteria one at a time. **A criterion the change does not fully deliver scores > 3 — it is a BLOCKER, so the verdict is \`changes_requested\`.** A criterion with no implementation or only partial delivery is a defect, not a note. Finalize must not complete while a stated criterion is unmet.
+- Walk the card's stated acceptance criteria one at a time. **A criterion the change does not fully deliver scores > 3 — it is a BLOCKER, so the verdict is \`changes_requested\`.** A criterion with no implementation or only partial delivery in what you reviewed (attached corpus plus omitted files you successfully read) is a defect, not a note. Finalize must not complete while a stated criterion is unmet. A file you could not Read/cat is not "no implementation".
 - A \`[Partial]\` / \`[Spec]\` card title, an author note that a gap is "intentional" / "out of scope for now" / "tracked as a follow-up", or a named follow-up card do **not** drop an unmet criterion to ≤ 3. Those are exactly the excuses that let unmet criteria ship unflagged — call the gap out and block.
 
 ## Decision tree (both modes)
 Walk in order and pick the **first** match:
-1. **Does any finding score greater than 3 on the severity rubric?** → \`changes_requested\`. List every finding with its severity score (e.g. \`**[6/10]** server/foo.ts:42 — …\`), blockers (>3) first, then non-blocking (≤3). Even one finding scoring 4+ blocks the change.
-2. **Otherwise (every finding scored ≤ 3)** → \`approved\`. Still write a substantive prose summary — prefix each note with its score (\`**[2/10]** …\`). \`approved\` means the change is **mergeable as-is**, not "zero thoughts."
+1. **Does any implementation finding score greater than 3 on the severity rubric?** → \`changes_requested\`. List every finding with its severity score (e.g. \`**[6/10]** server/foo.ts:42 — …\`), blockers (>3) first, then non-blocking (≤3). Even one finding scoring 4+ blocks the change.
+2. **Access failure only** (a tool call failed; no implementation defect): not an unmet criterion and not a blocker. Retry the read; if it still fails, say so in the prose and decide on what you did read. Never withhold the verdict block over it — a turn with no block is scored \`review_failed\` and Finalize stops without any review.
+3. **Otherwise (every finding scored ≤ 3)** → \`approved\`. Still write a substantive prose summary — prefix each note with its score (\`**[2/10]** …\`). \`approved\` means the change is **mergeable as-is**, not "zero thoughts."
 
 **Hard rule (don't rubber-stamp):** If there's a real blocker, use \`changes_requested\` — do NOT bury a blocker in an approved verdict.
 

@@ -33,6 +33,7 @@ import { clampPayload } from './session-events-store.js';
 import { buildSessionEventBroadcast } from './session-event-broadcast.js';
 import { offloadToolResultImages } from './tool-result-images.js';
 import config, { resolveAgentHubApiBaseForSpawn, resolveGrokSpawnModel } from './config.js';
+import { cursorSandboxArgs } from './cursor-sandbox-args.js';
 import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from './per-user-cli-spawn.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import {
@@ -4011,6 +4012,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           '-p',
           prompt,
           '--force',
+          // Cursor's bwrap sandbox cannot start in a container without
+          // unprivileged user namespaces, and every tool call dies with it.
+          ...cursorSandboxArgs(config.cursorSandboxBypass),
           '--model',
           model,
           '--resume',

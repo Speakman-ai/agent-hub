@@ -3,6 +3,8 @@ import {
   SYSBOX_SESSION_ENTRYPOINT,
   SYSBOX_SESSION_LABEL,
   SYSBOX_SESSION_WORKSPACE,
+  SYSBOX_SESSION_DEFAULT_CPUS,
+  SYSBOX_SESSION_DEFAULT_MEMORY_BYTES,
   buildCreateSysboxGraphVolumeArgv,
   buildExecSysboxPtyArgs,
   buildExecSysboxSpawnArgv,
@@ -103,6 +105,17 @@ describe('buildStartSysboxContainerArgv', () => {
     expect(argv).not.toContain('--privileged');
     expect(argv).not.toContain('--cgroupns=host');
     expect(argv.join(' ')).not.toMatch(/docker\.sock/);
+  });
+
+  it('applies managed CPU and memory caps', () => {
+    expect(argv).toContain('--cpus');
+    expect(argv[argv.indexOf('--cpus') + 1]).toBe(String(SYSBOX_SESSION_DEFAULT_CPUS));
+    expect(argv).toContain('--memory');
+    expect(argv[argv.indexOf('--memory') + 1]).toBe(String(SYSBOX_SESSION_DEFAULT_MEMORY_BYTES));
+    expect(argv).toContain('--memory-swap');
+    expect(argv[argv.indexOf('--memory-swap') + 1]).toBe(
+      String(SYSBOX_SESSION_DEFAULT_MEMORY_BYTES),
+    );
   });
 
   it('bind-mounts the worktree and the named inner-docker graph volume', () => {

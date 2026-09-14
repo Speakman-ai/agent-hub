@@ -234,9 +234,9 @@ export class SessionEnvManager {
     envPromise: Promise<SessionEnv>,
     opts: SessionEnvEnsureOpts,
   ): Promise<SessionEnv> {
-    if (!opts.waitForStartup) return envPromise;
     return envPromise.then(async (env) => {
-      await this.whenStartupSettled(sessionId);
+      env.verifyRuntimeContainment?.();
+      if (opts.waitForStartup) await this.whenStartupSettled(sessionId);
       return env;
     });
   }

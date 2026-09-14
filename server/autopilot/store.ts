@@ -14,8 +14,15 @@ import type {
   AutopilotStageRecord,
   AutopilotTarget,
   AutopilotUsage,
+  AutopilotEvaluatorPolicy,
+  AutopilotWorkerAuthority,
 } from './types.js';
-import { AUTOPILOT_ACTIVE_STATES, DEFAULT_AUTOPILOT_LIMITS } from './types.js';
+import {
+  AUTOPILOT_ACTIVE_STATES,
+  DEFAULT_AUTOPILOT_EVALUATOR_POLICY,
+  DEFAULT_AUTOPILOT_LIMITS,
+  EMPTY_AUTOPILOT_WORKER_AUTHORITY,
+} from './types.js';
 
 type Db = Database.Database;
 
@@ -48,6 +55,10 @@ function parseLimits(raw: string | null | undefined): AutopilotLimits {
       typeof parsed.maxRetriesPerStage === 'number' && Number.isFinite(parsed.maxRetriesPerStage)
         ? Math.floor(parsed.maxRetriesPerStage)
         : DEFAULT_AUTOPILOT_LIMITS.maxRetriesPerStage,
+    maxCostUsd:
+      typeof parsed.maxCostUsd === 'number' && Number.isFinite(parsed.maxCostUsd)
+        ? parsed.maxCostUsd
+        : null,
   };
 }
 
@@ -79,6 +90,23 @@ function parseUsage(raw: string | null | undefined): AutopilotUsage {
   };
 }
 
+function parseEvaluatorPolicy(raw: string | null | undefined): AutopilotEvaluatorPolicy {
+  const parsed = parseJson<Partial<AutopilotEvaluatorPolicy>>(raw, {});
+  const version =
+    typeof parsed.version === 'number' && Number.isInteger(parsed.version) && parsed.version >= 1
+      ? parsed.version
+      : DEFAULT_AUTOPILOT_EVALUATOR_POLICY.version;
+  return { version };
+}
+
+function parseWorkerAuthority(raw: string | null | undefined): AutopilotWorkerAuthority {
+  const parsed = parseJson<Partial<AutopilotWorkerAuthority>>(raw, {});
+  return {
+    keyName: typeof parsed.keyName === 'string' && parsed.keyName.trim() ? parsed.keyName : null,
+    keyId: typeof parsed.keyId === 'string' && parsed.keyId.trim() ? parsed.keyId : null,
+  };
+}
+
 interface ConfigRow {
   project_id: string;
   enabled: number;
@@ -87,6 +115,7 @@ interface ConfigRow {
   target_id: string | null;
   target_json: string;
   limits_json: string;
+  evaluator_policy_json: string | null;
   credential_owner_user_id: string | null;
   updated_at: string;
   updated_by: string | null;
@@ -119,6 +148,7 @@ interface RunRow {
   target_id: string | null;
   limits_json: string;
   usage_json: string;
+  worker_authority_json: string | null;
   started_by: string | null;
   started_at: string;
   stopped_at: string | null;
@@ -210,6 +240,7 @@ function mapRun(row: RunRow): AutopilotRunRecord {
     targetId: row.target_id,
     limits: parseLimits(row.limits_json),
     usage: parseUsage(row.usage_json),
+    workerAuthority: parseWorkerAuthority(row.worker_authority_json),
     startedBy: row.started_by,
     startedAt: row.started_at,
     stoppedAt: row.stopped_at,
@@ -302,6 +333,7 @@ export interface UpsertConfigInput {
   targetId: string | null;
   targetJson: string;
   limitsJson: string;
+  evaluatorPolicyJson: string;
   credentialOwnerUserId: string | null;
   updatedAt: string;
   updatedBy: string | null;
@@ -320,6 +352,7 @@ export interface InsertRunInput {
   targetId: string | null;
   limitsJson: string;
   usageJson: string;
+  workerAuthorityJson?: string;
   startedBy: string | null;
   startedAt: string;
   updatedAt: string;
@@ -348,6 +381,7 @@ export class AutopilotStore {
         briefRevision: null,
         target: null,
         limits: null,
+        evaluatorPolicy: { ...DEFAULT_AUTOPILOT_EVALUATOR_POLICY },
         credentialOwnerUserId: null,
         updatedAt: '',
         updatedBy: null,
@@ -363,6 +397,7 @@ export class AutopilotStore {
       briefRevision: brief?.revision ?? null,
       target: parseTarget(row.target_json, row.target_id),
       limits: parseLimits(row.limits_json),
+      evaluatorPolicy: parseEvaluatorPolicy(row.evaluator_policy_json),
       credentialOwnerUserId: row.credential_owner_user_id,
       updatedAt: row.updated_at,
       updatedBy: row.updated_by,
@@ -374,9 +409,9 @@ export class AutopilotStore {
       .prepare(
         `INSERT INTO autopilot_project_config (
            project_id, enabled, disabling, brief_id, target_id, target_json, limits_json,
-           credential_owner_user_id, updated_at, updated_by
+           evaluator_policy_json, credential_owner_user_id, updated_at, updated_by
          ) VALUES (@projectId, @enabled, @disabling, @briefId, @targetId, @targetJson, @limitsJson,
-           @credentialOwnerUserId, @updatedAt, @updatedBy)
+           @evaluatorPolicyJson, @credentialOwnerUserId, @updatedAt, @updatedBy)
          ON CONFLICT(project_id) DO UPDATE SET
            enabled = excluded.enabled,
            disabling = excluded.disabling,
@@ -384,6 +419,7 @@ export class AutopilotStore {
            target_id = excluded.target_id,
            target_json = excluded.target_json,
            limits_json = excluded.limits_json,
+           evaluator_policy_json = excluded.evaluator_policy_json,
            credential_owner_user_id = excluded.credential_owner_user_id,
            updated_at = excluded.updated_at,
            updated_by = excluded.updated_by`,
@@ -396,6 +432,7 @@ export class AutopilotStore {
         targetId: input.targetId,
         targetJson: input.targetJson,
         limitsJson: input.limitsJson,
+        evaluatorPolicyJson: input.evaluatorPolicyJson,
         credentialOwnerUserId: input.credentialOwnerUserId,
         updatedAt: input.updatedAt,
         updatedBy: input.updatedBy,
@@ -494,14 +531,18 @@ export class AutopilotStore {
         `INSERT INTO autopilot_runs (
            id, project_id, control_state, stage, fencing_generation, brief_id, brief_revision,
            cycle_number, credential_owner_user_id, target_id, limits_json, usage_json,
-           started_by, started_at, updated_at
+           worker_authority_json, started_by, started_at, updated_at
          ) VALUES (
            @id, @projectId, @controlState, @stage, @fencingGeneration, @briefId, @briefRevision,
            @cycleNumber, @credentialOwnerUserId, @targetId, @limitsJson, @usageJson,
-           @startedBy, @startedAt, @updatedAt
+           @workerAuthorityJson, @startedBy, @startedAt, @updatedAt
          )`,
       )
-      .run(input);
+      .run({
+        ...input,
+        workerAuthorityJson:
+          input.workerAuthorityJson ?? JSON.stringify(EMPTY_AUTOPILOT_WORKER_AUTHORITY),
+      });
   }
 
   updateRun(
@@ -517,6 +558,7 @@ export class AutopilotStore {
       lastDeploymentId: string | null;
       credentialOwnerUserId: string | null;
       usageJson: string;
+      workerAuthorityJson: string;
       stoppedAt: string | null;
       updatedAt: string;
     }>,
@@ -534,6 +576,7 @@ export class AutopilotStore {
       lastDeploymentId: 'last_deployment_id',
       credentialOwnerUserId: 'credential_owner_user_id',
       usageJson: 'usage_json',
+      workerAuthorityJson: 'worker_authority_json',
       stoppedAt: 'stopped_at',
       updatedAt: 'updated_at',
     };
@@ -669,6 +712,88 @@ export class AutopilotStore {
       .prepare(`SELECT * FROM autopilot_stages WHERE cycle_id = ? ORDER BY attempt ASC`)
       .all(cycleId) as StageRow[];
     return rows.map(mapStage);
+  }
+
+  getStageByOperationId(operationId: string): AutopilotStageRecord | null {
+    const row = this.db
+      .prepare(`SELECT * FROM autopilot_stages WHERE operation_id = ?`)
+      .get(operationId) as StageRow | undefined;
+    return row ? mapStage(row) : null;
+  }
+
+  getOpenStage(cycleId: string): AutopilotStageRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM autopilot_stages
+         WHERE cycle_id = ? AND status IN ('pending', 'in_progress')
+         ORDER BY attempt DESC LIMIT 1`,
+      )
+      .get(cycleId) as StageRow | undefined;
+    return row ? mapStage(row) : null;
+  }
+
+  countStageAttempts(cycleId: string, stage: AutopilotStage): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM autopilot_stages WHERE cycle_id = ? AND stage = ?`)
+      .get(cycleId, stage) as { n: number };
+    return row?.n ?? 0;
+  }
+
+  updateStage(
+    id: string,
+    patch: Partial<{
+      status: AutopilotStageRecord['status'];
+      operationId: string | null;
+      startedAt: string | null;
+      completedAt: string | null;
+      resultJson: string | null;
+    }>,
+  ): void {
+    const sets: string[] = [];
+    const params: Record<string, unknown> = { id };
+    const map: Record<string, string> = {
+      status: 'status',
+      operationId: 'operation_id',
+      startedAt: 'started_at',
+      completedAt: 'completed_at',
+      resultJson: 'result_json',
+    };
+    for (const [key, col] of Object.entries(map)) {
+      if (key in patch) {
+        sets.push(`${col} = @${key}`);
+        params[key] = (patch as Record<string, unknown>)[key];
+      }
+    }
+    if (sets.length === 0) return;
+    this.db.prepare(`UPDATE autopilot_stages SET ${sets.join(', ')} WHERE id = @id`).run(params);
+  }
+
+  updateCycle(
+    id: string,
+    patch: Partial<{
+      status: AutopilotCycleRecord['status'];
+      outcome: string | null;
+    }>,
+  ): void {
+    const sets: string[] = [];
+    const params: Record<string, unknown> = { id };
+    if (patch.status !== undefined) {
+      sets.push('status = @status');
+      params.status = patch.status;
+    }
+    if (patch.outcome !== undefined) {
+      sets.push('outcome = @outcome');
+      params.outcome = patch.outcome;
+    }
+    if (sets.length === 0) return;
+    this.db.prepare(`UPDATE autopilot_cycles SET ${sets.join(', ')} WHERE id = @id`).run(params);
+  }
+
+  countActiveCycles(runId: string): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM autopilot_cycles WHERE run_id = ? AND status = 'active'`)
+      .get(runId) as { n: number };
+    return row?.n ?? 0;
   }
 
   insertOperation(input: {

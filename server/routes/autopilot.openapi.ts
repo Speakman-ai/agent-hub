@@ -20,6 +20,22 @@ export const AutopilotLimitsSchema = registerComponent(
     maxWallTimeMs: z.number().positive(),
     maxStageTimeoutMs: z.number().positive(),
     maxRetriesPerStage: z.number().int().min(0).max(2),
+    maxCostUsd: z.number().positive().nullable(),
+  }),
+);
+
+export const AutopilotEvaluatorPolicySchema = registerComponent(
+  'AutopilotEvaluatorPolicy',
+  z.object({
+    version: z.number().int().positive(),
+  }),
+);
+
+export const AutopilotWorkerAuthoritySchema = registerComponent(
+  'AutopilotWorkerAuthority',
+  z.object({
+    keyName: z.string().nullable(),
+    keyId: z.string().nullable(),
   }),
 );
 
@@ -52,6 +68,7 @@ export const AutopilotConfigSchema = registerComponent(
     briefRevision: z.number().int().nullable(),
     target: AutopilotTargetSchema.nullable(),
     limits: AutopilotLimitsSchema.nullable(),
+    evaluatorPolicy: AutopilotEvaluatorPolicySchema,
     credentialOwnerUserId: z.string().nullable(),
     updatedAt: z.string(),
     updatedBy: z.string().nullable(),
@@ -96,6 +113,7 @@ export const AutopilotRunSchema = registerComponent(
     targetId: z.string().nullable(),
     limits: AutopilotLimitsSchema,
     usage: AutopilotUsageSchema,
+    workerAuthority: AutopilotWorkerAuthoritySchema,
     startedBy: z.string().nullable(),
     startedAt: z.string(),
     stoppedAt: z.string().nullable(),
@@ -224,7 +242,14 @@ export const PutAutopilotConfigRequestSchema = z.object({
       maxWallTimeMs: z.number().positive().optional(),
       maxStageTimeoutMs: z.number().positive().optional(),
       maxRetriesPerStage: z.number().int().min(0).max(2).optional(),
+      maxCostUsd: z.number().positive().nullable().optional(),
     })
+    .optional(),
+  evaluatorPolicy: z
+    .object({
+      version: z.number().int().positive().optional(),
+    })
+    .nullable()
     .optional(),
   credentialOwnerUserId: z.string().nullable().optional(),
 });
@@ -245,6 +270,7 @@ export const StartAutopilotRequestSchema = z.object({
       maxWallTimeMs: z.number().positive().optional(),
       maxStageTimeoutMs: z.number().positive().optional(),
       maxRetriesPerStage: z.number().int().min(0).max(2).optional(),
+      maxCostUsd: z.number().positive().nullable().optional(),
     })
     .optional(),
   credentialOwnerUserId: z.string().optional(),
@@ -322,7 +348,7 @@ registerPath({
   tags: ['Autopilot'],
   summary: 'Start an Autopilot run',
   description:
-    'Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires the server operator setting and project opt-in.',
+    'Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires the server operator setting, project opt-in, scoped worker credentials, and enforceable runtime containment.',
   request: {
     params: projectParams,
     body: { content: jsonContent(StartAutopilotRequestSchema), required: false },

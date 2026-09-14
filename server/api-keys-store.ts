@@ -77,12 +77,14 @@ const TOKEN_REGEX = /^ahub_[A-Za-z0-9_-]{40,}$/;
  * list is filtered. SQL fragment is reused so the filter rule lives in
  * exactly one place.
  */
-const HIDDEN_SYSTEM_KEY_SQL = `(name NOT LIKE 'spawn:%' AND name NOT LIKE 'spawn-recovery %')`;
+const HIDDEN_SYSTEM_KEY_SQL = `(name NOT LIKE 'spawn:%' AND name NOT LIKE 'spawn-recovery %' AND name NOT LIKE 'autopilot:%')`;
 
 /** Returns true when `name` belongs to a server-minted internal credential. */
 export function isHiddenSystemKeyName(name: string): boolean {
   if (typeof name !== 'string') return false;
-  return name.startsWith('spawn:') || name.startsWith('spawn-recovery ');
+  return (
+    name.startsWith('spawn:') || name.startsWith('spawn-recovery ') || name.startsWith('autopilot:')
+  );
 }
 
 /** Crypto-grade random token, url-safe base64. */

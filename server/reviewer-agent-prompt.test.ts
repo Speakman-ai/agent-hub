@@ -56,6 +56,9 @@ describe('buildReviewerAgentSystemPrompt', () => {
     // below the blocking cut — the PR #922 failure mode.
     expect(sp).toContain('[Partial]');
     expect(sp).toContain('do **not** drop an unmet criterion');
+    expect(sp).toContain('A file you could not Read/cat is not "no implementation"');
+    expect(sp).toContain('access failure');
+    expect(sp).not.toContain('verdict is `approved` even when some files were unread');
   });
 });
 

@@ -20,6 +20,20 @@ const READY = {
   credentialOwnerUserId: 'user-1',
 };
 
+function stubWorkerCreds() {
+  return {
+    assertContainment: () => undefined,
+    issueWorkerCredential: ({ projectId, runId }: { projectId: string; runId: string }) => ({
+      keyName: `autopilot:${projectId}:${runId}`,
+      keyId: `key-${runId}`,
+      token: `ahub_worker_${runId}`,
+    }),
+    revokeWorkerCredential: () => undefined,
+  };
+}
+
+const passContainment = { assertContainment: () => undefined };
+
 function freshController(opts?: {
   serverEnabled?: boolean;
   cancelSideEffects?: AutopilotCancelSideEffects;
@@ -27,10 +41,13 @@ function freshController(opts?: {
   credentialOwnerExists?: (userId: string) => boolean;
   holderId?: string;
   now?: () => Date;
+  assertContainment?: () => void;
+  issueWorkerCredential?: ReturnType<typeof stubWorkerCreds>['issueWorkerCredential'];
 }) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   ensureAutopilotSchema(db);
+  const stubs = stubWorkerCreds();
   const controller = createAutopilotController({
     db,
     isServerEnabled: () => opts?.serverEnabled !== false,
@@ -39,6 +56,9 @@ function freshController(opts?: {
     credentialOwnerExists: opts?.credentialOwnerExists ?? (() => true),
     holderId: opts?.holderId ?? 'hub-a',
     now: opts?.now,
+    assertContainment: opts?.assertContainment ?? stubs.assertContainment,
+    issueWorkerCredential: opts?.issueWorkerCredential ?? stubs.issueWorkerCredential,
+    revokeWorkerCredential: stubs.revokeWorkerCredential,
   });
   return { db, controller };
 }
@@ -139,7 +159,7 @@ describe('autopilot controller', () => {
       },
     });
     const started = await startReady(controller);
-    const op = controller.beginOperation({
+    const op = await controller.beginOperation({
       projectId: PROJECT,
       kind: 'implement',
       sessionId: 'sess-1',
@@ -153,14 +173,14 @@ describe('autopilot controller', () => {
     expect(stopped.run.controlState).toBe('stopped');
     expect(stopped.run.fencingGeneration).toBeGreaterThan(genAtStart);
 
-    expect(() =>
+    await expect(
       controller.completeOperation({
         operationId: op.id,
         fencingGeneration: genAtStart,
         outcome: 'succeeded',
         result: { sha: 'abc' },
       }),
-    ).toThrow(/Late callback|stale/i);
+    ).rejects.toThrow(/Late callback|stale/i);
 
     const after = controller.getRun(PROJECT, stopped.run.id);
     expect(after.run.controlState).toBe('stopped');
@@ -172,25 +192,21 @@ describe('autopilot controller', () => {
     await startReady(controller);
     controller.pause(PROJECT, ACTOR);
     const paused = controller.getProjectState(PROJECT).activeRun!;
-    const op = (() => {
-      try {
-        return controller.beginOperation({ projectId: PROJECT, kind: 'x' });
-      } catch (err) {
-        expect((err as AutopilotError).code).toBe('conflict');
-        return null;
-      }
-    })();
-    expect(op).toBeNull();
+    await expect(
+      controller.beginOperation({ projectId: PROJECT, kind: 'x' }),
+    ).rejects.toMatchObject({
+      code: 'conflict',
+    });
 
     await controller.resume(PROJECT, ACTOR);
-    const live = controller.beginOperation({ projectId: PROJECT, kind: 'implement' });
-    expect(() =>
+    const live = await controller.beginOperation({ projectId: PROJECT, kind: 'implement' });
+    await expect(
       controller.completeOperation({
         operationId: live.id,
         fencingGeneration: paused.run.fencingGeneration,
         outcome: 'succeeded',
       }),
-    ).toThrow(AutopilotError);
+    ).rejects.toThrow(AutopilotError);
     const still = controller.getProjectState(PROJECT).activeRun!;
     expect(still.operations.find((row) => row.id === live.id)?.status).toBe('in_flight');
   });
@@ -198,13 +214,14 @@ describe('autopilot controller', () => {
   it('pauses in-flight work as ambiguous after restart and never resurrects stopped runs', async () => {
     const { db, controller } = freshController({ holderId: 'hub-a' });
     await startReady(controller);
-    controller.beginOperation({ projectId: PROJECT, kind: 'implement', sessionId: 'sess-1' });
+    await controller.beginOperation({ projectId: PROJECT, kind: 'implement', sessionId: 'sess-1' });
 
     const restarted = createAutopilotController({
       db,
       isServerEnabled: () => true,
       holderId: 'hub-b',
       credentialOwnerExists: () => true,
+      ...passContainment,
     });
     const reconciled = await restarted.reconcileAfterRestart();
     expect(reconciled).toHaveLength(1);
@@ -215,19 +232,20 @@ describe('autopilot controller', () => {
 
     const staleGen = reconciled[0].run.fencingGeneration - 1;
     const op = reconciled[0].operations[0];
-    expect(() =>
+    await expect(
       restarted.completeOperation({
         operationId: op.id,
         fencingGeneration: staleGen,
         outcome: 'succeeded',
       }),
-    ).toThrow(/stale/i);
+    ).rejects.toThrow(/stale/i);
 
     await restarted.stop(PROJECT, ACTOR);
     const afterStop = createAutopilotController({
       db,
       isServerEnabled: () => true,
       holderId: 'hub-c',
+      ...passContainment,
     });
     const again = await afterStop.reconcileAfterRestart();
     expect(again).toHaveLength(0);
@@ -248,7 +266,7 @@ describe('autopilot controller', () => {
       },
     });
     await startReady(controller);
-    controller.beginOperation({ projectId: PROJECT, kind: 'deploy', deploymentId: 'dep-1' });
+    await controller.beginOperation({ projectId: PROJECT, kind: 'deploy', deploymentId: 'dep-1' });
 
     const first = controller.stop(PROJECT, ACTOR);
     await Promise.resolve();
@@ -267,11 +285,11 @@ describe('autopilot controller', () => {
       getDeployedRevision: () => 'sha-other',
     });
     const started = await startReady(controller);
-    const op = controller.beginOperation({ projectId: PROJECT, kind: 'implement' });
+    const op = await controller.beginOperation({ projectId: PROJECT, kind: 'implement' });
     const pausing = controller.pause(PROJECT, ACTOR);
     expect(pausing.run.controlState).toBe('pausing');
 
-    controller.completeOperation({
+    await controller.completeOperation({
       operationId: op.id,
       fencingGeneration: started.run.fencingGeneration,
       outcome: 'succeeded',
@@ -309,13 +327,14 @@ describe('autopilot controller', () => {
       isServerEnabled: () => true,
       holderId: 'hub-b',
       credentialOwnerExists: () => true,
+      ...passContainment,
     });
     const reconciled = await hubB.reconcileAfterRestart();
     expect(reconciled[0].run.controlState).toBe('running');
     expect(reconciled[0].lease?.holderId).toBe('hub-b');
 
     try {
-      hubA.beginOperation({ projectId: PROJECT, kind: 'implement' });
+      await hubA.beginOperation({ projectId: PROJECT, kind: 'implement' });
       throw new Error('expected stale_lease');
     } catch (err) {
       expect((err as AutopilotError).code).toBe('stale_lease');
@@ -327,13 +346,13 @@ describe('autopilot controller', () => {
     expect(resumed.lease?.holderId).toBe('hub-b');
 
     try {
-      hubA.beginOperation({ projectId: PROJECT, kind: 'implement' });
+      await hubA.beginOperation({ projectId: PROJECT, kind: 'implement' });
       throw new Error('expected stale_lease');
     } catch (err) {
       expect((err as AutopilotError).code).toBe('stale_lease');
     }
 
-    const op = hubB.beginOperation({ projectId: PROJECT, kind: 'implement' });
+    const op = await hubB.beginOperation({ projectId: PROJECT, kind: 'implement' });
     expect(op.status).toBe('in_flight');
   });
 
@@ -341,7 +360,7 @@ describe('autopilot controller', () => {
     const cancels: AutopilotCancelRefs[] = [];
     const { db, controller: hubA } = freshController({ holderId: 'hub-a' });
     await startReady(hubA);
-    hubA.beginOperation({
+    await hubA.beginOperation({
       projectId: PROJECT,
       kind: 'implement',
       sessionId: 'sess-live',
@@ -353,6 +372,7 @@ describe('autopilot controller', () => {
       isServerEnabled: () => true,
       holderId: 'hub-b',
       credentialOwnerExists: () => true,
+      ...passContainment,
       cancelSideEffects: (refs) => {
         cancels.push({
           sessionIds: [...refs.sessionIds],
@@ -382,7 +402,7 @@ describe('autopilot controller', () => {
   it('does not leave in-flight operations after a pausing restart, then allows resume', async () => {
     const { db, controller: hubA } = freshController({ holderId: 'hub-a' });
     await startReady(hubA);
-    hubA.beginOperation({
+    await hubA.beginOperation({
       projectId: PROJECT,
       kind: 'implement',
       sessionId: 'sess-drain',
@@ -396,6 +416,7 @@ describe('autopilot controller', () => {
       isServerEnabled: () => true,
       holderId: 'hub-b',
       credentialOwnerExists: () => true,
+      ...passContainment,
     });
     const reconciled = await hubB.reconcileAfterRestart();
     expect(reconciled[0].run.controlState).toBe('paused');
@@ -427,18 +448,18 @@ describe('autopilot controller', () => {
   it('does not resume while a sibling operation is still in flight after an ambiguous outcome', async () => {
     const { controller } = freshController();
     const started = await startReady(controller);
-    const first = controller.beginOperation({
+    const first = await controller.beginOperation({
       projectId: PROJECT,
       kind: 'implement',
       sessionId: 'sess-a',
     });
-    const second = controller.beginOperation({
+    const second = await controller.beginOperation({
       projectId: PROJECT,
       kind: 'implement',
       sessionId: 'sess-b',
     });
 
-    controller.completeOperation({
+    await controller.completeOperation({
       operationId: first.id,
       fencingGeneration: started.run.fencingGeneration,
       outcome: 'ambiguous',
@@ -456,7 +477,7 @@ describe('autopilot controller', () => {
     expect(stillDraining.run.fencingGeneration).toBe(genWhileDraining);
     expect(stillDraining.operations.find((op) => op.id === second.id)?.status).toBe('in_flight');
 
-    controller.completeOperation({
+    await controller.completeOperation({
       operationId: second.id,
       fencingGeneration: started.run.fencingGeneration,
       outcome: 'succeeded',
@@ -472,7 +493,7 @@ describe('autopilot controller', () => {
   it('refuses resume when a paused run still has in-flight operations', async () => {
     const { db, controller } = freshController();
     const started = await startReady(controller);
-    const op = controller.beginOperation({
+    const op = await controller.beginOperation({
       projectId: PROJECT,
       kind: 'implement',
       sessionId: 'sess-stuck',
@@ -497,7 +518,7 @@ describe('autopilot controller', () => {
           : [],
     });
     await startReady(controller);
-    const op = controller.beginOperation({
+    const op = await controller.beginOperation({
       projectId: PROJECT,
       kind: 'deploy',
       deploymentId: 'dep-1',
@@ -524,7 +545,7 @@ describe('autopilot controller', () => {
       ],
     });
     await startReady(controller);
-    controller.beginOperation({
+    await controller.beginOperation({
       projectId: PROJECT,
       kind: 'deploy',
       deploymentId: 'dep-1',
@@ -553,7 +574,7 @@ describe('autopilot controller', () => {
       },
     });
     const first = await startReady(controller);
-    controller.beginOperation({
+    await controller.beginOperation({
       projectId: PROJECT,
       kind: 'deploy',
       deploymentId: 'dep-1',
@@ -581,20 +602,20 @@ describe('autopilot controller', () => {
     expect(disabled.config.enabled).toBe(false);
     expect(disabled.config.disabling).toBe(false);
     expect(disabled.activeRun).toBeNull();
-    expect(() => controller.beginOperation({ projectId: PROJECT, kind: 'implement' })).toThrow(
-      /not enabled/i,
-    );
+    await expect(
+      controller.beginOperation({ projectId: PROJECT, kind: 'implement' }),
+    ).rejects.toThrow(/not enabled/i);
   });
 
   it('refuses beginOperation when project opt-in is off even if a run row is still running', async () => {
     const { db, controller } = freshController();
     await startReady(controller);
     db.prepare(`UPDATE autopilot_project_config SET enabled = 0 WHERE project_id = ?`).run(PROJECT);
-    expect(() => controller.beginOperation({ projectId: PROJECT, kind: 'implement' })).toThrow(
-      AutopilotError,
-    );
+    await expect(
+      controller.beginOperation({ projectId: PROJECT, kind: 'implement' }),
+    ).rejects.toThrow(AutopilotError);
     try {
-      controller.beginOperation({ projectId: PROJECT, kind: 'implement' });
+      await controller.beginOperation({ projectId: PROJECT, kind: 'implement' });
     } catch (err) {
       expect((err as AutopilotError).code).toBe('not_enabled');
     }
@@ -605,7 +626,7 @@ describe('autopilot controller', () => {
     let failCancel = false;
     const { db, controller: hubA } = freshController({ holderId: 'hub-a' });
     await startReady(hubA);
-    hubA.beginOperation({
+    await hubA.beginOperation({
       projectId: PROJECT,
       kind: 'implement',
       sessionId: 'sess-live',
@@ -615,6 +636,7 @@ describe('autopilot controller', () => {
       isServerEnabled: () => true,
       holderId: 'hub-b',
       credentialOwnerExists: () => true,
+      ...passContainment,
       cancelSideEffects: () =>
         failCancel ? [{ kind: 'session', id: 'sess-live', message: 'session still running' }] : [],
     });
@@ -681,7 +703,7 @@ describe('autopilot controller', () => {
   it('stops an existing run and rejects late callbacks after the server feature flag is turned off', async () => {
     const { db, controller } = freshController({ holderId: 'hub-a' });
     const started = await startReady(controller);
-    const op = controller.beginOperation({
+    const op = await controller.beginOperation({
       projectId: PROJECT,
       kind: 'implement',
       sessionId: 'sess-1',
@@ -693,7 +715,7 @@ describe('autopilot controller', () => {
       credentialOwnerExists: () => true,
     });
     try {
-      gated.beginOperation({ projectId: PROJECT, kind: 'extra' });
+      await gated.beginOperation({ projectId: PROJECT, kind: 'extra' });
       throw new Error('expected server_disabled');
     } catch (err) {
       expect((err as AutopilotError).code).toBe('server_disabled');
@@ -702,17 +724,265 @@ describe('autopilot controller', () => {
     const stopped = await gated.stop(PROJECT, ACTOR);
     expect(stopped.run.controlState).toBe('stopped');
     expect(stopped.run.fencingGeneration).toBeGreaterThan(started.run.fencingGeneration);
-    expect(() =>
+    await expect(
       gated.completeOperation({
         operationId: op.id,
         fencingGeneration: started.run.fencingGeneration,
         outcome: 'succeeded',
       }),
-    ).toThrow(/Late callback|stale/i);
+    ).rejects.toThrow(/Late callback|stale/i);
     expect(gated.getRun(PROJECT, stopped.run.id).run.controlState).toBe('stopped');
     expect(gated.getProjectState(PROJECT).activeRun).toBeNull();
 
     const disabled = await gated.disable(PROJECT, ACTOR);
     expect(disabled.config.enabled).toBe(false);
+  });
+
+  it('keeps the server operator gate independent of local-mode authentication bypass', () => {
+    const { controller } = freshController({ serverEnabled: false });
+    expect(controller.getProjectState(PROJECT).serverEnabled).toBe(false);
+    try {
+      controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+      throw new Error('expected server_disabled');
+    } catch (err) {
+      expect((err as AutopilotError).code).toBe('server_disabled');
+    }
+  });
+
+  it('blocks start when required containment cannot be enforced', () => {
+    const { controller } = freshController({
+      assertContainment: () => {
+        throw new AutopilotError(
+          'containment_unavailable',
+          'Autopilot cannot start: managed project runtime isolation is required',
+        );
+      },
+    });
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+    try {
+      controller.start(PROJECT, {}, ACTOR);
+      throw new Error('expected containment_unavailable');
+    } catch (err) {
+      expect((err as AutopilotError).code).toBe('containment_unavailable');
+    }
+    expect(controller.getProjectState(PROJECT).activeRun).toBeNull();
+  });
+
+  it('blocks beginOperation when required containment cannot be enforced', async () => {
+    let allow = true;
+    const { controller } = freshController({
+      assertContainment: () => {
+        if (!allow) {
+          throw new AutopilotError(
+            'containment_unavailable',
+            'Autopilot cannot start: arbitrary host mounts are not allowed',
+          );
+        }
+      },
+    });
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+    await startReady(controller);
+    allow = false;
+    await expect(
+      controller.beginOperation({ projectId: PROJECT, kind: 'implement' }),
+    ).rejects.toMatchObject({ code: 'containment_unavailable' });
+  });
+
+  it('issues scoped worker authority on start and reports missing cost honestly', async () => {
+    const { controller } = freshController();
+    const started = await startReady(controller);
+    expect(started.run.workerAuthority.keyName).toBe(`autopilot:${PROJECT}:${started.run.id}`);
+    expect(started.run.usage.costAvailable).toBe(false);
+    expect(started.run.usage.costUsd).toBeNull();
+    expect(controller.getProjectState(PROJECT).config.evaluatorPolicy).toEqual({ version: 1 });
+  });
+
+  it('pauses when the wall-time envelope is exhausted', async () => {
+    const startAt = new Date('2026-09-14T12:00:00.000Z');
+    let now = startAt;
+    const { controller } = freshController({
+      now: () => now,
+    });
+    controller.putConfig(
+      PROJECT,
+      {
+        enabled: true,
+        ...READY,
+        limits: { ...READY.limits, maxWallTimeMs: 5_000 },
+      },
+      ACTOR,
+    );
+    controller.start(PROJECT, {}, ACTOR);
+    now = new Date(startAt.getTime() + 6_000);
+    try {
+      await controller.beginOperation({ projectId: PROJECT, kind: 'implement' });
+      throw new Error('expected envelope_exhausted');
+    } catch (err) {
+      expect((err as AutopilotError).code).toBe('envelope_exhausted');
+    }
+    expect(controller.getProjectState(PROJECT).activeRun?.run.controlState).toBe('paused');
+    expect(controller.getProjectState(PROJECT).activeRun?.run.pauseReason).toMatch(/wall-time/);
+  });
+
+  it('pauses when reported cost exhausts the envelope and ignores missing cost', async () => {
+    const { controller } = freshController();
+    controller.putConfig(
+      PROJECT,
+      {
+        enabled: true,
+        ...READY,
+        limits: { ...READY.limits, maxCostUsd: 1 },
+      },
+      ACTOR,
+    );
+    const started = controller.start(PROJECT, {}, ACTOR);
+    const usage = await controller.recordUsage(PROJECT, {});
+    expect(usage.costAvailable).toBe(false);
+    expect(controller.getProjectState(PROJECT).activeRun?.run.controlState).toBe('running');
+
+    await controller.completeOperation({
+      operationId: started.operations[0].id,
+      fencingGeneration: started.run.fencingGeneration,
+      outcome: 'succeeded',
+      result: { costUsd: 1.5 },
+    });
+    expect(controller.getProjectState(PROJECT).activeRun?.run.pauseReason).toMatch(/cost envelope/);
+    expect(controller.getProjectState(PROJECT).activeRun?.run.usage.costUsd).toBe(1.5);
+  });
+
+  it('accumulates operation costs across completions and rejects negative costs', async () => {
+    const { controller } = freshController();
+    controller.putConfig(
+      PROJECT,
+      {
+        enabled: true,
+        ...READY,
+        limits: { ...READY.limits, maxCostUsd: 1 },
+      },
+      ACTOR,
+    );
+    const started = controller.start(PROJECT, {}, ACTOR);
+    await controller.completeOperation({
+      operationId: started.operations[0].id,
+      fencingGeneration: started.run.fencingGeneration,
+      outcome: 'succeeded',
+      result: { costUsd: 0.75 },
+    });
+    expect(controller.getProjectState(PROJECT).activeRun?.run.usage.costUsd).toBe(0.75);
+    expect(controller.getProjectState(PROJECT).activeRun?.run.controlState).toBe('running');
+
+    const second = await controller.beginOperation({ projectId: PROJECT, kind: 'implement' });
+    try {
+      await controller.completeOperation({
+        operationId: second.id,
+        fencingGeneration: started.run.fencingGeneration,
+        outcome: 'succeeded',
+        result: { costUsd: -0.1 },
+      });
+      throw new Error('expected invalid_config');
+    } catch (err) {
+      expect((err as AutopilotError).code).toBe('invalid_config');
+    }
+    expect(controller.getProjectState(PROJECT).activeRun?.run.usage.costUsd).toBe(0.75);
+
+    await controller.completeOperation({
+      operationId: second.id,
+      fencingGeneration: started.run.fencingGeneration,
+      outcome: 'succeeded',
+      result: { costUsd: 0.75 },
+    });
+    const after = controller.getProjectState(PROJECT).activeRun!;
+    expect(after.run.usage.costUsd).toBe(1.5);
+    expect(after.run.controlState).toBe('paused');
+    expect(after.run.pauseReason).toMatch(/cost envelope/);
+  });
+
+  it('cancels hung work when expiry is detected before the periodic sweep', async () => {
+    const cancelled: { refs: AutopilotCancelRefs | null } = { refs: null };
+    const startAt = new Date('2026-09-14T12:00:00.000Z');
+    let now = startAt;
+    const { controller } = freshController({
+      now: () => now,
+      cancelSideEffects: (refs) => {
+        cancelled.refs = refs;
+      },
+    });
+    controller.putConfig(
+      PROJECT,
+      {
+        enabled: true,
+        ...READY,
+        limits: { ...READY.limits, maxStageTimeoutMs: 2_000 },
+      },
+      ACTOR,
+    );
+    controller.start(PROJECT, {}, ACTOR);
+    const op = await controller.beginOperation({
+      projectId: PROJECT,
+      kind: 'implement',
+      sessionId: 'sess-hang',
+    });
+    now = new Date(startAt.getTime() + 3_000);
+    await expect(
+      controller.beginOperation({ projectId: PROJECT, kind: 'implement' }),
+    ).rejects.toMatchObject({ code: 'envelope_exhausted' });
+    expect(controller.getProjectState(PROJECT).activeRun?.run.controlState).toBe('paused');
+    expect(controller.getProjectState(PROJECT).activeRun?.run.pauseReason).toMatch(/stage timeout/);
+    expect(cancelled.refs?.sessionIds).toContain('sess-hang');
+    expect(
+      controller.getProjectState(PROJECT).activeRun?.operations.find((row) => row.id === op.id)
+        ?.status,
+    ).toBe('cancelled');
+    await expect(
+      controller.completeOperation({
+        operationId: op.id,
+        fencingGeneration: op.fencingGeneration,
+        outcome: 'succeeded',
+      }),
+    ).rejects.toThrow(/stale/i);
+  });
+
+  it('retries a failed stage twice then pauses', async () => {
+    const { controller } = freshController();
+    const started = await startReady(controller);
+    const fail = async (operationId: string, gen: number) =>
+      controller.completeOperation({
+        operationId,
+        fencingGeneration: gen,
+        outcome: 'failed',
+        result: { error: 'boom' },
+      });
+
+    await fail(started.operations[0].id, started.run.fencingGeneration);
+    expect(controller.getProjectState(PROJECT).activeRun?.run.controlState).toBe('running');
+
+    const second = await controller.beginOperation({ projectId: PROJECT, kind: 'plan-baseline' });
+    await fail(second.id, started.run.fencingGeneration);
+    expect(controller.getProjectState(PROJECT).activeRun?.run.controlState).toBe('running');
+
+    const third = await controller.beginOperation({ projectId: PROJECT, kind: 'plan-baseline' });
+    await fail(third.id, started.run.fencingGeneration);
+    const after = controller.getProjectState(PROJECT).activeRun!;
+    expect(after.run.controlState).toBe('paused');
+    expect(after.run.pauseReason).toBe('stage_retries_exhausted');
+    expect(after.stages.filter((row) => row.stage === 'planning')).toHaveLength(3);
+  });
+
+  it('refuses a second cycle while one is still active', async () => {
+    const { db, controller } = freshController();
+    const started = await startReady(controller);
+    try {
+      await controller.openNextCycle(PROJECT);
+      throw new Error('expected conflict');
+    } catch (err) {
+      expect((err as AutopilotError).code).toBe('conflict');
+    }
+    db.prepare(`UPDATE autopilot_cycles SET status = 'succeeded' WHERE run_id = ?`).run(
+      started.run.id,
+    );
+    const next = await controller.openNextCycle(PROJECT);
+    expect(next.run.cycleNumber).toBe(2);
+    expect(next.cycle?.cycleNumber).toBe(2);
+    expect(next.cycle?.status).toBe('active');
   });
 });

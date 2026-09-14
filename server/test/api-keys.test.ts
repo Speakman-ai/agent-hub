@@ -215,6 +215,7 @@ describe('GET /api/auth/keys hides server-minted spawn-creds', () => {
   it('omits spawn:<sessionId> and spawn-recovery (<short>) rows', async () => {
     const hiddenSpawn = createApiKey(userA.id, 'spawn:test-session-hidden-001', 7);
     const hiddenRecovery = createApiKey(userA.id, 'spawn-recovery (abcdef12)', 7);
+    const hiddenAutopilot = createApiKey(userA.id, 'autopilot:demo-app:run-1', 7);
     const visible = createApiKey(userA.id, 'my-real-token', 30);
 
     const list = await request
@@ -226,6 +227,7 @@ describe('GET /api/auth/keys hides server-minted spawn-creds', () => {
     expect(ids).toContain(visible.id);
     expect(ids).not.toContain(hiddenSpawn.id);
     expect(ids).not.toContain(hiddenRecovery.id);
+    expect(ids).not.toContain(hiddenAutopilot.id);
   });
 
   it('still authenticates with a hidden spawn-creds token', async () => {

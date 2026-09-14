@@ -36,6 +36,22 @@ export interface AutopilotLimits {
   maxWallTimeMs: number;
   maxStageTimeoutMs: number;
   maxRetriesPerStage: number;
+  /** Null means no cost cap; wall-time still applies when cost is unavailable. */
+  maxCostUsd: number | null;
+}
+
+export interface AutopilotEvaluatorPolicy {
+  version: number;
+}
+
+export interface AutopilotWorkerAuthority {
+  keyName: string | null;
+  keyId: string | null;
+}
+
+export interface AutopilotWorkerScope {
+  projectId: string;
+  runId: string;
 }
 
 export interface AutopilotTarget {
@@ -59,6 +75,7 @@ export interface AutopilotProjectConfig {
   briefRevision: number | null;
   target: AutopilotTarget | null;
   limits: AutopilotLimits | null;
+  evaluatorPolicy: AutopilotEvaluatorPolicy;
   credentialOwnerUserId: string | null;
   updatedAt: string;
   updatedBy: string | null;
@@ -81,6 +98,7 @@ export interface AutopilotRunRecord {
   targetId: string | null;
   limits: AutopilotLimits;
   usage: AutopilotUsage;
+  workerAuthority: AutopilotWorkerAuthority;
   startedBy: string | null;
   startedAt: string;
   stoppedAt: string | null;
@@ -194,6 +212,16 @@ export const DEFAULT_AUTOPILOT_LIMITS: AutopilotLimits = {
   maxWallTimeMs: 4 * 60 * 60 * 1000,
   maxStageTimeoutMs: 30 * 60 * 1000,
   maxRetriesPerStage: 2,
+  maxCostUsd: null,
+};
+
+export const DEFAULT_AUTOPILOT_EVALUATOR_POLICY: AutopilotEvaluatorPolicy = {
+  version: 1,
+};
+
+export const EMPTY_AUTOPILOT_WORKER_AUTHORITY: AutopilotWorkerAuthority = {
+  keyName: null,
+  keyId: null,
 };
 
 export const DEFAULT_AUTOPILOT_USAGE: AutopilotUsage = {

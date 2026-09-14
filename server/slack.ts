@@ -8,6 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getMemoryContext, appendDailyNote } from './memory.js';
 import config from './config.js';
+import { cursorSandboxArgs } from './cursor-sandbox-args.js';
 import { getProjects } from './project-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
@@ -220,7 +221,7 @@ function runAgent(
 
     if (engine === 'cursor-agent') {
       const combinedPrompt = systemPrompt ? `${systemPrompt}\n\n${userMessage}` : userMessage;
-      args = ['-p', combinedPrompt, '--force'];
+      args = ['-p', combinedPrompt, '--force', ...cursorSandboxArgs(config.cursorSandboxBypass)];
       bin = CURSOR_BIN;
     } else if (engine === 'gemini-cli') {
       // Gemini CLI has no --system-prompt flag; prepend it to the user turn.

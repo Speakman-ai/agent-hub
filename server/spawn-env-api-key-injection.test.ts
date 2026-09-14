@@ -66,4 +66,22 @@ describe('buildSpawnEnv — spawn-creds token in AGENT_HUB_API_KEY', () => {
     });
     expect(env.AGENT_HUB_API_KEY).toBe('ahub_global_break_glass');
   });
+
+  it('replaces the break-glass key for an Autopilot worker spawn', () => {
+    const sessionId = 'sess-autopilot-worker';
+    const globalCfg = { ...cfg, apiKey: 'ahub_global_break_glass' } as AppConfig;
+    const env = buildSpawnEnv(globalCfg, {
+      sessionId,
+      spawnCredsUserId: userId,
+      userId,
+      autopilotWorker: {
+        token: 'ahub_scoped_worker',
+        projectId: 'demo-app',
+        runId: 'run-1',
+      },
+    });
+    expect(env.AGENT_HUB_API_KEY).toBe('ahub_scoped_worker');
+    expect(env.PROJECT_ID).toBe('demo-app');
+    expect(env.AGENT_HUB_AUTOPILOT_RUN_ID).toBe('run-1');
+  });
 });

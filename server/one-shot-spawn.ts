@@ -41,6 +41,7 @@ import { resolveGrokSpawnModel } from './config.js';
 import type { AppConfig } from './types.js';
 import { resolveCodexHomeForProbe } from './host-cli-home.js';
 import { warmCursorAuthForHome } from './cursor-auth-warm.js';
+import { cursorSandboxArgs } from './cursor-sandbox-args.js';
 import type { SupportedEngine } from './engine-availability.js';
 
 export interface OneShotSpawnInput {
@@ -91,7 +92,7 @@ export function buildOneShotSpawnArgs(
   const trimmedModel = (model || '').trim();
 
   if (engine === 'cursor-agent') {
-    const args = ['--print', '--force'];
+    const args = ['--print', '--force', ...cursorSandboxArgs(cfg.cursorSandboxBypass)];
     if (trimmedModel) args.push('--model', trimmedModel);
     if (systemPrompt) args.push('--system-prompt', systemPrompt);
     args.push(prompt);

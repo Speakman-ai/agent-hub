@@ -375,6 +375,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           }
         : { configured: false, clientId: null },
       codexDangerBypass: !!config.codexDangerBypass,
+      cursorSandboxBypass: config.cursorSandboxBypass !== false,
       emailLogoEnabled: config.emailLogoEnabled !== false,
       experimentalAutopilotEnabled: !!config.experimentalAutopilotEnabled,
       codexProfile: config.codexProfile || null,
@@ -532,6 +533,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'transcriptionProvider',
       'publicUrl',
       'codexDangerBypass',
+      'cursorSandboxBypass',
       'emailLogoEnabled',
       'codexProfile',
       'experimentalAutopilotEnabled',
@@ -545,6 +547,9 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     }
     if (updates.codexDangerBypass !== undefined) {
       updates.codexDangerBypass = coerceConfigBooleanLoose(updates.codexDangerBypass, false);
+    }
+    if (updates.cursorSandboxBypass !== undefined) {
+      updates.cursorSandboxBypass = coerceConfigBooleanLoose(updates.cursorSandboxBypass, true);
     }
     if (updates.emailLogoEnabled !== undefined) {
       updates.emailLogoEnabled = coerceConfigBooleanLoose(updates.emailLogoEnabled, true);

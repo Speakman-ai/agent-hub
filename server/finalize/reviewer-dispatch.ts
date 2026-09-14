@@ -921,7 +921,7 @@ const OMITTED_PATCH_LIST_BYTE_BUDGET = 2_000;
  */
 export function renderOmittedPatchList(files: string[]): string {
   if (files.length === 0) return '';
-  const header = `> **Omitted patches** (listed for reference; do not shell-read them):\n`;
+  const header = `> **Omitted patches** (read from the worktree when local reads work):\n`;
   const contentBudget = Math.max(
     0,
     OMITTED_PATCH_LIST_BYTE_BUDGET - Buffer.byteLength(header, 'utf8') - 80,
@@ -941,18 +941,49 @@ export function renderOmittedPatchList(files: string[]): string {
 }
 
 /**
+ * Reorder a unified diff so implementation patches precede tests and
+ * generated files. Git emits alphabetical order, which puts a 30 KB
+ * `containment.test.ts` ahead of `controller.ts` / `worker-authority.ts`.
+ * When the model only attends to the head of a large always-apply rule,
+ * that order is how acceptance-criteria files look "omitted".
+ *
+ * Does not drop patches. Truncation still happens in
+ * {@link truncateDiffAtFileBoundary}. Exported for tests.
+ */
+export function orderUnifiedDiffForReviewCorpus(diff: string): string {
+  const markerMatch = diff.match(/\n\[diff truncated[^\n]*\]\n?$/);
+  const marker = markerMatch?.[0] ?? '';
+  const body = marker ? diff.slice(0, -marker.length) : diff;
+  const sections = body.split(/(?=^diff --git )/m).filter((s) => s.length > 0);
+  if (sections.length <= 1) return diff;
+  const originalIndex = new Map(sections.map((section, index) => [section, index]));
+  sections.sort((a, b) => {
+    const byPriority = diffSectionKeepPriority(b) - diffSectionKeepPriority(a);
+    if (byPriority !== 0) return byPriority;
+    return (originalIndex.get(a) ?? 0) - (originalIndex.get(b) ?? 0);
+  });
+  return sections.join('') + marker;
+}
+
+/**
  * Wrap the captured unified diff for an unbounded delivery channel (Cursor
  * always-apply rule, Claude system-prompt file, Gemini/Codex/Grok stdin).
- * The argv user prompt must not embed this body.
+ * The argv user prompt must not embed this body. Implementation patches
+ * are listed first so a truncated always-apply rule still shows the files
+ * the ticket's acceptance criteria name.
  */
 export function formatReviewerDiffCorpus(diff: string): string {
+  const ordered = orderUnifiedDiffForReviewCorpus(diff);
   return (
     `## Review corpus — unified diff\n\n` +
-    `This is the local diff for this Finalize review. It is attached out of band ` +
-    `so the argv cap cannot omit implementation files. Review this corpus. ` +
-    `Do not use shell \`cat\`, the host terminal, or a file Read tool — those ` +
-    `fail in this review environment and are not a code defect.\n\n` +
-    `\`\`\`diff\n${diff}\n\`\`\`\n`
+    `This is the local diff for this Finalize review. Implementation files are ` +
+    `listed first, then tests, then generated docs. It is attached out of band ` +
+    `so the argv cap cannot omit implementation files. Review this corpus ` +
+    `first. If the prompt flags Partial input, read the omitted files — your ` +
+    `Read/Bash tools work. A failed read (bwrap, empty terminal, missing \`op: exec\`) ` +
+    `is an access failure: report it, do not score it as a code defect, and ` +
+    `still emit a verdict.\n\n` +
+    `\`\`\`diff\n${ordered}\n\`\`\`\n`
   );
 }
 
@@ -1564,39 +1595,39 @@ export function buildLocalDiffReviewerPrompt(args: {
   const omitted = inputs.omittedFileCount ?? 0;
   const omittedFiles = inputs.omittedFiles ?? [];
   const anyTruncation = Boolean(inputs.diffDegraded) || Boolean(inputs.severedPatch) || omitted > 0;
-  // Completeness used to be delegated to worktree Read/cat after argv omitted
-  // files. That looped: Cursor sandbox cannot create a bwrap namespace, the
-  // host-terminal ReAct path returns empty, and this reviewer has no callable
-  // Read tool. Do not send the reviewer to tools.
-  const noToolReadDirective =
-    `> Do **not** use shell \`cat\`, a sandbox, the host-terminal tool, or a\n` +
-    `> file Read tool to fetch omitted patches. Those paths fail with \`bwrap\`\n` +
-    `> namespace errors, empty output, or a missing Read tool. Do **not** return\n` +
-    `> \`changes_requested\` solely because a patch was omitted from argv, the\n` +
-    `> corpus was size-limited, or a tool read failed: that is a review-environment\n` +
-    `> limit, not a coverage gap or a code defect. Review the attached review\n` +
-    `> corpus (session rule / system-prompt file / stdin) or the inline diff\n` +
-    `> below, whichever is present.\n`;
+  // Budget-trimmed diffs are partial. Reads of the omitted patches work
+  // (Cursor spawns pass `--sandbox disabled`); a read that still fails is an
+  // access failure — reportable, but never a defect and never a reason to
+  // withhold the verdict, which the orchestrator scores as `review_failed`.
+  const partialInputReadDirective =
+    `> The attached corpus is **partial**. Read the omitted patches from the\n` +
+    `> worktree before deciding — your Read/Bash tools work here. Hub\n` +
+    `> \`terminal\` has no \`op: exec\`; use your own tools. If a read still\n` +
+    `> fails, that is a review-environment **access failure**: say so in the\n` +
+    `> prose, do not score unread files as unmet criteria, and do not request\n` +
+    `> changes because a command errored. **Always end with the verdict\n` +
+    `> block** — a turn without one is recorded as a failed review, not as\n` +
+    `> caution.\n`;
   const omittedPatchList = renderOmittedPatchList(omittedFiles);
   const coverageNotice = inputs.diffDegraded
     ? `\n> **Partial input.** The patch body for this change set was too large to\n` +
       `> capture, so the section below is a per-file summary rather than the full\n` +
       `> diff. Review what is visible, and say so in your summary; do not treat\n` +
       `> the absence of visible problems as evidence the change is clean.\n` +
-      noToolReadDirective +
+      partialInputReadDirective +
       omittedPatchList
     : inputs.severedPatch
       ? `\n> **Partial input.** The diff exceeded the size budget and the last patch\n` +
         `> shown is cut off mid-file, so you are seeing an incomplete version of\n` +
         `> that file${omitted > 0 ? `, with ${omitted} further file patch(es) omitted` : ''}.\n` +
         `> Do not treat it as fully reviewed, and say so in your summary.\n` +
-        noToolReadDirective +
+        partialInputReadDirective +
         omittedPatchList
       : omitted > 0
         ? `\n> **Partial input.** ${omitted} file patch(es) were omitted\n` +
           `> to fit the corpus size budget; the patches shown are complete but do not cover\n` +
           `> every changed file.\n` +
-          noToolReadDirective +
+          partialInputReadDirective +
           omittedPatchList
         : '';
 
@@ -1630,7 +1661,7 @@ worktree for project \`${project.id}\` (${projectName}), card
 **No GitHub PR exists yet.** Do NOT call \`gh\`, the GitHub API, or any
 HTTP endpoint to fetch PR data — there is nothing to fetch. ${
     anyTruncation
-      ? 'The attached corpus is **partial** (see **Partial input** above). Review what is attached. Do not use tools to fetch omitted files, and do not fail the change solely for the omission.'
+      ? 'The attached corpus is **partial** (see **Partial input** above). Review what is attached and read the omitted files — your Read/Bash tools work. A read that still fails is an access failure: report it, do not score it as an implementation defect, and still end the turn with a verdict.'
       : embedDiff
         ? 'The diff below is the complete input.'
         : 'The attached review corpus is the complete input.'
@@ -1655,7 +1686,7 @@ ${fileList}
 ${
   embedDiff
     ? `\`\`\`diff\n${inputs.unifiedDiff}\n\`\`\``
-    : `The unified diff is **not** in this argv prompt. It is in the attached review corpus (Cursor always-apply session rule, Claude \`--system-prompt-file\`, or Gemini/Codex/Grok stdin). Review that corpus. Do not use shell, host terminal, or a file Read tool.`
+    : `The unified diff is **not** in this argv prompt. It is in the attached review corpus (Cursor always-apply session rule, Claude \`--system-prompt-file\`, or Gemini/Codex/Grok stdin). Review that corpus. If Partial input is flagged, read the omitted files — your Read/Bash tools work. A read that still fails is an access failure: report it, do not score it as a code defect, and still end the turn with a verdict.`
 }
 
 ## Your task
@@ -1675,13 +1706,21 @@ criterion the card states is not fully delivered in this change, score it
 above 3 so the verdict blocks — finalize must not complete while a stated
 criterion is unmet.** Score it:
 
-- **7** — a criterion has no implementation anywhere in the diff.
+- **7** — a criterion has no implementation anywhere in the **attached**
+  corpus, the inline diff, or omitted files you successfully read. An
+  omitted patch you could not read, a failed Read/cat/terminal, or a
+  sandbox \`bwrap\` error is **not** this: that is an access failure, not
+  proof the criterion is unimplemented, and not a completed review of
+  those unread files.
 - **6** — a criterion is only partially delivered (scaffolding, a type or
   helper with no caller, a flag nothing reads, one surface updated out of
-  the several the criterion names).
+  the several the criterion names) **in what you reviewed**.
 - **6** — the ticket itself reached you truncated (the spec block says so).
   Coverage you cannot read is coverage you cannot confirm, so an
   unassessable spec blocks rather than defaulting to approval.
+- Do **not** score 6 or 7 because a local tool read failed or because a
+  patch is listed as omitted. If reads failed, name that limit in the prose
+  and decide on what you did read — never end the turn without a verdict.
 
 A \`[Partial]\` or \`[Spec]\` card title does **not** lower this bar, and
 neither does an author note that the omission is "intentional", "tracked
@@ -1712,8 +1751,13 @@ that *is* present looks good.
 
 Walk in order, take the first match:
 
-1. **Any finding scores > 3?** → verdict = \`changes_requested\`.
-2. **Otherwise** → verdict = \`approved\`. (Non-blocking notes ≤ 3 are
+1. **Any implementation finding scores > 3?** → verdict = \`changes_requested\`.
+2. **Access failure only** (a tool call failed; no implementation defect):
+   not an unmet criterion and not a blocker. Retry the read; if it still
+   fails, report it in the prose and continue the walk on what you did read.
+   Never withhold the verdict block over it — a turn with no block is scored
+   \`review_failed\` and Finalize stops with no review at all.
+3. **Otherwise** → verdict = \`approved\`. (Non-blocking notes ≤ 3 are
    still included in the findings list.)
 
 When in doubt about a score, **round up, not down.** Under-scoring to

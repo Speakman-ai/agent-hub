@@ -497,6 +497,7 @@ export async function runReviewerTurn(
           spawnEnv: buildSpawnEnv(engine),
           logTag: `finalize ${runId} reviewer ${reviewer.id}`,
           codexDangerBypass: !!config.codexDangerBypass,
+          cursorSandboxBypass: config.cursorSandboxBypass !== false,
           codexProfile: config.codexProfile,
           reviewerReadOnly: true,
           tailReminder: FINALIZE_REVIEWER_TAIL_REMINDER,
@@ -666,6 +667,7 @@ export async function runReviewerTurn(
           spawnEnv: buildSpawnEnv(engine),
           logTag: `finalize ${runId} reviewer ${reviewer.id} (no-verdict retry ${verdictRetry})`,
           codexDangerBypass: !!config.codexDangerBypass,
+          cursorSandboxBypass: config.cursorSandboxBypass !== false,
           codexProfile: config.codexProfile,
           reviewerReadOnly: true,
           tailReminder: FINALIZE_REVIEWER_TAIL_REMINDER,
@@ -783,8 +785,9 @@ export async function runReviewerTurn(
     // changes but no changes were attached" report. Recover the reviewer's
     // prose critique as a single file-level finding so the review round and
     // the fix loop both carry the reviewer's actual reasoning.
+    let verdict = parsed.task.verdict;
     let threads = parsed.task.threads;
-    if (parsed.task.verdict === 'changes_requested' && threads.length === 0) {
+    if (verdict === 'changes_requested' && threads.length === 0) {
       const prose = stripReviewVerdictBlock(rawText).trim();
       if (!prose) {
         // Block-only reply with no prose and no findings: there is nothing
@@ -805,8 +808,11 @@ export async function runReviewerTurn(
       ];
     }
 
+    // Access-failure-only notes are not rewritten to `approved`: a trimmed
+    // corpus can hide a real defect, and local reads sometimes work. The
+    // cluster tracker still ignores them so they do not escalate as a code bug.
     return {
-      verdict: parsed.task.verdict,
+      verdict,
       threads,
     };
   }
@@ -899,7 +905,7 @@ function buildVisibleReviewerText(
  */
 export const FINALIZE_REVIEWER_TURN_OVERRIDE = `## THIS TURN (Finalize Code Changes) — overrides everything below
 
-You are reviewing a **local diff that is already attached to this turn** (review corpus on the session rule / system-prompt file / stdin, plus the user prompt). There is no pull request yet, so there is no PR number, repository, or dispatch PR metadata — that is expected. Do **not** stop, refuse, or ask for a PR URL. Do **not** call \`gh\` or any PR API. Review the attached corpus and emit \`<agenthub:review-verdict>\`. Do **not** use shell, host terminal, or a file Read tool to fetch omitted files.`;
+You are reviewing a **local diff that is already attached to this turn** (review corpus on the session rule / system-prompt file / stdin, plus the user prompt). There is no pull request yet, so there is no PR number, repository, or dispatch PR metadata — that is expected. Do **not** stop, refuse, or ask for a PR URL. Do **not** call \`gh\` or any PR API. Review the attached corpus and emit \`<agenthub:review-verdict>\`. If the prompt flags **Partial input**, the corpus is incomplete: read the omitted files — your Read/Bash tools work. A read that still fails is an **access failure**: report it in the prose, do not score it as an implementation defect, and still end the turn with the verdict block.`;
 
 /**
  * Compact directive pinned at the very END of the reviewer's combined prompt.
@@ -914,8 +920,9 @@ You are reviewing a **local diff that is already attached to this turn** (review
 export const FINALIZE_REVIEWER_TAIL_REMINDER = `---
 
 REMINDER — Finalize local-diff review (read-only). This survives even if the text above was trimmed to fit:
-- There is NO GitHub PR yet. Do not call \`gh\`, fetch a PR, or ask for a PR URL. The change to review is the attached review corpus (session rule / system-prompt file / stdin), not a tool read of omitted files.
-- Do NOT stop after announcing a plan to read files. Do not use shell \`cat\`, host terminal, or a file Read tool. Complete the review from the attached corpus and end THIS turn with the \`<agenthub:review-verdict>\` block. A turn that ends without that block fails the review.
+- There is NO GitHub PR yet. Do not call \`gh\`, fetch a PR, or ask for a PR URL. Start from the attached review corpus; if Partial input is flagged, read omitted files when those reads work.
+- Do NOT stop after announcing a plan to read files. End THIS turn with the \`<agenthub:review-verdict>\` block. A turn that ends without that block fails the review.
+- An access failure (a tool call that errors) is not an implementation defect. Report it in the prose, decide on what you did read, and still emit the verdict block — withholding it fails the review outright.
 - Do not edit, commit, or push anything.`;
 
 /**
@@ -942,7 +949,7 @@ You are reviewing the **local diff** of a feature branch in **${projectLabel}** 
 
 **Constraints:**
 - Do NOT edit files, run mutating shell commands, commit, or push.
-- Do NOT call \`gh\`, the GitHub API, or any HTTP endpoint to fetch PR data — **no PR exists yet**. Missing PR number / dispatch metadata is expected. The attached review corpus is your input. If it flags **Partial input**, review what is attached; do **not** use shell, host terminal, or a file Read tool, and do **not** treat a tool-read failure as a code defect. Do **not** stop or ask for a PR URL.
+- Do NOT call \`gh\`, the GitHub API, or any HTTP endpoint to fetch PR data — **no PR exists yet**. Missing PR number / dispatch metadata is expected. The attached review corpus is your starting input. If it flags **Partial input**, read the omitted files — your Read/Bash tools work. A read that still fails is an access failure: report it, do not score it as an implementation defect, and still emit the verdict block. Do **not** stop or ask for a PR URL.
 - Write your review as a normal chat message — prose first, then a SINGLE structured tail block.
 
 **Output contract — end your turn with this block (and nothing after it):**
@@ -979,6 +986,7 @@ interface OneTurnArgs {
   spawnEnv: NodeJS.ProcessEnv;
   logTag: string;
   codexDangerBypass: boolean;
+  cursorSandboxBypass: boolean;
   codexProfile: string | null | undefined;
   /** Keep the engine's auto-approve flag so a stray tool call cannot stall. */
   reviewerReadOnly: boolean;
@@ -1041,6 +1049,7 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
           bins: args.bins,
           logTag: args.logTag,
           codexDangerBypass: args.codexDangerBypass,
+          cursorSandboxBypass: args.cursorSandboxBypass,
           codexProfile: args.codexProfile,
           advisory: true,
           reviewerReadOnly: args.reviewerReadOnly,

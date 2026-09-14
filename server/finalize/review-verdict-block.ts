@@ -287,6 +287,55 @@ function truncateBody(body: string): string {
  * reviewer emits two we keep that as evidence of the contract violation
  * in the persisted chat message.
  */
+/**
+ * Phrases that mean the reviewer could not read the corpus / omitted files,
+ * not that the change is missing an implementation. A `changes_requested`
+ * verdict that only contains these loops Finalize forever: the diff never
+ * shrinks, sandbox `cat` keeps failing, and no fixer can "address" a
+ * missing file the model was told not to fetch.
+ */
+const REVIEW_ENVIRONMENT_NEEDLES = [
+  'bwrap',
+  'could not create a namespace',
+  'sandbox could not',
+  'host terminal returned no',
+  'review incomplete',
+  'cannot certify this as mergeable',
+  'cannot establish whether the branch is mergeable',
+  'could not inspect the',
+  'omitted files',
+  'omitted file patch',
+  'omitted patches',
+  'file read tool',
+  'tool-read failure',
+  'tool read failed',
+  'review-environment',
+  'inaccessible files',
+  'local reads failed',
+  'no file contents',
+  'approval pending completion of the review',
+  'no code defect is asserted',
+  'no concrete code defect',
+  'no scored code findings',
+  'acceptance criteria remain unverified',
+  'could not read omitted',
+  'access failure',
+  'read-only file channel',
+  'shell failed before reading',
+  'not evidence of missing implementation',
+] as const;
+
+export function isReviewEnvironmentFinding(body: string): boolean {
+  const text = body.toLowerCase();
+  return REVIEW_ENVIRONMENT_NEEDLES.some((needle) => text.includes(needle));
+}
+
+export function allFindingsAreReviewEnvironmentOnly(
+  threads: ReadonlyArray<{ body: string }>,
+): boolean {
+  return threads.length > 0 && threads.every((t) => isReviewEnvironmentFinding(t.body));
+}
+
 export function stripReviewVerdictBlock(text: string): string {
   if (typeof text !== 'string') return text;
   const tagStripped = text.replace(

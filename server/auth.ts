@@ -8,6 +8,7 @@ import { getUserById, getUserByUsername } from './users-store.js';
 import { getMembershipRole } from './memberships-store.js';
 import { verifyApiKey as verifyUserApiKey } from './api-keys-store.js';
 import { sessionIdFromSpawnKeyName } from './kanban-caller-session.js';
+import { parseAutopilotWorkerKeyName } from './autopilot/worker-authority.js';
 import {
   AUTH_CODE_INVALID_SESSION,
   AUTH_CODE_NO_ACTIVE_ORG_MEMBERSHIP,
@@ -134,6 +135,8 @@ export interface AuthenticatedRequest extends Request {
   authViaUserApiKey?: boolean;
   /** When auth used a per-session spawn-creds key (`spawn:<sessionId>`), the linked chat session id. */
   authSpawnSessionId?: string;
+  /** When auth used an Autopilot worker key (`autopilot:<projectId>:<runId>`). */
+  authAutopilotWorker?: { projectId: string; runId: string };
   /** Active org id at the time the request was authenticated. */
   authOrgId?: string;
   /** True when the caller used the apiKey fallback. */
@@ -520,6 +523,8 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
           authedReq.authViaUserApiKey = true;
           const spawnSessionId = sessionIdFromSpawnKeyName(verified.name);
           if (spawnSessionId) authedReq.authSpawnSessionId = spawnSessionId;
+          const autopilotWorker = parseAutopilotWorkerKeyName(verified.name);
+          if (autopilotWorker) authedReq.authAutopilotWorker = autopilotWorker;
           next();
           return;
         }

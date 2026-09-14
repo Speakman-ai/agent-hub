@@ -1,0 +1,24 @@
+---
+description: Finalize in-session review — always emit a verdict; tool failures are not defects
+alwaysApply: true
+---
+
+# Finalize local-diff review
+
+When this turn asks for `<agenthub:review-verdict>`:
+
+- **Always end the turn with the verdict block.** A turn without one is not
+  recorded as "undecided" — the orchestrator scores it `review_failed` and
+  Finalize stops with no review at all. There is no third value; withholding
+  the block is strictly worse than either choice.
+- Start from the attached review corpus (session rule / system-prompt file /
+  stdin). If the prompt flags **Partial input**, that corpus is incomplete.
+- If omitted patches are listed, read them. Your shell and file tools work —
+  Cursor spawns run with `--sandbox disabled` precisely so those reads
+  succeed. Hub `terminal` has no `op: exec`; use your own Read / Bash tools.
+- If a read still fails, say so in the prose and decide on what you could see.
+  A tool failure is **not** an implementation defect: do not score unread files
+  as unmet acceptance criteria, and do not request changes because a command
+  errored. State the gap plainly and let the human weigh it.
+- `changes_requested` is for a defect you actually found and can point at.
+  `approved` is for a review that found no blocker in what it read.

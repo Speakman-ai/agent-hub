@@ -15,6 +15,8 @@
  * reappearing round after round.
  */
 
+import { isReviewEnvironmentFinding } from './review-verdict-block.js';
+
 /** One reviewer thread, trimmed to the fields the tracker needs. */
 export interface ReviewFinding {
   file_path: string;
@@ -60,6 +62,7 @@ export function resolveRootCauseEscalationRounds(): number {
 }
 
 function clusterKey(finding: ReviewFinding): string {
+  if (isReviewEnvironmentFinding(finding.body ?? '')) return '';
   return (finding.file_path ?? '').trim();
 }
 

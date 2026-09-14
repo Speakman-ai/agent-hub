@@ -791,12 +791,39 @@ components:
           type: integer
           minimum: 0
           maximum: 2
+        maxCostUsd:
+          type: number
+          nullable: true
+          minimum: 0
+          exclusiveMinimum: true
       required:
         - cycleMode
         - maxCycles
         - maxWallTimeMs
         - maxStageTimeoutMs
         - maxRetriesPerStage
+        - maxCostUsd
+    AutopilotEvaluatorPolicy:
+      type: object
+      properties:
+        version:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+      required:
+        - version
+    AutopilotWorkerAuthority:
+      type: object
+      properties:
+        keyName:
+          type: string
+          nullable: true
+        keyId:
+          type: string
+          nullable: true
+      required:
+        - keyName
+        - keyId
     AutopilotTarget:
       type: object
       properties:
@@ -853,6 +880,8 @@ components:
           allOf:
             - $ref: "#/components/schemas/AutopilotLimits"
             - nullable: true
+        evaluatorPolicy:
+          $ref: "#/components/schemas/AutopilotEvaluatorPolicy"
         credentialOwnerUserId:
           type: string
           nullable: true
@@ -870,6 +899,7 @@ components:
         - briefRevision
         - target
         - limits
+        - evaluatorPolicy
         - credentialOwnerUserId
         - updatedAt
         - updatedBy
@@ -933,6 +963,8 @@ components:
           $ref: "#/components/schemas/AutopilotLimits"
         usage:
           $ref: "#/components/schemas/AutopilotUsage"
+        workerAuthority:
+          $ref: "#/components/schemas/AutopilotWorkerAuthority"
         startedBy:
           type: string
           nullable: true
@@ -960,6 +992,7 @@ components:
         - targetId
         - limits
         - usage
+        - workerAuthority
         - startedBy
         - startedAt
         - stoppedAt
@@ -3587,6 +3620,8 @@ components:
         anthropicApiKeySet:
           type: boolean
         codexDangerBypass:
+          type: boolean
+        cursorSandboxBypass:
           type: boolean
         emailLogoEnabled:
           type: boolean
@@ -19366,6 +19401,19 @@ paths:
                       type: integer
                       minimum: 0
                       maximum: 2
+                    maxCostUsd:
+                      type: number
+                      nullable: true
+                      minimum: 0
+                      exclusiveMinimum: true
+                evaluatorPolicy:
+                  type: object
+                  nullable: true
+                  properties:
+                    version:
+                      type: integer
+                      minimum: 0
+                      exclusiveMinimum: true
                 credentialOwnerUserId:
                   type: string
                   nullable: true
@@ -19405,7 +19453,7 @@ paths:
       tags:
         - Autopilot
       summary: Start an Autopilot run
-      description: Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires the server operator setting and project opt-in.
+      description: Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires the server operator setting, project opt-in, scoped worker credentials, and enforceable runtime containment.
       parameters:
         - schema:
             type: string
@@ -19460,6 +19508,11 @@ paths:
                       type: integer
                       minimum: 0
                       maximum: 2
+                    maxCostUsd:
+                      type: number
+                      nullable: true
+                      minimum: 0
+                      exclusiveMinimum: true
                 credentialOwnerUserId:
                   type: string
       responses:
@@ -25433,7 +25486,7 @@ paths:
       tags:
         - Config
       summary: Update one or more config fields
-      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `codexProfile`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked)."
+      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `cursorSandboxBypass`, `codexProfile`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked)."
       requestBody:
         content:
           application/json:
@@ -25474,6 +25527,8 @@ paths:
                 publicUrl:
                   type: string
                 codexDangerBypass:
+                  type: boolean
+                cursorSandboxBypass:
                   type: boolean
                 emailLogoEnabled:
                   type: boolean

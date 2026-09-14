@@ -454,6 +454,8 @@ describe('composeReviewerSystemPrompt', () => {
     expect(out).toContain('Do NOT edit files');
     expect(out).toContain('no PR exists yet');
     expect(out).toContain('agenthub:review-verdict');
+    expect(out).toContain('access failure');
+    expect(out).toContain('still end the turn with the verdict block');
     expect(out.startsWith(FINALIZE_REVIEWER_TURN_OVERRIDE)).toBe(true);
     expect(out.indexOf(FINALIZE_REVIEWER_TURN_OVERRIDE)).toBeLessThan(out.indexOf('BASE'));
     expect(out.indexOf('BASE')).toBeLessThan(out.indexOf('In-session Reviewer'));
@@ -895,6 +897,61 @@ describe('runReviewerTurn — changes_requested with no anchored findings', () =
   });
 });
 
+describe('runReviewerTurn — review-environment findings are not rewritten', () => {
+  it('leaves an access-failure-only changes_requested verdict in place', async () => {
+    const assistantText = `Review incomplete: local reads failed because the sandbox could not create a namespace; the host terminal returned no file contents. I could not inspect the 18 omitted files. No code defect is asserted from inaccessible files.
+
+<agenthub:review-verdict>
+{
+  "verdict":"changes_requested",
+  "threads":[
+    {"file_path":"General review feedback","line_start":null,"line_end":null,"body":"Review incomplete: local reads failed (bwrap). Acceptance criteria remain unverified. I cannot certify this as mergeable. No code defect is asserted from inaccessible files."}
+  ]
+}
+</agenthub:review-verdict>`;
+    const { spawnFn } = makeSpawnFake(assistantText);
+    const { deps } = makeDeps(spawnFn);
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-env-only',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('changes_requested');
+    expect(result.threads).toHaveLength(1);
+  });
+
+  it('still blocks when a real defect is mixed with an environment finding', async () => {
+    const assistantText = `<agenthub:review-verdict>
+{
+  "verdict":"changes_requested",
+  "threads":[
+    {"file_path":"General review feedback","line_start":null,"line_end":null,"body":"Review incomplete: could not inspect omitted files."},
+    {"file_path":"server/foo.ts","line_start":42,"line_end":45,"body":"**[6/10]** Race on config.bin."}
+  ]
+}
+</agenthub:review-verdict>`;
+    const { spawnFn } = makeSpawnFake(assistantText);
+    const { deps } = makeDeps(spawnFn);
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-mixed',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('changes_requested');
+    expect(result.threads).toHaveLength(2);
+  });
+});
+
 describe('runReviewerTurn — scoped prompt (no transcript bleed)', () => {
   it('does not read session messages to build the user prompt', async () => {
     const assistantText = `OK.
@@ -940,12 +997,10 @@ describe('runReviewerTurn — scoped prompt (no transcript bleed)', () => {
 
     expect(capturedArgs).toHaveLength(1);
     const argsBlob = capturedArgs[0]!.args.join('\n');
-    // The prompt should reference our diff body, and its total size
-    // should be a small multiple of the diff body (NOT amplified by an
-    // unbounded transcript). The buildLocalDiffReviewerPrompt template
-    // is ~2k chars; the diff body adds ~200. Anything > 20x of the
-    // diff body would signal transcript-bleed.
-    expect(argsBlob.length).toBeLessThan(bigDiff.length * 25);
+    // Production spawn keeps the unified diff off argv. The user prompt is
+    // the ticket + rubric (~6–7 KB); a transcript-bleed or an inlined
+    // corpus would be tens of KB. 30× a 250-byte stub is ~7.5 KB.
+    expect(argsBlob.length).toBeLessThan(bigDiff.length * 30);
   });
 });
 

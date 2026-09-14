@@ -3938,6 +3938,20 @@ export interface AppConfig {
    */
   codexDangerBypass: boolean;
   /**
+   * When true (the default), every `cursor-agent` spawn passes
+   * `--sandbox disabled`. Cursor sandboxes its shell/file tools with
+   * bubblewrap, which cannot create a user namespace inside a typical
+   * container (`bwrap: No permissions to create a new namespace`) — every
+   * command the agent runs then fails, so a Cursor session can neither read
+   * files nor run tests. That is what stalled Finalize in-session review for
+   * 17 rounds: the reviewer could not `cat` the files it was asked to check.
+   * Set false to keep Cursor's sandbox on hosts whose kernel allows
+   * unprivileged user namespaces. Configure via `cursorSandboxBypass` in
+   * config.json, `PATCH /api/config`, or env
+   * `AGENT_HUB_CURSOR_SANDBOX_BYPASS` (`false` / `0` / `off` to disable).
+   */
+  cursorSandboxBypass: boolean;
+  /**
    * Which SessionEnv backend runs per-session dev environments (dev server,
    * PTY host, port mapping). `auto` (the default) probes the host at boot and
    * picks `sysbox` when sysbox-runc is installed and registered with Docker,

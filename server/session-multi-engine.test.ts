@@ -329,6 +329,9 @@ describe('buildSessionMultiSpawnArgs', () => {
         'utf8',
       );
       expect(rule).toContain('AutopilotStore');
+      // Corpus must precede the system prompt so a truncated always-apply
+      // rule still contains the local diff the reviewer has to certify.
+      expect(rule.indexOf('AutopilotStore')).toBeLessThan(rule.indexOf('\nsys\n'));
       cursor.systemPromptFileCleanup?.();
 
       const claude = buildSessionMultiSpawnArgs({
@@ -344,7 +347,9 @@ describe('buildSessionMultiSpawnArgs', () => {
       });
       expect(claude.args[claude.args.length - 1]).not.toContain('AutopilotStore');
       const sysFile = claude.args[claude.args.indexOf('--system-prompt-file') + 1];
-      expect(readFileSync(sysFile, 'utf8')).toContain('AutopilotStore');
+      const claudeSys = readFileSync(sysFile, 'utf8');
+      expect(claudeSys).toContain('AutopilotStore');
+      expect(claudeSys.indexOf('AutopilotStore')).toBeLessThan(claudeSys.indexOf('\nsys'));
       claude.systemPromptFileCleanup?.();
 
       const gemini = buildSessionMultiSpawnArgs({
@@ -359,6 +364,9 @@ describe('buildSessionMultiSpawnArgs', () => {
       });
       expect(gemini.args[1]).not.toContain('AutopilotStore');
       expect(gemini.stdinPrompt).toContain('AutopilotStore');
+      expect(gemini.stdinPrompt!.indexOf('AutopilotStore')).toBeLessThan(
+        gemini.stdinPrompt!.indexOf('\nsys'),
+      );
 
       const grok = buildSessionMultiSpawnArgs({
         engine: 'grok-cli',

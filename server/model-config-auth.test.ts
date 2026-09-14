@@ -60,6 +60,7 @@ function makeConfig(): AppConfig {
     codexProfile: null,
     sessionEnvAdapter: 'auto' as const,
     codexDangerBypass: true,
+    cursorSandboxBypass: true,
     cardDoneOnPush: true,
     experimentalAutopilotEnabled: false,
     slackWebhookUrl: null,

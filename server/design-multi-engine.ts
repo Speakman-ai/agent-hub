@@ -6,6 +6,7 @@ import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { advertisedCapabilityModelsForEnv } from './codex-model-capability.js';
 import { codexReasoningArgs } from './codex-reasoning.js';
 import config, { resolveGrokSpawnModel } from './config.js';
+import { cursorSandboxArgs } from './cursor-sandbox-args.js';
 import {
   appendCodexAwsAccessDirs,
   appendCodexExecSandboxFlags,
@@ -186,6 +187,7 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
         '-p',
         prompt,
         '--force',
+        ...cursorSandboxArgs(config.cursorSandboxBypass),
         '--model',
         model,
         '--resume',

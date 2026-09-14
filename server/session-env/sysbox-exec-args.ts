@@ -34,6 +34,9 @@ import { DEFAULT_UBUNTU_24_04_IMAGE } from '../finalize/runner-images.js';
 /** The session worktree as seen from inside the container. */
 export const SYSBOX_SESSION_WORKSPACE = '/workspace';
 
+/** Inner dockerd graph destination for the per-session named volume. */
+export const SYSBOX_SESSION_GRAPH_DEST = '/var/lib/docker';
+
 /** Label marking session-env containers/volumes for the boot reconcile sweep. */
 export const SYSBOX_SESSION_LABEL_KEY = 'agent-hub.kind';
 export const SYSBOX_SESSION_LABEL_VALUE = 'session-env';
@@ -173,6 +176,11 @@ export function buildCreateSysboxGraphVolumeArgv(opts: {
   ];
 }
 
+/** CPU quota applied to every session container (`docker run --cpus`). */
+export const SYSBOX_SESSION_DEFAULT_CPUS = 2;
+/** Hard memory cap in bytes (`--memory` == `--memory-swap`). */
+export const SYSBOX_SESSION_DEFAULT_MEMORY_BYTES = 8 * 1024 * 1024 * 1024;
+
 export interface StartSysboxContainerOptions {
   sessionId: string;
   containerName: string;
@@ -191,6 +199,10 @@ export interface StartSysboxContainerOptions {
   env?: Record<string, string>;
   /** In-container command holding the env open. Default {@link SYSBOX_SESSION_ENTRYPOINT}. */
   command?: string[];
+  /** Override {@link SYSBOX_SESSION_DEFAULT_CPUS}. Must be positive. */
+  cpus?: number;
+  /** Override {@link SYSBOX_SESSION_DEFAULT_MEMORY_BYTES}. Must be positive. */
+  memoryBytes?: number;
 }
 
 /**
@@ -200,14 +212,31 @@ export interface StartSysboxContainerOptions {
  *   - exactly one isolation runtime, per {@link isolationRunArgs}
  *   - no host docker-socket mount in either mode — docker inside the
  *     container is the INNER dockerd
+ *   - managed CPU and memory caps (never an uncapped worker)
  *   - any port publishes bind 127.0.0.1 only, never `0.0.0.0`
  */
 export function buildStartSysboxContainerArgv(opts: StartSysboxContainerOptions): string[] {
   const hostMount = resolveHostMountPath(opts.worktreePath);
+  const cpus = opts.cpus ?? SYSBOX_SESSION_DEFAULT_CPUS;
+  const memoryBytes = opts.memoryBytes ?? SYSBOX_SESSION_DEFAULT_MEMORY_BYTES;
+  if (!(cpus > 0) || !Number.isFinite(cpus)) {
+    throw new Error(`session container cpus must be a positive number (got ${String(cpus)})`);
+  }
+  if (!(memoryBytes > 0) || !Number.isFinite(memoryBytes)) {
+    throw new Error(
+      `session container memoryBytes must be a positive number (got ${String(memoryBytes)})`,
+    );
+  }
   const args = [
     'run',
     '-d',
     ...isolationRunArgs(opts.isolation ?? 'sysbox-runc'),
+    '--cpus',
+    String(cpus),
+    '--memory',
+    String(memoryBytes),
+    '--memory-swap',
+    String(memoryBytes),
     '--name',
     opts.containerName,
     '--hostname',
@@ -223,7 +252,7 @@ export function buildStartSysboxContainerArgv(opts: StartSysboxContainerOptions)
   args.push('--user', 'root');
 
   args.push('-v', `${hostMount}:${SYSBOX_SESSION_WORKSPACE}:rw`);
-  args.push('-v', `${sysboxGraphVolumeName(opts.containerName)}:/var/lib/docker`);
+  args.push('-v', `${sysboxGraphVolumeName(opts.containerName)}:${SYSBOX_SESSION_GRAPH_DEST}`);
 
   for (const port of opts.ports) {
     args.push('-p', `127.0.0.1:${port.hostPort}:${port.internalPort}`);

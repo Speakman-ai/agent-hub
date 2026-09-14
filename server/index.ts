@@ -243,7 +243,12 @@ import createFinalizeWizardRoutes from './routes/finalize-wizard.js';
 import createFinalizeCiConfigRoutes from './routes/finalize-ci-config.js';
 import createDeploymentRoutes from './routes/deployments.js';
 import createAutopilotRoutes, { buildAutopilotControllerDeps } from './routes/autopilot.js';
-import { createAutopilotController } from './autopilot/controller.js';
+import { createAutopilotController, AUTOPILOT_DEADLINE_SWEEP_MS } from './autopilot/controller.js';
+import {
+  autopilotWorkerGuard,
+  configureAutopilotWorkerOperationLookup,
+} from './autopilot/worker-authority.js';
+import { AutopilotStore } from './autopilot/store.js';
 import type { AutopilotCancelRefs } from './autopilot/types.js';
 import { recoverInFlightDeployments } from './deploy/deploy-orchestrator.js';
 import { prepareDeploymentCheckout } from './deploy/deployment-checkout.js';
@@ -548,6 +553,15 @@ if (_startupOrgId !== 'default') {
 // skipped. So no checkpoint ever folds hundreds of MB back synchronously on the
 // main thread (the 147 MB WAL incident). See server/db-checkpoint.ts.
 startDbCheckpointScheduler();
+
+configureAutopilotWorkerOperationLookup((operationId) => {
+  const store = new AutopilotStore(getDb());
+  const op = store.getOperation(operationId);
+  if (!op) return null;
+  const run = store.getRun(op.runId);
+  if (!run) return null;
+  return { projectId: run.projectId, runId: run.id };
+});
 
 // Legacy NULL-owner sessions are intentionally NOT backfilled to any user:
 // AI auth and session ownership are strictly per-account, with no org-owner
@@ -1093,6 +1107,7 @@ app.use(
 startFleetScaler();
 
 app.use(authMiddleware);
+app.use(autopilotWorkerGuard);
 
 // Releases page powers the in-app "What's new" view, only reachable from
 // the logged-in sidebar. Mount AFTER authMiddleware so the `?refresh=1`
@@ -2953,11 +2968,21 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     }
 
     try {
-      void createAutopilotController(
+      const autopilotController = createAutopilotController(
         buildAutopilotControllerDeps({ cancelSideEffects: cancelAutopilotSideEffects }),
-      )
+      );
+      void autopilotController
         .reconcileAfterRestart()
         .catch((e) => console.error('[autopilot] reconcileAfterRestart', (e as Error).message));
+      if (process.env.NODE_ENV !== 'test') {
+        setInterval(() => {
+          void createAutopilotController(
+            buildAutopilotControllerDeps({ cancelSideEffects: cancelAutopilotSideEffects }),
+          )
+            .enforceDeadlines()
+            .catch((e) => console.error('[autopilot] enforceDeadlines', (e as Error).message));
+        }, AUTOPILOT_DEADLINE_SWEEP_MS).unref?.();
+      }
     } catch (e) {
       console.error('[autopilot] reconcileAfterRestart', (e as Error).message);
     }

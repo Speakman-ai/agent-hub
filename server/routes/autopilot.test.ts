@@ -5,9 +5,14 @@ import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { initDb } from '../db.js';
+import { initDb, getDb } from '../db.js';
 import type { Project, RouteDeps } from '../types.js';
 import createAutopilotRoutes from './autopilot.js';
+import {
+  autopilotWorkerGuard,
+  configureAutopilotWorkerOperationLookup,
+} from '../autopilot/worker-authority.js';
+import { AutopilotStore } from '../autopilot/store.js';
 
 const PROJECT_ID = 'autopilot-proj';
 
@@ -24,15 +29,24 @@ const READY = {
   credentialOwnerUserId: 'user-1',
 };
 
-function makeApp(role: 'Owner' | 'Admin' | 'User' | null = 'Owner') {
+function makeApp(
+  role: 'Owner' | 'Admin' | 'User' | null = 'Owner',
+  extras?: { worker?: { projectId: string; runId: string } },
+) {
   const project = {
     id: PROJECT_ID,
     name: 'Autopilot Project',
     cwd: '/tmp/project',
     agents: [],
   } as unknown as Project;
+  const other = {
+    id: 'other-proj',
+    name: 'Other',
+    cwd: '/tmp/other',
+    agents: [],
+  } as unknown as Project;
   const deps = {
-    findProject: (id: string) => (id === PROJECT_ID ? project : null),
+    findProject: (id: string) => (id === PROJECT_ID ? project : id === 'other-proj' ? other : null),
   } as unknown as RouteDeps;
   const app = express();
   app.use(express.json());
@@ -41,14 +55,39 @@ function makeApp(role: 'Owner' | 'Admin' | 'User' | null = 'Owner') {
       (req as unknown as { authRole?: string; authUserId?: string }).authRole = role;
       (req as unknown as { authRole?: string; authUserId?: string }).authUserId = 'user-1';
     }
+    if (extras?.worker) {
+      (req as unknown as { authAutopilotWorker?: typeof extras.worker }).authAutopilotWorker =
+        extras.worker;
+    }
     next();
   });
-  app.use(createAutopilotRoutes(deps, { isServerEnabled: () => true }));
+  app.use(autopilotWorkerGuard);
+  app.use(
+    createAutopilotRoutes(deps, {
+      isServerEnabled: () => true,
+      assertContainment: () => undefined,
+      issueWorkerCredential: ({ projectId, runId }) => ({
+        keyName: `autopilot:${projectId}:${runId}`,
+        keyId: `key-${runId}`,
+        token: `ahub_worker_${runId}`,
+      }),
+      revokeWorkerCredential: () => undefined,
+      credentialOwnerExists: () => true,
+    }),
+  );
   return app;
 }
 
 beforeEach(() => {
   initDb(mkdtempSync(path.join(tmpdir(), 'ah-autopilot-')));
+  configureAutopilotWorkerOperationLookup((operationId) => {
+    const store = new AutopilotStore(getDb());
+    const op = store.getOperation(operationId);
+    if (!op) return null;
+    const run = store.getRun(op.runId);
+    if (!run) return null;
+    return { projectId: run.projectId, runId: run.id };
+  });
 });
 
 describe('autopilot routes', () => {
@@ -150,5 +189,60 @@ describe('autopilot routes', () => {
       .send({ fencingGeneration: gen, outcome: 'succeeded' });
     expect(complete.status).toBe(409);
     expect(complete.body.code).toBe('stale_generation');
+  });
+
+  it('denies a worker credential for another project and protected config', async () => {
+    const app = makeApp('Admin');
+    await request(app).put(`/api/projects/${PROJECT_ID}/autopilot/config`).send(READY).expect(200);
+    const started = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/autopilot/start`)
+      .send({})
+      .expect(201);
+    const runId = started.body.run.id as string;
+    const workerApp = makeApp('Admin', { worker: { projectId: PROJECT_ID, runId } });
+
+    const other = await request(workerApp).get('/api/projects/other-proj/autopilot');
+    expect(other.status).toBe(403);
+    expect(other.body.code).toBe('authority_denied');
+
+    const protectedWrite = await request(workerApp)
+      .put(`/api/projects/${PROJECT_ID}/autopilot/config`)
+      .send({ brief: 'worker must not rewrite the brief' });
+    expect(protectedWrite.status).toBe(403);
+    expect(protectedWrite.body.code).toBe('authority_denied');
+
+    const own = await request(workerApp).get(`/api/projects/${PROJECT_ID}/autopilot`).expect(200);
+    expect(own.body.activeRun.run.id).toBe(runId);
+
+    const global = await request(workerApp).get('/api/config');
+    expect(global.status).toBe(403);
+    expect(global.body.code).toBe('authority_denied');
+
+    const deploy = await request(workerApp)
+      .patch(`/api/projects/${PROJECT_ID}/deploy/environments/prod`)
+      .send({ enabled: false });
+    expect(deploy.status).toBe(403);
+    expect(deploy.body.code).toBe('authority_denied');
+  });
+
+  it("denies a worker completing another run's operation", async () => {
+    const app = makeApp('Admin');
+    await request(app).put(`/api/projects/${PROJECT_ID}/autopilot/config`).send(READY).expect(200);
+    const first = await request(app).post(`/api/projects/${PROJECT_ID}/autopilot/start`).send({});
+    expect(first.status).toBe(201);
+    const firstOp = first.body.operations[0].id as string;
+    const firstGen = first.body.run.fencingGeneration as number;
+    await request(app).post(`/api/projects/${PROJECT_ID}/autopilot/stop`).expect(200);
+
+    const second = await request(app).post(`/api/projects/${PROJECT_ID}/autopilot/start`).send({});
+    expect(second.status).toBe(201);
+    const workerApp = makeApp('Admin', {
+      worker: { projectId: PROJECT_ID, runId: second.body.run.id as string },
+    });
+    const stolen = await request(workerApp)
+      .post(`/api/projects/${PROJECT_ID}/autopilot/operations/${firstOp}/complete`)
+      .send({ fencingGeneration: firstGen, outcome: 'succeeded' });
+    expect(stolen.status).toBe(403);
+    expect(stolen.body.code).toBe('authority_denied');
   });
 });
