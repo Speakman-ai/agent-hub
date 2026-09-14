@@ -16,6 +16,7 @@ import {
   type BackgroundShellBroadcast,
   type BackgroundShellLogSink,
   type SpawnFn,
+  type BackgroundShellRuntimeDeps,
 } from './background-shell-runtime.js';
 
 /** A minimal fake ChildProcess: EventEmitter + fake stdout/stderr streams. */
@@ -62,7 +63,11 @@ interface Harness {
 }
 
 function makeHarness(
-  opts: { failSpawn?: boolean; broadcast?: BackgroundShellBroadcast } = {},
+  opts: {
+    failSpawn?: boolean;
+    broadcast?: BackgroundShellBroadcast;
+    buildEnv?: BackgroundShellRuntimeDeps['buildEnv'];
+  } = {},
 ): Harness {
   const db = new Database(':memory:');
   const children: FakeChild[] = [];
@@ -104,6 +109,7 @@ function makeHarness(
     spawn,
     logSink,
     broadcast: opts.broadcast,
+    buildEnv: opts.buildEnv,
     // Simulate the OS: signalling a process group (`-pid`) makes the
     // matching child exit-with-signal, so `waitForExit` resolves.
     kill: (target, signal) => {
@@ -174,6 +180,35 @@ describe('BackgroundShellRuntime.start', () => {
       if (prevVenv === undefined) delete process.env.VIRTUAL_ENV;
       else process.env.VIRTUAL_ENV = prevVenv;
     }
+  });
+
+  it('uses the session environment without restoring scrubbed host credentials', () => {
+    const buildEnv = vi.fn(() => ({
+      AWS_CONFIG_FILE: '/project/aws/config',
+      AWS_SHARED_CREDENTIALS_FILE: '/project/aws/credentials',
+      HOME: '/owner/home',
+      PYTHONHOME: '/poison',
+    }));
+    const h = makeHarness({ buildEnv });
+    h.runtime.start(START);
+    expect(buildEnv).toHaveBeenCalledWith(START);
+    expect(h.lastSpawnOpts()?.env).toMatchObject({
+      AWS_CONFIG_FILE: '/project/aws/config',
+      AWS_SHARED_CREDENTIALS_FILE: '/project/aws/credentials',
+      HOME: '/owner/home',
+    });
+    expect((h.lastSpawnOpts()?.env as NodeJS.ProcessEnv).PYTHONHOME).toBeUndefined();
+    expect((h.lastSpawnOpts()?.env as NodeJS.ProcessEnv).AWS_ACCESS_KEY_ID).toBeUndefined();
+  });
+
+  it('fails without spawning when the session environment cannot be resolved', () => {
+    const h = makeHarness({
+      buildEnv: () => {
+        throw new Error('Session not found');
+      },
+    });
+    expect(h.runtime.start(START).status).toBe('failed');
+    expect(h.children).toHaveLength(0);
   });
 
   it('captures stdout/stderr into the log tail', () => {

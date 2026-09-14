@@ -11,6 +11,7 @@
  * as `preview/dev-server-runtime.ts`.
  */
 
+import { defaultPtyFactory } from './node-pty-factory.js';
 import { spawn as nodeSpawn } from 'child_process';
 import { stat } from 'fs/promises';
 import {
@@ -114,28 +115,6 @@ async function defaultIsDirectory(path: string): Promise<boolean> {
     return false;
   }
 }
-
-const defaultPtyFactory: HostPtyFactory = async (opts) => {
-  let mod: { spawn: (file: string, args: string[], o: object) => HostPtyLike };
-  try {
-    // Keep the import lazy so Hub boot does not load the native binding when
-    // the Terminal surface is unused.
-    const specifier = 'node-pty';
-    mod = (await import(specifier)) as unknown as typeof mod;
-  } catch (err) {
-    throw new Error(
-      'openPty requires the native module "node-pty" (install the server dependencies). ' +
-        `Import failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  return mod.spawn(opts.command, opts.args, {
-    cwd: opts.cwd,
-    env: opts.env,
-    cols: opts.cols,
-    rows: opts.rows,
-    name: opts.name,
-  });
-};
 
 interface LiveProcess {
   handle: SessionEnvProcess;

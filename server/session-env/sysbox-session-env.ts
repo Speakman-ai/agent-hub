@@ -25,6 +25,7 @@
  * CLIs.
  */
 
+import { defaultPtyFactory } from './node-pty-factory.js';
 import { execFile, spawn as nodeSpawn } from 'child_process';
 import { stat } from 'fs/promises';
 import type { HostPtyFactory, HostPtyLike, HostSpawnFn } from './host-session-env.js';
@@ -161,28 +162,6 @@ export function runDockerCommand(argv: string[]): Promise<SysboxRunResult> {
     );
   });
 }
-
-const defaultPtyFactory: HostPtyFactory = async (opts) => {
-  let mod: { spawn: (file: string, args: string[], o: object) => HostPtyLike };
-  try {
-    // Keep the native module lazy so the container adapter only loads it when
-    // a terminal is opened.
-    const specifier = 'node-pty';
-    mod = (await import(specifier)) as unknown as typeof mod;
-  } catch (err) {
-    throw new Error(
-      'openPty requires the native module "node-pty" (install the server dependencies). ' +
-        `Import failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  return mod.spawn(opts.command, opts.args, {
-    cwd: opts.cwd,
-    env: opts.env,
-    cols: opts.cols,
-    rows: opts.rows,
-    name: opts.name,
-  });
-};
 
 async function defaultIsDirectory(path: string): Promise<boolean> {
   try {

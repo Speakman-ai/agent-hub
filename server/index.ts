@@ -332,6 +332,7 @@ import {
   resolveDevServerPortEntries,
 } from './preview/dev-server-runtime.js';
 import { parseDevServerConfig } from './dev-server-config.js';
+import { buildBackgroundShellEnv } from './background-shells/background-shell-env.js';
 import { createBackgroundShellRuntime } from './background-shells/background-shell-runtime-setup.js';
 import {
   BackgroundShellWatcher,
@@ -1367,6 +1368,11 @@ const { devServerRuntime } = createPreviewRuntimes({
 // after the turn ends"). Reaped on session delete/archive via
 // `stopBySessionId` in routes/sessions.ts.
 const backgroundShellRuntime = createBackgroundShellRuntime({
+  buildEnv: ({ sessionId }) => {
+    const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session || session.deleted_at) throw new Error('Session not found');
+    return buildBackgroundShellEnv(session, findAgent(session.agent_id)?.project ?? null);
+  },
   db: getDb(),
   dataDir: _activeDataDir,
   broadcast: (event) => {

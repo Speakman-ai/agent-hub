@@ -239,6 +239,8 @@ export interface BackgroundShellRuntimeConfig {
 export interface BackgroundShellRuntimeDeps {
   db: Database;
   spawn: SpawnFn;
+  /** Complete environment resolved for each start, never persisted with the shell row. */
+  buildEnv?: (input: StartBackgroundShellInput) => NodeJS.ProcessEnv;
   logSink: BackgroundShellLogSink;
   clock?: Clock;
   config?: BackgroundShellRuntimeConfig;
@@ -307,6 +309,7 @@ interface ShellHandle {
 export class BackgroundShellRuntime {
   private readonly db: Database;
   private readonly spawn: SpawnFn;
+  private readonly buildEnv: NonNullable<BackgroundShellRuntimeDeps['buildEnv']>;
   private readonly logSink: BackgroundShellLogSink;
   private readonly clock: Clock;
   private readonly logTailLines: number;
@@ -344,6 +347,7 @@ export class BackgroundShellRuntime {
   constructor(deps: BackgroundShellRuntimeDeps) {
     this.db = deps.db;
     this.spawn = deps.spawn;
+    this.buildEnv = deps.buildEnv ?? (() => ({ ...process.env }));
     this.logSink = deps.logSink;
     this.clock = deps.clock ?? systemClock;
     this.logTailLines = deps.config?.logTailLines ?? DEFAULT_LOG_TAIL_LINES;
@@ -452,7 +456,7 @@ export class BackgroundShellRuntime {
     try {
       child = this.spawn('sh', ['-c', input.command], {
         cwd: input.cwd,
-        env: sanitizeSpawnPythonEnv({ ...process.env }),
+        env: sanitizeSpawnPythonEnv(this.buildEnv(input)),
         stdio: ['ignore', 'pipe', 'pipe'],
         // Own process-group leader so `kill(-pid)` reaches the whole tree.
         detached: true,

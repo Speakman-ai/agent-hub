@@ -401,6 +401,19 @@ describe('SessionTerminalPane', () => {
       expect(onActiveTabChange).toHaveBeenCalledWith('pty');
     });
 
+    it('shows interactive spawn failures only on the Shell tab', () => {
+      const { rerender } = render(
+        <SessionTerminalPane sessionId="session-1" jobs={[job]} activeTabId="job-1" />,
+      );
+      act(() => {
+        MockWebSocket.instances[0].open();
+        MockWebSocket.instances[0].receive({ type: 'error', message: 'posix_spawnp failed.' });
+      });
+      expect(screen.queryByText('posix_spawnp failed.')).not.toBeInTheDocument();
+      rerender(<SessionTerminalPane sessionId="session-1" jobs={[job]} activeTabId="pty" />);
+      expect(screen.getByText('posix_spawnp failed.')).toBeInTheDocument();
+    });
+
     it('fetches a log snapshot when the job tab has no live text yet', async () => {
       const onLogSnapshot = vi.fn();
       render(

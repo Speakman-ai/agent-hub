@@ -225,6 +225,7 @@ export default function SessionTerminalPane({
   const connectRef = useRef<() => void>(() => {});
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [error, setError] = useState('');
+  const [actionError, setActionError] = useState('');
   const [copied, setCopied] = useState(false);
   const [busyShellId, setBusyShellId] = useState<string | null>(null);
 
@@ -253,6 +254,7 @@ export default function SessionTerminalPane({
   }, [sendFrame]);
 
   const copyBuffer = useCallback(async () => {
+    setActionError('');
     const serialized = activeJob
       ? (logsById[activeJob.id] ?? '')
       : (serializeAddonRef.current?.serialize() ?? '');
@@ -261,7 +263,7 @@ export default function SessionTerminalPane({
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1_500);
     } catch {
-      setError('Could not copy the terminal buffer');
+      setActionError('Could not copy the terminal buffer');
     }
   }, [activeJob, logsById]);
 
@@ -276,6 +278,8 @@ export default function SessionTerminalPane({
     connectRef.current();
   }, []);
 
+  useEffect(() => setActionError(''), [activeTabId, sessionId]);
+
   const selectTab = useCallback(
     (tabId: string) => {
       onActiveTabChange?.(tabId);
@@ -286,12 +290,12 @@ export default function SessionTerminalPane({
   const stopJob = useCallback(
     async (shellId: string) => {
       setBusyShellId(shellId);
-      setError('');
+      setActionError('');
       try {
         if (onStopJob) await onStopJob(shellId);
         else await api.stopBackgroundShell(sessionId, shellId);
       } catch {
-        setError('Failed to stop the background command');
+        setActionError('Failed to stop the background command');
       } finally {
         setBusyShellId(null);
       }
@@ -635,12 +639,12 @@ export default function SessionTerminalPane({
           })}
         </div>
       )}
-      {error && (
+      {(actionError || (ptyActive && error)) && (
         <div
           data-testid="session-terminal-error"
           className="border-b border-red-900/50 bg-red-950/30 px-3 py-1.5 text-[11px] text-red-200"
         >
-          {error}
+          {actionError || error}
         </div>
       )}
       <div className="relative min-h-0 flex-1">

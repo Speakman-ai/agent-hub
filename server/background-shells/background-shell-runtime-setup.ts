@@ -15,6 +15,7 @@ import {
   type BackgroundShellBroadcast,
   type BackgroundShellLogSink,
   type BackgroundShellRuntimeConfig,
+  type BackgroundShellRuntimeDeps,
 } from './background-shell-runtime.js';
 
 const DEFAULT_LOG_TAIL_LINES = 500;
@@ -59,6 +60,7 @@ export function readTailLines(logPath: string, limit?: number): string[] {
 export interface CreateBackgroundShellRuntimeDeps {
   db: Database;
   dataDir: string;
+  buildEnv?: BackgroundShellRuntimeDeps['buildEnv'];
   broadcast?: BackgroundShellBroadcast;
   config?: BackgroundShellRuntimeConfig;
 }
@@ -103,6 +105,7 @@ export function createBackgroundShellRuntime(
   return new BackgroundShellRuntime({
     db: deps.db,
     spawn: childSpawn,
+    buildEnv: deps.buildEnv,
     logSink,
     broadcast: deps.broadcast,
     config: deps.config,

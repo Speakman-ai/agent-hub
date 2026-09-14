@@ -11,7 +11,7 @@
 import '../test/setup.js';
 import type supertest from 'supertest';
 import { describe, it, expect, beforeAll } from 'vitest';
-import { getRequest, createSession } from '../test/helpers.js';
+import { getRequest, createSession, createProject, createAgent } from '../test/helpers.js';
 
 let request: supertest.Agent;
 
@@ -30,6 +30,52 @@ function isAlive(pid: number): boolean {
 }
 
 describe('background shells — real runtime lifecycle', () => {
+  it('makes saved project profiles available to a shell started through the API', async () => {
+    const project = await createProject();
+    await request
+      .put(`/api/projects/${project.id}/aws-profiles`)
+      .send({
+        profiles: {
+          musc: {
+            sso_start_url: 'https://example.awsapps.com/start',
+            sso_region: 'us-east-1',
+            sso_account_id: '111111111111',
+            sso_role_name: 'ReadOnly',
+            region: 'us-east-1',
+          },
+        },
+        defaultProfile: 'musc',
+      })
+      .expect(200);
+    const agent = await createAgent({ projectId: project.id as string });
+    const session = await createSession({ agentId: agent.id as string });
+    const started = await request
+      .post(`/api/sessions/${session.id}/background-shells`)
+      .send({
+        command:
+          'test -r "$AWS_CONFIG_FILE" && test -r "$AWS_SHARED_CREDENTIALS_FILE" && printf "%s\\n" "$AWS_PROFILE" "$PROJECT_ID" "$AGENT_HUB_SESSION_ID"',
+        watch: false,
+      })
+      .expect(201);
+    const shellId = started.body.shell.id as string;
+    try {
+      await expect
+        .poll(async () => {
+          const result = await request
+            .get(`/api/sessions/${session.id}/background-shells/${shellId}`)
+            .expect(200);
+          return result.body.shell.status;
+        })
+        .toBe('exited');
+      const result = await request
+        .get(`/api/sessions/${session.id}/background-shells/${shellId}/logs`)
+        .expect(200);
+      expect(result.body.logs).toEqual(['musc', project.id, session.id]);
+    } finally {
+      await request.post(`/api/sessions/${session.id}/background-shells/${shellId}/stop`);
+    }
+  });
+
   it('starts, lists, gets, and stops a background shell', async () => {
     const session = await createSession();
     const sessionId = session.id as string;
