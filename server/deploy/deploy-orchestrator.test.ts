@@ -37,7 +37,7 @@ import {
   type DeploymentApprovalError,
   type DeployOrchestratorDeps,
 } from './deploy-orchestrator.js';
-import type { SpawnedStep } from '../finalize/step-runner.js';
+import type { SpawnedStep, SpawnStepFn } from '../finalize/step-runner.js';
 import type { RunnerJobLossProbe } from '../finalize/runner-queue.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
 import { createSupportTicket, getSupportTicket } from '../support-tickets-store.js';
@@ -92,6 +92,18 @@ environments:
     approval: true
     steps:
       - run: ./deploy-prod.sh
+`);
+
+const HOST_CONFIG = parseDeployConfig(`
+version: 1
+environments:
+  dev:
+    runs-on: host
+    steps:
+      - name: build
+        run: ./build.sh
+      - name: ship
+        run: ./ship.sh
 `);
 
 const RELEASE_CONFIG = parseDeployConfig(`
@@ -228,6 +240,48 @@ function makeFakeBackend(
     spawnArgs,
     killed,
   };
+}
+
+interface FakeHostSpawner {
+  spawnStep: SpawnStepFn;
+  spawnArgs: Array<{ run: string; cwd: string; env: NodeJS.ProcessEnv | undefined }>;
+}
+
+/**
+ * In-process host spawner for `runs-on: host` deploys — the injectable
+ * {@link DeployOrchestratorDeps.hostSpawnStep}. Drives the same EventEmitter-
+ * backed fake child as the fake lease so the streaming / exit-code logic runs
+ * end-to-end WITHOUT spawning a real `bash` (which the global guard forbids).
+ */
+function makeHostSpawner(scripts: StepScript[]): FakeHostSpawner {
+  const spawnArgs: FakeHostSpawner['spawnArgs'] = [];
+  let stepIdx = 0;
+  const spawnStep: SpawnStepFn = ({ step, cwd, env }) => {
+    const script = scripts[stepIdx++] ?? { exitCode: 0 };
+    spawnArgs.push({ run: step.run, cwd, env });
+    const stdout = new Readable({ read() {} });
+    const stderr = new Readable({ read() {} });
+    const emitter = new EventEmitter();
+    const child: SpawnedStep = {
+      stdout,
+      stderr,
+      on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
+        emitter.on(event, listener as never);
+        return child;
+      },
+      kill() {
+        setImmediate(() => emitter.emit('close', null));
+        return true;
+      },
+    };
+    setImmediate(() => {
+      if (script.stdout) stdout.push(script.stdout);
+      if (script.error) emitter.emit('error', new Error(script.error));
+      else if (!script.hang) emitter.emit('close', script.exitCode);
+    });
+    return child;
+  };
+  return { spawnStep, spawnArgs };
 }
 
 function makeDeps(
@@ -509,6 +563,105 @@ describe('triggerDeployment — happy path', () => {
     expect(env.current_ref).toBe('sha-ok');
     expect(env.active_deployment_id).toBeNull();
     expect(broadcast).toHaveBeenCalled(); // it WAS called (and threw), but was swallowed
+  });
+});
+
+describe('triggerDeployment — runs-on: host (native, no container/runner)', () => {
+  it('runs steps in-process on the host, never acquiring a runner', async () => {
+    const host = makeHostSpawner([{ exitCode: 0 }, { exitCode: 0 }]);
+    // A fake backend whose acquire MUST NOT be called on the host path.
+    const fb = makeFakeBackend([]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-host',
+        worktreePath: WORKTREE,
+        config: HOST_CONFIG,
+      },
+      { ...makeDeps(fb.backend), hostSpawnStep: host.spawnStep },
+    );
+
+    expect(dep.status).toBe('success');
+    // No runner was ever leased or torn down.
+    expect(fb.acquireCalls).toHaveLength(0);
+    expect(fb.released).toBe(0);
+    // Steps ran in declared order, in the Hub-local worktree, via the host spawner.
+    expect(host.spawnArgs.map((s) => s.run)).toEqual(['./build.sh', './ship.sh']);
+    expect(host.spawnArgs.every((s) => s.cwd === WORKTREE)).toBe(true);
+    // Live ref recorded; env lock released.
+    const env = getDeploymentEnvironment(PROJECT, 'dev')!;
+    expect(env.current_ref).toBe('sha-host');
+    expect(env.active_deployment_id).toBeNull();
+  });
+
+  it('runs host steps from the minimal allowlisted env — never the Hub process.env', async () => {
+    const host = makeHostSpawner([{ exitCode: 0 }, { exitCode: 0 }]);
+    const fb = makeFakeBackend([]);
+    await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'r',
+        worktreePath: WORKTREE,
+        config: HOST_CONFIG,
+      },
+      {
+        broadcast: vi.fn(),
+        runnerBackend: fb.backend,
+        hostSpawnStep: host.spawnStep,
+        env: { PATH: '/usr/bin', AWS_SECRET_ACCESS_KEY: 'hub-infra-cred' },
+      },
+    );
+    // Allowlisted basics reach the step; Hub-only credentials do not.
+    expect(host.spawnArgs[0].env?.PATH).toBe('/usr/bin');
+    expect(host.spawnArgs[0].env?.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+  });
+
+  it('fails a step on the host path and skips the rest (fail-fast)', async () => {
+    const host = makeHostSpawner([{ exitCode: 1, stdout: 'boom' }]);
+    const fb = makeFakeBackend([]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'r',
+        worktreePath: WORKTREE,
+        config: HOST_CONFIG,
+      },
+      { ...makeDeps(fb.backend), hostSpawnStep: host.spawnStep },
+    );
+    expect(dep.status).toBe('error');
+    expect(listDeploymentSteps(dep.id).map((s) => s.status)).toEqual(['error', 'skipped']);
+    expect(fb.acquireCalls).toHaveLength(0);
+  });
+
+  it('still rejects a non-host null-image label with unsupported runs-on', async () => {
+    const badConfig = parseDeployConfig(`
+version: 1
+environments:
+  dev:
+    runs-on: definitely-not-a-runner
+    steps:
+      - run: ./a.sh
+`);
+    const host = makeHostSpawner([]);
+    const fb = makeFakeBackend([]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'r',
+        worktreePath: WORKTREE,
+        config: badConfig,
+      },
+      { ...makeDeps(fb.backend), hostSpawnStep: host.spawnStep },
+    );
+    expect(dep.status).toBe('error');
+    expect(dep.error).toContain('unsupported runs-on');
+    // Neither the runner nor the host spawner ran.
+    expect(fb.acquireCalls).toHaveLength(0);
+    expect(host.spawnArgs).toHaveLength(0);
   });
 });
 

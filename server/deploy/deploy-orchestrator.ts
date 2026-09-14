@@ -3,7 +3,8 @@
  *
  * Executes a project's `.agent-hub/deploy.yaml` environment pipeline inside a
  * RunnerBackend lease (the SAME local-DinD / remote-fleet seam Finalize uses,
- * `server/finalize/runner-backend.ts`). Responsibilities:
+ * `server/finalize/runner-backend.ts`) — or, for `runs-on: host`, directly on
+ * the Hub host in-process with no container or runner acquire. Responsibilities:
  *
  *   1. Resolve the requested environment from the parsed {@link DeployConfig}.
  *   2. Acquire the per-environment concurrency lock (one deploy per env) — a
@@ -52,8 +53,9 @@ import {
   resolveDeployRunnerLossRetries,
 } from './deploy-runner-loss.js';
 import type { RunnerJobLossProbe } from '../finalize/runner-queue.js';
-import type { SpawnedStep } from '../finalize/step-runner.js';
-import { resolveRunsOnImage } from '../finalize/runner-images.js';
+import type { SpawnedStep, SpawnStepFn } from '../finalize/step-runner.js';
+import { defaultSpawnStep } from '../finalize/step-runner.js';
+import { isHostRunsOn, resolveRunsOnImage } from '../finalize/runner-images.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import { applyGithubSpawnCredentials } from '../spawn-github-credentials.js';
 import { hasAtLeastRole, parseRole } from '../roles.js';
@@ -180,6 +182,13 @@ export interface DeployOrchestratorDeps {
   broadcast: BroadcastFn;
   /** RunnerBackend to lease a runner from. Defaults to {@link resolveRunnerBackend}. */
   runnerBackend?: RunnerBackend;
+  /**
+   * Step spawner for a `runs-on: host` deploy — runs each step in-process on the
+   * Hub host with no container (the same seam Finalize uses for its native/host
+   * jobs). Defaults to {@link defaultSpawnStep}. Injected in tests so the host
+   * path never spawns a real `bash` (which would trip the CLI-spawn guard).
+   */
+  hostSpawnStep?: SpawnStepFn;
   /** Clock injection for deterministic timeout tests. Defaults to `Date.now`. */
   now?: () => number;
   /**
@@ -958,7 +967,12 @@ export async function runDeployment(
   };
 
   const image = resolveRunsOnImage(envConfig.runsOn);
-  if (!image) {
+  // `runs-on: host` runs steps natively on the Hub host (no container, no runner
+  // acquire) — the same path Finalize uses for host jobs. It resolves to a null
+  // image like a typo'd label does, so we distinguish it explicitly: a genuine
+  // `host` label proceeds; any OTHER null-image label is a config error.
+  const runsOnHost = isHostRunsOn(envConfig.runsOn);
+  if (!image && !runsOnHost) {
     // Still pending here — mark error + release the lock before any `running`
     // transition, so a bad runs-on never strands the env lock.
     return fail(`unsupported runs-on: ${envConfig.runsOn}`);
@@ -1064,32 +1078,50 @@ export async function runDeployment(
       );
     }
 
-    backend = deps.runnerBackend ?? resolveRunnerBackend();
-    runnerSpec = {
-      orgId: deps.orgId ?? '',
-      projectId,
-      runId: deploymentId,
-      jobId: environment,
-      matrixKey: 'deploy',
-      image,
-      worktreePath,
-      composeProjectName: deployComposeProjectName(deploymentId, environment),
-      env: baseEnv,
-      labels: {
-        'agent-hub.deploy.deployment_id': deploymentId,
-        'agent-hub.deploy.project_id': projectId,
-        'agent-hub.deploy.environment': environment,
-      },
-      // Deploys are real build/ship work, NOT the GitHub-parity gate — never cap.
-      resourceProfile: 'unconstrained',
-      // Steps run from the minimal `env` above only — never the Hub's process.env.
-      minimalEnv: true,
-    };
+    if (runsOnHost) {
+      // Native-host deploy: run steps in-process on the Hub host, no container
+      // and no runner acquire. `release()` is a no-op (nothing to tear down),
+      // and `spawnStep` is the in-process bash spawner Finalize uses for host
+      // jobs. Local children never surface runner-loss evidence, so the mid-run
+      // re-acquire path (`acquireLease`) stays dormant — `backend`/`runnerSpec`
+      // remain null and are never read. The steps still run from the SAME
+      // minimal allowlisted + project-secret `baseEnv`, so a host deploy is no
+      // more exposed to the Hub's own env than a container deploy.
+      lease = {
+        spawnStep: deps.hostSpawnStep ?? defaultSpawnStep,
+        release: async () => {},
+      };
+    } else if (image !== null) {
+      backend = deps.runnerBackend ?? resolveRunnerBackend();
+      runnerSpec = {
+        orgId: deps.orgId ?? '',
+        projectId,
+        runId: deploymentId,
+        jobId: environment,
+        matrixKey: 'deploy',
+        image,
+        worktreePath,
+        composeProjectName: deployComposeProjectName(deploymentId, environment),
+        env: baseEnv,
+        labels: {
+          'agent-hub.deploy.deployment_id': deploymentId,
+          'agent-hub.deploy.project_id': projectId,
+          'agent-hub.deploy.environment': environment,
+        },
+        // Deploys are real build/ship work, NOT the GitHub-parity gate — never cap.
+        resourceProfile: 'unconstrained',
+        // Steps run from the minimal `env` above only — never the Hub's process.env.
+        minimalEnv: true,
+      };
 
-    // This first acquire runs before any deploy step, so retrying it can never
-    // cause a partial / double deploy. On final give-up the throw falls through
-    // to the catch → fail(), which releases the env lock (no leak).
-    lease = await acquireLease();
+      // This first acquire runs before any deploy step, so retrying it can never
+      // cause a partial / double deploy. On final give-up the throw falls through
+      // to the catch → fail(), which releases the env lock (no leak).
+      lease = await acquireLease();
+    } else {
+      // Unreachable: the guard above rejects every null-image, non-host label.
+      return fail(`unsupported runs-on: ${envConfig.runsOn}`);
+    }
   } catch (err) {
     // `fail()` preserves a cancelled terminal: if the deployment was cancelled
     // (at entry or between acquire attempts) `acquireRunnerWithRetry` throws, but

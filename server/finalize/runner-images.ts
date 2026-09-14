@@ -85,6 +85,23 @@ export function isContainerRunsOn(runsOn: string): boolean {
   return resolveRunsOnImage(runsOn) !== null;
 }
 
+/**
+ * True when `runs-on` is the deliberate `host` label — a job that runs directly
+ * on the Hub host with no container, in-process via `defaultSpawnStep`.
+ *
+ * Both `host` and unrecognised bare labels (typos) resolve to a null image, so
+ * `resolveRunsOnImage(...) === null` alone cannot tell "run natively on the host"
+ * apart from "that label is a mistake". Callers that opt into the native-host
+ * path (the deploy orchestrator) match on THIS, not on a null image, so a typo'd
+ * label still fails fast with `unsupported runs-on` instead of silently running
+ * unguarded on the host. `macos-*` is deliberately excluded — those are native
+ * jobs too, but they need a macOS runner (see {@link macosRunnerMismatch}), not
+ * the plain Hub-host path.
+ */
+export function isHostRunsOn(runsOn: string): boolean {
+  return runsOn.trim().toLowerCase() === 'host';
+}
+
 /** Runner queue class for macOS jobs — only a macOS agent claims these. */
 export const MACOS_RUNNER_CLASS = 'macos';
 /** Default runner queue class (Linux DinD agents). */

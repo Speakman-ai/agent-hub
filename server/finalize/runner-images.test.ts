@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import {
   resolveRunsOnImage,
   isContainerRunsOn,
+  isHostRunsOn,
   isMacosRunsOn,
   macosRunnerMismatch,
   runnerClassForRunsOn,
@@ -97,6 +98,27 @@ describe('isMacosRunsOn', () => {
       '',
     ]) {
       expect(isMacosRunsOn(label)).toBe(false);
+    }
+  });
+});
+
+describe('isHostRunsOn', () => {
+  it('recognises the deliberate host label (case/whitespace-insensitive)', () => {
+    for (const label of ['host', 'HOST', '  host  ']) {
+      expect(isHostRunsOn(label)).toBe(true);
+    }
+  });
+
+  it('is false for macOS labels, container labels, and typos that also resolve to no image', () => {
+    for (const label of [
+      'macos',
+      'macos-14',
+      'ubuntu-24.04',
+      'definitely-not-a-runner', // typo → null image, but NOT the host path
+      'hosts',
+      '',
+    ]) {
+      expect(isHostRunsOn(label)).toBe(false);
     }
   });
 });

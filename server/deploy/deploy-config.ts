@@ -35,7 +35,10 @@
  *     environment is GATED — an Admin/Owner approval is required before the
  *     orchestrator runs the steps (epic decision `approval-auth`; the gate
  *     itself is wired in a later phase, the parser only surfaces the flag).
- *   - `runs-on` is an optional runner label (default `ubuntu-24.04`).
+ *   - `runs-on` is an optional runner label (default `ubuntu-24.04`). Use
+ *     `host` to run steps directly on the Hub host with no container (no runner
+ *     acquire) — for deploys that must reach the host Docker daemon or files
+ *     without an SSH loopback.
  *   - `timeout_minutes` is optional (floor 1, ceiling 4h). The config may LOWER
  *     the runtime cap but never raise it.
  *   - Unknown top-level / environment / step keys are HARD ERRORS — we never
