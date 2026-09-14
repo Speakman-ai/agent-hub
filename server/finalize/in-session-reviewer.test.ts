@@ -40,6 +40,8 @@ import {
   restrictToSpawnableEngines,
   FINALIZE_REVIEWER_TURN_OVERRIDE,
   REVIEWER_GENERAL_FEEDBACK_ANCHOR,
+  REVIEWER_NO_VERDICT_MAX_ATTEMPTS,
+  REVIEWER_NO_VERDICT_RETRY_NUDGE,
 } from './in-session-reviewer.js';
 import { ReviewerInfraStallError } from './reviewer-infra-stall.js';
 import type { EngineAvailability, SupportedEngine } from '../engine-availability.js';
@@ -474,6 +476,139 @@ describe('composeReviewerSystemPrompt', () => {
 });
 
 // ─── Driver behavior ──────────────────────────────────────────────────
+
+/**
+ * Claude-shaped spawn fake that behaves differently on each successive spawn
+ * call, cycling through `steps` (the last entry repeats once exhausted). A
+ * string streams that assistant text and closes clean; a `{ fail }` entry
+ * writes to stderr and closes non-zero (so `runOneTurn` rejects — an engine
+ * error). Used to exercise the no-verdict retry: turn 1 omits the block, turn
+ * 2 supplies it (or fails).
+ */
+function makeSequenceSpawnFake(steps: Array<string | { fail: string }>): {
+  spawnFn: typeof import('child_process').spawn;
+  capturedArgs: Array<{ bin: string; args: string[] }>;
+} {
+  const captured: Array<{ bin: string; args: string[] }> = [];
+  let call = 0;
+  const spawnFn = ((bin: string, args: string[]) => {
+    captured.push({ bin, args });
+    const step = steps[Math.min(call, steps.length - 1)] ?? '';
+    call++;
+    const proc = new FakeProc();
+    setImmediate(() => {
+      if (typeof step === 'object') {
+        proc.stderr.emit('data', Buffer.from(step.fail));
+        proc.emit('close', 1);
+        return;
+      }
+      proc.stdout.emit(
+        'data',
+        Buffer.from(
+          JSON.stringify({
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: step }] },
+          }) + '\n',
+        ),
+      );
+      proc.stdout.emit(
+        'data',
+        Buffer.from(JSON.stringify({ type: 'result', is_error: false }) + '\n'),
+      );
+      proc.emit('close', 0);
+    });
+    return proc as unknown as ChildProcess;
+  }) as unknown as typeof import('child_process').spawn;
+  return { spawnFn, capturedArgs: captured };
+}
+
+describe('runReviewerTurn — no-verdict retry', () => {
+  const VALID_TAIL = `Looks fine.
+
+<agenthub:review-verdict>
+{"verdict":"approved","threads":[]}
+</agenthub:review-verdict>`;
+
+  it('re-runs the reviewer with a corrective nudge when the first turn omits the verdict block, then succeeds', async () => {
+    // Turn 1: prose only, NO verdict block (the compliance miss that used to
+    // terminate the whole Finalize run as review_failed). Turn 2: valid block.
+    const { spawnFn, capturedArgs } = makeSequenceSpawnFake([
+      'I reviewed the diff and it looks reasonable overall.',
+      VALID_TAIL,
+    ]);
+    const { deps } = makeDeps(spawnFn);
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-noverdict-1',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    // Recovered instead of throwing → the run keeps going past review.
+    expect(result.verdict).toBe('approved');
+    // Exactly two spawns: the original turn + one no-verdict retry.
+    expect(capturedArgs).toHaveLength(2);
+    // The retry carried the corrective nudge in the `-p` prompt argv element.
+    const retryPrompt = capturedArgs[1]?.args.join('\n') ?? '';
+    expect(retryPrompt).toContain(REVIEWER_NO_VERDICT_RETRY_NUDGE);
+    // ...and it carried the previous (verdict-less) draft as reference data, so
+    // the fresh spawn is not asked to reconstruct findings from nothing.
+    expect(retryPrompt).toContain('BEGIN YOUR PREVIOUS DRAFT');
+    expect(retryPrompt).toContain('I reviewed the diff and it looks reasonable overall.');
+    // The original turn did NOT carry the nudge.
+    const firstPrompt = capturedArgs[0]?.args.join('\n') ?? '';
+    expect(firstPrompt).not.toContain(REVIEWER_NO_VERDICT_RETRY_NUDGE);
+  });
+
+  it('routes an engine failure on the retry through infra-stall classification, not a swallowed review_failed', async () => {
+    // Turn 1: prose only (no verdict block) → succeeds, triggers the retry.
+    // Turn 2 (the retry): the engine dies on a usage-limit error. That must NOT
+    // be swallowed into a missing-verdict review_failed — it is an infra cause
+    // that has to surface as a ReviewerInfraStallError (→ review_stalled).
+    const { spawnFn, capturedArgs } = makeSequenceSpawnFake([
+      'I reviewed the diff and it looks reasonable overall.',
+      { fail: 'Claude AI usage limit reached' },
+    ]);
+    const { deps } = makeDeps(spawnFn);
+
+    await expect(
+      runReviewerTurn(deps, {
+        runId: 'run-noverdict-3',
+        worktreePath: '/tmp/wt',
+        card: fakeCard,
+        project: fakeProject,
+        inputs: fakeInputs,
+        sessionId: 'sess-1',
+      }),
+    ).rejects.toBeInstanceOf(ReviewerInfraStallError);
+
+    // Exactly the original turn + one retry (the retry error stops the loop).
+    expect(capturedArgs).toHaveLength(2);
+  });
+
+  it('throws review_failed only after exhausting the retry budget when every turn omits the verdict', async () => {
+    // Every turn is prose-only — no attempt ever emits a verdict block.
+    const { spawnFn, capturedArgs } = makeSequenceSpawnFake(['No verdict block here, just prose.']);
+    const { deps } = makeDeps(spawnFn);
+
+    await expect(
+      runReviewerTurn(deps, {
+        runId: 'run-noverdict-2',
+        worktreePath: '/tmp/wt',
+        card: fakeCard,
+        project: fakeProject,
+        inputs: fakeInputs,
+        sessionId: 'sess-1',
+      }),
+    ).rejects.toThrow(/without a parseable review verdict/);
+
+    // The initial turn plus (MAX - 1) retries all ran before giving up.
+    expect(capturedArgs).toHaveLength(REVIEWER_NO_VERDICT_MAX_ATTEMPTS);
+  });
+});
 
 describe('runReviewerTurn — happy path (approved)', () => {
   it('attaches reviewer, persists chat message, parses tail block', async () => {

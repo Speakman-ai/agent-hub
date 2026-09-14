@@ -92,6 +92,57 @@ export const REVIEWER_TURN_TIMEOUT_MS_DEFAULT = 10 * 60 * 1000;
 export const REVIEWER_FAILOVER_MAX_ATTEMPTS = 4;
 
 /**
+ * How many times the reviewer turn is run when it COMPLETES successfully but
+ * ends WITHOUT a parseable `<agenthub:review-verdict>` block (first attempt +
+ * retries). This is a model-compliance miss, NOT an engine error, so the
+ * engine-failover loop above never covers it: the turn resolved fine, the
+ * model just forgot the required tail block. Treating that as a terminal
+ * `review_failed` ends the entire Finalize run with no recovery — the
+ * engine-independent "Finalize keeps ending after review" report (reproduced
+ * on Claude AND cursor). Each retry re-prompts the SAME engine (carrying any
+ * failover switch) with {@link REVIEWER_NO_VERDICT_RETRY_NUDGE} appended, and
+ * only after the budget is spent does the run fall through to `review_failed`.
+ */
+export const REVIEWER_NO_VERDICT_MAX_ATTEMPTS = 3;
+
+/**
+ * Corrective instruction prepended to the retry prompt when the previous turn
+ * ended without the required verdict block. Each retry is a FRESH one-shot
+ * spawn with no memory of the prior turn, so this deliberately does NOT forbid
+ * re-inspecting the diff/corpus — the prior draft is carried alongside (see
+ * {@link buildNoVerdictRetryUserPrompt}) purely as reference, and a model that
+ * needs to re-derive findings to produce the block must be free to do so.
+ */
+export const REVIEWER_NO_VERDICT_RETRY_NUDGE =
+  'Your previous turn ended WITHOUT the required <agenthub:review-verdict> block, so the review could not be recorded and Finalize cannot proceed. Complete your review of the attached diff/corpus — re-inspect it as needed — and end THIS turn with the <agenthub:review-verdict> block (verdict + threads) exactly as specified; the block must be the last thing in your reply, with nothing after it. Your previous draft is included below for reference: fold its findings into the block rather than restating them as prose.';
+
+/**
+ * Max chars of the previous (verdict-less) reviewer draft carried into the
+ * retry prompt. The draft rides the `-p` argv element (subject to the kernel
+ * argv cap), so it is clipped — a reviewer's prose critique is normally well
+ * under this, and the retry can re-inspect the corpus for anything clipped.
+ */
+export const REVIEWER_PREVIOUS_DRAFT_INCLUDE_LIMIT = 4_000;
+
+/**
+ * Build the retry user prompt: the nudge + the base prompt + the previous
+ * draft as clearly delimited reference data (clipped). Rebuilt from the
+ * unmodified `basePrompt` each retry so nudges/drafts never compound across
+ * iterations.
+ */
+export function buildNoVerdictRetryUserPrompt(basePrompt: string, previousDraft: string): string {
+  const draft = (previousDraft ?? '').trim();
+  const clipped =
+    draft.length > REVIEWER_PREVIOUS_DRAFT_INCLUDE_LIMIT
+      ? `${draft.slice(0, REVIEWER_PREVIOUS_DRAFT_INCLUDE_LIMIT)}\n[…draft clipped]`
+      : draft;
+  const reference = clipped
+    ? `\n\n----- BEGIN YOUR PREVIOUS DRAFT (no verdict block — reference only) -----\n${clipped}\n----- END YOUR PREVIOUS DRAFT -----`
+    : '';
+  return `${REVIEWER_NO_VERDICT_RETRY_NUDGE}\n\n${basePrompt}${reference}`;
+}
+
+/**
  * When the reviewer turn gives up, decide whether the underlying engine error
  * is an INFRA failure (provider quota/auth exhaustion, or a wedged provider
  * that only surfaces as a timeout). If so, wrap it as a {@link
@@ -324,7 +375,7 @@ export async function runReviewerTurn(
     // the patch body. The unified diff rides `reviewCorpus` on an unbounded
     // channel. We do not feed prior review messages back in (avoid context
     // snowball across iterations).
-    const userPrompt = buildLocalDiffReviewerPrompt({
+    let userPrompt = buildLocalDiffReviewerPrompt({
       inputs,
       card,
       project,
@@ -570,7 +621,88 @@ export async function runReviewerTurn(
     // Parse the tail before persisting so JSON-only reviewer replies do
     // not leak the machine payload into chat. Missing or malformed tails
     // still persist the original text below, then throw after broadcast.
-    const parsed = detectReviewVerdictBlock(rawText);
+    let parsed = detectReviewVerdictBlock(rawText);
+
+    // No-verdict retry: the turn resolved (the failover loop above already
+    // handled engine errors), but the model omitted the required
+    // `<agenthub:review-verdict>` tail. That is a recoverable compliance miss —
+    // re-prompt the SAME engine with a corrective nudge instead of terminating
+    // the whole Finalize run as `review_failed`. Only once the retry budget is
+    // spent does control fall through to the deliberate throw below.
+    //
+    // The retry carries the previous draft as delimited reference data and does
+    // NOT forbid re-inspection — each retry is a fresh one-shot spawn with no
+    // memory of the prior turn. `baseUserPrompt` is the unmodified prompt so the
+    // nudge + draft are rebuilt fresh each iteration (never compounding).
+    const baseUserPrompt = userPrompt;
+    for (
+      let verdictRetry = 1;
+      verdictRetry < REVIEWER_NO_VERDICT_MAX_ATTEMPTS && !(parsed.present && parsed.task);
+      verdictRetry++
+    ) {
+      if (args.signal?.aborted) break;
+      log(
+        `[in-session-reviewer] run=${runId}: reviewer turn ended without a usable verdict ` +
+          `(present=${parsed.present}, reason=${parsed.reason ?? 'none'}); retry ${verdictRetry}/${
+            REVIEWER_NO_VERDICT_MAX_ATTEMPTS - 1
+          } with corrective nudge`,
+      );
+      userPrompt = buildNoVerdictRetryUserPrompt(baseUserPrompt, rawText);
+      try {
+        rawText = await runOneTurn({
+          engine,
+          model,
+          systemPrompt,
+          userPrompt,
+          reviewCorpus,
+          bins: {
+            claude: deps.getClaudeBin(),
+            cursor: deps.getCursorBin(),
+            gemini: deps.getGeminiBin(),
+            codex: deps.getCodexBin(),
+            grok: deps.getGrokBin(),
+          },
+          cwd,
+          spawnEnv: buildSpawnEnv(engine),
+          logTag: `finalize ${runId} reviewer ${reviewer.id} (no-verdict retry ${verdictRetry})`,
+          codexDangerBypass: !!config.codexDangerBypass,
+          codexProfile: config.codexProfile,
+          reviewerReadOnly: true,
+          tailReminder: FINALIZE_REVIEWER_TAIL_REMINDER,
+          timeoutMs,
+          signal: args.signal,
+          sessionId,
+          activeProcesses: deps.activeProcesses,
+          spawnFn,
+          broadcast: deps.broadcast,
+          reviewerName: reviewer.name,
+          reviewerColor: reviewer.color,
+          reviewerId: reviewer.id,
+          assistantMsgId,
+          config,
+          ownerUserId: roomOwnerId,
+          dataDir: config.dataDir,
+        });
+      } catch (err) {
+        // A cancel is intentional — propagate untouched.
+        if (args.signal?.aborted || (err instanceof Error && err.message === 'cancelled')) {
+          throw err;
+        }
+        // An engine error on the retry (auth/quota/timeout) can happen even
+        // though the first turn succeeded. Do NOT swallow it into a
+        // missing-verdict `review_failed`: route it through the SAME
+        // classification the give-up sites use, so an infra cause becomes a
+        // `ReviewerInfraStallError` (→ `review_stalled`) and only a genuine
+        // failure stays raw (→ `review_failed`).
+        log(
+          `[in-session-reviewer] run=${runId}: no-verdict retry ${verdictRetry} failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        throw reviewerGiveUpError(err);
+      }
+      parsed = detectReviewVerdictBlock(rawText);
+    }
     // Prepend any engine-switch notices so the human reading the review knows a
     // different model produced it — the user did not ask for the switch, so it
     // has to be visible rather than letting another engine answer silently.
