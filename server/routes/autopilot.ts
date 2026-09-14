@@ -14,6 +14,10 @@ import {
   mintAutopilotWorkerCredential,
   revokeMintedAutopilotWorkerCredential,
 } from '../autopilot/worker-authority.js';
+import {
+  removeAutopilotWorkerToken,
+  writeAutopilotWorkerToken,
+} from '../autopilot/worker-token.js';
 import type { RouteDeps } from '../types.js';
 import {
   CompleteAutopilotOperationRequestSchema,
@@ -54,8 +58,19 @@ export function buildAutopilotControllerDeps(
     credentialOwnerExists: options.credentialOwnerExists,
     holderId: options.holderId,
     assertContainment: options.assertContainment,
-    issueWorkerCredential: options.issueWorkerCredential ?? mintAutopilotWorkerCredential,
-    revokeWorkerCredential: options.revokeWorkerCredential ?? revokeMintedAutopilotWorkerCredential,
+    issueWorkerCredential:
+      options.issueWorkerCredential ??
+      ((input) => {
+        const issued = mintAutopilotWorkerCredential(input);
+        writeAutopilotWorkerToken(input.runId, issued.token, config.dataDir);
+        return issued;
+      }),
+    revokeWorkerCredential:
+      options.revokeWorkerCredential ??
+      ((input) => {
+        revokeMintedAutopilotWorkerCredential(input);
+        removeAutopilotWorkerToken(input.runId, config.dataDir);
+      }),
   };
 }
 

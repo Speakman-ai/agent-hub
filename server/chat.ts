@@ -34,7 +34,11 @@ import { buildSessionEventBroadcast } from './session-event-broadcast.js';
 import { offloadToolResultImages } from './tool-result-images.js';
 import config, { resolveAgentHubApiBaseForSpawn, resolveGrokSpawnModel } from './config.js';
 import { cursorSandboxArgs } from './cursor-sandbox-args.js';
-import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from './per-user-cli-spawn.js';
+import {
+  resolveSessionCliSpawnEnv,
+  EngineAuthRequiredError,
+  AutopilotWorkerCredentialError,
+} from './per-user-cli-spawn.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import {
   resolveProjectPaths,
@@ -3691,9 +3695,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           engine,
         });
       } catch (err) {
-        if (err instanceof EngineAuthRequiredError) {
-          // Strictly account-based auth: refuse to spawn rather than borrow
-          // another identity or run a CLI that would silently 401.
+        if (
+          err instanceof EngineAuthRequiredError ||
+          err instanceof AutopilotWorkerCredentialError
+        ) {
+          // Refuse to spawn rather than borrow another identity, run a CLI
+          // that would silently 401, or (for Autopilot workers) fall through
+          // to the Hub break-glass key after the run token was revoked.
           saveErrorMessage(sessionId, assistantMsgId, engine, model, err.message);
           broadcast({
             type: 'error',

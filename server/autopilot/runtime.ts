@@ -102,12 +102,7 @@ export class AutopilotRuntime {
   }
 
   private async driveRun(run: AutopilotRunRecord): Promise<void> {
-    const controller = this.buildController();
-    const orchestrator = createAutopilotOrchestrator({
-      controller,
-      db: this.db,
-      ...this.buildAdapters(run),
-    });
+    const orchestrator = this.orchestratorFor(run);
     switch (run.stage) {
       case 'planning':
         await orchestrator.runPlanning(run.projectId);
@@ -123,6 +118,63 @@ export class AutopilotRuntime {
         // later cards; the driver leaves those stages untouched.
         return;
     }
+  }
+
+  /**
+   * Session/Finalize completion callback: if this session belongs to an
+   * in-flight implement operation and an outcome is now observable, settle
+   * it immediately instead of waiting for the next ticker pulse.
+   */
+  async settleSession(sessionId: string): Promise<void> {
+    try {
+      const store = new AutopilotStore(this.db);
+      const op = store.getOperationBySessionId(sessionId);
+      if (!op || op.kind !== 'implement' || op.status !== 'in_flight') return;
+      const run = store.getRun(op.runId);
+      if (!run || run.controlState !== 'running') return;
+      const outcome = this.readSessionOutcome(sessionId);
+      if (!outcome) return;
+      const orchestrator = this.orchestratorFor(run);
+      await orchestrator.reconcileImplementation(run.projectId, {
+        operationId: op.id,
+        fencingGeneration: op.fencingGeneration,
+        result: outcome,
+      });
+    } catch (err) {
+      if (!this.isBenign(err)) this.log(`settle session ${sessionId}`, err);
+    }
+  }
+
+  /**
+   * Finalize completion callback: if this Finalize run belongs to an
+   * in-flight finalize operation and an outcome is now observable, settle it.
+   */
+  async settleFinalize(finalizeRunId: string): Promise<void> {
+    try {
+      const store = new AutopilotStore(this.db);
+      const op = store.getOperationByFinalizeRunId(finalizeRunId);
+      if (!op || op.kind !== 'finalize' || op.status !== 'in_flight') return;
+      const run = store.getRun(op.runId);
+      if (!run || run.controlState !== 'running') return;
+      const outcome = this.readFinalizeOutcome(finalizeRunId);
+      if (!outcome) return;
+      const orchestrator = this.orchestratorFor(run);
+      await orchestrator.reconcileFinalize(run.projectId, {
+        operationId: op.id,
+        fencingGeneration: op.fencingGeneration,
+        result: outcome,
+      });
+    } catch (err) {
+      if (!this.isBenign(err)) this.log(`settle finalize ${finalizeRunId}`, err);
+    }
+  }
+
+  private orchestratorFor(run: AutopilotRunRecord): AutopilotOrchestrator {
+    return createAutopilotOrchestrator({
+      controller: this.buildController(),
+      db: this.db,
+      ...this.buildAdapters(run),
+    });
   }
 
   private async driveImplementing(

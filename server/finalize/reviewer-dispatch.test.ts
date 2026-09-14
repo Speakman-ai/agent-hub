@@ -1881,6 +1881,36 @@ describe('truncateDiffAtFileBoundary', () => {
     expect(result.diff).not.toContain('tttt');
   });
 
+  it('keeps spawn and turn-end patches when a large fixture would consume the budget', () => {
+    const fixture = patch(
+      'server/autopilot/fixtures/integrated-cycle.ts',
+      `+${'f'.repeat(4000)}\n`,
+    );
+    const chat = patch(
+      'server/chat.ts',
+      '+catch (err) { if (err instanceof AutopilotWorkerCredentialError) }\n',
+    );
+    const spawn = patch(
+      'server/per-user-cli-spawn.ts',
+      '+const worker = resolveAutopilotWorkerSpawn(sessionId, cfg.dataDir);\n',
+    );
+    const turnEnd = patch(
+      'server/finalize/turn-end.ts',
+      '+export function subscribeAllTurnEnds(onTurnEnd) {}\n',
+    );
+    const result = truncateDiffAtFileBoundary(
+      fixture + chat + spawn + turnEnd,
+      Buffer.byteLength(chat + spawn + turnEnd, 'utf8') + DIFF_MARKER_RESERVE_BYTES,
+    );
+
+    expect(result.severedPatch).toBe(false);
+    expect(result.diff).toContain('server/chat.ts');
+    expect(result.diff).toContain('server/per-user-cli-spawn.ts');
+    expect(result.diff).toContain('server/finalize/turn-end.ts');
+    expect(result.diff).not.toContain('integrated-cycle.ts');
+    expect(result.omittedFiles).toEqual(['server/autopilot/fixtures/integrated-cycle.ts']);
+  });
+
   it('keeps a large implementation file when earlier smaller ones would crowd it out', () => {
     // Same-priority packing used to follow git order. A 25 KB store after
     // several 1–7 KB helpers filled the budget and omitted the store, which is
@@ -2014,6 +2044,16 @@ describe('orderUnifiedDiffForReviewCorpus', () => {
 
     expect(ordered.indexOf('controller.ts')).toBeLessThan(ordered.indexOf('containment.test.ts'));
     expect(ordered.indexOf('controller.ts')).toBeLessThan(ordered.indexOf('openapi.yaml'));
+  });
+
+  it('puts implementation ahead of disposable fixture drivers', () => {
+    const fixture = patch('server/autopilot/fixtures/integrated-cycle.ts', '+fixture\n');
+    const chat = patch('server/chat.ts', '+spawn\n');
+    const ordered = orderUnifiedDiffForReviewCorpus(fixture + chat);
+
+    expect(ordered.indexOf('server/chat.ts')).toBeLessThan(
+      ordered.indexOf('server/autopilot/fixtures/integrated-cycle.ts'),
+    );
   });
 
   it('keeps a truncation marker after the reordered patches', () => {

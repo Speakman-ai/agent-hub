@@ -249,7 +249,12 @@ import {
   configureAutopilotWorkerOperationLookup,
 } from './autopilot/worker-authority.js';
 import { AutopilotStore } from './autopilot/store.js';
-import { buildAutopilotRuntime } from './autopilot/wiring.js';
+import {
+  attachAutopilotCompletionCallbacks,
+  buildAutopilotRuntime,
+  handleAutopilotBroadcast,
+} from './autopilot/wiring.js';
+import type { AutopilotRuntime } from './autopilot/runtime.js';
 import type { AutopilotCancelRefs } from './autopilot/types.js';
 import { recoverInFlightDeployments } from './deploy/deploy-orchestrator.js';
 import { prepareDeploymentCheckout } from './deploy/deployment-checkout.js';
@@ -714,8 +719,10 @@ app.use(uriDecodeGuard);
 app.use(cors(corsOptions));
 
 let _broadcast: BroadcastFn;
+let attachedAutopilotRuntime: AutopilotRuntime | null = null;
 function broadcast(data: Record<string, unknown>): void {
   _broadcast(data);
+  if (attachedAutopilotRuntime) handleAutopilotBroadcast(attachedAutopilotRuntime, data);
 }
 
 // Git smart-HTTP transport for Agent Hub-hosted repos (/git/<id>.git).
@@ -2999,6 +3006,8 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
           getActiveSessionIds: () => new Set(activeProcesses.keys()),
           controllerOptions: { cancelSideEffects: cancelAutopilotSideEffects },
         });
+        attachedAutopilotRuntime = autopilotRuntime;
+        attachAutopilotCompletionCallbacks(autopilotRuntime);
         setInterval(() => {
           void createAutopilotController(
             buildAutopilotControllerDeps({ cancelSideEffects: cancelAutopilotSideEffects }),

@@ -22,6 +22,7 @@ vi.mock('./process-groups.js', async (importOriginal) => {
 
 vi.mock('./per-user-cli-spawn.js', () => ({
   EngineAuthRequiredError: class EngineAuthRequiredError extends Error {},
+  AutopilotWorkerCredentialError: class AutopilotWorkerCredentialError extends Error {},
   resolveSessionCliSpawnEnv: vi.fn(() => ({})),
 }));
 

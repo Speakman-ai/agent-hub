@@ -142,6 +142,10 @@ export const AUTOPILOT_SCHEMA = `
     ON autopilot_operations(run_id, status);
   CREATE INDEX IF NOT EXISTS idx_autopilot_operations_cycle
     ON autopilot_operations(cycle_id);
+  CREATE INDEX IF NOT EXISTS idx_autopilot_operations_session
+    ON autopilot_operations(session_id);
+  CREATE INDEX IF NOT EXISTS idx_autopilot_operations_finalize
+    ON autopilot_operations(finalize_run_id);
 
   CREATE TABLE IF NOT EXISTS autopilot_events (
     id TEXT PRIMARY KEY,
@@ -191,4 +195,10 @@ export function ensureAutopilotSchema(db: { exec: (sql: string) => unknown }): v
   db.exec(`DROP INDEX IF EXISTS idx_autopilot_events_run`);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_autopilot_events_seq ON autopilot_events(seq)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_autopilot_events_run ON autopilot_events(run_id, seq)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_autopilot_operations_session ON autopilot_operations(session_id)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_autopilot_operations_finalize ON autopilot_operations(finalize_run_id)`,
+  );
 }

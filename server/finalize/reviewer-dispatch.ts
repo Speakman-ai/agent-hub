@@ -1376,7 +1376,11 @@ function diffSectionKeepPriority(section: string): number {
   ) {
     return 0;
   }
+  // Tests and disposable fixtures are supporting material. Rank them below
+  // implementation so a large fixture cycle cannot omit chat.ts / spawn /
+  // turn-end from the in-session review corpus.
   if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(name)) return 1;
+  if (/(?:^|\/)fixtures?\//.test(name)) return 1;
   return 2;
 }
 

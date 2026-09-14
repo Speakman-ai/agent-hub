@@ -5,6 +5,7 @@ import {
   finalizeTurnEndSubscriber,
   notifyFinalizeSessionTurnEnd,
   notifyFinalizeSessionSpawnFailed,
+  subscribeAllTurnEnds,
 } from './turn-end.js';
 
 describe('finalize turn-end bus', () => {
@@ -40,5 +41,18 @@ describe('finalize turn-end bus', () => {
     notifyFinalizeSessionTurnEnd('sess-1');
     expect(onEnd).not.toHaveBeenCalled();
     expect(__testFinalizeTurnEndListenerCount('sess-1')).toBe(0);
+  });
+
+  it('notifies global subscribers for any session', () => {
+    const onAll = vi.fn();
+    const unsub = subscribeAllTurnEnds(onAll);
+    notifyFinalizeSessionTurnEnd('sess-a');
+    notifyFinalizeSessionSpawnFailed('sess-b');
+    expect(onAll).toHaveBeenCalledTimes(2);
+    expect(onAll).toHaveBeenNthCalledWith(1, 'sess-a', 'turn_ended');
+    expect(onAll).toHaveBeenNthCalledWith(2, 'sess-b', 'spawn_failed');
+    unsub();
+    notifyFinalizeSessionTurnEnd('sess-a');
+    expect(onAll).toHaveBeenCalledTimes(2);
   });
 });

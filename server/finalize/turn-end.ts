@@ -12,6 +12,9 @@ import type { TurnEndSubscriber } from './fix-dispatch.js';
 type TurnEndListener = (outcome: 'turn_ended' | 'spawn_failed') => void;
 
 const listenersBySession = new Map<string, Set<TurnEndListener>>();
+const globalTurnEndListeners = new Set<
+  (sessionId: string, outcome: 'turn_ended' | 'spawn_failed') => void
+>();
 
 /**
  * Shared production {@link TurnEndSubscriber}. One singleton per server
@@ -33,15 +36,37 @@ export const finalizeTurnEndSubscriber: TurnEndSubscriber = {
   },
 };
 
+/**
+ * Subscribe to every session's turn-end. Autopilot uses this to settle an
+ * implementation operation as soon as the worker turn finishes, rather than
+ * waiting for the next ticker pulse. Per-session subscribers still work.
+ */
+export function subscribeAllTurnEnds(
+  onTurnEnd: (sessionId: string, outcome: 'turn_ended' | 'spawn_failed') => void,
+): () => void {
+  globalTurnEndListeners.add(onTurnEnd);
+  return () => {
+    globalTurnEndListeners.delete(onTurnEnd);
+  };
+}
+
 function notifyListeners(sessionId: string, outcome: 'turn_ended' | 'spawn_failed'): void {
   if (!sessionId) return;
   const set = listenersBySession.get(sessionId);
-  if (!set || set.size === 0) return;
-  for (const listener of [...set]) {
+  if (set && set.size > 0) {
+    for (const listener of [...set]) {
+      try {
+        listener(outcome);
+      } catch {
+        // A subscriber threw — do not block other waiters or chat teardown.
+      }
+    }
+  }
+  for (const listener of [...globalTurnEndListeners]) {
     try {
-      listener(outcome);
+      listener(sessionId, outcome);
     } catch {
-      // A subscriber threw — do not block other waiters or chat teardown.
+      /* same isolation as per-session listeners */
     }
   }
 }
@@ -65,6 +90,7 @@ export function notifyFinalizeSessionSpawnFailed(sessionId: string): void {
 /** Test-only reset. */
 export function __testResetFinalizeTurnEndListeners(): void {
   listenersBySession.clear();
+  globalTurnEndListeners.clear();
 }
 
 /** Test-only introspection. */

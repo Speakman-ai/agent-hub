@@ -1,6 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Stmts } from '../types.js';
-import { buildBoardOps, parseBaselineSpecJson, readFinalizeOutcome } from './wiring.js';
+import type { AutopilotRuntime } from './runtime.js';
+import {
+  buildBoardOps,
+  handleAutopilotBroadcast,
+  parseBaselineSpecJson,
+  readFinalizeOutcome,
+} from './wiring.js';
 
 describe('autopilot wiring — parseBaselineSpecJson', () => {
   it('parses a fenced json block from planning-session output', () => {
@@ -127,5 +133,19 @@ describe('autopilot wiring — readFinalizeOutcome', () => {
       status: 'review_rejected',
       reviewStatus: 'changes_requested',
     });
+  });
+});
+
+describe('autopilot wiring — completion callbacks', () => {
+  it('routes finalize_run_completed and changes_ready into settle methods', () => {
+    const settleSession = vi.fn();
+    const settleFinalize = vi.fn();
+    const runtime = { settleSession, settleFinalize } as unknown as AutopilotRuntime;
+    handleAutopilotBroadcast(runtime, { type: 'finalize_run_completed', run_id: 'fin-1' });
+    handleAutopilotBroadcast(runtime, { type: 'changes_ready', sessionId: 'sess-1' });
+    handleAutopilotBroadcast(runtime, { type: 'changes_ready', session_id: 'sess-2' });
+    expect(settleFinalize).toHaveBeenCalledWith('fin-1');
+    expect(settleSession).toHaveBeenCalledWith('sess-1');
+    expect(settleSession).toHaveBeenCalledWith('sess-2');
   });
 });

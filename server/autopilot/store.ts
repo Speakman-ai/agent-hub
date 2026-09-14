@@ -954,6 +954,32 @@ export class AutopilotStore {
     return rows.map(mapOperation);
   }
 
+  /** Most recent operation launched for this session, if any. */
+  getOperationBySessionId(sessionId: string): AutopilotOperationRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM autopilot_operations
+         WHERE session_id = ?
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get(sessionId) as OperationRow | undefined;
+    return row ? mapOperation(row) : null;
+  }
+
+  /** Most recent operation that started this Finalize run, if any. */
+  getOperationByFinalizeRunId(finalizeRunId: string): AutopilotOperationRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM autopilot_operations
+         WHERE finalize_run_id = ?
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get(finalizeRunId) as OperationRow | undefined;
+    return row ? mapOperation(row) : null;
+  }
+
   listOpenOperations(runId: string): AutopilotOperationRecord[] {
     const rows = this.db
       .prepare(

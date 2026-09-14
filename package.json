@@ -44,6 +44,7 @@
     "format": "prettier --write 'server/**/*.ts' 'client/src/**/*.{ts,tsx}' 'mobile/src/**/*.{ts,tsx}' 'shared/**/*.ts' 'electron/**/*.{ts,cjs}' 'e2e/**/*.ts'",
     "format:check": "prettier --check 'server/**/*.ts' 'client/src/**/*.{ts,tsx}' 'mobile/src/**/*.{ts,tsx}' 'shared/**/*.ts' 'electron/**/*.{ts,cjs}' 'e2e/**/*.ts'",
     "prepare": "husky",
+    "test:autopilot-fixture": "npx tsx server/autopilot/fixtures/run-baseline-cycle.ts",
     "test:e2e": "cd e2e && npx playwright test",
     "test:e2e:ui": "cd e2e && npx playwright test --ui",
     "test:e2e:headed": "cd e2e && npx playwright test --headed",

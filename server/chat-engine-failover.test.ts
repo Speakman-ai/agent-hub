@@ -27,6 +27,7 @@ import type { EngineAvailability, SupportedEngine } from './engine-availability.
 
 vi.mock('./per-user-cli-spawn.js', () => ({
   EngineAuthRequiredError: class EngineAuthRequiredError extends Error {},
+  AutopilotWorkerCredentialError: class AutopilotWorkerCredentialError extends Error {},
   resolveSessionCliSpawnEnv: vi.fn(() => ({})),
   userHasEngineCreds: vi.fn(() => false),
   resolveUserCliCredOverride: vi.fn(() => undefined),

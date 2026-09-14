@@ -169,4 +169,61 @@ describe('autopilot runtime driver', () => {
     expect(store.getRun(runId)!.controlState).toBe('running');
     expect(store.getRun(runId)!.stage).toBe('finalizing');
   });
+
+  it('settles an in-flight implementation from a session completion callback', async () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    ensureAutopilotSchema(db);
+    const store = new AutopilotStore(db);
+    const controller = buildController(db);
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+    const runId = controller.start(PROJECT, {}, ACTOR).run.id;
+
+    let sessionOutcome: AutopilotSessionResult | null = null;
+    const runtime = createAutopilotRuntime({
+      db,
+      buildController: () => buildController(db),
+      buildAdapters: () => fakeAdapters(),
+      readSessionOutcome: () => sessionOutcome,
+      readFinalizeOutcome: () => null,
+    });
+
+    await runtime.tick(); // plan -> implementing
+    await runtime.tick(); // dispatch impl
+    expect(store.getRun(runId)!.stage).toBe('implementing');
+
+    sessionOutcome = { committed: true, commitSha: 'abc123' };
+    await runtime.settleSession('sess-1');
+    expect(store.getRun(runId)!.stage).toBe('finalizing');
+  });
+
+  it('settles an in-flight Finalize run from a completion callback', async () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    ensureAutopilotSchema(db);
+    const store = new AutopilotStore(db);
+    const controller = buildController(db);
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+    const runId = controller.start(PROJECT, {}, ACTOR).run.id;
+
+    let sessionOutcome: AutopilotSessionResult | null = { committed: true };
+    let finalizeOutcome: AutopilotFinalizeResult | null = null;
+    const runtime = createAutopilotRuntime({
+      db,
+      buildController: () => buildController(db),
+      buildAdapters: () => fakeAdapters(),
+      readSessionOutcome: () => sessionOutcome,
+      readFinalizeOutcome: () => finalizeOutcome,
+    });
+
+    await runtime.tick(); // plan
+    await runtime.tick(); // dispatch impl
+    await runtime.tick(); // reconcile impl -> finalizing
+    await runtime.tick(); // dispatch finalize
+    expect(store.getCycle(runId, 1)!.finalizeRunId).toBe('fin-1');
+
+    finalizeOutcome = { status: 'merged', mergedSha: 'deadbeef', reviewStatus: 'approved' };
+    await runtime.settleFinalize('fin-1');
+    expect(store.getCycle(runId, 1)!.testedCommitSha).toBe('deadbeef');
+  });
 });

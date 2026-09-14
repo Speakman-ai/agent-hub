@@ -1,14 +1,20 @@
 import { randomUUID } from 'crypto';
 import type { RouteDeps, Stmts, SessionRow, Project } from '../types.js';
 import { getDb } from '../db.js';
+import config from '../config.js';
 import { getOrCreateBoard } from '../routes/board.js';
 import { findCycle } from '../kanban-blockers.js';
 import { topologicallySortPhaseIds, PhaseCycleError } from '../kanban-phase-topo-sort.js';
 import { ensureKanbanCardForSession } from '../finalize/ensure-kanban-card.js';
-import { startFinalizeRunBackground } from '../finalize/trigger-run.js';
-import { markSessionFinalizeAutomation, markSessionAutoShipOnComplete } from '../session-ship.js';
+import {
+  startFinalizeRunBackground,
+  type StartFinalizeRunBackgroundResult,
+} from '../finalize/trigger-run.js';
+import { markSessionFinalizeAutomation } from '../session-ship.js';
 import { setSessionOwner } from '../session-ownership.js';
-import { finalizeTurnEndSubscriber } from '../finalize/turn-end.js';
+import { finalizeTurnEndSubscriber, subscribeAllTurnEnds } from '../finalize/turn-end.js';
+import { writeSpawnCredsFile } from '../spawn-creds-file.js';
+import { bindAutopilotWorkerSession, readAutopilotWorkerToken } from './worker-token.js';
 import {
   createAutopilotBoardAdapter,
   createAutopilotFinalizeAdapter,
@@ -112,6 +118,22 @@ function buildPlanningPrompt(brief: string): string {
   ].join('\n');
 }
 
+function bindWorkerSession(sessionId: string, projectId: string, runId: string): void {
+  bindAutopilotWorkerSession(sessionId, { projectId, runId }, config.dataDir);
+  const token = readAutopilotWorkerToken(runId, config.dataDir);
+  if (token) {
+    try {
+      writeSpawnCredsFile(sessionId, token, config.dataDir);
+    } catch (err) {
+      console.warn(
+        `[autopilot] spawn-creds write failed session=${sessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+}
+
 /**
  * Build the real planner ops: dispatch a bounded planning session under the
  * run's owner-scoped identity, await its turn, and parse the structured
@@ -125,7 +147,8 @@ export function buildPlannerOps(deps: AutopilotWiringDeps): AutopilotPlannerOps 
     planBaseline: async ({ projectId, runId, brief }) => {
       const agent = resolveWorkerAgent(projectId);
       if (!agent) throw new Error(`Autopilot: no worker agent configured for project ${projectId}`);
-      const run = new AutopilotStore(getDb()).getRun(runId);
+      const store = new AutopilotStore(getDb());
+      const run = store.getRun(runId);
       const sessionId = randomUUID();
       stmts.createSession.run(
         sessionId,
@@ -138,6 +161,11 @@ export function buildPlannerOps(deps: AutopilotWiringDeps): AutopilotPlannerOps 
         0,
       );
       setSessionOwner(sessionId, run?.credentialOwnerUserId ?? null);
+      bindWorkerSession(sessionId, projectId, runId);
+      const planningOp = store
+        .listInFlightOperations(runId)
+        .find((op) => op.kind === 'plan-baseline');
+      if (planningOp) store.updateOperation(planningOp.id, { sessionId });
       const turnEnded = new Promise<void>((resolve) => {
         const unsub = finalizeTurnEndSubscriber.subscribe(sessionId, () => {
           unsub();
@@ -292,8 +320,22 @@ export function readFinalizeOutcome(
   });
 }
 
+export type AutopilotStartFinalizeRun = (
+  deps: RouteDeps,
+  args: {
+    project: Project;
+    card: import('../types.js').KanbanCardRow;
+    session: SessionRow;
+    triggerSource?: 'ui_button' | 'agent_block';
+    triggeredByUserId?: string;
+  },
+) => Promise<StartFinalizeRunBackgroundResult>;
+
 /** Build the real Finalize ops (set merge automation + start the run). */
-export function buildFinalizeOps(deps: RouteDeps): AutopilotFinalizeOps {
+export function buildFinalizeOps(
+  deps: RouteDeps,
+  startRun: AutopilotStartFinalizeRun = startFinalizeRunBackground,
+): AutopilotFinalizeOps {
   return {
     startMergeAutomation: async ({ projectId, sessionId }) => {
       const session = deps.stmts.getSession.get(sessionId) as SessionRow | undefined;
@@ -305,7 +347,7 @@ export function buildFinalizeOps(deps: RouteDeps): AutopilotFinalizeOps {
         { stmts: deps.stmts, broadcast: deps.broadcast, findAgent: deps.findAgent },
         { projectId, session, createdBy: null },
       );
-      const res = await startFinalizeRunBackground(deps, {
+      const res = await startRun(deps, {
         project: project as Project,
         card,
         session,
@@ -349,6 +391,13 @@ export interface AutopilotWiringDeps {
   /** Active chat session ids (a session mid-turn is not yet done). */
   getActiveSessionIds: () => Set<string>;
   controllerOptions?: AutopilotRouteOptions;
+  /**
+   * Optional Finalize kickoff. Production omits this and uses
+   * startFinalizeRunBackground. The canned Vitest fixture injects a
+   * deterministic fake. The outside-Vitest integrated runner omits this so
+   * the real Finalize path (review, native push, merge) can reconcile.
+   */
+  startFinalizeRun?: AutopilotStartFinalizeRun;
 }
 
 /** Build the real session dispatch ops over the createSession + handleChat triad. */
@@ -376,12 +425,11 @@ export function buildSessionOps(deps: AutopilotWiringDeps): AutopilotSessionOps 
         0,
         0,
       );
-      // NOTE: scoped-worker-credential spawn env is not yet consumed by the
-      // shared chat path; identity is owner-scoped via setSessionOwner. Wiring
-      // the worker key into buildSpawnEnv is a follow-up (see card ed2ba39c).
       setSessionOwner(sessionId, ownerUserId);
-      markSessionAutoShipOnComplete(stmts, sessionId);
-      markSessionFinalizeAutomation(stmts, sessionId, 'manual'); // Finalize is driven by the controller
+      bindWorkerSession(sessionId, projectId, runId);
+      // Commit locally only. Auto-ship would push/PR and skip Autopilot's
+      // Finalize adapter; Finalize is driven by the controller instead.
+      markSessionFinalizeAutomation(stmts, sessionId, 'manual');
       // Link the primary card to this session so Finalize acts on the same card.
       getDb().prepare('UPDATE kanban_cards SET session_id = ? WHERE id = ?').run(sessionId, cardId);
       void routeDeps
@@ -411,7 +459,10 @@ export function buildAutopilotRuntime(deps: AutopilotWiringDeps): AutopilotRunti
   const stmts = routeDeps.stmts;
   const plannerOps = buildPlannerOps(deps);
   const boardOps = buildBoardOps(stmts);
-  const finalizeOps = buildFinalizeOps(routeDeps);
+  const finalizeOps = buildFinalizeOps(
+    routeDeps,
+    deps.startFinalizeRun ?? startFinalizeRunBackground,
+  );
   const sessionOps = buildSessionOps(deps);
   return createAutopilotRuntime({
     db: getDb(),
@@ -427,4 +478,27 @@ export function buildAutopilotRuntime(deps: AutopilotWiringDeps): AutopilotRunti
       readSessionOutcome(stmts, deps.getActiveSessionIds(), sessionId),
     readFinalizeOutcome: (finalizeRunId) => readFinalizeOutcome(stmts, finalizeRunId),
   });
+}
+
+/**
+ * Route session turn-end and Finalize/changes_ready broadcasts into the
+ * runtime's reconcile methods. Returns an unsubscribe for tests.
+ */
+export function attachAutopilotCompletionCallbacks(runtime: AutopilotRuntime): () => void {
+  return subscribeAllTurnEnds((sessionId) => {
+    void runtime.settleSession(sessionId);
+  });
+}
+
+export function handleAutopilotBroadcast(
+  runtime: AutopilotRuntime,
+  data: Record<string, unknown>,
+): void {
+  if (data.type === 'finalize_run_completed' && typeof data.run_id === 'string') {
+    void runtime.settleFinalize(data.run_id);
+  }
+  if (data.type === 'changes_ready') {
+    const sessionId = data.sessionId ?? data.session_id;
+    if (typeof sessionId === 'string') void runtime.settleSession(sessionId);
+  }
 }
