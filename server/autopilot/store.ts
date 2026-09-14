@@ -674,6 +674,13 @@ export class AutopilotStore {
     return row ? mapCycle(row) : null;
   }
 
+  getCycleById(id: string): AutopilotCycleRecord | null {
+    const row = this.db.prepare(`SELECT * FROM autopilot_cycles WHERE id = ?`).get(id) as
+      | CycleRow
+      | undefined;
+    return row ? mapCycle(row) : null;
+  }
+
   listCycles(runId: string): AutopilotCycleRecord[] {
     const rows = this.db
       .prepare(`SELECT * FROM autopilot_cycles WHERE run_id = ? ORDER BY cycle_number ASC`)
@@ -773,20 +780,47 @@ export class AutopilotStore {
     patch: Partial<{
       status: AutopilotCycleRecord['status'];
       outcome: string | null;
+      specRevision: number | null;
+      cardId: string | null;
+      sessionId: string | null;
+      testedCommitSha: string | null;
+      finalizeRunId: string | null;
+      deploymentId: string | null;
+      verificationJson: string | null;
+      documentationJson: string | null;
+      selectedImprovement: string | null;
     }>,
   ): void {
     const sets: string[] = [];
     const params: Record<string, unknown> = { id };
-    if (patch.status !== undefined) {
-      sets.push('status = @status');
-      params.status = patch.status;
-    }
-    if (patch.outcome !== undefined) {
-      sets.push('outcome = @outcome');
-      params.outcome = patch.outcome;
+    const map: Record<string, string> = {
+      status: 'status',
+      outcome: 'outcome',
+      specRevision: 'spec_revision',
+      cardId: 'card_id',
+      sessionId: 'session_id',
+      testedCommitSha: 'tested_commit_sha',
+      finalizeRunId: 'finalize_run_id',
+      deploymentId: 'deployment_id',
+      verificationJson: 'verification_json',
+      documentationJson: 'documentation_json',
+      selectedImprovement: 'selected_improvement',
+    };
+    for (const [key, col] of Object.entries(map)) {
+      if (key in patch) {
+        sets.push(`${col} = @${key}`);
+        params[key] = (patch as Record<string, unknown>)[key];
+      }
     }
     if (sets.length === 0) return;
     this.db.prepare(`UPDATE autopilot_cycles SET ${sets.join(', ')} WHERE id = @id`).run(params);
+  }
+
+  /** Persist the planner's expanded baseline spec onto the brief revision. */
+  updateBriefSpec(briefId: string, specJson: string): void {
+    this.db
+      .prepare(`UPDATE autopilot_briefs SET spec_json = ? WHERE id = ?`)
+      .run(specJson, briefId);
   }
 
   countActiveCycles(runId: string): number {
@@ -837,6 +871,36 @@ export class AutopilotStore {
       | OperationRow
       | undefined;
     return row ? mapOperation(row) : null;
+  }
+
+  /**
+   * Atomically claim a still-pending operation for the given generation
+   * (pending -> in_flight). Returns true only for the caller that won the
+   * transition, so concurrent claimers cannot both proceed.
+   */
+  claimPendingOperation(id: string, fencingGeneration: number, now: string): boolean {
+    const res = this.db
+      .prepare(
+        `UPDATE autopilot_operations SET status = 'in_flight', updated_at = ?
+         WHERE id = ? AND status = 'pending' AND fencing_generation = ?`,
+      )
+      .run(now, id, fencingGeneration);
+    return res.changes > 0;
+  }
+
+  /**
+   * Atomically claim a still-pending stage (pending -> in_progress) and link it
+   * to `operationId`. Returns true only for the winning caller.
+   */
+  claimPendingStage(id: string, operationId: string, now: string): boolean {
+    const res = this.db
+      .prepare(
+        `UPDATE autopilot_stages
+         SET status = 'in_progress', operation_id = ?, started_at = COALESCE(started_at, ?)
+         WHERE id = ? AND status = 'pending'`,
+      )
+      .run(operationId, now, id);
+    return res.changes > 0;
   }
 
   updateOperation(

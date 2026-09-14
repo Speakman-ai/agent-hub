@@ -249,6 +249,7 @@ import {
   configureAutopilotWorkerOperationLookup,
 } from './autopilot/worker-authority.js';
 import { AutopilotStore } from './autopilot/store.js';
+import { buildAutopilotRuntime } from './autopilot/wiring.js';
 import type { AutopilotCancelRefs } from './autopilot/types.js';
 import { recoverInFlightDeployments } from './deploy/deploy-orchestrator.js';
 import { prepareDeploymentCheckout } from './deploy/deployment-checkout.js';
@@ -2975,12 +2976,34 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
         .reconcileAfterRestart()
         .catch((e) => console.error('[autopilot] reconcileAfterRestart', (e as Error).message));
       if (process.env.NODE_ENV !== 'test') {
+        // Runtime driver: advances active runs' plan → implement → finalize
+        // spine using concrete adapters. Gated on the operator flag; a no-op
+        // when Autopilot is disabled (the default).
+        const autopilotRuntime = buildAutopilotRuntime({
+          routeDeps,
+          resolveWorkerAgent: (projectId) => {
+            const agent = allAgents().find((a) => a.projectId === projectId);
+            if (!agent) return null;
+            return {
+              agentId: agent.id,
+              engine: agent.engine ?? 'claude',
+              model: agent.model ?? '',
+            };
+          },
+          getActiveSessionIds: () => new Set(activeProcesses.keys()),
+          controllerOptions: { cancelSideEffects: cancelAutopilotSideEffects },
+        });
         setInterval(() => {
           void createAutopilotController(
             buildAutopilotControllerDeps({ cancelSideEffects: cancelAutopilotSideEffects }),
           )
             .enforceDeadlines()
             .catch((e) => console.error('[autopilot] enforceDeadlines', (e as Error).message));
+          if (config.experimentalAutopilotEnabled) {
+            void autopilotRuntime
+              .tick()
+              .catch((e) => console.error('[autopilot] runtime tick', (e as Error).message));
+          }
         }, AUTOPILOT_DEADLINE_SWEEP_MS).unref?.();
       }
     } catch (e) {

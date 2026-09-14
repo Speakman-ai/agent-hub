@@ -1453,6 +1453,133 @@ export class AutopilotController {
     return this.snapshot(run.id);
   }
 
+  /**
+   * Transition the active cycle to `toStage` and open a fresh pending stage row
+   * for it. The orchestrator calls this after a stage's operation settles
+   * successfully; `beginOperation` then links the new open stage to the
+   * dispatched work. Fencing/lease guard the transition so a superseded
+   * generation cannot advance the run.
+   */
+  advanceStage(projectId: string, toStage: AutopilotStage): AutopilotRunSnapshot {
+    this.requireServerEnabled();
+    this.requireProjectDispatchable(projectId);
+    const run = this.store.getActiveRun(projectId);
+    if (!run) {
+      throw new AutopilotError('no_active_run', 'No active Autopilot run');
+    }
+    if (run.controlState !== 'running') {
+      throw new AutopilotError(
+        'conflict',
+        `Cannot advance a stage while run is ${run.controlState}`,
+      );
+    }
+    this.requireHeldLease(projectId, run);
+    const cycle = this.store.getCycle(run.id, run.cycleNumber);
+    if (!cycle || cycle.status !== 'active') {
+      throw new AutopilotError('conflict', 'No active cycle to advance');
+    }
+    const open = this.store.getOpenStage(cycle.id);
+    if (open) {
+      const linked = open.operationId ? this.store.getOperation(open.operationId) : null;
+      const linkedOpen = linked && (linked.status === 'pending' || linked.status === 'in_flight');
+      if (open.stage !== toStage && linkedOpen) {
+        throw new AutopilotError('conflict', 'Cannot advance while a stage operation is in flight');
+      }
+    }
+    const now = this.timestamp();
+    const fromStage = run.stage;
+    this.store.insertStage({
+      id: this.randomId(),
+      cycleId: cycle.id,
+      stage: toStage,
+      status: 'pending',
+      attempt: this.store.countStageAttempts(cycle.id, toStage) + 1,
+      operationId: null,
+      startedAt: now,
+    });
+    this.store.updateRun(run.id, { stage: toStage, updatedAt: now });
+    this.store.insertEvent({
+      runId: run.id,
+      cycleId: cycle.id,
+      type: 'stage_advanced',
+      payload: { from: fromStage, to: toStage },
+      fencingGeneration: run.fencingGeneration,
+      createdAt: now,
+    });
+    return this.snapshot(run.id);
+  }
+
+  /**
+   * Atomically claim exclusive execution of the current cycle's planning stage.
+   * Reuses the pending planning operation the run started with (or opens a fresh
+   * one for a retry attempt), transitions it to in_flight and marks the planning
+   * stage in_progress in a single synchronous pass. Returns the claimed
+   * operation, or `null` when planning is already claimed/advanced so a
+   * concurrent caller backs off instead of double-executing the planner.
+   */
+  claimPlanningOperation(projectId: string): AutopilotOperationRecord | null {
+    this.requireServerEnabled();
+    this.requireProjectDispatchable(projectId);
+    const run = this.store.getActiveRun(projectId);
+    if (!run) {
+      throw new AutopilotError('no_active_run', 'No active Autopilot run');
+    }
+    if (run.controlState !== 'running') {
+      throw new AutopilotError('conflict', `Cannot plan while run is ${run.controlState}`);
+    }
+    this.requireHeldLease(projectId, run);
+    const cycle = this.store.getCycle(run.id, run.cycleNumber);
+    if (!cycle || cycle.status !== 'active') {
+      throw new AutopilotError('conflict', 'No active cycle to plan');
+    }
+    const open = this.store.getOpenStage(cycle.id);
+    if (!open || open.stage !== 'planning' || open.status !== 'pending') {
+      // Already claimed (in_progress), advanced, or no planning stage: back off.
+      return null;
+    }
+    const now = this.timestamp();
+    let operationId: string | null = open.operationId;
+    if (operationId) {
+      const linked = this.store.getOperation(operationId);
+      if (linked && linked.status === 'pending') {
+        if (!this.store.claimPendingOperation(operationId, run.fencingGeneration, now)) {
+          return null;
+        }
+      } else {
+        operationId = null;
+      }
+    }
+    if (!operationId) {
+      operationId = this.randomId();
+      this.store.insertOperation({
+        id: operationId,
+        runId: run.id,
+        cycleId: cycle.id,
+        kind: 'plan-baseline',
+        status: 'in_flight',
+        fencingGeneration: run.fencingGeneration,
+        intentJson: JSON.stringify({ stage: 'planning', cycleNumber: run.cycleNumber }),
+        sessionId: null,
+        finalizeRunId: null,
+        deploymentId: null,
+        createdAt: now,
+      });
+    }
+    if (!this.store.claimPendingStage(open.id, operationId, now)) {
+      return null;
+    }
+    this.store.insertEvent({
+      runId: run.id,
+      cycleId: cycle.id,
+      operationId,
+      type: 'planning_claimed',
+      payload: { attempt: open.attempt },
+      fencingGeneration: run.fencingGeneration,
+      createdAt: now,
+    });
+    return this.store.getOperation(operationId);
+  }
+
   async recordUsage(
     projectId: string,
     input: { costUsd?: number | null },

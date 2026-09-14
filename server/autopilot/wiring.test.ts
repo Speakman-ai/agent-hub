@@ -1,0 +1,131 @@
+import { describe, it, expect } from 'vitest';
+import type { Stmts } from '../types.js';
+import { buildBoardOps, parseBaselineSpecJson, readFinalizeOutcome } from './wiring.js';
+
+describe('autopilot wiring — parseBaselineSpecJson', () => {
+  it('parses a fenced json block from planning-session output', () => {
+    const text =
+      'Here is the plan:\n```json\n{ "acceptanceJourneys": [{ "action": "a" }] }\n```\nDone.';
+    expect(parseBaselineSpecJson(text)).toEqual({ acceptanceJourneys: [{ action: 'a' }] });
+  });
+
+  it('parses a bare object and returns null on non-JSON', () => {
+    expect(parseBaselineSpecJson('{ "qualityRubricVersion": 1 }')).toEqual({
+      qualityRubricVersion: 1,
+    });
+    expect(parseBaselineSpecJson('no json here')).toBeNull();
+    expect(parseBaselineSpecJson('')).toBeNull();
+    expect(parseBaselineSpecJson('```json\n{ not valid }\n```')).toBeNull();
+  });
+});
+
+/** Minimal fake Stmts: only the statements the functions under test touch. */
+function fakeStmts(rows: {
+  epics?: { id: string; labels: string | null; position: number }[];
+  cardsByEpic?: { id: string; title: string; labels: string | null }[];
+  finalizeRun?: Record<string, unknown> | undefined;
+  pr?: Record<string, unknown> | undefined;
+}): Stmts {
+  return {
+    getKanbanEpics: { all: () => rows.epics ?? [] },
+    getKanbanCardsByEpic: { all: () => rows.cardsByEpic ?? [] },
+    getFinalizeRun: { get: () => rows.finalizeRun },
+    getPullRequestByNumber: { get: () => rows.pr },
+  } as unknown as Stmts;
+}
+
+describe('autopilot wiring — board ops', () => {
+  it('finds a prior epic by the autopilot idempotency-key label', () => {
+    const stmts = fakeStmts({
+      epics: [
+        { id: 'e1', labels: 'other', position: 0 },
+        { id: 'e2', labels: 'autopilot-key:autopilot:run-1:cycle-1', position: 1 },
+      ],
+    });
+    const ops = buildBoardOps(stmts);
+    expect(ops.findEpicByKey('board-1', 'autopilot:run-1:cycle-1')).toEqual({ epicId: 'e2' });
+    expect(ops.findEpicByKey('board-1', 'autopilot:run-9:cycle-9')).toBeNull();
+  });
+
+  it('computes the next epic position', () => {
+    const ops = buildBoardOps(
+      fakeStmts({
+        epics: [
+          { id: 'e1', labels: null, position: 3 },
+          { id: 'e2', labels: null, position: 7 },
+        ],
+      }),
+    );
+    expect(ops.nextEpicPosition('board-1')).toBe(8);
+    expect(buildBoardOps(fakeStmts({ epics: [] })).nextEpicPosition('board-1')).toBe(0);
+  });
+
+  it('lists epic cards by their durable autopilot-card key, ignoring keyless cards', () => {
+    const ops = buildBoardOps(
+      fakeStmts({
+        cardsByEpic: [
+          {
+            id: 'c1',
+            title: 'x'.repeat(200),
+            labels: 'autopilot-card:autopilot:run-1:cycle-1#primary',
+          },
+          {
+            id: 'c2',
+            title: 'x'.repeat(200),
+            labels: 'autopilot-card:autopilot:run-1:cycle-1#journey-1',
+          },
+          { id: 'c3', title: 'unrelated', labels: 'some-other-label' },
+        ],
+      }),
+    );
+    // Keys come from the label, not the (identical, truncatable) titles; the
+    // keyless card is excluded.
+    expect(ops.listCardsForEpic('epic-1')).toEqual([
+      { id: 'c1', key: 'autopilot:run-1:cycle-1#primary' },
+      { id: 'c2', key: 'autopilot:run-1:cycle-1#journey-1' },
+    ]);
+  });
+});
+
+describe('autopilot wiring — readFinalizeOutcome', () => {
+  it('returns null while the run is still in progress', () => {
+    const stmts = fakeStmts({ finalizeRun: { status: 'reviewing', reviewer_verdict: null } });
+    expect(readFinalizeOutcome(stmts, 'run-1')).toBeNull();
+  });
+
+  it('returns null when the run is missing', () => {
+    expect(readFinalizeOutcome(fakeStmts({}), 'run-x')).toBeNull();
+  });
+
+  it('maps a pushed+merged run to a merged result with the PR merge SHA', () => {
+    const stmts = fakeStmts({
+      finalizeRun: {
+        status: 'pushed',
+        reviewer_verdict: 'approved',
+        pr_url: 'https://hub/git/proj/pulls/42',
+        project_id: 'proj',
+      },
+      pr: { status: 'merged', merged_sha: 'cafe1234' },
+    });
+    expect(readFinalizeOutcome(stmts, 'run-1')).toEqual({
+      status: 'merged',
+      mergedSha: 'cafe1234',
+      reviewStatus: 'approved',
+    });
+  });
+
+  it('maps a changes_requested run to a review rejection', () => {
+    const stmts = fakeStmts({
+      finalizeRun: {
+        status: 'failed',
+        reviewer_verdict: 'changes_requested',
+        pr_url: null,
+        project_id: 'proj',
+      },
+    });
+    expect(readFinalizeOutcome(stmts, 'run-1')).toEqual({
+      status: 'review_rejected',
+      reviewStatus: 'changes_requested',
+    });
+  });
+});
