@@ -5,6 +5,8 @@ import { createAutopilotOrchestrator } from './orchestrator.js';
 import type {
   AutopilotBaselineSpec,
   AutopilotBoardPort,
+  AutopilotDeployPort,
+  AutopilotDeployResult,
   AutopilotFinalizePort,
   AutopilotFinalizeResult,
   AutopilotPlannerPort,
@@ -18,7 +20,11 @@ const ACTOR = { userId: 'user-1' };
 
 const READY = {
   brief: 'Build a disposable todo API with a browser-testable list page.',
-  target: { targetId: 'local-preview' },
+  target: {
+    targetId: 'local-preview',
+    origin: 'http://127.0.0.1:4310',
+    readinessProbeUrl: 'http://127.0.0.1:4310/health',
+  },
   limits: {
     cycleMode: 'continuous' as const,
     maxWallTimeMs: 60 * 60 * 1000,
@@ -36,6 +42,7 @@ const SPEC: AutopilotBaselineSpec = {
   ],
   nonGoals: ['auth', 'multi-tenant'],
   specDecisions: [{ key: 'storage', decision: 'in-memory sqlite' }],
+  storageRecovery: 'disposable',
   qualityRubricVersion: 1,
 };
 
@@ -65,6 +72,25 @@ function fakeFinalize(finalizeRunId = 'fin-1'): AutopilotFinalizePort {
   return { startFinalize: async () => ({ finalizeRunId }) };
 }
 
+function fakeDeploy(opts?: {
+  deploymentId?: string;
+  rollback?: AutopilotDeployResult | (() => Promise<AutopilotDeployResult>);
+}): AutopilotDeployPort {
+  return {
+    deployRevision: async () => ({ deploymentId: opts?.deploymentId ?? 'dep-1' }),
+    rollback: async () => {
+      if (typeof opts?.rollback === 'function') return opts.rollback();
+      return (
+        opts?.rollback ?? {
+          status: 'success',
+          deploymentId: 'dep-rollback',
+          deployedSha: 'verified-sha',
+        }
+      );
+    },
+  };
+}
+
 function stubWorkerCreds() {
   return {
     assertContainment: () => undefined,
@@ -83,6 +109,7 @@ function harness(opts?: {
   board?: AutopilotBoardPort;
   session?: AutopilotSessionPort;
   finalize?: AutopilotFinalizePort;
+  deploy?: AutopilotDeployPort;
   db?: Database.Database;
 }) {
   const db = opts?.db ?? new Database(':memory:');
@@ -105,6 +132,7 @@ function harness(opts?: {
     board: opts?.board ?? fakeBoard(),
     session: opts?.session ?? fakeSession(),
     finalize: opts?.finalize ?? fakeFinalize(),
+    deploy: opts?.deploy ?? fakeDeploy(),
   });
   const store = new AutopilotStore(db);
   return { db, controller, orchestrator, store };
@@ -167,6 +195,7 @@ describe('autopilot orchestrator', () => {
     expect(finResult.advanced).toBe(true);
     expect(finResult.outcome).toBe('succeeded');
     expect(store.getCycle(runId, 1)!.testedCommitSha).toBe('deadbeefcafe');
+    expect(finResult.snapshot.run.stage).toBe('deploying');
     // Deploy verification is a later stage; the run is not yet marked verified.
     expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
   });
@@ -303,6 +332,7 @@ describe('autopilot orchestrator', () => {
       board: fakeBoard(),
       session: fakeSession(),
       finalize: fakeFinalize(),
+      deploy: fakeDeploy(),
     });
 
     // A late session callback for the superseded operation must not advance.
@@ -632,6 +662,7 @@ describe('autopilot orchestrator', () => {
     expect(res.idempotent).toBe(true);
     expect(res.advanced).toBe(true);
     expect(store.getCycle(started.run.id, 1)!.testedCommitSha).toBe('deadbeefcafe');
+    expect(store.getRun(started.run.id)!.stage).toBe('deploying');
   });
 
   it('reconciles a missing planning advance after a crash between settle and advance', async () => {
@@ -693,5 +724,222 @@ describe('autopilot orchestrator', () => {
     expect(second.advanced).toBe(false);
     // The tested SHA was recorded exactly once and remains stable.
     expect(store.getCycle(started.run.id, 1)!.testedCommitSha).toBe('deadbeefcafe');
+    expect(store.getRun(started.run.id)!.stage).toBe('deploying');
+  });
+});
+
+async function reachDeploying(
+  orchestrator: ReturnType<typeof createAutopilotOrchestrator>,
+  controller: ReturnType<typeof createAutopilotController>,
+) {
+  start(controller);
+  await orchestrator.runPlanning(PROJECT);
+  const implOp = await orchestrator.dispatchImplementation(PROJECT);
+  await orchestrator.reconcileImplementation(PROJECT, {
+    operationId: implOp.id,
+    fencingGeneration: implOp.fencingGeneration,
+    result: { committed: true },
+  });
+  const finOp = await orchestrator.dispatchFinalize(PROJECT);
+  await orchestrator.reconcileFinalize(PROJECT, {
+    operationId: finOp.id,
+    fencingGeneration: finOp.fencingGeneration,
+    result: MERGED,
+  });
+}
+
+describe('autopilot orchestrator — deploy', () => {
+  it('deploys the exact merged SHA and advances to verifying without marking last-known-good', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachDeploying(orchestrator, controller);
+    const depOp = await orchestrator.dispatchDeploy(PROJECT);
+    expect(depOp.kind).toBe('deploy');
+    expect(depOp.deploymentId).toBe('dep-1');
+    const runId = store.getActiveRun(PROJECT)!.id;
+    expect(store.getCycle(runId, 1)!.deploymentId).toBe('dep-1');
+
+    const result = await orchestrator.reconcileDeploy(PROJECT, {
+      operationId: depOp.id,
+      fencingGeneration: depOp.fencingGeneration,
+      result: { status: 'success', deploymentId: 'dep-1', deployedSha: 'deadbeefcafe' },
+    });
+    expect(result.advanced).toBe(true);
+    expect(result.snapshot.run.stage).toBe('verifying');
+    expect(store.getCycle(runId, 1)!.deploymentId).toBe('dep-1');
+    expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
+    expect(store.getRun(runId)!.lastDeploymentId).toBeNull();
+  });
+
+  it('does not advance when the live SHA does not match the merged revision', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachDeploying(orchestrator, controller);
+    const depOp = await orchestrator.dispatchDeploy(PROJECT);
+    const result = await orchestrator.reconcileDeploy(PROJECT, {
+      operationId: depOp.id,
+      fencingGeneration: depOp.fencingGeneration,
+      result: { status: 'success', deploymentId: 'dep-1', deployedSha: 'wrong-sha' },
+    });
+    expect(result.advanced).toBe(false);
+    expect(result.outcome).toBe('failed');
+    expect(store.getActiveRun(PROJECT)!.controlState).toBe('paused');
+    expect(store.getActiveRun(PROJECT)!.pauseReason).toMatch(/no last-known-good/);
+    expect(store.getActiveRun(PROJECT)!.lastVerifiedSha).toBeNull();
+  });
+
+  it('rolls back to the last verified artifact on a failed candidate', async () => {
+    const { controller, orchestrator, store } = harness({
+      deploy: fakeDeploy({
+        rollback: {
+          status: 'success',
+          deploymentId: 'dep-lkg',
+          deployedSha: 'verified-sha',
+        },
+      }),
+    });
+    await reachDeploying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    store.updateRun(runId, {
+      lastVerifiedSha: 'verified-sha',
+      lastDeploymentId: 'dep-lkg',
+      updatedAt: store.getRun(runId)!.updatedAt,
+    });
+    const depOp = await orchestrator.dispatchDeploy(PROJECT);
+    const result = await orchestrator.reconcileDeploy(PROJECT, {
+      operationId: depOp.id,
+      fencingGeneration: depOp.fencingGeneration,
+      result: { status: 'error', deploymentId: 'dep-1', message: 'step failed' },
+    });
+    expect(result.advanced).toBe(false);
+    expect(store.getRun(runId)!.controlState).toBe('paused');
+    expect(store.getRun(runId)!.pauseReason).toMatch(/recovered last-known-good/);
+    expect(store.getRun(runId)!.lastVerifiedSha).toBe('verified-sha');
+    expect(store.getRun(runId)!.lastDeploymentId).toBe('dep-lkg');
+  });
+
+  it('pauses when rollback does not restore the last verified SHA', async () => {
+    const { controller, orchestrator, store } = harness({
+      deploy: fakeDeploy({
+        rollback: {
+          status: 'success',
+          deploymentId: 'dep-bad',
+          deployedSha: 'not-the-lkg',
+        },
+      }),
+    });
+    await reachDeploying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    store.updateRun(runId, {
+      lastVerifiedSha: 'verified-sha',
+      lastDeploymentId: 'dep-lkg',
+      updatedAt: store.getRun(runId)!.updatedAt,
+    });
+    const depOp = await orchestrator.dispatchDeploy(PROJECT);
+    await orchestrator.reconcileDeploy(PROJECT, {
+      operationId: depOp.id,
+      fencingGeneration: depOp.fencingGeneration,
+      result: { status: 'error', deploymentId: 'dep-1' },
+    });
+    expect(store.getRun(runId)!.controlState).toBe('paused');
+    expect(store.getRun(runId)!.pauseReason).toBe('rollback failed');
+    expect(store.getRun(runId)!.lastVerifiedSha).toBe('verified-sha');
+  });
+
+  it('reuses an in-flight deploy operation instead of launching a duplicate', async () => {
+    const { controller, orchestrator } = harness();
+    await reachDeploying(orchestrator, controller);
+    const first = await orchestrator.dispatchDeploy(PROJECT);
+    const second = await orchestrator.dispatchDeploy(PROJECT);
+    expect(second.id).toBe(first.id);
+  });
+
+  it('halts when the experiment target parks for approval', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachDeploying(orchestrator, controller);
+    const depOp = await orchestrator.dispatchDeploy(PROJECT);
+    await orchestrator.reconcileDeploy(PROJECT, {
+      operationId: depOp.id,
+      fencingGeneration: depOp.fencingGeneration,
+      result: { status: 'awaiting_approval', deploymentId: 'dep-1' },
+    });
+    expect(store.getActiveRun(PROJECT)!.controlState).toBe('paused');
+    expect(store.getActiveRun(PROJECT)!.pauseReason).toMatch(/unattended deploy is not authorized/);
+  });
+
+  it('pauses before deploying when a last-known-good exists and storage cannot be rolled back', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachDeploying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const run = store.getRun(runId)!;
+    store.updateBriefSpec(
+      run.briefId!,
+      JSON.stringify({
+        ...SPEC,
+        specDecisions: [{ key: 'storage', decision: 'postgres migration rewriting user rows' }],
+        storageRecovery: 'unsupported',
+      }),
+    );
+    store.updateRun(runId, {
+      lastVerifiedSha: 'verified-sha',
+      lastDeploymentId: 'dep-lkg',
+      updatedAt: run.updatedAt,
+    });
+    await orchestrator.dispatchDeploy(PROJECT);
+    expect(store.getRun(runId)!.controlState).toBe('paused');
+    expect(store.getRun(runId)!.pauseReason).toMatch(/unsupported data migration/);
+  });
+
+  it('pauses before deploying when mixed storage prose is not an exact recovery contract', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachDeploying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const run = store.getRun(runId)!;
+    store.updateBriefSpec(
+      run.briefId!,
+      JSON.stringify({
+        ...SPEC,
+        specDecisions: [
+          {
+            key: 'storage',
+            decision: 'persistent PostgreSQL; destructive migration; disposable test fixtures',
+          },
+        ],
+        storageRecovery: 'unknown',
+      }),
+    );
+    store.updateRun(runId, {
+      lastVerifiedSha: 'verified-sha',
+      lastDeploymentId: 'dep-lkg',
+      updatedAt: run.updatedAt,
+    });
+    await orchestrator.dispatchDeploy(PROJECT);
+    expect(store.getRun(runId)!.controlState).toBe('paused');
+    expect(store.getRun(runId)!.pauseReason).toMatch(/cannot be established/);
+  });
+
+  it('pauses a first deploy when storageRecovery is unsupported', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachDeploying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const run = store.getRun(runId)!;
+    expect(run.lastVerifiedSha).toBeNull();
+    store.updateBriefSpec(
+      run.briefId!,
+      JSON.stringify({ ...SPEC, storageRecovery: 'unsupported' }),
+    );
+    await orchestrator.dispatchDeploy(PROJECT);
+    expect(store.getRun(runId)!.controlState).toBe('paused');
+    expect(store.getRun(runId)!.pauseReason).toMatch(/unsupported data migration/);
+  });
+
+  it('pauses a first deploy when storageRecovery is unknown', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachDeploying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const run = store.getRun(runId)!;
+    expect(run.lastVerifiedSha).toBeNull();
+    store.updateBriefSpec(run.briefId!, JSON.stringify({ ...SPEC, storageRecovery: 'unknown' }));
+    await orchestrator.dispatchDeploy(PROJECT);
+    expect(store.getRun(runId)!.controlState).toBe('paused');
+    expect(store.getRun(runId)!.pauseReason).toMatch(/cannot be established/);
   });
 });

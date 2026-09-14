@@ -6,6 +6,8 @@ import {
   createAutopilotOrchestrator,
   type AutopilotOrchestrator,
   type AutopilotBoardPort,
+  type AutopilotDeployPort,
+  type AutopilotDeployResult,
   type AutopilotFinalizePort,
   type AutopilotFinalizeResult,
   type AutopilotPlannerPort,
@@ -23,6 +25,7 @@ export interface AutopilotAdapters {
   board: AutopilotBoardPort;
   session: AutopilotSessionPort;
   finalize: AutopilotFinalizePort;
+  deploy: AutopilotDeployPort;
 }
 
 export interface AutopilotRuntimeDeps {
@@ -41,6 +44,11 @@ export interface AutopilotRuntimeDeps {
    * still in progress.
    */
   readFinalizeOutcome: (finalizeRunId: string) => AutopilotFinalizeResult | null;
+  /**
+   * Read the outcome of a started deployment. Return null while the deploy is
+   * still in progress (pending/running).
+   */
+  readDeployOutcome: (deploymentId: string) => AutopilotDeployResult | null;
   log?: (message: string, err?: unknown) => void;
 }
 
@@ -60,6 +68,7 @@ export class AutopilotRuntime {
   private readonly buildAdapters: (run: AutopilotRunRecord) => AutopilotAdapters;
   private readonly readSessionOutcome: (sessionId: string) => AutopilotSessionResult | null;
   private readonly readFinalizeOutcome: (finalizeRunId: string) => AutopilotFinalizeResult | null;
+  private readonly readDeployOutcome: (deploymentId: string) => AutopilotDeployResult | null;
   private readonly log: (message: string, err?: unknown) => void;
 
   constructor(deps: AutopilotRuntimeDeps) {
@@ -68,6 +77,7 @@ export class AutopilotRuntime {
     this.buildAdapters = deps.buildAdapters;
     this.readSessionOutcome = deps.readSessionOutcome;
     this.readFinalizeOutcome = deps.readFinalizeOutcome;
+    this.readDeployOutcome = deps.readDeployOutcome;
     this.log =
       deps.log ??
       ((message, err) =>
@@ -113,9 +123,11 @@ export class AutopilotRuntime {
       case 'finalizing':
         await this.driveFinalizing(orchestrator, run);
         return;
+      case 'deploying':
+        await this.driveDeploying(orchestrator, run);
+        return;
       default:
-        // deploying / verifying / documenting / selecting-next are owned by
-        // later cards; the driver leaves those stages untouched.
+        // verifying / documenting / selecting-next are owned by later cards.
         return;
     }
   }
@@ -166,6 +178,30 @@ export class AutopilotRuntime {
       });
     } catch (err) {
       if (!this.isBenign(err)) this.log(`settle finalize ${finalizeRunId}`, err);
+    }
+  }
+
+  /**
+   * Deployment completion callback: if this deployment belongs to an
+   * in-flight deploy operation and an outcome is now observable, settle it.
+   */
+  async settleDeployment(deploymentId: string): Promise<void> {
+    try {
+      const store = new AutopilotStore(this.db);
+      const op = store.getOperationByDeploymentId(deploymentId);
+      if (!op || op.kind !== 'deploy' || op.status !== 'in_flight') return;
+      const run = store.getRun(op.runId);
+      if (!run || run.controlState !== 'running') return;
+      const outcome = this.readDeployOutcome(deploymentId);
+      if (!outcome) return;
+      const orchestrator = this.orchestratorFor(run);
+      await orchestrator.reconcileDeploy(run.projectId, {
+        operationId: op.id,
+        fencingGeneration: op.fencingGeneration,
+        result: outcome,
+      });
+    } catch (err) {
+      if (!this.isBenign(err)) this.log(`settle deployment ${deploymentId}`, err);
     }
   }
 
@@ -224,6 +260,56 @@ export class AutopilotRuntime {
       result: outcome,
     });
   }
+
+  private async driveDeploying(
+    orchestrator: AutopilotOrchestrator,
+    run: AutopilotRunRecord,
+  ): Promise<void> {
+    const store = new AutopilotStore(this.db);
+    const cycle = store.getCycle(run.id, run.cycleNumber);
+    if (!cycle) return;
+    const cycleDeploys = store
+      .listOperations(run.id)
+      .filter((op) => op.kind === 'deploy' && op.cycleId === cycle.id);
+    const inFlight = cycleDeploys.find(
+      (op) => op.status === 'in_flight' || op.status === 'pending',
+    );
+    // A crash after completeOperation but before advanceAfterDeploy leaves the
+    // run in deploying with a succeeded op and no in-flight row. Reconcile
+    // that settled op (idempotent advance) instead of launching a new deploy.
+    const succeeded = [...cycleDeploys].reverse().find((op) => op.status === 'succeeded');
+    if (succeeded && !inFlight) {
+      await orchestrator.reconcileDeploy(run.projectId, {
+        operationId: succeeded.id,
+        fencingGeneration: succeeded.fencingGeneration,
+        result: deployResultFromSettled(succeeded),
+      });
+      return;
+    }
+    if (!inFlight) {
+      await orchestrator.dispatchDeploy(run.projectId);
+      return;
+    }
+    if (!inFlight.deploymentId) return;
+    const outcome = this.readDeployOutcome(inFlight.deploymentId);
+    if (!outcome) return;
+    await orchestrator.reconcileDeploy(run.projectId, {
+      operationId: inFlight.id,
+      fencingGeneration: inFlight.fencingGeneration,
+      result: outcome,
+    });
+  }
+}
+
+function deployResultFromSettled(op: {
+  deploymentId: string | null;
+  result: unknown;
+}): AutopilotDeployResult {
+  const result = (op.result ?? {}) as { deployedSha?: unknown; deploymentId?: unknown };
+  const deployedSha = typeof result.deployedSha === 'string' ? result.deployedSha : undefined;
+  const deploymentId =
+    op.deploymentId ?? (typeof result.deploymentId === 'string' ? result.deploymentId : '');
+  return { status: 'success', deploymentId, deployedSha };
 }
 
 export function createAutopilotRuntime(deps: AutopilotRuntimeDeps): AutopilotRuntime {

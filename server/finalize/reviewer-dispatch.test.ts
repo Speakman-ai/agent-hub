@@ -242,6 +242,119 @@ describe('runReviewerDispatch — approved verdict, no threads', () => {
   });
 });
 
+describe('runReviewerDispatch — environment-only changes_requested is approved', () => {
+  it('persists approved when the driver only reports sandbox/omitted-file access failure', async () => {
+    const store: ThreadStoreState = { rows: [] };
+    const runner = vi.fn<ReviewerDispatchDeps['runReviewer']>().mockResolvedValue({
+      verdict: 'changes_requested',
+      threads: [
+        {
+          file_path: 'General review feedback',
+          line_start: null,
+          line_end: null,
+          body: 'Review incomplete: the sandbox could not start. This is a verification limitation, not a code finding. No confirmed defect in the visible patches; cannot establish that this change is mergeable.',
+        },
+      ],
+    });
+    const broadcast = vi.fn();
+    const { deps, stmts } = makeDeps(store, runner, broadcast);
+
+    const outcome = await runReviewerDispatch(deps, {
+      runId: 'run-env-only',
+      worktreePath: '/tmp/wt',
+      inputs: fakeInputs,
+      card: fakeCard,
+      project: fakeProject,
+      sessionId: 'sess-1',
+    });
+
+    expect(outcome).toEqual({
+      kind: 'success',
+      verdict: 'approved',
+      threadCount: 1,
+      activeSecondsBilled: REVIEW_PHASE_ACTIVE_SECONDS,
+    });
+    expect(stmts.updateFinalizeRunReviewerVerdict.run).toHaveBeenCalledWith(
+      'approved',
+      'run-env-only',
+    );
+    expect(stmts.insertReviewerThread.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('coerces after dropping blank threads so leftover access-failure notes still approve', async () => {
+    const store: ThreadStoreState = { rows: [] };
+    const runner = vi.fn<ReviewerDispatchDeps['runReviewer']>().mockResolvedValue({
+      verdict: 'changes_requested',
+      threads: [
+        {
+          file_path: 'General review feedback',
+          line_start: null,
+          line_end: null,
+          body: 'Review incomplete: sandbox could not start. No confirmed defect.',
+        },
+        { file_path: 'noise.ts', line_start: 1, line_end: 1, body: '   ' },
+      ],
+    });
+    const { deps, stmts } = makeDeps(store, runner, vi.fn());
+
+    const outcome = await runReviewerDispatch(deps, {
+      runId: 'run-env-blank',
+      worktreePath: '/tmp/wt',
+      inputs: fakeInputs,
+      card: fakeCard,
+      project: fakeProject,
+    });
+
+    expect(outcome.kind).toBe('success');
+    if (outcome.kind !== 'success') throw new Error('unreachable');
+    expect(outcome.verdict).toBe('approved');
+    expect(outcome.threadCount).toBe(1);
+    expect(stmts.updateFinalizeRunReviewerVerdict.run).toHaveBeenCalledWith(
+      'approved',
+      'run-env-blank',
+    );
+  });
+
+  it('still persists changes_requested when a scored defect is mixed with an environment note', async () => {
+    const store: ThreadStoreState = { rows: [] };
+    const runner = vi.fn<ReviewerDispatchDeps['runReviewer']>().mockResolvedValue({
+      verdict: 'changes_requested',
+      threads: [
+        {
+          file_path: 'General review feedback',
+          line_start: null,
+          line_end: null,
+          body: 'Review incomplete: sandbox could not start.',
+        },
+        {
+          file_path: 'server/foo.ts',
+          line_start: 42,
+          line_end: 45,
+          body: '**[6/10]** Race on config.bin.',
+        },
+      ],
+    });
+    const { deps, stmts } = makeDeps(store, runner, vi.fn());
+
+    const outcome = await runReviewerDispatch(deps, {
+      runId: 'run-mixed-env',
+      worktreePath: '/tmp/wt',
+      inputs: fakeInputs,
+      card: fakeCard,
+      project: fakeProject,
+    });
+
+    expect(outcome.kind).toBe('success');
+    if (outcome.kind !== 'success') throw new Error('unreachable');
+    expect(outcome.verdict).toBe('changes_requested');
+    expect(outcome.threadCount).toBe(2);
+    expect(stmts.updateFinalizeRunReviewerVerdict.run).toHaveBeenCalledWith(
+      'changes_requested',
+      'run-mixed-env',
+    );
+  });
+});
+
 describe('runReviewerDispatch — changes_requested with threads', () => {
   it('persists every thread + verdict, broadcasts one event per row', async () => {
     const store: ThreadStoreState = { rows: [] };

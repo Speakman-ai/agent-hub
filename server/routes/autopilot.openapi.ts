@@ -42,9 +42,18 @@ export const AutopilotWorkerAuthoritySchema = registerComponent(
 export const AutopilotTargetSchema = registerComponent(
   'AutopilotTarget',
   z.object({
-    targetId: z.string().min(1),
-    readinessProbeUrl: z.string().nullable(),
-    origin: z.string().nullable(),
+    targetId: z.string().min(1).openapi({
+      description:
+        'Declared local deploy.yaml environment name used as the experiment target. That environment must declare origin and readiness that match this target.',
+    }),
+    readinessProbeUrl: z.string().nullable().openapi({
+      description:
+        'HTTP(S) loopback readiness probe on the same origin as `origin`. Required to enable or start a run.',
+    }),
+    origin: z.string().nullable().openapi({
+      description:
+        'HTTP(S) loopback origin of the dedicated local target (scheme://host[:port], no path). Required to enable or start a run. Public-browser loopback blocking is unchanged.',
+    }),
   }),
 );
 
@@ -107,8 +116,13 @@ export const AutopilotRunSchema = registerComponent(
     cycleNumber: z.number().int(),
     pauseReason: z.string().nullable(),
     failureReason: z.string().nullable(),
-    lastVerifiedSha: z.string().nullable(),
-    lastDeploymentId: z.string().nullable(),
+    lastVerifiedSha: z.string().nullable().openapi({
+      description:
+        'Last verified SHA at the experiment target. A successful candidate deploy does not write this; verification owns last-known-good.',
+    }),
+    lastDeploymentId: z.string().nullable().openapi({
+      description: 'Deployment id of the last verified artifact retained for rollback.',
+    }),
     credentialOwnerUserId: z.string().nullable(),
     targetId: z.string().nullable(),
     limits: AutopilotLimitsSchema,
@@ -133,7 +147,10 @@ export const AutopilotCycleSchema = registerComponent(
     sessionId: z.string().nullable(),
     testedCommitSha: z.string().nullable(),
     finalizeRunId: z.string().nullable(),
-    deploymentId: z.string().nullable(),
+    deploymentId: z.string().nullable().openapi({
+      description:
+        'Deployment id of the cycle candidate. Exact merged SHA must be live before verifying.',
+    }),
     verification: z.unknown().nullable(),
     documentation: z.unknown().nullable(),
     selectedImprovement: z.string().nullable(),
@@ -331,7 +348,7 @@ registerPath({
   tags: ['Autopilot'],
   summary: 'Save Autopilot project configuration',
   description:
-    'Persists the project opt-in, versioned brief, local target, limits and credential owner. Enabling requires every field. Does not start a run.',
+    'Persists the project opt-in, versioned brief, local target, limits and credential owner. Enabling requires every field, including a loopback origin and readiness probe on the dedicated experiment target. Unattended deploy authority applies only to that target. Does not start a run.',
   request: {
     params: projectParams,
     body: { content: jsonContent(PutAutopilotConfigRequestSchema) },
@@ -348,7 +365,7 @@ registerPath({
   tags: ['Autopilot'],
   summary: 'Start an Autopilot run',
   description:
-    'Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires the server operator setting, project opt-in, scoped worker credentials, and enforceable runtime containment.',
+    'Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires the server operator setting, project opt-in, a declared local target with origin and readiness, scoped worker credentials, and enforceable runtime containment. Unattended deploy is authorized only for that experiment target; push and schedule triggers for the owned target are skipped.',
   request: {
     params: projectParams,
     body: { content: jsonContent(StartAutopilotRequestSchema), required: false },

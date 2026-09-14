@@ -4,14 +4,22 @@ import { createAutopilotController } from './controller.js';
 import { createAutopilotRuntime, type AutopilotAdapters } from './runtime.js';
 import { AutopilotStore } from './store.js';
 import { ensureAutopilotSchema } from './schema.js';
-import type { AutopilotFinalizeResult, AutopilotSessionResult } from './orchestrator.js';
+import type {
+  AutopilotDeployResult,
+  AutopilotFinalizeResult,
+  AutopilotSessionResult,
+} from './orchestrator.js';
 
 const PROJECT = 'demo-app';
 const ACTOR = { userId: 'user-1' };
 
 const READY = {
   brief: 'Build a disposable todo API with a browser-testable list page.',
-  target: { targetId: 'local-preview' },
+  target: {
+    targetId: 'local-preview',
+    origin: 'http://127.0.0.1:4310',
+    readinessProbeUrl: 'http://127.0.0.1:4310/health',
+  },
   limits: {
     cycleMode: 'continuous' as const,
     maxWallTimeMs: 60 * 60 * 1000,
@@ -29,6 +37,7 @@ function fakeAdapters(): AutopilotAdapters {
         acceptanceJourneys: [{ action: 'create a todo', expectedResult: 'it appears in the list' }],
         nonGoals: ['auth'],
         specDecisions: [{ key: 'storage', decision: 'sqlite' }],
+        storageRecovery: 'disposable',
         qualityRubricVersion: 1,
       }),
     },
@@ -45,6 +54,14 @@ function fakeAdapters(): AutopilotAdapters {
     },
     finalize: {
       startFinalize: async () => ({ finalizeRunId: 'fin-1' }),
+    },
+    deploy: {
+      deployRevision: async () => ({ deploymentId: 'dep-1' }),
+      rollback: async () => ({
+        status: 'success' as const,
+        deploymentId: 'dep-rb',
+        deployedSha: 'verified',
+      }),
     },
   };
 }
@@ -80,6 +97,7 @@ describe('autopilot runtime driver', () => {
 
     let sessionOutcome: AutopilotSessionResult | null = null;
     let finalizeOutcome: AutopilotFinalizeResult | null = null;
+    let deployOutcome: AutopilotDeployResult | null = null;
 
     const runtime = createAutopilotRuntime({
       db,
@@ -87,6 +105,7 @@ describe('autopilot runtime driver', () => {
       buildAdapters: () => fakeAdapters(),
       readSessionOutcome: () => sessionOutcome,
       readFinalizeOutcome: () => finalizeOutcome,
+      readDeployOutcome: () => deployOutcome,
     });
 
     // Tick 1: planning -> implementing.
@@ -117,10 +136,22 @@ describe('autopilot runtime driver', () => {
     await runtime.tick();
     expect(store.getCycle(runId, 1)!.testedCommitSha).toBeNull();
 
-    // Finalize merged -> tick 7 records the tested SHA.
+    // Finalize merged -> tick 7 records the tested SHA and advances to deploying.
     finalizeOutcome = { status: 'merged', mergedSha: 'deadbeef', reviewStatus: 'approved' };
     await runtime.tick();
     expect(store.getCycle(runId, 1)!.testedCommitSha).toBe('deadbeef');
+    expect(store.getRun(runId)!.stage).toBe('deploying');
+
+    // Tick 8: dispatch the deployment.
+    await runtime.tick();
+    expect(store.getCycle(runId, 1)!.deploymentId).toBe('dep-1');
+    expect(store.getRun(runId)!.stage).toBe('deploying');
+
+    // Exact SHA at the live target -> tick 9 advances to verifying without marking LKG.
+    deployOutcome = { status: 'success', deploymentId: 'dep-1', deployedSha: 'deadbeef' };
+    await runtime.tick();
+    expect(store.getRun(runId)!.stage).toBe('verifying');
+    expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
   });
 
   it('is a no-op when no run is active', async () => {
@@ -133,6 +164,7 @@ describe('autopilot runtime driver', () => {
       buildAdapters: () => fakeAdapters(),
       readSessionOutcome: () => null,
       readFinalizeOutcome: () => null,
+      readDeployOutcome: () => null,
     });
     await expect(runtime.tick()).resolves.toBeUndefined();
   });
@@ -154,6 +186,7 @@ describe('autopilot runtime driver', () => {
       buildAdapters: () => fakeAdapters(),
       readSessionOutcome: () => sessionOutcome,
       readFinalizeOutcome: () => finalizeOutcome,
+      readDeployOutcome: () => null,
     });
 
     await runtime.tick(); // plan -> implementing
@@ -186,6 +219,7 @@ describe('autopilot runtime driver', () => {
       buildAdapters: () => fakeAdapters(),
       readSessionOutcome: () => sessionOutcome,
       readFinalizeOutcome: () => null,
+      readDeployOutcome: () => null,
     });
 
     await runtime.tick(); // plan -> implementing
@@ -214,6 +248,7 @@ describe('autopilot runtime driver', () => {
       buildAdapters: () => fakeAdapters(),
       readSessionOutcome: () => sessionOutcome,
       readFinalizeOutcome: () => finalizeOutcome,
+      readDeployOutcome: () => null,
     });
 
     await runtime.tick(); // plan
@@ -225,5 +260,112 @@ describe('autopilot runtime driver', () => {
     finalizeOutcome = { status: 'merged', mergedSha: 'deadbeef', reviewStatus: 'approved' };
     await runtime.settleFinalize('fin-1');
     expect(store.getCycle(runId, 1)!.testedCommitSha).toBe('deadbeef');
+    expect(store.getRun(runId)!.stage).toBe('deploying');
+  });
+
+  it('settles an in-flight deployment from a completion callback', async () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    ensureAutopilotSchema(db);
+    const store = new AutopilotStore(db);
+    const controller = buildController(db);
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+    const runId = controller.start(PROJECT, {}, ACTOR).run.id;
+
+    let sessionOutcome: AutopilotSessionResult | null = { committed: true };
+    let finalizeOutcome: AutopilotFinalizeResult | null = {
+      status: 'merged',
+      mergedSha: 'deadbeef',
+      reviewStatus: 'approved',
+    };
+    let deployOutcome: AutopilotDeployResult | null = null;
+    const runtime = createAutopilotRuntime({
+      db,
+      buildController: () => buildController(db),
+      buildAdapters: () => fakeAdapters(),
+      readSessionOutcome: () => sessionOutcome,
+      readFinalizeOutcome: () => finalizeOutcome,
+      readDeployOutcome: () => deployOutcome,
+    });
+
+    await runtime.tick(); // plan
+    await runtime.tick(); // dispatch impl
+    await runtime.tick(); // reconcile impl -> finalizing
+    await runtime.tick(); // dispatch finalize
+    await runtime.tick(); // reconcile finalize -> deploying
+    await runtime.tick(); // dispatch deploy
+    expect(store.getCycle(runId, 1)!.deploymentId).toBe('dep-1');
+
+    deployOutcome = { status: 'success', deploymentId: 'dep-1', deployedSha: 'deadbeef' };
+    await runtime.settleDeployment('dep-1');
+    expect(store.getRun(runId)!.stage).toBe('verifying');
+    expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
+  });
+
+  it('recovers a succeeded deploy after a crash between settle and advance instead of launching another', async () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    ensureAutopilotSchema(db);
+    const store = new AutopilotStore(db);
+    const controller = buildController(db);
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+    const runId = controller.start(PROJECT, {}, ACTOR).run.id;
+
+    let deployCalls = 0;
+    const adapters = fakeAdapters();
+    adapters.deploy = {
+      deployRevision: async () => {
+        deployCalls += 1;
+        return { deploymentId: `dep-${deployCalls}` };
+      },
+      rollback: async () => ({
+        status: 'success' as const,
+        deploymentId: 'dep-rb',
+        deployedSha: 'verified',
+      }),
+    };
+
+    const runtime = createAutopilotRuntime({
+      db,
+      buildController: () => buildController(db),
+      buildAdapters: () => adapters,
+      readSessionOutcome: () => ({ committed: true }),
+      readFinalizeOutcome: () => ({
+        status: 'merged',
+        mergedSha: 'deadbeef',
+        reviewStatus: 'approved',
+      }),
+      readDeployOutcome: () => ({
+        status: 'success',
+        deploymentId: 'dep-1',
+        deployedSha: 'deadbeef',
+      }),
+    });
+
+    await runtime.tick(); // plan
+    await runtime.tick(); // dispatch impl
+    await runtime.tick(); // reconcile impl -> finalizing
+    await runtime.tick(); // dispatch finalize
+    await runtime.tick(); // reconcile finalize -> deploying
+    await runtime.tick(); // dispatch deploy
+    expect(deployCalls).toBe(1);
+    const depOp = store.listOperations(runId).find((op) => op.kind === 'deploy')!;
+    expect(depOp.status).toBe('in_flight');
+
+    // Crash: the operation is settled succeeded, but the run never left deploying.
+    await controller.completeOperation({
+      operationId: depOp.id,
+      fencingGeneration: depOp.fencingGeneration,
+      outcome: 'succeeded',
+      result: { deployedSha: 'deadbeef', deploymentId: 'dep-1' },
+    });
+    expect(store.getRun(runId)!.stage).toBe('deploying');
+    expect(store.listOperations(runId).filter((op) => op.kind === 'deploy')).toHaveLength(1);
+
+    await runtime.tick();
+    expect(store.getRun(runId)!.stage).toBe('verifying');
+    expect(store.listOperations(runId).filter((op) => op.kind === 'deploy')).toHaveLength(1);
+    expect(deployCalls).toBe(1);
+    expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
   });
 });

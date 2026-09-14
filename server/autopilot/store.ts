@@ -980,6 +980,19 @@ export class AutopilotStore {
     return row ? mapOperation(row) : null;
   }
 
+  /** Most recent operation that started this deployment, if any. */
+  getOperationByDeploymentId(deploymentId: string): AutopilotOperationRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM autopilot_operations
+         WHERE deployment_id = ?
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get(deploymentId) as OperationRow | undefined;
+    return row ? mapOperation(row) : null;
+  }
+
   listOpenOperations(runId: string): AutopilotOperationRecord[] {
     const rows = this.db
       .prepare(

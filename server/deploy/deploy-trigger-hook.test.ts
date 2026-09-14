@@ -58,7 +58,15 @@ function configWith(...envs: string[]): DeployConfig {
     environments: new Map(
       envs.map((name) => [
         name,
-        { name, approval: false, runsOn: 'ubuntu-24.04', timeoutMinutes: 30, steps: [] },
+        {
+          name,
+          approval: false,
+          runsOn: 'ubuntu-24.04',
+          timeoutMinutes: 30,
+          origin: null,
+          readiness: null,
+          steps: [],
+        },
       ]),
     ),
   };
@@ -143,6 +151,27 @@ describe('maybeRunDeployTriggers', () => {
     // Success ⇒ ownership transferred to the orchestrator; the hook must NOT
     // clean the worktree itself.
     expect(existsSync(created[0]!)).toBe(true);
+  });
+
+  it('skips a push trigger for an environment owned by Autopilot', async () => {
+    const { created, prepareCheckout } = makeCheckoutTracker();
+    const triggerDeployment = mockTrigger('dep-skip');
+
+    await maybeRunDeployTriggers(PROJECT, 'push', ['refs/heads/main'], {
+      broadcast: vi.fn(),
+      config: APP_CONFIG,
+      findProject: () => PROJECT,
+      prepareCheckout,
+      loadConfig: async () => configWith('prod'),
+      findMatchingTriggers: () => [triggerRow('prod', 'push', 'main')],
+      isEnvironmentDeployable: () => true,
+      triggerDeployment,
+      skipOwnedTarget: () => true,
+      log: vi.fn(),
+    } as DeployTriggerHookDeps);
+
+    expect(triggerDeployment).not.toHaveBeenCalled();
+    expect(created).toHaveLength(1);
   });
 
   it('uses the merge event for the afterMerge hook', async () => {

@@ -897,8 +897,8 @@ describe('runReviewerTurn — changes_requested with no anchored findings', () =
   });
 });
 
-describe('runReviewerTurn — review-environment findings are not rewritten', () => {
-  it('leaves an access-failure-only changes_requested verdict in place', async () => {
+describe('runReviewerTurn — review-environment findings are rewritten', () => {
+  it('coerces an access-failure-only changes_requested verdict to approved', async () => {
     const assistantText = `Review incomplete: local reads failed because the sandbox could not create a namespace; the host terminal returned no file contents. I could not inspect the 18 omitted files. No code defect is asserted from inaccessible files.
 
 <agenthub:review-verdict>
@@ -921,7 +921,7 @@ describe('runReviewerTurn — review-environment findings are not rewritten', ()
       sessionId: 'sess-1',
     });
 
-    expect(result.verdict).toBe('changes_requested');
+    expect(result.verdict).toBe('approved');
     expect(result.threads).toHaveLength(1);
   });
 

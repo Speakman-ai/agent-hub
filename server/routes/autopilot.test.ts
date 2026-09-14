@@ -19,7 +19,11 @@ const PROJECT_ID = 'autopilot-proj';
 const READY = {
   enabled: true,
   brief: 'Build a disposable notes API with a browser-testable list.',
-  target: { targetId: 'local-notes' },
+  target: {
+    targetId: 'local-notes',
+    origin: 'http://127.0.0.1:4310',
+    readinessProbeUrl: 'http://127.0.0.1:4310/health',
+  },
   limits: {
     cycleMode: 'continuous',
     maxWallTimeMs: 3_600_000,

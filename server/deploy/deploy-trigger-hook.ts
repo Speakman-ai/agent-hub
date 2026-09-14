@@ -43,6 +43,8 @@ import {
   type DeployTriggerEvent,
 } from './deployment-trigger-store.js';
 import type { ReleaseDigestRunner } from '../release-digest.js';
+import { getDb } from '../db.js';
+import { shouldSkipAutopilotDuplicateTrigger } from '../autopilot/deploy-ownership.js';
 
 type CheckoutResult = { worktreePath: string; resolvedRef: string };
 
@@ -109,6 +111,11 @@ export interface DeployTriggerHookDeps {
   findMatchingTriggers?: typeof defaultFindMatchingTriggers;
   /** Test seam — defaults to {@link defaultIsEnvironmentDeployable}. */
   isEnvironmentDeployable?: typeof defaultIsEnvironmentDeployable;
+  /**
+   * Skip push/schedule deploys for an Autopilot-owned experiment target.
+   * Defaults to {@link shouldSkipAutopilotDuplicateTrigger} against the Hub DB.
+   */
+  skipOwnedTarget?: (projectId: string, environment: string, ref?: string) => boolean;
   /** Orchestrator overrides (runner backend, clock, env, …) for tests. */
   orchestratorDeps?: Partial<DeployOrchestratorDeps>;
   /** Override for tests to capture log lines. */
@@ -233,6 +240,21 @@ async function runTriggeredDeployments(
       continue;
     }
 
+    const skipOwned =
+      deps.skipOwnedTarget ??
+      ((projectId: string, environment: string, ref?: string) => {
+        try {
+          return shouldSkipAutopilotDuplicateTrigger({
+            projectId,
+            environment,
+            ref,
+            db: getDb(),
+          }).skip;
+        } catch {
+          return false;
+        }
+      });
+
     const declared = [...config.environments.keys()];
     // The config checkout is reused by the first environment that actually
     // deploys; a spare that no environment consumes is cleaned up at the end.
@@ -242,6 +264,13 @@ async function runTriggeredDeployments(
       if (!isDeployable(project.id, env, declared)) {
         log(
           `[deploy-trigger] ${project.id} ${event}/${branch}: env "${env}" not deployable — skipped`,
+        );
+        continue;
+      }
+
+      if (skipOwned(project.id, env, branch)) {
+        log(
+          `[deploy-trigger] ${project.id} ${event}/${branch}: env "${env}" owned by Autopilot — skipped`,
         );
         continue;
       }

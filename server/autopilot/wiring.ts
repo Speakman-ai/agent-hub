@@ -1,3 +1,5 @@
+import path from 'path';
+import { readFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import type { RouteDeps, Stmts, SessionRow, Project } from '../types.js';
 import { getDb } from '../db.js';
@@ -17,11 +19,14 @@ import { writeSpawnCredsFile } from '../spawn-creds-file.js';
 import { bindAutopilotWorkerSession, readAutopilotWorkerToken } from './worker-token.js';
 import {
   createAutopilotBoardAdapter,
+  createAutopilotDeployAdapter,
   createAutopilotFinalizeAdapter,
   createAutopilotPlannerAdapter,
   createAutopilotSessionAdapter,
+  deployOutcomeFromSnapshot,
   finalizeOutcomeFromSnapshot,
   type AutopilotBoardOps,
+  type AutopilotDeployOps,
   type AutopilotFinalizeOps,
   type AutopilotPlannerOps,
   type AutopilotSessionOps,
@@ -30,8 +35,17 @@ import { buildAutopilotControllerDeps, type AutopilotRouteOptions } from '../rou
 import { createAutopilotController } from './controller.js';
 import { AutopilotStore } from './store.js';
 import { createAutopilotRuntime, type AutopilotRuntime } from './runtime.js';
-import type { AutopilotFinalizeResult, AutopilotSessionResult } from './orchestrator.js';
+import type {
+  AutopilotDeployResult,
+  AutopilotFinalizeResult,
+  AutopilotSessionResult,
+} from './orchestrator.js';
 import type { AutopilotRunRecord } from './types.js';
+import { getDeployment, getDeploymentEnvironment } from '../deploy/deployment-store.js';
+import { triggerDeployment } from '../deploy/deploy-orchestrator.js';
+import { loadDeployConfig, parseDeployConfig } from '../deploy/deploy-config.js';
+import { prepareDeploymentCheckout } from '../deploy/deployment-checkout.js';
+import { buildDeployOrchestratorDeps } from '../deploy/deploy-trigger-hook.js';
 
 const AUTOPILOT_KEY_LABEL = 'autopilot-key:';
 const AUTOPILOT_CARD_LABEL = 'autopilot-card:';
@@ -112,9 +126,16 @@ function buildPlanningPrompt(brief: string): string {
     '  ],',
     '  "nonGoals": string[],              // non-empty',
     '  "specDecisions": [ { "key": "storage", "decision": "..." }, { "key": "runtime", "decision": "..." } ],',
+    '  "storageRecovery": "disposable" | "backward-compatible" | "unsupported" | "unknown",',
     '  "qualityRubricVersion": 1',
     '}',
     'Resolve scope conflicts and the storage choice concretely before returning.',
+    'storageRecovery is a closed token, not a sentence. Do not infer it from',
+    'the storage decision text. Only disposable (throwaway test data) and',
+    'backward-compatible (a code rollback leaves data intact) are accepted.',
+    'unsupported and unknown fail planning and never authorize deploy, including',
+    'the first cycle: lacking a last-known-good artifact does not establish that',
+    'the target holds disposable data.',
   ].join('\n');
 }
 
@@ -361,6 +382,169 @@ export function buildFinalizeOps(
   };
 }
 
+export type AutopilotStartDeployment = (args: {
+  projectId: string;
+  runId: string;
+  operationId: string;
+  targetId: string;
+  sha: string;
+  sourceDeploymentId?: string | null;
+  trigger: 'autopilot' | 'rollback';
+}) => Promise<{ deploymentId: string }>;
+
+export type AutopilotRunRollback = (args: {
+  projectId: string;
+  runId: string;
+  operationId: string;
+  targetId: string;
+  priorDeploymentId: string;
+  priorSha: string;
+}) => Promise<AutopilotDeployResult>;
+
+/** Read a deployment row + live env ref into the orchestrator result shape. */
+export function readDeployOutcome(deploymentId: string): AutopilotDeployResult | null {
+  const row = getDeployment(deploymentId);
+  if (!row) return null;
+  const live = getDeploymentEnvironment(row.project_id, row.environment);
+  return deployOutcomeFromSnapshot(deploymentId, {
+    status: row.status,
+    ref: row.ref,
+    liveRef: live?.current_ref ?? null,
+  });
+}
+
+export function readAutopilotDeployedRevision(projectId: string, targetId: string): string | null {
+  return getDeploymentEnvironment(projectId, targetId)?.current_ref ?? null;
+}
+
+export function buildLocalTargetLookup(
+  findProject: (id: string) => Project | null | undefined,
+  getLiveEnvironment: (
+    projectId: string,
+    targetId: string,
+  ) => {
+    current_ref: string | null;
+    current_deployment_id: string | null;
+  } | null = getDeploymentEnvironment,
+): import('./local-target.js').AutopilotLocalTargetLookup {
+  return {
+    getDeclaredEnvironment: (projectId, targetId) => {
+      const project = findProject(projectId);
+      if (!project?.cwd) return null;
+      try {
+        const raw = readFileSync(path.join(project.cwd, '.agent-hub', 'deploy.yaml'), 'utf8');
+        const env = parseDeployConfig(raw).environments.get(targetId);
+        if (!env) return null;
+        const live = getLiveEnvironment(projectId, targetId);
+        return {
+          origin: env.origin,
+          readinessProbeUrl: env.readiness,
+          currentRef: live?.current_ref ?? null,
+          currentDeploymentId: live?.current_deployment_id ?? null,
+        };
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+/** Build deploy ops. Tests inject startDeployment / runRollback so Vitest never hits a live target. */
+export function buildDeployOps(
+  deps: AutopilotWiringDeps,
+  startDeployment: AutopilotStartDeployment | undefined,
+  runRollback: AutopilotRunRollback | undefined,
+): AutopilotDeployOps {
+  const kickoff: AutopilotStartDeployment = async (args) => {
+    if (startDeployment) return startDeployment(args);
+    const project = deps.routeDeps.findProject(args.projectId);
+    if (!project) throw new Error(`Autopilot: project ${args.projectId} not found for deploy`);
+    const checkout = await prepareDeploymentCheckout({ project, ref: args.sha });
+    const cfg = await loadDeployConfig(
+      path.join(checkout.worktreePath, '.agent-hub', 'deploy.yaml'),
+    );
+    const orchestratorDeps = buildDeployOrchestratorDeps({
+      broadcast: deps.routeDeps.broadcast,
+      config,
+      findProject: deps.routeDeps.findProject,
+      prepareCheckout: prepareDeploymentCheckout,
+    });
+    const row = await triggerDeployment(
+      {
+        projectId: args.projectId,
+        environment: args.targetId,
+        ref: args.sha,
+        worktreePath: checkout.worktreePath,
+        config: cfg,
+        trigger: 'autopilot',
+        triggeredBy: 'autopilot',
+        sourceDeploymentId: args.sourceDeploymentId ?? null,
+        unattendedEnvironment: args.targetId,
+        deferRun: true,
+        cleanupWorktreeOnTerminal: true,
+        meta: { autopilotRunId: args.runId, operationId: args.operationId },
+      },
+      orchestratorDeps,
+    );
+    return { deploymentId: row.id };
+  };
+  return {
+    startDeployment: kickoff,
+    runRollback: async (args) => {
+      if (runRollback) return runRollback(args);
+      const project = deps.routeDeps.findProject(args.projectId);
+      if (!project) throw new Error(`Autopilot: project ${args.projectId} not found for rollback`);
+      const checkout = await prepareDeploymentCheckout({ project, ref: args.priorSha });
+      const cfg = await loadDeployConfig(
+        path.join(checkout.worktreePath, '.agent-hub', 'deploy.yaml'),
+      );
+      const orchestratorDeps = buildDeployOrchestratorDeps({
+        broadcast: deps.routeDeps.broadcast,
+        config,
+        findProject: deps.routeDeps.findProject,
+        prepareCheckout: prepareDeploymentCheckout,
+      });
+      const row = await triggerDeployment(
+        {
+          projectId: args.projectId,
+          environment: args.targetId,
+          ref: args.priorSha,
+          worktreePath: checkout.worktreePath,
+          config: cfg,
+          trigger: 'autopilot',
+          triggeredBy: 'autopilot',
+          sourceDeploymentId: args.priorDeploymentId,
+          unattendedEnvironment: args.targetId,
+          deferRun: false,
+          cleanupWorktreeOnTerminal: true,
+          meta: {
+            autopilotRunId: args.runId,
+            operationId: args.operationId,
+            rollbackOf: args.priorDeploymentId,
+          },
+        },
+        orchestratorDeps,
+      );
+      const live = getDeploymentEnvironment(args.projectId, args.targetId);
+      const liveRef = live?.current_ref ?? null;
+      return (
+        deployOutcomeFromSnapshot(row.id, {
+          status: row.status,
+          ref: row.ref,
+          liveRef,
+        }) ?? {
+          status: 'error',
+          deploymentId: row.id,
+          deployedSha: liveRef,
+          message: liveRef
+            ? 'rollback did not reach a terminal state'
+            : 'live revision is not established',
+        }
+      );
+    },
+  };
+}
+
 /** Read a dispatched session's outcome (committed locally?) via its worktree. */
 export function readSessionOutcome(
   stmts: Stmts,
@@ -398,6 +582,14 @@ export interface AutopilotWiringDeps {
    * the real Finalize path (review, native push, merge) can reconcile.
    */
   startFinalizeRun?: AutopilotStartFinalizeRun;
+  /**
+   * Optional deploy kickoff / rollback. Production omits these and uses
+   * triggerDeployment. Vitest fixtures inject deterministic fakes so tests
+   * never touch a live deployment.
+   */
+  startDeployment?: AutopilotStartDeployment;
+  runRollback?: AutopilotRunRollback;
+  readDeployOutcome?: (deploymentId: string) => AutopilotDeployResult | null;
 }
 
 /** Build the real session dispatch ops over the createSession + handleChat triad. */
@@ -464,6 +656,7 @@ export function buildAutopilotRuntime(deps: AutopilotWiringDeps): AutopilotRunti
     deps.startFinalizeRun ?? startFinalizeRunBackground,
   );
   const sessionOps = buildSessionOps(deps);
+  const deployOps = buildDeployOps(deps, deps.startDeployment, deps.runRollback);
   return createAutopilotRuntime({
     db: getDb(),
     buildController: () =>
@@ -473,10 +666,12 @@ export function buildAutopilotRuntime(deps: AutopilotWiringDeps): AutopilotRunti
       board: createAutopilotBoardAdapter({ ops: boardOps }),
       session: createAutopilotSessionAdapter({ ops: sessionOps }),
       finalize: createAutopilotFinalizeAdapter({ ops: finalizeOps }),
+      deploy: createAutopilotDeployAdapter({ ops: deployOps }),
     }),
     readSessionOutcome: (sessionId) =>
       readSessionOutcome(stmts, deps.getActiveSessionIds(), sessionId),
     readFinalizeOutcome: (finalizeRunId) => readFinalizeOutcome(stmts, finalizeRunId),
+    readDeployOutcome: deps.readDeployOutcome ?? readDeployOutcome,
   });
 }
 
@@ -500,5 +695,11 @@ export function handleAutopilotBroadcast(
   if (data.type === 'changes_ready') {
     const sessionId = data.sessionId ?? data.session_id;
     if (typeof sessionId === 'string') void runtime.settleSession(sessionId);
+  }
+  if (data.type === 'deployment_update') {
+    const deployment = data.deployment as { id?: string } | undefined;
+    if (deployment && typeof deployment.id === 'string') {
+      void runtime.settleDeployment(deployment.id);
+    }
   }
 }

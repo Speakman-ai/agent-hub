@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { AutopilotError, isAutopilotError } from './errors.js';
 import { AutopilotStore } from './store.js';
+import { assessStorageRecoverability, type AutopilotStorageRecoveryKind } from './local-target.js';
 import type { AutopilotController } from './controller.js';
 import type { AutopilotOperationRecord, AutopilotRunSnapshot } from './types.js';
 
@@ -36,6 +37,11 @@ export interface AutopilotBaselineSpec {
   acceptanceJourneys: AutopilotAcceptanceJourney[];
   nonGoals: string[];
   specDecisions: { key: string; decision: string }[];
+  /**
+   * Explicit storage recovery contract. Deploy is allowed only for
+   * `disposable` or `backward-compatible`, including the first cycle.
+   */
+  storageRecovery: AutopilotStorageRecoveryKind;
   qualityRubricVersion: number;
 }
 
@@ -104,6 +110,7 @@ export interface AutopilotImplementationContext {
   acceptanceJourneys: AutopilotAcceptanceJourney[];
   nonGoals: string[];
   specDecisions: { key: string; decision: string }[];
+  storageRecovery: AutopilotStorageRecoveryKind | null;
 }
 
 export interface AutopilotSessionPort {
@@ -158,6 +165,43 @@ export interface AutopilotFinalizeResult {
   message?: string;
 }
 
+export interface AutopilotDeployPort {
+  /**
+   * Deploy `sha` to the run's opted-in experiment target. `operationId` keys
+   * the launch so a retry cannot start a second pipeline. Approval bypass
+   * applies only to that target.
+   */
+  deployRevision(input: {
+    projectId: string;
+    runId: string;
+    operationId: string;
+    targetId: string;
+    sha: string;
+    workerKeyName: string | null;
+  }): Promise<{ deploymentId: string }>;
+  /**
+   * Redeploy the last verified artifact. Awaited to a terminal outcome so
+   * the orchestrator can pause immediately on recovery failure.
+   */
+  rollback(input: {
+    projectId: string;
+    runId: string;
+    operationId: string;
+    targetId: string;
+    priorDeploymentId: string;
+    priorSha: string;
+  }): Promise<AutopilotDeployResult>;
+}
+
+export type AutopilotDeployStatus = 'success' | 'error' | 'cancelled' | 'awaiting_approval';
+
+export interface AutopilotDeployResult {
+  status: AutopilotDeployStatus;
+  deploymentId: string;
+  deployedSha?: string | null;
+  message?: string;
+}
+
 export interface AutopilotReconcileInput<TResult> {
   operationId: string;
   fencingGeneration: number;
@@ -180,6 +224,7 @@ export interface AutopilotOrchestratorDeps {
   board: AutopilotBoardPort;
   session: AutopilotSessionPort;
   finalize: AutopilotFinalizePort;
+  deploy: AutopilotDeployPort;
   randomId?: () => string;
 }
 
@@ -199,6 +244,7 @@ export class AutopilotOrchestrator {
   private readonly board: AutopilotBoardPort;
   private readonly session: AutopilotSessionPort;
   private readonly finalize: AutopilotFinalizePort;
+  private readonly deploy: AutopilotDeployPort;
 
   constructor(deps: AutopilotOrchestratorDeps) {
     this.controller = deps.controller;
@@ -207,6 +253,7 @@ export class AutopilotOrchestrator {
     this.board = deps.board;
     this.session = deps.session;
     this.finalize = deps.finalize;
+    this.deploy = deps.deploy;
   }
 
   private requireActiveRunningCycle(projectId: string): {
@@ -391,6 +438,7 @@ export class AutopilotOrchestrator {
           acceptanceJourneys: spec?.acceptanceJourneys ?? [],
           nonGoals: spec?.nonGoals ?? [],
           specDecisions: spec?.specDecisions ?? [],
+          storageRecovery: spec?.storageRecovery ?? null,
         },
       });
       return this.persistDispatchOrDisown(op, cycleId, 'implementation', {
@@ -523,12 +571,13 @@ export class AutopilotOrchestrator {
 
     if (isSettled(op)) {
       if (op.status === 'succeeded') {
-        const changed = this.persistMergedShaFromOp(op);
+        this.persistMergedShaFromOp(op);
+        const fwd = this.advanceAfterFinalize(projectId, op);
         return {
-          advanced: changed,
+          advanced: fwd.advanced,
           idempotent: true,
           outcome: 'succeeded',
-          snapshot: this.controller.getRun(projectId, runId),
+          snapshot: fwd.snapshot,
         };
       }
       return {
@@ -571,17 +620,240 @@ export class AutopilotOrchestrator {
       result: { mergedSha: input.result.mergedSha },
     });
     const settled = this.store.getOperation(input.operationId)!;
-    const changed = this.persistMergedShaFromOp(settled);
+    this.persistMergedShaFromOp(settled);
+    const fwd = this.advanceAfterFinalize(projectId, settled);
     return {
-      advanced: changed,
+      advanced: fwd.advanced,
       idempotent: false,
       outcome: 'succeeded',
-      snapshot: this.controller.getRun(projectId, runId),
+      snapshot: fwd.snapshot,
     };
   }
 
   /**
-   * Apply the implement stage's forward transition (advance to finalizing).
+   * Deploying stage: reserve a guarded operation BEFORE triggering deploy of
+   * the exact merged SHA, then start it keyed on the operation id. Duplicate
+   * in-flight deploys for this cycle are reused. Pauses without launching when
+   * storage is not recoverable.
+   */
+  async dispatchDeploy(projectId: string): Promise<AutopilotOperationRecord> {
+    const { run, cycleId } = this.requireActiveRunningCycle(projectId);
+    if (run.stage !== 'deploying') {
+      throw new AutopilotError('conflict', `Run stage is ${run.stage}, not deploying`);
+    }
+    const existing = this.findInFlightOperation(run.id, 'deploy', cycleId);
+    if (existing) return existing;
+    const cycle = this.store.getCycle(run.id, run.cycleNumber)!;
+    const sha = cycle.testedCommitSha;
+    if (!sha) {
+      throw new AutopilotError('invalid_config', 'cycle has no merged SHA to deploy');
+    }
+    if (!run.targetId) {
+      throw new AutopilotError('invalid_config', 'run has no experiment target');
+    }
+    const recover = assessStorageRecoverability(this.readSpec(run.briefId));
+    const op = await this.controller.beginOperation({
+      projectId,
+      kind: 'deploy',
+      intent: { sha, targetId: run.targetId },
+    });
+    if (!recover.ok) {
+      await this.controller.completeOperation({
+        operationId: op.id,
+        fencingGeneration: op.fencingGeneration,
+        outcome: 'failed',
+        haltReason: recover.reason,
+        result: { error: recover.reason },
+      });
+      return this.store.getOperation(op.id)!;
+    }
+    try {
+      const started = await this.deploy.deployRevision({
+        projectId,
+        runId: run.id,
+        operationId: op.id,
+        targetId: run.targetId,
+        sha,
+        workerKeyName: run.workerAuthority.keyName,
+      });
+      return this.persistDispatchOrDisown(op, cycleId, 'deployment', {
+        deploymentId: started.deploymentId,
+      });
+    } catch (err) {
+      await this.settleFailureQuiet(op, err);
+      throw err;
+    }
+  }
+
+  /**
+   * Settle a candidate deploy. Only an exact match of the merged SHA at the
+   * live target advances to verifying. A failed or mismatched candidate rolls
+   * back to the last verified artifact (or pauses when there is none / rollback
+   * fails). Does not write lastVerifiedSha: a failed candidate cannot become
+   * last-known-good.
+   */
+  async reconcileDeploy(
+    projectId: string,
+    input: AutopilotReconcileInput<AutopilotDeployResult>,
+  ): Promise<AutopilotReconcileOutcome> {
+    const op = this.requireOperationOfKind(input.operationId, 'deploy');
+    const runId = op.runId;
+    if (isSettled(op)) {
+      if (op.status === 'succeeded') {
+        const fwd = this.advanceAfterDeploy(projectId, op);
+        return {
+          advanced: fwd.advanced,
+          idempotent: true,
+          outcome: 'succeeded',
+          snapshot: fwd.snapshot,
+        };
+      }
+      return {
+        advanced: false,
+        idempotent: true,
+        outcome: outcomeFromOperation(op),
+        snapshot: this.controller.getRun(projectId, runId),
+      };
+    }
+
+    const run = this.store.getRun(runId);
+    const intended =
+      typeof (op.intent as { sha?: unknown } | null)?.sha === 'string'
+        ? ((op.intent as { sha: string }).sha as string)
+        : (this.store.getCycleById(op.cycleId ?? '')?.testedCommitSha ?? null);
+    const exact =
+      input.result.status === 'success' &&
+      typeof input.result.deployedSha === 'string' &&
+      input.result.deployedSha.trim().length > 0 &&
+      intended != null &&
+      input.result.deployedSha === intended;
+
+    if (exact) {
+      await this.controller.completeOperation({
+        operationId: input.operationId,
+        fencingGeneration: input.fencingGeneration,
+        outcome: 'succeeded',
+        result: {
+          deployedSha: input.result.deployedSha,
+          deploymentId: input.result.deploymentId,
+        },
+      });
+      const settled = this.store.getOperation(input.operationId)!;
+      if (settled.cycleId) {
+        this.store.updateCycle(settled.cycleId, { deploymentId: input.result.deploymentId });
+      }
+      const fwd = this.advanceAfterDeploy(projectId, settled);
+      return {
+        advanced: fwd.advanced,
+        idempotent: false,
+        outcome: 'succeeded',
+        snapshot: fwd.snapshot,
+      };
+    }
+
+    if (input.result.status === 'awaiting_approval') {
+      await this.controller.completeOperation({
+        operationId: input.operationId,
+        fencingGeneration: input.fencingGeneration,
+        outcome: 'failed',
+        haltReason: 'experiment target required approval; unattended deploy is not authorized',
+        result: { status: input.result.status, message: input.result.message ?? null },
+      });
+      return {
+        advanced: false,
+        idempotent: false,
+        outcome: 'failed',
+        snapshot: this.controller.getRun(projectId, runId),
+      };
+    }
+
+    return this.recoverFailedCandidate(projectId, op, input, run);
+  }
+
+  /**
+   * Redeploy the last verified artifact after a failed candidate. Pauses
+   * when there is no last-known-good or rollback does not restore that SHA.
+   */
+  private async recoverFailedCandidate(
+    projectId: string,
+    op: AutopilotOperationRecord,
+    input: AutopilotReconcileInput<AutopilotDeployResult>,
+    run: ReturnType<AutopilotStore['getRun']>,
+  ): Promise<AutopilotReconcileOutcome> {
+    const fail = async (haltReason: string, extra: Record<string, unknown> = {}) => {
+      await this.controller.completeOperation({
+        operationId: input.operationId,
+        fencingGeneration: input.fencingGeneration,
+        outcome: 'failed',
+        haltReason,
+        result: {
+          status: input.result.status,
+          deployedSha: input.result.deployedSha ?? null,
+          message: input.result.message ?? null,
+          ...extra,
+        },
+      });
+      return {
+        advanced: false,
+        idempotent: false,
+        outcome: 'failed' as const,
+        snapshot: this.controller.getRun(projectId, op.runId),
+      };
+    };
+    if (!run || !run.lastVerifiedSha || !run.lastDeploymentId || !run.targetId) {
+      return fail('no last-known-good to recover');
+    }
+    let rolled: AutopilotDeployResult;
+    try {
+      rolled = await this.deploy.rollback({
+        projectId,
+        runId: run.id,
+        operationId: op.id,
+        targetId: run.targetId,
+        priorDeploymentId: run.lastDeploymentId,
+        priorSha: run.lastVerifiedSha,
+      });
+    } catch (err) {
+      return fail('rollback failed', {
+        rollbackError: err instanceof Error ? err.message : String(err),
+      });
+    }
+    if (rolled.status !== 'success' || rolled.deployedSha !== run.lastVerifiedSha) {
+      return fail('rollback failed', {
+        rollbackStatus: rolled.status,
+        restoredSha: rolled.deployedSha ?? null,
+      });
+    }
+    if (op.cycleId) {
+      this.store.updateCycle(op.cycleId, { deploymentId: input.result.deploymentId });
+    }
+    return fail('candidate deploy failed; recovered last-known-good', {
+      restoredSha: rolled.deployedSha,
+      rollbackDeploymentId: rolled.deploymentId,
+    });
+  }
+
+  /**
+   * Apply the finalize stage's forward transition (advance to deploying).
+   */
+  private advanceAfterFinalize(
+    projectId: string,
+    op: AutopilotOperationRecord,
+  ): { advanced: boolean; snapshot: AutopilotRunSnapshot } {
+    return this.advanceAfterStage(projectId, op, 'finalizing', 'deploying');
+  }
+
+  /**
+   * Apply the deploy stage's forward transition (advance to verifying).
+   */
+  private advanceAfterDeploy(
+    projectId: string,
+    op: AutopilotOperationRecord,
+  ): { advanced: boolean; snapshot: AutopilotRunSnapshot } {
+    return this.advanceAfterStage(projectId, op, 'deploying', 'verifying');
+  }
+
+  /**
    * Keyed on the specific operation, not the run's current stage: it advances
    * only when the operation belongs to the run's ACTIVE cycle, matches the
    * current fencing generation, succeeded, and is linked to that cycle's
@@ -593,26 +865,35 @@ export class AutopilotOrchestrator {
     projectId: string,
     op: AutopilotOperationRecord,
   ): { advanced: boolean; snapshot: AutopilotRunSnapshot } {
+    return this.advanceAfterStage(projectId, op, 'implementing', 'finalizing');
+  }
+
+  private advanceAfterStage(
+    projectId: string,
+    op: AutopilotOperationRecord,
+    fromStage: AutopilotRunSnapshot['run']['stage'],
+    toStage: NonNullable<AutopilotRunSnapshot['run']['stage']>,
+  ): { advanced: boolean; snapshot: AutopilotRunSnapshot } {
     const runId = op.runId;
     const stay = (): { advanced: boolean; snapshot: AutopilotRunSnapshot } => ({
       advanced: false,
       snapshot: this.controller.getRun(projectId, runId),
     });
     const run = this.store.getRun(runId);
-    if (!run || run.controlState !== 'running' || run.stage !== 'implementing') return stay();
+    if (!run || run.controlState !== 'running' || run.stage !== fromStage) return stay();
     if (op.status !== 'succeeded' || op.fencingGeneration !== run.fencingGeneration) return stay();
     const cycle = this.store.getCycle(run.id, run.cycleNumber);
-    if (!cycle || cycle.id !== op.cycleId) return stay(); // cross-cycle / stale callback
+    if (!cycle || cycle.id !== op.cycleId) return stay();
     const stage = this.store.getStageByOperationId(op.id);
     if (
       !stage ||
       stage.cycleId !== cycle.id ||
-      stage.stage !== 'implementing' ||
+      stage.stage !== fromStage ||
       stage.status !== 'succeeded'
     ) {
       return stay();
     }
-    return { advanced: true, snapshot: this.controller.advanceStage(projectId, 'finalizing') };
+    return { advanced: true, snapshot: this.controller.advanceStage(projectId, toStage) };
   }
 
   /**
@@ -705,7 +986,7 @@ export class AutopilotOrchestrator {
     op: AutopilotOperationRecord,
     cycleId: string,
     kind: string,
-    ref: { sessionId: string } | { finalizeRunId: string },
+    ref: { sessionId: string } | { finalizeRunId: string } | { deploymentId: string },
   ): AutopilotOperationRecord {
     this.store.updateOperation(op.id, { ...ref, updatedAt: op.createdAt });
     if (!this.operationOwnsCurrentStage(op)) {

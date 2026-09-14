@@ -22,6 +22,7 @@ const spec = {
     { key: 'storage', decision: 'in-memory array' },
     { key: 'runtime', decision: 'static html and js' },
   ],
+  storageRecovery: 'disposable',
   qualityRubricVersion: 1,
 };
 

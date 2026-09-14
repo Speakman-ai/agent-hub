@@ -28,13 +28,14 @@ import {
 export interface AutopilotRouteOptions {
   isServerEnabled?: () => boolean;
   cancelSideEffects?: AutopilotCancelSideEffects;
-  getDeployedRevision?: (targetId: string) => string | null;
+  getDeployedRevision?: (projectId: string, targetId: string) => string | null;
   credentialOwnerExists?: (userId: string) => boolean;
   holderId?: string;
   getController?: () => AutopilotController;
   assertContainment?: () => void;
   issueWorkerCredential?: AutopilotControllerDeps['issueWorkerCredential'];
   revokeWorkerCredential?: AutopilotControllerDeps['revokeWorkerCredential'];
+  validateLocalTarget?: AutopilotControllerDeps['validateLocalTarget'];
 }
 
 function sendAutopilotError(res: Response, err: unknown): void {
@@ -55,6 +56,7 @@ export function buildAutopilotControllerDeps(
       options.isServerEnabled ?? (() => Boolean(config.experimentalAutopilotEnabled)),
     cancelSideEffects: options.cancelSideEffects,
     getDeployedRevision: options.getDeployedRevision,
+    validateLocalTarget: options.validateLocalTarget,
     credentialOwnerExists: options.credentialOwnerExists,
     holderId: options.holderId,
     assertContainment: options.assertContainment,

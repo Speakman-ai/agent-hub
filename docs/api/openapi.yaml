@@ -830,12 +830,15 @@ components:
         targetId:
           type: string
           minLength: 1
+          description: Declared local deploy.yaml environment name used as the experiment target. That environment must declare origin and readiness that match this target.
         readinessProbeUrl:
           type: string
           nullable: true
+          description: HTTP(S) loopback readiness probe on the same origin as `origin`. Required to enable or start a run.
         origin:
           type: string
           nullable: true
+          description: HTTP(S) loopback origin of the dedicated local target (scheme://host[:port], no path). Required to enable or start a run. Public-browser loopback blocking is unchanged.
       required:
         - targetId
         - readinessProbeUrl
@@ -950,9 +953,11 @@ components:
         lastVerifiedSha:
           type: string
           nullable: true
+          description: Last verified SHA at the experiment target. A successful candidate deploy does not write this; verification owns last-known-good.
         lastDeploymentId:
           type: string
           nullable: true
+          description: Deployment id of the last verified artifact retained for rollback.
         credentialOwnerUserId:
           type: string
           nullable: true
@@ -1026,6 +1031,7 @@ components:
         deploymentId:
           type: string
           nullable: true
+          description: Deployment id of the cycle candidate. Exact merged SHA must be live before verifying.
         verification:
           nullable: true
         documentation:
@@ -4917,6 +4923,12 @@ components:
           type: string
         timeoutMinutes:
           type: integer
+        origin:
+          type: string
+          nullable: true
+        readiness:
+          type: string
+          nullable: true
         steps:
           type: array
           items:
@@ -4951,6 +4963,8 @@ components:
         - approval
         - runsOn
         - timeoutMinutes
+        - origin
+        - readiness
         - steps
         - currentRef
         - currentDeploymentId
@@ -5012,6 +5026,12 @@ components:
         timeoutMinutes:
           type: integer
           nullable: true
+        origin:
+          type: string
+          nullable: true
+        readiness:
+          type: string
+          nullable: true
         steps:
           type: array
           items:
@@ -5038,6 +5058,8 @@ components:
         - approval
         - runsOn
         - timeoutMinutes
+        - origin
+        - readiness
         - steps
         - currentRef
         - currentDeploymentId
@@ -19343,7 +19365,7 @@ paths:
       tags:
         - Autopilot
       summary: Save Autopilot project configuration
-      description: Persists the project opt-in, versioned brief, local target, limits and credential owner. Enabling requires every field. Does not start a run.
+      description: Persists the project opt-in, versioned brief, local target, limits and credential owner. Enabling requires every field, including a loopback origin and readiness probe on the dedicated experiment target. Unattended deploy authority applies only to that target. Does not start a run.
       parameters:
         - schema:
             type: string
@@ -19453,7 +19475,7 @@ paths:
       tags:
         - Autopilot
       summary: Start an Autopilot run
-      description: Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires the server operator setting, project opt-in, scoped worker credentials, and enforceable runtime containment.
+      description: Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires the server operator setting, project opt-in, a declared local target with origin and readiness, scoped worker credentials, and enforceable runtime containment. Unattended deploy is authorized only for that experiment target; push and schedule triggers for the owned target are skipped.
       parameters:
         - schema:
             type: string

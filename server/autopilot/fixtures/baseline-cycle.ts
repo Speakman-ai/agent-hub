@@ -25,6 +25,7 @@ import {
   type AutopilotStartFinalizeRun,
   type AutopilotWiringDeps,
 } from '../wiring.js';
+import type { AutopilotDeployResult } from '../orchestrator.js';
 import { buildAutopilotControllerDeps } from '../../routes/autopilot.js';
 import { removeAutopilotWorkerToken, writeAutopilotWorkerToken } from '../worker-token.js';
 import { validateTodoApp } from './validate-todo-app.js';
@@ -51,12 +52,17 @@ export const FIXTURE_SPEC = {
     { key: 'storage', decision: 'in-memory array' },
     { key: 'runtime', decision: 'static html and js' },
   ],
+  storageRecovery: 'disposable',
   qualityRubricVersion: 1,
 };
 
 const READY = {
   brief: 'Build a disposable todo list with a browser-testable add-and-list flow.',
-  target: { targetId: 'local-preview' },
+  target: {
+    targetId: 'local-preview',
+    origin: 'http://127.0.0.1:4310',
+    readinessProbeUrl: 'http://127.0.0.1:4310/health',
+  },
   limits: {
     cycleMode: 'continuous' as const,
     maxWallTimeMs: 60 * 60 * 1000,
@@ -149,6 +155,7 @@ export interface LiveBaselineCycleResult {
   epicId: string;
   sessionId: string;
   finalizeRunId: string;
+  deploymentId: string;
   baselineSha: string;
   mergedSha: string;
   fixtureRepo: string;
@@ -254,6 +261,8 @@ export async function runLiveBaselineCycle(opts: {
   controller.putConfig(FIXTURE_PROJECT_ID, { enabled: true, ...READY }, { userId: 'user-1' });
   const runId = controller.start(FIXTURE_PROJECT_ID, {}, { userId: 'user-1' }).run.id;
 
+  let deployOutcome: AutopilotDeployResult | null = null;
+
   const wiring: AutopilotWiringDeps = {
     routeDeps: stubRouteDeps({ project, handleChat }),
     resolveWorkerAgent: (projectId) =>
@@ -263,6 +272,13 @@ export async function runLiveBaselineCycle(opts: {
     getActiveSessionIds: () => new Set(),
     controllerOptions,
     startFinalizeRun,
+    startDeployment: async () => ({ deploymentId: 'dep-fixture' }),
+    runRollback: async (args) => ({
+      status: 'success',
+      deploymentId: 'dep-rb',
+      deployedSha: args.priorSha,
+    }),
+    readDeployOutcome: () => deployOutcome,
   };
   const runtime = buildAutopilotRuntime(wiring);
 
@@ -301,6 +317,27 @@ export async function runLiveBaselineCycle(opts: {
   if (mergedSha !== implementedSha) {
     throw new Error(`merged SHA ${mergedSha} did not match fixture HEAD ${implementedSha}`);
   }
+  if (store.getRun(runId)?.stage !== 'deploying') {
+    throw new Error(`expected deploying after merge, got ${store.getRun(runId)?.stage}`);
+  }
+
+  await runtime.tick();
+  const deploymentId = store.getCycle(runId, 1)?.deploymentId;
+  if (deploymentId !== 'dep-fixture') {
+    throw new Error(`expected dep-fixture, got ${deploymentId}`);
+  }
+  deployOutcome = {
+    status: 'success',
+    deploymentId: 'dep-fixture',
+    deployedSha: implementedSha,
+  };
+  await runtime.settleDeployment('dep-fixture');
+  if (store.getRun(runId)?.stage !== 'verifying') {
+    throw new Error(`expected verifying after exact-SHA deploy, got ${store.getRun(runId)?.stage}`);
+  }
+  if (store.getRun(runId)?.lastVerifiedSha) {
+    throw new Error('candidate deploy must not become last-known-good');
+  }
 
   return {
     runId,
@@ -308,6 +345,7 @@ export async function runLiveBaselineCycle(opts: {
     epicId,
     sessionId,
     finalizeRunId,
+    deploymentId,
     baselineSha,
     mergedSha: implementedSha,
     fixtureRepo: opts.fixtureRepo,

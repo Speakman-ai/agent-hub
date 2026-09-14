@@ -1,8 +1,11 @@
 import { randomUUID } from 'crypto';
+import { assessStorageRecoverability } from './local-target.js';
 import type {
   AutopilotAcceptanceJourney,
   AutopilotBaselineSpec,
   AutopilotBoardPort,
+  AutopilotDeployPort,
+  AutopilotDeployResult,
   AutopilotFinalizePort,
   AutopilotFinalizeResult,
   AutopilotImplementationContext,
@@ -57,7 +60,10 @@ function requireNonEmptyStrings(value: unknown, label: string): string[] {
  * throw (planning then retries/pauses per the controller). Enforces that every
  * acceptance journey carries a concrete action AND an observable expected
  * result — a raw brief sentence with no resolved outcome is rejected — and that
- * an in-scope storage decision was actually resolved.
+ * an in-scope storage decision and a supported storageRecovery contract
+ * (`disposable` or `backward-compatible`) were actually resolved. Recovery is
+ * never inferred from storage prose, and unknown/unsupported kinds are not a
+ * deployable baseline.
  */
 export function validateBaselineSpec(raw: unknown): AutopilotBaselineSpec {
   const fail = (why: string): never => {
@@ -94,12 +100,27 @@ export function validateBaselineSpec(raw: unknown): AutopilotBaselineSpec {
     fail('storage decision was not resolved');
   }
 
+  const recovery = assessStorageRecoverability({
+    storageRecovery: spec.storageRecovery,
+    specDecisions,
+  });
+  const storageRecovery = recovery.ok
+    ? recovery.kind
+    : fail(`storage recovery contract: ${recovery.reason}`);
+
   const qualityRubricVersion =
     typeof spec.qualityRubricVersion === 'number' && spec.qualityRubricVersion >= 1
       ? Math.floor(spec.qualityRubricVersion)
       : fail('missing quality rubric version');
 
-  return { assumptions, acceptanceJourneys, nonGoals, specDecisions, qualityRubricVersion };
+  return {
+    assumptions,
+    acceptanceJourneys,
+    nonGoals,
+    specDecisions,
+    storageRecovery,
+    qualityRubricVersion,
+  };
 }
 
 /**
@@ -318,6 +339,10 @@ export function buildImplementationPrompt(context: AutopilotImplementationContex
     'Locked spec decisions:',
     ...context.specDecisions.map((d) => `- ${d.key}: ${d.decision}`),
     '',
+    'Storage recovery contract (code rollback cannot restore data). Use only the',
+    'closed token; do not infer recoverability from the storage decision text:',
+    context.storageRecovery ?? 'unknown',
+    '',
     'Commit your work locally on the session branch. Do not push, open a PR, or',
     'merge — the platform Finalize flow owns review, CI, push and merge.',
   ];
@@ -376,6 +401,95 @@ export function createAutopilotFinalizeAdapter(
   return {
     startFinalize: async ({ projectId, sessionId, cardId }) =>
       deps.ops.startMergeAutomation({ projectId, sessionId, cardId }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Deploy
+// ---------------------------------------------------------------------------
+
+export interface AutopilotDeployOps {
+  startDeployment: (args: {
+    projectId: string;
+    runId: string;
+    operationId: string;
+    targetId: string;
+    sha: string;
+    sourceDeploymentId?: string | null;
+    trigger: 'autopilot' | 'rollback';
+  }) => Promise<{ deploymentId: string }>;
+  /**
+   * Await a rollback to a terminal outcome. Tests inject an immediate result;
+   * production awaits the orchestrator without deferRun.
+   */
+  runRollback: (args: {
+    projectId: string;
+    runId: string;
+    operationId: string;
+    targetId: string;
+    priorDeploymentId: string;
+    priorSha: string;
+  }) => Promise<AutopilotDeployResult>;
+}
+
+export interface AutopilotDeployAdapterDeps {
+  ops: AutopilotDeployOps;
+}
+
+export interface DeploymentSnapshot {
+  status: string;
+  ref: string | null;
+  liveRef?: string | null;
+}
+
+const DEPLOY_IN_FLIGHT = new Set(['pending', 'running']);
+
+/** Live `current_ref` only. The requested deployment `ref` is not evidence. */
+function establishedLiveRef(snap: DeploymentSnapshot): string | null {
+  if (typeof snap.liveRef !== 'string') return null;
+  const live = snap.liveRef.trim();
+  return live.length > 0 ? live : null;
+}
+
+export function deployOutcomeFromSnapshot(
+  deploymentId: string,
+  snap: DeploymentSnapshot | null,
+): AutopilotDeployResult | null {
+  if (!snap) return null;
+  if (DEPLOY_IN_FLIGHT.has(snap.status)) return null;
+  if (snap.status === 'success') {
+    const deployedSha = establishedLiveRef(snap);
+    if (!deployedSha) return null;
+    return { status: 'success', deploymentId, deployedSha };
+  }
+  if (snap.status === 'awaiting_approval') {
+    return {
+      status: 'awaiting_approval',
+      deploymentId,
+      deployedSha: snap.ref,
+      message: 'deployment parked for approval',
+    };
+  }
+  if (snap.status === 'cancelled') {
+    return { status: 'cancelled', deploymentId, deployedSha: snap.ref };
+  }
+  return { status: 'error', deploymentId, deployedSha: snap.ref, message: snap.status };
+}
+
+export function createAutopilotDeployAdapter(
+  deps: AutopilotDeployAdapterDeps,
+): AutopilotDeployPort {
+  return {
+    deployRevision: async (input) =>
+      deps.ops.startDeployment({
+        projectId: input.projectId,
+        runId: input.runId,
+        operationId: input.operationId,
+        targetId: input.targetId,
+        sha: input.sha,
+        trigger: 'autopilot',
+      }),
+    rollback: async (input) => deps.ops.runRollback(input),
   };
 }
 

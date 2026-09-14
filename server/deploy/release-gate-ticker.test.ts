@@ -68,7 +68,15 @@ function configWith(...envs: string[]): DeployConfig {
     environments: new Map(
       envs.map((name) => [
         name,
-        { name, approval: false, runsOn: 'ubuntu-24.04', timeoutMinutes: 30, steps: [] },
+        {
+          name,
+          approval: false,
+          runsOn: 'ubuntu-24.04',
+          timeoutMinutes: 30,
+          origin: null,
+          readiness: null,
+          steps: [],
+        },
       ]),
     ),
   } as unknown as DeployConfig;

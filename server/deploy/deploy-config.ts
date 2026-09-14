@@ -41,6 +41,11 @@
  *     without an SSH loopback.
  *   - `timeout_minutes` is optional (floor 1, ceiling 4h). The config may LOWER
  *     the runtime cap but never raise it.
+ *   - `origin` is an optional http(s) origin (scheme://host[:port], no path)
+ *     naming where this environment actually deploys. `readiness` is an optional
+ *     same-origin probe URL, or a path resolved against `origin`. Autopilot
+ *     binds its local target to these fields at start; omitting them is valid
+ *     for gated/cloud environments that Autopilot will not use.
  *   - Unknown top-level / environment / step keys are HARD ERRORS — we never
  *     silently drop a directive an author believed they enabled.
  *
@@ -75,7 +80,14 @@ export const DEPLOY_TIMEOUT_MIN_MINUTES = 1;
 export const DEPLOY_TIMEOUT_DEFAULT_MINUTES = 60;
 
 const SUPPORTED_TOP_LEVEL_KEYS = new Set(['version', 'environments']);
-const SUPPORTED_ENV_KEYS = new Set(['approval', 'runs-on', 'timeout_minutes', 'steps']);
+const SUPPORTED_ENV_KEYS = new Set([
+  'approval',
+  'runs-on',
+  'timeout_minutes',
+  'origin',
+  'readiness',
+  'steps',
+]);
 const SUPPORTED_STEP_KEYS = new Set(['name', 'run', 'github_workflow']);
 
 export interface DeployStep {
@@ -104,6 +116,16 @@ export interface DeployEnvironmentConfig {
   runsOn: string;
   /** Resolved per-environment step budget in minutes (default 60). */
   timeoutMinutes: number;
+  /**
+   * Where this environment deploys (scheme://host[:port]). Null when the YAML
+   * omits `origin`. Autopilot requires this to match its local target.
+   */
+  origin: string | null;
+  /**
+   * Readiness probe URL on `origin`. A YAML path is resolved against `origin`.
+   * Null when omitted.
+   */
+  readiness: string | null;
   /** Ordered steps (at least one). */
   steps: DeployStep[];
 }
@@ -191,6 +213,96 @@ function parseTimeoutMinutes(raw: unknown, envName: string): number {
   return raw;
 }
 
+function parseOptionalOrigin(raw: unknown, envName: string): string | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'string' || !raw.trim()) {
+    throw new DeployConfigError(
+      'invalid_origin',
+      `environment "${envName}": "origin", when present, must be a non-empty http(s) origin.`,
+    );
+  }
+  let u: URL;
+  try {
+    u = new URL(raw.trim());
+  } catch {
+    throw new DeployConfigError(
+      'invalid_origin',
+      `environment "${envName}": "origin" must be a valid http(s) URL.`,
+    );
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new DeployConfigError(
+      'invalid_origin',
+      `environment "${envName}": "origin" must be an http(s) origin.`,
+    );
+  }
+  if (u.username || u.password) {
+    throw new DeployConfigError(
+      'invalid_origin',
+      `environment "${envName}": "origin" must not include credentials.`,
+    );
+  }
+  if (u.pathname !== '/' || u.search || u.hash) {
+    throw new DeployConfigError(
+      'invalid_origin',
+      `environment "${envName}": "origin" must be scheme://host[:port] with no path.`,
+    );
+  }
+  return u.origin;
+}
+
+function parseOptionalReadiness(
+  raw: unknown,
+  origin: string | null,
+  envName: string,
+): string | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'string' || !raw.trim()) {
+    throw new DeployConfigError(
+      'invalid_readiness',
+      `environment "${envName}": "readiness", when present, must be a non-empty URL or path.`,
+    );
+  }
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('/')) {
+    if (!origin) {
+      throw new DeployConfigError(
+        'invalid_readiness',
+        `environment "${envName}": "readiness" path requires "origin".`,
+      );
+    }
+    return new URL(trimmed, `${origin}/`).href;
+  }
+  let u: URL;
+  try {
+    u = new URL(trimmed);
+  } catch {
+    throw new DeployConfigError(
+      'invalid_readiness',
+      `environment "${envName}": "readiness" must be a valid http(s) URL or a path.`,
+    );
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new DeployConfigError(
+      'invalid_readiness',
+      `environment "${envName}": "readiness" must be an http(s) URL.`,
+    );
+  }
+  if (u.username || u.password) {
+    throw new DeployConfigError(
+      'invalid_readiness',
+      `environment "${envName}": "readiness" must not include credentials.`,
+    );
+  }
+  if (origin && u.origin !== origin) {
+    throw new DeployConfigError(
+      'invalid_readiness',
+      `environment "${envName}": "readiness" must be on the same origin as "origin".`,
+    );
+  }
+  return u.href;
+}
+
 function parseEnvironment(name: string, raw: unknown): DeployEnvironmentConfig {
   if (!isPlainObject(raw)) {
     throw new DeployConfigError('invalid_environment', `environment "${name}": must be a mapping.`);
@@ -219,11 +331,16 @@ function parseEnvironment(name: string, raw: unknown): DeployEnvironmentConfig {
     );
   }
 
+  const origin = parseOptionalOrigin(raw.origin, name);
+  const readiness = parseOptionalReadiness(raw.readiness, origin, name);
+
   return {
     name,
     approval: approval === true,
     runsOn: typeof runsOnRaw === 'string' ? runsOnRaw.trim() : DEPLOY_DEFAULT_RUNS_ON,
     timeoutMinutes: parseTimeoutMinutes(raw['timeout_minutes'], name),
+    origin,
+    readiness,
     steps: steps.map((step, i) => parseStep(step, i + 1, name)),
   };
 }

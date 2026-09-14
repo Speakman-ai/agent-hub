@@ -40,6 +40,11 @@ describe('validateBrowserNavigationUrl', () => {
     expect(validateBrowserNavigationUrl('http://0.0.0.0/').ok).toBe(false);
   });
 
+  it('still refuses an Autopilot local-target origin without an allowOrigins pin', () => {
+    expect(validateBrowserNavigationUrl('http://127.0.0.1:4310/').ok).toBe(false);
+    expect(validateBrowserNavigationUrl('http://127.0.0.1:4310/health').ok).toBe(false);
+  });
+
   it('rejects cloud metadata hostname', () => {
     expect(validateBrowserNavigationUrl('http://metadata.google.internal/').ok).toBe(false);
   });

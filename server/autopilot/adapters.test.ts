@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   buildImplementationPrompt,
   createAutopilotBoardAdapter,
+  createAutopilotDeployAdapter,
   createAutopilotFinalizeAdapter,
   createAutopilotPlannerAdapter,
   createAutopilotSessionAdapter,
+  deployOutcomeFromSnapshot,
   finalizeOutcomeFromSnapshot,
   validateBaselineSpec,
   type AutopilotBoardOps,
@@ -20,6 +22,7 @@ const SPEC: AutopilotBaselineSpec = {
   ],
   nonGoals: ['auth'],
   specDecisions: [{ key: 'storage', decision: 'sqlite' }],
+  storageRecovery: 'disposable',
   qualityRubricVersion: 1,
 };
 
@@ -33,7 +36,8 @@ const RESOLVED_SPEC = {
     },
   ],
   nonGoals: ['authentication'],
-  specDecisions: [{ key: 'storage', decision: 'in-memory SQLite, disposable' }],
+  specDecisions: [{ key: 'storage', decision: 'in-memory SQLite' }],
+  storageRecovery: 'disposable',
   qualityRubricVersion: 1,
 };
 
@@ -146,6 +150,47 @@ describe('autopilot planner adapter', () => {
       /assumptions/,
     );
     expect(() => validateBaselineSpec({ ...RESOLVED_SPEC, nonGoals: [] })).toThrow(/nonGoals/);
+  });
+
+  it('validateBaselineSpec requires an exact storageRecovery contract', () => {
+    expect(() => validateBaselineSpec({ ...RESOLVED_SPEC, storageRecovery: undefined })).toThrow(
+      /storage recovery contract/,
+    );
+    expect(() =>
+      validateBaselineSpec({
+        ...RESOLVED_SPEC,
+        storageRecovery: 'persistent PostgreSQL; destructive migration; disposable test fixtures',
+      }),
+    ).toThrow(/cannot be established/);
+    expect(() =>
+      validateBaselineSpec({
+        ...RESOLVED_SPEC,
+        specDecisions: [{ key: 'storage', decision: 'in-memory SQLite, disposable' }],
+        storageRecovery: undefined,
+      }),
+    ).toThrow(/cannot be established/);
+    expect(() =>
+      validateBaselineSpec({
+        ...RESOLVED_SPEC,
+        storageRecovery: 'migration is not guaranteed to be backward-compatible',
+      }),
+    ).toThrow(/cannot be established/);
+    expect(() =>
+      validateBaselineSpec({
+        ...RESOLVED_SPEC,
+        specDecisions: [
+          ...RESOLVED_SPEC.specDecisions,
+          { key: 'storage-recovery', decision: 'unsupported' },
+        ],
+      }),
+    ).toThrow(/contradictory/);
+    expect(() =>
+      validateBaselineSpec({ ...RESOLVED_SPEC, storageRecovery: 'unsupported' }),
+    ).toThrow(/unsupported data migration/);
+    expect(() => validateBaselineSpec({ ...RESOLVED_SPEC, storageRecovery: 'unknown' })).toThrow(
+      /cannot be established/,
+    );
+    expect(validateBaselineSpec(RESOLVED_SPEC).storageRecovery).toBe('disposable');
   });
 });
 
@@ -293,6 +338,7 @@ describe('autopilot session adapter', () => {
         acceptanceJourneys: [{ action: 'create a todo', expectedResult: 'it appears in the list' }],
         nonGoals: ['auth'],
         specDecisions: [{ key: 'storage', decision: 'sqlite' }],
+        storageRecovery: 'disposable',
       },
     });
     expect(out.sessionId).toBe('sess-x');
@@ -309,11 +355,14 @@ describe('autopilot session adapter', () => {
       acceptanceJourneys: [{ action: 'do j1', expectedResult: 'see r1' }],
       nonGoals: ['n1'],
       specDecisions: [{ key: 'k', decision: 'd' }],
+      storageRecovery: 'disposable',
     });
     expect(prompt).toContain('do j1');
     expect(prompt).toContain('see r1');
     expect(prompt).toContain('n1');
     expect(prompt).toContain('Finalize');
+    expect(prompt).toContain('disposable');
+    expect(prompt).toContain('do not infer recoverability');
   });
 });
 
@@ -396,5 +445,63 @@ describe('autopilot finalize adapter', () => {
     });
     expect(noVerdict?.status).toBe('error');
     expect(noVerdict?.reviewStatus ?? null).not.toBe('approved');
+  });
+});
+
+describe('autopilot deploy adapter', () => {
+  it('starts a deploy through the injected op with trigger autopilot', async () => {
+    let started: { targetId: string; sha: string; trigger: string } | null = null;
+    const adapter = createAutopilotDeployAdapter({
+      ops: {
+        startDeployment: async (args) => {
+          started = { targetId: args.targetId, sha: args.sha, trigger: args.trigger };
+          return { deploymentId: 'dep-9' };
+        },
+        runRollback: async () => ({
+          status: 'success',
+          deploymentId: 'dep-rb',
+          deployedSha: 'lkg',
+        }),
+      },
+    });
+    const out = await adapter.deployRevision({
+      projectId: 'demo',
+      runId: 'run-1',
+      operationId: 'op-3',
+      targetId: 'local-preview',
+      sha: 'deadbeef',
+      workerKeyName: null,
+    });
+    expect(out.deploymentId).toBe('dep-9');
+    expect(started).toEqual({
+      targetId: 'local-preview',
+      sha: 'deadbeef',
+      trigger: 'autopilot',
+    });
+  });
+
+  it('maps deployment snapshots to orchestrator results', () => {
+    expect(deployOutcomeFromSnapshot('dep-1', { status: 'pending', ref: 'sha' })).toBeNull();
+    expect(deployOutcomeFromSnapshot('dep-1', { status: 'running', ref: 'sha' })).toBeNull();
+    expect(
+      deployOutcomeFromSnapshot('dep-1', { status: 'success', ref: 'sha', liveRef: 'live' }),
+    ).toEqual({
+      status: 'success',
+      deploymentId: 'dep-1',
+      deployedSha: 'live',
+    });
+    expect(
+      deployOutcomeFromSnapshot('dep-1', { status: 'success', ref: 'sha', liveRef: null }),
+    ).toBeNull();
+    expect(deployOutcomeFromSnapshot('dep-1', { status: 'success', ref: 'sha' })).toBeNull();
+    expect(
+      deployOutcomeFromSnapshot('dep-1', { status: 'awaiting_approval', ref: 'sha' })?.status,
+    ).toBe('awaiting_approval');
+    expect(deployOutcomeFromSnapshot('dep-1', { status: 'cancelled', ref: 'sha' })?.status).toBe(
+      'cancelled',
+    );
+    expect(deployOutcomeFromSnapshot('dep-1', { status: 'error', ref: 'sha' })?.status).toBe(
+      'error',
+    );
   });
 });

@@ -252,7 +252,9 @@ import { AutopilotStore } from './autopilot/store.js';
 import {
   attachAutopilotCompletionCallbacks,
   buildAutopilotRuntime,
+  buildLocalTargetLookup,
   handleAutopilotBroadcast,
+  readAutopilotDeployedRevision,
 } from './autopilot/wiring.js';
 import type { AutopilotRuntime } from './autopilot/runtime.js';
 import type { AutopilotCancelRefs } from './autopilot/types.js';
@@ -2123,6 +2125,8 @@ app.use(createDeploymentRoutes(routeDeps));
 app.use(
   createAutopilotRoutes(routeDeps, {
     cancelSideEffects: cancelAutopilotSideEffects,
+    getDeployedRevision: readAutopilotDeployedRevision,
+    validateLocalTarget: buildLocalTargetLookup(findProject),
   }),
 );
 app.use(createReleaseNotificationSettingsRoutes(routeDeps));
@@ -2983,7 +2987,11 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
 
     try {
       const autopilotController = createAutopilotController(
-        buildAutopilotControllerDeps({ cancelSideEffects: cancelAutopilotSideEffects }),
+        buildAutopilotControllerDeps({
+          cancelSideEffects: cancelAutopilotSideEffects,
+          getDeployedRevision: readAutopilotDeployedRevision,
+          validateLocalTarget: buildLocalTargetLookup(findProject),
+        }),
       );
       void autopilotController
         .reconcileAfterRestart()
@@ -3004,13 +3012,21 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
             };
           },
           getActiveSessionIds: () => new Set(activeProcesses.keys()),
-          controllerOptions: { cancelSideEffects: cancelAutopilotSideEffects },
+          controllerOptions: {
+            cancelSideEffects: cancelAutopilotSideEffects,
+            getDeployedRevision: readAutopilotDeployedRevision,
+            validateLocalTarget: buildLocalTargetLookup(findProject),
+          },
         });
         attachedAutopilotRuntime = autopilotRuntime;
         attachAutopilotCompletionCallbacks(autopilotRuntime);
         setInterval(() => {
           void createAutopilotController(
-            buildAutopilotControllerDeps({ cancelSideEffects: cancelAutopilotSideEffects }),
+            buildAutopilotControllerDeps({
+              cancelSideEffects: cancelAutopilotSideEffects,
+              getDeployedRevision: readAutopilotDeployedRevision,
+              validateLocalTarget: buildLocalTargetLookup(findProject),
+            }),
           )
             .enforceDeadlines()
             .catch((e) => console.error('[autopilot] enforceDeadlines', (e as Error).message));

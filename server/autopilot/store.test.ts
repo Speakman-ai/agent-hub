@@ -75,9 +75,24 @@ describe('autopilot store operation lookups', () => {
       deploymentId: null,
       createdAt,
     });
+    store.insertOperation({
+      id: 'op-dep',
+      runId: 'run-1',
+      cycleId: null,
+      kind: 'deploy',
+      status: 'in_flight',
+      fencingGeneration: 1,
+      intentJson: '{}',
+      sessionId: null,
+      finalizeRunId: null,
+      deploymentId: 'dep-9',
+      createdAt,
+    });
     expect(store.getOperationBySessionId('sess-1')?.id).toBe('op-new');
     expect(store.getOperationByFinalizeRunId('fin-9')?.id).toBe('op-fin');
+    expect(store.getOperationByDeploymentId('dep-9')?.id).toBe('op-dep');
     expect(store.getOperationBySessionId('missing')).toBeNull();
     expect(store.getOperationByFinalizeRunId('fin-missing')).toBeNull();
+    expect(store.getOperationByDeploymentId('dep-missing')).toBeNull();
   });
 });

@@ -38,6 +38,8 @@ describe('parseDeployConfig — happy path', () => {
     expect(dev.approval).toBe(false);
     expect(dev.runsOn).toBe(DEPLOY_DEFAULT_RUNS_ON);
     expect(dev.timeoutMinutes).toBe(DEPLOY_TIMEOUT_DEFAULT_MINUTES);
+    expect(dev.origin).toBeNull();
+    expect(dev.readiness).toBeNull();
     expect(dev.steps).toEqual([
       { name: 'build', run: './build.sh' },
       { name: 'step 2', run: './deploy-dev.sh' }, // name defaults to "step <index>"
@@ -58,6 +60,21 @@ environments:
   prod: { steps: [{ run: c }] }
 `);
     expect([...cfg.environments.keys()]).toEqual(['staging', 'alpha', 'prod']);
+  });
+
+  it('parses optional origin and a readiness path on the same origin', () => {
+    const cfg = parseDeployConfig(`
+version: 1
+environments:
+  local-preview:
+    origin: http://127.0.0.1:4310
+    readiness: /health
+    steps:
+      - run: ./deploy-local.sh
+`);
+    const env = cfg.environments.get('local-preview')!;
+    expect(env.origin).toBe('http://127.0.0.1:4310');
+    expect(env.readiness).toBe('http://127.0.0.1:4310/health');
   });
 });
 
@@ -119,6 +136,21 @@ describe('parseDeployConfig — rejections', () => {
       name: 'timeout above ceiling',
       yaml: 'version: 1\nenvironments:\n  dev:\n    timeout_minutes: 9999\n    steps: [{ run: x }]',
       reason: 'invalid_timeout',
+    },
+    {
+      name: 'origin with a path',
+      yaml: 'version: 1\nenvironments:\n  dev:\n    origin: http://127.0.0.1:4310/app\n    steps: [{ run: x }]',
+      reason: 'invalid_origin',
+    },
+    {
+      name: 'readiness path without origin',
+      yaml: 'version: 1\nenvironments:\n  dev:\n    readiness: /health\n    steps: [{ run: x }]',
+      reason: 'invalid_readiness',
+    },
+    {
+      name: 'readiness on a different origin',
+      yaml: 'version: 1\nenvironments:\n  dev:\n    origin: http://127.0.0.1:4310\n    readiness: http://127.0.0.1:9999/health\n    steps: [{ run: x }]',
+      reason: 'invalid_readiness',
     },
     { name: 'malformed yaml', yaml: 'version: 1\n  bad: : :', reason: 'invalid_yaml' },
   ];

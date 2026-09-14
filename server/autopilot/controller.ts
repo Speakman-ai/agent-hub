@@ -23,6 +23,11 @@ import {
   DEFAULT_AUTOPILOT_USAGE,
 } from './types.js';
 import { assertAutopilotContainment } from './containment.js';
+import {
+  assertLocalTargetContract,
+  assertLocalTargetReadyToRun,
+  type AutopilotLocalTargetLookup,
+} from './local-target.js';
 import type {
   IssueAutopilotWorkerCredential,
   RevokeAutopilotWorkerCredential,
@@ -63,6 +68,11 @@ export interface CompleteOperationInput {
   fencingGeneration: number;
   outcome: 'succeeded' | 'failed' | 'ambiguous';
   result?: unknown;
+  /**
+   * When set with a failed outcome, park the run with this reason and do not
+   * schedule a stage retry (recovery failure, unsupported migration, no LKG).
+   */
+  haltReason?: string;
 }
 
 export interface AutopilotControllerDeps {
@@ -72,7 +82,8 @@ export interface AutopilotControllerDeps {
   randomId?: () => string;
   holderId?: string;
   cancelSideEffects?: AutopilotCancelSideEffects;
-  getDeployedRevision?: (targetId: string) => string | null;
+  getDeployedRevision?: (projectId: string, targetId: string) => string | null;
+  validateLocalTarget?: AutopilotLocalTargetLookup;
   credentialOwnerExists?: (userId: string) => boolean;
   assertContainment?: () => void;
   issueWorkerCredential?: IssueAutopilotWorkerCredential;
@@ -264,7 +275,8 @@ export class AutopilotController {
   private readonly holderId: string;
   private readonly isServerEnabled: () => boolean;
   private readonly cancelSideEffects: AutopilotCancelSideEffects;
-  private readonly getDeployedRevision?: (targetId: string) => string | null;
+  private readonly getDeployedRevision?: (projectId: string, targetId: string) => string | null;
+  private readonly validateLocalTarget?: AutopilotLocalTargetLookup;
   private readonly credentialOwnerExists?: (userId: string) => boolean;
   private readonly assertContainment: () => void;
   private readonly issueWorkerCredential?: IssueAutopilotWorkerCredential;
@@ -278,6 +290,7 @@ export class AutopilotController {
     this.isServerEnabled = deps.isServerEnabled;
     this.cancelSideEffects = deps.cancelSideEffects ?? (async () => undefined);
     this.getDeployedRevision = deps.getDeployedRevision;
+    this.validateLocalTarget = deps.validateLocalTarget;
     this.credentialOwnerExists = deps.credentialOwnerExists;
     this.assertContainment = deps.assertContainment ?? assertAutopilotContainment;
     this.issueWorkerCredential = deps.issueWorkerCredential;
@@ -574,6 +587,9 @@ export class AutopilotController {
         limits,
         credentialOwnerUserId,
       });
+      if (this.validateLocalTarget && target) {
+        assertLocalTargetReadyToRun(projectId, target, this.validateLocalTarget);
+      }
     }
 
     const updatedAt = this.timestamp();
@@ -613,6 +629,7 @@ export class AutopilotController {
     if (!parts.target?.targetId) {
       throw new AutopilotError('invalid_config', 'a local deployment target is required');
     }
+    assertLocalTargetContract(parts.target);
     if (!parts.limits) {
       throw new AutopilotError('invalid_config', 'resource limits are required');
     }
@@ -687,6 +704,9 @@ export class AutopilotController {
           if (!this.credentialOwnerExists(config.credentialOwnerUserId)) {
             throw new AutopilotError('invalid_config', 'credential owner does not exist');
           }
+        }
+        if (this.validateLocalTarget && config.target) {
+          assertLocalTargetReadyToRun(projectId, config.target, this.validateLocalTarget);
         }
         if (this.store.getActiveRun(projectId)) {
           throw new AutopilotError(
@@ -923,12 +943,19 @@ export class AutopilotController {
       if (!this.getDeployedRevision) {
         return 'deployed revision could not be verified';
       }
-      const deployed = this.getDeployedRevision(run.targetId);
+      const deployed = this.getDeployedRevision(run.projectId, run.targetId);
       if (!deployed) {
         return 'deployed revision is unavailable';
       }
       if (deployed !== run.lastVerifiedSha) {
         return 'deployed revision does not match the last verified SHA';
+      }
+    }
+    if (this.validateLocalTarget && config.target) {
+      try {
+        assertLocalTargetReadyToRun(run.projectId, config.target, this.validateLocalTarget);
+      } catch (err) {
+        return err instanceof AutopilotError ? err.message : String(err);
       }
     }
     return null;
@@ -1325,7 +1352,7 @@ export class AutopilotController {
     });
 
     if (input.outcome === 'failed') {
-      await this.recordStageFailure(run, op.id, now, input.result);
+      await this.recordStageFailure(run, op.id, now, input.result, input.haltReason);
     } else if (input.outcome === 'succeeded') {
       const stage = this.store.getStageByOperationId(op.id);
       if (stage) {
@@ -1339,6 +1366,8 @@ export class AutopilotController {
 
     if (input.outcome === 'ambiguous') {
       this.parkRun(run, now, 'ambiguous_operation_outcome');
+    } else if (input.haltReason && input.outcome === 'failed') {
+      this.parkRun(this.store.getRun(run.id) ?? run, now, input.haltReason);
     } else if (run.controlState === 'pausing') {
       if (this.store.listInFlightOperations(run.id).length === 0) {
         this.parkRun(
@@ -1367,6 +1396,7 @@ export class AutopilotController {
     operationId: string,
     now: string,
     result: unknown,
+    haltReason?: string,
   ): Promise<void> {
     const stage = this.store.getStageByOperationId(operationId);
     if (!stage) return;
@@ -1375,6 +1405,7 @@ export class AutopilotController {
       completedAt: now,
       resultJson: JSON.stringify(result ?? {}),
     });
+    if (haltReason) return;
     const canRetry = stage.attempt <= run.limits.maxRetriesPerStage;
     if (!canRetry) {
       await this.expireRun(run, 'stage_retries_exhausted');

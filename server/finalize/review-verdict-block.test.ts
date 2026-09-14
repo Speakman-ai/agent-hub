@@ -28,6 +28,7 @@ import {
   stripReviewVerdictBlock,
   isReviewEnvironmentFinding,
   allFindingsAreReviewEnvironmentOnly,
+  coerceEnvironmentOnlyReviewVerdict,
 } from './review-verdict-block.js';
 
 describe('detectReviewVerdictBlock — happy path', () => {
@@ -388,6 +389,15 @@ describe('review-environment findings', () => {
     expect(allFindingsAreReviewEnvironmentOnly([{ body }])).toBe(false);
   });
 
+  it('does not treat a scored finding as environment-only just because it mentions omitted files', () => {
+    const body =
+      '**[6/10]** Recovery still infers recoverability from storage prose. Also mentions omitted files in passing.';
+    expect(isReviewEnvironmentFinding(body)).toBe(false);
+    expect(coerceEnvironmentOnlyReviewVerdict('changes_requested', [{ body }])).toBe(
+      'changes_requested',
+    );
+  });
+
   it('requires every thread to be environment-only', () => {
     expect(
       allFindingsAreReviewEnvironmentOnly([
@@ -395,5 +405,36 @@ describe('review-environment findings', () => {
         { body: '**[6/10]** Missing caller for mintAutopilotWorkerCredential.' },
       ]),
     ).toBe(false);
+  });
+
+  it("recognizes this round's sandbox-start / verification-limit wording", () => {
+    const body = `I'll read the omitted files and trace each acceptance criterion through deployment, recovery, and cancellation.
+The shell failed before executing because its sandbox could not start. This is a verification limitation, not a code finding.
+Review incomplete: local reads failed before execution because the sandbox could not create a namespace. No alternate file reader returned the omitted code. I found no confirmed defect in the visible patches, but cannot establish that this change is mergeable.
+These are verification limits, not confirmed implementation gaps. The verdict withholds approval pending completion of the review; it does not request speculative code changes.`;
+    expect(isReviewEnvironmentFinding(body)).toBe(true);
+    expect(coerceEnvironmentOnlyReviewVerdict('changes_requested', [{ body }])).toBe('approved');
+  });
+
+  it('coerces access-failure-only changes_requested to approved', () => {
+    expect(
+      coerceEnvironmentOnlyReviewVerdict('changes_requested', [
+        { body: 'Review incomplete: sandbox could not start. No confirmed defect.' },
+      ]),
+    ).toBe('approved');
+  });
+
+  it('does not coerce mixed environment + scored findings', () => {
+    expect(
+      coerceEnvironmentOnlyReviewVerdict('changes_requested', [
+        { body: 'Review incomplete: local reads failed (bwrap).' },
+        { body: '**[6/10]** Race on config.bin.' },
+      ]),
+    ).toBe('changes_requested');
+  });
+
+  it('leaves approved and empty-thread verdicts unchanged', () => {
+    expect(coerceEnvironmentOnlyReviewVerdict('approved', [])).toBe('approved');
+    expect(coerceEnvironmentOnlyReviewVerdict('changes_requested', [])).toBe('changes_requested');
   });
 });

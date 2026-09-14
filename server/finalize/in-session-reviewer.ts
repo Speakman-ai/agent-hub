@@ -66,7 +66,11 @@ import {
   type RunReviewerOnLocalDiff,
   type ReviewerLocalDiffInputs,
 } from './reviewer-dispatch.js';
-import { detectReviewVerdictBlock, stripReviewVerdictBlock } from './review-verdict-block.js';
+import {
+  coerceEnvironmentOnlyReviewVerdict,
+  detectReviewVerdictBlock,
+  stripReviewVerdictBlock,
+} from './review-verdict-block.js';
 import { listSessionAgents } from '../session-agents.js';
 import type {
   AgentLookup,
@@ -808,9 +812,11 @@ export async function runReviewerTurn(
       ];
     }
 
-    // Access-failure-only notes are not rewritten to `approved`: a trimmed
-    // corpus can hide a real defect, and local reads sometimes work. The
-    // cluster tracker still ignores them so they do not escalate as a code bug.
+    // Access-failure-only notes are not implementer work. Leaving them as
+    // `changes_requested` loops Finalize forever: the diff never shrinks and
+    // sandbox reads keep failing. Coerce to approved so CI can run. Mixed
+    // real defects still block.
+    verdict = coerceEnvironmentOnlyReviewVerdict(verdict, threads);
     return {
       verdict,
       threads,

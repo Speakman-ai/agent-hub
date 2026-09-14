@@ -32,6 +32,7 @@ describe('autopilot live adapters + disposable fixture app', () => {
 
     expect(result.mergedSha).toMatch(/^[0-9a-f]{40}$/);
     expect(result.mergedSha).not.toBe(result.baselineSha);
+    expect(result.deploymentId).toBe('dep-fixture');
     expect(validateTodoApp(fixtureRepo, { requireComplete: true }).ok).toBe(true);
 
     const epic = stmts.getKanbanEpic.get(result.epicId) as { labels?: string } | undefined;

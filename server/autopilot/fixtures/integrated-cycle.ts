@@ -39,7 +39,11 @@ const FIXTURE_REVIEWER_ID = 'fixture-reviewer';
 
 const READY = {
   brief: 'Build a disposable todo list with a browser-testable add-and-list flow.',
-  target: { targetId: 'local-preview' },
+  target: {
+    targetId: 'local-preview',
+    origin: 'http://127.0.0.1:4310',
+    readinessProbeUrl: 'http://127.0.0.1:4310/health',
+  },
   limits: {
     cycleMode: 'continuous' as const,
     maxWallTimeMs: 60 * 60 * 1000,
@@ -311,6 +315,13 @@ export async function runIntegratedBaselineCycle(opts: {
         : null,
     getActiveSessionIds: () => new Set(activeProcesses.keys()),
     controllerOptions,
+    startDeployment: async () => ({ deploymentId: 'dep-fixture' }),
+    runRollback: async (args) => ({
+      status: 'success',
+      deploymentId: 'dep-rb',
+      deployedSha: args.priorSha,
+    }),
+    readDeployOutcome: () => null,
   };
   const runtime = buildAutopilotRuntime(wiring);
 

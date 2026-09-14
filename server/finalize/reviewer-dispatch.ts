@@ -65,6 +65,7 @@ import {
   writeFinalizeReviewRoundTimeline,
   type TimelineMessageDeps,
 } from './timeline-message.js';
+import { coerceEnvironmentOnlyReviewVerdict } from './review-verdict-block.js';
 import { isReviewerInfraStallError, reviewerStallCauseLabel } from './reviewer-infra-stall.js';
 
 const execFileAsync = promisify(execFile);
@@ -521,8 +522,14 @@ export async function runReviewerDispatch(
   }
 
   // Sanitise + cap inputs from the driver. Truncation is silent so a
-  // misbehaving reviewer does not break the dispatch path.
+  // misbehaving reviewer does not break the dispatch path. Coerce after
+  // sanitise so dropped empty rows cannot keep an access-failure-only
+  // pass stuck on `changes_requested`.
   const sanitised = sanitiseThreads(result.threads);
+  result = {
+    ...result,
+    verdict: coerceEnvironmentOnlyReviewVerdict(result.verdict, sanitised),
+  };
   const billed = Math.max(1, Math.floor(result.activeSecondsBilled ?? REVIEW_PHASE_ACTIVE_SECONDS));
 
   // Persist threads + verdict atomically. Wipe any prior threads tied

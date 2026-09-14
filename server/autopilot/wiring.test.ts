@@ -1,8 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
 import type { Stmts } from '../types.js';
 import type { AutopilotRuntime } from './runtime.js';
 import {
   buildBoardOps,
+  buildLocalTargetLookup,
   handleAutopilotBroadcast,
   parseBaselineSpecJson,
   readFinalizeOutcome,
@@ -140,12 +144,62 @@ describe('autopilot wiring — completion callbacks', () => {
   it('routes finalize_run_completed and changes_ready into settle methods', () => {
     const settleSession = vi.fn();
     const settleFinalize = vi.fn();
-    const runtime = { settleSession, settleFinalize } as unknown as AutopilotRuntime;
+    const settleDeployment = vi.fn();
+    const runtime = {
+      settleSession,
+      settleFinalize,
+      settleDeployment,
+    } as unknown as AutopilotRuntime;
     handleAutopilotBroadcast(runtime, { type: 'finalize_run_completed', run_id: 'fin-1' });
     handleAutopilotBroadcast(runtime, { type: 'changes_ready', sessionId: 'sess-1' });
     handleAutopilotBroadcast(runtime, { type: 'changes_ready', session_id: 'sess-2' });
+    handleAutopilotBroadcast(runtime, { type: 'deployment_update', deployment: { id: 'dep-1' } });
     expect(settleFinalize).toHaveBeenCalledWith('fin-1');
     expect(settleSession).toHaveBeenCalledWith('sess-1');
     expect(settleSession).toHaveBeenCalledWith('sess-2');
+    expect(settleDeployment).toHaveBeenCalledWith('dep-1');
+  });
+});
+
+describe('autopilot wiring — local target lookup', () => {
+  it('binds origin, readiness, and live revision from the declared environment', () => {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'autopilot-target-'));
+    mkdirSync(path.join(cwd, '.agent-hub'));
+    writeFileSync(
+      path.join(cwd, '.agent-hub', 'deploy.yaml'),
+      `version: 1
+environments:
+  local-preview:
+    origin: http://127.0.0.1:4310
+    readiness: /health
+    steps:
+      - run: ./deploy.sh
+  staging:
+    origin: http://127.0.0.1:9999
+    readiness: /health
+    steps:
+      - run: ./deploy-staging.sh
+`,
+    );
+    const lookup = buildLocalTargetLookup(
+      (id) => (id === 'demo' ? ({ id, cwd } as never) : null),
+      (_projectId, targetId) =>
+        targetId === 'local-preview'
+          ? { current_ref: 'sha-live', current_deployment_id: 'dep-1' }
+          : null,
+    );
+    expect(lookup.getDeclaredEnvironment('demo', 'local-preview')).toEqual({
+      origin: 'http://127.0.0.1:4310',
+      readinessProbeUrl: 'http://127.0.0.1:4310/health',
+      currentRef: 'sha-live',
+      currentDeploymentId: 'dep-1',
+    });
+    expect(lookup.getDeclaredEnvironment('demo', 'staging')).toEqual({
+      origin: 'http://127.0.0.1:9999',
+      readinessProbeUrl: 'http://127.0.0.1:9999/health',
+      currentRef: null,
+      currentDeploymentId: null,
+    });
+    expect(lookup.getDeclaredEnvironment('demo', 'production')).toBeNull();
   });
 });

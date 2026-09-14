@@ -52,6 +52,8 @@ import {
 } from './deployment-schedule-store.js';
 import { buildDeployOrchestratorDeps } from './deploy-trigger-hook.js';
 import type { ReleaseDigestRunner } from '../release-digest.js';
+import { getDb } from '../db.js';
+import { shouldSkipAutopilotDuplicateTrigger } from '../autopilot/deploy-ownership.js';
 
 type CheckoutResult = { worktreePath: string; resolvedRef: string };
 
@@ -68,6 +70,10 @@ export interface DeployScheduleTickerDeps {
   triggerDeployment?: typeof defaultTriggerDeployment;
   /** Test seam — defaults to {@link defaultIsEnvironmentDeployable}. */
   isEnvironmentDeployable?: typeof defaultIsEnvironmentDeployable;
+  /**
+   * Skip scheduled deploys for an Autopilot-owned experiment target.
+   */
+  skipOwnedTarget?: (projectId: string, environment: string, ref?: string) => boolean;
   /** Test seam — defaults to {@link defaultGetSchedule}. */
   getSchedule?: typeof defaultGetSchedule;
   /** Test seam — defaults to {@link defaultListEnabledSchedules}. */
@@ -150,6 +156,26 @@ export async function runScheduledDeployment(
     // environments-config: absent from deploy.yaml OR operator-paused ⇒ skip.
     if (!isDeployable(project.id, current.environment_name, declared)) {
       log(`[deploy-schedule] ${label}: not deployable — skipped`);
+      await cleanupCheckout(checkout);
+      return;
+    }
+
+    const skipOwned =
+      deps.skipOwnedTarget ??
+      ((projectId: string, environment: string, ref?: string) => {
+        try {
+          return shouldSkipAutopilotDuplicateTrigger({
+            projectId,
+            environment,
+            ref,
+            db: getDb(),
+          }).skip;
+        } catch {
+          return false;
+        }
+      });
+    if (skipOwned(project.id, current.environment_name, current.ref)) {
+      log(`[deploy-schedule] ${label}: owned by Autopilot — skipped`);
       await cleanupCheckout(checkout);
       return;
     }

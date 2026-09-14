@@ -63,7 +63,15 @@ function configWith(...envs: string[]): DeployConfig {
     environments: new Map(
       envs.map((name) => [
         name,
-        { name, approval: false, runsOn: 'ubuntu-24.04', timeoutMinutes: 30, steps: [] },
+        {
+          name,
+          approval: false,
+          runsOn: 'ubuntu-24.04',
+          timeoutMinutes: 30,
+          origin: null,
+          readiness: null,
+          steps: [],
+        },
       ]),
     ),
   };
@@ -142,6 +150,28 @@ describe('runScheduledDeployment', () => {
     expect(input.worktreePath).toBe(created[0]);
     // Success ⇒ ownership transferred; the ticker must NOT clean the worktree.
     expect(existsSync(created[0]!)).toBe(true);
+  });
+
+  it('skips a scheduled deploy for an environment owned by Autopilot', async () => {
+    const { created, prepareCheckout } = makeCheckoutTracker();
+    const row = scheduleRow();
+    const triggerDeployment = vi.fn();
+
+    await runScheduledDeployment(
+      row,
+      baseDeps({
+        prepareCheckout,
+        loadConfig: async () => configWith('prod'),
+        isEnvironmentDeployable: () => true,
+        getSchedule: () => row,
+        triggerDeployment,
+        skipOwnedTarget: () => true,
+      }),
+    );
+
+    expect(triggerDeployment).not.toHaveBeenCalled();
+    expect(created).toHaveLength(1);
+    expect(existsSync(created[0]!)).toBe(false);
   });
 
   it('passes triggeredBy=null for a system-owned schedule', async () => {

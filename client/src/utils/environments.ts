@@ -8,6 +8,8 @@ export interface ResolvedEnvironment {
   deployable: boolean;
   approval: boolean | null;
   runsOn: string | null;
+  origin: string | null;
+  readiness: string | null;
   timeoutMinutes: number | null;
   steps?: Array<{ name: string; run: string }>;
   currentRef: string | null;

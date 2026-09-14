@@ -4,13 +4,18 @@ import { createAutopilotController } from './controller.js';
 import { AutopilotError } from './errors.js';
 import { ensureAutopilotSchema } from './schema.js';
 import type { AutopilotCancelRefs, AutopilotCancelSideEffects } from './types.js';
+import type { AutopilotLocalTargetLookup } from './local-target.js';
 
 const PROJECT = 'demo-app';
 const ACTOR = { userId: 'user-1' };
 
 const READY = {
   brief: 'Build a disposable todo API with a browser-testable list page.',
-  target: { targetId: 'local-preview' },
+  target: {
+    targetId: 'local-preview',
+    origin: 'http://127.0.0.1:4310',
+    readinessProbeUrl: 'http://127.0.0.1:4310/health',
+  },
   limits: {
     cycleMode: 'continuous' as const,
     maxWallTimeMs: 60 * 60 * 1000,
@@ -37,7 +42,8 @@ const passContainment = { assertContainment: () => undefined };
 function freshController(opts?: {
   serverEnabled?: boolean;
   cancelSideEffects?: AutopilotCancelSideEffects;
-  getDeployedRevision?: (targetId: string) => string | null;
+  getDeployedRevision?: (projectId: string, targetId: string) => string | null;
+  validateLocalTarget?: AutopilotLocalTargetLookup;
   credentialOwnerExists?: (userId: string) => boolean;
   holderId?: string;
   now?: () => Date;
@@ -53,6 +59,7 @@ function freshController(opts?: {
     isServerEnabled: () => opts?.serverEnabled !== false,
     cancelSideEffects: opts?.cancelSideEffects,
     getDeployedRevision: opts?.getDeployedRevision,
+    validateLocalTarget: opts?.validateLocalTarget,
     credentialOwnerExists: opts?.credentialOwnerExists ?? (() => true),
     holderId: opts?.holderId ?? 'hub-a',
     now: opts?.now,
@@ -130,6 +137,60 @@ describe('autopilot controller', () => {
     expect(after.activeRun?.run.credentialOwnerUserId).toBe(runBefore.credentialOwnerUserId);
     expect(after.activeRun?.run.targetId).toBe(runBefore.targetId);
     expect(after.activeRun?.run.briefRevision).toBe(runBefore.briefRevision);
+  });
+
+  it('refuses to enable without a loopback origin and readiness probe', () => {
+    const { controller } = freshController();
+    expect(() =>
+      controller.putConfig(
+        PROJECT,
+        {
+          enabled: true,
+          brief: READY.brief,
+          target: { targetId: 'local-preview' },
+          limits: READY.limits,
+          credentialOwnerUserId: 'user-1',
+        },
+        ACTOR,
+      ),
+    ).toThrow(/target\.origin is required/);
+  });
+
+  it('refuses to enable when the declared environment points elsewhere', () => {
+    const { controller } = freshController({
+      validateLocalTarget: {
+        getDeclaredEnvironment: () => ({
+          origin: 'http://127.0.0.1:9999',
+          readinessProbeUrl: 'http://127.0.0.1:9999/health',
+          currentRef: null,
+          currentDeploymentId: null,
+        }),
+      },
+    });
+    expect(() => controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR)).toThrow(
+      /points at http:\/\/127\.0\.0\.1:9999/,
+    );
+  });
+
+  it('parks without retry when a failed operation carries haltReason', async () => {
+    const { controller } = freshController();
+    const started = await startReady(controller);
+    const op = started.operations[0];
+    await controller.completeOperation({
+      operationId: op.id,
+      fencingGeneration: op.fencingGeneration,
+      outcome: 'failed',
+      haltReason: 'rollback failed',
+      result: { error: 'rollback failed' },
+    });
+    const snap = controller.getProjectState(PROJECT).activeRun!;
+    expect(snap.run.id).toBe(started.run.id);
+    expect(snap.run.controlState).toBe('paused');
+    expect(snap.run.pauseReason).toBe('rollback failed');
+    expect(snap.operations.find((row) => row.id === op.id)?.status).toBe('failed');
+    expect(
+      snap.operations.filter((row) => row.status === 'pending' || row.status === 'in_flight'),
+    ).toHaveLength(0);
   });
 
   it('rolls back start overlays when the credential owner is invalid', () => {
@@ -316,6 +377,27 @@ describe('autopilot controller', () => {
     db.prepare(`UPDATE autopilot_runs SET last_verified_sha = 'sha-good' WHERE id = ?`).run(run.id);
     controller.pause(PROJECT, ACTOR);
     await expect(controller.resume(PROJECT, ACTOR)).rejects.toThrow(/deployed revision/);
+    expect(controller.getProjectState(PROJECT).activeRun?.run.controlState).toBe('paused');
+  });
+
+  it('refuses resume when the declared environment now points elsewhere', async () => {
+    let envOrigin = READY.target.origin;
+    const { controller } = freshController({
+      validateLocalTarget: {
+        getDeclaredEnvironment: () => ({
+          origin: envOrigin,
+          readinessProbeUrl: `${envOrigin}/health`,
+          currentRef: null,
+          currentDeploymentId: null,
+        }),
+      },
+    });
+    await startReady(controller);
+    controller.pause(PROJECT, ACTOR);
+    envOrigin = 'http://127.0.0.1:9999';
+    await expect(controller.resume(PROJECT, ACTOR)).rejects.toThrow(
+      /points at http:\/\/127\.0\.0\.1:9999/,
+    );
     expect(controller.getProjectState(PROJECT).activeRun?.run.controlState).toBe('paused');
   });
 

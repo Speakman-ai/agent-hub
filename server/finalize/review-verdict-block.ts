@@ -276,18 +276,6 @@ function truncateBody(body: string): string {
 }
 
 /**
- * Strip the trailing `<agenthub:review-verdict>` block (and any
- * surrounding whitespace) from `text`. Used when persisting the
- * reviewer's prose into the session — the structured block is
- * machine-only and would clutter the side-panel chat view if surfaced
- * verbatim.
- *
- * Idempotent: a text with no block returns unchanged. Strips only the
- * FIRST block to match `detectReviewVerdictBlock`'s semantics; if a
- * reviewer emits two we keep that as evidence of the contract violation
- * in the persisted chat message.
- */
-/**
  * Phrases that mean the reviewer could not read the corpus / omitted files,
  * not that the change is missing an implementation. A `changes_requested`
  * verdict that only contains these loops Finalize forever: the diff never
@@ -322,10 +310,21 @@ const REVIEW_ENVIRONMENT_NEEDLES = [
   'access failure',
   'read-only file channel',
   'shell failed before reading',
-  'not evidence of missing implementation',
+  'shell failed before executing',
+  'sandbox could not start',
+  'verification limitation',
+  'verification limits',
+  'cannot establish that this change is mergeable',
+  'no confirmed defect',
+  'no alternate file reader',
+  'does not request speculative',
+  'withholds approval pending',
 ] as const;
 
 export function isReviewEnvironmentFinding(body: string): boolean {
+  // A scored finding is implementer work even if the prose also mentions
+  // omitted files or a sandbox miss.
+  if (/\*\*\[\d+\s*\/\s*10\]\*\*/.test(body)) return false;
   const text = body.toLowerCase();
   return REVIEW_ENVIRONMENT_NEEDLES.some((needle) => text.includes(needle));
 }
@@ -336,6 +335,34 @@ export function allFindingsAreReviewEnvironmentOnly(
   return threads.length > 0 && threads.every((t) => isReviewEnvironmentFinding(t.body));
 }
 
+/**
+ * Access-failure-only `changes_requested` is not implementer work. Dispatching
+ * a fixer loops forever: the diff does not shrink, sandbox reads keep failing,
+ * and no patch can "address" a missing namespace. Coerce to `approved` so CI
+ * can run; mixed real defects still block.
+ */
+export function coerceEnvironmentOnlyReviewVerdict(
+  verdict: ReviewVerdict,
+  threads: ReadonlyArray<{ body: string }>,
+): ReviewVerdict {
+  if (verdict === 'changes_requested' && allFindingsAreReviewEnvironmentOnly(threads)) {
+    return 'approved';
+  }
+  return verdict;
+}
+
+/**
+ * Strip the trailing `<agenthub:review-verdict>` block (and any
+ * surrounding whitespace) from `text`. Used when persisting the
+ * reviewer's prose into the session — the structured block is
+ * machine-only and would clutter the side-panel chat view if surfaced
+ * verbatim.
+ *
+ * Idempotent: a text with no block returns unchanged. Strips only the
+ * FIRST block to match `detectReviewVerdictBlock`'s semantics; if a
+ * reviewer emits two we keep that as evidence of the contract violation
+ * in the persisted chat message.
+ */
 export function stripReviewVerdictBlock(text: string): string {
   if (typeof text !== 'string') return text;
   const tagStripped = text.replace(
