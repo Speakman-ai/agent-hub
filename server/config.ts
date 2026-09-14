@@ -612,6 +612,18 @@ const config: AppConfig = {
     return coerceConfigBooleanLoose(fileConfig.cardDoneOnPush, false);
   })(),
 
+  // Experimental Project Autopilot. Default false: independent of local-mode
+  // auth bypass. Operators opt in via config.json or PATCH /api/config.
+  experimentalAutopilotEnabled: (() => {
+    const k = 'AGENT_HUB_EXPERIMENTAL_AUTOPILOT' as const;
+    if (process.env[k] !== undefined) {
+      if (envMeansFalse(k)) return false;
+      if (envMeansTrue(k)) return true;
+      return coerceConfigBooleanLoose(process.env[k], false);
+    }
+    return coerceConfigBooleanLoose(fileConfig.experimentalAutopilotEnabled, false);
+  })(),
+
   // ── Host browser sessions (Stagehand / Playwright Chromium) ──
   browserMaxConcurrentContexts: clampFiniteInt(
     resolveInt('AGENT_HUB_BROWSER_MAX_CONTEXTS', 'browserMaxConcurrentContexts', 3),

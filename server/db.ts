@@ -18,6 +18,7 @@ import {
 } from './preview/preview-schema.js';
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
 import { BACKGROUND_SHELLS_SCHEMA } from './background-shells/background-shell-schema.js';
+import { ensureAutopilotSchema } from './autopilot/schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import { FINALIZE_SERVER_CI_SCHEMA } from './finalize/ci-config-store.js';
@@ -3459,6 +3460,10 @@ function initDb(dataDir: string): void {
   // older `background_tasks` table (async agent prompt turns). Schema is
   // co-located with the runtime so its unit test can use an in-memory DB.
   db.exec(BACKGROUND_SHELLS_SCHEMA);
+
+  // Experimental Project Autopilot: per-project config, versioned briefs,
+  // run/cycle/stage records, operation fencing and the event journal.
+  ensureAutopilotSchema(db);
 
   // Deployment Module: deployments / steps / environments / approvals. Schema
   // is co-located with the deploy store so deployment-schema.test.ts can spin

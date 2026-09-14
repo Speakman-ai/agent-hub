@@ -162,6 +162,7 @@ import {
   type KilledBackgroundShell,
 } from './restart-resume-notice.js';
 import { cancelSessionChatRun } from './session-chat-cancel.js';
+import { cancelAutopilotSideEffects as runAutopilotSideEffectCancel } from './autopilot/cancel-side-effects.js';
 
 import { trustProxyValueFromEnv } from './trust-proxy.js';
 import { uriDecodeGuard, uriErrorHandler } from './uri-error-handler.js';
@@ -241,6 +242,9 @@ import createFinalizeQuarantineRoutes from './routes/finalize-quarantine.js';
 import createFinalizeWizardRoutes from './routes/finalize-wizard.js';
 import createFinalizeCiConfigRoutes from './routes/finalize-ci-config.js';
 import createDeploymentRoutes from './routes/deployments.js';
+import createAutopilotRoutes, { buildAutopilotControllerDeps } from './routes/autopilot.js';
+import { createAutopilotController } from './autopilot/controller.js';
+import type { AutopilotCancelRefs } from './autopilot/types.js';
 import { recoverInFlightDeployments } from './deploy/deploy-orchestrator.js';
 import { prepareDeploymentCheckout } from './deploy/deployment-checkout.js';
 import { maybeRunDeployTriggers } from './deploy/deploy-trigger-hook.js';
@@ -1183,6 +1187,10 @@ export const activeProcesses = new Map<
   import('./active-chat-process.js').ActiveChatProcess
 >();
 
+function cancelAutopilotSideEffects(refs: AutopilotCancelRefs) {
+  return runAutopilotSideEffectCancel(refs, { activeProcesses, broadcast });
+}
+
 // ─── Preview runtime ────────────────────────────────────────────────────
 //
 // The reaper is scheduled below the runtime construction so it picks up
@@ -2083,6 +2091,11 @@ app.use(createFinalizeQuarantineRoutes(routeDeps));
 app.use(createFinalizeWizardRoutes(routeDeps));
 app.use(createFinalizeCiConfigRoutes(routeDeps));
 app.use(createDeploymentRoutes(routeDeps));
+app.use(
+  createAutopilotRoutes(routeDeps, {
+    cancelSideEffects: cancelAutopilotSideEffects,
+  }),
+);
 app.use(createReleaseNotificationSettingsRoutes(routeDeps));
 app.use(createProjectBrandingRoutes(routeDeps));
 app.use(createProjectRoutes(routeDeps));
@@ -2937,6 +2950,16 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       void retriggerInterruptedFinalizeRunsOnBoot(routeDeps, interruptedFinalizeRuns).catch((e) =>
         console.error('[finalize] retriggerInterruptedFinalizeRunsOnBoot', (e as Error).message),
       );
+    }
+
+    try {
+      void createAutopilotController(
+        buildAutopilotControllerDeps({ cancelSideEffects: cancelAutopilotSideEffects }),
+      )
+        .reconcileAfterRestart()
+        .catch((e) => console.error('[autopilot] reconcileAfterRestart', (e as Error).message));
+    } catch (e) {
+      console.error('[autopilot] reconcileAfterRestart', (e as Error).message);
     }
 
     try {

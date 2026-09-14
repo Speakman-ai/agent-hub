@@ -60,6 +60,7 @@ import {
 import { TRANSIENT_TURN_ERROR_MAX_RETRIES } from '../turn-error.js';
 import {
   buildLocalDiffReviewerPrompt,
+  formatReviewerDiffCorpus,
   type ReviewerCancelSignal,
   type ReviewerRunResult,
   type RunReviewerOnLocalDiff,
@@ -319,11 +320,17 @@ export async function runReviewerTurn(
     reviewer: EnrichedAgent,
     session: SessionRow,
   ): Promise<ReviewerRunResult> {
-    // Build the SCOPED prompt — the local-diff inputs, not the transcript.
-    // The user-prompt size is bounded by the diff body; we do not feed
-    // prior review messages back in (per design risk: avoid context
+    // Build the SCOPED prompt — ticket + SHAs, not the transcript and not
+    // the patch body. The unified diff rides `reviewCorpus` on an unbounded
+    // channel. We do not feed prior review messages back in (avoid context
     // snowball across iterations).
-    const userPrompt = buildLocalDiffReviewerPrompt({ inputs, card, project });
+    const userPrompt = buildLocalDiffReviewerPrompt({
+      inputs,
+      card,
+      project,
+      embedDiff: false,
+    });
+    const reviewCorpus = formatReviewerDiffCorpus(inputs.unifiedDiff);
 
     const enrichedSystem = deps.buildEnrichedPrompt(reviewer);
     const systemPrompt = composeReviewerSystemPrompt(enrichedSystem, project, card);
@@ -427,6 +434,7 @@ export async function runReviewerTurn(
           model,
           systemPrompt,
           userPrompt,
+          reviewCorpus,
           bins: {
             claude: deps.getClaudeBin(),
             cursor: deps.getCursorBin(),
@@ -759,7 +767,7 @@ function buildVisibleReviewerText(
  */
 export const FINALIZE_REVIEWER_TURN_OVERRIDE = `## THIS TURN (Finalize Code Changes) — overrides everything below
 
-You are reviewing a **local diff that is already in the user prompt**. There is no pull request yet, so there is no PR number, repository, or dispatch PR metadata — that is expected. Do **not** stop, refuse, or ask for a PR URL. Do **not** call \`gh\` or any PR API. Review the provided diff and emit \`<agenthub:review-verdict>\`.`;
+You are reviewing a **local diff that is already attached to this turn** (review corpus on the session rule / system-prompt file / stdin, plus the user prompt). There is no pull request yet, so there is no PR number, repository, or dispatch PR metadata — that is expected. Do **not** stop, refuse, or ask for a PR URL. Do **not** call \`gh\` or any PR API. Review the attached corpus and emit \`<agenthub:review-verdict>\`. Do **not** use shell, host terminal, or a file Read tool to fetch omitted files.`;
 
 /**
  * Compact directive pinned at the very END of the reviewer's combined prompt.
@@ -774,8 +782,8 @@ You are reviewing a **local diff that is already in the user prompt**. There is 
 export const FINALIZE_REVIEWER_TAIL_REMINDER = `---
 
 REMINDER — Finalize local-diff review (read-only). This survives even if the text above was trimmed to fit:
-- There is NO GitHub PR yet. Do not call \`gh\`, fetch a PR, or ask for a PR URL. The change to review is the local diff above; any patch trimmed or omitted from it is still on disk in this worktree — read the file directly (read-only) to finish.
-- Do NOT stop after announcing a plan to read files. Actually read them, complete the review, and end THIS turn with the \`<agenthub:review-verdict>\` block. A turn that ends without that block fails the review.
+- There is NO GitHub PR yet. Do not call \`gh\`, fetch a PR, or ask for a PR URL. The change to review is the attached review corpus (session rule / system-prompt file / stdin), not a tool read of omitted files.
+- Do NOT stop after announcing a plan to read files. Do not use shell \`cat\`, host terminal, or a file Read tool. Complete the review from the attached corpus and end THIS turn with the \`<agenthub:review-verdict>\` block. A turn that ends without that block fails the review.
 - Do not edit, commit, or push anything.`;
 
 /**
@@ -802,7 +810,7 @@ You are reviewing the **local diff** of a feature branch in **${projectLabel}** 
 
 **Constraints:**
 - Do NOT edit files, run mutating shell commands, commit, or push.
-- Do NOT call \`gh\`, the GitHub API, or any HTTP endpoint to fetch PR data — **no PR exists yet**. Missing PR number / dispatch metadata is expected. The user prompt carries your input; if it flags a **Partial input** (the diff was trimmed to a size budget), read the named files directly from the worktree (read-only) rather than treating the omission as a coverage gap or asking for the complete patches. Do **not** stop or ask for a PR URL.
+- Do NOT call \`gh\`, the GitHub API, or any HTTP endpoint to fetch PR data — **no PR exists yet**. Missing PR number / dispatch metadata is expected. The attached review corpus is your input. If it flags **Partial input**, review what is attached; do **not** use shell, host terminal, or a file Read tool, and do **not** treat a tool-read failure as a code defect. Do **not** stop or ask for a PR URL.
 - Write your review as a normal chat message — prose first, then a SINGLE structured tail block.
 
 **Output contract — end your turn with this block (and nothing after it):**
@@ -826,6 +834,8 @@ interface OneTurnArgs {
   model: string;
   systemPrompt: string;
   userPrompt: string;
+  /** Out-of-band unified diff; must not ride the argv user prompt. */
+  reviewCorpus?: string | null;
   bins: {
     claude: string;
     cursor: string;
@@ -838,7 +848,7 @@ interface OneTurnArgs {
   logTag: string;
   codexDangerBypass: boolean;
   codexProfile: string | null | undefined;
-  /** Keep the engine's auto-approve flag so the reviewer can read worktree files. */
+  /** Keep the engine's auto-approve flag so a stray tool call cannot stall. */
   reviewerReadOnly: boolean;
   /** Directive pinned at the tail of the combined prompt (survives the argv cap). */
   tailReminder: string;
@@ -894,6 +904,7 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
           model: args.model,
           systemPrompt: args.systemPrompt,
           userPrompt: args.userPrompt,
+          reviewCorpus: args.reviewCorpus,
           cursorChatId,
           bins: args.bins,
           logTag: args.logTag,

@@ -33,6 +33,7 @@ import {
   collectLocalDiffInputs,
   truncateDiffAtFileBoundary,
   REVIEWER_DIFF_BYTE_LIMIT,
+  REVIEWER_CORPUS_BYTE_LIMIT,
   REVIEWER_FILE_LIST_CAP,
   REVIEWER_FILE_LIST_BYTE_BUDGET,
   renderChangedFileList,
@@ -799,11 +800,36 @@ describe('collectLocalDiffInputs', () => {
       changedFiles: ['a.ts', 'b.ts'],
       unifiedDiff: 'diff body\n',
       omittedFileCount: 0,
+      omittedFiles: [],
       severedPatch: false,
       diffDegraded: false,
       fileListUnavailable: false,
     });
     expect(runGit).toHaveBeenCalledTimes(4);
+  });
+
+  it('keeps an Autopilot-scale diff whole under the attached corpus budget', async () => {
+    const body = `diff --git a/server/autopilot/store.ts b/server/autopilot/store.ts\n+${'s'.repeat(300_000)}\n`;
+    const runGit = vi.fn().mockImplementation((args: string[]) => {
+      if (args[0] === 'rev-parse') {
+        return Promise.resolve({
+          stdout: args[1] === 'HEAD' ? 'bbb2222\n' : 'aaa1111\n',
+          stderr: '',
+        });
+      }
+      if (args[1] === '--name-only') {
+        return Promise.resolve({ stdout: 'server/autopilot/store.ts\n', stderr: '' });
+      }
+      return Promise.resolve({ stdout: body, stderr: '' });
+    });
+    const result = await collectLocalDiffInputs({
+      worktreePath: '/tmp/wt',
+      baseBranch: 'main',
+      runGit,
+    });
+    expect(result.omittedFileCount).toBe(0);
+    expect(result.unifiedDiff).toContain('ssss');
+    expect(Buffer.byteLength(result.unifiedDiff, 'utf8')).toBeGreaterThan(REVIEWER_DIFF_BYTE_LIMIT);
   });
 
   // Regression: a 325-file session reported "Finalize struggles when there are
@@ -1042,46 +1068,45 @@ describe('buildLocalDiffReviewerPrompt', () => {
   // never shrinks, so the review looped every round. The reviewer runs in the
   // worktree with read-only file access, so truncation must point it at the
   // worktree, not fail the change.
-  describe('truncated diff points the reviewer at the worktree, not a coverage gap', () => {
-    it('omitted patches: instructs a worktree read and forbids failing solely for the omission', () => {
+  describe('truncated diff does not send the reviewer to tools', () => {
+    it('omitted patches: forbids failing solely for the omission or a tool-read failure', () => {
       const prompt = buildLocalDiffReviewerPrompt({
         inputs: { ...fakeInputs, omittedFileCount: 36 },
         card: fakeCard,
         project: fakeProject,
       });
       expect(prompt).toContain('36 file patch(es) were omitted');
-      expect(prompt).toContain('Read the\n> affected files directly');
-      expect(prompt).toContain('read-only');
-      expect(prompt).toContain('size-budget limit, not a coverage gap');
-      // Must not tell the reviewer to just scope to the visible diff.
+      expect(prompt).toContain('Do **not** use shell');
+      expect(prompt).toContain('review-environment');
+      expect(prompt).toContain('not a coverage gap or a code defect');
+      expect(prompt).toContain('bwrap');
       expect(prompt).not.toContain('Scope your findings to what is visible');
-      // The "complete input" claim must flip to partial + worktree.
       expect(prompt).not.toContain('The diff below is the complete input.');
-      expect(prompt).toContain('The diff below is **partial**');
+      expect(prompt).toContain('The attached corpus is **partial**');
     });
 
-    it('severed patch also gets the worktree-read directive', () => {
+    it('severed patch also forbids tool-read fallback', () => {
       const prompt = buildLocalDiffReviewerPrompt({
         inputs: { ...fakeInputs, severedPatch: true, omittedFileCount: 2 },
         card: fakeCard,
         project: fakeProject,
       });
       expect(prompt).toContain('cut off mid-file');
-      expect(prompt).toContain('Read the\n> affected files directly');
-      expect(prompt).toContain('size-budget limit, not a coverage gap');
+      expect(prompt).toContain('Do **not** use shell');
+      expect(prompt).toContain('not a coverage gap or a code defect');
     });
 
-    it('degraded (stat-only) diff also gets the worktree-read directive', () => {
+    it('degraded (stat-only) diff also forbids tool-read fallback', () => {
       const prompt = buildLocalDiffReviewerPrompt({
         inputs: { ...fakeInputs, diffDegraded: true },
         card: fakeCard,
         project: fakeProject,
       });
       expect(prompt).toContain('per-file summary rather than the full');
-      expect(prompt).toContain('Read the\n> affected files directly');
+      expect(prompt).toContain('Do **not** use shell');
     });
 
-    it('acceptance-criteria coverage cites the worktree when the diff is truncated', () => {
+    it('acceptance-criteria coverage cites the attached corpus when truncated', () => {
       const prompt = buildLocalDiffReviewerPrompt({
         inputs: { ...fakeInputs, omittedFileCount: 5 },
         card: {
@@ -1090,11 +1115,11 @@ describe('buildLocalDiffReviewerPrompt', () => {
         },
         project: fakeProject,
       });
-      expect(prompt).toContain('from the diff plus any omitted files you read from the worktree');
+      expect(prompt).toContain('from the attached review corpus (and the inline diff if present)');
       expect(prompt).not.toContain('from the diff alone');
     });
 
-    it('a complete diff keeps the tight "complete input" / "from the diff alone" wording', () => {
+    it('a complete inline diff keeps complete-input wording', () => {
       const prompt = buildLocalDiffReviewerPrompt({
         inputs: fakeInputs,
         card: {
@@ -1104,10 +1129,21 @@ describe('buildLocalDiffReviewerPrompt', () => {
         project: fakeProject,
       });
       expect(prompt).toContain('The diff below is the complete input.');
-      expect(prompt).toContain('from the diff alone');
-      // No truncation notice / worktree directive when nothing was dropped.
+      expect(prompt).toContain('from the attached review corpus or the inline diff');
       expect(prompt).not.toContain('Partial input');
-      expect(prompt).not.toContain('Read the\n> affected files directly');
+    });
+
+    it('production spawn omits the diff from argv and points at the attached corpus', () => {
+      const huge = `diff --git a/store.ts b/store.ts\n+${'s'.repeat(8000)}\n`;
+      const prompt = buildLocalDiffReviewerPrompt({
+        inputs: { ...fakeInputs, unifiedDiff: huge },
+        card: fakeCard,
+        project: fakeProject,
+        embedDiff: false,
+      });
+      expect(prompt).not.toContain('ssss');
+      expect(prompt).toContain('attached review corpus');
+      expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThan(SAFE_ARG_STRLEN_BYTES);
     });
   });
 });
@@ -1743,6 +1779,7 @@ describe('truncateDiffAtFileBoundary', () => {
     expect(truncateDiffAtFileBoundary(diff, 1000)).toEqual({
       diff,
       omittedFileCount: 0,
+      omittedFiles: [],
       severedPatch: false,
     });
   });
@@ -1759,6 +1796,7 @@ describe('truncateDiffAtFileBoundary', () => {
     );
 
     expect(result.omittedFileCount).toBe(1);
+    expect(result.omittedFiles).toEqual(['c.ts']);
     // Retained patches are complete — a reviewer anchoring findings to them
     // cannot land on a line that was severed by the trim.
     expect(result.severedPatch).toBe(false);
@@ -1801,6 +1839,60 @@ describe('truncateDiffAtFileBoundary', () => {
     expect(result.severedPatch).toBe(false);
     expect(result.omittedFileCount).toBe(1);
     expect(result.diff).toContain('const x = 1;');
+  });
+
+  it('keeps implementation patches when generated OpenAPI would consume the budget', () => {
+    const yaml = patch('docs/api/openapi.yaml', `+${'y'.repeat(4000)}\n`);
+    const tests = patch('server/autopilot/controller.test.ts', `+${'t'.repeat(800)}\n`);
+    const impl = patch('server/autopilot/controller.ts', '+export class AutopilotController {}\n');
+    const routes = patch(
+      'server/routes/autopilot.ts',
+      '+export default function createAutopilotRoutes() {}\n',
+    );
+    const result = truncateDiffAtFileBoundary(
+      yaml + tests + impl + routes,
+      Buffer.byteLength(tests + impl + routes, 'utf8') + DIFF_MARKER_RESERVE_BYTES,
+    );
+
+    expect(result.severedPatch).toBe(false);
+    expect(result.diff).toContain('AutopilotController');
+    expect(result.diff).toContain('createAutopilotRoutes');
+    expect(result.diff).not.toContain('docs/api/openapi.yaml');
+  });
+
+  it('prefers implementation over tests when both cannot fit', () => {
+    const tests = patch('server/autopilot/controller.test.ts', `+${'t'.repeat(400)}\n`);
+    const impl = patch('server/autopilot/controller.ts', `+${'c'.repeat(400)}\n`);
+    const result = truncateDiffAtFileBoundary(
+      tests + impl,
+      Buffer.byteLength(impl, 'utf8') + DIFF_MARKER_RESERVE_BYTES,
+    );
+
+    expect(result.omittedFileCount).toBe(1);
+    expect(result.diff).toContain('cccc');
+    expect(result.diff).not.toContain('tttt');
+  });
+
+  it('keeps a large implementation file when earlier smaller ones would crowd it out', () => {
+    // Same-priority packing used to follow git order. A 25 KB store after
+    // several 1–7 KB helpers filled the budget and omitted the store, which is
+    // the file the reviewer has to certify. Largest-first keeps the store.
+    const errors = patch('server/autopilot/errors.ts', `+${'e'.repeat(300)}\n`);
+    const schema = patch('server/autopilot/schema.ts', `+${'c'.repeat(300)}\n`);
+    const store = patch('server/autopilot/store.ts', `+${'s'.repeat(800)}\n`);
+    const db = patch('server/db.ts', `+${'d'.repeat(300)}\n`);
+    const budget =
+      Buffer.byteLength(store, 'utf8') +
+      Buffer.byteLength(errors, 'utf8') +
+      DIFF_MARKER_RESERVE_BYTES;
+    const result = truncateDiffAtFileBoundary(errors + schema + store + db, budget);
+
+    expect(result.diff).toContain('server/autopilot/store.ts');
+    expect(result.diff).toContain('ssss');
+    expect(result.omittedFiles).toEqual(
+      expect.arrayContaining(['server/autopilot/schema.ts', 'server/db.ts']),
+    );
+    expect(result.omittedFiles).not.toContain('server/autopilot/store.ts');
   });
 
   it('reports both a severed patch and the patches dropped alongside it', () => {
@@ -1897,6 +1989,8 @@ describe('truncateDiffAtFileBoundary', () => {
     // surviving diff is a raw byte slice with severed hunks. Staying under the
     // cap here is what stops that second trim from ever running.
     expect(REVIEWER_DIFF_BYTE_LIMIT).toBeLessThan(SAFE_ARG_STRLEN_BYTES);
+    expect(REVIEWER_CORPUS_BYTE_LIMIT).toBeGreaterThan(SAFE_ARG_STRLEN_BYTES);
+    expect(REVIEWER_CORPUS_BYTE_LIMIT).toBeGreaterThan(300_000);
   });
 });
 
@@ -1976,6 +2070,7 @@ describe('buildLocalDiffReviewerPrompt — stays under the engine argv cap', () 
         changedFiles: Array.from({ length: REVIEWER_FILE_LIST_CAP }, () => longPath),
         unifiedDiff: trimmed.diff,
         omittedFileCount: trimmed.omittedFileCount,
+        omittedFiles: trimmed.omittedFiles,
         severedPatch: trimmed.severedPatch,
       },
       // A description is free text with no schema bound, so the worst case has
@@ -2005,6 +2100,7 @@ describe('buildLocalDiffReviewerPrompt — stays under the engine argv cap', () 
       changedFiles: Array.from({ length: fileCount }, (_, i) => `some/deep/path/to/file-${i}.ts`),
       unifiedDiff: trimmed.diff,
       omittedFileCount: trimmed.omittedFileCount,
+      omittedFiles: trimmed.omittedFiles,
     };
 
     const prompt = buildLocalDiffReviewerPrompt({
@@ -2032,12 +2128,18 @@ describe('buildLocalDiffReviewerPrompt — partial-input disclosure', () => {
   it('tells the reviewer when file patches were omitted', () => {
     const prompt = buildLocalDiffReviewerPrompt({
       ...base,
-      inputs: { ...fakeInputs, omittedFileCount: 42 },
+      inputs: {
+        ...fakeInputs,
+        omittedFileCount: 42,
+        omittedFiles: ['server/autopilot/store.ts', 'server/routes/autopilot.openapi.ts'],
+      },
     });
-    // Without this the reviewer reads a trimmed patch as the whole change and
-    // can approve code it never saw.
     expect(prompt).toContain('Partial input');
     expect(prompt).toContain('42 file patch(es) were omitted');
+    expect(prompt).toContain('Omitted patches');
+    expect(prompt).toContain('server/autopilot/store.ts');
+    expect(prompt).toContain('file Read tool');
+    expect(prompt).toContain('bwrap');
   });
 
   it('tells the reviewer when the only patch was cut mid-file', () => {

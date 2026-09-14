@@ -304,6 +304,108 @@ describe('buildSessionMultiSpawnArgs', () => {
     }
   });
 
+  it('puts the Finalize review corpus on unbounded channels, not argv', () => {
+    const corpus =
+      '## Review corpus — unified diff\n```diff\n+export class AutopilotStore {}\n```\n';
+    const cwd = makeMultiWorktreeCwd();
+    try {
+      const cursor = buildSessionMultiSpawnArgs({
+        engine: 'cursor-agent',
+        model: 'auto',
+        systemPrompt: 'sys',
+        userPrompt: 'review the attached corpus',
+        reviewCorpus: corpus,
+        bins,
+        cursorChatId: 'chat-1',
+        cwd,
+        sessionId: 'sess-corpus-1',
+        advisory: true,
+        reviewerReadOnly: true,
+      });
+      expect(cursor.args[1]).toBe('review the attached corpus');
+      expect(cursor.args[1]).not.toContain('AutopilotStore');
+      const rule = readFileSync(
+        path.join(cwd, cursorHubSessionRuleRelPath('sess-corpus-1')),
+        'utf8',
+      );
+      expect(rule).toContain('AutopilotStore');
+      cursor.systemPromptFileCleanup?.();
+
+      const claude = buildSessionMultiSpawnArgs({
+        engine: 'claude-code',
+        model: 'claude-opus-4-6',
+        systemPrompt: 'sys',
+        userPrompt: 'review the attached corpus',
+        reviewCorpus: corpus,
+        bins,
+        sessionId: 'sess-corpus-claude',
+        advisory: true,
+        reviewerReadOnly: true,
+      });
+      expect(claude.args[claude.args.length - 1]).not.toContain('AutopilotStore');
+      const sysFile = claude.args[claude.args.indexOf('--system-prompt-file') + 1];
+      expect(readFileSync(sysFile, 'utf8')).toContain('AutopilotStore');
+      claude.systemPromptFileCleanup?.();
+
+      const gemini = buildSessionMultiSpawnArgs({
+        engine: 'gemini-cli',
+        model: 'gemini-2.5-pro',
+        systemPrompt: 'sys',
+        userPrompt: 'review the attached corpus',
+        reviewCorpus: corpus,
+        bins,
+        advisory: true,
+        reviewerReadOnly: true,
+      });
+      expect(gemini.args[1]).not.toContain('AutopilotStore');
+      expect(gemini.stdinPrompt).toContain('AutopilotStore');
+
+      const grok = buildSessionMultiSpawnArgs({
+        engine: 'grok-cli',
+        model: 'grok-4.6',
+        systemPrompt: 'sys',
+        userPrompt: 'review the attached corpus',
+        reviewCorpus: corpus,
+        bins,
+        advisory: true,
+        reviewerReadOnly: true,
+      });
+      expect(grok.args[1]).not.toContain('AutopilotStore');
+      expect(grok.stdinPrompt).toContain('AutopilotStore');
+
+      const codex = buildSessionMultiSpawnArgs({
+        engine: 'codex-cli',
+        model: 'gpt-5.4',
+        systemPrompt: 'sys',
+        userPrompt: 'review the attached corpus',
+        reviewCorpus: corpus,
+        bins,
+        advisory: true,
+        reviewerReadOnly: true,
+      });
+      expect(codex.stdinPrompt).toContain('AutopilotStore');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to put a Finalize review corpus on cursor-agent argv', () => {
+    expect(() =>
+      buildSessionMultiSpawnArgs({
+        engine: 'cursor-agent',
+        model: 'auto',
+        systemPrompt: 'sys',
+        userPrompt: 'review the attached corpus',
+        reviewCorpus: '## Review corpus\n+export class AutopilotStore {}\n',
+        bins,
+        cursorChatId: 'chat-1',
+        // no cwd / sessionId → rule write is skipped
+        advisory: true,
+        reviewerReadOnly: true,
+      }),
+    ).toThrow(/cannot attach a review corpus/);
+  });
+
   it('cursor-agent inlines Hub rules into -p when no sessionId is available to scope the file', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'hub-cursor-nosid-'));
     try {

@@ -27,7 +27,7 @@ describe('buildReviewerAgentSystemPrompt', () => {
   it('is mode-aware: Finalize local-diff and Hub PR review share one severity cut', () => {
     expect(sp).toContain('Mode A');
     expect(sp).toContain('Mode B');
-    expect(sp).toContain('local diff');
+    expect(sp).toContain('attached review corpus');
     expect(sp).toContain('a reason to stop');
     expect(sp).toContain('/pulls/');
     expect(sp).toContain('X-API-Key');

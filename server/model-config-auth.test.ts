@@ -61,6 +61,7 @@ function makeConfig(): AppConfig {
     sessionEnvAdapter: 'auto' as const,
     codexDangerBypass: true,
     cardDoneOnPush: true,
+    experimentalAutopilotEnabled: false,
     slackWebhookUrl: null,
     browserMaxConcurrentContexts: 3,
     browserIdleTimeoutMs: 300_000,

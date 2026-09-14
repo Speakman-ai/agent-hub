@@ -95,6 +95,12 @@ export interface BuildSessionMultiSpawnArgsInput {
   model: string;
   systemPrompt: string;
   userPrompt: string;
+  /**
+   * Finalize reviewer unified diff, delivered on an unbounded channel
+   * (Cursor session rule, Claude system-prompt file, Gemini/Codex/Grok stdin)
+   * so argv cannot omit implementation files. Advisory chat turns omit this.
+   */
+  reviewCorpus?: string | null;
   cursorChatId?: string | null;
   bins: SessionSpawnBins;
   logTag?: string;
@@ -108,16 +114,11 @@ export interface BuildSessionMultiSpawnArgsInput {
   /** When true, force read-only / ask-mode spawn (advisor turns). */
   advisory?: boolean;
   /**
-   * Finalize in-session reviewer turn: read-only, but the reviewer must be
-   * able to read files from the worktree (its prompt tells it to read patches
-   * that were trimmed from the inline diff). Grok/Gemini/Cursor have no
-   * read-only permission mode, so on a plain `advisory` turn their
-   * auto-approve flag is dropped and every tool call blocks on an approval
-   * that never arrives headless — the reviewer then narrates "I'll read the
-   * omitted files" and ends with no verdict. When this is set we keep the
-   * auto-approve flag so those reads work; the reviewer system prompt still
-   * forbids edits/commits/pushes. Claude's `plan` mode already permits reads,
-   * so this only affects the concatenated-argv engines.
+   * Finalize in-session reviewer turn: read-only. Auto-approve stays on so
+   * headless engines do not block on a tool-approval that never arrives.
+   * The unified diff is attached out of band (`reviewCorpus`); the reviewer
+   * must not depend on worktree Read/cat. The system prompt still forbids
+   * edits/commits/pushes.
    */
   reviewerReadOnly?: boolean;
   /**
@@ -164,6 +165,7 @@ export function buildSessionMultiSpawnArgs(
     model,
     systemPrompt,
     userPrompt,
+    reviewCorpus,
     cursorChatId,
     bins,
     logTag,
@@ -175,11 +177,13 @@ export function buildSessionMultiSpawnArgs(
   } = input;
 
   // Pin `tailReminder` (if any) as the LAST thing in the combined prompt so
-  // `applyArgvPromptCap`'s tail-keep can never drop it. Reviewer read-only
-  // turns need their worktree-read + emit-verdict contract to survive even
-  // when a large diff pushes the head off the argv cap.
+  // `applyArgvPromptCap`'s tail-keep can never drop it. Reviewer turns need
+  // the emit-verdict contract to survive even if the argv user prompt is
+  // trimmed; the unified diff itself must not ride argv.
   const withTailReminder = (prompt: string): string =>
     tailReminder ? `${prompt}\n\n${tailReminder}` : prompt;
+
+  const systemWithCorpus = reviewCorpus ? `${systemPrompt}\n\n${reviewCorpus}` : systemPrompt;
 
   if (engine === 'cursor-agent') {
     if (!cursorChatId) {
@@ -191,11 +195,20 @@ export function buildSessionMultiSpawnArgs(
     // file (loaded from disk, never trimmed by the argv cap) so `-p` stays
     // user-only. Needs a cwd and a sessionId to scope the filename; without
     // either, or on a genuine write hazard, fall back to inlining the system
-    // prompt into `-p` (capped) so Cursor still receives the Hub rules.
+    // prompt into `-p` (capped) so Cursor still receives the Hub rules —
+    // except a Finalize review corpus never falls back to argv (throws below).
     const ruleWrite =
       input.cwd != null && input.sessionId
-        ? writeCursorHubSessionRule(input.cwd, systemPrompt, input.sessionId)
+        ? writeCursorHubSessionRule(input.cwd, systemWithCorpus, input.sessionId)
         : null;
+    // Never put a review corpus through `-p`. Cursor's argv cap would drop
+    // the head (the corpus) and the reviewer would try to Read/cat omitted
+    // files — the loop this delivery exists to stop. Fail over instead.
+    if (reviewCorpus && !ruleWrite) {
+      throw new Error(
+        'buildSessionMultiSpawnArgs: cursor-agent cannot attach a review corpus without a session-scoped Hub rule file',
+      );
+    }
     let prompt: string;
     if (ruleWrite) {
       const rawUser = withTailReminder(userPrompt);
@@ -210,7 +223,7 @@ export function buildSessionMultiSpawnArgs(
       }
       prompt = capped.prompt;
     } else {
-      const rawPrompt = withTailReminder(`${systemPrompt}\n\n${userPrompt}`);
+      const rawPrompt = withTailReminder(`${systemWithCorpus}\n\n${userPrompt}`);
       const capped = applyArgvPromptCap(rawPrompt);
       if (capped.truncated && input.sessionId) {
         logArgvCapTruncation(
@@ -227,9 +240,9 @@ export function buildSessionMultiSpawnArgs(
       args: [
         '-p',
         prompt,
-        // `--force` auto-approves tool calls. Reviewer turns need it to read
-        // worktree files even though they are read-only (edits forbidden by
-        // the reviewer system prompt); plain advisor turns still omit it.
+        // `--force` auto-approves tool calls. Reviewer turns keep it so a
+        // stray tool call cannot stall headless; the corpus is already
+        // attached and edits stay forbidden by the system prompt.
         ...(advisory && !reviewerReadOnly ? [] : ['--force']),
         '--model',
         model,
@@ -265,15 +278,15 @@ export function buildSessionMultiSpawnArgs(
     if (model && model !== 'auto') {
       args.push('--model', model);
     }
-    // `--yolo` auto-approves tool calls; reviewer read-only turns keep it so
-    // the reviewer can read worktree files (edits still forbidden by prompt).
+    // `--yolo` auto-approves tool calls; reviewer turns keep it so a stray
+    // tool call cannot stall headless (edits still forbidden by prompt).
     if (!advisory || reviewerReadOnly) {
       args.push('--yolo');
     }
     return {
       bin: bins.gemini,
       args,
-      stdinPrompt: systemPrompt,
+      stdinPrompt: systemWithCorpus,
       systemPromptFileCleanup: null,
     };
   }
@@ -282,11 +295,42 @@ export function buildSessionMultiSpawnArgs(
     if (!bins.grok) {
       throw new Error('buildSessionMultiSpawnArgs: grok-cli requires bins.grok');
     }
+    // Reviewer corpus cannot fit in `-p` (argv cap). Put system+corpus on
+    // stdin and keep `-p` as the short user turn. Advisory chat without a
+    // corpus still concatenates into `-p` as before.
+    if (reviewCorpus) {
+      const rawUser = withTailReminder(userPrompt);
+      const capped = applyArgvPromptCap(rawUser);
+      if (capped.truncated && input.sessionId) {
+        logArgvCapTruncation(
+          'grok-cli-user',
+          input.sessionId,
+          capped.originalBytes,
+          rawUser.length,
+        );
+      }
+      const args = ['-p', capped.prompt, '--output-format', 'streaming-json', '--no-auto-update'];
+      const grokModel = input.config
+        ? resolveGrokSpawnModel(model, input.config)
+        : model?.trim() || undefined;
+      if (grokModel) {
+        args.push('--model', grokModel);
+      }
+      if (!advisory || reviewerReadOnly) {
+        args.push('--always-approve');
+      }
+      return {
+        bin: bins.grok,
+        args,
+        stdinPrompt: systemWithCorpus,
+        systemPromptFileCleanup: null,
+      };
+    }
     // Grok has no `--system-prompt`; concatenate like Gemini. streaming-json is
     // required because callers (in-session reviewer, multi-agent advisors) feed
     // stdout through createStreamParser('grok-cli'). Omit `--always-approve` on
     // advisory turns to match chat Ask Mode — but Finalize reviewer turns
-    // (`reviewerReadOnly`) keep it so the reviewer can read worktree files.
+    // (`reviewerReadOnly`) keep it so auto-approve is available if a tool is used.
     const combined = advisory
       ? `${systemPrompt}\n\n${userPrompt}`
       : withLocalCommitReminder(`${systemPrompt}\n\n${userPrompt}`);
@@ -302,9 +346,6 @@ export function buildSessionMultiSpawnArgs(
     if (grokModel) {
       args.push('--model', grokModel);
     }
-    // `--always-approve` auto-approves tool calls. Reviewer read-only turns
-    // keep it so "read the omitted files from the worktree" actually works;
-    // the reviewer system prompt still forbids edits/commits/pushes.
     if (!advisory || reviewerReadOnly) {
       args.push('--always-approve');
     }
@@ -345,18 +386,18 @@ export function buildSessionMultiSpawnArgs(
     // Codex reads the prompt from stdin (no argv cap), but keep the tail
     // reminder for parity so the reviewer contract reads identically across
     // engines. Ask-mode's read-only sandbox already permits worktree reads.
-    const prompt = withTailReminder(`${systemPrompt}\n\n${userPrompt}`);
+    const prompt = withTailReminder(`${systemWithCorpus}\n\n${userPrompt}`);
     return { bin: bins.codex, args, stdinPrompt: prompt, systemPromptFileCleanup: null };
   }
 
   let systemPromptFileCleanup: (() => void) | null = null;
   let claudeSystemPromptArg: string;
   if (input.sessionId) {
-    const promptFile = writeSystemPromptFile(systemPrompt, input.sessionId);
+    const promptFile = writeSystemPromptFile(systemWithCorpus, input.sessionId);
     systemPromptFileCleanup = promptFile.cleanup;
     claudeSystemPromptArg = promptFile.path;
   } else {
-    claudeSystemPromptArg = systemPrompt;
+    claudeSystemPromptArg = systemWithCorpus;
   }
 
   // The claude CLI takes the user prompt as a positional argv argument, so a

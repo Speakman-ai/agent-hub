@@ -153,8 +153,19 @@ export const REVIEWER_FILE_LIST_BYTE_BUDGET = 12_000;
 export const REVIEWER_DIFF_BYTE_LIMIT = SAFE_ARG_STRLEN_BYTES - REVIEWER_PROMPT_RESERVE_BYTES;
 
 /**
+ * Byte ceiling for the **attached** review corpus (Cursor session rule,
+ * Claude `--system-prompt-file`, Gemini/Codex/Grok stdin). Argv cannot hold
+ * Autopilot-scale diffs (~300 KB), and telling the reviewer to Read/cat the
+ * omitted files fails in this environment (`bwrap` namespace errors, empty
+ * host-terminal, no Read tool). The corpus rides an unbounded channel so the
+ * reviewer sees the implementation without tools. Pathological diffs still
+ * truncate at file boundaries.
+ */
+export const REVIEWER_CORPUS_BYTE_LIMIT = 512_000;
+
+/**
  * Buffer ceiling for the `git diff` spawn itself, deliberately far above
- * {@link REVIEWER_DIFF_BYTE_LIMIT} so ordinary-large changesets are captured
+ * {@link REVIEWER_CORPUS_BYTE_LIMIT} so ordinary-large changesets are captured
  * whole and trimmed here rather than killing git with
  * `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`. That overflow used to reject out of
  * `collectLocalDiffInputs` and surface as `no_diff_inputs`, whose UI copy
@@ -213,6 +224,12 @@ export interface ReviewerLocalDiffInputs {
    * its view is partial instead of approving unseen code.
    */
   omittedFileCount?: number;
+  /**
+   * Paths of those omitted patches, in packer drop order. Listed in the prompt
+   * so the reviewer can Read the files instead of guessing from the full
+   * changed-file list. Absent when nothing was omitted.
+   */
+  omittedFiles?: string[];
   /**
    * True when the patch body could not be captured at all and `unifiedDiff`
    * holds a `--stat` summary instead. The review still runs — a large
@@ -742,12 +759,13 @@ export async function collectLocalDiffInputs(
 
   // The patch body is the only unbounded input here, and its failure modes all
   // scale with change-set size. Capture it under a large buffer, then trim to
-  // the prompt budget. Every failure degrades to a `--stat` summary rather than
+  // the attached-corpus budget. Every failure degrades to a `--stat` summary rather than
   // propagating: a throw here becomes `no_diff_inputs`, which the UI reports as
   // "There were no code changes" — the worst possible answer for a session with
   // hundreds of changed files.
   let unifiedDiff = '';
   let omittedFileCount = 0;
+  let omittedFiles: string[] = [];
   let severedPatch = false;
   let diffDegraded = false;
   try {
@@ -755,9 +773,10 @@ export async function collectLocalDiffInputs(
       ...spawnOpts,
       maxBufferBytes: DIFF_SPAWN_MAX_BUFFER,
     });
-    const trimmed = truncateDiffAtFileBoundary(diffRes.stdout);
+    const trimmed = truncateDiffAtFileBoundary(diffRes.stdout, REVIEWER_CORPUS_BYTE_LIMIT);
     unifiedDiff = trimmed.diff;
     omittedFileCount = trimmed.omittedFileCount;
+    omittedFiles = trimmed.omittedFiles;
     severedPatch = trimmed.severedPatch;
   } catch {
     diffDegraded = true;
@@ -766,7 +785,7 @@ export async function collectLocalDiffInputs(
         ...spawnOpts,
         maxBufferBytes: DIFF_SPAWN_MAX_BUFFER,
       });
-      unifiedDiff = truncateDiffAtFileBoundary(statRes.stdout).diff;
+      unifiedDiff = truncateDiffAtFileBoundary(statRes.stdout, REVIEWER_CORPUS_BYTE_LIMIT).diff;
     } catch {
       // Both the patch and the stat were unreadable. The SHAs already resolved
       // above, so the refs are sound and this is a size/transient problem —
@@ -782,29 +801,13 @@ export async function collectLocalDiffInputs(
     changedFiles,
     unifiedDiff,
     omittedFileCount,
+    omittedFiles,
     severedPatch,
     diffDegraded,
     fileListUnavailable,
   };
 }
 
-/**
- * Trim a unified diff to `limit` bytes on whole-file-patch boundaries.
- *
- * Cutting at a raw byte offset would hand the reviewer a half-written hunk and
- * invite findings anchored to lines that do not exist. Splitting on `diff --git`
- * headers keeps every retained patch complete, and the caller reports the
- * dropped count so the prompt can say what was not reviewed.
- *
- * A single file patch larger than the whole budget is the one case where a
- * clean boundary does not exist; it is byte-clipped so the reviewer still sees
- * the head of that file rather than nothing at all. That case is reported
- * separately as `severedPatch` — it is NOT an omission (the file is partly
- * shown), and conflating the two would let a mid-file cut pass with no
- * disclosure whenever it is the only patch.
- *
- * Exported for tests.
- */
 /**
  * Clip a string to at most `limit` **UTF-8 bytes**, never splitting a character.
  *
@@ -907,6 +910,50 @@ export function renderChangedFileList(
 
   const unlisted = files.length - lines.length;
   return lines.join('\n') + (unlisted > 0 ? renderFileListSuffix(unlisted) : '');
+}
+
+/** Byte cap for the omitted-patch path list inside the Partial input notice. */
+const OMITTED_PATCH_LIST_BYTE_BUDGET = 2_000;
+
+/**
+ * Render omitted patch paths for the reviewer prompt. Empty when nothing was
+ * dropped. Bounded so listing them cannot push the prompt over the argv cap.
+ */
+export function renderOmittedPatchList(files: string[]): string {
+  if (files.length === 0) return '';
+  const header = `> **Omitted patches** (listed for reference; do not shell-read them):\n`;
+  const contentBudget = Math.max(
+    0,
+    OMITTED_PATCH_LIST_BYTE_BUDGET - Buffer.byteLength(header, 'utf8') - 80,
+  );
+  const lines: string[] = [];
+  let used = 0;
+  for (const file of files) {
+    const line = `> - ${file}\n`;
+    const size = Buffer.byteLength(line, 'utf8');
+    if (used + size > contentBudget) break;
+    lines.push(line);
+    used += size;
+  }
+  const unlisted = files.length - lines.length;
+  const more = unlisted > 0 ? `> - …and ${unlisted} more\n` : '';
+  return header + lines.join('') + more;
+}
+
+/**
+ * Wrap the captured unified diff for an unbounded delivery channel (Cursor
+ * always-apply rule, Claude system-prompt file, Gemini/Codex/Grok stdin).
+ * The argv user prompt must not embed this body.
+ */
+export function formatReviewerDiffCorpus(diff: string): string {
+  return (
+    `## Review corpus — unified diff\n\n` +
+    `This is the local diff for this Finalize review. It is attached out of band ` +
+    `so the argv cap cannot omit implementation files. Review this corpus. ` +
+    `Do not use shell \`cat\`, the host terminal, or a file Read tool — those ` +
+    `fail in this review environment and are not a code defect.\n\n` +
+    `\`\`\`diff\n${diff}\n\`\`\`\n`
+  );
 }
 
 /** Shown in place of the description when a card carries no spec text at all. */
@@ -1277,6 +1324,35 @@ export function buildSpecTruncationDirective(render: CardSpecRender): string {
 > shortened or split.`;
 }
 
+/**
+ * Rank a unified-diff file patch for reviewer-budget packing.
+ * Generated docs and lockfiles are dropped first; tests next; implementation last
+ * to drop. Within a keep-priority, larger patches win so a 25 KB store cannot
+ * be crowded out by earlier 1–7 KB helpers. Alphabetical git order otherwise
+ * keeps tests and openapi.yaml and omits the controller the review has to certify.
+ */
+function diffSectionPath(section: string): string {
+  const match = section.match(/^diff --git a\/(.+?) b\//);
+  return match?.[1] ?? '';
+}
+
+function diffSectionKeepPriority(section: string): number {
+  const name = diffSectionPath(section);
+  if (
+    name === 'docs/api/openapi.yaml' ||
+    name.endsWith('package-lock.json') ||
+    name.endsWith('.lock')
+  ) {
+    return 0;
+  }
+  if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(name)) return 1;
+  return 2;
+}
+
+function diffSectionSize(section: string): number {
+  return Buffer.byteLength(section, 'utf8');
+}
+
 /** The `[diff truncated …]` footer appended to a trimmed diff. */
 function renderDiffTruncationMarker(
   limit: number,
@@ -1308,47 +1384,84 @@ export const DIFF_MARKER_RESERVE_BYTES = Buffer.byteLength(
   'utf8',
 );
 
+/**
+ * Trim a unified diff to `limit` bytes on whole-file-patch boundaries.
+ *
+ * Cutting at a raw byte offset would hand the reviewer a half-written hunk and
+ * invite findings anchored to lines that do not exist. Splitting on `diff --git`
+ * headers keeps every retained patch complete, and the caller reports the
+ * dropped count so the prompt can say what was not reviewed.
+ *
+ * A single file patch larger than the whole budget is the one case where a
+ * clean boundary does not exist; it is byte-clipped so the reviewer still sees
+ * the head of that file rather than nothing at all. That case is reported
+ * separately as `severedPatch` — it is NOT an omission (the file is partly
+ * shown), and conflating the two would let a mid-file cut pass with no
+ * disclosure whenever it is the only patch.
+ *
+ * Same-priority patches are packed largest-first so a 25 KB store is not
+ * crowded out by earlier 1–7 KB helpers.
+ *
+ * Exported for tests.
+ */
 export function truncateDiffAtFileBoundary(
   diff: string,
   limit: number = REVIEWER_DIFF_BYTE_LIMIT,
-): { diff: string; omittedFileCount: number; severedPatch: boolean } {
+): { diff: string; omittedFileCount: number; omittedFiles: string[]; severedPatch: boolean } {
   if (Buffer.byteLength(diff, 'utf8') <= limit)
-    return { diff, omittedFileCount: 0, severedPatch: false };
+    return { diff, omittedFileCount: 0, omittedFiles: [], severedPatch: false };
 
   // Content is budgeted against the limit MINUS the marker that gets appended
   // below, so the returned string honours `limit` rather than overshooting it
   // by the footer's length.
   const contentBudget = Math.max(0, limit - DIFF_MARKER_RESERVE_BYTES);
   const sections = diff.split(/(?=^diff --git )/m).filter((s) => s.length > 0);
+  const originalIndex = new Map(sections.map((section, index) => [section, index]));
+  const ranked = [...sections].sort((a, b) => {
+    const byPriority = diffSectionKeepPriority(b) - diffSectionKeepPriority(a);
+    if (byPriority !== 0) return byPriority;
+    const bySize = diffSectionSize(b) - diffSectionSize(a);
+    if (bySize !== 0) return bySize;
+    return (originalIndex.get(a) ?? 0) - (originalIndex.get(b) ?? 0);
+  });
   const kept: string[] = [];
+  const omitted: string[] = [];
   let used = 0;
   let omittedFileCount = 0;
   let severedPatch = false;
 
-  for (const section of sections) {
-    const size = Buffer.byteLength(section, 'utf8');
+  for (const section of ranked) {
+    const size = diffSectionSize(section);
     if (used + size <= contentBudget) {
       kept.push(section);
       used += size;
     } else {
       omittedFileCount += 1;
+      const name = diffSectionPath(section);
+      if (name) omitted.push(name);
     }
   }
+  kept.sort((a, b) => (originalIndex.get(a) ?? 0) - (originalIndex.get(b) ?? 0));
 
   if (kept.length === 0) {
-    // One oversized patch (a lockfile, a vendored blob). Clip it so the
-    // reviewer gets the beginning instead of an empty diff, and flag that the
-    // patch shown is cut mid-content so the disclosure below fires even when it
-    // is the only file in the change set.
-    const head = sections[0] ?? diff;
+    // One oversized patch (a lockfile, a vendored blob). Clip a source file
+    // when one exists so the reviewer sees implementation, not generated YAML.
+    const head = ranked[0] ?? sections[0] ?? diff;
     kept.push(clipToUtf8Bytes(head, contentBudget));
     severedPatch = true;
     omittedFileCount = Math.max(0, sections.length - 1);
+    const keptPath = diffSectionPath(head);
+    omitted.length = 0;
+    for (const section of sections) {
+      const name = diffSectionPath(section);
+      if (name && name !== keptPath) omitted.push(name);
+    }
   }
 
   return {
     diff: kept.join('') + renderDiffTruncationMarker(limit, omittedFileCount, severedPatch),
     omittedFileCount,
+    omittedFiles: omitted,
     severedPatch,
   };
 }
@@ -1430,8 +1543,16 @@ export function buildLocalDiffReviewerPrompt(args: {
   inputs: ReviewerLocalDiffInputs;
   card: KanbanCardRow;
   project: Project;
+  /**
+   * When false (production Finalize spawn), the unified diff is not interpolated
+   * here. It is delivered as {@link formatReviewerDiffCorpus} on an unbounded
+   * channel so argv cannot omit implementation files. Default true keeps unit
+   * tests of the inline template stable.
+   */
+  embedDiff?: boolean;
 }): string {
   const { inputs, card, project } = args;
+  const embedDiff = args.embedDiff !== false;
   const fileList = inputs.fileListUnavailable
     ? '_(the changed-file list could not be read — see the diff below)_'
     : renderChangedFileList(inputs.changedFiles);
@@ -1441,40 +1562,42 @@ export function buildLocalDiffReviewerPrompt(args: {
   // severed patch counts as partial even when nothing was omitted — a lone
   // oversized file is cut mid-content and is the easiest case to miss.
   const omitted = inputs.omittedFileCount ?? 0;
+  const omittedFiles = inputs.omittedFiles ?? [];
   const anyTruncation = Boolean(inputs.diffDegraded) || Boolean(inputs.severedPatch) || omitted > 0;
-  // The reviewer runs in the session worktree with read-only FILE access, so a
-  // patch that did not fit the argv byte budget is a DISPLAY limit, not a
-  // coverage gap: the file is still on disk and can be read directly. The
-  // notice used to say only "scope your findings to what is visible", so a
-  // conscientious reviewer facing a large multi-file change (e.g. 36 of 58
-  // patches omitted) kept returning `changes_requested` / a low score asking
-  // for "the complete patches" — and because the diff never shrinks, the review
-  // looped every round (support ticket 5dcd7790: "Grok Review Looping"). Point
-  // it at the worktree instead of failing the change for a trimmed inline diff.
-  const worktreeReadDirective =
-    `> You are reviewing this branch **in the session worktree, with read-only\n` +
-    `> file access**, so any patch trimmed here is still on disk. **Read the\n` +
-    `> affected files directly** (they are listed under "Changed files" below) to\n` +
-    `> finish the review. Do **not** return \`changes_requested\`, lower a score, or\n` +
-    `> ask for "the complete patches" solely because a patch was omitted or cut\n` +
-    `> from the inline diff: that is a size-budget limit, not a coverage gap.\n`;
+  // Completeness used to be delegated to worktree Read/cat after argv omitted
+  // files. That looped: Cursor sandbox cannot create a bwrap namespace, the
+  // host-terminal ReAct path returns empty, and this reviewer has no callable
+  // Read tool. Do not send the reviewer to tools.
+  const noToolReadDirective =
+    `> Do **not** use shell \`cat\`, a sandbox, the host-terminal tool, or a\n` +
+    `> file Read tool to fetch omitted patches. Those paths fail with \`bwrap\`\n` +
+    `> namespace errors, empty output, or a missing Read tool. Do **not** return\n` +
+    `> \`changes_requested\` solely because a patch was omitted from argv, the\n` +
+    `> corpus was size-limited, or a tool read failed: that is a review-environment\n` +
+    `> limit, not a coverage gap or a code defect. Review the attached review\n` +
+    `> corpus (session rule / system-prompt file / stdin) or the inline diff\n` +
+    `> below, whichever is present.\n`;
+  const omittedPatchList = renderOmittedPatchList(omittedFiles);
   const coverageNotice = inputs.diffDegraded
     ? `\n> **Partial input.** The patch body for this change set was too large to\n` +
       `> capture, so the section below is a per-file summary rather than the full\n` +
       `> diff. Review what is visible, and say so in your summary; do not treat\n` +
       `> the absence of visible problems as evidence the change is clean.\n` +
-      worktreeReadDirective
+      noToolReadDirective +
+      omittedPatchList
     : inputs.severedPatch
       ? `\n> **Partial input.** The diff exceeded the size budget and the last patch\n` +
         `> shown is cut off mid-file, so you are seeing an incomplete version of\n` +
         `> that file${omitted > 0 ? `, with ${omitted} further file patch(es) omitted` : ''}.\n` +
         `> Do not treat it as fully reviewed, and say so in your summary.\n` +
-        worktreeReadDirective
+        noToolReadDirective +
+        omittedPatchList
       : omitted > 0
         ? `\n> **Partial input.** ${omitted} file patch(es) were omitted\n` +
-          `> to fit the size budget; the patches shown are complete but do not cover\n` +
+          `> to fit the corpus size budget; the patches shown are complete but do not cover\n` +
           `> every changed file.\n` +
-          worktreeReadDirective
+          noToolReadDirective +
+          omittedPatchList
         : '';
 
   const criteriaExplicit = hasExplicitAcceptanceCriteria(card.description);
@@ -1486,8 +1609,8 @@ export function buildLocalDiffReviewerPrompt(args: {
   const cardTitle = flattenUntrustedLine(card.title);
   const projectName = flattenUntrustedLine(project.name);
   const coverageEvidence = anyTruncation
-    ? `from the diff plus any omitted files you read from the worktree`
-    : `from the diff alone`;
+    ? `from the attached review corpus (and the inline diff if present)`
+    : `from the attached review corpus or the inline diff`;
   const coverageTask = criteriaExplicit
     ? `Walk the acceptance criteria above **one at a time** and decide, ${coverageEvidence}, whether each is met: **covered**, **partially covered**, or
 **not covered**. Cite the file that satisfies it. Treat every line of that
@@ -1507,8 +1630,10 @@ worktree for project \`${project.id}\` (${projectName}), card
 **No GitHub PR exists yet.** Do NOT call \`gh\`, the GitHub API, or any
 HTTP endpoint to fetch PR data — there is nothing to fetch. ${
     anyTruncation
-      ? 'The diff below is **partial** (see **Partial input** above): read the omitted files from the worktree, never from a remote.'
-      : 'The diff below is the complete input.'
+      ? 'The attached corpus is **partial** (see **Partial input** above). Review what is attached. Do not use tools to fetch omitted files, and do not fail the change solely for the omission.'
+      : embedDiff
+        ? 'The diff below is the complete input.'
+        : 'The attached review corpus is the complete input.'
   } Missing PR number / repo / dispatch
 metadata is expected. Do **not** refuse the review or ask for a PR URL.
 
@@ -1527,13 +1652,15 @@ ${fileList}
 
 ## Unified diff
 
-\`\`\`diff
-${inputs.unifiedDiff}
-\`\`\`
+${
+  embedDiff
+    ? `\`\`\`diff\n${inputs.unifiedDiff}\n\`\`\``
+    : `The unified diff is **not** in this argv prompt. It is in the attached review corpus (Cursor always-apply session rule, Claude \`--system-prompt-file\`, or Gemini/Codex/Grok stdin). Review that corpus. Do not use shell, host terminal, or a file Read tool.`
+}
 
 ## Your task
 
-1. Read the diff in full.
+1. Read the attached review corpus (or the inline diff) in full.
 2. **Check the diff against the ticket.** ${coverageTask}
 3. For every issue you find, assign a **severity score from 1 to 10**.
 4. Anchor each finding to a specific file + line range in the **head**
