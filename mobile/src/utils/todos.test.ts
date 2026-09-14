@@ -15,6 +15,7 @@ import {
   dateInputToIso,
   dateInputToTodoDatePatch,
   isoToDateInput,
+  orgTodoEventMatchesOrg,
   type TodoLike,
 } from './todos';
 
@@ -256,5 +257,24 @@ describe('date <-> input conversions', () => {
   it('returns empty for a null/invalid ISO', () => {
     expect(isoToDateInput(null)).toBe('');
     expect(isoToDateInput('garbage')).toBe('');
+  });
+});
+
+describe('orgTodoEventMatchesOrg — alias-aware event filtering', () => {
+  it('a concrete component org matches only its own event id', () => {
+    expect(orgTodoEventMatchesOrg('acme', 'acme')).toBe(true);
+    expect(orgTodoEventMatchesOrg('acme', 'other')).toBe(false);
+  });
+
+  it("the 'active' alias (remote org) matches any concrete event id", () => {
+    // Regression: remote orgs send `active`, events carry the real id — a naive
+    // string compare would drop every teammate update and leave the list stale.
+    expect(orgTodoEventMatchesOrg('active', 'acme')).toBe(true);
+    expect(orgTodoEventMatchesOrg('active', 'any-real-org-id')).toBe(true);
+  });
+
+  it('a missing event org id refreshes to stay safe', () => {
+    expect(orgTodoEventMatchesOrg('acme', undefined)).toBe(true);
+    expect(orgTodoEventMatchesOrg('acme', null)).toBe(true);
   });
 });

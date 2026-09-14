@@ -34,6 +34,7 @@ export const HUB_ICON_NAMES = [
   'Pencil',
   'Play',
   'Plus',
+  'RefreshCw',
   'ScanEye',
   'ScrollText',
   'Server',
@@ -44,6 +45,7 @@ export const HUB_ICON_NAMES = [
   'Target',
   'Terminal',
   'Trash2',
+  'Users',
   'X',
 ];
 const HUB_ICON_SET = new Set(HUB_ICON_NAMES);

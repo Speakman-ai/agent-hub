@@ -47,6 +47,17 @@ export function getActiveOrg() {
   return state.orgs.find((o: any) => o.id === state.activeOrgId) || state.orgs[0] || null;
 }
 /**
+ * Org id to send on org-scoped API calls. Remote orgs are client-side
+ * bookmarks whose random id doesn't exist on the remote server, so we send the
+ * `active` alias, which the server resolves to its own active-org id (mirrors
+ * the web `getActiveOrgApiId`). Returns null when there is no active org.
+ */
+export function getActiveOrgApiId(): string | null {
+  const org = getActiveOrg();
+  if (!org) return null;
+  return org.mode === 'remote' ? 'active' : org.id;
+}
+/**
  * Switch to a different org by ID.
  * Updates connection config to point at the new server.
  */

@@ -33,6 +33,7 @@ import { parsePreviewProxySessionId } from './preview/preview-proxy.js';
 import { parseTerminalWebSocketSessionId } from './terminal/terminal-websocket.js';
 import { parseBrowserScreencastWebSocketSessionId } from './browser-screencast-websocket.js';
 import { canViewProject } from './project-visibility.js';
+import { getMembershipRole } from './memberships-store.js';
 import {
   queryLogRecordsSince,
   queryLogTailSeed,
@@ -444,6 +445,7 @@ export default function createWebSocket(
             findProject: findProjectLocal,
             getSessionOwner,
             isSharedReadableSession,
+            isOrgMember: (userId, orgId) => getMembershipRole(userId, orgId) !== null,
           })
         ) {
           return;

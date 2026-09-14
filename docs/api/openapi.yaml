@@ -11549,6 +11549,72 @@ components:
         - created_at
         - updated_at
       description: A single project note row.
+    OrgTodosErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for org-todo routes.
+    OrgTodo:
+      type: object
+      properties:
+        id:
+          type: string
+        orgId:
+          type: string
+        title:
+          type: string
+        notes:
+          type: string
+        status:
+          type: string
+          enum:
+            - open
+            - done
+        priority:
+          type: string
+          enum:
+            - urgent
+            - high
+            - medium
+            - low
+        doDate:
+          type: string
+          nullable: true
+          description: Day the team plans to work the task (scheduling "do" date, not a deadline).
+        doStartAt:
+          type: string
+          nullable: true
+        doEndAt:
+          type: string
+          nullable: true
+        position:
+          type: number
+        createdByUserId:
+          type: string
+          nullable: true
+          description: Member who added the todo, or null for apiKey / local-bundled creates.
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - orgId
+        - title
+        - notes
+        - status
+        - priority
+        - doDate
+        - doStartAt
+        - doEndAt
+        - position
+        - createdByUserId
+        - createdAt
+        - updatedAt
+      description: A single shared organization todo, visible and editable by every member of the org. A distinct list, not an aggregation of members' personal todos.
     PrAutoMergeRequest:
       type: object
       properties:
@@ -37689,6 +37755,346 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NotesErrorResponse"
+  /api/orgs/{orgId}/todos:
+    get:
+      tags:
+        - Org Todos
+      summary: List the org's shared todos
+      parameters:
+        - schema:
+            type: string
+            description: Org id.
+          required: true
+          description: Org id.
+          name: orgId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - open
+              - done
+            description: Filter to only open or only done.
+          required: false
+          description: Filter to only open or only done.
+          name: status
+          in: query
+      responses:
+        "200":
+          description: The org's shared todos in per-org order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todos:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgTodo"
+                required:
+                  - todos
+        "400":
+          description: Invalid status filter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "403":
+          description: Caller is not a member of this org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "404":
+          description: Org not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+    post:
+      tags:
+        - Org Todos
+      summary: Create a shared org todo
+      parameters:
+        - schema:
+            type: string
+            description: Org id.
+          required: true
+          description: Org id.
+          name: orgId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                notes:
+                  type: string
+                priority:
+                  type: string
+                  enum:
+                    - urgent
+                    - high
+                    - medium
+                    - low
+                doDate:
+                  type: string
+                  nullable: true
+                  description: Day the team plans to work the task (scheduling "do" date, not a deadline).
+                doStartAt:
+                  type: string
+                  nullable: true
+                doEndAt:
+                  type: string
+                  nullable: true
+              required:
+                - title
+      responses:
+        "201":
+          description: Created todo.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todo:
+                    $ref: "#/components/schemas/OrgTodo"
+                required:
+                  - todo
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "403":
+          description: Caller is not a member of this org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "404":
+          description: Org not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+  /api/orgs/{orgId}/todos/{id}:
+    put:
+      tags:
+        - Org Todos
+      summary: Update a shared org todo (partial)
+      parameters:
+        - schema:
+            type: string
+            description: Org id.
+          required: true
+          description: Org id.
+          name: orgId
+          in: path
+        - schema:
+            type: string
+            description: Todo id.
+          required: true
+          description: Todo id.
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                notes:
+                  type: string
+                status:
+                  type: string
+                  enum:
+                    - open
+                    - done
+                priority:
+                  type: string
+                  enum:
+                    - urgent
+                    - high
+                    - medium
+                    - low
+                doDate:
+                  type: string
+                  nullable: true
+                doStartAt:
+                  type: string
+                  nullable: true
+                doEndAt:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated todo.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todo:
+                    $ref: "#/components/schemas/OrgTodo"
+                required:
+                  - todo
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "403":
+          description: Caller is not a member of this org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "404":
+          description: Org or todo not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+    delete:
+      tags:
+        - Org Todos
+      summary: Delete a shared org todo
+      parameters:
+        - schema:
+            type: string
+            description: Org id.
+          required: true
+          description: Org id.
+          name: orgId
+          in: path
+        - schema:
+            type: string
+            description: Todo id.
+          required: true
+          description: Todo id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "403":
+          description: Caller is not a member of this org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "404":
+          description: Org or todo not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+  /api/orgs/{orgId}/todos/reorder:
+    post:
+      tags:
+        - Org Todos
+      summary: Reassign the order of the org's shared todos
+      parameters:
+        - schema:
+            type: string
+            description: Org id.
+          required: true
+          description: Org id.
+          name: orgId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                orderedIds:
+                  type: array
+                  items:
+                    type: string
+                  description: Ids in the desired order. Ids not in this org are ignored.
+              required:
+                - orderedIds
+      responses:
+        "200":
+          description: The reordered todo list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todos:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgTodo"
+                required:
+                  - todos
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "403":
+          description: Caller is not a member of this org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
+        "404":
+          description: Org not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgTodosErrorResponse"
   /api/auth/me/claude-auth/browser:
     get:
       tags:

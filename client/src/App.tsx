@@ -3290,6 +3290,12 @@ export default function App({ initialView }: any = {}) {
         case 'user_todo_update':
           window.dispatchEvent(new CustomEvent('user_todo_update', { detail: data }));
           break;
+        // Shared org-todo change: bridge to a window CustomEvent so the org
+        // section of <TodosPage /> refetches without subscribing to the WS
+        // connection directly.
+        case 'org_todo_update':
+          window.dispatchEvent(new CustomEvent('org_todo_update', { detail: data }));
+          break;
 
         // GitHub mirror sync status (server/git-host/mirror.ts +
         // reconcile.ts). Bridged to a window CustomEvent so
@@ -7035,7 +7041,7 @@ export default function App({ initialView }: any = {}) {
                       }}
                     />
                   }
-                  todos={<TodosPage />}
+                  todos={<TodosPage orgId={getActiveOrgApiId()} />}
                   calendar={
                     <CalendarAgendaPage
                       onOpenAccountSettings={() => setCurrentView('settings:account')}

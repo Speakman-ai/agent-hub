@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import PromoteTodoModal from './PromoteTodoModal';
 import LinkTodoModal from './LinkTodoModal';
+import OrgTodosSection from './OrgTodosSection';
 import { api, type UserTodoWire, type TodoPriority } from '../utils/api';
 import {
   moveTodoId,
@@ -70,7 +71,12 @@ const LINK_BADGE_CLASS: Record<string, string> = {
   Session: 'border-teal-800 bg-teal-900/30 text-teal-300',
 };
 
-export default function TodosPage() {
+/**
+ * @param orgId Active org id. When present, a shared org-wide Todos list renders
+ *   above the personal list. Null in single-tenant / no-org contexts, where only
+ *   the personal list shows.
+ */
+export default function TodosPage({ orgId = null }: { orgId?: string | null }) {
   const [todos, setTodos] = useState<UserTodoWire[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -236,11 +242,20 @@ export default function TodosPage() {
   return (
     <div className="flex-1 overflow-y-auto bg-gray-950">
       <div className="max-w-3xl mx-auto p-4 md:p-8" data-testid="todos-page">
+        {/* Shared, org-wide list above the personal one. A distinct list visible
+            to every member of the org, not an aggregation of personal todos.
+            `key={orgId}` remounts the section on an org switch so no in-flight
+            request/mutation captured for the previous org can write into the new
+            one (its instance unmounts, flipping the section's mounted guard). */}
+        {orgId && <OrgTodosSection key={orgId} orgId={orgId} />}
+
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <ListTodo size={28} className="text-blue-400" />
             <div>
-              <h1 className="text-2xl font-semibold text-white">Todos</h1>
+              <h1 className="text-2xl font-semibold text-white">
+                {orgId ? 'Personal Todos' : 'Todos'}
+              </h1>
               <p className="text-sm text-gray-500">Personal, across every project</p>
             </div>
           </div>

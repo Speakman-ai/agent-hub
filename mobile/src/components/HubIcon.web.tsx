@@ -31,6 +31,7 @@ import {
   Pencil,
   Play,
   Plus,
+  RefreshCw,
   ScanEye,
   ScrollText,
   Server,
@@ -41,6 +42,7 @@ import {
   Target,
   Terminal,
   Trash2,
+  Users,
   X,
 } from 'lucide-react-native';
 import { colors } from '../theme/colors';
@@ -79,6 +81,7 @@ const HUB_LUCIDE_ICONS: Record<string, any> = {
   Pencil,
   Play,
   Plus,
+  RefreshCw,
   ScanEye,
   ScrollText,
   Server,
@@ -89,6 +92,7 @@ const HUB_LUCIDE_ICONS: Record<string, any> = {
   Target,
   Terminal,
   Trash2,
+  Users,
   X,
 };
 for (const name of HUB_ICON_NAMES) {

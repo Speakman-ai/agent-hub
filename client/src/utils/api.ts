@@ -94,6 +94,28 @@ export interface UserTodoWire {
   updatedAt: string;
 }
 
+/**
+ * Shared organization todo. Mirrors server `OrgTodo`. Unlike `UserTodoWire`
+ * there is no per-user ownership — the whole org shares one list. Keyed by
+ * `orgId`; `createdByUserId` records who added the row.
+ */
+export interface OrgTodoWire {
+  id: string;
+  orgId: string;
+  title: string;
+  notes: string;
+  status: 'open' | 'done';
+  priority: TodoPriority;
+  /** Day the team plans to WORK the task (scheduling "do" date, not a deadline). */
+  doDate: string | null;
+  doStartAt: string | null;
+  doEndAt: string | null;
+  position: number;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Personal Dashboard aggregation (GET /api/me/dashboard, /api/me/work). Mirrors
 // the server MeDashboardPayload / DashboardWork shapes (server/me-dashboard.ts,
 // server/me-dashboard-google.ts) for the User Module home.
@@ -229,6 +251,25 @@ interface UpdateTodoBody {
   doEndAt?: string | null;
   /** Deprecated: retained for back-compat. Prefer `doDate`. */
   dueAt?: string | null;
+}
+
+interface CreateOrgTodoBody {
+  title: string;
+  notes?: string;
+  priority?: TodoPriority;
+  doDate?: string | null;
+  doStartAt?: string | null;
+  doEndAt?: string | null;
+}
+
+interface UpdateOrgTodoBody {
+  title?: string;
+  notes?: string;
+  status?: 'open' | 'done';
+  priority?: TodoPriority;
+  doDate?: string | null;
+  doStartAt?: string | null;
+  doEndAt?: string | null;
 }
 
 // Session-scoped flag we set right before a 401-triggered reload so that the
@@ -888,6 +929,32 @@ export const api = {
   },
   reorderTodos: (orderedIds: string[]) =>
     fetchJSON<{ todos: UserTodoWire[] }>('/me/todos/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ orderedIds }),
+    }),
+  // Shared organization todos: one list every member of the org sees and edits
+  // (distinct from personal todos, not an aggregation of them). Every write
+  // broadcasts `org_todo_update` to the org's members.
+  listOrgTodos: (orgId: string, status?: 'open' | 'done') => {
+    const qs = status ? `?status=${status}` : '';
+    return fetchJSON<{ todos: OrgTodoWire[] }>(`/orgs/${encodeURIComponent(orgId)}/todos${qs}`);
+  },
+  createOrgTodo: (orgId: string, data: CreateOrgTodoBody) =>
+    fetchJSON<{ todo: OrgTodoWire }>(`/orgs/${encodeURIComponent(orgId)}/todos`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateOrgTodo: (orgId: string, id: string, data: UpdateOrgTodoBody) =>
+    fetchJSON<{ todo: OrgTodoWire }>(
+      `/orgs/${encodeURIComponent(orgId)}/todos/${encodeURIComponent(id)}`,
+      { method: 'PUT', body: JSON.stringify(data) },
+    ),
+  deleteOrgTodo: (orgId: string, id: string) =>
+    fetchJSON<{ ok: true }>(`/orgs/${encodeURIComponent(orgId)}/todos/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  reorderOrgTodos: (orgId: string, orderedIds: string[]) =>
+    fetchJSON<{ todos: OrgTodoWire[] }>(`/orgs/${encodeURIComponent(orgId)}/todos/reorder`, {
       method: 'POST',
       body: JSON.stringify({ orderedIds }),
     }),

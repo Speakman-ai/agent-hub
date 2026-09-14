@@ -196,6 +196,10 @@ export function AppProvider({ children }: any) {
   // bump a timestamp so an effect keyed on it re-runs. Shape:
   //   { action: 'created'|'updated'|'deleted'|'reordered'|'promoted', bump }
   const [lastUserTodoEvent, setLastUserTodoEvent] = useState<any>(null);
+  // Last `org_todo_update` WS event — the shared-org counterpart of
+  // `lastUserTodoEvent`. Drives live refetches of the org Todos section without
+  // a poll. Shape: { orgId, action, bump }.
+  const [lastOrgTodoEvent, setLastOrgTodoEvent] = useState<any>(null);
   // Tracks the project currently being viewed in ThreadsScreen so we can
   // suppress unread-badge increments (counts are only incremented when the
   // user isn't already looking at that project's threads list).
@@ -806,6 +810,16 @@ export function AppProvider({ children }: any) {
           // any event we receive is ours. Surface it so TodosScreen can
           // silently refetch (create/update/delete/reorder/promote).
           setLastUserTodoEvent({ action: data.action ?? null, bump: Date.now() });
+          break;
+        case 'org_todo_update':
+          // Shared org todo changed. The server fans this to every member of
+          // the org, so surface it and let OrgTodosSection (scoped to its org)
+          // silently refetch.
+          setLastOrgTodoEvent({
+            orgId: data.orgId ?? null,
+            action: data.action ?? null,
+            bump: Date.now(),
+          });
           break;
         case 'dispatch_failure':
           // The linked card's kanban_update carries the project id and is
@@ -2579,6 +2593,8 @@ export function AppProvider({ children }: any) {
     lastInfraHealthEvent,
     // Cross-project personal todos (live refetch signal)
     lastUserTodoEvent,
+    // Shared org todos (live refetch signal)
+    lastOrgTodoEvent,
     // Threads
     unreadThreadCounts,
     lastThreadEvent,

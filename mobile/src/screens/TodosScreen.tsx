@@ -33,6 +33,8 @@ import {
 import { todoOriginLabel, todoOriginDeepLink } from '@shared/utils/captureTodo';
 import PromoteTodoModal from '../components/PromoteTodoModal';
 import LinkTodoModal from '../components/LinkTodoModal';
+import OrgTodosSection from '../components/OrgTodosSection';
+import { getActiveOrgApiId } from '../utils/orgs';
 
 /**
  * Cross-project personal Todos screen (spec NAV-PLACEMENT) — the mobile 1:1
@@ -118,6 +120,9 @@ function PrioritySelect({
 export default function TodosScreen() {
   const sidebar = useContext(SidebarContext);
   const { lastUserTodoEvent } = useApp();
+  // Active org id for the shared org-todo list rendered above the personal one.
+  // Null in single-tenant / no-org contexts, where only the personal list shows.
+  const orgId = getActiveOrgApiId();
   const [todos, setTodos] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -278,7 +283,7 @@ export default function TodosScreen() {
         </TouchableOpacity>
         <HubIcon name="ListTodo" size={20} color={colors.blue400} style={styles.titleIcon} />
         <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Todos</Text>
+          <Text style={styles.title}>{orgId ? 'Personal Todos' : 'Todos'}</Text>
           <Text style={styles.subtitle}>Personal, across every project</Text>
         </View>
         <TouchableOpacity
@@ -307,6 +312,13 @@ export default function TodosScreen() {
           />
         }
       >
+        {/* Shared, org-wide list above the personal one. A distinct list every
+            member of the org sees, not an aggregation of personal todos.
+            `key={orgId}` remounts the section on an org switch so no in-flight
+            request/mutation captured for the previous org can write into the new
+            one (its instance unmounts, flipping the section's mounted guard). */}
+        {orgId ? <OrgTodosSection key={orgId} orgId={orgId} /> : null}
+
         {/* Add form */}
         <View style={styles.addForm}>
           <TextInput

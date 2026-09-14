@@ -1137,6 +1137,30 @@ export const api = {
   },
   reorderTodos: (orderedIds: any) =>
     fetchJSON('/me/todos/reorder', { method: 'POST', body: JSON.stringify({ orderedIds }) }),
+  // Shared organization todos: one list every member of the org sees and edits
+  // (distinct from personal todos, not an aggregation). Every write broadcasts
+  // `org_todo_update` to the org's members.
+  listOrgTodos: (orgId: any, status?: 'open' | 'done') =>
+    fetchJSON(`/orgs/${encodeURIComponent(orgId)}/todos${status ? `?status=${status}` : ''}`),
+  createOrgTodo: (orgId: any, data: any) =>
+    fetchJSON(`/orgs/${encodeURIComponent(orgId)}/todos`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateOrgTodo: (orgId: any, id: any, data: any) =>
+    fetchJSON(`/orgs/${encodeURIComponent(orgId)}/todos/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteOrgTodo: (orgId: any, id: any) =>
+    fetchJSON(`/orgs/${encodeURIComponent(orgId)}/todos/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  reorderOrgTodos: (orgId: any, orderedIds: any) =>
+    fetchJSON(`/orgs/${encodeURIComponent(orgId)}/todos/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ orderedIds }),
+    }),
   // Per-user cross-project aggregation for the Dashboard home (spec
   // AGGREGATION). One RBAC-filtered fan-out; cached server-side, `fresh` busts
   // the cache. `date`/`tz` bracket the caller's local day for the calendar pane.

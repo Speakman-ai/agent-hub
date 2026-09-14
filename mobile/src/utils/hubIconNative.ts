@@ -42,6 +42,7 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
   Pencil: { family: 'feather', name: 'edit-2' },
   Play: { family: 'feather', name: 'play' },
   Plus: { family: 'feather', name: 'plus' },
+  RefreshCw: { family: 'feather', name: 'refresh-cw' },
   ScanEye: { family: 'feather', name: 'eye' },
   ScrollText: { family: 'material', name: 'script-text-outline' },
   Server: { family: 'feather', name: 'server' },
@@ -52,6 +53,7 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
   Target: { family: 'feather', name: 'target' },
   Terminal: { family: 'feather', name: 'terminal' },
   Trash2: { family: 'feather', name: 'trash-2' },
+  Users: { family: 'feather', name: 'users' },
   X: { family: 'feather', name: 'x' },
 };
 /**

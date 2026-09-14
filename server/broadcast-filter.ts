@@ -52,6 +52,14 @@ export interface BroadcastFilterDeps {
    * session-progress so live updates match `userCanReadSession`.
    */
   isSharedReadableSession?: (sessionId: string) => boolean;
+  /**
+   * True when `userId` is a member of `orgId`. Gates the org-wide `org_todo_update`
+   * event so a shared todo list only fans out to that org's members. Optional:
+   * when omitted, org-todo events fall back to legacy global fan-out (matching
+   * how unresolvable events are handled), so snapshot paths that never carry
+   * these events don't need to inject it.
+   */
+  isOrgMember?: (userId: string, orgId: string) => boolean;
 }
 
 /**
@@ -148,6 +156,16 @@ export function shouldDeliverBroadcast(
       typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
     if (!owner) return true;
     return stamp.userId === owner;
+  }
+
+  // 3b-org. Shared organization-todo events fan out to every MEMBER of the org,
+  //    and no one else — the list is team-visible but still org-private. A
+  //    missing orgId, an absent membership resolver, or a stamp with no user id
+  //    falls back to legacy fan-out rather than silently dropping the event.
+  if (data.type === 'org_todo_update') {
+    const orgId = typeof data.orgId === 'string' && data.orgId ? data.orgId : null;
+    if (!orgId || !deps.isOrgMember || !stamp.userId) return true;
+    return deps.isOrgMember(stamp.userId, orgId);
   }
 
   // 3c. Session-scoped events: background shells stay owner-only; progress /

@@ -283,6 +283,7 @@ import createReplayPlaylistRoutes from './routes/replay-playlists.js';
 import createRumSessionsRoutes from './routes/rum-sessions.js';
 import createAuthRoutes from './routes/auth.js';
 import createMeTodosRoutes from './routes/me-todos.js';
+import createOrgTodosRoutes from './routes/org-todos.js';
 import createMeDashboardRoutes from './routes/me-dashboard.js';
 import createMeHubRoutes from './routes/me-hub.js';
 import createMeDailySummaryRoutes from './routes/me-daily-summary.js';
@@ -2219,6 +2220,7 @@ app.use(
   }),
 );
 app.use(createMeTodosRoutes(routeDeps));
+app.use(createOrgTodosRoutes(routeDeps));
 app.use(createMeDashboardRoutes(routeDeps));
 app.use(createMeHubRoutes(routeDeps));
 app.use(createMeDailySummaryRoutes(routeDeps));

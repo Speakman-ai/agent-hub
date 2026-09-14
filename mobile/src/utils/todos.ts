@@ -228,3 +228,24 @@ export function isoToDateInput(dueAt: string | null | undefined): string {
   const dd = String(d.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
+
+/**
+ * Whether an `org_todo_update` event targeting `eventOrgId` should refresh a
+ * section scoped to `componentOrgId`.
+ *
+ * `componentOrgId` may be the `active` alias (what `getActiveOrgApiId` returns
+ * for a remote org, since the remote's real org id is unknown client-side),
+ * while the event always carries the concrete org id. Comparing those strings
+ * directly would discard every teammate update on a remote org, leaving the
+ * shared list stale. So the `active` alias matches any event (the server only
+ * fans org-todo events for the connection's active org), and a concrete id
+ * matches only its own. A missing `eventOrgId` refreshes to stay safe.
+ */
+export function orgTodoEventMatchesOrg(
+  componentOrgId: string,
+  eventOrgId: string | null | undefined,
+): boolean {
+  if (componentOrgId === 'active') return true;
+  if (!eventOrgId) return true;
+  return eventOrgId === componentOrgId;
+}
