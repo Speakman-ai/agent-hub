@@ -550,6 +550,12 @@ export default function AutopilotSettingsSection({
           )}
           <EvidencePanel evidence={view.run.evidence} />
           <DocumentationPanel documentation={view.run.documentation} />
+          <p className="text-xs text-gray-500" data-testid="autopilot-run-caveats">
+            Evaluator scores reduce self-grading bias but do not prove product value or guarantee
+            monotonic improvement. Recovery redeploys the last verified code artifact only. A code
+            rollback is not a database rollback. See the operator runbook:{' '}
+            <span className="text-gray-400">docs/guides/experimental-autopilot.md</span>.
+          </p>
         </div>
       )}
 

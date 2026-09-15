@@ -111,6 +111,26 @@ jobs:
       - name: No new mirrored client/mobile modules
         run: npm run check:mirrored-modules
 
+  # ── OpenAPI coverage + freshness (finalize-only) ────────────────────
+  # The required OpenAPI checks (per CLAUDE.md: every route needs a Zod
+  # registration; the committed docs/api/openapi.yaml must match the generator)
+  # otherwise run only post-merge in GitHub `api-docs.yml`, which is out of the
+  # PR-gate scope Finalize mirrors. Wiring them here makes coverage + freshness
+  # a Finalize gate too, so a route added without a schema (or a stale spec)
+  # fails before merge rather than after. `check:openapi` = coverage ratchet +
+  # freshness diff. generate:openapi imports server routes, so this needs the
+  # server deps (native better-sqlite3 built by the non-ignore-scripts install).
+  # Mapped `finalize-only` in .agent-hub/ci-mirror.yaml.
+  openapi:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts --include=dev
+      - name: Install server dependencies
+        run: cd server && npm ci --include=dev
+      - name: OpenAPI coverage + freshness
+        run: npm run check:openapi
+
   # ── GHA `secret-scan` gate (ci.yml) ─────────────────────────────────
   # Working-tree gitleaks scan. The run script below is kept BYTE-IDENTICAL to
   # the `secret-scan` job in .github/workflows/ci.yml so `npm run

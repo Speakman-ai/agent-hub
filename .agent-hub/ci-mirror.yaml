@@ -37,3 +37,7 @@ jobs:
   # deliberately omits (format drift is a soft, post-merge signal, not a
   # code-correctness gate). Drop `(loose)` to make that gap a warning.
   lint: main-checks.yml:lint (loose)
+  # No in-scope GitHub counterpart: the OpenAPI coverage + freshness checks run
+  # post-merge in api-docs.yml (out of the ci.yml/main-checks.yml PR-gate scope
+  # mirrored here), so wiring them as a Finalize gate is an intentional add.
+  openapi: finalize-only

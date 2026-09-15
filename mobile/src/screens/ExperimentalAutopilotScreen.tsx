@@ -499,6 +499,12 @@ export default function ExperimentalAutopilotScreen({ route, navigation }: any) 
                 Documentation: none recorded yet.
               </Text>
             )}
+            <Text style={styles.rowSmall} testID="autopilot-run-caveats">
+              Evaluator scores reduce self-grading bias but do not prove product value or guarantee
+              monotonic improvement. Recovery redeploys the last verified code artifact only. A code
+              rollback is not a database rollback. See the operator runbook:
+              docs/guides/experimental-autopilot.md.
+            </Text>
           </View>
         )}
 

@@ -481,6 +481,102 @@ describe('AutopilotSettingsSection', () => {
     expect(screen.getByTestId('autopilot-doc-links').textContent).toContain('127.0.0.1:8080');
   });
 
+  it('resumes a paused run and applies the running snapshot', async () => {
+    (api.getAutopilot as any).mockResolvedValueOnce(
+      state({
+        config: readyConfig({ enabled: true }),
+        activeRun: {
+          run: run({ controlState: 'paused', stage: null }),
+          cycle: null,
+          stateVersion: 1,
+        },
+        stateVersion: 1,
+      }),
+    );
+    // The reconciling GET after Resume fails, so only the mutation snapshot drives state.
+    (api.getAutopilot as any).mockRejectedValue(new Error('reconcile GET fails'));
+    (api.resumeAutopilot as any).mockResolvedValue({
+      run: run({ controlState: 'running' }),
+      cycle: null,
+      stateVersion: 5,
+    });
+    render(<AutopilotSettingsSection projectId="p1" />);
+    const resume = await screen.findByTestId('autopilot-resume');
+    expect(screen.queryByTestId('autopilot-pause')).toBeNull();
+    fireEvent.click(resume);
+    await waitFor(() => expect(api.resumeAutopilot).toHaveBeenCalledWith('p1'));
+    await waitFor(() =>
+      expect(screen.getByTestId('autopilot-run-state').textContent).toContain('Running'),
+    );
+  });
+
+  it('disables Autopilot after confirmation', async () => {
+    (api.getAutopilot as any).mockResolvedValue(
+      state({
+        config: readyConfig({ enabled: true }),
+        activeRun: { run: run({ controlState: 'running' }), cycle: null },
+      }),
+    );
+    (api.disableAutopilot as any).mockResolvedValue({
+      config: readyConfig({ enabled: false }),
+      activeRun: null,
+      stateVersion: 9,
+    });
+    render(<AutopilotSettingsSection projectId="p1" />);
+    const disable = await screen.findByTestId('autopilot-disable');
+    fireEvent.click(disable);
+    await waitFor(() => expect(api.disableAutopilot).toHaveBeenCalledWith('p1'));
+  });
+
+  it('surfaces an error toast when a run-control action fails', async () => {
+    (api.getAutopilot as any).mockResolvedValue(
+      state({
+        config: readyConfig({ enabled: true }),
+        activeRun: { run: run({ controlState: 'running' }), cycle: null },
+      }),
+    );
+    (api.pauseAutopilot as any).mockRejectedValue(new Error('pause rejected by server'));
+    const showToast = vi.fn();
+    render(<AutopilotSettingsSection projectId="p1" showToast={showToast} />);
+    fireEvent.click(await screen.findByTestId('autopilot-pause'));
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.stringMatching(/pause rejected by server/i),
+        'error',
+      ),
+    );
+  });
+
+  it('marks a run-control action busy while it is pending', async () => {
+    (api.getAutopilot as any).mockResolvedValue(
+      state({
+        config: readyConfig({ enabled: true }),
+        activeRun: { run: run({ controlState: 'running' }), cycle: null },
+      }),
+    );
+    // Pause never resolves, so it stays in flight for the whole test.
+    (api.pauseAutopilot as any).mockReturnValue(new Promise(() => {}));
+    render(<AutopilotSettingsSection projectId="p1" />);
+    const pause = await screen.findByTestId('autopilot-pause');
+    fireEvent.click(pause);
+    // A second Pause while the first is pending must be refused.
+    fireEvent.click(pause);
+    expect(api.pauseAutopilot).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect((pause as HTMLButtonElement).disabled).toBe(true));
+  });
+
+  it('surfaces the evaluator-score and code-only-rollback limits in the run view', async () => {
+    (api.getAutopilot as any).mockResolvedValue(
+      state({ activeRun: { run: run({ controlState: 'running' }), cycle: null } }),
+    );
+    render(<AutopilotSettingsSection projectId="p1" />);
+    const caveats = await screen.findByTestId('autopilot-run-caveats');
+    expect(caveats.textContent).toMatch(/do not prove product value/i);
+    expect(caveats.textContent).toMatch(/monotonic improvement/i);
+    expect(caveats.textContent).toMatch(/code rollback is not a database rollback/i);
+    expect(caveats.textContent).toContain('docs/guides/experimental-autopilot.md');
+  });
+
   it('discards a stale project response after switching projects', async () => {
     let resolveA: (v: any) => void = () => {};
     const aPromise = new Promise((r) => {

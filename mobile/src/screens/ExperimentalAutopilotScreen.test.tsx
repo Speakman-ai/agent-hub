@@ -948,4 +948,107 @@ describe('ExperimentalAutopilotScreen interactions', () => {
     expect(byTestID(renderer, 'autopilot-documentation').length).toBe(1);
     expect(hasText(renderer, 'faster paint')).toBe(true);
   });
+
+  it('resumes a paused run through the resume control', async () => {
+    apiMock.state = {
+      serverEnabled: true,
+      config: readyConfig({ enabled: true }),
+      activeRun: { run: run({ controlState: 'paused', stage: null }), cycle: null },
+    };
+    apiMock.resumeAutopilot.mockResolvedValue({
+      run: run({ controlState: 'running' }),
+      cycle: null,
+      stateVersion: 5,
+    });
+    let renderer: any;
+    await act(async () => {
+      renderer = create(<ExperimentalAutopilotScreen route={ROUTE} navigation={NAV} />);
+    });
+    await flush();
+    expect(byTestID(renderer, 'autopilot-resume').length).toBe(1);
+    expect(byTestID(renderer, 'autopilot-pause').length).toBe(0);
+    await pressByTestID(renderer, 'autopilot-resume');
+    expect(apiMock.resumeAutopilot).toHaveBeenCalledWith('p1');
+  });
+
+  it('disables Autopilot after confirming the destructive dialog', async () => {
+    apiMock.state = {
+      serverEnabled: true,
+      config: readyConfig({ enabled: true }),
+      activeRun: { run: run({ controlState: 'running' }), cycle: null },
+    };
+    let renderer: any;
+    await act(async () => {
+      renderer = create(<ExperimentalAutopilotScreen route={ROUTE} navigation={NAV} />);
+    });
+    await flush();
+    await pressByTestID(renderer, 'autopilot-disable');
+    const buttons = Alert.alert.mock.calls.at(-1)[2] as any[];
+    const disableBtn = buttons.find((b) => b.text === 'Disable');
+    await act(async () => {
+      disableBtn.onPress();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(apiMock.disableAutopilot).toHaveBeenCalledWith('p1');
+  });
+
+  it('surfaces an alert when a run-control action fails', async () => {
+    apiMock.state = {
+      serverEnabled: true,
+      config: readyConfig({ enabled: true }),
+      activeRun: { run: run({ controlState: 'running' }), cycle: null },
+    };
+    apiMock.pauseAutopilot.mockRejectedValue(new Error('pause rejected by server'));
+    let renderer: any;
+    await act(async () => {
+      renderer = create(<ExperimentalAutopilotScreen route={ROUTE} navigation={NAV} />);
+    });
+    await flush();
+    await pressByTestID(renderer, 'autopilot-pause');
+    expect(apiMock.pauseAutopilot).toHaveBeenCalledWith('p1');
+    expect(Alert.alert.mock.calls.some((c: any[]) => c[0] === 'Action failed')).toBe(true);
+  });
+
+  it('marks a run-control action busy while it is pending', async () => {
+    apiMock.state = {
+      serverEnabled: true,
+      config: readyConfig({ enabled: true }),
+      activeRun: { run: run({ controlState: 'running' }), cycle: null },
+    };
+    // Pause never resolves, so it stays in flight for the whole test.
+    apiMock.pauseAutopilot.mockReturnValue(new Promise(() => {}));
+    let renderer: any;
+    await act(async () => {
+      renderer = create(<ExperimentalAutopilotScreen route={ROUTE} navigation={NAV} />);
+    });
+    await flush();
+    await pressByTestID(renderer, 'autopilot-pause');
+    // A second Pause while the first is pending must be refused.
+    await pressByTestID(renderer, 'autopilot-pause');
+    expect(apiMock.pauseAutopilot).toHaveBeenCalledTimes(1);
+    expect(byTestID(renderer, 'autopilot-pause')[0].props.disabled).toBe(true);
+  });
+
+  it('surfaces the evaluator-score and code-only-rollback limits in the run view', async () => {
+    apiMock.state = {
+      serverEnabled: true,
+      config: readyConfig({ enabled: true }),
+      activeRun: { run: run({ controlState: 'running' }), cycle: null },
+    };
+    let renderer: any;
+    await act(async () => {
+      renderer = create(<ExperimentalAutopilotScreen route={ROUTE} navigation={NAV} />);
+    });
+    await flush();
+
+    const [caveats] = byTestID(renderer, 'autopilot-run-caveats');
+    expect(caveats).toBeTruthy();
+    const text = Array.isArray(caveats.children)
+      ? caveats.children.join('')
+      : String(caveats.children);
+    expect(text).toMatch(/do not prove product value/i);
+    expect(text).toMatch(/monotonic improvement/i);
+    expect(text).toMatch(/code rollback is not a database rollback/i);
+    expect(text).toContain('docs/guides/experimental-autopilot.md');
+  });
 });
