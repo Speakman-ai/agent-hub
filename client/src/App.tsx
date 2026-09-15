@@ -102,6 +102,7 @@ import {
 import { useGoogleStatus } from './hooks/useGoogleStatus';
 import { shouldShowCalendarNav, shouldShowGmailNav } from './utils/googleSurface';
 import DeploymentsPage from './components/DeploymentsPage';
+import AutopilotSettingsSection from './components/AutopilotSettingsSection';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
 import NotesEditor from './components/NotesEditor';
@@ -626,6 +627,9 @@ export default function App({ initialView }: any = {}) {
   const [deploymentsProjectId, setDeploymentsProjectId] = useState<any>(
     initialNavigation.view === 'deployments' ? initialNavigation.projectId || null : null,
   );
+  const [autopilotProjectId, setAutopilotProjectId] = useState<any>(
+    initialNavigation.view === 'autopilot' ? initialNavigation.projectId || null : null,
+  );
   const [replaysProjectId, setReplaysProjectId] = useState<any>(
     initialNavigation.view === 'replays' ? initialNavigation.projectId || null : null,
   );
@@ -942,6 +946,8 @@ export default function App({ initialView }: any = {}) {
         return supportProjectId;
       case 'deployments':
         return deploymentsProjectId;
+      case 'autopilot':
+        return autopilotProjectId;
       case 'replays':
         return replaysProjectId;
       case 'security':
@@ -952,6 +958,7 @@ export default function App({ initialView }: any = {}) {
   }, [
     currentView,
     deploymentsProjectId,
+    autopilotProjectId,
     notesProjectId,
     pullsProjectId,
     replaysProjectId,
@@ -990,6 +997,7 @@ export default function App({ initialView }: any = {}) {
       setSupportTicketId(route?.ticketId || null);
     }
     if (view === 'deployments') setDeploymentsProjectId(route?.projectId || null);
+    if (view === 'autopilot') setAutopilotProjectId(route?.projectId || null);
     if (view === 'replays') setReplaysProjectId(route?.projectId || null);
     if (view === 'security') setSecurityProjectId(route?.projectId || null);
     if (view === 'design') setActiveDesignId(route?.designId || null);
@@ -6487,6 +6495,7 @@ export default function App({ initialView }: any = {}) {
             googleCalendarNavVisible={googleCalendarNavVisible}
             googleGmailNavVisible={googleGmailNavVisible}
             deploymentsProjectId={deploymentsProjectId}
+            autopilotProjectId={autopilotProjectId}
             replaysProjectId={replaysProjectId}
             securityProjectId={securityProjectId}
             pullsProjectId={pullsProjectId}
@@ -7070,6 +7079,15 @@ export default function App({ initialView }: any = {}) {
                     if (sessionId) focusAgentSession(agentId, sessionId);
                   }}
                 />
+              ) : currentView === 'autopilot' && autopilotProjectId ? (
+                <div className="flex-1 overflow-y-auto p-4 md:p-6">
+                  <div className="max-w-4xl mx-auto">
+                    <AutopilotSettingsSection
+                      projectId={autopilotProjectId}
+                      showToast={showToast}
+                    />
+                  </div>
+                </div>
               ) : currentView === 'replays' && replaysProjectId ? (
                 <ReplaysDashboardPage
                   projectId={replaysProjectId}

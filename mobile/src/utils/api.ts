@@ -403,6 +403,26 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
+  // ── Experimental Project Autopilot ──
+  getAutopilot: (projectId: any) => fetchJSON(`/projects/${projectId}/autopilot`),
+  putAutopilotConfig: (projectId: any, body: any) =>
+    fetchJSON(`/projects/${projectId}/autopilot/config`, {
+      method: 'PUT',
+      body: JSON.stringify(body ?? {}),
+    }),
+  startAutopilot: (projectId: any, body: any = {}) =>
+    fetchJSON(`/projects/${projectId}/autopilot/start`, {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+  pauseAutopilot: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/autopilot/pause`, { method: 'POST' }),
+  resumeAutopilot: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/autopilot/resume`, { method: 'POST' }),
+  stopAutopilot: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/autopilot/stop`, { method: 'POST' }),
+  disableAutopilot: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/autopilot/disable`, { method: 'POST' }),
   // ── AI logs setup wizard ──
   getLogsSetupDraft: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/setup-draft`),
   startLogsWizard: (projectId: any) =>

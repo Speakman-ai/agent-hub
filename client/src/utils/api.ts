@@ -1252,6 +1252,34 @@ export const api = {
   // Revoke (soft-delete) an ingest client.
   revokeRumClient: (projectId: any, clientId: any) =>
     fetchJSON(`/projects/${projectId}/rum/clients/${clientId}`, { method: 'DELETE' }),
+  // ── Experimental Project Autopilot ───────────────────────────────
+  // Project state: server operator setting, config (opt-in, brief, target,
+  // limits, credential owner) and the single active run snapshot.
+  getAutopilot: (projectId: any) => fetchJSON(`/projects/${projectId}/autopilot`),
+  // Save opt-in / brief / target / limits / credential owner. Enabling
+  // requires a complete config; the server returns a 400 with the missing
+  // field when it is not ready.
+  putAutopilotConfig: (projectId: any, body: any) =>
+    fetchJSON(`/projects/${projectId}/autopilot/config`, {
+      method: 'PUT',
+      body: JSON.stringify(body ?? {}),
+    }),
+  // Start the single active run for the project.
+  startAutopilot: (projectId: any, body: any = {}) =>
+    fetchJSON(`/projects/${projectId}/autopilot/start`, {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+  pauseAutopilot: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/autopilot/pause`, { method: 'POST' }),
+  resumeAutopilot: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/autopilot/resume`, { method: 'POST' }),
+  // Stop is idempotent; it may return `stopping` until cancellation settles.
+  stopAutopilot: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/autopilot/stop`, { method: 'POST' }),
+  // Clear the opt-in; invokes Stop when a run is active.
+  disableAutopilot: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/autopilot/disable`, { method: 'POST' }),
   // ── AI logs setup wizard ─────────────────────────────────────────
   // Read-only repo scan: stack, logging libs, existing OTel setup, exporter
   // target candidates, recommended approach, existing sources. `{ projectId, draft }`.

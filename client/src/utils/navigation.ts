@@ -25,6 +25,7 @@ const PROJECT_SCOPED_VIEWS = new Set([
   'deployments',
   'replays',
   'security',
+  'autopilot',
 ]);
 
 const REMOVED_GLOBAL_VIEWS = new Set(['sheets', 'drive']);

@@ -43,6 +43,7 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
   Play: { family: 'feather', name: 'play' },
   Plus: { family: 'feather', name: 'plus' },
   RefreshCw: { family: 'feather', name: 'refresh-cw' },
+  Rocket: { family: 'material', name: 'rocket-launch' },
   ScanEye: { family: 'feather', name: 'eye' },
   ScrollText: { family: 'material', name: 'script-text-outline' },
   Server: { family: 'feather', name: 'server' },

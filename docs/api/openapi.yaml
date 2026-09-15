@@ -893,6 +893,9 @@ components:
         updatedBy:
           type: string
           nullable: true
+        revision:
+          type: integer
+          description: Optimistic-concurrency revision. Each successful config write increments it; pass it back as `expectedRevision` on the next PUT to reject stale, out-of-order writes.
       required:
         - projectId
         - enabled
@@ -906,6 +909,7 @@ components:
         - credentialOwnerUserId
         - updatedAt
         - updatedBy
+        - revision
     AutopilotRun:
       type: object
       properties:
@@ -1243,6 +1247,9 @@ components:
           allOf:
             - $ref: "#/components/schemas/AutopilotLease"
             - nullable: true
+        stateVersion:
+          type: integer
+          description: Server-authored monotonic version (max event seq for the project). Clients order overlapping GET/mutation responses by this rather than arrival order.
       required:
         - run
         - cycle
@@ -1250,6 +1257,7 @@ components:
         - operations
         - events
         - lease
+        - stateVersion
     AutopilotProjectState:
       type: object
       properties:
@@ -1261,10 +1269,14 @@ components:
           allOf:
             - $ref: "#/components/schemas/AutopilotRunSnapshot"
             - nullable: true
+        stateVersion:
+          type: integer
+          description: Server-authored monotonic version, present even with no active run, so clients can order overlapping GET/mutation responses by server state rather than arrival order.
       required:
         - serverEnabled
         - config
         - activeRun
+        - stateVersion
     BackgroundShell:
       type: object
       properties:
@@ -19506,6 +19518,10 @@ paths:
                 credentialOwnerUserId:
                   type: string
                   nullable: true
+                expectedRevision:
+                  type: integer
+                  minimum: 0
+                  description: "Optimistic-concurrency guard: the config revision the caller loaded. The write is rejected with 409 if the stored revision has since advanced."
       responses:
         "200":
           description: Saved configuration.

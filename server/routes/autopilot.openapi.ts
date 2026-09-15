@@ -81,6 +81,10 @@ export const AutopilotConfigSchema = registerComponent(
     credentialOwnerUserId: z.string().nullable(),
     updatedAt: z.string(),
     updatedBy: z.string().nullable(),
+    revision: z.number().int().openapi({
+      description:
+        'Optimistic-concurrency revision. Each successful config write increments it; pass it back as `expectedRevision` on the next PUT to reject stale, out-of-order writes.',
+    }),
   }),
 );
 
@@ -232,6 +236,10 @@ export const AutopilotRunSnapshotSchema = registerComponent(
     operations: z.array(AutopilotOperationSchema),
     events: z.array(AutopilotEventSchema),
     lease: AutopilotLeaseSchema.nullable(),
+    stateVersion: z.number().int().openapi({
+      description:
+        'Server-authored monotonic version (max event seq for the project). Clients order overlapping GET/mutation responses by this rather than arrival order.',
+    }),
   }),
 );
 
@@ -241,6 +249,10 @@ export const AutopilotProjectStateSchema = registerComponent(
     serverEnabled: z.boolean(),
     config: AutopilotConfigSchema,
     activeRun: AutopilotRunSnapshotSchema.nullable(),
+    stateVersion: z.number().int().openapi({
+      description:
+        'Server-authored monotonic version, present even with no active run, so clients can order overlapping GET/mutation responses by server state rather than arrival order.',
+    }),
   }),
 );
 
@@ -272,6 +284,10 @@ export const PutAutopilotConfigRequestSchema = z.object({
     .nullable()
     .optional(),
   credentialOwnerUserId: z.string().nullable().optional(),
+  expectedRevision: z.number().int().nonnegative().optional().openapi({
+    description:
+      'Optimistic-concurrency guard: the config revision the caller loaded. The write is rejected with 409 if the stored revision has since advanced.',
+  }),
 });
 
 export const StartAutopilotRequestSchema = z.object({

@@ -1147,3 +1147,57 @@ describe('autopilot controller', () => {
     expect(store.getRun(started.run.id)!.lastVerifiedSha).toBeNull();
   });
 });
+
+describe('autopilot config optimistic concurrency', () => {
+  it('increments the revision on each successful write', () => {
+    const { controller } = freshController();
+    expect(controller.putConfig(PROJECT, { brief: 'first' }, ACTOR).revision).toBe(1);
+    expect(controller.putConfig(PROJECT, { brief: 'second' }, ACTOR).revision).toBe(2);
+  });
+
+  it('rejects a stale write and preserves the newer config under reversed ordering', () => {
+    const { controller } = freshController();
+    // Base config at revision 1; both later edits are built from this revision.
+    const base = controller.putConfig(PROJECT, { ...READY, enabled: true }, ACTOR);
+    expect(base.revision).toBe(1);
+
+    // "Save #2" (the newer intent) reaches the server first and succeeds.
+    const save2 = controller.putConfig(
+      PROJECT,
+      { brief: 'newer brief', expectedRevision: base.revision },
+      ACTOR,
+    );
+    expect(save2.revision).toBe(2);
+    expect(save2.brief).toBe('newer brief');
+
+    // "Save #1" (the older intent) arrives afterwards carrying the now-stale
+    // base revision — it must be rejected, not silently overwrite the newer one.
+    let code: string | undefined;
+    let status: number | undefined;
+    try {
+      controller.putConfig(
+        PROJECT,
+        { brief: 'older brief', expectedRevision: base.revision },
+        ACTOR,
+      );
+    } catch (err) {
+      code = (err as AutopilotError).code;
+      status = (err as AutopilotError).httpStatus;
+    }
+    expect(code).toBe('conflict');
+    expect(status).toBe(409);
+
+    // Final persisted configuration is the newer write; the stale one never landed.
+    const final = controller.getProjectState(PROJECT).config;
+    expect(final.brief).toBe('newer brief');
+    expect(final.revision).toBe(2);
+  });
+
+  it('permits an unconditional write when no expectedRevision is supplied', () => {
+    const { controller } = freshController();
+    controller.putConfig(PROJECT, { brief: 'a' }, ACTOR);
+    const c = controller.putConfig(PROJECT, { brief: 'b' }, ACTOR);
+    expect(c.brief).toBe('b');
+    expect(c.revision).toBe(2);
+  });
+});

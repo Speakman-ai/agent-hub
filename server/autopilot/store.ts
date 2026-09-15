@@ -127,6 +127,7 @@ interface ConfigRow {
   credential_owner_user_id: string | null;
   updated_at: string;
   updated_by: string | null;
+  revision: number | null;
 }
 
 interface BriefRow {
@@ -345,6 +346,7 @@ export interface UpsertConfigInput {
   credentialOwnerUserId: string | null;
   updatedAt: string;
   updatedBy: string | null;
+  revision: number;
 }
 
 export interface InsertRunInput {
@@ -393,6 +395,7 @@ export class AutopilotStore {
         credentialOwnerUserId: null,
         updatedAt: '',
         updatedBy: null,
+        revision: 0,
       };
     }
     const brief = row.brief_id ? this.getBrief(row.brief_id) : null;
@@ -409,6 +412,7 @@ export class AutopilotStore {
       credentialOwnerUserId: row.credential_owner_user_id,
       updatedAt: row.updated_at,
       updatedBy: row.updated_by,
+      revision: row.revision ?? 0,
     };
   }
 
@@ -417,9 +421,9 @@ export class AutopilotStore {
       .prepare(
         `INSERT INTO autopilot_project_config (
            project_id, enabled, disabling, brief_id, target_id, target_json, limits_json,
-           evaluator_policy_json, credential_owner_user_id, updated_at, updated_by
+           evaluator_policy_json, credential_owner_user_id, updated_at, updated_by, revision
          ) VALUES (@projectId, @enabled, @disabling, @briefId, @targetId, @targetJson, @limitsJson,
-           @evaluatorPolicyJson, @credentialOwnerUserId, @updatedAt, @updatedBy)
+           @evaluatorPolicyJson, @credentialOwnerUserId, @updatedAt, @updatedBy, @revision)
          ON CONFLICT(project_id) DO UPDATE SET
            enabled = excluded.enabled,
            disabling = excluded.disabling,
@@ -430,7 +434,8 @@ export class AutopilotStore {
            evaluator_policy_json = excluded.evaluator_policy_json,
            credential_owner_user_id = excluded.credential_owner_user_id,
            updated_at = excluded.updated_at,
-           updated_by = excluded.updated_by`,
+           updated_by = excluded.updated_by,
+           revision = excluded.revision`,
       )
       .run({
         projectId: input.projectId,
@@ -444,6 +449,7 @@ export class AutopilotStore {
         credentialOwnerUserId: input.credentialOwnerUserId,
         updatedAt: input.updatedAt,
         updatedBy: input.updatedBy,
+        revision: input.revision,
       });
   }
 
@@ -1070,6 +1076,26 @@ export class AutopilotStore {
       .prepare(`SELECT * FROM autopilot_events WHERE run_id = ? ORDER BY seq DESC LIMIT ?`)
       .all(runId, limit) as EventRow[];
     return rows.map(mapEvent).reverse();
+  }
+
+  /**
+   * Highest event `seq` across all of a project's runs (0 when none). Event
+   * seq is globally monotonic and incremented on every controller transition,
+   * so this is a server-authored version that orders any two project snapshots
+   * — including the transition to/from "no active run", which carries no run
+   * timestamp of its own. Clients use it to reconcile overlapping GET/mutation
+   * responses by server state order rather than arrival order.
+   */
+  maxEventSeq(projectId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(MAX(e.seq), 0) AS max_seq
+           FROM autopilot_events e
+           JOIN autopilot_runs r ON r.id = e.run_id
+          WHERE r.project_id = ?`,
+      )
+      .get(projectId) as { max_seq: number } | undefined;
+    return row?.max_seq ?? 0;
   }
 }
 

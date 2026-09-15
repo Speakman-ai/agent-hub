@@ -17,7 +17,8 @@ export const AUTOPILOT_SCHEMA = `
     evaluator_policy_json TEXT NOT NULL DEFAULT '{}',
     credential_owner_user_id TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_by TEXT
+    updated_by TEXT,
+    revision INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS autopilot_briefs (
@@ -177,6 +178,14 @@ export function ensureAutopilotSchema(db: { exec: (sql: string) => unknown }): v
     db.exec(
       `ALTER TABLE autopilot_project_config ADD COLUMN evaluator_policy_json TEXT NOT NULL DEFAULT '{}'`,
     );
+  } catch {
+    /* column already present */
+  }
+  try {
+    // Optimistic-concurrency revision for config writes: each successful
+    // putConfig bumps it, and a PUT carrying a stale expectedRevision is
+    // rejected so out-of-order writes can't clobber newer settings.
+    db.exec('ALTER TABLE autopilot_project_config ADD COLUMN revision INTEGER NOT NULL DEFAULT 0');
   } catch {
     /* column already present */
   }

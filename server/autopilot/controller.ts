@@ -45,6 +45,12 @@ export interface PutAutopilotConfigInput {
   limits?: Partial<AutopilotLimits> | null;
   evaluatorPolicy?: Partial<AutopilotEvaluatorPolicy> | null;
   credentialOwnerUserId?: string | null;
+  /**
+   * Optimistic-concurrency guard. When provided, the write is rejected with a
+   * `conflict` if the stored config revision has moved on since the caller
+   * loaded it — so an out-of-order PUT can't overwrite newer settings.
+   */
+  expectedRevision?: number;
 }
 
 export interface StartAutopilotInput {
@@ -466,6 +472,7 @@ export class AutopilotController {
       credentialOwnerUserId: config.credentialOwnerUserId,
       updatedAt: this.timestamp(),
       updatedBy: actor.userId,
+      revision: config.revision + 1,
     });
   }
 
@@ -501,6 +508,7 @@ export class AutopilotController {
       operations: this.store.listOperations(runId),
       events: this.store.listEvents(runId),
       lease: this.store.getLease(run.projectId),
+      stateVersion: this.store.maxEventSeq(run.projectId),
     };
   }
 
@@ -511,6 +519,7 @@ export class AutopilotController {
       serverEnabled: this.isServerEnabled(),
       config,
       activeRun: active ? this.snapshot(active.id) : null,
+      stateVersion: this.store.maxEventSeq(projectId),
     };
   }
 
@@ -600,8 +609,18 @@ export class AutopilotController {
 
     const updatedAt = this.timestamp();
     this.store.transaction(() => {
-      if (this.store.getConfig(projectId).disabling) {
+      const currentInTx = this.store.getConfig(projectId);
+      if (currentInTx.disabling) {
         throw new AutopilotError('conflict', 'Autopilot disable is in progress');
+      }
+      // Optimistic concurrency: reject a write built from a stale revision so a
+      // config PUT that reaches the server out of order can't overwrite a newer
+      // one. The check runs inside the write transaction against the live value.
+      if (input.expectedRevision !== undefined && input.expectedRevision !== currentInTx.revision) {
+        throw new AutopilotError(
+          'conflict',
+          'Autopilot configuration was modified since it was loaded; reload and retry',
+        );
       }
       if (pendingBrief) {
         this.store.insertBrief(pendingBrief);
@@ -618,6 +637,7 @@ export class AutopilotController {
         credentialOwnerUserId,
         updatedAt,
         updatedBy: actor.userId,
+        revision: currentInTx.revision + 1,
       });
     });
     return this.store.getConfig(projectId);

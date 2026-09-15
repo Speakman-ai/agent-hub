@@ -84,6 +84,8 @@ export interface AutopilotProjectConfig {
   credentialOwnerUserId: string | null;
   updatedAt: string;
   updatedBy: string | null;
+  /** Optimistic-concurrency revision; each successful config write increments it. */
+  revision: number;
 }
 
 export interface AutopilotRunRecord {
@@ -203,12 +205,20 @@ export interface AutopilotRunSnapshot {
   operations: AutopilotOperationRecord[];
   events: AutopilotEventRecord[];
   lease: AutopilotLeaseRecord | null;
+  /** Server-authored monotonic version (max event seq for the project). */
+  stateVersion: number;
 }
 
 export interface AutopilotProjectState {
   serverEnabled: boolean;
   config: AutopilotProjectConfig;
   activeRun: AutopilotRunSnapshot | null;
+  /**
+   * Server-authored monotonic version (max event seq for the project), present
+   * even when there is no active run. Clients order overlapping GET/mutation
+   * responses by this instead of arrival order.
+   */
+  stateVersion: number;
 }
 
 export const DEFAULT_AUTOPILOT_LIMITS: AutopilotLimits = {
