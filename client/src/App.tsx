@@ -6470,6 +6470,7 @@ export default function App({ initialView }: any = {}) {
                 setSupportTicketId(null);
               }
               if (view === 'deployments' && extra) setDeploymentsProjectId(extra);
+              if (view === 'autopilot' && extra) setAutopilotProjectId(extra);
               if (view === 'replays' && extra) setReplaysProjectId(extra);
               if (view === 'security' && extra) setSecurityProjectId(extra);
               setSidebarOpen(false);
