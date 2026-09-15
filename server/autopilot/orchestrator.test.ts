@@ -197,7 +197,6 @@ function harness(opts?: {
   const stubs = stubWorkerCreds();
   const controller = createAutopilotController({
     db,
-    isServerEnabled: () => true,
     credentialOwnerExists: () => true,
     holderId: opts?.holderId ?? 'hub-a',
     assertContainment: stubs.assertContainment,
@@ -420,7 +419,6 @@ describe('autopilot orchestrator', () => {
     // ambiguous and the run parks paused with a bumped fencing generation.
     const restarted = createAutopilotController({
       db,
-      isServerEnabled: () => true,
       credentialOwnerExists: () => true,
       holderId: 'hub-b',
       assertContainment: () => undefined,

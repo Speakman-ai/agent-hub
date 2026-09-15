@@ -14,8 +14,9 @@ describe('autopilot operator runbook', () => {
 
   it('documents setup and a recovery runbook without requiring a shell', () => {
     const doc = readFileSync(GUIDE, 'utf8');
-    // Setup surface: server gate, opt-in config, readiness/start.
-    expect(doc).toMatch(/Enable the server setting/i);
+    // Setup surface: per-project enablement, opt-in config, readiness/start.
+    expect(doc).toMatch(/Enable Autopilot for the project/i);
+    expect(doc).toMatch(/per project/i);
     expect(doc).toMatch(/Readiness and Start/i);
     expect(doc).toMatch(/Pause, Resume, Stop/i);
     // Recovery runbook covers the induced-failure paths this epic validates.

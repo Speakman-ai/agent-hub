@@ -113,7 +113,6 @@ export interface AutopilotRunSnapshotWire {
 }
 
 export interface AutopilotProjectStateWire {
-  serverEnabled: boolean;
   config: AutopilotConfigWire;
   activeRun: AutopilotRunSnapshotWire | null;
   /** Server-authored monotonic version, present even with no active run. */
@@ -280,14 +279,6 @@ export function deriveReadiness(state: AutopilotProjectStateWire): ReadinessItem
   const target = config.target;
   return [
     {
-      key: 'server',
-      label: 'Enabled by server operator',
-      ok: state.serverEnabled,
-      detail: state.serverEnabled
-        ? 'The Autopilot server setting is on.'
-        : 'An operator must turn on the Autopilot server setting before a run can start.',
-    },
-    {
       key: 'brief',
       label: 'Product brief',
       ok: hasBrief(config),
@@ -364,10 +355,9 @@ export function deriveControls(state: AutopilotProjectStateWire): AutopilotContr
   const active = isActiveRun(run);
   const disabling = state.config.disabling;
   return {
-    canStart:
-      state.serverEnabled && state.config.enabled && !disabling && !active && isReady(state),
+    canStart: state.config.enabled && !disabling && !active && isReady(state),
     canPause: cs === 'running',
-    canResume: cs === 'paused' && state.serverEnabled && !disabling,
+    canResume: cs === 'paused' && !disabling,
     canStop: active && cs !== 'stopping',
     canDisable: state.config.enabled && !disabling,
     stopping: cs === 'stopping' || cs === 'pausing' || disabling,
@@ -603,7 +593,6 @@ export function deriveRunView(state: AutopilotProjectStateWire): AutopilotRunVie
 }
 
 export interface AutopilotView {
-  serverEnabled: boolean;
   enabled: boolean;
   disabling: boolean;
   readiness: ReadinessItem[];
@@ -616,7 +605,6 @@ export interface AutopilotView {
 export function deriveAutopilotView(state: AutopilotProjectStateWire): AutopilotView {
   const readiness = deriveReadiness(state);
   return {
-    serverEnabled: state.serverEnabled,
     enabled: state.config.enabled,
     disabling: state.config.disabling,
     readiness,

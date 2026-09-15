@@ -199,12 +199,11 @@ export default function AutopilotSettingsSection({
         const res = (await api.getAutopilot(proj)) as AutopilotProjectStateWire;
         if (!current()) return; // project switched or superseded by a newer load
         // Apply the run only if this GET is at least as fresh as what's shown;
-        // config/serverEnabled always take the latest read. This keeps a stale
-        // read (e.g. a reconnect returning pre-Start state) from clobbering a
-        // newer applied run, while a newer read supersedes stale mutations.
+        // config always takes the latest read. This keeps a stale read (e.g. a
+        // reconnect returning pre-Start state) from clobbering a newer applied
+        // run, while a newer read supersedes stale mutations.
         const runFresh = acceptStateVersion(res.stateVersion);
         setState((prev) => ({
-          serverEnabled: res.serverEnabled,
           config: res.config,
           activeRun: runFresh ? res.activeRun : (prev?.activeRun ?? null),
         }));
@@ -479,16 +478,6 @@ export default function AutopilotSettingsSection({
           data-testid="autopilot-error"
         >
           <AlertCircle size={16} /> {error}
-        </div>
-      )}
-
-      {view && !view.serverEnabled && (
-        <div
-          className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2"
-          data-testid="autopilot-server-disabled"
-        >
-          Autopilot is turned off by the server operator. Configuration can be prepared, but a run
-          cannot start until it is enabled server-side.
         </div>
       )}
 

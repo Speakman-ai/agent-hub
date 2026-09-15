@@ -53,7 +53,6 @@ describe('autopilot acceptance — AC3 authorization and durable outcomes', () =
 
     const afterStop = createAutopilotController({
       db,
-      isServerEnabled: () => true,
       credentialOwnerExists: () => true,
       holderId: 'hub-c',
       assertContainment: () => undefined,

@@ -89,7 +89,6 @@ export interface CompleteOperationInput {
 
 export interface AutopilotControllerDeps {
   db: Database.Database;
-  isServerEnabled: () => boolean;
   now?: () => Date;
   randomId?: () => string;
   holderId?: string;
@@ -285,7 +284,6 @@ export class AutopilotController {
   private readonly now: () => Date;
   private readonly randomId: () => string;
   private readonly holderId: string;
-  private readonly isServerEnabled: () => boolean;
   private readonly cancelSideEffects: AutopilotCancelSideEffects;
   private readonly getDeployedRevision?: (projectId: string, targetId: string) => string | null;
   private readonly validateLocalTarget?: AutopilotLocalTargetLookup;
@@ -299,7 +297,6 @@ export class AutopilotController {
     this.now = deps.now ?? defaultNow;
     this.randomId = deps.randomId ?? randomUUID;
     this.holderId = deps.holderId ?? `hub:${process.pid}`;
-    this.isServerEnabled = deps.isServerEnabled;
     this.cancelSideEffects = deps.cancelSideEffects ?? (async () => undefined);
     this.getDeployedRevision = deps.getDeployedRevision;
     this.validateLocalTarget = deps.validateLocalTarget;
@@ -427,15 +424,6 @@ export class AutopilotController {
     });
   }
 
-  private requireServerEnabled(): void {
-    if (!this.isServerEnabled()) {
-      throw new AutopilotError(
-        'server_disabled',
-        'Experimental Autopilot is disabled by the server operator setting',
-      );
-    }
-  }
-
   private requireNotDisabling(projectId: string): AutopilotProjectConfig {
     const config = this.store.getConfig(projectId);
     if (config.disabling) {
@@ -516,7 +504,6 @@ export class AutopilotController {
     const config = this.store.getConfig(projectId);
     const active = this.store.getActiveRun(projectId);
     return {
-      serverEnabled: this.isServerEnabled(),
       config,
       activeRun: active ? this.snapshot(active.id) : null,
       stateVersion: this.store.maxEventSeq(projectId),
@@ -536,7 +523,6 @@ export class AutopilotController {
     input: PutAutopilotConfigInput,
     actor: AutopilotActor,
   ): AutopilotProjectConfig {
-    this.requireServerEnabled();
     this.requireNotDisabling(projectId);
     const existing = this.store.getConfig(projectId);
     const enabled = input.enabled ?? existing.enabled;
@@ -670,7 +656,6 @@ export class AutopilotController {
     input: StartAutopilotInput,
     actor: AutopilotActor,
   ): AutopilotRunSnapshot {
-    this.requireServerEnabled();
     this.requireNotDisabling(projectId);
     this.assertContainment();
     if (!this.issueWorkerCredential) {
@@ -847,7 +832,6 @@ export class AutopilotController {
   }
 
   pause(projectId: string, _actor: AutopilotActor): AutopilotRunSnapshot {
-    this.requireServerEnabled();
     const run = this.store.getActiveRun(projectId);
     if (!run) {
       throw new AutopilotError('no_active_run', 'No active Autopilot run to pause');
@@ -870,7 +854,6 @@ export class AutopilotController {
   }
 
   async resume(projectId: string, _actor: AutopilotActor): Promise<AutopilotRunSnapshot> {
-    this.requireServerEnabled();
     this.requireProjectDispatchable(projectId);
     const config = this.store.getConfig(projectId);
     const run = this.store.getActiveRun(projectId);
@@ -1157,7 +1140,6 @@ export class AutopilotController {
   async stop(projectId: string, _actor: AutopilotActor): Promise<AutopilotRunSnapshot> {
     const run = this.store.getActiveRun(projectId) ?? this.store.getLatestRun(projectId);
     if (!run) {
-      this.requireServerEnabled();
       throw new AutopilotError('no_active_run', 'No Autopilot run to stop');
     }
     if (run.controlState === 'stopped') {
@@ -1256,7 +1238,6 @@ export class AutopilotController {
   }
 
   async beginOperation(input: BeginOperationInput): Promise<AutopilotOperationRecord> {
-    this.requireServerEnabled();
     this.requireProjectDispatchable(input.projectId);
     const run = this.store.getActiveRun(input.projectId);
     if (!run) {
@@ -1487,7 +1468,6 @@ export class AutopilotController {
   }
 
   async openNextCycle(projectId: string): Promise<AutopilotRunSnapshot> {
-    this.requireServerEnabled();
     this.requireProjectDispatchable(projectId);
     const run = this.store.getActiveRun(projectId);
     if (!run) {
@@ -1544,7 +1524,6 @@ export class AutopilotController {
       verificationJson?: string;
     },
   ): AutopilotRunSnapshot {
-    this.requireServerEnabled();
     this.requireProjectDispatchable(projectId);
     const run = this.store.getActiveRun(projectId);
     if (!run) {
@@ -1612,7 +1591,6 @@ export class AutopilotController {
    * generation cannot advance the run.
    */
   advanceStage(projectId: string, toStage: AutopilotStage): AutopilotRunSnapshot {
-    this.requireServerEnabled();
     this.requireProjectDispatchable(projectId);
     const run = this.store.getActiveRun(projectId);
     if (!run) {
@@ -1676,7 +1654,6 @@ export class AutopilotController {
     projectId: string,
     input: { sha: string; deploymentId: string },
   ): AutopilotRunSnapshot {
-    this.requireServerEnabled();
     this.requireProjectDispatchable(projectId);
     const run = this.store.getActiveRun(projectId);
     if (!run) {
@@ -1792,7 +1769,6 @@ export class AutopilotController {
       busyMessage: string;
     },
   ): AutopilotOperationRecord | null {
-    this.requireServerEnabled();
     this.requireProjectDispatchable(projectId);
     const run = this.store.getActiveRun(projectId);
     if (!run) {

@@ -1,5 +1,4 @@
 export type AutopilotErrorCode =
-  | 'server_disabled'
   | 'not_enabled'
   | 'invalid_config'
   | 'already_active'
@@ -31,7 +30,6 @@ export class AutopilotError extends Error {
 
 function statusForCode(code: AutopilotErrorCode): number {
   switch (code) {
-    case 'server_disabled':
     case 'not_enabled':
     case 'authority_denied':
       return 403;

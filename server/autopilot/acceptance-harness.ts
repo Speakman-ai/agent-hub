@@ -291,7 +291,6 @@ export function harness(opts?: {
   ensureAutopilotSchema(db);
   const controller = createAutopilotController({
     db,
-    isServerEnabled: () => true,
     credentialOwnerExists: () => true,
     holderId: opts?.holderId ?? 'hub-a',
     now: opts?.now,
@@ -550,7 +549,6 @@ export function rebuild(
 ) {
   const controller = createAutopilotController({
     db,
-    isServerEnabled: () => true,
     credentialOwnerExists: () => true,
     holderId,
     assertContainment: () => undefined,

@@ -26,7 +26,6 @@ import {
 } from './autopilot.openapi.js';
 
 export interface AutopilotRouteOptions {
-  isServerEnabled?: () => boolean;
   cancelSideEffects?: AutopilotCancelSideEffects;
   getDeployedRevision?: (projectId: string, targetId: string) => string | null;
   credentialOwnerExists?: (userId: string) => boolean;
@@ -52,8 +51,6 @@ export function buildAutopilotControllerDeps(
 ): AutopilotControllerDeps {
   return {
     db: getDb(),
-    isServerEnabled:
-      options.isServerEnabled ?? (() => Boolean(config.experimentalAutopilotEnabled)),
     cancelSideEffects: options.cancelSideEffects,
     getDeployedRevision: options.getDeployedRevision,
     validateLocalTarget: options.validateLocalTarget,

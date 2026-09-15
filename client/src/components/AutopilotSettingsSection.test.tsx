@@ -76,7 +76,6 @@ function run(overrides: any = {}) {
 
 function state(overrides: any = {}) {
   return {
-    serverEnabled: true,
     config: readyConfig(),
     activeRun: null,
     ...overrides,
@@ -95,8 +94,7 @@ describe('AutopilotSettingsSection', () => {
   it('renders the readiness checklist from the loaded state', async () => {
     render(<AutopilotSettingsSection projectId="p1" />);
     await waitFor(() => expect(screen.getByTestId('autopilot-readiness')).toBeTruthy());
-    // All requirements met for a complete config + server on.
-    expect(screen.getByTestId('autopilot-readiness-server').textContent).toContain('server');
+    // All requirements met for a complete config.
     expect(screen.getByTestId('autopilot-readiness-brief')).toBeTruthy();
     expect(screen.getByTestId('autopilot-readiness-owner')).toBeTruthy();
   });
@@ -350,13 +348,6 @@ describe('AutopilotSettingsSection', () => {
 
     expect(api.putAutopilotConfig).not.toHaveBeenCalled();
     expect(showToast).toHaveBeenCalledWith(expect.stringMatching(/wall-time/i), 'error');
-  });
-
-  it('shows the server-disabled banner and blocks opt-in readiness when the operator setting is off', async () => {
-    (api.getAutopilot as any).mockResolvedValue(state({ serverEnabled: false }));
-    render(<AutopilotSettingsSection projectId="p1" />);
-    await waitFor(() => expect(screen.getByTestId('autopilot-server-disabled')).toBeTruthy());
-    expect(screen.getByTestId('autopilot-readiness-server').textContent).toMatch(/operator/i);
   });
 
   it('offers Stop for a running run and calls stopAutopilot', async () => {

@@ -62,7 +62,6 @@ function makeConfig(): AppConfig {
     codexDangerBypass: true,
     cursorSandboxBypass: true,
     cardDoneOnPush: true,
-    experimentalAutopilotEnabled: false,
     slackWebhookUrl: null,
     browserMaxConcurrentContexts: 3,
     browserIdleTimeoutMs: 300_000,

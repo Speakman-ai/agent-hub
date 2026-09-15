@@ -3,8 +3,9 @@
 Experimental Project Autopilot runs one bounded implement, review, merge,
 deploy, verify, document cycle at a time against a **disposable local** web app
 or API, then selects one evidence-backed improvement and repeats. It is disabled
-by default, opt-in per project, and additionally gated by a server operator
-setting. This guide is the operator runbook: how to turn it on, what Autopilot
+by default and opt-in **per project** — there is no server-wide operator gate.
+Enabling Autopilot is entirely a per-project configuration, like a project's AWS
+profiles. This guide is the operator runbook: how to turn it on, what Autopilot
 does without a human in the loop, how it recovers from a bad deployment, and the
 two limits every operator must understand before trusting a run: **what an
 evaluator score does and does not prove**, and **why recovery is a code-only
@@ -26,36 +27,19 @@ Out of scope: native mobile builds, cloud provisioning, production deployment,
 and anything that would modify the running Hub, another project, the controller
 policy, or the human-authored brief and limits.
 
-## 1. Enable the server setting
+## 1. Enable Autopilot for the project
 
-Autopilot cannot start until an authorized operator turns on the server-side
-feature flag **`experimentalAutopilotEnabled`** (default `false`). This gate is
-independent of local-mode authentication bypass: enabling local mode does
-**not** enable Autopilot. Until the flag is on, the project settings module lets
-you prepare a configuration but shows a "turned off by the server operator"
-banner (`autopilot-server-disabled`) and blocks Start.
+Enablement is **per project**. There is no server-wide operator switch to flip
+first: a project admin opts the project in and starts it entirely from that
+project's settings, the same way a project's AWS profiles are configured
+per-project rather than host-wide. A project stays disabled until its own config
+is complete and an admin enables and starts it; nothing about one project's
+Autopilot affects another's.
 
-There are three supported ways to set it. The API path applies live; the file
-and env paths are read at startup and need a restart:
-
-- **`PATCH /api/config`** (recommended; requires an Owner/Admin session):
-  send `{ "experimentalAutopilotEnabled": true }`. The server applies it to the
-  running config immediately (no restart) and persists it to
-  `~/.agent-hub/data/config.json`. The Autopilot start/config gate reads the
-  live value, so the "server disabled" banner clears on the next load. Set it
-  back to `false` to turn the gate off. This field is documented in the OpenAPI
-  reference under **Config**.
-- **`config.json`**: set `"experimentalAutopilotEnabled": true` in
-  `~/.agent-hub/data/config.json` (or the legacy `server/config.json` fallback).
-  This file is read at boot, so **restart the server** (`pm2 restart agent-hub`,
-  or your process manager) for the change to take effect.
-- **Environment variable**: set `AGENT_HUB_EXPERIMENTAL_AUTOPILOT=true` on the
-  server process. It is read once at startup, so it also requires a
-  **restart**; when set, it overrides the config-file value.
-
-The setting is process-wide, not per project: it authorizes any opted-in
-project to start a run. Leaving it off keeps every project's Autopilot disabled
-regardless of per-project configuration.
+Do everything from **Settings > Experimental Autopilot** for the project: fill
+the setup form, satisfy the readiness checklist, toggle the project on, and
+Start. The REST surface behind these controls is documented in the OpenAPI
+reference under **Autopilot**.
 
 ## 2. Opt the project in and configure the run
 

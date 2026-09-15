@@ -87,10 +87,6 @@ export const AppConfigComponent = registerComponent(
         description:
           'Whether deployment/release notification emails render the Agent Hub logo in the HTML header. Default true. Configurable via `emailLogoEnabled` in config.json, `PATCH /api/config`, or env `AGENT_HUB_EMAIL_LOGO_ENABLED`.',
       }),
-      experimentalAutopilotEnabled: z.boolean().optional().openapi({
-        description:
-          'Operator gate for Experimental Project Autopilot. Default false. Independent of local-mode authentication bypass. Configurable via `experimentalAutopilotEnabled` in config.json, `PATCH /api/config`, or env `AGENT_HUB_EXPERIMENTAL_AUTOPILOT`.',
-      }),
       codexProfile: z.string().nullable().optional().openapi({
         description:
           'Optional Codex CLI profile name forwarded as `--profile <name>` on every codex spawn (chat, room, design, slack one-shot). Null / empty = no flag. Configurable via `codexProfile` in config.json, `PATCH /api/config`, or env `CODEX_PROFILE`.',
@@ -104,7 +100,6 @@ export const AppConfigComponent = registerComponent(
       }),
       features: z.object({
         prEnv: z.boolean(),
-        experimentalAutopilot: z.boolean().optional(),
       }),
     })
     .passthrough()

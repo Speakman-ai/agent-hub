@@ -78,7 +78,6 @@ function fakeAdapters(): AutopilotAdapters {
 function buildController(db: Database.Database) {
   return createAutopilotController({
     db,
-    isServerEnabled: () => true,
     credentialOwnerExists: () => true,
     holderId: 'hub-a',
     assertContainment: () => undefined,

@@ -240,7 +240,6 @@ export async function runIntegratedBaselineCycle(opts: {
   };
 
   const controllerOptions = {
-    isServerEnabled: () => true,
     credentialOwnerExists: () => true,
     holderId: 'hub-fixture',
     assertContainment: () => undefined,

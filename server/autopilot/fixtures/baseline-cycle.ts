@@ -244,7 +244,6 @@ export async function runLiveBaselineCycle(opts: {
   };
 
   const controllerOptions = {
-    isServerEnabled: () => true,
     credentialOwnerExists: () => true,
     holderId: 'hub-fixture',
     assertContainment: () => undefined,

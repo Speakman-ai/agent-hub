@@ -147,7 +147,6 @@ describe('formFromState', () => {
 
   it('hydrates from a saved config, converting limit units', () => {
     const f = formFromState({
-      serverEnabled: true,
       activeRun: null,
       config: readyConfig({
         brief: 'Ship it',
@@ -222,7 +221,7 @@ describe('buildConfigBody', () => {
 
 describe('ExperimentalAutopilotScreen interactions', () => {
   it('opts in by enabling from the setup form', async () => {
-    apiMock.state = { serverEnabled: true, config: readyConfig(), activeRun: null };
+    apiMock.state = { config: readyConfig(), activeRun: null };
     let renderer: any;
     await act(async () => {
       renderer = create(<ExperimentalAutopilotScreen route={ROUTE} navigation={NAV} />);
@@ -238,7 +237,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('discards a deferred mutation completion after switching projects', async () => {
     apiMock.getAutopilot.mockImplementation(async (pid: string) => ({
-      serverEnabled: true,
       config: readyConfig({ projectId: pid, brief: `brief ${pid}` }),
       activeRun: null,
     }));
@@ -279,7 +277,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('serializes repeated Save — no overlapping config PUTs', async () => {
     apiMock.getAutopilot.mockImplementation(async () => ({
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: null,
     }));
@@ -306,7 +303,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('prevents Save and Enable from overlapping on a disabled project', async () => {
     apiMock.getAutopilot.mockImplementation(async () => ({
-      serverEnabled: true,
       config: readyConfig({ enabled: false }),
       activeRun: null,
     }));
@@ -332,7 +328,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('a stale Save from a prior visit cannot release the current Save slot (A→B→A)', async () => {
     apiMock.getAutopilot.mockImplementation(async (pid: string) => ({
-      serverEnabled: true,
       config: readyConfig({ projectId: pid, enabled: true, brief: `brief ${pid}` }),
       activeRun: null,
     }));
@@ -402,7 +397,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
     let rev = 1;
     let serverBrief = 'server v1';
     apiMock.getAutopilot.mockImplementation(async () => ({
-      serverEnabled: true,
       config: readyConfig({ revision: rev, brief: serverBrief }),
       activeRun: null,
     }));
@@ -447,7 +441,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
     let rev = 1;
     let serverBrief = 'A';
     apiMock.getAutopilot.mockImplementation(async () => ({
-      serverEnabled: true,
       config: readyConfig({ revision: rev, brief: serverBrief }),
       activeRun: null,
     }));
@@ -507,7 +500,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('ignores an out-of-order lifecycle response that would regress a newer one', async () => {
     apiMock.getAutopilot.mockResolvedValueOnce({
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'running' }), cycle: null, stateVersion: 1 },
       stateVersion: 1,
@@ -561,7 +553,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('discards a mutation response that a newer successful GET has superseded', async () => {
     apiMock.getAutopilot.mockResolvedValueOnce({
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'running' }), cycle: null, stateVersion: 1 },
       stateVersion: 1,
@@ -586,7 +577,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
     // External stop; a reconnect GET loads the newer state (no active run) at a
     // higher server version, then later GETs fail.
     apiMock.getAutopilot.mockResolvedValueOnce({
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: null,
       stateVersion: 3,
@@ -609,7 +599,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('applies a successful Start even if a stale pre-Start GET completed first', async () => {
     apiMock.getAutopilot.mockResolvedValueOnce({
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: null,
       stateVersion: 1,
@@ -631,7 +620,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
     // Reconnect GET returns the pre-Start state (no run, version 1); later fail.
     apiMock.getAutopilot.mockResolvedValueOnce({
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: null,
       stateVersion: 1,
@@ -655,7 +643,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('rejects an invalid cost cap instead of clearing the saved cap', async () => {
     apiMock.getAutopilot.mockResolvedValue({
-      serverEnabled: true,
       config: readyConfig({ enabled: true, limits: { ...LIMITS, maxCostUsd: 5 } }),
       activeRun: null,
     });
@@ -688,7 +675,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('rejects an invalid wall-time budget instead of silently defaulting', async () => {
     apiMock.getAutopilot.mockResolvedValue({
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: null,
     });
@@ -713,7 +699,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('keeps a pending Save owned across a Stop completion', async () => {
     apiMock.getAutopilot.mockImplementation(async () => ({
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'running' }), cycle: null },
     }));
@@ -756,7 +741,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('does not erase edits typed while a save is in flight', async () => {
     apiMock.getAutopilot.mockImplementation(async () => ({
-      serverEnabled: true,
       config: readyConfig({ brief: 'saved brief' }),
       activeRun: null,
     }));
@@ -792,7 +776,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('keeps the started run visible when the reconciling refresh fails', async () => {
     apiMock.getAutopilot.mockResolvedValueOnce({
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: null,
     });
@@ -818,7 +801,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('refetches changed server state on websocket reconnect', async () => {
     apiMock.state = {
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'running' }), cycle: null },
     };
@@ -833,7 +815,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
     // Server state changes while disconnected; reconnect refetches it.
     apiMock.state = {
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'paused', stage: null }), cycle: null },
     };
@@ -849,7 +830,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('Stop stays stopping until settlement, then renders the settled state', async () => {
     apiMock.state = {
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'running' }), cycle: null },
     };
@@ -863,7 +843,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
     // Press Stop → confirmation dialog; accept the destructive button.
     // The next refetch reports `stopping`.
     apiMock.state = {
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'stopping' }), cycle: null },
     };
@@ -881,7 +860,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
     // Settlement: the run is gone; a reconnect refetch renders the settled UI.
     apiMock.state = {
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: null,
     };
@@ -897,7 +875,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('renders verification evidence and documentation for a run', async () => {
     apiMock.state = {
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: {
         run: run({ controlState: 'failed', stage: 'verifying' }),
@@ -951,7 +928,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('resumes a paused run through the resume control', async () => {
     apiMock.state = {
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'paused', stage: null }), cycle: null },
     };
@@ -973,7 +949,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('disables Autopilot after confirming the destructive dialog', async () => {
     apiMock.state = {
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'running' }), cycle: null },
     };
@@ -994,7 +969,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('surfaces an alert when a run-control action fails', async () => {
     apiMock.state = {
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'running' }), cycle: null },
     };
@@ -1011,7 +985,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('marks a run-control action busy while it is pending', async () => {
     apiMock.state = {
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'running' }), cycle: null },
     };
@@ -1031,7 +1004,6 @@ describe('ExperimentalAutopilotScreen interactions', () => {
 
   it('surfaces the evaluator-score and code-only-rollback limits in the run view', async () => {
     apiMock.state = {
-      serverEnabled: true,
       config: readyConfig({ enabled: true }),
       activeRun: { run: run({ controlState: 'running' }), cycle: null },
     };

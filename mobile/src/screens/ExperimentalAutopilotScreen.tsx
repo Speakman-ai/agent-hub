@@ -158,10 +158,9 @@ export default function ExperimentalAutopilotScreen({ route, navigation }: any) 
         const res = (await api.getAutopilot(proj)) as AutopilotProjectStateWire;
         if (!current()) return;
         // Apply the run only if this GET is at least as fresh as what's shown;
-        // config/serverEnabled always take the latest read.
+        // config always takes the latest read.
         const runFresh = acceptStateVersion(res.stateVersion);
         setState((prev) => ({
-          serverEnabled: res.serverEnabled,
           config: res.config,
           activeRun: runFresh ? res.activeRun : (prev?.activeRun ?? null),
         }));
@@ -375,15 +374,6 @@ export default function ExperimentalAutopilotScreen({ route, navigation }: any) 
 
         {loading && <ActivityIndicator color={colors.gray400} />}
         {error && <Text style={styles.error}>{error}</Text>}
-
-        {view && !view.serverEnabled && (
-          <View style={styles.warnCard} testID="autopilot-server-disabled">
-            <Text style={styles.warnText}>
-              Autopilot is turned off by the server operator. You can prepare configuration, but a
-              run cannot start until it is enabled server-side.
-            </Text>
-          </View>
-        )}
 
         {view && view.run && (
           <View style={styles.card} testID="autopilot-run">
@@ -796,15 +786,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.gray800,
   },
-  warnCard: {
-    backgroundColor: colors.amber900_40,
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: colors.amber900_40,
-  },
-  warnText: { fontSize: 13, color: colors.amber400 },
   warnInline: { fontSize: 12, color: colors.amber400, marginTop: 4 },
   row: { fontSize: 13, color: colors.gray300, marginBottom: 4 },
   rowSmall: { fontSize: 12, color: colors.gray300, marginBottom: 3 },

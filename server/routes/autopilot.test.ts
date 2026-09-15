@@ -68,7 +68,6 @@ function makeApp(
   app.use(autopilotWorkerGuard);
   app.use(
     createAutopilotRoutes(deps, {
-      isServerEnabled: () => true,
       assertContainment: () => undefined,
       issueWorkerCredential: ({ projectId, runId }) => ({
         keyName: `autopilot:${projectId}:${runId}`,
@@ -98,7 +97,6 @@ describe('autopilot routes', () => {
   it('returns disabled project state before configuration', async () => {
     const res = await request(makeApp('User')).get(`/api/projects/${PROJECT_ID}/autopilot`);
     expect(res.status).toBe(200);
-    expect(res.body.serverEnabled).toBe(true);
     expect(res.body.config.enabled).toBe(false);
     expect(res.body.config.disabling).toBe(false);
     expect(res.body.activeRun).toBeNull();

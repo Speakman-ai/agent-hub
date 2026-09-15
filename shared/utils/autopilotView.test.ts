@@ -92,7 +92,6 @@ function run(overrides: Partial<AutopilotRunWire> = {}): AutopilotRunWire {
 
 function state(overrides: Partial<AutopilotProjectStateWire> = {}): AutopilotProjectStateWire {
   return {
-    serverEnabled: true,
     config: config(),
     activeRun: null,
     ...overrides,
@@ -183,10 +182,9 @@ describe('formatters', () => {
 
 describe('deriveReadiness', () => {
   it('flags every missing requirement on a fresh project', () => {
-    const items = deriveReadiness(state({ serverEnabled: false, config: config() }));
+    const items = deriveReadiness(state({ config: config() }));
     const byKey = Object.fromEntries(items.map((i) => [i.key, i.ok]));
     expect(byKey).toEqual({
-      server: false,
       brief: false,
       target: false,
       origin: false,
@@ -194,24 +192,17 @@ describe('deriveReadiness', () => {
       limits: false,
       owner: false,
     });
-    expect(isReady(state({ serverEnabled: false }))).toBe(false);
+    expect(isReady(state())).toBe(false);
   });
 
-  it('is fully ready when server on and config complete', () => {
-    const s = state({ serverEnabled: true, config: readyConfig() });
+  it('is fully ready when config complete', () => {
+    const s = state({ config: readyConfig() });
     expect(deriveReadiness(s).every((i) => i.ok)).toBe(true);
     expect(isReady(s)).toBe(true);
   });
 
-  it('stays not-ready when the server operator setting is off', () => {
-    const s = state({ serverEnabled: false, config: readyConfig() });
-    expect(isReady(s)).toBe(false);
-    expect(deriveReadiness(s).find((i) => i.key === 'server')?.ok).toBe(false);
-  });
-
   it('flags a target that is missing its readiness probe', () => {
     const s = state({
-      serverEnabled: true,
       config: readyConfig({
         target: { targetId: 'local', origin: 'http://127.0.0.1:8080', readinessProbeUrl: null },
       }),
@@ -222,14 +213,10 @@ describe('deriveReadiness', () => {
 });
 
 describe('deriveControls', () => {
-  it('allows start only when ready, enabled, server-on and no active run', () => {
+  it('allows start only when ready, enabled and no active run', () => {
     expect(deriveControls(state({ config: readyConfig() })).canStart).toBe(true);
     // not enabled
     expect(deriveControls(state({ config: readyConfig({ enabled: false }) })).canStart).toBe(false);
-    // server off
-    expect(deriveControls(state({ serverEnabled: false, config: readyConfig() })).canStart).toBe(
-      false,
-    );
     // not ready (no brief)
     expect(
       deriveControls(state({ config: readyConfig({ brief: null, briefId: null }) })).canStart,
@@ -470,7 +457,6 @@ describe('deriveAutopilotView', () => {
       activeRun: { run: run({ controlState: 'paused', stage: null }), cycle: null },
     });
     const view = deriveAutopilotView(s);
-    expect(view.serverEnabled).toBe(true);
     expect(view.enabled).toBe(true);
     expect(view.ready).toBe(true);
     expect(view.controls.canResume).toBe(true);

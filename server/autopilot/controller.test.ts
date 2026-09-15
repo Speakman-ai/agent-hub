@@ -46,7 +46,6 @@ function stubWorkerCreds() {
 const passContainment = { assertContainment: () => undefined };
 
 function freshController(opts?: {
-  serverEnabled?: boolean;
   cancelSideEffects?: AutopilotCancelSideEffects;
   getDeployedRevision?: (projectId: string, targetId: string) => string | null;
   validateLocalTarget?: AutopilotLocalTargetLookup;
@@ -63,7 +62,6 @@ function freshController(opts?: {
   const stubs = stubWorkerCreds();
   const controller = createAutopilotController({
     db,
-    isServerEnabled: () => opts?.serverEnabled !== false,
     cancelSideEffects: opts?.cancelSideEffects,
     getDeployedRevision: opts?.getDeployedRevision,
     validateLocalTarget: opts?.validateLocalTarget,
@@ -87,14 +85,17 @@ describe('autopilot controller', () => {
     vi.useRealTimers();
   });
 
-  it('refuses start when the server operator setting is off', () => {
-    const { controller } = freshController({ serverEnabled: false });
-    expect(() => controller.start(PROJECT, READY, ACTOR)).toThrow(AutopilotError);
-    try {
-      controller.start(PROJECT, READY, ACTOR);
-    } catch (err) {
-      expect((err as AutopilotError).code).toBe('server_disabled');
-    }
+  it('starts from per-project config alone with no global operator gate', async () => {
+    // Autopilot is per-project only (like AWS profiles): enabling and starting
+    // a project must not depend on any server-wide operator switch. A freshly
+    // constructed controller has no isServerEnabled dep at all.
+    const { controller } = freshController();
+    const started = await startReady(controller);
+    expect(started.run.controlState).toBe('running');
+    const stateAfter = controller.getProjectState(PROJECT);
+    expect(stateAfter.config.enabled).toBe(true);
+    // The state no longer carries a serverEnabled field.
+    expect('serverEnabled' in stateAfter).toBe(false);
   });
 
   it('rejects a duplicate start for the same project', async () => {
@@ -326,7 +327,6 @@ describe('autopilot controller', () => {
 
     const restarted = createAutopilotController({
       db,
-      isServerEnabled: () => true,
       holderId: 'hub-b',
       credentialOwnerExists: () => true,
       ...passContainment,
@@ -351,7 +351,6 @@ describe('autopilot controller', () => {
     await restarted.stop(PROJECT, ACTOR);
     const afterStop = createAutopilotController({
       db,
-      isServerEnabled: () => true,
       holderId: 'hub-c',
       ...passContainment,
     });
@@ -453,7 +452,6 @@ describe('autopilot controller', () => {
     await startReady(hubA);
     const hubB = createAutopilotController({
       db,
-      isServerEnabled: () => true,
       holderId: 'hub-b',
       credentialOwnerExists: () => true,
       ...passContainment,
@@ -498,7 +496,6 @@ describe('autopilot controller', () => {
 
     const hubB = createAutopilotController({
       db,
-      isServerEnabled: () => true,
       holderId: 'hub-b',
       credentialOwnerExists: () => true,
       ...passContainment,
@@ -542,7 +539,6 @@ describe('autopilot controller', () => {
 
     const hubB = createAutopilotController({
       db,
-      isServerEnabled: () => true,
       holderId: 'hub-b',
       credentialOwnerExists: () => true,
       ...passContainment,
@@ -762,7 +758,6 @@ describe('autopilot controller', () => {
     });
     const hubB = createAutopilotController({
       db,
-      isServerEnabled: () => true,
       holderId: 'hub-b',
       credentialOwnerExists: () => true,
       ...passContainment,
@@ -829,7 +824,7 @@ describe('autopilot controller', () => {
     expect(paused.run.credentialOwnerUserId).toBe('user-a');
   });
 
-  it('stops an existing run and rejects late callbacks after the server feature flag is turned off', async () => {
+  it('stops an existing run and rejects late callbacks', async () => {
     const { db, controller } = freshController({ holderId: 'hub-a' });
     const started = await startReady(controller);
     const op = await controller.beginOperation({
@@ -837,45 +832,27 @@ describe('autopilot controller', () => {
       kind: 'implement',
       sessionId: 'sess-1',
     });
-    const gated = createAutopilotController({
+    const other = createAutopilotController({
       db,
-      isServerEnabled: () => false,
       holderId: 'hub-a',
       credentialOwnerExists: () => true,
     });
-    try {
-      await gated.beginOperation({ projectId: PROJECT, kind: 'extra' });
-      throw new Error('expected server_disabled');
-    } catch (err) {
-      expect((err as AutopilotError).code).toBe('server_disabled');
-    }
 
-    const stopped = await gated.stop(PROJECT, ACTOR);
+    const stopped = await other.stop(PROJECT, ACTOR);
     expect(stopped.run.controlState).toBe('stopped');
     expect(stopped.run.fencingGeneration).toBeGreaterThan(started.run.fencingGeneration);
     await expect(
-      gated.completeOperation({
+      other.completeOperation({
         operationId: op.id,
         fencingGeneration: started.run.fencingGeneration,
         outcome: 'succeeded',
       }),
     ).rejects.toThrow(/Late callback|stale/i);
-    expect(gated.getRun(PROJECT, stopped.run.id).run.controlState).toBe('stopped');
-    expect(gated.getProjectState(PROJECT).activeRun).toBeNull();
+    expect(other.getRun(PROJECT, stopped.run.id).run.controlState).toBe('stopped');
+    expect(other.getProjectState(PROJECT).activeRun).toBeNull();
 
-    const disabled = await gated.disable(PROJECT, ACTOR);
+    const disabled = await other.disable(PROJECT, ACTOR);
     expect(disabled.config.enabled).toBe(false);
-  });
-
-  it('keeps the server operator gate independent of local-mode authentication bypass', () => {
-    const { controller } = freshController({ serverEnabled: false });
-    expect(controller.getProjectState(PROJECT).serverEnabled).toBe(false);
-    try {
-      controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
-      throw new Error('expected server_disabled');
-    } catch (err) {
-      expect((err as AutopilotError).code).toBe('server_disabled');
-    }
   });
 
   it('blocks start when required containment cannot be enforced', () => {

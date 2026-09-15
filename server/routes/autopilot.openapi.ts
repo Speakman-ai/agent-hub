@@ -246,7 +246,6 @@ export const AutopilotRunSnapshotSchema = registerComponent(
 export const AutopilotProjectStateSchema = registerComponent(
   'AutopilotProjectState',
   z.object({
-    serverEnabled: z.boolean(),
     config: AutopilotConfigSchema,
     activeRun: AutopilotRunSnapshotSchema.nullable(),
     stateVersion: z.number().int().openapi({

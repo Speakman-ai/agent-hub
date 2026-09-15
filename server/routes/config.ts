@@ -377,7 +377,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       codexDangerBypass: !!config.codexDangerBypass,
       cursorSandboxBypass: config.cursorSandboxBypass !== false,
       emailLogoEnabled: config.emailLogoEnabled !== false,
-      experimentalAutopilotEnabled: !!config.experimentalAutopilotEnabled,
       codexProfile: config.codexProfile || null,
       _file: {
         claudeBin: fileConfig.claudeBin || null,
@@ -392,7 +391,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       // means the PR-env subsystem is killed at boot (epic 88367984).
       features: {
         prEnv: !isPrEnvKillSwitchOn(),
-        experimentalAutopilot: !!config.experimentalAutopilotEnabled,
       },
     });
   });
@@ -536,7 +534,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'cursorSandboxBypass',
       'emailLogoEnabled',
       'codexProfile',
-      'experimentalAutopilotEnabled',
     ] as const;
     const body = (req.body || {}) as Record<string, unknown>;
     const legacyDefaultModelRequested = Object.prototype.hasOwnProperty.call(body, 'defaultModel');
@@ -553,12 +550,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     }
     if (updates.emailLogoEnabled !== undefined) {
       updates.emailLogoEnabled = coerceConfigBooleanLoose(updates.emailLogoEnabled, true);
-    }
-    if (updates.experimentalAutopilotEnabled !== undefined) {
-      updates.experimentalAutopilotEnabled = coerceConfigBooleanLoose(
-        updates.experimentalAutopilotEnabled,
-        false,
-      );
     }
     if (updates.openaiApiKey !== undefined) {
       const raw = updates.openaiApiKey;

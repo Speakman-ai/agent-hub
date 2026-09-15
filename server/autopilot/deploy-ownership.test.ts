@@ -44,7 +44,6 @@ describe('shouldSkipAutopilotDuplicateTrigger', () => {
     ensureAutopilotSchema(db);
     const controller = createAutopilotController({
       db,
-      isServerEnabled: () => true,
       credentialOwnerExists: () => true,
       holderId: 'hub-a',
       assertContainment: () => undefined,
@@ -82,7 +81,6 @@ describe('shouldSkipAutopilotDuplicateTrigger', () => {
     ensureAutopilotSchema(db);
     const controller = createAutopilotController({
       db,
-      isServerEnabled: () => true,
       credentialOwnerExists: () => true,
       holderId: 'hub-a',
       assertContainment: () => undefined,

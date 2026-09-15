@@ -97,7 +97,6 @@ const ctl = vi.hoisted(() => ({
       // AutopilotSettingsSection refetches on mount; a resolved wire state lets
       // it render its section shell (deriveAutopilotView needs config.target).
       getAutopilot: vi.fn().mockResolvedValue({
-        serverEnabled: true,
         config: {
           projectId: 'proj-1',
           enabled: false,

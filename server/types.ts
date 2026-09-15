@@ -3979,13 +3979,6 @@ export interface AppConfig {
    * Configure via `AGENT_HUB_CARD_DONE_ON_PUSH` (`true` / `1` / `on` to enable).
    */
   cardDoneOnPush: boolean;
-  /**
-   * Operator gate for Experimental Project Autopilot. Independent of local-mode
-   * authentication bypass. Default false: existing projects are unchanged and
-   * Autopilot start/config APIs refuse until an operator turns this on.
-   * Env: `AGENT_HUB_EXPERIMENTAL_AUTOPILOT`; config.json: `experimentalAutopilotEnabled`.
-   */
-  experimentalAutopilotEnabled: boolean;
   slackWebhookUrl: string | null;
   /** Max simultaneous host Chromium contexts (distinct pinned chat sessions). */
   browserMaxConcurrentContexts: number;

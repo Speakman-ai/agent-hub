@@ -3032,11 +3032,9 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
           )
             .enforceDeadlines()
             .catch((e) => console.error('[autopilot] enforceDeadlines', (e as Error).message));
-          if (config.experimentalAutopilotEnabled) {
-            void autopilotRuntime
-              .tick()
-              .catch((e) => console.error('[autopilot] runtime tick', (e as Error).message));
-          }
+          void autopilotRuntime
+            .tick()
+            .catch((e) => console.error('[autopilot] runtime tick', (e as Error).message));
         }, AUTOPILOT_DEADLINE_SWEEP_MS).unref?.();
       }
     } catch (e) {

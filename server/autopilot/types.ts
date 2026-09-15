@@ -210,7 +210,6 @@ export interface AutopilotRunSnapshot {
 }
 
 export interface AutopilotProjectState {
-  serverEnabled: boolean;
   config: AutopilotProjectConfig;
   activeRun: AutopilotRunSnapshot | null;
   /**
