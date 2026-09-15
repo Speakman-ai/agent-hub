@@ -7083,10 +7083,16 @@ export default function App({ initialView }: any = {}) {
               ) : currentView === 'autopilot' && autopilotProjectId ? (
                 <div className="flex-1 overflow-y-auto p-4 md:p-6">
                   <div className="max-w-4xl mx-auto">
-                    <AutopilotSettingsSection
-                      projectId={autopilotProjectId}
-                      showToast={showToast}
-                    />
+                    {projects.find((p: any) => p.id === autopilotProjectId)?.autopilotEnabled ? (
+                      <AutopilotSettingsSection
+                        projectId={autopilotProjectId}
+                        showToast={showToast}
+                      />
+                    ) : (
+                      <p className="text-sm text-gray-400">
+                        Enable Autopilot in Project Configuration.
+                      </p>
+                    )}
                   </div>
                 </div>
               ) : currentView === 'replays' && replaysProjectId ? (

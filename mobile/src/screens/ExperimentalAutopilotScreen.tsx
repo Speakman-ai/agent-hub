@@ -60,14 +60,13 @@ export function formFromState(state: AutopilotProjectStateWire | null): Autopilo
   };
 }
 
-export function buildConfigBody(form: AutopilotFormState, enabled: boolean) {
+export function buildConfigBody(form: AutopilotFormState) {
   const maxCycles = form.cycleMode === 'finite' ? Math.max(1, Number(form.maxCycles) || 1) : null;
   // `null` only for an explicitly empty field; invalid nonempty input is caught
   // by saveConfig before this runs (never silently clears the cap).
   const cap = parseAutopilotCostCap(form.maxCostUsd);
   const maxCostUsd = cap.ok ? cap.value : Number(form.maxCostUsd);
   return {
-    enabled,
     brief: form.brief.trim() || null,
     target: {
       targetId: form.targetId.trim(),
@@ -89,7 +88,8 @@ export function buildConfigBody(form: AutopilotFormState, enabled: boolean) {
 export default function ExperimentalAutopilotScreen({ route, navigation }: any) {
   const projectId = route?.params?.projectId;
   const project = route?.params?.project;
-  const { connected } = useApp();
+  const { connected, projects } = useApp();
+  const currentProject = projects?.find((p: any) => p.id === projectId);
 
   const [state, setState] = useState<AutopilotProjectStateWire | null>(null);
   const [loading, setLoading] = useState(false);
@@ -297,7 +297,7 @@ export default function ExperimentalAutopilotScreen({ route, navigation }: any) 
     return { ...prev, activeRun: res && typeof res === 'object' && res.run ? res : prev.activeRun };
   };
 
-  const saveConfig = (enabled: boolean) => {
+  const saveConfig = () => {
     // Reject invalid numeric limits rather than letting them silently change a
     // safety-relevant limit (see web sibling).
     const limitsCheck = validateAutopilotLimitsForm(form);
@@ -307,14 +307,14 @@ export default function ExperimentalAutopilotScreen({ route, navigation }: any) 
     }
     const formGenAtStart = formLoadGenRef.current;
     return runAction(
-      enabled ? 'enable' : 'save',
+      'save',
       () =>
         api.putAutopilotConfig(projectId, {
-          ...buildConfigBody(form, enabled),
+          ...buildConfigBody(form),
           // Guard keyed to the revision the FORM was built from (see web sibling).
           expectedRevision: formBaseRevisionRef.current,
         }),
-      enabled ? 'Autopilot enabled' : 'Configuration saved',
+      'Configuration saved',
       {
         resetForm: true,
         apply: (res, prev) => {
@@ -347,21 +347,20 @@ export default function ExperimentalAutopilotScreen({ route, navigation }: any) 
       },
     ]);
 
-  const confirmDisable = () =>
-    Alert.alert('Disable Autopilot', 'Any active run is stopped.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Disable',
-        style: 'destructive',
-        onPress: () =>
-          runAction('disable', () => api.disableAutopilot(projectId), 'Autopilot disabled', {
-            apply: (res, prev) => {
-              if (!acceptStateVersion(res?.stateVersion)) return prev;
-              return res && typeof res === 'object' && 'config' in res ? res : prev;
-            },
-          }),
-      },
-    ]);
+  if ((currentProject && !currentProject.autopilotEnabled) || (state && !state.config.enabled)) {
+    return (
+      <SafeAreaView style={styles.screen} edges={['top']}>
+        <ProjectScreenHeader
+          title="Autopilot"
+          project={project}
+          onBack={() => navigation.goBack()}
+        />
+        <Text style={styles.hint} testID="autopilot-disabled">
+          Enable Autopilot in Project Configuration.
+        </Text>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
@@ -566,16 +565,6 @@ export default function ExperimentalAutopilotScreen({ route, navigation }: any) 
                 </Text>
               </TouchableOpacity>
             )}
-            {view.controls.canDisable && (
-              <ActionBtn
-                testID="autopilot-disable"
-                label="Disable"
-                busy={busy === 'disable'}
-                disabled={mutating}
-                onPress={confirmDisable}
-                variant="ghost"
-              />
-            )}
           </View>
         )}
 
@@ -669,21 +658,11 @@ export default function ExperimentalAutopilotScreen({ route, navigation }: any) 
             <TouchableOpacity
               testID="autopilot-save-config"
               disabled={mutating}
-              onPress={() => saveConfig(state?.config.enabled ?? false)}
+              onPress={() => saveConfig()}
               style={[styles.secondaryBtn, mutating && styles.btnDisabled]}
             >
               <Text style={styles.secondaryBtnText}>Save configuration</Text>
             </TouchableOpacity>
-            {!view.enabled && (
-              <TouchableOpacity
-                testID="autopilot-enable-toggle"
-                disabled={mutating}
-                onPress={() => saveConfig(true)}
-                style={[styles.primaryBtn, mutating && styles.btnDisabled]}
-              >
-                <Text style={styles.primaryBtnText}>Enable Autopilot</Text>
-              </TouchableOpacity>
-            )}
           </View>
         )}
 

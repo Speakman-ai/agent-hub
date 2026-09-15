@@ -383,6 +383,12 @@ export function AppProvider({ children }: any) {
       const forActiveSession = data.sessionId && data.sessionId === activeSessionIdRef.current;
       const msgForActiveSession = data.message?.session_id === activeSessionIdRef.current;
       switch (data.type) {
+        case 'projects_updated':
+          api
+            .getProjects()
+            .then(setProjects)
+            .catch(() => {});
+          break;
         case 'active-tasks-snapshot': {
           const next: Record<string, any> = {};
           for (const t of data.tasks || []) {
@@ -1294,7 +1300,7 @@ export function AppProvider({ children }: any) {
     });
   }, []);
   const refreshProjects = useCallback(() => {
-    api
+    return api
       .getProjects()
       .then(setProjects)
       .catch(() => setProjects([]));

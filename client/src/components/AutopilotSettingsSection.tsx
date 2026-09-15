@@ -74,14 +74,13 @@ function formFromState(state: AutopilotProjectStateWire | null): FormState {
   };
 }
 
-function buildConfigBody(form: FormState, enabled: boolean) {
+function buildConfigBody(form: FormState) {
   const maxCycles = form.cycleMode === 'finite' ? Math.max(1, Number(form.maxCycles) || 1) : null;
   // `null` only for an explicitly empty field; an invalid nonempty value is
   // caught by saveConfig before we get here (it never silently clears the cap).
   const cap = parseAutopilotCostCap(form.maxCostUsd);
   const maxCostUsd = cap.ok ? cap.value : Number(form.maxCostUsd);
   return {
-    enabled,
     brief: form.brief.trim() || null,
     target: {
       targetId: form.targetId.trim(),
@@ -161,7 +160,7 @@ export default function AutopilotSettingsSection({
   // pair — those repeat across navigation and let a stale op reclaim the slot.
   const opSeqRef = useRef(0);
   // Slots hold the token of the operation currently owning them (null = free).
-  // Ordinary mutations (save/enable/start/pause/resume/disable) serialize
+  // Ordinary mutations (save/start/pause/resume) serialize
   // through `busyRef`; Stop uses its own `stopRef` so a completing Stop never
   // frees a still-pending Save.
   const busyRef = useRef<number | null>(null);
@@ -365,7 +364,7 @@ export default function AutopilotSettingsSection({
     return { ...prev, activeRun: res && typeof res === 'object' && res.run ? res : prev.activeRun };
   };
 
-  const saveConfig = (enabled: boolean) => {
+  const saveConfig = () => {
     // Reject invalid numeric limits client-side rather than letting them
     // silently change a safety-relevant limit (an invalid cost cap becoming
     // "no cap", or an invalid wall-time/timeout/retries/cycles being coerced to
@@ -380,17 +379,17 @@ export default function AutopilotSettingsSection({
     // NOT advance the base revision — the form now holds different content.
     const formGenAtStart = formLoadGenRef.current;
     return runAction(
-      enabled ? 'enable' : 'save',
+      'save',
       () =>
         api.putAutopilotConfig(projectId, {
-          ...buildConfigBody(form, enabled),
+          ...buildConfigBody(form),
           // Optimistic-concurrency guard keyed to the revision the FORM was
           // built from (not the live state.config.revision, which a background
           // load may have advanced). The server rejects a stale write, so an
           // out-of-order PUT can't overwrite newer settings.
           expectedRevision: formBaseRevisionRef.current,
         }),
-      enabled ? 'Autopilot enabled' : 'Configuration saved',
+      'Configuration saved',
       {
         resetForm: true,
         apply: (res, prev) => {
@@ -410,20 +409,6 @@ export default function AutopilotSettingsSection({
     );
   };
 
-  const disable = () => {
-    if (
-      typeof window !== 'undefined' &&
-      !window.confirm('Disable Autopilot? Any active run is stopped.')
-    )
-      return;
-    runAction('disable', () => api.disableAutopilot(projectId), 'Autopilot disabled', {
-      apply: (res, prev) => {
-        if (!acceptStateVersion(res?.stateVersion)) return prev;
-        return res && typeof res === 'object' && 'config' in res ? res : prev;
-      },
-    });
-  };
-
   const stop = () => {
     if (typeof window !== 'undefined' && !window.confirm('Stop the active Autopilot run?')) return;
     runAction('stop', () => api.stopAutopilot(projectId), 'Stop requested', {
@@ -435,6 +420,14 @@ export default function AutopilotSettingsSection({
     return (
       <div className="text-gray-400 text-sm" data-testid="autopilot-no-project">
         Select a project to configure Autopilot.
+      </div>
+    );
+  }
+
+  if (state && !state.config.enabled) {
+    return (
+      <div data-testid="autopilot-disabled" className="text-sm text-gray-400">
+        Enable Autopilot in Project Configuration.
       </div>
     );
   }
@@ -638,15 +631,6 @@ export default function AutopilotSettingsSection({
               )}
             </button>
           )}
-          <ActionBtn
-            testid="autopilot-disable"
-            show={view.controls.canDisable}
-            busy={busy === 'disable'}
-            disabled={mutating}
-            onClick={disable}
-            label="Disable Autopilot"
-            variant="ghost"
-          />
         </div>
       )}
 
@@ -762,27 +746,13 @@ export default function AutopilotSettingsSection({
             <button
               type="button"
               disabled={mutating}
-              onClick={() => saveConfig(state?.config.enabled ?? false)}
+              onClick={() => saveConfig()}
               data-testid="autopilot-save-config"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-100 disabled:opacity-50"
             >
-              {(busy === 'save' || busy === 'enable') && (
-                <Loader2 size={14} className="animate-spin" />
-              )}
+              {busy === 'save' && <Loader2 size={14} className="animate-spin" />}
               Save configuration
             </button>
-            {!view.enabled && (
-              <button
-                type="button"
-                disabled={mutating}
-                onClick={() => saveConfig(true)}
-                data-testid="autopilot-enable-toggle"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-sm bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-50"
-              >
-                {busy === 'enable' && <Loader2 size={14} className="animate-spin" />}
-                Enable Autopilot
-              </button>
-            )}
           </div>
         </div>
       )}

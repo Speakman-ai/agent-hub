@@ -88,6 +88,20 @@ async function installAutopilotMocks(
     });
   });
 
+  await page.route('**/api/projects', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const upstream = await route.fetch();
+    const projects = await upstream.json();
+    await route.fulfill({
+      response: upstream,
+      json: projects.map((project: any) =>
+        project.id === projectId
+          ? { ...project, autopilotEnabled: bag.state.config.enabled }
+          : project,
+      ),
+    });
+  });
+
   await page.route(`**/api/projects/${projectId}/autopilot`, async (route) => {
     if (route.request().method() !== 'GET') return route.continue();
     await route.fulfill({
@@ -128,30 +142,35 @@ async function installAutopilotMocks(
 }
 
 test.describe('Experimental Autopilot', () => {
-  test('opts in by enabling from the setup form', async ({ page, seed }) => {
+  test('opts in through Project Configuration before the module appears', async ({
+    page,
+    seed,
+  }) => {
     const project = await seed.project({ name: 'Autopilot E2E opt-in' });
     const bag = await installAutopilotMocks(page, project.id, {
-      serverEnabled: true,
       config: readyConfig({ projectId: project.id }),
       activeRun: null,
     });
 
     await page.goto(`/#/autopilot/${project.id}`);
-    await expect(page.getByTestId('autopilot-section')).toBeVisible();
-    const enable = page.getByTestId('autopilot-enable-toggle');
+    await expect(page.getByText('Enable Autopilot in Project Configuration.')).toBeVisible();
+    await expect(page.getByTestId('autopilot-section')).toHaveCount(0);
+    await page.goto(`/#/view/project-settings:${project.id}`);
+    const enable = page.getByTestId(`project-autopilot-enabled-${project.id}`);
     await expect(enable).toBeVisible();
     await enable.click();
-
     await expect.poll(() => bag.putCalls.length, { timeout: 5000 }).toBeGreaterThan(0);
-    expect(bag.putCalls[0].enabled).toBe(true);
-    // Once enabled, the opt-in button is gone.
+    expect(bag.putCalls[0]).toEqual({ enabled: true });
+    await expect(enable).toHaveAttribute('aria-checked', 'true');
+    await page.goto(`/#/autopilot/${project.id}`);
+    await expect(page.getByTestId('autopilot-setup')).toBeVisible();
     await expect(page.getByTestId('autopilot-enable-toggle')).toHaveCount(0);
+    await expect(page.getByTestId('autopilot-disable')).toHaveCount(0);
   });
 
   test('reconnect refetches changed server state on the mounted client', async ({ page, seed }) => {
     const project = await seed.project({ name: 'Autopilot E2E reconnect' });
     const bag = await installAutopilotMocks(page, project.id, {
-      serverEnabled: true,
       config: readyConfig({ projectId: project.id, enabled: true }),
       activeRun: { run: runningRun({ projectId: project.id }), cycle: null },
     });
@@ -162,7 +181,6 @@ test.describe('Experimental Autopilot', () => {
     // Server progresses the run while the client is mounted; a WS reconnect
     // (not a reload) refetches the authoritative state and the UI updates.
     bag.state = {
-      serverEnabled: true,
       config: readyConfig({ projectId: project.id, enabled: true }),
       activeRun: {
         run: runningRun({ projectId: project.id, controlState: 'paused', stage: null }),
@@ -180,7 +198,6 @@ test.describe('Experimental Autopilot', () => {
   }) => {
     const project = await seed.project({ name: 'Autopilot E2E stop' });
     const bag = await installAutopilotMocks(page, project.id, {
-      serverEnabled: true,
       config: readyConfig({ projectId: project.id, enabled: true }),
       activeRun: { run: runningRun({ projectId: project.id }), cycle: null },
     });
@@ -201,7 +218,6 @@ test.describe('Experimental Autopilot', () => {
     // Cancellation settles: the run is gone. A reconnect refetch renders the
     // settled UI (no active run, no Stop control).
     bag.state = {
-      serverEnabled: true,
       config: readyConfig({ projectId: project.id, enabled: true }),
       activeRun: null,
     };

@@ -5,6 +5,8 @@ import { flushSync } from 'react-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMocks = vi.hoisted(() => ({
+  putAutopilotConfig: vi.fn(() => Promise.resolve({ enabled: true })),
+  disableAutopilot: vi.fn(() => Promise.resolve({})),
   updateProject: vi.fn(() => Promise.resolve({})),
   deleteProject: vi.fn(() => Promise.resolve({})),
 }));
@@ -49,6 +51,7 @@ const appState: any = { projects: [], refreshProjects: vi.fn(() => Promise.resol
 vi.mock('../context/AppContext', () => ({ useApp: () => appState }));
 
 import ProjectSettingsScreen from './ProjectSettingsScreen';
+import { Alert } from 'react-native';
 
 function mount() {
   const container = document.createElement('div');
@@ -91,5 +94,54 @@ describe('ProjectSettingsScreen — feature request approval toggle', () => {
 
     expect(apiMocks.updateProject).toHaveBeenCalledWith('p1', { voting: { enabled: true } });
     flushSync(() => root.unmount());
+  });
+});
+
+describe('ProjectSettingsScreen Autopilot toggle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    appState.projects = [];
+  });
+  it('enables without setup and refreshes projects', async () => {
+    const project = { id: 'p1', name: 'Acme' };
+    const { container, root } = mount();
+    flushSync(() =>
+      root.render(
+        <ProjectSettingsScreen route={{ params: { projectId: 'p1', project } }} navigation={{}} />,
+      ),
+    );
+    const toggle = container.querySelector(
+      '[data-testid="project-autopilot-enabled-p1"]',
+    ) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    toggle.click();
+    await flush();
+    expect(apiMocks.putAutopilotConfig).toHaveBeenCalledWith('p1', { enabled: true });
+    expect(appState.refreshProjects).toHaveBeenCalled();
+    flushSync(() => root.unmount());
+  });
+
+  it('reads current project state and disables through cancellation after confirmation', async () => {
+    const project = { id: 'p1', name: 'Acme', autopilotEnabled: false };
+    appState.projects = [{ ...project, autopilotEnabled: true }];
+    const { container, root } = mount();
+    flushSync(() =>
+      root.render(
+        <ProjectSettingsScreen route={{ params: { projectId: 'p1', project } }} navigation={{}} />,
+      ),
+    );
+    const toggle = container.querySelector(
+      '[data-testid="project-autopilot-enabled-p1"]',
+    ) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    toggle.click();
+    expect(apiMocks.disableAutopilot).not.toHaveBeenCalled();
+    const buttons = vi.mocked(Alert.alert).mock.calls.at(-1)?.[2];
+    buttons?.find((button) => button.text === 'Disable')?.onPress?.();
+    await flush();
+    expect(apiMocks.disableAutopilot).toHaveBeenCalledWith('p1');
+    expect(appState.refreshProjects).toHaveBeenCalled();
+    flushSync(() => root.unmount());
+    appState.projects = [];
   });
 });

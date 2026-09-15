@@ -834,11 +834,11 @@ components:
         readinessProbeUrl:
           type: string
           nullable: true
-          description: HTTP(S) loopback readiness probe on the same origin as `origin`. Required to enable or start a run.
+          description: HTTP(S) loopback readiness probe on the same origin as `origin`. Required to start a run.
         origin:
           type: string
           nullable: true
-          description: HTTP(S) loopback origin of the dedicated local target (scheme://host[:port], no path). Required to enable or start a run. Public-browser loopback blocking is unchanged.
+          description: HTTP(S) loopback origin of the dedicated local target (scheme://host[:port], no path). Required to start a run. Public-browser loopback blocking is unchanged.
       required:
         - targetId
         - readinessProbeUrl
@@ -864,6 +864,7 @@ components:
           type: string
         enabled:
           type: boolean
+          description: Project opt-in. May be enabled before setup; start validates run readiness.
         disabling:
           type: boolean
         briefId:
@@ -12338,6 +12339,9 @@ components:
         cwd:
           type: string
           description: Absolute path to the project working directory on disk.
+        autopilotEnabled:
+          type: boolean
+          description: Read-only projection of Autopilot config.enabled. Defaults to false; managed through the Autopilot config and disable endpoints.
         githubRepo:
           type: string
           nullable: true
@@ -19436,7 +19440,7 @@ paths:
       tags:
         - Autopilot
       summary: Save Autopilot project configuration
-      description: Persists the project opt-in, versioned brief, local target, limits and credential owner. Enabling requires every field, including a loopback origin and readiness probe on the dedicated experiment target. Unattended deploy authority applies only to that target. Does not start a run.
+      description: Persists the project opt-in, versioned brief, local target, limits and credential owner. Project enablement may be saved before setup. Starting requires the complete configuration, including a loopback origin and readiness probe on the dedicated experiment target. Unattended deploy authority applies only to that target. Does not start a run.
       parameters:
         - schema:
             type: string
@@ -19550,7 +19554,7 @@ paths:
       tags:
         - Autopilot
       summary: Start an Autopilot run
-      description: Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires the server operator setting, project opt-in, a declared local target with origin and readiness, scoped worker credentials, and enforceable runtime containment. Unattended deploy is authorized only for that experiment target; push and schedule triggers for the owned target are skipped.
+      description: Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires project opt-in, a declared local target with origin and readiness, scoped worker credentials, and enforceable runtime containment. Unattended deploy is authorized only for that experiment target; push and schedule triggers for the owned target are skipped.
       parameters:
         - schema:
             type: string
@@ -40238,6 +40242,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProjectMemberErrorResponse"
+  /api/projects:
+    get:
+      tags:
+        - Projects
+      summary: List visible projects with agents and module enablement
+      responses:
+        "200":
+          description: Visible projects
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProjectDetail"
   /api/projects/provision/suggest:
     post:
       tags:

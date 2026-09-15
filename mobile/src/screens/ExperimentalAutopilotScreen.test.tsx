@@ -10,7 +10,7 @@ const create = TestRenderer.create as (el: any) => { root: any; update: (el: any
 
 // Mutable WebSocket connectivity + API state the mocks read, so tests can
 // drive reconnect and changing server responses.
-const ws = vi.hoisted(() => ({ connected: false }));
+const ws = vi.hoisted(() => ({ connected: false, projects: [] as any[] }));
 const apiMock = vi.hoisted(() => ({
   state: null as any,
   getAutopilot: vi.fn(),
@@ -33,7 +33,9 @@ vi.mock('react-native', () => ({
   View: 'View',
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
-vi.mock('../context/AppContext', () => ({ useApp: () => ({ connected: ws.connected }) }));
+vi.mock('../context/AppContext', () => ({
+  useApp: () => ({ connected: ws.connected, projects: ws.projects }),
+}));
 vi.mock('../utils/auth', () => ({ hasRole: () => true }));
 vi.mock('../utils/api', () => ({ api: apiMock }));
 vi.mock('../components/ProjectScreenHeader', () => ({ default: 'ProjectScreenHeader' }));
@@ -56,7 +58,7 @@ const LIMITS = {
 function readyConfig(overrides: Record<string, unknown> = {}) {
   return {
     projectId: 'p1',
-    enabled: false,
+    enabled: true,
     disabling: false,
     briefId: 'b1',
     brief: 'Build a todo app.',
@@ -124,6 +126,7 @@ async function pressByTestID(renderer: any, id: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   ws.connected = false;
+  ws.projects = [];
   apiMock.state = null;
   apiMock.getAutopilot.mockImplementation(async () => apiMock.state);
   apiMock.putAutopilotConfig.mockResolvedValue({});
@@ -190,9 +193,9 @@ describe('buildConfigBody', () => {
     credentialOwnerUserId: 'u1',
   };
 
-  it('builds a PUT body and carries the enabled flag through', () => {
-    const body = buildConfigBody(base, true);
-    expect(body.enabled).toBe(true);
+  it('builds a PUT body without changing project enablement', () => {
+    const body = buildConfigBody(base);
+    expect(body).not.toHaveProperty('enabled');
     expect(body.target.origin).toBe('http://127.0.0.1:8080');
     expect(body.limits.maxWallTimeMs).toBe(4 * 3_600_000);
     expect(body.limits.maxStageTimeoutMs).toBe(30 * 60_000);
@@ -200,19 +203,23 @@ describe('buildConfigBody', () => {
   });
 
   it('requires a positive maxCycles in finite mode and clamps retries', () => {
-    const finite = buildConfigBody(
-      { ...base, cycleMode: 'finite', maxCycles: '0', maxRetriesPerStage: '9' },
-      false,
-    );
+    const finite = buildConfigBody({
+      ...base,
+      cycleMode: 'finite',
+      maxCycles: '0',
+      maxRetriesPerStage: '9',
+    });
     expect(finite.limits.maxCycles).toBe(1);
     expect(finite.limits.maxRetriesPerStage).toBe(2);
   });
 
   it('nulls out empty optional fields', () => {
-    const body = buildConfigBody(
-      { ...base, brief: '  ', credentialOwnerUserId: '', maxCostUsd: '' },
-      false,
-    );
+    const body = buildConfigBody({
+      ...base,
+      brief: '  ',
+      credentialOwnerUserId: '',
+      maxCostUsd: '',
+    });
     expect(body.brief).toBeNull();
     expect(body.credentialOwnerUserId).toBeNull();
     expect(body.limits.maxCostUsd).toBeNull();
@@ -220,7 +227,7 @@ describe('buildConfigBody', () => {
 });
 
 describe('ExperimentalAutopilotScreen interactions', () => {
-  it('opts in by enabling from the setup form', async () => {
+  it('saves setup without changing project enablement', async () => {
     apiMock.state = { config: readyConfig(), activeRun: null };
     let renderer: any;
     await act(async () => {
@@ -228,11 +235,11 @@ describe('ExperimentalAutopilotScreen interactions', () => {
     });
     await flush();
 
-    expect(byTestID(renderer, 'autopilot-enable-toggle').length).toBe(1);
-    await pressByTestID(renderer, 'autopilot-enable-toggle');
+    expect(byTestID(renderer, 'autopilot-save-config').length).toBe(1);
+    await pressByTestID(renderer, 'autopilot-save-config');
 
     expect(apiMock.putAutopilotConfig).toHaveBeenCalled();
-    expect(apiMock.putAutopilotConfig.mock.calls[0][1].enabled).toBe(true);
+    expect(apiMock.putAutopilotConfig.mock.calls[0][1]).not.toHaveProperty('enabled');
   });
 
   it('discards a deferred mutation completion after switching projects', async () => {
@@ -255,7 +262,7 @@ describe('ExperimentalAutopilotScreen interactions', () => {
     });
     await flush();
     // Start enable on A (mutation stays pending), then switch to B.
-    await pressByTestID(renderer, 'autopilot-enable-toggle');
+    await pressByTestID(renderer, 'autopilot-save-config');
     await act(async () => {
       renderer.update(<ExperimentalAutopilotScreen route={routeB} navigation={NAV} />);
       await new Promise((r) => setTimeout(r, 0));
@@ -301,29 +308,20 @@ describe('ExperimentalAutopilotScreen interactions', () => {
     expect(save().props.disabled).toBe(true);
   });
 
-  it('prevents Save and Enable from overlapping on a disabled project', async () => {
-    apiMock.getAutopilot.mockImplementation(async () => ({
+  it('hides setup and controls for disabled project deep links', async () => {
+    apiMock.getAutopilot.mockResolvedValue({
       config: readyConfig({ enabled: false }),
       activeRun: null,
-    }));
-    apiMock.putAutopilotConfig.mockReturnValue(new Promise(() => {}));
-
+    });
     let renderer: any;
     await act(async () => {
       renderer = create(<ExperimentalAutopilotScreen route={ROUTE} navigation={NAV} />);
     });
     await flush();
-    await act(async () => {
-      byTestID(renderer, 'autopilot-save-config')[0].props.onPress();
-      await new Promise((r) => setTimeout(r, 0));
-    });
-    await act(async () => {
-      byTestID(renderer, 'autopilot-enable-toggle')[0].props.onPress();
-      await new Promise((r) => setTimeout(r, 0));
-    });
-    expect(apiMock.putAutopilotConfig).toHaveBeenCalledTimes(1);
-    expect(byTestID(renderer, 'autopilot-save-config')[0].props.disabled).toBe(true);
-    expect(byTestID(renderer, 'autopilot-enable-toggle')[0].props.disabled).toBe(true);
+    expect(byTestID(renderer, 'autopilot-disabled')).toHaveLength(1);
+    expect(byTestID(renderer, 'autopilot-setup')).toHaveLength(0);
+    expect(byTestID(renderer, 'autopilot-controls')).toHaveLength(0);
+    expect(byTestID(renderer, 'autopilot-enable-toggle')).toHaveLength(0);
   });
 
   it('a stale Save from a prior visit cannot release the current Save slot (A→B→A)', async () => {
@@ -947,24 +945,33 @@ describe('ExperimentalAutopilotScreen interactions', () => {
     expect(apiMock.resumeAutopilot).toHaveBeenCalledWith('p1');
   });
 
-  it('disables Autopilot after confirming the destructive dialog', async () => {
-    apiMock.state = {
-      config: readyConfig({ enabled: true }),
-      activeRun: { run: run({ controlState: 'running' }), cycle: null },
-    };
+  it('hides a mounted module when refreshed projects show it disabled', async () => {
+    apiMock.state = { config: readyConfig(), activeRun: null };
+    ws.projects = [{ id: 'p1', autopilotEnabled: true }];
     let renderer: any;
     await act(async () => {
       renderer = create(<ExperimentalAutopilotScreen route={ROUTE} navigation={NAV} />);
     });
     await flush();
-    await pressByTestID(renderer, 'autopilot-disable');
-    const buttons = Alert.alert.mock.calls.at(-1)[2] as any[];
-    const disableBtn = buttons.find((b) => b.text === 'Disable');
+    expect(byTestID(renderer, 'autopilot-setup')).toHaveLength(1);
+    ws.projects = [{ id: 'p1', autopilotEnabled: false }];
+    await act(async () =>
+      renderer.update(<ExperimentalAutopilotScreen route={ROUTE} navigation={NAV} />),
+    );
+    expect(byTestID(renderer, 'autopilot-setup')).toHaveLength(0);
+    expect(byTestID(renderer, 'autopilot-disabled')).toHaveLength(1);
+  });
+
+  it('keeps enablement controls in Project Configuration', async () => {
+    apiMock.state = { config: readyConfig(), activeRun: null };
+    let renderer: any;
     await act(async () => {
-      disableBtn.onPress();
-      await new Promise((r) => setTimeout(r, 0));
+      renderer = create(<ExperimentalAutopilotScreen route={ROUTE} navigation={NAV} />);
     });
-    expect(apiMock.disableAutopilot).toHaveBeenCalledWith('p1');
+    await flush();
+    expect(byTestID(renderer, 'autopilot-setup')).toHaveLength(1);
+    expect(byTestID(renderer, 'autopilot-disable')).toHaveLength(0);
+    expect(byTestID(renderer, 'autopilot-enable-toggle')).toHaveLength(0);
   });
 
   it('surfaces an alert when a run-control action fails', async () => {

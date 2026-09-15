@@ -11,10 +11,11 @@ two limits every operator must understand before trusting a run: **what an
 evaluator score does and does not prove**, and **why recovery is a code-only
 rollback**.
 
-Manage everything from **Settings > Experimental Autopilot** for a project (web,
-Electron, and mobile). No shell is required to set up, watch, pause, resume, or
-stop a run. The REST shapes behind these controls are in the generated OpenAPI
-reference: [`docs/api/openapi.yaml`](../api/openapi.yaml) (tag **Autopilot**).
+Enable or disable the module in **Project Configuration > Autopilot** on web,
+Electron, and mobile. Enabling reveals the project's **Autopilot** navigation
+entry, where you configure, watch, pause, resume, or stop a run. The REST shapes
+behind these controls are in the generated OpenAPI reference:
+[`docs/api/openapi.yaml`](../api/openapi.yaml) (tag **Autopilot**).
 
 ## What is in scope
 
@@ -29,21 +30,18 @@ policy, or the human-authored brief and limits.
 
 ## 1. Enable Autopilot for the project
 
-Enablement is **per project**. There is no server-wide operator switch to flip
-first: a project admin opts the project in and starts it entirely from that
-project's settings, the same way a project's AWS profiles are configured
-per-project rather than host-wide. A project stays disabled until its own config
-is complete and an admin enables and starts it; nothing about one project's
-Autopilot affects another's.
+In **Project Configuration**, turn on **Autopilot**. This is the only UI
+control for project enablement. The module stays hidden from navigation until
+enabled, and opening its URL while disabled points back to Project Configuration.
+There is no server toggle.
 
-Do everything from **Settings > Experimental Autopilot** for the project: fill
-the setup form, satisfy the readiness checklist, toggle the project on, and
-Start. The REST surface behind these controls is documented in the OpenAPI
-reference under **Autopilot**.
+You can enable a project before supplying a brief, target, or credentials.
+Enabling reveals the module; it does not start work. The same persisted flag
+controls visibility and run eligibility, with no separate module switch.
 
-## 2. Opt the project in and configure the run
+## 2. Configure the run
 
-In **Settings > Experimental Autopilot**, provide:
+Open **Autopilot** from the project's navigation and provide:
 
 - **Brief**: a loose product brief. The planner expands it into a small baseline
   with explicit acceptance journeys, non-goals, and a versioned quality rubric.
@@ -67,7 +65,7 @@ The **Readiness** checklist validates, before any run starts: repo and agent
 credentials, Finalize review-and-merge automation, local-target isolation,
 deployment revision reporting, test access, and recoverability. Every failed
 check explains itself without a shell. **Start** is available only when the
-checklist passes and the server flag is on. Starting authorizes routine
+checklist passes and the project is enabled. Starting authorizes routine
 automated implementation, review, merge, local deployment, and testing for that
 project's experiment target, with no per-cycle human approval.
 
@@ -90,7 +88,8 @@ evidence.
   their owner APIs. The run stays **Stopping** until cancellation and
   reconciliation finish. Stopping cannot undo a merge or a deployment that has
   already completed. A stopped run is never resurrected by a restart.
-- **Disable** invokes Stop and turns the project capability back off.
+- Turn off **Autopilot** in **Project Configuration** to invoke Stop and disable
+  the module. Its navigation entry disappears after cancellation settles.
 
 ## Recovery runbook
 

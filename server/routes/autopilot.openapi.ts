@@ -48,11 +48,11 @@ export const AutopilotTargetSchema = registerComponent(
     }),
     readinessProbeUrl: z.string().nullable().openapi({
       description:
-        'HTTP(S) loopback readiness probe on the same origin as `origin`. Required to enable or start a run.',
+        'HTTP(S) loopback readiness probe on the same origin as `origin`. Required to start a run.',
     }),
     origin: z.string().nullable().openapi({
       description:
-        'HTTP(S) loopback origin of the dedicated local target (scheme://host[:port], no path). Required to enable or start a run. Public-browser loopback blocking is unchanged.',
+        'HTTP(S) loopback origin of the dedicated local target (scheme://host[:port], no path). Required to start a run. Public-browser loopback blocking is unchanged.',
     }),
   }),
 );
@@ -70,7 +70,9 @@ export const AutopilotConfigSchema = registerComponent(
   'AutopilotProjectConfig',
   z.object({
     projectId: z.string(),
-    enabled: z.boolean(),
+    enabled: z.boolean().openapi({
+      description: 'Project opt-in. May be enabled before setup; start validates run readiness.',
+    }),
     disabling: z.boolean(),
     briefId: z.string().nullable(),
     brief: z.string().nullable(),
@@ -366,7 +368,7 @@ registerPath({
   tags: ['Autopilot'],
   summary: 'Save Autopilot project configuration',
   description:
-    'Persists the project opt-in, versioned brief, local target, limits and credential owner. Enabling requires every field, including a loopback origin and readiness probe on the dedicated experiment target. Unattended deploy authority applies only to that target. Does not start a run.',
+    'Persists the project opt-in, versioned brief, local target, limits and credential owner. Project enablement may be saved before setup. Starting requires the complete configuration, including a loopback origin and readiness probe on the dedicated experiment target. Unattended deploy authority applies only to that target. Does not start a run.',
   request: {
     params: projectParams,
     body: { content: jsonContent(PutAutopilotConfigRequestSchema) },
@@ -383,7 +385,7 @@ registerPath({
   tags: ['Autopilot'],
   summary: 'Start an Autopilot run',
   description:
-    'Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires the server operator setting, project opt-in, a declared local target with origin and readiness, scoped worker credentials, and enforceable runtime containment. Unattended deploy is authorized only for that experiment target; push and schedule triggers for the owned target are skipped.',
+    'Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires project opt-in, a declared local target with origin and readiness, scoped worker credentials, and enforceable runtime containment. Unattended deploy is authorized only for that experiment target; push and schedule triggers for the owned target are skipped.',
   request: {
     params: projectParams,
     body: { content: jsonContent(StartAutopilotRequestSchema), required: false },

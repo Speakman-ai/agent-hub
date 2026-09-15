@@ -99,7 +99,7 @@ const ctl = vi.hoisted(() => ({
       getAutopilot: vi.fn().mockResolvedValue({
         config: {
           projectId: 'proj-1',
-          enabled: false,
+          enabled: true,
           disabling: false,
           briefId: 'b1',
           brief: 'Build a todo app.',
@@ -130,6 +130,7 @@ const ctl = vi.hoisted(() => ({
 const PROJECT_FIXTURE = [
   {
     id: 'proj-1',
+    autopilotEnabled: true,
     name: 'Project',
     color: '#3b82f6',
     cwd: '/tmp/w',
@@ -189,6 +190,22 @@ describe('App autopilot sidebar navigation', () => {
   // Regression: onNavigate set currentView='autopilot' but never set
   // autopilotProjectId, so the render guard failed and the Autopilot click
   // fell through to a blank session pane.
+  it('hides the module when a disabled project is opened directly', async () => {
+    PROJECT_FIXTURE[0].autopilotEnabled = false;
+    try {
+      await bootApp();
+      await act(async () => {
+        ctl.onNavigate('autopilot', 'proj-1');
+      });
+      expect(
+        await screen.findByText('Enable Autopilot in Project Configuration.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId('autopilot-section')).toBeNull();
+    } finally {
+      PROJECT_FIXTURE[0].autopilotEnabled = true;
+    }
+  });
+
   it('renders the autopilot section (not a blank pane) when navigating to autopilot', async () => {
     await bootApp();
     await act(async () => {

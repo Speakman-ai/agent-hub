@@ -34,7 +34,7 @@ const LIMITS = {
 function readyConfig(overrides: any = {}) {
   return {
     projectId: 'p1',
-    enabled: false,
+    enabled: true,
     disabling: false,
     briefId: 'b1',
     brief: 'Build a todo app.',
@@ -99,24 +99,24 @@ describe('AutopilotSettingsSection', () => {
     expect(screen.getByTestId('autopilot-readiness-owner')).toBeTruthy();
   });
 
-  it('opts in: clicking Enable PUTs the config with enabled=true', async () => {
+  it('saves setup without changing project enablement', async () => {
     const showToast = vi.fn();
     render(<AutopilotSettingsSection projectId="p1" showToast={showToast} />);
-    const enable = await screen.findByTestId('autopilot-enable-toggle');
+    const enable = await screen.findByTestId('autopilot-save-config');
     fireEvent.click(enable);
     await waitFor(() => expect(api.putAutopilotConfig).toHaveBeenCalled());
     const body = (api.putAutopilotConfig as any).mock.calls[0][1];
-    expect(body.enabled).toBe(true);
+    expect(body).not.toHaveProperty('enabled');
     expect(body.target.targetId).toBe('local');
     await waitFor(() =>
-      expect(showToast).toHaveBeenCalledWith(expect.stringMatching(/enabled/i), 'success'),
+      expect(showToast).toHaveBeenCalledWith(expect.stringMatching(/saved/i), 'success'),
     );
   });
 
   it('sends the loaded config revision as expectedRevision (optimistic concurrency)', async () => {
     (api.getAutopilot as any).mockResolvedValue(state({ config: readyConfig({ revision: 7 }) }));
     render(<AutopilotSettingsSection projectId="p1" />);
-    const enable = await screen.findByTestId('autopilot-enable-toggle');
+    const enable = await screen.findByTestId('autopilot-save-config');
     fireEvent.click(enable);
     await waitFor(() => expect(api.putAutopilotConfig).toHaveBeenCalled());
     expect((api.putAutopilotConfig as any).mock.calls[0][1].expectedRevision).toBe(7);
@@ -501,22 +501,11 @@ describe('AutopilotSettingsSection', () => {
     );
   });
 
-  it('disables Autopilot after confirmation', async () => {
-    (api.getAutopilot as any).mockResolvedValue(
-      state({
-        config: readyConfig({ enabled: true }),
-        activeRun: { run: run({ controlState: 'running' }), cycle: null },
-      }),
-    );
-    (api.disableAutopilot as any).mockResolvedValue({
-      config: readyConfig({ enabled: false }),
-      activeRun: null,
-      stateVersion: 9,
-    });
+  it('keeps enablement controls in Project Configuration', async () => {
     render(<AutopilotSettingsSection projectId="p1" />);
-    const disable = await screen.findByTestId('autopilot-disable');
-    fireEvent.click(disable);
-    await waitFor(() => expect(api.disableAutopilot).toHaveBeenCalledWith('p1'));
+    await screen.findByTestId('autopilot-setup');
+    expect(screen.queryByTestId('autopilot-disable')).toBeNull();
+    expect(screen.queryByTestId('autopilot-enable-toggle')).toBeNull();
   });
 
   it('surfaces an error toast when a run-control action fails', async () => {
@@ -619,7 +608,7 @@ describe('AutopilotSettingsSection', () => {
       ),
     );
     // Start the enable mutation on A, then switch to B before it resolves.
-    fireEvent.click(screen.getByTestId('autopilot-enable-toggle'));
+    fireEvent.click(screen.getByTestId('autopilot-save-config'));
     rerender(<AutopilotSettingsSection projectId="projB" />);
     await waitFor(() =>
       expect((screen.getByTestId('autopilot-brief') as HTMLTextAreaElement).value).toBe(
@@ -689,20 +678,14 @@ describe('AutopilotSettingsSection', () => {
     expect(save).toBeDisabled();
   });
 
-  it('prevents Save and Enable from overlapping on a disabled project', async () => {
+  it('hides setup and controls for disabled project deep links', async () => {
     (api.getAutopilot as any).mockResolvedValue(state({ config: readyConfig({ enabled: false }) }));
-    (api.putAutopilotConfig as any).mockReturnValue(new Promise(() => {}));
-
     render(<AutopilotSettingsSection projectId="p1" />);
-    const save = await screen.findByTestId('autopilot-save-config');
-    const enable = screen.getByTestId('autopilot-enable-toggle');
-    fireEvent.click(save);
-    // Enable must not start while a Save is in flight.
-    fireEvent.click(enable);
-
-    expect(api.putAutopilotConfig).toHaveBeenCalledTimes(1);
-    expect(save).toBeDisabled();
-    expect(enable).toBeDisabled();
+    await screen.findByTestId('autopilot-disabled');
+    expect(screen.queryByTestId('autopilot-setup')).toBeNull();
+    expect(screen.queryByTestId('autopilot-controls')).toBeNull();
+    expect(screen.queryByTestId('autopilot-enable-toggle')).toBeNull();
+    expect(api.putAutopilotConfig).not.toHaveBeenCalled();
   });
 
   it('a stale Save from a prior visit cannot release the current Save slot (A→B→A)', async () => {

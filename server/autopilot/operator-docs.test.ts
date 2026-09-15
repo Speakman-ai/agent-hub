@@ -17,6 +17,8 @@ describe('autopilot operator runbook', () => {
     // Setup surface: per-project enablement, opt-in config, readiness/start.
     expect(doc).toMatch(/Enable Autopilot for the project/i);
     expect(doc).toMatch(/per project/i);
+    expect(doc).toMatch(/Project Configuration > Autopilot/);
+    expect(doc).not.toMatch(/server flag is on|Settings > Experimental Autopilot/);
     expect(doc).toMatch(/Readiness and Start/i);
     expect(doc).toMatch(/Pause, Resume, Stop/i);
     // Recovery runbook covers the induced-failure paths this epic validates.

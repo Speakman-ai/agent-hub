@@ -581,18 +581,6 @@ export class AutopilotController {
           ? input.credentialOwnerUserId.trim()
           : null;
 
-    if (enabled) {
-      this.assertReadyToEnable({
-        briefId,
-        target,
-        limits,
-        credentialOwnerUserId,
-      });
-      if (this.validateLocalTarget && target) {
-        assertLocalTargetReadyToRun(projectId, target, this.validateLocalTarget);
-      }
-    }
-
     const updatedAt = this.timestamp();
     this.store.transaction(() => {
       const currentInTx = this.store.getConfig(projectId);
@@ -629,14 +617,14 @@ export class AutopilotController {
     return this.store.getConfig(projectId);
   }
 
-  private assertReadyToEnable(parts: {
+  private assertReadyToStart(parts: {
     briefId: string | null;
     target: AutopilotTarget | null;
     limits: AutopilotLimits | null;
     credentialOwnerUserId: string | null;
   }): void {
     if (!parts.briefId) {
-      throw new AutopilotError('invalid_config', 'brief is required before enabling Autopilot');
+      throw new AutopilotError('invalid_config', 'brief is required before starting Autopilot');
     }
     if (!parts.target?.targetId) {
       throw new AutopilotError('invalid_config', 'a local deployment target is required');
@@ -689,7 +677,6 @@ export class AutopilotController {
           this.putConfig(
             projectId,
             {
-              enabled: true,
               brief: input.brief,
               target: input.target,
               limits: input.limits,
@@ -705,7 +692,7 @@ export class AutopilotController {
         if (!config.enabled) {
           throw new AutopilotError('not_enabled', 'Autopilot is not enabled for this project');
         }
-        this.assertReadyToEnable({
+        this.assertReadyToStart({
           briefId: config.briefId,
           target: config.target,
           limits: config.limits,

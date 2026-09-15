@@ -30,7 +30,7 @@ const PROJECT_COLORS = [
 export default function ProjectSettingsScreen({ route, navigation }: any) {
   const { projectId, project: routeProject } = route.params || {};
   const { projects, refreshProjects } = useApp();
-  const project = routeProject || projects?.find((p: any) => p.id === projectId);
+  const project = projects?.find((p: any) => p.id === projectId) || routeProject;
   const [name, setName] = useState(project?.name || '');
   const [color, setColor] = useState(project?.color || '#6366f1');
   const [saving, setSaving] = useState(false);
@@ -55,6 +55,27 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
     },
     [projectId, refreshProjects],
   );
+  const toggleAutopilot = (enabled: boolean) => {
+    const persist = async () => {
+      if (saving) return;
+      setSaving(true);
+      try {
+        if (enabled) await api.putAutopilotConfig(projectId, { enabled: true });
+        else await api.disableAutopilot(projectId);
+        await refreshProjects?.();
+      } catch (err: any) {
+        Alert.alert('Error', err?.message || 'Failed to update Autopilot');
+      } finally {
+        setSaving(false);
+      }
+    };
+    if (enabled) void persist();
+    else
+      Alert.alert('Disable Autopilot', 'Any active run is stopped.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Disable', style: 'destructive', onPress: () => void persist() },
+      ]);
+  };
   const handleSaveName = async () => {
     const trimmed = name.trim();
     if (!trimmed || trimmed === project?.name) return;
@@ -128,6 +149,24 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
 
         <Text style={styles.label}>GitHub repository</Text>
         <Text style={styles.readOnly}>{githubRepo ? githubRepo : 'No repo linked'}</Text>
+
+        <View style={styles.toggleRow}>
+          <View style={styles.toggleTextCol}>
+            <Text style={styles.toggleTitle}>Autopilot</Text>
+            <Text style={styles.toggleDesc}>
+              Enable experimental Autopilot for this project. Its menu entry appears when enabled.
+              Disabling stops any active run.
+            </Text>
+          </View>
+          <Switch
+            testID={`project-autopilot-enabled-${projectId}`}
+            accessibilityLabel="Autopilot"
+            value={!!project.autopilotEnabled}
+            disabled={saving}
+            onValueChange={toggleAutopilot}
+            trackColor={{ true: colors.emerald600, false: colors.gray600 }}
+          />
+        </View>
 
         <View style={styles.toggleRow}>
           <View style={styles.toggleTextCol}>

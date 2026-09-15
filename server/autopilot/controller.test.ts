@@ -187,24 +187,21 @@ describe('autopilot controller', () => {
     expect(after.activeRun?.run.briefRevision).toBe(runBefore.briefRevision);
   });
 
-  it('refuses to enable without a loopback origin and readiness probe', () => {
+  it('refuses to start without a loopback origin and readiness probe', () => {
     const { controller } = freshController();
-    expect(() =>
-      controller.putConfig(
-        PROJECT,
-        {
-          enabled: true,
-          brief: READY.brief,
-          target: { targetId: 'local-preview' },
-          limits: READY.limits,
-          credentialOwnerUserId: 'user-1',
-        },
-        ACTOR,
-      ),
-    ).toThrow(/target\.origin is required/);
+    controller.putConfig(
+      PROJECT,
+      {
+        enabled: true,
+        ...READY,
+        target: { targetId: 'local-preview' },
+      },
+      ACTOR,
+    );
+    expect(() => controller.start(PROJECT, {}, ACTOR)).toThrow(/target\.origin is required/);
   });
 
-  it('refuses to enable when the declared environment points elsewhere', () => {
+  it('refuses to start when the declared environment points elsewhere', () => {
     const { controller } = freshController({
       validateLocalTarget: {
         getDeclaredEnvironment: () => ({
@@ -215,7 +212,8 @@ describe('autopilot controller', () => {
         }),
       },
     });
-    expect(() => controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR)).toThrow(
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+    expect(() => controller.start(PROJECT, {}, ACTOR)).toThrow(
       /points at http:\/\/127\.0\.0\.1:9999/,
     );
   });

@@ -102,6 +102,31 @@ describe('autopilot routes', () => {
     expect(res.body.activeRun).toBeNull();
   });
 
+  it('enables an unconfigured project without permitting an unready run', async () => {
+    const app = makeApp('Admin');
+    const enabled = await request(app)
+      .put(`/api/projects/${PROJECT_ID}/autopilot/config`)
+      .send({ enabled: true })
+      .expect(200);
+    expect(enabled.body.enabled).toBe(true);
+    expect(enabled.body.brief).toBeNull();
+    const start = await request(app).post(`/api/projects/${PROJECT_ID}/autopilot/start`).send({});
+    expect(start.status).toBe(400);
+    expect(start.body.code).toBe('invalid_config');
+  });
+
+  it('cannot opt in by starting a disabled project with setup overrides', async () => {
+    const app = makeApp('Admin');
+    const start = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/autopilot/start`)
+      .send(READY);
+    expect(start.status).toBe(403);
+    expect(start.body.code).toBe('not_enabled');
+    const state = await request(app).get(`/api/projects/${PROJECT_ID}/autopilot`).expect(200);
+    expect(state.body.config.enabled).toBe(false);
+    expect(state.body.config.brief).toBeNull();
+  });
+
   it('rejects duplicate start', async () => {
     const app = makeApp('Admin');
     await request(app).put(`/api/projects/${PROJECT_ID}/autopilot/config`).send(READY).expect(200);

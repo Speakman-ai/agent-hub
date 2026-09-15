@@ -1560,6 +1560,22 @@ describe('Sidebar — per-project nav groups', () => {
     expect(screen.queryByRole('button', { name: 'Workflows' })).toBeNull();
   });
 
+  it('hides Autopilot until the project enables it and removes it on disable', () => {
+    const props = buildProps();
+    const { rerender } = render(<Sidebar {...props} />);
+    expect(screen.queryByRole('button', { name: 'Autopilot' })).toBeNull();
+    rerender(
+      <Sidebar
+        {...props}
+        projects={props.projects.map((p: any) => ({ ...p, autopilotEnabled: true }))}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Autopilot' }));
+    expect(props.onNavigate).toHaveBeenCalledWith('autopilot', PROJECT_ID);
+    rerender(<Sidebar {...props} />);
+    expect(screen.queryByRole('button', { name: 'Autopilot' })).toBeNull();
+  });
+
   it('hides AWS when the project has not enabled AWS', () => {
     render(<Sidebar {...buildProps()} />);
     expect(screen.queryByRole('button', { name: 'AWS' })).toBeNull();

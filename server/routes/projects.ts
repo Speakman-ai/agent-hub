@@ -1,3 +1,5 @@
+import { getDb } from '../db.js';
+import { isAutopilotEnabled } from '../autopilot/store.js';
 import { Router, Request, Response } from 'express';
 import cron from 'node-cron';
 import { execFileSync, spawn, ChildProcess, exec, execFile } from 'child_process';
@@ -1116,6 +1118,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     );
     const enriched = projects.map((p) => ({
       ...p,
+      autopilotEnabled: isAutopilotEnabled(getDb(), p.id),
       agents: p.agents.map((a) => {
         const sessions = stmts.getSessions.all(a.id) as Array<{ id: string; updated_at: string }>;
         let lastActivity: string | null = null;
@@ -1549,7 +1552,10 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
   router.get('/api/projects/:projectId', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    res.json(project);
+    res.json({
+      ...project,
+      autopilotEnabled: isAutopilotEnabled(getDb(), project.id),
+    });
   });
 
   // ─── Per-user, project-scoped settings ───────────────────────────

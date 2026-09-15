@@ -128,7 +128,9 @@ export default function createAutopilotRoutes(
         return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
       }
       try {
-        res.json(controllerFor().putConfig(projectId, parsed.data, actor(req)));
+        const updated = controllerFor().putConfig(projectId, parsed.data, actor(req));
+        deps.broadcast?.({ type: 'projects_updated', reason: 'autopilot-config' });
+        res.json(updated);
       } catch (err) {
         sendAutopilotError(res, err);
       }
@@ -216,7 +218,9 @@ export default function createAutopilotRoutes(
       const projectId = resolveProject(req, res);
       if (!projectId) return;
       try {
-        res.json(await controllerFor().disable(projectId, actor(req)));
+        const updated = await controllerFor().disable(projectId, actor(req));
+        deps.broadcast?.({ type: 'projects_updated', reason: 'autopilot-disabled' });
+        res.json(updated);
       } catch (err) {
         sendAutopilotError(res, err);
       }

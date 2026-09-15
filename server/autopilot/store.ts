@@ -368,6 +368,13 @@ export interface InsertRunInput {
   updatedAt: string;
 }
 
+export function isAutopilotEnabled(db: Db, projectId: string): boolean {
+  const row = db
+    .prepare('SELECT enabled FROM autopilot_project_config WHERE project_id = ?')
+    .get(projectId) as { enabled: number } | undefined;
+  return row?.enabled === 1;
+}
+
 export class AutopilotStore {
   constructor(private readonly db: Db) {
     ensureAutopilotSchema(db);

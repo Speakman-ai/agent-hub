@@ -11,6 +11,8 @@ import { api } from '../utils/api';
 (vi as any).mock('../utils/api.js', () => ({
   api: {
     getConfig: vi.fn(),
+    putAutopilotConfig: vi.fn().mockResolvedValue({ enabled: true }),
+    disableAutopilot: vi.fn().mockResolvedValue({ config: { enabled: false } }),
     updateConfig: vi.fn(),
     get: vi.fn(),
     getModelConfig: vi.fn(),
@@ -658,6 +660,34 @@ describe('SettingsPage — sidebar navigation', () => {
     expect(await findByText('Your default automation')).toBeTruthy();
     // The Finalize automation levels are selectable here now.
     expect(await findByText('Auto Merge')).toBeTruthy();
+  });
+
+  it('enables Autopilot from Project Configuration without requiring setup', async () => {
+    const onProjectsChange = vi.fn();
+    const projects = [{ id: 'p1', name: 'Acme', agents: [] }];
+    const { getByTestId } = render(
+      <ProjectsSection projects={projects} projectId="p1" onProjectsChange={onProjectsChange} />,
+    );
+    const toggle = getByTestId('project-autopilot-enabled-p1');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(api.putAutopilotConfig).toHaveBeenCalledWith('p1', { enabled: true }),
+    );
+    await waitFor(() => expect(onProjectsChange).toHaveBeenCalled());
+  });
+
+  it('disables Autopilot through the cancellation endpoint from Project Configuration', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onProjectsChange = vi.fn();
+    const projects = [{ id: 'p1', name: 'Acme', agents: [], autopilotEnabled: true }];
+    const { getByTestId } = render(
+      <ProjectsSection projects={projects} projectId="p1" onProjectsChange={onProjectsChange} />,
+    );
+    fireEvent.click(getByTestId('project-autopilot-enabled-p1'));
+    await waitFor(() => expect(api.disableAutopilot).toHaveBeenCalledWith('p1'));
+    await waitFor(() => expect(onProjectsChange).toHaveBeenCalled());
+    confirm.mockRestore();
   });
 
   it('exposes an AWS enable toggle that defaults off and persists via updateProject', async () => {

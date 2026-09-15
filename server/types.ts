@@ -3678,6 +3678,8 @@ export interface Project {
    * hidden until a user opts in via Settings → Projects.
    */
   awsEnabled?: boolean;
+  /** Read-only projection of the Autopilot configuration enabled flag. */
+  autopilotEnabled?: boolean;
   /**
    * When true, the per-project Infrastructure monitoring module is visible
    * in the sidebar. Defaults to `false` (omitted) until an operator opts in.
