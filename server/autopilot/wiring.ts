@@ -49,7 +49,7 @@ import type {
 } from './orchestrator.js';
 import { parseEvaluationReport, type AutopilotEvaluationReport } from './evaluate.js';
 import { listEvaluationCaptures, probePinnedApiCriterion } from './evaluation-captures.js';
-import type { AutopilotRunRecord } from './types.js';
+import type { AutopilotRunRecord, AutopilotIsolationAdapter } from './types.js';
 import { getDeployment, getDeploymentEnvironment } from '../deploy/deployment-store.js';
 import { triggerDeployment } from '../deploy/deploy-orchestrator.js';
 import { loadDeployConfig, parseDeployConfig } from '../deploy/deploy-config.js';
@@ -161,6 +161,34 @@ function buildPlanningPrompt(brief: string): string {
   ].join('\n');
 }
 
+/**
+ * Pin a worker session's session-env adapter to the project's chosen isolation
+ * adapter, failing closed. `auto` is a no-op (the global boot selection applies).
+ *
+ * For any concrete adapter the UPDATE MUST affect exactly the target session; if
+ * it does not, the worker would silently run under the global adapter that the
+ * controller's containment gate did not approve (e.g. a Sysbox selection that
+ * passed the gate but reverts to the host default). The caller must abort
+ * dispatch, so this throws rather than logging and continuing.
+ */
+export function pinSessionEnvAdapter(
+  db: ReturnType<typeof getDb>,
+  sessionId: string,
+  isolationAdapter: AutopilotIsolationAdapter,
+): void {
+  if (!isolationAdapter || isolationAdapter === 'auto') return;
+  const result = db
+    .prepare('UPDATE sessions SET session_env_adapter = ? WHERE id = ?')
+    .run(isolationAdapter, sessionId);
+  if (result.changes !== 1) {
+    throw new Error(
+      `autopilot: failed to pin session-env adapter '${isolationAdapter}' on session ` +
+        `${sessionId} (rows changed=${result.changes}); refusing to dispatch a worker whose ` +
+        `isolation would diverge from the approved selection`,
+    );
+  }
+}
+
 function bindWorkerSession(
   sessionId: string,
   projectId: string,
@@ -185,6 +213,14 @@ function bindWorkerSession(
       expectedSha: extra.expectedSha ?? null,
     },
     config.dataDir,
+  );
+  // Pin the project's chosen isolation adapter onto the worker session so the
+  // worker runs under the adapter the controller's containment gate approved,
+  // even when the server's global adapter differs. Fails closed.
+  pinSessionEnvAdapter(
+    getDb(),
+    sessionId,
+    new AutopilotStore(getDb()).getConfig(projectId).isolationAdapter,
   );
   const token = readAutopilotWorkerToken(runId, config.dataDir, role);
   if (token) {

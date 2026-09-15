@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createAutopilotController } from './controller.js';
 import { AutopilotError } from './errors.js';
 import { ensureAutopilotSchema } from './schema.js';
@@ -11,6 +11,20 @@ import type {
   IssueAutopilotWorkerCredential,
   RevokeAutopilotWorkerCredential,
 } from './worker-authority.js';
+import {
+  initSessionEnvSelection,
+  resetSessionEnvSelectionForTest,
+  type SysboxProbeDeps,
+} from '../session-env/sysbox-capability.js';
+
+function noSysboxDeps(): SysboxProbeDeps {
+  return {
+    platform: 'linux',
+    kernelRelease: () => '6.1.0-generic',
+    readTextFile: async () => '0\n',
+    run: async () => ({ ok: false, stdout: '' }),
+  };
+}
 
 const PROJECT = 'demo-app';
 const ACTOR = { userId: 'user-1' };
@@ -52,7 +66,7 @@ function freshController(opts?: {
   credentialOwnerExists?: (userId: string) => boolean;
   holderId?: string;
   now?: () => Date;
-  assertContainment?: () => void;
+  assertContainment?: (opts?: { allowHostAdapter?: boolean }) => void;
   issueWorkerCredential?: IssueAutopilotWorkerCredential;
   revokeWorkerCredential?: RevokeAutopilotWorkerCredential;
 }) {
@@ -870,6 +884,155 @@ describe('autopilot controller', () => {
       expect((err as AutopilotError).code).toBe('containment_unavailable');
     }
     expect(controller.getProjectState(PROJECT).activeRun).toBeNull();
+  });
+
+  describe('real session-env containment path (container-configured server)', () => {
+    afterEach(() => resetSessionEnvSelectionForTest());
+
+    function realGateController() {
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      ensureAutopilotSchema(db);
+      const stubs = stubWorkerCreds();
+      // NOTE: assertContainment is intentionally NOT injected here, so the
+      // controller exercises the real gate → resolveSessionEnvSelectionForMode →
+      // evaluateAutopilotIsolationCapability path against the seeded selection.
+      const controller = createAutopilotController({
+        db,
+        credentialOwnerExists: () => true,
+        holderId: 'hub-a',
+        issueWorkerCredential: stubs.issueWorkerCredential,
+        revokeWorkerCredential: stubs.revokeWorkerCredential,
+      });
+      return { controller };
+    }
+
+    it('rejects auto/unacked host but starts host once acknowledged', async () => {
+      // Global adapter is container (verified isolation is NOT satisfied by it).
+      await initSessionEnvSelection(
+        'container',
+        noSysboxDeps(),
+        { dockerAvailable: true, routing: 'container-ip' },
+        { available: false, reason: 'no kvm' },
+      );
+      const { controller } = realGateController();
+      controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+
+      // isolationAdapter 'auto' → resolves container → rejected.
+      expect(() => controller.start(PROJECT, {}, ACTOR)).toThrowError(
+        /managed project runtime isolation is required/,
+      );
+
+      // Selecting host WITHOUT acknowledging is still rejected.
+      controller.putConfig(PROJECT, { isolationAdapter: 'host' }, ACTOR);
+      expect(() => controller.start(PROJECT, {}, ACTOR)).toThrowError(
+        /managed project runtime isolation is required/,
+      );
+
+      // Host + acknowledgment → the gate resolves host and allows the start,
+      // even though the server's global adapter is container.
+      controller.putConfig(PROJECT, { isolationAdapter: 'host', hostAdapterAck: true }, ACTOR);
+      const snap = controller.start(PROJECT, {}, ACTOR);
+      expect(snap.run.controlState).toBe('running');
+    });
+  });
+
+  it('threads the host opt-out from config into the containment gate on start', () => {
+    const seen: Array<boolean | undefined> = [];
+    const { controller } = freshController({
+      assertContainment: (opts) => {
+        seen.push(opts?.allowHostAdapter);
+        // Simulate a host-only machine: the gate rejects unless host is allowed.
+        if (!opts?.allowHostAdapter) {
+          throw new AutopilotError(
+            'containment_unavailable',
+            'Autopilot cannot start: managed project runtime isolation is required (sysbox or firecracker)',
+          );
+        }
+      },
+    });
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+
+    // Default config (isolationAdapter 'auto', no ack) → gate blocks start.
+    expect(() => controller.start(PROJECT, {}, ACTOR)).toThrowError(
+      /managed project runtime isolation is required/,
+    );
+    expect(seen.at(-1)).toBe(false);
+
+    // Selecting host without acknowledging is still not enough.
+    controller.putConfig(PROJECT, { isolationAdapter: 'host' }, ACTOR);
+    expect(() => controller.start(PROJECT, {}, ACTOR)).toThrow();
+    expect(seen.at(-1)).toBe(false);
+
+    // Host + acknowledgment lets Autopilot start on the host adapter.
+    controller.putConfig(PROJECT, { isolationAdapter: 'host', hostAdapterAck: true }, ACTOR);
+    const snap = controller.start(PROJECT, {}, ACTOR);
+    expect(snap.run.controlState).toBe('running');
+    expect(seen.at(-1)).toBe(true);
+  });
+
+  it('persists and returns the isolation adapter selection and host acknowledgment', () => {
+    const { controller } = freshController();
+    const initial = controller.getProjectState(PROJECT).config;
+    expect(initial.isolationAdapter).toBe('auto');
+    expect(initial.hostAdapterAck).toBe(false);
+
+    const saved = controller.putConfig(
+      PROJECT,
+      { isolationAdapter: 'host', hostAdapterAck: true },
+      ACTOR,
+    );
+    expect(saved.isolationAdapter).toBe('host');
+    expect(saved.hostAdapterAck).toBe(true);
+
+    // Survives an unrelated write (e.g. an enable toggle).
+    const afterEnable = controller.putConfig(PROJECT, { enabled: true }, ACTOR);
+    expect(afterEnable.isolationAdapter).toBe('host');
+    expect(afterEnable.hostAdapterAck).toBe(true);
+  });
+
+  it('resets the host acknowledgment when switching away from host (host→sysbox→host)', () => {
+    const { controller } = freshController();
+    // Opt into host with acknowledgment.
+    let cfg = controller.putConfig(
+      PROJECT,
+      { isolationAdapter: 'host', hostAdapterAck: true },
+      ACTOR,
+    );
+    expect(cfg.hostAdapterAck).toBe(true);
+
+    // Partial PUT that only switches the adapter (ack omitted) must clear the
+    // stale acknowledgment, not carry it forward.
+    cfg = controller.putConfig(PROJECT, { isolationAdapter: 'sysbox' }, ACTOR);
+    expect(cfg.hostAdapterAck).toBe(false);
+
+    // Switching back to host (ack omitted) must NOT resurrect the old "yes".
+    cfg = controller.putConfig(PROJECT, { isolationAdapter: 'host' }, ACTOR);
+    expect(cfg.hostAdapterAck).toBe(false);
+  });
+
+  it('never persists a host acknowledgment for a non-host adapter', () => {
+    const { controller, db } = freshController();
+    // Even an explicit ack:true alongside a non-host adapter is normalized off.
+    const cfg = controller.putConfig(
+      PROJECT,
+      { isolationAdapter: 'sysbox', hostAdapterAck: true },
+      ACTOR,
+    );
+    expect(cfg.hostAdapterAck).toBe(false);
+
+    // Defense in depth: even a row hand-written with a stale ack reads back false.
+    db.prepare(
+      "UPDATE autopilot_project_config SET isolation_adapter = 'container', host_adapter_ack = 1 WHERE project_id = ?",
+    ).run(PROJECT);
+    expect(controller.getProjectState(PROJECT).config.hostAdapterAck).toBe(false);
+  });
+
+  it('rejects an unknown isolation adapter', () => {
+    const { controller } = freshController();
+    expect(() =>
+      controller.putConfig(PROJECT, { isolationAdapter: 'nonsense' as unknown as 'host' }, ACTOR),
+    ).toThrowError(/unknown isolation adapter/);
   });
 
   it('blocks beginOperation when required containment cannot be enforced', async () => {

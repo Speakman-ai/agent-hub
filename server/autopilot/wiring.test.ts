@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import Database from 'better-sqlite3';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -9,6 +10,7 @@ import {
   buildLocalTargetLookup,
   handleAutopilotBroadcast,
   parseBaselineSpecJson,
+  pinSessionEnvAdapter,
   readFinalizeOutcome,
 } from './wiring.js';
 
@@ -56,6 +58,42 @@ function fakeStmts(rows: {
     getPullRequestByNumber: { get: () => rows.pr },
   } as unknown as Stmts;
 }
+
+describe('autopilot wiring — pinSessionEnvAdapter (fail closed)', () => {
+  function dbWithSession(id: string) {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, session_env_adapter TEXT)');
+    db.prepare('INSERT INTO sessions (id) VALUES (?)').run(id);
+    return db;
+  }
+
+  it('pins a concrete adapter onto the target session', () => {
+    const db = dbWithSession('s1');
+    pinSessionEnvAdapter(db, 's1', 'host');
+    const row = db.prepare('SELECT session_env_adapter FROM sessions WHERE id = ?').get('s1') as {
+      session_env_adapter: string | null;
+    };
+    expect(row.session_env_adapter).toBe('host');
+  });
+
+  it('is a no-op for auto (global boot selection applies)', () => {
+    const db = dbWithSession('s1');
+    pinSessionEnvAdapter(db, 's1', 'auto');
+    const row = db.prepare('SELECT session_env_adapter FROM sessions WHERE id = ?').get('s1') as {
+      session_env_adapter: string | null;
+    };
+    expect(row.session_env_adapter).toBeNull();
+  });
+
+  it('throws when the UPDATE affects no row, rather than silently using global', () => {
+    const db = dbWithSession('s1');
+    // Target a session id that does not exist — the pin cannot be applied, so a
+    // Sysbox selection must NOT silently fall back to the host default.
+    expect(() => pinSessionEnvAdapter(db, 'missing', 'sysbox')).toThrowError(
+      /failed to pin session-env adapter 'sysbox'/,
+    );
+  });
+});
 
 describe('autopilot wiring — board ops', () => {
   it('finds a prior epic by the autopilot idempotency-key label', () => {

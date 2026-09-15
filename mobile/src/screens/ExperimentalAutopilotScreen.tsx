@@ -23,7 +23,9 @@ import {
   minutesToMs,
   parseAutopilotCostCap,
   validateAutopilotLimitsForm,
+  AUTOPILOT_ISOLATION_ADAPTERS,
   type AutopilotProjectStateWire,
+  type AutopilotIsolationAdapter,
 } from '@shared/utils/autopilotView';
 
 const ACTIVE_POLL_MS = 5000;
@@ -40,6 +42,8 @@ export interface AutopilotFormState {
   maxRetriesPerStage: string;
   maxCostUsd: string;
   credentialOwnerUserId: string;
+  isolationAdapter: AutopilotIsolationAdapter;
+  hostAdapterAck: boolean;
 }
 
 export function formFromState(state: AutopilotProjectStateWire | null): AutopilotFormState {
@@ -57,6 +61,8 @@ export function formFromState(state: AutopilotProjectStateWire | null): Autopilo
     maxRetriesPerStage: l ? String(l.maxRetriesPerStage) : '2',
     maxCostUsd: l?.maxCostUsd != null ? String(l.maxCostUsd) : '',
     credentialOwnerUserId: c?.credentialOwnerUserId ?? '',
+    isolationAdapter: c?.isolationAdapter ?? 'auto',
+    hostAdapterAck: c?.hostAdapterAck ?? false,
   };
 }
 
@@ -82,6 +88,10 @@ export function buildConfigBody(form: AutopilotFormState) {
       maxCostUsd: maxCostUsd && maxCostUsd > 0 ? maxCostUsd : null,
     },
     credentialOwnerUserId: form.credentialOwnerUserId.trim() || null,
+    isolationAdapter: form.isolationAdapter,
+    // The acknowledgment only matters for the host adapter; never persist a
+    // stale "yes" for a verified adapter selection.
+    hostAdapterAck: form.isolationAdapter === 'host' ? form.hostAdapterAck : false,
   };
 }
 
@@ -655,6 +665,51 @@ export default function ExperimentalAutopilotScreen({ route, navigation }: any) 
               onChangeText={(v) => updateForm({ credentialOwnerUserId: v })}
               testID="autopilot-credential-owner"
             />
+            <Text style={styles.retentionLabel}>Worker isolation</Text>
+            <View style={styles.chipRow}>
+              {AUTOPILOT_ISOLATION_ADAPTERS.map((adapter) => {
+                const selected = form.isolationAdapter === adapter;
+                return (
+                  <TouchableOpacity
+                    key={adapter}
+                    testID={`autopilot-isolation-${adapter}`}
+                    onPress={() =>
+                      updateForm(
+                        adapter === 'host'
+                          ? { isolationAdapter: adapter }
+                          : { isolationAdapter: adapter, hostAdapterAck: false },
+                      )
+                    }
+                    style={[styles.chip, selected && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, selected && styles.chipTextActive]}>
+                      {adapter === 'auto' ? 'auto (isolated)' : adapter}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            {form.isolationAdapter === 'host' && (
+              <View style={styles.hostWarning} testID="autopilot-host-warning">
+                <Text style={styles.hostWarningText}>
+                  Autopilot will run unattended on the host with no isolation boundary. It can read
+                  and write anything the server process can. Only enable this on a machine you own
+                  and trust.
+                </Text>
+                <TouchableOpacity
+                  testID="autopilot-host-ack"
+                  onPress={() => updateForm({ hostAdapterAck: !form.hostAdapterAck })}
+                  style={styles.ackRow}
+                >
+                  <View style={[styles.checkbox, form.hostAdapterAck && styles.checkboxChecked]}>
+                    {form.hostAdapterAck && <Text style={styles.checkboxMark}>✓</Text>}
+                  </View>
+                  <Text style={styles.ackText}>
+                    Are you sure? I understand and want to run Autopilot on the host.
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
             <TouchableOpacity
               testID="autopilot-save-config"
               disabled={mutating}
@@ -846,4 +901,27 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: colors.purple900_40, borderColor: colors.purple500 },
   chipText: { color: colors.gray300, fontSize: 13 },
   chipTextActive: { color: colors.purple400 },
+  hostWarning: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.amber400,
+    backgroundColor: colors.amber900_40,
+  },
+  hostWarningText: { color: colors.amber400, fontSize: 12, marginBottom: 8 },
+  ackRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  checkbox: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: colors.amber400,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  checkboxChecked: { backgroundColor: colors.amber900_40 },
+  checkboxMark: { color: colors.amber400, fontSize: 12, fontWeight: '700' },
+  ackText: { color: colors.amber400, fontSize: 12, flex: 1 },
 });

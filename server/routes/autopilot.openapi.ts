@@ -66,6 +66,14 @@ export const AutopilotUsageSchema = registerComponent(
   }),
 );
 
+const AutopilotIsolationAdapterEnum = z.enum([
+  'auto',
+  'host',
+  'sysbox',
+  'container',
+  'firecracker',
+]);
+
 export const AutopilotConfigSchema = registerComponent(
   'AutopilotProjectConfig',
   z.object({
@@ -86,6 +94,14 @@ export const AutopilotConfigSchema = registerComponent(
     revision: z.number().int().openapi({
       description:
         'Optimistic-concurrency revision. Each successful config write increments it; pass it back as `expectedRevision` on the next PUT to reject stale, out-of-order writes.',
+    }),
+    isolationAdapter: AutopilotIsolationAdapterEnum.openapi({
+      description:
+        'Operator-selected isolation adapter for workers. `auto` keeps the managed-isolation requirement (sysbox/firecracker); `host` combined with `hostAdapterAck` lets Autopilot run on the host adapter without an isolation boundary.',
+    }),
+    hostAdapterAck: z.boolean().openapi({
+      description:
+        'Explicit acknowledgment that Autopilot may run without a managed isolation boundary. Only honored when `isolationAdapter === "host"`.',
     }),
   }),
 );
@@ -285,6 +301,14 @@ export const PutAutopilotConfigRequestSchema = z.object({
     .nullable()
     .optional(),
   credentialOwnerUserId: z.string().nullable().optional(),
+  isolationAdapter: AutopilotIsolationAdapterEnum.optional().openapi({
+    description:
+      'Operator-selected isolation adapter for workers. Select `host` (plus `hostAdapterAck: true`) to run Autopilot without a managed isolation boundary.',
+  }),
+  hostAdapterAck: z.boolean().optional().openapi({
+    description:
+      'Acknowledgment that Autopilot may run without a managed isolation boundary. Required for the host adapter to be accepted at start/resume.',
+  }),
   expectedRevision: z.number().int().nonnegative().optional().openapi({
     description:
       'Optimistic-concurrency guard: the config revision the caller loaded. The write is rejected with 409 if the stored revision has since advanced.',

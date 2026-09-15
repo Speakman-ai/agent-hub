@@ -2222,6 +2222,17 @@ function initDb(dataDir: string): void {
     "UPDATE sessions SET session_mode = 'consult' WHERE cron_id IS NOT NULL AND session_mode != 'consult'",
   );
 
+  // Per-session session-env adapter override ('auto' | 'host' | 'sysbox' |
+  // 'container' | 'firecracker'). NULL/absent = use the global boot selection.
+  // Set on Autopilot worker sessions from the project's chosen isolation adapter
+  // so `resolveSessionEnvAdapterForSession` runs the worker on the selected
+  // adapter (e.g. host) even when the server's global adapter differs.
+  try {
+    db.prepare('SELECT session_env_adapter FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN session_env_adapter TEXT');
+  }
+
   // Codex reasoning-effort preset: 'high' (default) | 'pro' (→ xhigh).
   // NULL on legacy rows / non-Codex sessions; resolver treats NULL as 'high'.
   try {
@@ -4780,6 +4791,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionFinalizeAutomation: db.prepare(
       "UPDATE sessions SET finalize_automation = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionEnvAdapter: db.prepare(
+      "UPDATE sessions SET session_env_adapter = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     getUserProjectSettings: db.prepare(
       'SELECT * FROM user_project_settings WHERE user_id = ? AND project_id = ?',

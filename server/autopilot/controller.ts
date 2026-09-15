@@ -16,13 +16,17 @@ import type {
   AutopilotStage,
   AutopilotTarget,
   AutopilotUsage,
+  AutopilotIsolationAdapter,
 } from './types.js';
 import {
+  AUTOPILOT_ISOLATION_ADAPTERS,
   DEFAULT_AUTOPILOT_EVALUATOR_POLICY,
   DEFAULT_AUTOPILOT_LIMITS,
   DEFAULT_AUTOPILOT_USAGE,
+  normalizeHostAdapterAck,
 } from './types.js';
 import { assertAutopilotContainment } from './containment.js';
+import { resolveSessionEnvSelectionForMode } from '../session-env/sysbox-capability.js';
 import {
   assertLocalTargetContract,
   assertLocalTargetReadyToRun,
@@ -45,6 +49,13 @@ export interface PutAutopilotConfigInput {
   limits?: Partial<AutopilotLimits> | null;
   evaluatorPolicy?: Partial<AutopilotEvaluatorPolicy> | null;
   credentialOwnerUserId?: string | null;
+  /** Operator-selected isolation adapter for workers ('auto' by default). */
+  isolationAdapter?: AutopilotIsolationAdapter;
+  /**
+   * "I understand this runs without a managed isolation boundary" acknowledgment.
+   * Only honored when `isolationAdapter === 'host'`.
+   */
+  hostAdapterAck?: boolean;
   /**
    * Optimistic-concurrency guard. When provided, the write is rejected with a
    * `conflict` if the stored config revision has moved on since the caller
@@ -87,6 +98,17 @@ export interface CompleteOperationInput {
   skipStageRetry?: boolean;
 }
 
+/**
+ * Options the controller passes to the containment gate. `adapterMode` is the
+ * project's chosen isolation adapter, re-resolved against the boot capability
+ * probe so the gate evaluates the adapter the worker will actually run under;
+ * `allowHostAdapter` relaxes the managed-isolation requirement for host.
+ */
+export interface AutopilotContainmentGateOptions {
+  allowHostAdapter?: boolean;
+  adapterMode?: AutopilotIsolationAdapter;
+}
+
 export interface AutopilotControllerDeps {
   db: Database.Database;
   now?: () => Date;
@@ -96,7 +118,7 @@ export interface AutopilotControllerDeps {
   getDeployedRevision?: (projectId: string, targetId: string) => string | null;
   validateLocalTarget?: AutopilotLocalTargetLookup;
   credentialOwnerExists?: (userId: string) => boolean;
-  assertContainment?: () => void;
+  assertContainment?: (opts?: AutopilotContainmentGateOptions) => void;
   issueWorkerCredential?: IssueAutopilotWorkerCredential;
   revokeWorkerCredential?: RevokeAutopilotWorkerCredential;
 }
@@ -288,7 +310,7 @@ export class AutopilotController {
   private readonly getDeployedRevision?: (projectId: string, targetId: string) => string | null;
   private readonly validateLocalTarget?: AutopilotLocalTargetLookup;
   private readonly credentialOwnerExists?: (userId: string) => boolean;
-  private readonly assertContainment: () => void;
+  private readonly assertContainment: (opts?: AutopilotContainmentGateOptions) => void;
   private readonly issueWorkerCredential?: IssueAutopilotWorkerCredential;
   private readonly revokeWorkerCredential?: RevokeAutopilotWorkerCredential;
 
@@ -301,7 +323,18 @@ export class AutopilotController {
     this.getDeployedRevision = deps.getDeployedRevision;
     this.validateLocalTarget = deps.validateLocalTarget;
     this.credentialOwnerExists = deps.credentialOwnerExists;
-    this.assertContainment = deps.assertContainment ?? assertAutopilotContainment;
+    this.assertContainment =
+      deps.assertContainment ??
+      ((opts) => {
+        const mode = opts?.adapterMode;
+        assertAutopilotContainment(undefined, {
+          allowHostAdapter: opts?.allowHostAdapter,
+          // Evaluate containment against the adapter the worker will actually run
+          // under (the project's selection), not just the global boot adapter.
+          getSelection:
+            mode && mode !== 'auto' ? () => resolveSessionEnvSelectionForMode(mode) : undefined,
+        });
+      });
     this.issueWorkerCredential = deps.issueWorkerCredential;
     this.revokeWorkerCredential = deps.revokeWorkerCredential;
   }
@@ -432,9 +465,21 @@ export class AutopilotController {
     return config;
   }
 
+  /**
+   * The managed-isolation requirement is relaxed for a project only when the
+   * operator explicitly selected the host adapter AND acknowledged running
+   * without an isolation boundary. Any other adapter keeps the strict gate.
+   */
+  private allowHostAdapter(config: AutopilotProjectConfig): boolean {
+    return config.isolationAdapter === 'host' && config.hostAdapterAck === true;
+  }
+
   private requireProjectDispatchable(projectId: string): AutopilotProjectConfig {
-    this.assertContainment();
     const config = this.requireNotDisabling(projectId);
+    this.assertContainment({
+      allowHostAdapter: this.allowHostAdapter(config),
+      adapterMode: config.isolationAdapter,
+    });
     if (!config.enabled) {
       throw new AutopilotError('not_enabled', 'Autopilot is not enabled for this project');
     }
@@ -461,6 +506,8 @@ export class AutopilotController {
       updatedAt: this.timestamp(),
       updatedBy: actor.userId,
       revision: config.revision + 1,
+      isolationAdapter: config.isolationAdapter,
+      hostAdapterAck: config.hostAdapterAck,
     });
   }
 
@@ -581,6 +628,20 @@ export class AutopilotController {
           ? input.credentialOwnerUserId.trim()
           : null;
 
+    const isolationAdapter =
+      input.isolationAdapter === undefined ? existing.isolationAdapter : input.isolationAdapter;
+    if (!(AUTOPILOT_ISOLATION_ADAPTERS as readonly string[]).includes(isolationAdapter)) {
+      throw new AutopilotError('invalid_config', `unknown isolation adapter: ${isolationAdapter}`);
+    }
+    // Normalize the acknowledgment against the selected adapter so a partial PUT
+    // that switches away from host (e.g. host/true → sysbox) cannot retain a
+    // stale "yes" that the gate would later honor on a switch back to host. This
+    // gives API clients the same protection the web/mobile forms apply.
+    const hostAdapterAck = normalizeHostAdapterAck(
+      isolationAdapter,
+      input.hostAdapterAck === undefined ? existing.hostAdapterAck : input.hostAdapterAck,
+    );
+
     const updatedAt = this.timestamp();
     this.store.transaction(() => {
       const currentInTx = this.store.getConfig(projectId);
@@ -612,6 +673,8 @@ export class AutopilotController {
         updatedAt,
         updatedBy: actor.userId,
         revision: currentInTx.revision + 1,
+        isolationAdapter,
+        hostAdapterAck,
       });
     });
     return this.store.getConfig(projectId);
@@ -644,8 +707,11 @@ export class AutopilotController {
     input: StartAutopilotInput,
     actor: AutopilotActor,
   ): AutopilotRunSnapshot {
-    this.requireNotDisabling(projectId);
-    this.assertContainment();
+    const preStartConfig = this.requireNotDisabling(projectId);
+    this.assertContainment({
+      allowHostAdapter: this.allowHostAdapter(preStartConfig),
+      adapterMode: preStartConfig.isolationAdapter,
+    });
     if (!this.issueWorkerCredential) {
       throw new AutopilotError(
         'authority_denied',

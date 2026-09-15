@@ -73,7 +73,24 @@ export interface AutopilotConfigWire {
   updatedBy: string | null;
   /** Optimistic-concurrency revision; sent back as `expectedRevision` on save. */
   revision: number;
+  /**
+   * Operator-selected isolation adapter for workers. `auto` keeps the managed
+   * isolation requirement; `host` + `hostAdapterAck` runs without a boundary.
+   */
+  isolationAdapter: AutopilotIsolationAdapter;
+  /** Acknowledgment that Autopilot may run on the host adapter (no isolation). */
+  hostAdapterAck: boolean;
 }
+
+export const AUTOPILOT_ISOLATION_ADAPTERS = [
+  'auto',
+  'host',
+  'sysbox',
+  'container',
+  'firecracker',
+] as const;
+
+export type AutopilotIsolationAdapter = (typeof AUTOPILOT_ISOLATION_ADAPTERS)[number];
 
 export interface AutopilotRunWire {
   id: string;

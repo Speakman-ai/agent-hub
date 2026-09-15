@@ -58,6 +58,13 @@ export interface SessionRow {
    */
   session_mode?: string | null;
   /**
+   * Per-session session-env adapter override ('auto' | 'host' | 'sysbox' |
+   * 'container' | 'firecracker'). NULL/absent = use the global boot selection.
+   * Set on Autopilot worker sessions from the project's chosen isolation adapter
+   * so the worker runs under it even when the server's global adapter differs.
+   */
+  session_env_adapter?: string | null;
+  /**
    * Codex reasoning-effort preset for this session: `'high'` (default) or
    * `'pro'` (→ native `model_reasoning_effort=xhigh`). NULL/absent on legacy
    * rows and non-Codex sessions → treated as `'high'`. See
@@ -2162,6 +2169,7 @@ export interface Stmts {
   updateSessionPendingSkillContext: Stmt;
   updateSessionAutoShipOnComplete: Stmt;
   updateSessionFinalizeAutomation: Stmt;
+  updateSessionEnvAdapter: Stmt;
   getUserProjectSettings: Stmt;
   upsertUserProjectDefaultFinalizeAutomation: Stmt;
   updateSessionState: Stmt;

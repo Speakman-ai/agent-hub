@@ -38,6 +38,7 @@ import {
   type AutopilotProjectStateWire,
   type AutopilotEvidenceView,
   type AutopilotDocumentationView,
+  type AutopilotIsolationAdapter,
 } from '@shared/utils/autopilotView';
 
 const ACTIVE_POLL_MS = 5000;
@@ -54,6 +55,8 @@ interface FormState {
   maxRetriesPerStage: string;
   maxCostUsd: string;
   credentialOwnerUserId: string;
+  isolationAdapter: AutopilotIsolationAdapter;
+  hostAdapterAck: boolean;
 }
 
 function formFromState(state: AutopilotProjectStateWire | null): FormState {
@@ -71,6 +74,8 @@ function formFromState(state: AutopilotProjectStateWire | null): FormState {
     maxRetriesPerStage: l ? String(l.maxRetriesPerStage) : '2',
     maxCostUsd: l?.maxCostUsd != null ? String(l.maxCostUsd) : '',
     credentialOwnerUserId: c?.credentialOwnerUserId ?? '',
+    isolationAdapter: c?.isolationAdapter ?? 'auto',
+    hostAdapterAck: c?.hostAdapterAck ?? false,
   };
 }
 
@@ -96,6 +101,10 @@ function buildConfigBody(form: FormState) {
       maxCostUsd: maxCostUsd && maxCostUsd > 0 ? maxCostUsd : null,
     },
     credentialOwnerUserId: form.credentialOwnerUserId.trim() || null,
+    isolationAdapter: form.isolationAdapter,
+    // The acknowledgment only means anything for the host adapter; never send a
+    // stale "yes" for a verified adapter selection.
+    hostAdapterAck: form.isolationAdapter === 'host' ? form.hostAdapterAck : false,
   };
 }
 
@@ -742,6 +751,49 @@ export default function AutopilotSettingsSection({
               placeholder="user id whose scoped credentials the worker runs under"
             />
           </Field>
+          <Field label="Worker isolation">
+            <select
+              value={form.isolationAdapter}
+              onChange={(e) =>
+                updateForm({
+                  isolationAdapter: e.target.value as AutopilotIsolationAdapter,
+                  // Selecting anything but host clears the acknowledgment so it
+                  // can't linger and silently re-apply if host is picked again.
+                  ...(e.target.value === 'host' ? {} : { hostAdapterAck: false }),
+                })
+              }
+              data-testid="autopilot-isolation-adapter"
+              className="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-sm text-gray-100"
+            >
+              <option value="auto">Auto (require managed isolation)</option>
+              <option value="sysbox">Sysbox</option>
+              <option value="firecracker">Firecracker</option>
+              <option value="container">Container</option>
+              <option value="host">Host (no isolation boundary)</option>
+            </select>
+          </Field>
+          {form.isolationAdapter === 'host' && (
+            <div
+              className="rounded border border-amber-700/60 bg-amber-950/40 px-3 py-2 text-sm text-amber-200"
+              data-testid="autopilot-host-warning"
+            >
+              <p className="mb-2">
+                Autopilot will run unattended on the host with no isolation boundary. It can read
+                and write anything the server process can. Only enable this on a machine you own and
+                trust.
+              </p>
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.hostAdapterAck}
+                  onChange={(e) => updateForm({ hostAdapterAck: e.target.checked })}
+                  data-testid="autopilot-host-ack"
+                  className="mt-0.5"
+                />
+                <span>Are you sure? I understand and want to run Autopilot on the host.</span>
+              </label>
+            </div>
+          )}
           <div className="flex flex-wrap gap-2 pt-1">
             <button
               type="button"

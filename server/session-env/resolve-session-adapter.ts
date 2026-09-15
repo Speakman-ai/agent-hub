@@ -13,7 +13,12 @@ import type { Project } from '../types.js';
 import { getProjectMode } from '../project-mode.js';
 import { isIsolatedModeActive } from '../session-mode.js';
 import type { SessionEnvKind } from './session-env.js';
-import { getSessionEnvSelection } from './sysbox-capability.js';
+import {
+  getSessionEnvSelection,
+  resolveSessionEnvSelectionForMode,
+  coerceSessionEnvAdapterMode,
+  SESSION_ENV_ADAPTER_MODES,
+} from './sysbox-capability.js';
 export { isFirecrackerBackendRegistered } from './firecracker/firecracker-backend-status.js';
 
 /**
@@ -25,7 +30,7 @@ export { isFirecrackerBackendRegistered } from './firecracker/firecracker-backen
  */
 export function resolveSessionEnvAdapterForSession(opts: {
   project: Project | null | undefined;
-  session: { session_mode?: string | null } | null | undefined;
+  session: { session_mode?: string | null; session_env_adapter?: string | null } | null | undefined;
   /** Override for tests; defaults to {@link getSessionEnvSelection}.adapter. */
   globalAdapter?: SessionEnvKind;
   /**
@@ -48,6 +53,20 @@ export function resolveSessionEnvAdapterForSession(opts: {
   // isolated mode is separately gated on firecracker being registered
   // (routes/sessions.ts).
   if (isIsolatedModeActive(opts.session)) return 'firecracker';
+  // A per-session adapter override (set on Autopilot worker sessions from the
+  // project's chosen isolation adapter) is re-resolved through the same boot
+  // capability probe, so selecting `host` actually runs the worker on the host
+  // even when the server's global adapter is `container`/`sysbox`. `auto`/absent
+  // falls through to the global selection. The test override wins when provided.
+  const rawOverride = opts.session?.session_env_adapter;
+  if (
+    typeof rawOverride === 'string' &&
+    rawOverride.trim() &&
+    rawOverride !== 'auto' &&
+    (SESSION_ENV_ADAPTER_MODES as readonly string[]).includes(rawOverride)
+  ) {
+    return resolveSessionEnvSelectionForMode(coerceSessionEnvAdapterMode(rawOverride)).adapter;
+  }
   const global = opts.globalAdapter ?? getSessionEnvSelection().adapter;
   // `sessionEnvAdapter=firecracker` used to mean "every session is a VM".
   // Isolated mode replaced that; keep the backend registered (so the picker

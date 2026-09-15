@@ -395,6 +395,17 @@ export function logSessionEnvSelection(
 }
 
 let cachedSelection: SessionEnvSelection | null = null;
+/**
+ * The capability inputs the boot selection was resolved from, retained so a
+ * per-project adapter override (e.g. Autopilot choosing `host` on a server whose
+ * global adapter is `container`) can be re-resolved through the SAME logic and
+ * the same probe results, rather than being second-guessed by callers.
+ */
+let cachedSelectionInputs: {
+  probe: SysboxProbeResult;
+  container: ContainerCapability;
+  firecracker: FirecrackerCapabilitySummary;
+} | null = null;
 
 let selectionReadyResolve: (() => void) | null = null;
 /** Open until {@link beginSessionEnvSelection} closes the gate for a real boot. */
@@ -431,11 +442,44 @@ export async function initSessionEnvSelection(
 ): Promise<SessionEnvSelection> {
   try {
     const probe = await probeSysboxCapability(deps);
-    cachedSelection = selectSessionEnvAdapter(mode, probe, container, firecracker);
+    const resolvedContainer = container ?? {
+      dockerAvailable: false,
+      routing: 'published-ports' as const,
+    };
+    const resolvedFirecracker = firecracker ?? { available: false, reason: 'not probed' };
+    cachedSelectionInputs = {
+      probe,
+      container: resolvedContainer,
+      firecracker: resolvedFirecracker,
+    };
+    cachedSelection = selectSessionEnvAdapter(mode, probe, resolvedContainer, resolvedFirecracker);
     return cachedSelection;
   } finally {
     releaseSelectionReadyGate();
   }
+}
+
+/**
+ * Resolve the session-env selection for an explicit adapter mode, reusing the
+ * boot-time capability probe. `auto` (and any request that matches the cached
+ * mode) returns the global boot selection unchanged. A concrete mode is
+ * re-resolved through {@link selectSessionEnvAdapter} with the SAME probe /
+ * container / firecracker inputs, so a per-project override honors the real host
+ * capabilities and fails closed identically to the global path (e.g. selecting
+ * `sysbox` on a host without sysbox still fails; `host` always resolves to host).
+ */
+export function resolveSessionEnvSelectionForMode(
+  mode: SessionEnvAdapterMode,
+): SessionEnvSelection {
+  const global = getSessionEnvSelection();
+  if (mode === 'auto' || mode === global.mode) return global;
+  const inputs = cachedSelectionInputs;
+  if (inputs) {
+    return selectSessionEnvAdapter(mode, inputs.probe, inputs.container, inputs.firecracker);
+  }
+  // No boot probe ran (unit tests, early boot). Re-resolve from the safe default
+  // probe: `host` still resolves to host; stronger modes fail closed.
+  return selectSessionEnvAdapter(mode, global.probe);
 }
 
 /**
@@ -469,6 +513,7 @@ export function getSessionEnvSelection(): SessionEnvSelection {
 /** Test-only: clear the cached boot selection. */
 export function resetSessionEnvSelectionForTest(): void {
   cachedSelection = null;
+  cachedSelectionInputs = null;
   // Leave the gate open — most unit tests never call begin/init.
   releaseSelectionReadyGate();
   selectionReady = Promise.resolve();

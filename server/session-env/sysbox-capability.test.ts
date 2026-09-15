@@ -9,6 +9,7 @@ import {
   parseKernelRelease,
   probeSysboxCapability,
   resetSessionEnvSelectionForTest,
+  resolveSessionEnvSelectionForMode,
   selectSessionEnvAdapter,
   whenSessionEnvSelectionReady,
   type SysboxProbeDeps,
@@ -440,5 +441,41 @@ describe('initSessionEnvSelection / getSessionEnvSelection', () => {
     await initSessionEnvSelection('auto', makeDeps());
     await waiting;
     expect(ready).toBe(true);
+  });
+});
+
+describe('resolveSessionEnvSelectionForMode', () => {
+  // A server configured for the container adapter, with sysbox unavailable.
+  const noSysboxDeps = () => makeDeps({ run: async () => ({ ok: false, stdout: '' }) });
+
+  it('re-resolves a per-project mode against the boot capability probe', async () => {
+    const global = await initSessionEnvSelection(
+      'container',
+      noSysboxDeps(),
+      { dockerAvailable: true, routing: 'container-ip' },
+      { available: false, reason: 'no kvm' },
+    );
+    expect(global.adapter).toBe('container');
+
+    // `auto` and the cached mode return the global selection unchanged.
+    expect(resolveSessionEnvSelectionForMode('auto')).toBe(global);
+    expect(resolveSessionEnvSelectionForMode('container')).toBe(global);
+
+    // `host` always resolves to host — this is the Autopilot opt-out path on a
+    // container-configured server.
+    expect(resolveSessionEnvSelectionForMode('host').adapter).toBe('host');
+
+    // A stronger mode still fails closed when the host cannot provide it.
+    const sysbox = resolveSessionEnvSelectionForMode('sysbox');
+    expect(sysbox.adapter).toBe('sysbox');
+    expect(sysbox.reason).toContain('unavailable');
+
+    // Firecracker respects the cached (unavailable) capability.
+    expect(resolveSessionEnvSelectionForMode('firecracker').adapter).toBe('firecracker');
+  });
+
+  it('resolves host from the safe default when no boot probe has run', () => {
+    // No initSessionEnvSelection — the module cache is empty.
+    expect(resolveSessionEnvSelectionForMode('host').adapter).toBe('host');
   });
 });

@@ -44,6 +44,36 @@ export interface AutopilotEvaluatorPolicy {
   version: number;
 }
 
+/**
+ * Operator-selected isolation adapter for Autopilot workers. Mirrors
+ * SessionEnvAdapterMode. `auto` keeps the managed-isolation requirement
+ * (sysbox/firecracker); `host` combined with an explicit acknowledgment opts
+ * the project out of that requirement so Autopilot may run on the host adapter.
+ */
+export const AUTOPILOT_ISOLATION_ADAPTERS = [
+  'auto',
+  'host',
+  'sysbox',
+  'container',
+  'firecracker',
+] as const;
+
+export type AutopilotIsolationAdapter = (typeof AUTOPILOT_ISOLATION_ADAPTERS)[number];
+
+/**
+ * The host-adapter acknowledgment is only meaningful when the selected adapter
+ * is `host`. Coupling the two into a single invariant here — enforced at every
+ * config read and write — is the root-cause guard against a stale "yes"
+ * surviving a `host → sysbox → host` round-trip and being honored by the
+ * containment gate. Any adapter other than `host` normalizes the ack to false.
+ */
+export function normalizeHostAdapterAck(
+  isolationAdapter: AutopilotIsolationAdapter,
+  hostAdapterAck: boolean,
+): boolean {
+  return isolationAdapter === 'host' ? hostAdapterAck : false;
+}
+
 export type AutopilotWorkerRole = 'implementer' | 'evaluator';
 
 export interface AutopilotWorkerAuthority {
@@ -86,6 +116,14 @@ export interface AutopilotProjectConfig {
   updatedBy: string | null;
   /** Optimistic-concurrency revision; each successful config write increments it. */
   revision: number;
+  /** Operator-selected isolation adapter for workers. Defaults to `auto`. */
+  isolationAdapter: AutopilotIsolationAdapter;
+  /**
+   * Explicit "I understand this runs without a managed isolation boundary"
+   * acknowledgment. Only honored when `isolationAdapter === 'host'`, in which
+   * case Autopilot is allowed to start/run on the host adapter.
+   */
+  hostAdapterAck: boolean;
 }
 
 export interface AutopilotRunRecord {

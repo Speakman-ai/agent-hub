@@ -853,6 +853,37 @@ describe('evaluateAutopilotContainment', () => {
     ).toMatch(/fell back to the host adapter/);
   });
 
+  it('accepts the host adapter when the operator opted out of managed isolation', () => {
+    // Default (no opt-in) still blocks.
+    expect(evaluateAutopilotContainment({ ...isolated, adapter: 'host' }).ok).toBe(false);
+    // Opt-in accepts host, including when it fell back from a verified request.
+    const opted = evaluateAutopilotContainment(
+      {
+        adapter: 'host',
+        fellBack: true,
+        inspectable: true,
+        dockerSocketMounted: false,
+        extraHostMounts: ['/'],
+        resourceLimitsEnforced: false,
+        privileged: false,
+        hostNamespacesShared: false,
+        isolationRuntime: 'none',
+      },
+      { allowHostAdapter: true },
+    );
+    expect(opted.ok).toBe(true);
+    expect(opted.reason).toMatch(/opted out of managed isolation/);
+  });
+
+  it('does not relax the container adapter even when host opt-in is set', () => {
+    expect(
+      evaluateAutopilotContainment(
+        { ...isolated, adapter: 'container' },
+        { allowHostAdapter: true },
+      ).ok,
+    ).toBe(false);
+  });
+
   it('blocks a docker socket mount, extra host mounts, and unverifiable probes', () => {
     expect(evaluateAutopilotContainment({ ...isolated, dockerSocketMounted: true }).ok).toBe(false);
     expect(
@@ -921,6 +952,28 @@ describe('assertAutopilotContainment', () => {
       expect(err).toBeInstanceOf(AutopilotError);
       expect((err as AutopilotError).code).toBe('containment_unavailable');
     }
+  });
+
+  it('permits the host adapter when the caller opts in via deps.allowHostAdapter', () => {
+    const hostSelection = {
+      adapter: 'host' as const,
+      mode: 'host' as const,
+      forced: true,
+      fellBack: false,
+      reason: 'test',
+      probe: { available: false, checks: [], missing: [] },
+    };
+    // Without the opt-in, the host selection is rejected.
+    expect(() =>
+      assertAutopilotContainment(undefined, { getSelection: () => hostSelection }),
+    ).toThrow(/managed project runtime isolation is required/);
+    // With the opt-in, it passes.
+    expect(() =>
+      assertAutopilotContainment(undefined, {
+        getSelection: () => hostSelection,
+        allowHostAdapter: true,
+      }),
+    ).not.toThrow();
   });
 
   it('Start without a worker launch requires Sysbox resource-controller evidence', () => {

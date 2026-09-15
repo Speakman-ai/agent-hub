@@ -897,6 +897,18 @@ components:
         revision:
           type: integer
           description: Optimistic-concurrency revision. Each successful config write increments it; pass it back as `expectedRevision` on the next PUT to reject stale, out-of-order writes.
+        isolationAdapter:
+          type: string
+          enum:
+            - auto
+            - host
+            - sysbox
+            - container
+            - firecracker
+          description: Operator-selected isolation adapter for workers. `auto` keeps the managed-isolation requirement (sysbox/firecracker); `host` combined with `hostAdapterAck` lets Autopilot run on the host adapter without an isolation boundary.
+        hostAdapterAck:
+          type: boolean
+          description: Explicit acknowledgment that Autopilot may run without a managed isolation boundary. Only honored when `isolationAdapter === "host"`.
       required:
         - projectId
         - enabled
@@ -911,6 +923,8 @@ components:
         - updatedAt
         - updatedBy
         - revision
+        - isolationAdapter
+        - hostAdapterAck
     AutopilotRun:
       type: object
       properties:
@@ -19514,6 +19528,18 @@ paths:
                 credentialOwnerUserId:
                   type: string
                   nullable: true
+                isolationAdapter:
+                  type: string
+                  enum:
+                    - auto
+                    - host
+                    - sysbox
+                    - container
+                    - firecracker
+                  description: "Operator-selected isolation adapter for workers. Select `host` (plus `hostAdapterAck: true`) to run Autopilot without a managed isolation boundary."
+                hostAdapterAck:
+                  type: boolean
+                  description: Acknowledgment that Autopilot may run without a managed isolation boundary. Required for the host adapter to be accepted at start/resume.
                 expectedRevision:
                   type: integer
                   minimum: 0

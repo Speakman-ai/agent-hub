@@ -1,10 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, afterEach } from 'vitest';
 import type { Project } from '../types.js';
 import {
   isFirecrackerBackendRegistered,
   resolveSessionEnvAdapterForSession,
 } from './resolve-session-adapter.js';
 import type { SessionEnvKind } from './session-env.js';
+import {
+  initSessionEnvSelection,
+  resetSessionEnvSelectionForTest,
+  type SysboxProbeDeps,
+} from './sysbox-capability.js';
+
+function noSysboxDeps(): SysboxProbeDeps {
+  return {
+    platform: 'linux',
+    kernelRelease: () => '6.1.0-generic',
+    readTextFile: async () => '0\n',
+    run: async () => ({ ok: false, stdout: '' }),
+  };
+}
 
 function project(mode?: string): Project {
   return {
@@ -114,5 +128,67 @@ describe('resolveSessionEnvAdapterForSession', () => {
         registeredBackends: registered('host', 'firecracker'),
       }),
     ).toBe('host');
+  });
+});
+
+describe('resolveSessionEnvAdapterForSession — per-session adapter override', () => {
+  afterEach(() => {
+    resetSessionEnvSelectionForTest();
+  });
+
+  it('runs a worker on host when the session overrides a container-configured server', async () => {
+    // Server global adapter is container; sysbox unavailable.
+    await initSessionEnvSelection(
+      'container',
+      noSysboxDeps(),
+      { dockerAvailable: true, routing: 'container-ip' },
+      { available: false, reason: 'no kvm' },
+    );
+    // No override → global container.
+    expect(
+      resolveSessionEnvAdapterForSession({
+        project: project('dev'),
+        session: { session_mode: 'chat' },
+      }),
+    ).toBe('container');
+    // Autopilot worker session pinned to host runs on host, not container.
+    expect(
+      resolveSessionEnvAdapterForSession({
+        project: project('dev'),
+        session: { session_mode: 'chat', session_env_adapter: 'host' },
+      }),
+    ).toBe('host');
+  });
+
+  it('ignores an `auto` or empty override (uses the global selection)', async () => {
+    await initSessionEnvSelection(
+      'container',
+      noSysboxDeps(),
+      { dockerAvailable: true, routing: 'container-ip' },
+      { available: false, reason: 'no kvm' },
+    );
+    expect(
+      resolveSessionEnvAdapterForSession({
+        project: project('dev'),
+        session: { session_mode: 'chat', session_env_adapter: 'auto' },
+      }),
+    ).toBe('container');
+    expect(
+      resolveSessionEnvAdapterForSession({
+        project: project('dev'),
+        session: { session_mode: 'chat', session_env_adapter: '' },
+      }),
+    ).toBe('container');
+  });
+
+  it('lets an isolated session keep its firecracker boundary over any override', () => {
+    expect(
+      resolveSessionEnvAdapterForSession({
+        project: project('dev'),
+        session: { session_mode: 'isolated', session_env_adapter: 'host' },
+        globalAdapter: 'host',
+        registeredBackends: registered('host', 'firecracker'),
+      }),
+    ).toBe('firecracker');
   });
 });

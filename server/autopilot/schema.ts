@@ -18,7 +18,9 @@ export const AUTOPILOT_SCHEMA = `
     credential_owner_user_id TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_by TEXT,
-    revision INTEGER NOT NULL DEFAULT 0
+    revision INTEGER NOT NULL DEFAULT 0,
+    isolation_adapter TEXT NOT NULL DEFAULT 'auto',
+    host_adapter_ack INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS autopilot_briefs (
@@ -186,6 +188,24 @@ export function ensureAutopilotSchema(db: { exec: (sql: string) => unknown }): v
     // putConfig bumps it, and a PUT carrying a stale expectedRevision is
     // rejected so out-of-order writes can't clobber newer settings.
     db.exec('ALTER TABLE autopilot_project_config ADD COLUMN revision INTEGER NOT NULL DEFAULT 0');
+  } catch {
+    /* column already present */
+  }
+  try {
+    // Operator-selected isolation adapter for Autopilot workers ('auto' | 'host'
+    // | 'sysbox' | 'container' | 'firecracker'). Selecting 'host' plus the
+    // host_adapter_ack acknowledgment opts the project out of the managed
+    // isolation requirement so Autopilot may run on the host adapter.
+    db.exec(
+      `ALTER TABLE autopilot_project_config ADD COLUMN isolation_adapter TEXT NOT NULL DEFAULT 'auto'`,
+    );
+  } catch {
+    /* column already present */
+  }
+  try {
+    db.exec(
+      'ALTER TABLE autopilot_project_config ADD COLUMN host_adapter_ack INTEGER NOT NULL DEFAULT 0',
+    );
   } catch {
     /* column already present */
   }

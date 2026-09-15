@@ -113,6 +113,43 @@ describe('AutopilotSettingsSection', () => {
     );
   });
 
+  it('gates the host isolation adapter behind an "are you sure" acknowledgment', async () => {
+    render(<AutopilotSettingsSection projectId="p1" />);
+    const select = (await screen.findByTestId('autopilot-isolation-adapter')) as HTMLSelectElement;
+    // Default adapter is auto; no host warning is shown.
+    expect(select.value).toBe('auto');
+    expect(screen.queryByTestId('autopilot-host-warning')).toBeNull();
+
+    // Selecting host reveals the warning + confirmation checkbox.
+    fireEvent.change(select, { target: { value: 'host' } });
+    expect(screen.getByTestId('autopilot-host-warning')).toBeTruthy();
+    const ack = screen.getByTestId('autopilot-host-ack') as HTMLInputElement;
+    expect(ack.checked).toBe(false);
+
+    fireEvent.click(ack);
+    fireEvent.click(screen.getByTestId('autopilot-save-config'));
+    await waitFor(() => expect(api.putAutopilotConfig).toHaveBeenCalled());
+    const body = (api.putAutopilotConfig as any).mock.calls[0][1];
+    expect(body.isolationAdapter).toBe('host');
+    expect(body.hostAdapterAck).toBe(true);
+  });
+
+  it('never sends a host acknowledgment for a non-host adapter', async () => {
+    (api.getAutopilot as any).mockResolvedValue(
+      state({ config: readyConfig({ isolationAdapter: 'host', hostAdapterAck: true }) }),
+    );
+    render(<AutopilotSettingsSection projectId="p1" />);
+    const select = (await screen.findByTestId('autopilot-isolation-adapter')) as HTMLSelectElement;
+    // Switch away from host — the stale acknowledgment must not be persisted.
+    fireEvent.change(select, { target: { value: 'sysbox' } });
+    expect(screen.queryByTestId('autopilot-host-warning')).toBeNull();
+    fireEvent.click(screen.getByTestId('autopilot-save-config'));
+    await waitFor(() => expect(api.putAutopilotConfig).toHaveBeenCalled());
+    const body = (api.putAutopilotConfig as any).mock.calls[0][1];
+    expect(body.isolationAdapter).toBe('sysbox');
+    expect(body.hostAdapterAck).toBe(false);
+  });
+
   it('sends the loaded config revision as expectedRevision (optimistic concurrency)', async () => {
     (api.getAutopilot as any).mockResolvedValue(state({ config: readyConfig({ revision: 7 }) }));
     render(<AutopilotSettingsSection projectId="p1" />);

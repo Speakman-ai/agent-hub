@@ -16,12 +16,15 @@ import type {
   AutopilotUsage,
   AutopilotEvaluatorPolicy,
   AutopilotWorkerAuthority,
+  AutopilotIsolationAdapter,
 } from './types.js';
 import {
   AUTOPILOT_ACTIVE_STATES,
+  AUTOPILOT_ISOLATION_ADAPTERS,
   DEFAULT_AUTOPILOT_EVALUATOR_POLICY,
   DEFAULT_AUTOPILOT_LIMITS,
   EMPTY_AUTOPILOT_WORKER_AUTHORITY,
+  normalizeHostAdapterAck,
 } from './types.js';
 
 type Db = Database.Database;
@@ -33,6 +36,12 @@ function parseJson<T>(raw: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+export function coerceIsolationAdapter(raw: unknown): AutopilotIsolationAdapter {
+  return (AUTOPILOT_ISOLATION_ADAPTERS as readonly string[]).includes(raw as string)
+    ? (raw as AutopilotIsolationAdapter)
+    : 'auto';
 }
 
 function parseLimits(raw: string | null | undefined): AutopilotLimits {
@@ -128,6 +137,8 @@ interface ConfigRow {
   updated_at: string;
   updated_by: string | null;
   revision: number | null;
+  isolation_adapter: string | null;
+  host_adapter_ack: number | null;
 }
 
 interface BriefRow {
@@ -347,6 +358,8 @@ export interface UpsertConfigInput {
   updatedAt: string;
   updatedBy: string | null;
   revision: number;
+  isolationAdapter: AutopilotIsolationAdapter;
+  hostAdapterAck: boolean;
 }
 
 export interface InsertRunInput {
@@ -403,6 +416,8 @@ export class AutopilotStore {
         updatedAt: '',
         updatedBy: null,
         revision: 0,
+        isolationAdapter: 'auto',
+        hostAdapterAck: false,
       };
     }
     const brief = row.brief_id ? this.getBrief(row.brief_id) : null;
@@ -420,6 +435,13 @@ export class AutopilotStore {
       updatedAt: row.updated_at,
       updatedBy: row.updated_by,
       revision: row.revision ?? 0,
+      isolationAdapter: coerceIsolationAdapter(row.isolation_adapter),
+      // Normalize on read so the gate/worker can never observe a stale ack for a
+      // non-host adapter, regardless of how the row was persisted.
+      hostAdapterAck: normalizeHostAdapterAck(
+        coerceIsolationAdapter(row.isolation_adapter),
+        row.host_adapter_ack === 1,
+      ),
     };
   }
 
@@ -428,9 +450,11 @@ export class AutopilotStore {
       .prepare(
         `INSERT INTO autopilot_project_config (
            project_id, enabled, disabling, brief_id, target_id, target_json, limits_json,
-           evaluator_policy_json, credential_owner_user_id, updated_at, updated_by, revision
+           evaluator_policy_json, credential_owner_user_id, updated_at, updated_by, revision,
+           isolation_adapter, host_adapter_ack
          ) VALUES (@projectId, @enabled, @disabling, @briefId, @targetId, @targetJson, @limitsJson,
-           @evaluatorPolicyJson, @credentialOwnerUserId, @updatedAt, @updatedBy, @revision)
+           @evaluatorPolicyJson, @credentialOwnerUserId, @updatedAt, @updatedBy, @revision,
+           @isolationAdapter, @hostAdapterAck)
          ON CONFLICT(project_id) DO UPDATE SET
            enabled = excluded.enabled,
            disabling = excluded.disabling,
@@ -442,7 +466,9 @@ export class AutopilotStore {
            credential_owner_user_id = excluded.credential_owner_user_id,
            updated_at = excluded.updated_at,
            updated_by = excluded.updated_by,
-           revision = excluded.revision`,
+           revision = excluded.revision,
+           isolation_adapter = excluded.isolation_adapter,
+           host_adapter_ack = excluded.host_adapter_ack`,
       )
       .run({
         projectId: input.projectId,
@@ -457,6 +483,8 @@ export class AutopilotStore {
         updatedAt: input.updatedAt,
         updatedBy: input.updatedBy,
         revision: input.revision,
+        isolationAdapter: input.isolationAdapter,
+        hostAdapterAck: input.hostAdapterAck ? 1 : 0,
       });
   }
 

@@ -204,7 +204,21 @@ export interface AutopilotContainmentProbeDeps {
    * Start requires this for Sysbox. Omit or a false field fails closed.
    */
   getResourceControllers?: () => DockerResourceControllerCapability | null;
+  /**
+   * Operator opt-out of the managed-isolation requirement. When true, the host
+   * adapter is accepted instead of failing closed. Only the `host` adapter is
+   * relaxed — container/fallback-to-non-host still fail closed.
+   */
+  allowHostAdapter?: boolean;
 }
+
+export interface AutopilotContainmentEvalOptions {
+  allowHostAdapter?: boolean;
+}
+
+/** The reason surfaced when the operator opted into the unmanaged host adapter. */
+export const HOST_ADAPTER_OPT_IN_REASON =
+  'using host adapter (operator opted out of managed isolation)';
 
 export function parseDockerRunContainment(
   argv: string[],
@@ -764,7 +778,11 @@ export function probeAutopilotContainment(
 export function evaluateAutopilotIsolationCapability(
   selection: SessionEnvSelection,
   resourceControllers?: DockerResourceControllerCapability | null,
+  opts?: AutopilotContainmentEvalOptions,
 ): AutopilotContainmentResult {
+  if (opts?.allowHostAdapter && selection.adapter === 'host') {
+    return { ok: true, reason: HOST_ADAPTER_OPT_IN_REASON };
+  }
   if (selection.fellBack && !VERIFIED_ADAPTERS.has(selection.adapter)) {
     return {
       ok: false,
@@ -789,7 +807,11 @@ export function evaluateAutopilotIsolationCapability(
 
 export function evaluateAutopilotContainment(
   probe: AutopilotContainmentProbe,
+  opts?: AutopilotContainmentEvalOptions,
 ): AutopilotContainmentResult {
+  if (opts?.allowHostAdapter && probe.adapter === 'host') {
+    return { ok: true, reason: HOST_ADAPTER_OPT_IN_REASON };
+  }
   if (!probe.inspectable) {
     return {
       ok: false,
@@ -853,12 +875,16 @@ export function assertAutopilotWorkerLaunch(
   adapter: SessionEnvAdapterKind,
   launch: AutopilotWorkerLaunch,
   fellBack = false,
+  opts?: AutopilotContainmentEvalOptions,
 ): void {
-  const result = evaluateAutopilotContainment({
-    adapter,
-    fellBack,
-    ...inspectWorkerLaunch(adapter, launch),
-  });
+  const result = evaluateAutopilotContainment(
+    {
+      adapter,
+      fellBack,
+      ...inspectWorkerLaunch(adapter, launch),
+    },
+    opts,
+  );
   if (!result.ok) {
     throw new AutopilotError('containment_unavailable', result.reason);
   }
@@ -868,8 +894,9 @@ export function assertAutopilotContainment(
   probe?: AutopilotContainmentProbe,
   deps?: AutopilotContainmentProbeDeps,
 ): void {
+  const evalOpts: AutopilotContainmentEvalOptions = { allowHostAdapter: deps?.allowHostAdapter };
   if (probe) {
-    const result = evaluateAutopilotContainment(probe);
+    const result = evaluateAutopilotContainment(probe, evalOpts);
     if (!result.ok) {
       throw new AutopilotError('containment_unavailable', result.reason);
     }
@@ -877,7 +904,7 @@ export function assertAutopilotContainment(
   }
   if (deps?.launch) {
     const selection = (deps.getSelection ?? getSessionEnvSelection)();
-    assertAutopilotWorkerLaunch(selection.adapter, deps.launch, selection.fellBack);
+    assertAutopilotWorkerLaunch(selection.adapter, deps.launch, selection.fellBack, evalOpts);
     return;
   }
   const selection = (deps?.getSelection ?? getSessionEnvSelection)();
@@ -886,7 +913,7 @@ export function assertAutopilotContainment(
     : selection.adapter === 'sysbox'
       ? probeDockerResourceControllersSync()
       : null;
-  const result = evaluateAutopilotIsolationCapability(selection, resourceControllers);
+  const result = evaluateAutopilotIsolationCapability(selection, resourceControllers, evalOpts);
   if (!result.ok) {
     throw new AutopilotError('containment_unavailable', result.reason);
   }

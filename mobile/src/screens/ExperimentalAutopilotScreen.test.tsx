@@ -191,6 +191,8 @@ describe('buildConfigBody', () => {
     maxRetriesPerStage: '2',
     maxCostUsd: '',
     credentialOwnerUserId: 'u1',
+    isolationAdapter: 'auto' as const,
+    hostAdapterAck: false,
   };
 
   it('builds a PUT body without changing project enablement', () => {
@@ -200,6 +202,18 @@ describe('buildConfigBody', () => {
     expect(body.limits.maxWallTimeMs).toBe(4 * 3_600_000);
     expect(body.limits.maxStageTimeoutMs).toBe(30 * 60_000);
     expect(body.credentialOwnerUserId).toBe('u1');
+    expect(body.isolationAdapter).toBe('auto');
+    expect(body.hostAdapterAck).toBe(false);
+  });
+
+  it('sends the host acknowledgment only when the host adapter is selected', () => {
+    expect(
+      buildConfigBody({ ...base, isolationAdapter: 'host', hostAdapterAck: true }).hostAdapterAck,
+    ).toBe(true);
+    // Ack is dropped when a non-host adapter is selected, even if left checked.
+    expect(
+      buildConfigBody({ ...base, isolationAdapter: 'sysbox', hostAdapterAck: true }).hostAdapterAck,
+    ).toBe(false);
   });
 
   it('requires a positive maxCycles in finite mode and clamps retries', () => {
