@@ -19,6 +19,7 @@ import {
   writeAutopilotWorkerToken,
 } from '../autopilot/worker-token.js';
 import type { RouteDeps } from '../types.js';
+import { getUserById, getUserByUsername } from '../users-store.js';
 import {
   CompleteAutopilotOperationRequestSchema,
   PutAutopilotConfigRequestSchema,
@@ -29,6 +30,7 @@ export interface AutopilotRouteOptions {
   cancelSideEffects?: AutopilotCancelSideEffects;
   getDeployedRevision?: (projectId: string, targetId: string) => string | null;
   credentialOwnerExists?: (userId: string) => boolean;
+  resolveCredentialOwnerUserId?: AutopilotControllerDeps['resolveCredentialOwnerUserId'];
   holderId?: string;
   getController?: () => AutopilotController;
   assertContainment?: () => void;
@@ -54,7 +56,19 @@ export function buildAutopilotControllerDeps(
     cancelSideEffects: options.cancelSideEffects,
     getDeployedRevision: options.getDeployedRevision,
     validateLocalTarget: options.validateLocalTarget,
-    credentialOwnerExists: options.credentialOwnerExists,
+    // Default to the real users table so a mistyped owner is rejected with a
+    // 400 at config time instead of surfacing as a foreign-key 500 from the
+    // worker-credential mint at start time.
+    credentialOwnerExists:
+      options.credentialOwnerExists ?? ((userId) => getUserById(userId) !== null),
+    resolveCredentialOwnerUserId:
+      options.resolveCredentialOwnerUserId ??
+      (options.credentialOwnerExists
+        ? // An injected existence check (tests, embedders) defines the user
+          // universe; resolve against it rather than the real users table.
+          (idOrUsername) => (options.credentialOwnerExists!(idOrUsername) ? idOrUsername : null)
+        : (idOrUsername) =>
+            getUserById(idOrUsername)?.id ?? getUserByUsername(idOrUsername)?.id ?? null),
     holderId: options.holderId,
     assertContainment: options.assertContainment,
     issueWorkerCredential:

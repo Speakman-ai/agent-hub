@@ -118,6 +118,14 @@ export interface AutopilotControllerDeps {
   getDeployedRevision?: (projectId: string, targetId: string) => string | null;
   validateLocalTarget?: AutopilotLocalTargetLookup;
   credentialOwnerExists?: (userId: string) => boolean;
+  /**
+   * Map what an operator typed into the "credential owner" field (a user id or
+   * a username/email) to the canonical user id, or null when no such user
+   * exists. When provided, putConfig stores the resolved id so the worker
+   * credential mint (api_keys.user_id → users.id) can never hit a foreign-key
+   * failure at start time.
+   */
+  resolveCredentialOwnerUserId?: (idOrUsername: string) => string | null;
   assertContainment?: (opts?: AutopilotContainmentGateOptions) => void;
   issueWorkerCredential?: IssueAutopilotWorkerCredential;
   revokeWorkerCredential?: RevokeAutopilotWorkerCredential;
@@ -310,6 +318,7 @@ export class AutopilotController {
   private readonly getDeployedRevision?: (projectId: string, targetId: string) => string | null;
   private readonly validateLocalTarget?: AutopilotLocalTargetLookup;
   private readonly credentialOwnerExists?: (userId: string) => boolean;
+  private readonly resolveCredentialOwnerUserId?: (idOrUsername: string) => string | null;
   private readonly assertContainment: (opts?: AutopilotContainmentGateOptions) => void;
   private readonly issueWorkerCredential?: IssueAutopilotWorkerCredential;
   private readonly revokeWorkerCredential?: RevokeAutopilotWorkerCredential;
@@ -323,6 +332,7 @@ export class AutopilotController {
     this.getDeployedRevision = deps.getDeployedRevision;
     this.validateLocalTarget = deps.validateLocalTarget;
     this.credentialOwnerExists = deps.credentialOwnerExists;
+    this.resolveCredentialOwnerUserId = deps.resolveCredentialOwnerUserId;
     this.assertContainment =
       deps.assertContainment ??
       ((opts) => {
@@ -625,7 +635,7 @@ export class AutopilotController {
       input.credentialOwnerUserId === undefined
         ? existing.credentialOwnerUserId
         : input.credentialOwnerUserId && input.credentialOwnerUserId.trim()
-          ? input.credentialOwnerUserId.trim()
+          ? this.resolveCredentialOwner(input.credentialOwnerUserId.trim())
           : null;
 
     const isolationAdapter =
@@ -678,6 +688,29 @@ export class AutopilotController {
       });
     });
     return this.store.getConfig(projectId);
+  }
+
+  /**
+   * Accept a user id or a username/email for the credential owner and store the
+   * canonical id. Rejecting unknown owners here (400 invalid_config) is what
+   * keeps start() from failing deep inside the credential mint with an opaque
+   * "FOREIGN KEY constraint failed" 500.
+   */
+  private resolveCredentialOwner(raw: string): string {
+    if (this.resolveCredentialOwnerUserId) {
+      const resolved = this.resolveCredentialOwnerUserId(raw);
+      if (!resolved) {
+        throw new AutopilotError(
+          'invalid_config',
+          `credential owner "${raw}" is not a known user id or username`,
+        );
+      }
+      return resolved;
+    }
+    if (this.credentialOwnerExists && !this.credentialOwnerExists(raw)) {
+      throw new AutopilotError('invalid_config', `credential owner "${raw}" does not exist`);
+    }
+    return raw;
   }
 
   private assertReadyToStart(parts: {
