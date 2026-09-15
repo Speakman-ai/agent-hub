@@ -104,6 +104,14 @@ function parseWorkerAuthority(raw: string | null | undefined): AutopilotWorkerAu
   return {
     keyName: typeof parsed.keyName === 'string' && parsed.keyName.trim() ? parsed.keyName : null,
     keyId: typeof parsed.keyId === 'string' && parsed.keyId.trim() ? parsed.keyId : null,
+    evaluatorKeyName:
+      typeof parsed.evaluatorKeyName === 'string' && parsed.evaluatorKeyName.trim()
+        ? parsed.evaluatorKeyName
+        : null,
+    evaluatorKeyId:
+      typeof parsed.evaluatorKeyId === 'string' && parsed.evaluatorKeyId.trim()
+        ? parsed.evaluatorKeyId
+        : null,
   };
 }
 

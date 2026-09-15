@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildEvaluationPrompt,
   buildImplementationPrompt,
   createAutopilotBoardAdapter,
   createAutopilotDeployAdapter,
@@ -503,5 +504,31 @@ describe('autopilot deploy adapter', () => {
     expect(deployOutcomeFromSnapshot('dep-1', { status: 'error', ref: 'sha' })?.status).toBe(
       'error',
     );
+  });
+
+  it('builds an evaluator prompt that forbids implementation writes and preview', () => {
+    const prompt = buildEvaluationPrompt({
+      origin: 'http://127.0.0.1:4310',
+      expectedSha: 'deadbeef',
+      pinned: {
+        specRevision: 1,
+        qualityRubricVersion: 1,
+        criteria: [
+          {
+            id: 'baseline-1',
+            source: 'baseline',
+            kind: 'browser_journey',
+            action: 'create a todo',
+            expectedResult: 'it appears',
+          },
+        ],
+      },
+    });
+    expect(prompt).toMatch(/no implementation write authority/i);
+    expect(prompt).toContain('deadbeef');
+    expect(prompt).toMatch(/Do not use session preview/);
+    expect(prompt).toContain('baseline-1');
+    expect(prompt).toMatch(/Hub records HTTP responses/);
+    expect(prompt).toMatch(/screenshots and journey traces/);
   });
 });

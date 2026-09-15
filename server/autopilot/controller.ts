@@ -32,6 +32,7 @@ import type {
   IssueAutopilotWorkerCredential,
   RevokeAutopilotWorkerCredential,
 } from './worker-authority.js';
+import { verificationAllowsLastKnownGood } from './evaluate.js';
 
 export interface AutopilotActor {
   userId: string | null;
@@ -73,6 +74,11 @@ export interface CompleteOperationInput {
    * schedule a stage retry (recovery failure, unsupported migration, no LKG).
    */
   haltReason?: string;
+  /**
+   * Mark the stage failed without scheduling the same-stage retry. Used when
+   * the orchestrator will reopen implementing for bounded repair instead.
+   */
+  skipStageRetry?: boolean;
 }
 
 export interface AutopilotControllerDeps {
@@ -722,6 +728,12 @@ export class AutopilotController {
           ownerUserId,
         });
         issuedKey = { projectId, runId, ownerUserId };
+        const evaluatorIssued = this.issueWorkerCredential!({
+          projectId,
+          runId,
+          ownerUserId,
+          role: 'evaluator',
+        });
         this.store.insertRun({
           id: runId,
           projectId,
@@ -735,7 +747,12 @@ export class AutopilotController {
           targetId: config.target?.targetId ?? null,
           limitsJson: JSON.stringify(limits),
           usageJson: JSON.stringify(DEFAULT_AUTOPILOT_USAGE),
-          workerAuthorityJson: JSON.stringify({ keyName: issued.keyName, keyId: issued.keyId }),
+          workerAuthorityJson: JSON.stringify({
+            keyName: issued.keyName,
+            keyId: issued.keyId,
+            evaluatorKeyName: evaluatorIssued.keyName,
+            evaluatorKeyId: evaluatorIssued.keyId,
+          }),
           startedBy: actor.userId,
           startedAt: now,
           updatedAt: now,
@@ -1352,7 +1369,14 @@ export class AutopilotController {
     });
 
     if (input.outcome === 'failed') {
-      await this.recordStageFailure(run, op.id, now, input.result, input.haltReason);
+      await this.recordStageFailure(
+        run,
+        op.id,
+        now,
+        input.result,
+        input.haltReason,
+        input.skipStageRetry,
+      );
     } else if (input.outcome === 'succeeded') {
       const stage = this.store.getStageByOperationId(op.id);
       if (stage) {
@@ -1397,6 +1421,7 @@ export class AutopilotController {
     now: string,
     result: unknown,
     haltReason?: string,
+    skipStageRetry?: boolean,
   ): Promise<void> {
     const stage = this.store.getStageByOperationId(operationId);
     if (!stage) return;
@@ -1405,7 +1430,7 @@ export class AutopilotController {
       completedAt: now,
       resultJson: JSON.stringify(result ?? {}),
     });
-    if (haltReason) return;
+    if (haltReason || skipStageRetry) return;
     const canRetry = stage.attempt <= run.limits.maxRetriesPerStage;
     if (!canRetry) {
       await this.expireRun(run, 'stage_retries_exhausted');
@@ -1534,6 +1559,85 @@ export class AutopilotController {
       cycleId: cycle.id,
       type: 'stage_advanced',
       payload: { from: fromStage, to: toStage },
+      fencingGeneration: run.fencingGeneration,
+      createdAt: now,
+    });
+    return this.snapshot(run.id);
+  }
+
+  /** Hub-observed live SHA at the experiment target. Not worker-supplied. */
+  observeDeployedRevision(projectId: string, targetId: string | null): string | null {
+    if (!targetId || !this.getDeployedRevision) return null;
+    const sha = this.getDeployedRevision(projectId, targetId);
+    return typeof sha === 'string' && sha.trim() ? sha.trim() : null;
+  }
+
+  /**
+   * Record a passing evaluation as last-known-good. Only the verifying
+   * stage may call this, and only with the cycle's tested SHA plus a
+   * recorded passing judgement bound to that SHA and deployment.
+   */
+  promoteLastKnownGood(
+    projectId: string,
+    input: { sha: string; deploymentId: string },
+  ): AutopilotRunSnapshot {
+    this.requireServerEnabled();
+    this.requireProjectDispatchable(projectId);
+    const run = this.store.getActiveRun(projectId);
+    if (!run) {
+      throw new AutopilotError('no_active_run', 'No active Autopilot run');
+    }
+    if (run.controlState !== 'running') {
+      throw new AutopilotError(
+        'conflict',
+        `Cannot promote last-known-good while run is ${run.controlState}`,
+      );
+    }
+    this.requireHeldLease(projectId, run);
+    const sha = input.sha.trim();
+    const deploymentId = input.deploymentId.trim();
+    if (!sha || !deploymentId) {
+      throw new AutopilotError(
+        'invalid_config',
+        'last-known-good requires a SHA and deployment id',
+      );
+    }
+    const cycle = this.store.getCycle(run.id, run.cycleNumber);
+    if (!cycle || cycle.status !== 'active') {
+      throw new AutopilotError('conflict', 'No active cycle to promote');
+    }
+    if (run.stage !== 'verifying') {
+      throw new AutopilotError('conflict', 'Only a passing evaluation can promote last-known-good');
+    }
+    if (cycle.testedCommitSha !== sha) {
+      throw new AutopilotError(
+        'conflict',
+        'last-known-good SHA must match the cycle tested commit',
+      );
+    }
+    if (cycle.deploymentId !== deploymentId) {
+      throw new AutopilotError(
+        'conflict',
+        'last-known-good deployment must match the cycle deployment',
+      );
+    }
+    if (!verificationAllowsLastKnownGood(cycle.verification, { sha, deploymentId })) {
+      throw new AutopilotError(
+        'conflict',
+        'last-known-good requires a passing evaluation bound to this SHA and deployment',
+      );
+    }
+    const now = this.timestamp();
+    this.store.updateRun(run.id, {
+      lastVerifiedSha: sha,
+      lastDeploymentId: deploymentId,
+      updatedAt: now,
+    });
+    this.store.insertEvent({
+      runId: run.id,
+      cycleId: cycle.id,
+      type: 'last_known_good_promoted',
+      payload: { sha, deploymentId },
       fencingGeneration: run.fencingGeneration,
       createdAt: now,
     });

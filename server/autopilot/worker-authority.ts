@@ -8,7 +8,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { createApiKey, revokeApiKeysByName } from '../api-keys-store.js';
-import type { AutopilotWorkerScope } from './types.js';
+import type { AutopilotWorkerRole, AutopilotWorkerScope } from './types.js';
 
 export const AUTOPILOT_WORKER_KEY_PREFIX = 'autopilot:';
 
@@ -49,15 +49,25 @@ export function autopilotWorkerKeyName(projectId: string, runId: string): string
   return `${AUTOPILOT_WORKER_KEY_PREFIX}${projectId}:${runId}`;
 }
 
+export function autopilotEvaluatorKeyName(projectId: string, runId: string): string {
+  return `${autopilotWorkerKeyName(projectId, runId)}:eval`;
+}
+
 export function parseAutopilotWorkerKeyName(name: string): AutopilotWorkerScope | null {
   if (!isAutopilotWorkerKeyName(name)) return null;
   const rest = name.slice(AUTOPILOT_WORKER_KEY_PREFIX.length);
-  const sep = rest.lastIndexOf(':');
-  if (sep <= 0 || sep === rest.length - 1) return null;
-  const projectId = rest.slice(0, sep).trim();
-  const runId = rest.slice(sep + 1).trim();
+  let role: AutopilotWorkerRole = 'implementer';
+  let identity = rest;
+  if (rest.endsWith(':eval')) {
+    role = 'evaluator';
+    identity = rest.slice(0, -':eval'.length);
+  }
+  const sep = identity.lastIndexOf(':');
+  if (sep <= 0 || sep === identity.length - 1) return null;
+  const projectId = identity.slice(0, sep).trim();
+  const runId = identity.slice(sep + 1).trim();
   if (!projectId || !runId) return null;
-  return { projectId, runId };
+  return { projectId, runId, role };
 }
 
 export function projectIdFromApiPath(pathname: string): string | null {
@@ -98,6 +108,7 @@ export function isDeploymentConfigPath(pathname: string): boolean {
 export interface WorkerOperationResource {
   projectId: string;
   runId: string;
+  kind?: string;
 }
 
 export interface WorkerRequestResource {
@@ -176,7 +187,17 @@ export function decideAutopilotWorkerRequest(
     if (!operation || operation.projectId !== scope.projectId || operation.runId !== scope.runId) {
       return { ok: false, reason: "Autopilot workers cannot complete another run's operations" };
     }
+    if (scope.role === 'evaluator' && operation.kind !== 'evaluate') {
+      return {
+        ok: false,
+        reason: 'Autopilot evaluators cannot write implementation artifacts',
+      };
+    }
     return { ok: true };
+  }
+
+  if (scope.role === 'evaluator') {
+    return { ok: false, reason: 'Autopilot evaluators cannot write implementation artifacts' };
   }
 
   return { ok: false, reason: 'Autopilot workers cannot perform this operation' };
@@ -205,12 +226,13 @@ export function autopilotWorkerGuard(req: Request, res: Response, next: NextFunc
 
 export function applyAutopilotWorkerSpawnEnv(
   env: NodeJS.ProcessEnv,
-  input: { token: string; projectId: string; runId: string },
+  input: { token: string; projectId: string; runId: string; role?: AutopilotWorkerRole },
 ): NodeJS.ProcessEnv {
   env.AGENT_HUB_API_KEY = input.token;
   env.PROJECT_ID = input.projectId;
   env.AGENT_HUB_AUTOPILOT_RUN_ID = input.runId;
   env.AGENT_HUB_AUTOPILOT_PROJECT_ID = input.projectId;
+  env.AGENT_HUB_AUTOPILOT_WORKER_ROLE = input.role ?? 'implementer';
   for (const key of CLOUD_AND_SOCKET_ENV_KEYS) {
     delete env[key];
   }
@@ -227,6 +249,7 @@ export type IssueAutopilotWorkerCredential = (input: {
   projectId: string;
   runId: string;
   ownerUserId: string;
+  role?: AutopilotWorkerRole;
 }) => IssuedAutopilotWorkerCredential;
 
 export type RevokeAutopilotWorkerCredential = (input: {
@@ -239,8 +262,12 @@ export function mintAutopilotWorkerCredential(input: {
   projectId: string;
   runId: string;
   ownerUserId: string;
+  role?: AutopilotWorkerRole;
 }): IssuedAutopilotWorkerCredential {
-  const keyName = autopilotWorkerKeyName(input.projectId, input.runId);
+  const keyName =
+    input.role === 'evaluator'
+      ? autopilotEvaluatorKeyName(input.projectId, input.runId)
+      : autopilotWorkerKeyName(input.projectId, input.runId);
   const minted = createApiKey(input.ownerUserId, keyName, 7);
   return { keyName, keyId: minted.id, token: minted.token };
 }
@@ -252,4 +279,5 @@ export function revokeMintedAutopilotWorkerCredential(input: {
 }): void {
   if (!input.ownerUserId) return;
   revokeApiKeysByName(input.ownerUserId, autopilotWorkerKeyName(input.projectId, input.runId));
+  revokeApiKeysByName(input.ownerUserId, autopilotEvaluatorKeyName(input.projectId, input.runId));
 }

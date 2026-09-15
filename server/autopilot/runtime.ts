@@ -8,12 +8,15 @@ import {
   type AutopilotBoardPort,
   type AutopilotDeployPort,
   type AutopilotDeployResult,
+  type AutopilotEvaluatePort,
   type AutopilotFinalizePort,
   type AutopilotFinalizeResult,
   type AutopilotPlannerPort,
+  type AutopilotProbeApi,
   type AutopilotSessionPort,
   type AutopilotSessionResult,
 } from './orchestrator.js';
+import type { AutopilotEvaluationReport, AutopilotExecutionCapture } from './evaluate.js';
 import type { AutopilotRunRecord } from './types.js';
 
 /**
@@ -26,6 +29,7 @@ export interface AutopilotAdapters {
   session: AutopilotSessionPort;
   finalize: AutopilotFinalizePort;
   deploy: AutopilotDeployPort;
+  evaluate: AutopilotEvaluatePort;
 }
 
 export interface AutopilotRuntimeDeps {
@@ -49,6 +53,13 @@ export interface AutopilotRuntimeDeps {
    * still in progress (pending/running).
    */
   readDeployOutcome: (deploymentId: string) => AutopilotDeployResult | null;
+  /**
+   * Read the evaluator session's structured report. Return null while the
+   * session is still running.
+   */
+  readEvaluateOutcome: (sessionId: string) => AutopilotEvaluationReport | null;
+  listCaptures?: (operationId: string) => AutopilotExecutionCapture[];
+  probeApi?: AutopilotProbeApi;
   log?: (message: string, err?: unknown) => void;
 }
 
@@ -69,6 +80,9 @@ export class AutopilotRuntime {
   private readonly readSessionOutcome: (sessionId: string) => AutopilotSessionResult | null;
   private readonly readFinalizeOutcome: (finalizeRunId: string) => AutopilotFinalizeResult | null;
   private readonly readDeployOutcome: (deploymentId: string) => AutopilotDeployResult | null;
+  private readonly readEvaluateOutcome: (sessionId: string) => AutopilotEvaluationReport | null;
+  private readonly listCaptures: (operationId: string) => AutopilotExecutionCapture[];
+  private readonly probeApi: AutopilotProbeApi | undefined;
   private readonly log: (message: string, err?: unknown) => void;
 
   constructor(deps: AutopilotRuntimeDeps) {
@@ -78,6 +92,9 @@ export class AutopilotRuntime {
     this.readSessionOutcome = deps.readSessionOutcome;
     this.readFinalizeOutcome = deps.readFinalizeOutcome;
     this.readDeployOutcome = deps.readDeployOutcome;
+    this.readEvaluateOutcome = deps.readEvaluateOutcome;
+    this.listCaptures = deps.listCaptures ?? (() => []);
+    this.probeApi = deps.probeApi;
     this.log =
       deps.log ??
       ((message, err) =>
@@ -126,8 +143,11 @@ export class AutopilotRuntime {
       case 'deploying':
         await this.driveDeploying(orchestrator, run);
         return;
+      case 'verifying':
+        await this.driveVerifying(orchestrator, run);
+        return;
       default:
-        // verifying / documenting / selecting-next are owned by later cards.
+        // documenting / selecting-next are owned by later cards.
         return;
     }
   }
@@ -141,17 +161,30 @@ export class AutopilotRuntime {
     try {
       const store = new AutopilotStore(this.db);
       const op = store.getOperationBySessionId(sessionId);
-      if (!op || op.kind !== 'implement' || op.status !== 'in_flight') return;
+      if (!op || op.status !== 'in_flight') return;
       const run = store.getRun(op.runId);
       if (!run || run.controlState !== 'running') return;
-      const outcome = this.readSessionOutcome(sessionId);
-      if (!outcome) return;
-      const orchestrator = this.orchestratorFor(run);
-      await orchestrator.reconcileImplementation(run.projectId, {
-        operationId: op.id,
-        fencingGeneration: op.fencingGeneration,
-        result: outcome,
-      });
+      if (op.kind === 'implement') {
+        const outcome = this.readSessionOutcome(sessionId);
+        if (!outcome) return;
+        const orchestrator = this.orchestratorFor(run);
+        await orchestrator.reconcileImplementation(run.projectId, {
+          operationId: op.id,
+          fencingGeneration: op.fencingGeneration,
+          result: outcome,
+        });
+        return;
+      }
+      if (op.kind === 'evaluate') {
+        const outcome = this.readEvaluateOutcome(sessionId);
+        if (!outcome) return;
+        const orchestrator = this.orchestratorFor(run);
+        await orchestrator.reconcileEvaluate(run.projectId, {
+          operationId: op.id,
+          fencingGeneration: op.fencingGeneration,
+          result: outcome,
+        });
+      }
     } catch (err) {
       if (!this.isBenign(err)) this.log(`settle session ${sessionId}`, err);
     }
@@ -210,6 +243,8 @@ export class AutopilotRuntime {
       controller: this.buildController(),
       db: this.db,
       ...this.buildAdapters(run),
+      listCaptures: this.listCaptures,
+      probeApi: this.probeApi,
     });
   }
 
@@ -299,6 +334,40 @@ export class AutopilotRuntime {
       result: outcome,
     });
   }
+
+  private async driveVerifying(
+    orchestrator: AutopilotOrchestrator,
+    run: AutopilotRunRecord,
+  ): Promise<void> {
+    const store = new AutopilotStore(this.db);
+    const cycle = store.getCycle(run.id, run.cycleNumber);
+    if (!cycle) return;
+    const cycleEvals = store
+      .listOperations(run.id)
+      .filter((op) => op.kind === 'evaluate' && op.cycleId === cycle.id);
+    const inFlight = cycleEvals.find((op) => op.status === 'in_flight' || op.status === 'pending');
+    const succeeded = [...cycleEvals].reverse().find((op) => op.status === 'succeeded');
+    if (succeeded && !inFlight) {
+      await orchestrator.reconcileEvaluate(run.projectId, {
+        operationId: succeeded.id,
+        fencingGeneration: succeeded.fencingGeneration,
+        result: evaluateResultFromSettled(succeeded),
+      });
+      return;
+    }
+    if (!inFlight) {
+      await orchestrator.dispatchEvaluate(run.projectId);
+      return;
+    }
+    if (!inFlight.sessionId) return;
+    const outcome = this.readEvaluateOutcome(inFlight.sessionId);
+    if (!outcome) return;
+    await orchestrator.reconcileEvaluate(run.projectId, {
+      operationId: inFlight.id,
+      fencingGeneration: inFlight.fencingGeneration,
+      result: outcome,
+    });
+  }
 }
 
 function deployResultFromSettled(op: {
@@ -310,6 +379,14 @@ function deployResultFromSettled(op: {
   const deploymentId =
     op.deploymentId ?? (typeof result.deploymentId === 'string' ? result.deploymentId : '');
   return { status: 'success', deploymentId, deployedSha };
+}
+
+function evaluateResultFromSettled(op: { result: unknown }): AutopilotEvaluationReport | null {
+  const result = (op.result ?? {}) as { sha?: unknown; evidence?: unknown };
+  if (result.evidence && typeof result.evidence === 'object') {
+    return result.evidence as AutopilotEvaluationReport;
+  }
+  return null;
 }
 
 export function createAutopilotRuntime(deps: AutopilotRuntimeDeps): AutopilotRuntime {

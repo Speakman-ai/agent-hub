@@ -1,9 +1,24 @@
 import type Database from 'better-sqlite3';
+import { statSync } from 'fs';
 import { AutopilotError, isAutopilotError } from './errors.js';
 import { AutopilotStore } from './store.js';
 import { assessStorageRecoverability, type AutopilotStorageRecoveryKind } from './local-target.js';
 import type { AutopilotController } from './controller.js';
 import type { AutopilotOperationRecord, AutopilotRunSnapshot } from './types.js';
+import {
+  deriveCycleJourneys,
+  judgeEvaluation,
+  parseCycleVerification,
+  pinCriteriaFromSpec,
+  stampHubEvidence,
+  writeCycleVerification,
+  type ArtifactExists,
+  type AutopilotEvaluationJudgement,
+  type AutopilotEvaluationReport,
+  type AutopilotExecutionCapture,
+  type AutopilotPinnedCriteria,
+  type AutopilotPinnedCriterion,
+} from './evaluate.js';
 
 /**
  * Orchestration driver for an Autopilot cycle's plan → implement → finalize
@@ -202,11 +217,40 @@ export interface AutopilotDeployResult {
   message?: string;
 }
 
+export interface AutopilotEvaluatePort {
+  /**
+   * Start a bounded evaluator session with no implementation write authority.
+   * The worker hits the actual local target (not session preview) and must
+   * return structured criterion evidence. `operationId` keys the launch.
+   */
+  dispatchEvaluation(input: {
+    projectId: string;
+    runId: string;
+    operationId: string;
+    deploymentId: string;
+    origin: string;
+    expectedSha: string;
+    pinned: AutopilotPinnedCriteria;
+    workerKeyName: string | null;
+    bounds: AutopilotSessionBounds;
+  }): Promise<{ sessionId: string }>;
+}
+
 export interface AutopilotReconcileInput<TResult> {
   operationId: string;
   fencingGeneration: number;
   result: TResult;
+  /** Hub-recorded captures. Never derived from `result`. */
+  captures?: AutopilotExecutionCapture[];
 }
+
+export type AutopilotProbeApi = (input: {
+  operationId: string;
+  deploymentId: string;
+  expectedSha: string;
+  origin: string;
+  criterion: AutopilotPinnedCriterion;
+}) => Promise<AutopilotExecutionCapture | null>;
 
 export interface AutopilotReconcileOutcome {
   /** True when this call moved the cycle forward (dispatched/settled + advanced). */
@@ -225,7 +269,23 @@ export interface AutopilotOrchestratorDeps {
   session: AutopilotSessionPort;
   finalize: AutopilotFinalizePort;
   deploy: AutopilotDeployPort;
+  evaluate: AutopilotEvaluatePort;
   randomId?: () => string;
+  /** Hub-side artifact existence and mtime. Tests inject; production stats. */
+  artifactExists?: ArtifactExists;
+  /** Load captures Hub recorded during this evaluate operation. */
+  listCaptures?: (operationId: string) => AutopilotExecutionCapture[];
+  /** Hub-executed API probe; never copies status from the evaluator report. */
+  probeApi?: AutopilotProbeApi;
+}
+
+function defaultArtifactExists(filePath: string): { exists: boolean; mtimeMs?: number } {
+  try {
+    const st = statSync(filePath);
+    return { exists: true, mtimeMs: st.mtimeMs };
+  } catch {
+    return { exists: false };
+  }
 }
 
 function isSettled(op: AutopilotOperationRecord): boolean {
@@ -245,6 +305,10 @@ export class AutopilotOrchestrator {
   private readonly session: AutopilotSessionPort;
   private readonly finalize: AutopilotFinalizePort;
   private readonly deploy: AutopilotDeployPort;
+  private readonly evaluate: AutopilotEvaluatePort;
+  private readonly artifactExists: ArtifactExists;
+  private readonly listCaptures: (operationId: string) => AutopilotExecutionCapture[];
+  private readonly probeApi: AutopilotProbeApi | null;
 
   constructor(deps: AutopilotOrchestratorDeps) {
     this.controller = deps.controller;
@@ -254,6 +318,10 @@ export class AutopilotOrchestrator {
     this.session = deps.session;
     this.finalize = deps.finalize;
     this.deploy = deps.deploy;
+    this.evaluate = deps.evaluate;
+    this.artifactExists = deps.artifactExists ?? defaultArtifactExists;
+    this.listCaptures = deps.listCaptures ?? (() => []);
+    this.probeApi = deps.probeApi ?? null;
   }
 
   private requireActiveRunningCycle(projectId: string): {
@@ -371,7 +439,20 @@ export class AutopilotOrchestrator {
     if (!this.operationOwnsCurrentStage(op)) {
       return this.controller.getRun(projectId, run.id);
     }
-    this.store.updateCycle(cycleId, { cardId: board.primaryCardId });
+    this.store.updateCycle(cycleId, {
+      cardId: board.primaryCardId,
+      verificationJson: writeCycleVerification(cycle.verification, {
+        pinned: pinCriteriaFromSpec(
+          spec,
+          brief.revision,
+          deriveCycleJourneys(
+            spec,
+            { cardId: board.primaryCardId, selectedImprovement: cycle.selectedImprovement },
+            board,
+          ),
+        ),
+      }),
+    });
     try {
       await this.controller.completeOperation({
         operationId: op.id,
@@ -851,6 +932,302 @@ export class AutopilotOrchestrator {
     op: AutopilotOperationRecord,
   ): { advanced: boolean; snapshot: AutopilotRunSnapshot } {
     return this.advanceAfterStage(projectId, op, 'deploying', 'verifying');
+  }
+
+  /**
+   * Verifying stage: dispatch a separate evaluator session (consult / no
+   * implementation write) against the live local target. Criteria were pinned
+   * at planning; the expected SHA is the merged tested commit.
+   */
+  async dispatchEvaluate(projectId: string): Promise<AutopilotOperationRecord> {
+    const { run, cycleId } = this.requireActiveRunningCycle(projectId);
+    if (run.stage !== 'verifying') {
+      throw new AutopilotError('conflict', `Run stage is ${run.stage}, not verifying`);
+    }
+    const existing = this.findInFlightOperation(run.id, 'evaluate', cycleId);
+    if (existing) return existing;
+    const cycle = this.store.getCycle(run.id, run.cycleNumber)!;
+    const expectedSha = cycle.testedCommitSha?.trim() ?? '';
+    if (!expectedSha) {
+      throw new AutopilotError('invalid_config', 'cycle has no tested commit SHA to evaluate');
+    }
+    const origin = this.requireTargetOrigin(run.targetId, projectId);
+    const pinned = parseCycleVerification(cycle.verification).pinned;
+    if (!pinned) {
+      throw new AutopilotError(
+        'invalid_config',
+        'evaluation criteria were not pinned before implementation',
+      );
+    }
+    const op = await this.controller.beginOperation({
+      projectId,
+      kind: 'evaluate',
+      intent: { expectedSha, origin, specRevision: pinned.specRevision },
+    });
+    try {
+      const dispatched = await this.evaluate.dispatchEvaluation({
+        projectId,
+        runId: run.id,
+        operationId: op.id,
+        deploymentId: cycle.deploymentId ?? '',
+        origin,
+        expectedSha,
+        pinned,
+        workerKeyName: run.workerAuthority.evaluatorKeyName ?? run.workerAuthority.keyName,
+        bounds: { maxStageTimeoutMs: run.limits.maxStageTimeoutMs },
+      });
+      this.store.updateOperation(op.id, { sessionId: dispatched.sessionId });
+      if (!this.operationOwnsCurrentStage(op)) {
+        throw new AutopilotError(
+          'conflict',
+          'evaluate dispatch was superseded before it completed',
+        );
+      }
+      return this.store.getOperation(op.id)!;
+    } catch (err) {
+      await this.settleFailureQuiet(op, err);
+      throw err;
+    }
+  }
+
+  /**
+   * Hub captures recorded during this evaluate operation, plus optional
+   * Hub-executed API probes for pinned api_check criteria that still lack a
+   * requestId. The evaluator report is never a source of API status.
+   */
+  private async collectEvaluateCaptures(input: {
+    operationId: string;
+    deploymentId: string;
+    expectedSha: string;
+    origin: string;
+    pinned: AutopilotPinnedCriteria | null;
+    extra: AutopilotExecutionCapture[];
+  }): Promise<AutopilotExecutionCapture[]> {
+    const captures = [...this.listCaptures(input.operationId), ...input.extra];
+    if (!this.probeApi || !input.pinned) return captures;
+    for (const criterion of input.pinned.criteria) {
+      if (criterion.kind !== 'api_check') continue;
+      if (captures.some((c) => c.criterionId === criterion.id && c.api?.requestId)) continue;
+      const probed = await this.probeApi({
+        operationId: input.operationId,
+        deploymentId: input.deploymentId,
+        expectedSha: input.expectedSha,
+        origin: input.origin,
+        criterion,
+      });
+      if (probed) captures.push(probed);
+    }
+    return captures;
+  }
+
+  /**
+   * Settle an independent evaluation. Passing, artifact-backed evidence at
+   * the expected SHA promotes last-known-good and advances to documenting.
+   * Failed evaluation recovers the prior verified artifact and never opens
+   * improvement selection.
+   */
+  async reconcileEvaluate(
+    projectId: string,
+    input: AutopilotReconcileInput<AutopilotEvaluationReport | null>,
+  ): Promise<AutopilotReconcileOutcome> {
+    const op = this.requireOperationOfKind(input.operationId, 'evaluate');
+    const runId = op.runId;
+    if (isSettled(op)) {
+      if (op.status === 'succeeded') {
+        this.persistLastKnownGoodFromOp(projectId, op);
+        const fwd = this.advanceAfterEvaluate(projectId, op);
+        return {
+          advanced: fwd.advanced,
+          idempotent: true,
+          outcome: 'succeeded',
+          snapshot: fwd.snapshot,
+        };
+      }
+      return {
+        advanced: false,
+        idempotent: true,
+        outcome: outcomeFromOperation(op),
+        snapshot: this.controller.getRun(projectId, runId),
+      };
+    }
+
+    const run = this.store.getRun(runId);
+    const cycle = op.cycleId ? this.store.getCycleById(op.cycleId) : null;
+    const pinned = parseCycleVerification(cycle?.verification).pinned;
+    const expectedSha = cycle?.testedCommitSha?.trim() ?? '';
+    const origin = this.requireTargetOrigin(run?.targetId ?? null, projectId);
+    const observedSha = this.controller.observeDeployedRevision(projectId, run?.targetId ?? null);
+    const deploymentId = cycle?.deploymentId ?? '';
+    const captures = await this.collectEvaluateCaptures({
+      operationId: op.id,
+      deploymentId,
+      expectedSha,
+      origin,
+      pinned,
+      extra: input.captures ?? [],
+    });
+    const hubEvidence = stampHubEvidence({
+      operationId: op.id,
+      deploymentId,
+      expectedSha,
+      observedSha,
+      origin,
+      operationStartedAt: op.createdAt,
+      captures,
+      report: input.result,
+      artifactExists: this.artifactExists,
+    });
+    const judgement = judgeEvaluation({
+      pinned,
+      expectedSha,
+      targetOrigin: origin,
+      report: input.result,
+      hubEvidence,
+      binding: { operationId: op.id, deploymentId },
+    });
+
+    if (cycle) {
+      this.store.updateCycle(cycle.id, {
+        verificationJson: writeCycleVerification(cycle.verification, {
+          evidence: input.result,
+          hubEvidence,
+          judgement,
+        }),
+      });
+    }
+
+    if (judgement.ok) {
+      const deploymentId = cycle?.deploymentId ?? '';
+      await this.controller.completeOperation({
+        operationId: input.operationId,
+        fencingGeneration: input.fencingGeneration,
+        outcome: 'succeeded',
+        result: { sha: judgement.sha, deploymentId },
+      });
+      const settled = this.store.getOperation(input.operationId)!;
+      this.persistLastKnownGoodFromOp(projectId, settled);
+      const fwd = this.advanceAfterEvaluate(projectId, settled);
+      return {
+        advanced: fwd.advanced,
+        idempotent: false,
+        outcome: 'succeeded',
+        snapshot: fwd.snapshot,
+      };
+    }
+
+    return this.recoverAfterFailedEvaluation(projectId, op, input, judgement);
+  }
+
+  private advanceAfterEvaluate(
+    projectId: string,
+    op: AutopilotOperationRecord,
+  ): { advanced: boolean; snapshot: AutopilotRunSnapshot } {
+    return this.advanceAfterStage(projectId, op, 'verifying', 'documenting');
+  }
+
+  /**
+   * Reconcile last-known-good from a succeeded evaluate operation. A crash
+   * between completeOperation and promote must not advance documenting
+   * without recording the verified SHA.
+   */
+  private persistLastKnownGoodFromOp(projectId: string, op: AutopilotOperationRecord): void {
+    const result = op.result as { sha?: unknown; deploymentId?: unknown } | null;
+    const sha = typeof result?.sha === 'string' ? result.sha.trim() : '';
+    const deploymentId = typeof result?.deploymentId === 'string' ? result.deploymentId.trim() : '';
+    if (!sha || !deploymentId) return;
+    const run = this.store.getRun(op.runId);
+    if (!run || run.stage !== 'verifying' || run.controlState !== 'running') return;
+    if (run.lastVerifiedSha === sha && run.lastDeploymentId === deploymentId) return;
+    this.controller.promoteLastKnownGood(projectId, { sha, deploymentId });
+  }
+
+  private requireTargetOrigin(targetId: string | null, projectId: string): string {
+    const state = this.controller.getProjectState(projectId);
+    const origin = state.config.target?.origin?.trim() ?? '';
+    if (!targetId || !origin) {
+      throw new AutopilotError('invalid_config', 'run has no experiment target origin');
+    }
+    return origin.replace(/\/+$/, '');
+  }
+
+  /**
+   * Roll back to last-known-good after a failed evaluation, then reopen
+   * implementing for a budgeted repair. Never advances to documenting or
+   * selecting-next. Pinned criteria stay on the cycle.
+   */
+  private async recoverAfterFailedEvaluation(
+    projectId: string,
+    op: AutopilotOperationRecord,
+    input: AutopilotReconcileInput<AutopilotEvaluationReport | null>,
+    judgement: Extract<AutopilotEvaluationJudgement, { ok: false }>,
+  ): Promise<AutopilotReconcileOutcome> {
+    const run = this.store.getRun(op.runId);
+    const fail = async (haltReason: string, extra: Record<string, unknown> = {}) => {
+      await this.controller.completeOperation({
+        operationId: input.operationId,
+        fencingGeneration: input.fencingGeneration,
+        outcome: 'failed',
+        haltReason,
+        result: { reason: judgement.reason, detail: judgement.detail, ...extra },
+      });
+      return {
+        advanced: false,
+        idempotent: false,
+        outcome: 'failed' as const,
+        snapshot: this.controller.getRun(projectId, op.runId),
+      };
+    };
+    const extra: Record<string, unknown> = {};
+    if (run?.lastVerifiedSha && run.lastDeploymentId && run.targetId) {
+      let rolled;
+      try {
+        rolled = await this.deploy.rollback({
+          projectId,
+          runId: run.id,
+          operationId: op.id,
+          targetId: run.targetId,
+          priorDeploymentId: run.lastDeploymentId,
+          priorSha: run.lastVerifiedSha,
+        });
+      } catch (err) {
+        return fail('evaluation failed; recovery failed', {
+          rollbackError: err instanceof Error ? err.message : String(err),
+        });
+      }
+      if (rolled.status !== 'success' || rolled.deployedSha !== run.lastVerifiedSha) {
+        return fail('evaluation failed; recovery failed', {
+          rollbackStatus: rolled.status,
+          restoredSha: rolled.deployedSha ?? null,
+        });
+      }
+      extra.restoredSha = rolled.deployedSha;
+      extra.rollbackDeploymentId = rolled.deploymentId;
+    }
+
+    const stage = this.store.getStageByOperationId(op.id);
+    const maxRetries = run?.limits.maxRetriesPerStage ?? 0;
+    const canRepair = !!run && !!stage && stage.attempt <= maxRetries;
+    if (!canRepair) {
+      const suffix = extra.restoredSha
+        ? 'recovered last-known-good; repair budget exhausted'
+        : 'no last-known-good to recover';
+      return fail(`evaluation ${judgement.reason}; ${suffix}`, extra);
+    }
+
+    await this.controller.completeOperation({
+      operationId: input.operationId,
+      fencingGeneration: input.fencingGeneration,
+      outcome: 'failed',
+      skipStageRetry: true,
+      result: { reason: judgement.reason, detail: judgement.detail, repair: true, ...extra },
+    });
+    const snapshot = this.controller.advanceStage(projectId, 'implementing');
+    return {
+      advanced: true,
+      idempotent: false,
+      outcome: 'failed',
+      snapshot,
+    };
   }
 
   /**

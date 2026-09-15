@@ -3,8 +3,14 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createAutopilotController } from './controller.js';
 import { AutopilotError } from './errors.js';
 import { ensureAutopilotSchema } from './schema.js';
+import { AutopilotStore } from './store.js';
+import { writeCycleVerification } from './evaluate.js';
 import type { AutopilotCancelRefs, AutopilotCancelSideEffects } from './types.js';
 import type { AutopilotLocalTargetLookup } from './local-target.js';
+import type {
+  IssueAutopilotWorkerCredential,
+  RevokeAutopilotWorkerCredential,
+} from './worker-authority.js';
 
 const PROJECT = 'demo-app';
 const ACTOR = { userId: 'user-1' };
@@ -48,7 +54,8 @@ function freshController(opts?: {
   holderId?: string;
   now?: () => Date;
   assertContainment?: () => void;
-  issueWorkerCredential?: ReturnType<typeof stubWorkerCreds>['issueWorkerCredential'];
+  issueWorkerCredential?: IssueAutopilotWorkerCredential;
+  revokeWorkerCredential?: RevokeAutopilotWorkerCredential;
 }) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -65,7 +72,7 @@ function freshController(opts?: {
     now: opts?.now,
     assertContainment: opts?.assertContainment ?? stubs.assertContainment,
     issueWorkerCredential: opts?.issueWorkerCredential ?? stubs.issueWorkerCredential,
-    revokeWorkerCredential: stubs.revokeWorkerCredential,
+    revokeWorkerCredential: opts?.revokeWorkerCredential ?? stubs.revokeWorkerCredential,
   });
   return { db, controller };
 }
@@ -100,6 +107,46 @@ describe('autopilot controller', () => {
       expect((err as AutopilotError).code).toBe('already_active');
       expect((err as AutopilotError).httpStatus).toBe(409);
     }
+  });
+
+  it('revokes the implementer credential when evaluator issuance fails', () => {
+    const issued: Array<{ projectId: string; runId: string; ownerUserId: string; role?: string }> =
+      [];
+    const revoked: Array<{ projectId: string; runId: string; ownerUserId?: string | null }> = [];
+    const { controller } = freshController({
+      issueWorkerCredential: (input) => {
+        issued.push({
+          projectId: input.projectId,
+          runId: input.runId,
+          ownerUserId: input.ownerUserId,
+          role: input.role,
+        });
+        if (input.role === 'evaluator') {
+          throw new Error('evaluator mint failed');
+        }
+        return {
+          keyName: `autopilot:${input.projectId}:${input.runId}`,
+          keyId: `key-${input.runId}`,
+          token: `ahub_worker_${input.runId}`,
+        };
+      },
+      revokeWorkerCredential: (input) => {
+        revoked.push(input);
+      },
+    });
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+    expect(() => controller.start(PROJECT, {}, ACTOR)).toThrow(/evaluator mint failed/);
+    expect(issued).toHaveLength(2);
+    expect(issued[0]?.role).toBeUndefined();
+    expect(issued[1]?.role).toBe('evaluator');
+    expect(revoked).toEqual([
+      {
+        projectId: PROJECT,
+        runId: issued[0]?.runId,
+        ownerUserId: 'user-1',
+      },
+    ]);
+    expect(controller.getProjectState(PROJECT).activeRun).toBeNull();
   });
 
   it('does not persist overlay settings from a rejected duplicate start', async () => {
@@ -1066,5 +1113,37 @@ describe('autopilot controller', () => {
     expect(next.run.cycleNumber).toBe(2);
     expect(next.cycle?.cycleNumber).toBe(2);
     expect(next.cycle?.status).toBe('active');
+  });
+
+  it('rejects last-known-good promotion without a passing recorded judgement', async () => {
+    const { db, controller } = freshController();
+    const started = await startReady(controller);
+    const store = new AutopilotStore(db);
+    const cycle = store.getCycle(started.run.id, 1)!;
+    store.updateRun(started.run.id, { stage: 'verifying', updatedAt: new Date().toISOString() });
+    store.updateCycle(cycle.id, {
+      testedCommitSha: 'deadbeefcafe',
+      deploymentId: 'dep-1',
+    });
+
+    expect(() =>
+      controller.promoteLastKnownGood(PROJECT, { sha: 'deadbeefcafe', deploymentId: 'dep-1' }),
+    ).toThrow(/passing evaluation bound to this SHA and deployment/);
+    expect(store.getRun(started.run.id)!.lastVerifiedSha).toBeNull();
+
+    store.updateCycle(cycle.id, {
+      verificationJson: writeCycleVerification(null, {
+        judgement: {
+          ok: false,
+          reason: 'health_only',
+          detail: 'HTTP health is not sufficient',
+          recover: false,
+        },
+      }),
+    });
+    expect(() =>
+      controller.promoteLastKnownGood(PROJECT, { sha: 'deadbeefcafe', deploymentId: 'dep-1' }),
+    ).toThrow(/passing evaluation bound to this SHA and deployment/);
+    expect(store.getRun(started.run.id)!.lastVerifiedSha).toBeNull();
   });
 });

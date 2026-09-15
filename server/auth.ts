@@ -136,7 +136,7 @@ export interface AuthenticatedRequest extends Request {
   /** When auth used a per-session spawn-creds key (`spawn:<sessionId>`), the linked chat session id. */
   authSpawnSessionId?: string;
   /** When auth used an Autopilot worker key (`autopilot:<projectId>:<runId>`). */
-  authAutopilotWorker?: { projectId: string; runId: string };
+  authAutopilotWorker?: { projectId: string; runId: string; role: 'implementer' | 'evaluator' };
   /** Active org id at the time the request was authenticated. */
   authOrgId?: string;
   /** True when the caller used the apiKey fallback. */

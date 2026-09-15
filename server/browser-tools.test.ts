@@ -396,6 +396,11 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.ui?.screenshotCaptured).toBe(true);
     expect(r.ui?.screenshotWsUrl).toBeTruthy();
     expect(r.ui?.screenshotWsUrl).toContain('data:image/jpeg;base64,');
+    expect(r.pageSnapshot).toEqual({
+      url: 'https://example.com/after',
+      title: 'Example',
+      textExcerpt: 'Hello body',
+    });
   });
 
   it('screenshot: reports empty visible text when the DOM body is blank', async () => {

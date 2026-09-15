@@ -849,7 +849,12 @@ export interface BuildSpawnEnvOptions {
    * Scoped Autopilot worker credential. When set, replaces `AGENT_HUB_API_KEY`
    * (including the global break-glass key) and strips cloud/socket credentials.
    */
-  autopilotWorker?: { token: string; projectId: string; runId: string } | null;
+  autopilotWorker?: {
+    token: string;
+    projectId: string;
+    runId: string;
+    role?: 'implementer' | 'evaluator';
+  } | null;
 }
 
 /** Treat null / undefined / empty / whitespace-only as "not provided". */

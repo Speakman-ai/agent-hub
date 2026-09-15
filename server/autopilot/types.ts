@@ -44,14 +44,19 @@ export interface AutopilotEvaluatorPolicy {
   version: number;
 }
 
+export type AutopilotWorkerRole = 'implementer' | 'evaluator';
+
 export interface AutopilotWorkerAuthority {
   keyName: string | null;
   keyId: string | null;
+  evaluatorKeyName: string | null;
+  evaluatorKeyId: string | null;
 }
 
 export interface AutopilotWorkerScope {
   projectId: string;
   runId: string;
+  role: AutopilotWorkerRole;
 }
 
 export interface AutopilotTarget {
@@ -222,6 +227,8 @@ export const DEFAULT_AUTOPILOT_EVALUATOR_POLICY: AutopilotEvaluatorPolicy = {
 export const EMPTY_AUTOPILOT_WORKER_AUTHORITY: AutopilotWorkerAuthority = {
   keyName: null,
   keyId: null,
+  evaluatorKeyName: null,
+  evaluatorKeyId: null,
 };
 
 export const DEFAULT_AUTOPILOT_USAGE: AutopilotUsage = {

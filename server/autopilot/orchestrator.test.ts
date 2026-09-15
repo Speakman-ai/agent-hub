@@ -7,11 +7,17 @@ import type {
   AutopilotBoardPort,
   AutopilotDeployPort,
   AutopilotDeployResult,
+  AutopilotEvaluatePort,
   AutopilotFinalizePort,
   AutopilotFinalizeResult,
   AutopilotPlannerPort,
   AutopilotSessionPort,
 } from './orchestrator.js';
+import {
+  type AutopilotEvaluationReport,
+  type AutopilotExecutionCapture,
+  writeCycleVerification,
+} from './evaluate.js';
 import { AutopilotStore } from './store.js';
 import { ensureAutopilotSchema } from './schema.js';
 
@@ -72,6 +78,10 @@ function fakeFinalize(finalizeRunId = 'fin-1'): AutopilotFinalizePort {
   return { startFinalize: async () => ({ finalizeRunId }) };
 }
 
+function fakeEvaluate(sessionId = 'eval-1'): AutopilotEvaluatePort {
+  return { dispatchEvaluation: async () => ({ sessionId }) };
+}
+
 function fakeDeploy(opts?: {
   deploymentId?: string;
   rollback?: AutopilotDeployResult | (() => Promise<AutopilotDeployResult>);
@@ -110,7 +120,9 @@ function harness(opts?: {
   session?: AutopilotSessionPort;
   finalize?: AutopilotFinalizePort;
   deploy?: AutopilotDeployPort;
+  evaluate?: AutopilotEvaluatePort;
   db?: Database.Database;
+  getDeployedRevision?: (projectId: string, targetId: string) => string | null;
 }) {
   const db = opts?.db ?? new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -124,6 +136,7 @@ function harness(opts?: {
     assertContainment: stubs.assertContainment,
     issueWorkerCredential: stubs.issueWorkerCredential,
     revokeWorkerCredential: stubs.revokeWorkerCredential,
+    getDeployedRevision: opts?.getDeployedRevision ?? (() => 'deadbeefcafe'),
   });
   const orchestrator = createAutopilotOrchestrator({
     controller,
@@ -133,6 +146,8 @@ function harness(opts?: {
     session: opts?.session ?? fakeSession(),
     finalize: opts?.finalize ?? fakeFinalize(),
     deploy: opts?.deploy ?? fakeDeploy(),
+    evaluate: opts?.evaluate ?? fakeEvaluate(),
+    artifactExists: () => ({ exists: true, mtimeMs: Date.now(), journeyTrace: true }),
   });
   const store = new AutopilotStore(db);
   return { db, controller, orchestrator, store };
@@ -163,6 +178,15 @@ describe('autopilot orchestrator', () => {
     let cycle = store.getCycle(runId, 1)!;
     expect(cycle.specRevision).toBe(brief.revision);
     expect(cycle.cardId).toBe('card-1');
+    const pinned = (
+      cycle.verification as { pinned?: { criteria?: { id: string; source: string }[] } } | null
+    )?.pinned;
+    expect(pinned?.criteria?.map((c) => c.id)).toEqual([
+      'baseline-1',
+      'baseline-2',
+      'cycle-1',
+      'cycle-2',
+    ]);
 
     // Implementation dispatch records the session and leaves work in flight.
     const implOp = await orchestrator.dispatchImplementation(PROJECT);
@@ -333,6 +357,7 @@ describe('autopilot orchestrator', () => {
       session: fakeSession(),
       finalize: fakeFinalize(),
       deploy: fakeDeploy(),
+      evaluate: fakeEvaluate(),
     });
 
     // A late session callback for the superseded operation must not advance.
@@ -941,5 +966,403 @@ describe('autopilot orchestrator — deploy', () => {
     await orchestrator.dispatchDeploy(PROJECT);
     expect(store.getRun(runId)!.controlState).toBe('paused');
     expect(store.getRun(runId)!.pauseReason).toMatch(/cannot be established/);
+  });
+});
+
+function parsePinned(store: AutopilotStore, runId: string) {
+  return (
+    (
+      store.getCycle(runId, 1)!.verification as {
+        pinned?: { criteria?: { source: string }[] };
+      } | null
+    )?.pinned?.criteria ?? []
+  );
+}
+
+function passingEvalCaptures(
+  operationId: string,
+  report: AutopilotEvaluationReport = passingEvalReport(),
+): AutopilotExecutionCapture[] {
+  const capturedAt = report.capturedAt || new Date().toISOString();
+  const mtimeMs = Date.parse(capturedAt) || Date.now();
+  return report.criteria.flatMap((ev, i): AutopilotExecutionCapture[] => {
+    if (ev.kind === 'api_check' && ev.apiCheck) {
+      return [
+        {
+          captureId: `cap-${ev.criterionId}`,
+          criterionId: ev.criterionId,
+          kind: 'api_check' as const,
+          capturedAt,
+          operationId,
+          deploymentId: 'dep-1',
+          expectedSha: 'deadbeefcafe',
+          origin: 'http://127.0.0.1:4310',
+          screenshot: null,
+          trace: null,
+          api: {
+            requestId: `req-${ev.criterionId}-${i}`,
+            method: ev.apiCheck.method,
+            url: ev.apiCheck.url,
+            status: ev.apiCheck.status,
+            body: ev.apiCheck.body ?? ev.apiCheck.bodyExcerpt,
+            bodyComplete: ev.apiCheck.bodyComplete,
+            bodyExcerpt: ev.apiCheck.bodyExcerpt,
+          },
+        },
+      ];
+    }
+    if (!ev.screenshotPath && !ev.tracePath) return [];
+    return [
+      {
+        captureId: `cap-${ev.criterionId}`,
+        criterionId: ev.criterionId,
+        kind: 'browser_journey' as const,
+        capturedAt,
+        operationId,
+        deploymentId: 'dep-1',
+        expectedSha: 'deadbeefcafe',
+        origin: 'http://127.0.0.1:4310',
+        screenshot: ev.screenshotPath ? { path: ev.screenshotPath, mtimeMs } : null,
+        trace: ev.tracePath ? { path: ev.tracePath, mtimeMs } : null,
+        api: null,
+      },
+    ];
+  });
+}
+
+function passingEvalReport(
+  overrides: Partial<AutopilotEvaluationReport> = {},
+): AutopilotEvaluationReport {
+  return {
+    expectedSha: 'deadbeefcafe',
+    observedSha: 'deadbeefcafe',
+    origin: 'http://127.0.0.1:4310',
+    healthCheck: { url: 'http://127.0.0.1:4310/health', ok: true },
+    capturedAt: new Date().toISOString(),
+    criteria: [
+      {
+        criterionId: 'baseline-1',
+        passed: true,
+        kind: 'browser_journey',
+        screenshotPath: '/tmp/eval/list.png',
+        tracePath: '/tmp/eval/list.trace',
+        observed: 'todos are shown',
+      },
+      {
+        criterionId: 'baseline-2',
+        passed: true,
+        kind: 'browser_journey',
+        screenshotPath: '/tmp/eval/list2.png',
+        tracePath: '/tmp/eval/list2.trace',
+        observed: 'existing todos are shown',
+      },
+      {
+        criterionId: 'cycle-1',
+        passed: true,
+        kind: 'browser_journey',
+        screenshotPath: '/tmp/eval/cycle1.png',
+        tracePath: '/tmp/eval/cycle1.trace',
+        observed: 'todos are shown',
+      },
+      {
+        criterionId: 'cycle-2',
+        passed: true,
+        kind: 'browser_journey',
+        screenshotPath: '/tmp/eval/cycle2.png',
+        tracePath: '/tmp/eval/cycle2.trace',
+        observed: 'existing todos are shown',
+      },
+    ],
+    ...overrides,
+  };
+}
+
+async function reachVerifying(
+  orchestrator: ReturnType<typeof createAutopilotOrchestrator>,
+  controller: ReturnType<typeof createAutopilotController>,
+) {
+  await reachDeploying(orchestrator, controller);
+  const depOp = await orchestrator.dispatchDeploy(PROJECT);
+  await orchestrator.reconcileDeploy(PROJECT, {
+    operationId: depOp.id,
+    fencingGeneration: depOp.fencingGeneration,
+    result: { status: 'success', deploymentId: 'dep-1', deployedSha: 'deadbeefcafe' },
+  });
+}
+
+describe('autopilot orchestrator — evaluate', () => {
+  it('promotes last-known-good only after passing deployed evidence and advances to documenting', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachVerifying(orchestrator, controller);
+    const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    expect(evalOp.kind).toBe('evaluate');
+    expect(evalOp.sessionId).toBe('eval-1');
+    const runId = store.getActiveRun(PROJECT)!.id;
+    expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
+
+    const passing = passingEvalReport();
+    const result = await orchestrator.reconcileEvaluate(PROJECT, {
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      result: passing,
+      captures: passingEvalCaptures(evalOp.id, passing),
+    });
+    expect(result.advanced).toBe(true);
+    expect(result.snapshot.run.stage).toBe('documenting');
+    expect(store.getRun(runId)!.lastVerifiedSha).toBe('deadbeefcafe');
+    expect(store.getRun(runId)!.lastDeploymentId).toBe('dep-1');
+  });
+
+  it('rejects the wrong live revision, recovers last-known-good, and opens bounded repair', async () => {
+    const { controller, orchestrator, store } = harness({
+      getDeployedRevision: () => 'not-the-merged-sha',
+    });
+    await reachVerifying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    store.updateRun(runId, {
+      lastVerifiedSha: 'verified-sha',
+      lastDeploymentId: 'dep-lkg',
+    });
+    const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    const result = await orchestrator.reconcileEvaluate(PROJECT, {
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      result: passingEvalReport(),
+    });
+    expect(result.snapshot.run.stage).toBe('implementing');
+    expect(store.getRun(runId)!.stage).not.toBe('selecting-next');
+    expect(store.getRun(runId)!.lastVerifiedSha).toBe('verified-sha');
+    expect(store.getRun(runId)!.controlState).toBe('running');
+    expect(parsePinned(store, runId).map((c) => c.source)).toContain('cycle');
+  });
+
+  it('rejects health-only false positives and starts bounded repair without promoting last-known-good', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachVerifying(orchestrator, controller);
+    const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    const result = await orchestrator.reconcileEvaluate(PROJECT, {
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      result: passingEvalReport({
+        criteria: [],
+        healthCheck: { url: 'http://127.0.0.1:4310/health', ok: true },
+      }),
+    });
+    const runId = store.getActiveRun(PROJECT)!.id;
+    expect(result.snapshot.run.stage).toBe('implementing');
+    expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
+    expect(store.getRun(runId)!.stage).not.toBe('selecting-next');
+    expect(store.getRun(runId)!.controlState).toBe('running');
+    const verification = store.getCycle(runId, 1)!.verification as {
+      judgement?: { reason?: string };
+    };
+    expect(verification.judgement?.reason).toBe('health_only');
+  });
+
+  it('treats a baseline regression as recovery plus bounded repair, not improvement selection', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachVerifying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    store.updateRun(runId, {
+      lastVerifiedSha: 'verified-sha',
+      lastDeploymentId: 'dep-lkg',
+    });
+    const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    const failing = passingEvalReport({
+      criteria: [
+        {
+          criterionId: 'baseline-1',
+          passed: false,
+          kind: 'browser_journey',
+          screenshotPath: '/tmp/eval/fail.png',
+          tracePath: '/tmp/eval/fail.trace',
+          observed: 'list stayed empty',
+        },
+        {
+          criterionId: 'baseline-2',
+          passed: true,
+          kind: 'browser_journey',
+          screenshotPath: '/tmp/eval/ok.png',
+          tracePath: '/tmp/eval/ok.trace',
+        },
+        {
+          criterionId: 'cycle-1',
+          passed: true,
+          kind: 'browser_journey',
+          screenshotPath: '/tmp/eval/cycle1.png',
+          tracePath: '/tmp/eval/cycle1.trace',
+        },
+        {
+          criterionId: 'cycle-2',
+          passed: true,
+          kind: 'browser_journey',
+          screenshotPath: '/tmp/eval/cycle2.png',
+          tracePath: '/tmp/eval/cycle2.trace',
+        },
+      ],
+    });
+    await orchestrator.reconcileEvaluate(PROJECT, {
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      result: failing,
+      captures: passingEvalCaptures(evalOp.id, failing),
+    });
+    expect(store.getRun(runId)!.stage).toBe('implementing');
+    expect(store.getRun(runId)!.stage).not.toBe('documenting');
+    expect(store.getRun(runId)!.stage).not.toBe('selecting-next');
+    expect(store.getRun(runId)!.lastVerifiedSha).toBe('verified-sha');
+    expect(store.getRun(runId)!.controlState).toBe('running');
+    expect(parsePinned(store, runId)).toHaveLength(4);
+  });
+
+  it('pauses when the repair budget is exhausted instead of selecting an improvement', async () => {
+    const { controller, orchestrator, store, db } = harness();
+    await reachVerifying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    store.updateRun(runId, {
+      lastVerifiedSha: 'verified-sha',
+      lastDeploymentId: 'dep-lkg',
+    });
+    db.prepare(`UPDATE autopilot_runs SET limits_json = ? WHERE id = ?`).run(
+      JSON.stringify({ ...READY.limits, maxRetriesPerStage: 0 }),
+      runId,
+    );
+    const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    await orchestrator.reconcileEvaluate(PROJECT, {
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      result: passingEvalReport({
+        criteria: [],
+        healthCheck: { url: 'http://127.0.0.1:4310/health', ok: true },
+      }),
+    });
+    expect(store.getRun(runId)!.controlState).toBe('paused');
+    expect(store.getRun(runId)!.stage).not.toBe('selecting-next');
+    expect(store.getRun(runId)!.pauseReason).toMatch(/repair budget exhausted|health_only/);
+  });
+
+  it('promotes a primary-cycle API evaluation when Hub recorded distinct requests', async () => {
+    const apiSpec: AutopilotBaselineSpec = {
+      ...SPEC,
+      acceptanceJourneys: [
+        { action: 'GET /api/todos', expectedResult: 'returns the stored items as JSON' },
+      ],
+    };
+    const { controller, orchestrator, store } = harness({ planner: fakePlanner(apiSpec) });
+    await reachVerifying(orchestrator, controller);
+    const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    const report = passingEvalReport({
+      criteria: [
+        {
+          criterionId: 'baseline-1',
+          passed: true,
+          kind: 'api_check',
+          apiCheck: {
+            method: 'GET',
+            url: 'http://127.0.0.1:4310/api/todos',
+            status: 200,
+            bodyExcerpt: '[{"title":"x"}]',
+          },
+        },
+        {
+          criterionId: 'cycle-1',
+          passed: true,
+          kind: 'api_check',
+          apiCheck: {
+            method: 'GET',
+            url: 'http://127.0.0.1:4310/api/todos',
+            status: 200,
+            bodyExcerpt: '[{"title":"x"}]',
+          },
+        },
+      ],
+    });
+    const result = await orchestrator.reconcileEvaluate(PROJECT, {
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      result: report,
+      captures: passingEvalCaptures(evalOp.id, report),
+    });
+    const runId = store.getActiveRun(PROJECT)!.id;
+    expect(parsePinned(store, runId).map((c) => c.source)).toEqual(['baseline', 'cycle']);
+    expect(result.advanced).toBe(true);
+    expect(store.getRun(runId)!.lastVerifiedSha).toBe('deadbeefcafe');
+    expect(store.getRun(runId)!.stage).toBe('documenting');
+  });
+
+  it('promotes last-known-good from a succeeded evaluate op after a crash before advance', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachVerifying(orchestrator, controller);
+    const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const cycle = store.getCycle(runId, 1)!;
+    store.updateCycle(cycle.id, {
+      verificationJson: writeCycleVerification(cycle.verification, {
+        judgement: { ok: true, sha: 'deadbeefcafe' },
+        hubEvidence: {
+          binding: {
+            operationId: evalOp.id,
+            deploymentId: 'dep-1',
+            expectedSha: 'deadbeefcafe',
+            observedSha: 'deadbeefcafe',
+            origin: 'http://127.0.0.1:4310',
+            operationStartedAt: evalOp.createdAt,
+          },
+          captures: [
+            {
+              captureId: 'cap-crash',
+              criterionId: 'baseline-1',
+              kind: 'browser_journey',
+              capturedAt: evalOp.createdAt,
+              screenshotPath: '/tmp/eval/list.png',
+              screenshotPresent: true,
+              screenshotMtimeMs: Date.parse(evalOp.createdAt) || Date.now(),
+              tracePresent: false,
+              apiOriginMatches: false,
+            },
+          ],
+        },
+      }),
+    });
+    await controller.completeOperation({
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      outcome: 'succeeded',
+      result: { sha: 'deadbeefcafe', deploymentId: 'dep-1' },
+    });
+    expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
+    expect(store.getRun(runId)!.stage).toBe('verifying');
+
+    const res = await orchestrator.reconcileEvaluate(PROJECT, {
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      result: null,
+    });
+    expect(res.idempotent).toBe(true);
+    expect(res.advanced).toBe(true);
+    expect(store.getRun(runId)!.lastVerifiedSha).toBe('deadbeefcafe');
+    expect(store.getRun(runId)!.stage).toBe('documenting');
+  });
+
+  it('does not promote last-known-good from a succeeded evaluate op without passing evidence', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachVerifying(orchestrator, controller);
+    const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    await controller.completeOperation({
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      outcome: 'succeeded',
+      result: { sha: 'deadbeefcafe', deploymentId: 'dep-1' },
+    });
+    await expect(
+      orchestrator.reconcileEvaluate(PROJECT, {
+        operationId: evalOp.id,
+        fencingGeneration: evalOp.fencingGeneration,
+        result: null,
+      }),
+    ).rejects.toThrow(/passing evaluation bound to this SHA and deployment/);
+    expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
+    expect(store.getRun(runId)!.stage).toBe('verifying');
   });
 });

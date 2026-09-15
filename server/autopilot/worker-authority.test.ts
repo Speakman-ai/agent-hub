@@ -10,7 +10,8 @@ import {
   parseAutopilotWorkerKeyName,
 } from './worker-authority.js';
 
-const SCOPE = { projectId: 'demo-app', runId: 'run-1' };
+const SCOPE = { projectId: 'demo-app', runId: 'run-1', role: 'implementer' as const };
+const EVAL_SCOPE = { projectId: 'demo-app', runId: 'run-1', role: 'evaluator' as const };
 
 describe('autopilot worker key names', () => {
   it('round-trips project and run ids', () => {
@@ -19,6 +20,7 @@ describe('autopilot worker key names', () => {
     expect(parseAutopilotWorkerKeyName(name)).toEqual(SCOPE);
     expect(parseAutopilotWorkerKeyName('spawn:sess-1')).toBeNull();
     expect(parseAutopilotWorkerKeyName('autopilot:only-one-part')).toBeNull();
+    expect(parseAutopilotWorkerKeyName('autopilot:demo-app:run-1:eval')).toEqual(EVAL_SCOPE);
   });
 });
 
@@ -107,6 +109,31 @@ describe('decideAutopilotWorkerRequest', () => {
       false,
     );
   });
+
+  it('denies evaluator writes to implementation operations and Hub artifacts', () => {
+    expect(
+      decideAutopilotWorkerRequest(
+        EVAL_SCOPE,
+        'POST',
+        '/api/projects/demo-app/autopilot/operations/op-1/complete',
+        { operation: { ...SCOPE, kind: 'implement' } },
+      ).reason,
+    ).toMatch(/cannot write implementation artifacts/);
+    expect(
+      decideAutopilotWorkerRequest(
+        EVAL_SCOPE,
+        'POST',
+        '/api/projects/demo-app/autopilot/operations/op-1/complete',
+        { operation: { projectId: 'demo-app', runId: 'run-1', kind: 'evaluate' } },
+      ).ok,
+    ).toBe(true);
+    expect(
+      decideAutopilotWorkerRequest(EVAL_SCOPE, 'POST', '/api/projects/demo-app/wiki/pages').reason,
+    ).toMatch(/cannot write implementation artifacts/);
+    expect(
+      decideAutopilotWorkerRequest(EVAL_SCOPE, 'GET', '/api/projects/demo-app/autopilot').ok,
+    ).toBe(true);
+  });
 });
 
 describe('applyAutopilotWorkerSpawnEnv', () => {
@@ -124,10 +151,25 @@ describe('applyAutopilotWorkerSpawnEnv', () => {
     expect(env.AGENT_HUB_API_KEY).toBe('ahub_scoped_worker');
     expect(env.PROJECT_ID).toBe('demo-app');
     expect(env.AGENT_HUB_AUTOPILOT_RUN_ID).toBe('run-1');
+    expect(env.AGENT_HUB_AUTOPILOT_WORKER_ROLE).toBe('implementer');
     expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
     expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(env.DOCKER_HOST).toBeUndefined();
     expect(env.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
+  });
+
+  it('records the evaluator role on the spawn env', () => {
+    const env = applyAutopilotWorkerSpawnEnv(
+      { AGENT_HUB_API_KEY: 'ahub_global_break_glass' },
+      {
+        token: 'ahub_eval_worker',
+        projectId: 'demo-app',
+        runId: 'run-1',
+        role: 'evaluator',
+      },
+    );
+    expect(env.AGENT_HUB_API_KEY).toBe('ahub_eval_worker');
+    expect(env.AGENT_HUB_AUTOPILOT_WORKER_ROLE).toBe('evaluator');
   });
 });
 

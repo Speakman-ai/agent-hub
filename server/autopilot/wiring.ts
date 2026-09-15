@@ -20,6 +20,7 @@ import { bindAutopilotWorkerSession, readAutopilotWorkerToken } from './worker-t
 import {
   createAutopilotBoardAdapter,
   createAutopilotDeployAdapter,
+  createAutopilotEvaluateAdapter,
   createAutopilotFinalizeAdapter,
   createAutopilotPlannerAdapter,
   createAutopilotSessionAdapter,
@@ -27,6 +28,7 @@ import {
   finalizeOutcomeFromSnapshot,
   type AutopilotBoardOps,
   type AutopilotDeployOps,
+  type AutopilotEvaluateOps,
   type AutopilotFinalizeOps,
   type AutopilotPlannerOps,
   type AutopilotSessionOps,
@@ -40,6 +42,8 @@ import type {
   AutopilotFinalizeResult,
   AutopilotSessionResult,
 } from './orchestrator.js';
+import { parseEvaluationReport, type AutopilotEvaluationReport } from './evaluate.js';
+import { listEvaluationCaptures, probePinnedApiCriterion } from './evaluation-captures.js';
 import type { AutopilotRunRecord } from './types.js';
 import { getDeployment, getDeploymentEnvironment } from '../deploy/deployment-store.js';
 import { triggerDeployment } from '../deploy/deploy-orchestrator.js';
@@ -139,9 +143,32 @@ function buildPlanningPrompt(brief: string): string {
   ].join('\n');
 }
 
-function bindWorkerSession(sessionId: string, projectId: string, runId: string): void {
-  bindAutopilotWorkerSession(sessionId, { projectId, runId }, config.dataDir);
-  const token = readAutopilotWorkerToken(runId, config.dataDir);
+function bindWorkerSession(
+  sessionId: string,
+  projectId: string,
+  runId: string,
+  role: 'implementer' | 'evaluator' = 'implementer',
+  origin: string | null = null,
+  extra: {
+    operationId?: string | null;
+    deploymentId?: string | null;
+    expectedSha?: string | null;
+  } = {},
+): void {
+  bindAutopilotWorkerSession(
+    sessionId,
+    {
+      projectId,
+      runId,
+      role,
+      origin,
+      operationId: extra.operationId ?? null,
+      deploymentId: extra.deploymentId ?? null,
+      expectedSha: extra.expectedSha ?? null,
+    },
+    config.dataDir,
+  );
+  const token = readAutopilotWorkerToken(runId, config.dataDir, role);
   if (token) {
     try {
       writeSpawnCredsFile(sessionId, token, config.dataDir);
@@ -562,6 +589,17 @@ export function readSessionOutcome(
   return null; // not yet observable as committed; re-check next tick
 }
 
+export function readEvaluateOutcome(
+  stmts: Stmts,
+  activeSessionIds: Set<string>,
+  sessionId: string,
+): AutopilotEvaluationReport | null {
+  if (activeSessionIds.has(sessionId)) return null;
+  const msg = stmts.getLastAssistantMessage.get(sessionId) as { content?: string } | undefined;
+  if (!msg?.content) return null;
+  return parseEvaluationReport(parseBaselineSpecJson(msg.content));
+}
+
 export interface AutopilotWorkerAgent {
   agentId: string;
   engine: string;
@@ -640,6 +678,63 @@ export function buildSessionOps(deps: AutopilotWiringDeps): AutopilotSessionOps 
   };
 }
 
+/** Build evaluator session ops: consult mode, no worktree, evaluator worker key. */
+export function buildEvaluateOps(deps: AutopilotWiringDeps): AutopilotEvaluateOps {
+  const { routeDeps, resolveWorkerAgent } = deps;
+  const stmts = routeDeps.stmts;
+  return {
+    startEvaluationSession: async ({
+      projectId,
+      runId,
+      operationId,
+      deploymentId,
+      expectedSha,
+      origin: boundOrigin,
+      prompt,
+    }) => {
+      const agent = resolveWorkerAgent(projectId);
+      if (!agent) {
+        throw new Error(`Autopilot: no worker agent configured for project ${projectId}`);
+      }
+      const store = new AutopilotStore(getDb());
+      const run = store.getRun(runId);
+      const ownerUserId = run?.credentialOwnerUserId ?? null;
+      const origin = (boundOrigin || store.getConfig(projectId).target?.origin) ?? null;
+      const sessionId = randomUUID();
+      stmts.createSession.run(
+        sessionId,
+        agent.agentId,
+        'Autopilot evaluator',
+        agent.engine,
+        agent.model,
+        0,
+        1,
+        0,
+      );
+      stmts.updateSessionMode.run('consult', sessionId);
+      setSessionOwner(sessionId, ownerUserId);
+      bindWorkerSession(sessionId, projectId, runId, 'evaluator', origin, {
+        operationId,
+        deploymentId,
+        expectedSha,
+      });
+      markSessionFinalizeAutomation(stmts, sessionId, 'manual');
+      void routeDeps
+        .handleChat(null, {
+          type: 'chat',
+          agentId: agent.agentId,
+          sessionId,
+          content: prompt,
+          _fromAutonomousDispatch: true,
+        } as never)
+        .catch((err: unknown) =>
+          console.error('[autopilot] evaluator session', (err as Error).message),
+        );
+      return { sessionId };
+    },
+  };
+}
+
 /**
  * Construct the fully-wired Autopilot runtime. Board/Finalize/planner adapters
  * are backed by real Hub subsystems; the deadline-sweep interval pumps tick().
@@ -656,6 +751,7 @@ export function buildAutopilotRuntime(deps: AutopilotWiringDeps): AutopilotRunti
     deps.startFinalizeRun ?? startFinalizeRunBackground,
   );
   const sessionOps = buildSessionOps(deps);
+  const evaluateOps = buildEvaluateOps(deps);
   const deployOps = buildDeployOps(deps, deps.startDeployment, deps.runRollback);
   return createAutopilotRuntime({
     db: getDb(),
@@ -667,11 +763,16 @@ export function buildAutopilotRuntime(deps: AutopilotWiringDeps): AutopilotRunti
       session: createAutopilotSessionAdapter({ ops: sessionOps }),
       finalize: createAutopilotFinalizeAdapter({ ops: finalizeOps }),
       deploy: createAutopilotDeployAdapter({ ops: deployOps }),
+      evaluate: createAutopilotEvaluateAdapter({ ops: evaluateOps }),
     }),
     readSessionOutcome: (sessionId) =>
       readSessionOutcome(stmts, deps.getActiveSessionIds(), sessionId),
     readFinalizeOutcome: (finalizeRunId) => readFinalizeOutcome(stmts, finalizeRunId),
     readDeployOutcome: deps.readDeployOutcome ?? readDeployOutcome,
+    readEvaluateOutcome: (sessionId) =>
+      readEvaluateOutcome(stmts, deps.getActiveSessionIds(), sessionId),
+    listCaptures: (operationId) => listEvaluationCaptures(config.dataDir, operationId),
+    probeApi: (input) => probePinnedApiCriterion(input),
   });
 }
 

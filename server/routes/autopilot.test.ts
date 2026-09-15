@@ -90,7 +90,7 @@ beforeEach(() => {
     if (!op) return null;
     const run = store.getRun(op.runId);
     if (!run) return null;
-    return { projectId: run.projectId, runId: run.id };
+    return { projectId: run.projectId, runId: run.id, kind: op.kind };
   });
 });
 

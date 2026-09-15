@@ -1021,6 +1021,10 @@ export type BrowserReActStepOutcome = {
   hostExit: number;
   hostDetail?: string;
   ui?: BrowserStepUiExtras;
+  /** Absolute path Hub persisted for a successful screenshot, if any. */
+  savedScreenshotPath?: string;
+  /** Page snapshot captured with a successful screenshot, used for Hub traces. */
+  pageSnapshot?: { url: string; title: string; textExcerpt: string };
 };
 
 export function summarizeJsonPreview(data: unknown, maxChars = 400): string | undefined {
@@ -1109,6 +1113,7 @@ export async function runBrowserReActStep(
   chatSessionId: string,
   input: BrowserReActActionInput,
   sessionLaunchOpts: BrowserSessionOptions = {},
+  policyOpts?: BrowserNavigationPolicyOpts,
 ): Promise<BrowserReActStepOutcome> {
   const opRaw = typeof input.op === 'string' ? input.op.trim() : '';
   if (!opRaw || !BROWSER_REACT_OP_SET.has(opRaw)) {
@@ -1198,7 +1203,7 @@ export async function runBrowserReActStep(
         });
       }
       case 'navigate': {
-        const r = await browserNavigate(host, input.url ?? '', opTimeoutMs);
+        const r = await browserNavigate(host, input.url ?? '', opTimeoutMs, policyOpts);
         const openedHost = r.ok ? hostHintFromNavigateData(r.data) : undefined;
         return finish({
           markdown: fmt(r, 'Browser: navigate'),
@@ -1296,10 +1301,12 @@ export async function runBrowserReActStep(
           ...surfaceObservationLines('web', currentPageUrlOf(host)),
         ];
         let screenshotWsUrl: string | undefined;
+        let pageSnapshot: { url: string; title: string; textExcerpt: string } | undefined;
         if (r.ok && imageBase64) {
           lines.push(...screenshotObservationLines(saved, mime));
           try {
-            lines.push(...pageSnapshotObservationLines(await capturePageSnapshot(host)));
+            pageSnapshot = await capturePageSnapshot(host);
+            lines.push(...pageSnapshotObservationLines(pageSnapshot));
           } catch {
             // Snapshot is advisory — never fail a successful capture.
           }
@@ -1312,6 +1319,8 @@ export async function runBrowserReActStep(
           markdown: lines.join('\n'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? 'screenshot' : r.error,
+          savedScreenshotPath: saved?.absPath,
+          pageSnapshot,
           ui: r.ok
             ? {
                 summary: 'Screenshot captured',
@@ -1336,7 +1345,7 @@ export async function runBrowserReActStep(
         });
       }
       case 'back': {
-        const r = await browserBack(host, opTimeoutMs);
+        const r = await browserBack(host, opTimeoutMs, policyOpts);
         const openedHost = r.ok ? hostHintFromNavigateData(r.data) : undefined;
         return finish({
           markdown: fmt(r, 'Browser: back'),
@@ -1348,7 +1357,7 @@ export async function runBrowserReActStep(
         });
       }
       case 'forward': {
-        const r = await browserForward(host, opTimeoutMs);
+        const r = await browserForward(host, opTimeoutMs, policyOpts);
         const openedHost = r.ok ? hostHintFromNavigateData(r.data) : undefined;
         return finish({
           markdown: fmt(r, 'Browser: forward'),

@@ -63,6 +63,9 @@ function fakeAdapters(): AutopilotAdapters {
         deployedSha: 'verified',
       }),
     },
+    evaluate: {
+      dispatchEvaluation: async () => ({ sessionId: 'eval-1' }),
+    },
   };
 }
 
@@ -106,6 +109,7 @@ describe('autopilot runtime driver', () => {
       readSessionOutcome: () => sessionOutcome,
       readFinalizeOutcome: () => finalizeOutcome,
       readDeployOutcome: () => deployOutcome,
+      readEvaluateOutcome: () => null,
     });
 
     // Tick 1: planning -> implementing.
@@ -165,6 +169,7 @@ describe('autopilot runtime driver', () => {
       readSessionOutcome: () => null,
       readFinalizeOutcome: () => null,
       readDeployOutcome: () => null,
+      readEvaluateOutcome: () => null,
     });
     await expect(runtime.tick()).resolves.toBeUndefined();
   });
@@ -187,6 +192,7 @@ describe('autopilot runtime driver', () => {
       readSessionOutcome: () => sessionOutcome,
       readFinalizeOutcome: () => finalizeOutcome,
       readDeployOutcome: () => null,
+      readEvaluateOutcome: () => null,
     });
 
     await runtime.tick(); // plan -> implementing
@@ -220,6 +226,7 @@ describe('autopilot runtime driver', () => {
       readSessionOutcome: () => sessionOutcome,
       readFinalizeOutcome: () => null,
       readDeployOutcome: () => null,
+      readEvaluateOutcome: () => null,
     });
 
     await runtime.tick(); // plan -> implementing
@@ -249,6 +256,7 @@ describe('autopilot runtime driver', () => {
       readSessionOutcome: () => sessionOutcome,
       readFinalizeOutcome: () => finalizeOutcome,
       readDeployOutcome: () => null,
+      readEvaluateOutcome: () => null,
     });
 
     await runtime.tick(); // plan
@@ -286,6 +294,7 @@ describe('autopilot runtime driver', () => {
       readSessionOutcome: () => sessionOutcome,
       readFinalizeOutcome: () => finalizeOutcome,
       readDeployOutcome: () => deployOutcome,
+      readEvaluateOutcome: () => null,
     });
 
     await runtime.tick(); // plan
@@ -340,6 +349,7 @@ describe('autopilot runtime driver', () => {
         deploymentId: 'dep-1',
         deployedSha: 'deadbeef',
       }),
+      readEvaluateOutcome: () => null,
     });
 
     await runtime.tick(); // plan

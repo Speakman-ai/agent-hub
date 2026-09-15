@@ -33,11 +33,47 @@ describe('autopilot worker token files', () => {
     expect(readAutopilotSessionBinding('sess-1', dataDir)).toEqual({
       projectId: 'demo-app',
       runId: 'run-1',
+      role: 'implementer',
+      origin: null,
+      operationId: null,
+      deploymentId: null,
+      expectedSha: null,
     });
     expect(resolveAutopilotWorkerSpawn('sess-1', dataDir)).toEqual({
       token: 'ahub_scoped_worker',
       projectId: 'demo-app',
       runId: 'run-1',
+      role: 'implementer',
+    });
+  });
+
+  it('resolves the evaluator token, not the implementer token', () => {
+    writeAutopilotWorkerToken('run-1', 'ahub_implementer', dataDir);
+    writeAutopilotWorkerToken('run-1', 'ahub_evaluator', dataDir, 'evaluator');
+    bindAutopilotWorkerSession(
+      'sess-eval',
+      {
+        projectId: 'demo-app',
+        runId: 'run-1',
+        role: 'evaluator',
+        origin: 'http://127.0.0.1:4310',
+      },
+      dataDir,
+    );
+    expect(readAutopilotSessionBinding('sess-eval', dataDir)).toEqual({
+      projectId: 'demo-app',
+      runId: 'run-1',
+      role: 'evaluator',
+      origin: 'http://127.0.0.1:4310',
+      operationId: null,
+      deploymentId: null,
+      expectedSha: null,
+    });
+    expect(resolveAutopilotWorkerSpawn('sess-eval', dataDir)).toEqual({
+      token: 'ahub_evaluator',
+      projectId: 'demo-app',
+      runId: 'run-1',
+      role: 'evaluator',
     });
   });
 

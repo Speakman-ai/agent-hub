@@ -42,32 +42,55 @@ function removeIfPresent(filePath: string): void {
   }
 }
 
-export function autopilotWorkerTokenPath(runId: string, dataDir: string): string {
+export function autopilotWorkerTokenPath(
+  runId: string,
+  dataDir: string,
+  role: 'implementer' | 'evaluator' = 'implementer',
+): string {
   assertSafeId(runId, 'runId');
-  return path.join(dataDir, TOKEN_SUBDIR, `${runId}.token`);
+  const file = role === 'evaluator' ? `${runId}.eval.token` : `${runId}.token`;
+  return path.join(dataDir, TOKEN_SUBDIR, file);
 }
 
-export function writeAutopilotWorkerToken(runId: string, token: string, dataDir: string): string {
+export function writeAutopilotWorkerToken(
+  runId: string,
+  token: string,
+  dataDir: string,
+  role: 'implementer' | 'evaluator' = 'implementer',
+): string {
   if (typeof token !== 'string' || token.length === 0) {
     throw new Error('autopilot-worker-token: token must be a non-empty string');
   }
   const dir = path.join(dataDir, TOKEN_SUBDIR);
-  const filePath = autopilotWorkerTokenPath(runId, dataDir);
+  const filePath = autopilotWorkerTokenPath(runId, dataDir, role);
   atomicWrite(filePath, dir, token);
   return filePath;
 }
 
-export function readAutopilotWorkerToken(runId: string, dataDir: string): string | null {
-  return readOrNull(autopilotWorkerTokenPath(runId, dataDir));
+export function readAutopilotWorkerToken(
+  runId: string,
+  dataDir: string,
+  role: 'implementer' | 'evaluator' = 'implementer',
+): string | null {
+  return readOrNull(autopilotWorkerTokenPath(runId, dataDir, role));
 }
 
-export function removeAutopilotWorkerToken(runId: string, dataDir: string): void {
-  removeIfPresent(autopilotWorkerTokenPath(runId, dataDir));
+export function removeAutopilotWorkerToken(
+  runId: string,
+  dataDir: string,
+  role: 'implementer' | 'evaluator' = 'implementer',
+): void {
+  removeIfPresent(autopilotWorkerTokenPath(runId, dataDir, role));
 }
 
 export interface AutopilotSessionWorkerBinding {
   projectId: string;
   runId: string;
+  role?: 'implementer' | 'evaluator';
+  origin?: string | null;
+  operationId?: string | null;
+  deploymentId?: string | null;
+  expectedSha?: string | null;
 }
 
 export function autopilotSessionBindingPath(sessionId: string, dataDir: string): string {
@@ -88,7 +111,15 @@ export function bindAutopilotWorkerSession(
   atomicWrite(
     filePath,
     dir,
-    JSON.stringify({ projectId: binding.projectId, runId: binding.runId }),
+    JSON.stringify({
+      projectId: binding.projectId,
+      runId: binding.runId,
+      role: binding.role ?? 'implementer',
+      origin: binding.origin ?? null,
+      operationId: binding.operationId ?? null,
+      deploymentId: binding.deploymentId ?? null,
+      expectedSha: binding.expectedSha ?? null,
+    }),
   );
   return filePath;
 }
@@ -112,7 +143,17 @@ export function readAutopilotSessionBinding(
     throw err;
   }
   const parsed = parseBindingOrThrow(sessionId, raw);
-  return { projectId: parsed.projectId, runId: parsed.runId };
+  const role = parsed.role === 'evaluator' ? 'evaluator' : 'implementer';
+  const origin = parsed.origin ?? null;
+  return {
+    projectId: parsed.projectId,
+    runId: parsed.runId,
+    role,
+    origin,
+    operationId: parsed.operationId ?? null,
+    deploymentId: parsed.deploymentId ?? null,
+    expectedSha: parsed.expectedSha ?? null,
+  };
 }
 
 function parseBindingOrThrow(sessionId: string, raw: string): AutopilotSessionWorkerBinding {
@@ -131,7 +172,20 @@ function parseBindingOrThrow(sessionId: string, raw: string): AutopilotSessionWo
   if (!projectId || !runId) {
     throw new AutopilotWorkerCredentialError(sessionId, { projectId, runId });
   }
-  return { projectId, runId };
+  const role = parsed.role === 'evaluator' ? 'evaluator' : 'implementer';
+  const origin =
+    typeof parsed.origin === 'string' && parsed.origin.trim() ? parsed.origin.trim() : null;
+  const optionalId = (value: unknown) =>
+    typeof value === 'string' && value.trim() ? value.trim() : null;
+  return {
+    projectId,
+    runId,
+    role,
+    origin,
+    operationId: optionalId(parsed.operationId),
+    deploymentId: optionalId(parsed.deploymentId),
+    expectedSha: optionalId(parsed.expectedSha),
+  };
 }
 
 export function unbindAutopilotWorkerSession(sessionId: string, dataDir: string): void {
@@ -170,10 +224,11 @@ export class AutopilotWorkerCredentialError extends Error {
 export function resolveAutopilotWorkerSpawn(
   sessionId: string,
   dataDir: string,
-): { token: string; projectId: string; runId: string } | null {
+): { token: string; projectId: string; runId: string; role: 'implementer' | 'evaluator' } | null {
   const binding = readAutopilotSessionBinding(sessionId, dataDir);
   if (!binding) return null;
-  const token = readAutopilotWorkerToken(binding.runId, dataDir);
+  const role = binding.role === 'evaluator' ? 'evaluator' : 'implementer';
+  const token = readAutopilotWorkerToken(binding.runId, dataDir, role);
   if (!token) throw new AutopilotWorkerCredentialError(sessionId, binding);
-  return { token, projectId: binding.projectId, runId: binding.runId };
+  return { token, projectId: binding.projectId, runId: binding.runId, role };
 }

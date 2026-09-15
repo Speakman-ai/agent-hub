@@ -64,7 +64,12 @@ export function buildAutopilotControllerDeps(
       options.issueWorkerCredential ??
       ((input) => {
         const issued = mintAutopilotWorkerCredential(input);
-        writeAutopilotWorkerToken(input.runId, issued.token, config.dataDir);
+        writeAutopilotWorkerToken(
+          input.runId,
+          issued.token,
+          config.dataDir,
+          input.role === 'evaluator' ? 'evaluator' : 'implementer',
+        );
         return issued;
       }),
     revokeWorkerCredential:
@@ -72,6 +77,7 @@ export function buildAutopilotControllerDeps(
       ((input) => {
         revokeMintedAutopilotWorkerCredential(input);
         removeAutopilotWorkerToken(input.runId, config.dataDir);
+        removeAutopilotWorkerToken(input.runId, config.dataDir, 'evaluator');
       }),
   };
 }

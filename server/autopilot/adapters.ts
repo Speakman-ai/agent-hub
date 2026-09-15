@@ -6,6 +6,7 @@ import type {
   AutopilotBoardPort,
   AutopilotDeployPort,
   AutopilotDeployResult,
+  AutopilotEvaluatePort,
   AutopilotFinalizePort,
   AutopilotFinalizeResult,
   AutopilotImplementationContext,
@@ -14,6 +15,7 @@ import type {
   AutopilotPlannedBoard,
   AutopilotSessionPort,
 } from './orchestrator.js';
+import type { AutopilotPinnedCriteria } from './evaluate.js';
 
 /**
  * Concrete adapters that bind the Autopilot orchestrator's ports to the real
@@ -369,6 +371,100 @@ export function createAutopilotSessionAdapter(
         cardId,
         workerKeyName,
         prompt: buildImplementationPrompt(context),
+      }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Evaluate
+// ---------------------------------------------------------------------------
+
+export interface AutopilotEvaluateOps {
+  startEvaluationSession: (args: {
+    projectId: string;
+    runId: string;
+    operationId: string;
+    deploymentId: string;
+    expectedSha: string;
+    origin: string;
+    workerKeyName: string | null;
+    prompt: string;
+  }) => Promise<{ sessionId: string }>;
+}
+
+export interface AutopilotEvaluateAdapterDeps {
+  ops: AutopilotEvaluateOps;
+}
+
+/** Structured handoff the evaluator worker receives. Not an implementation brief. */
+export function buildEvaluationPrompt(input: {
+  origin: string;
+  expectedSha: string;
+  pinned: AutopilotPinnedCriteria;
+}): string {
+  return [
+    'You are an Autopilot evaluator. You have no implementation write authority.',
+    'Do not edit files, commit, push, or change tests, the brief, or evaluator policy.',
+    '',
+    `Evaluate the LIVE local deployment at ${input.origin}.`,
+    `The deployed revision MUST be ${input.expectedSha}.`,
+    'Do not use session preview. HTTP health alone is not sufficient.',
+    'Use the local-target browser worker pinned to that origin.',
+    '',
+    'Pinned criteria (frozen before implementation):',
+    ...input.pinned.criteria.map((c) => {
+      const assertion =
+        c.kind === 'api_check' && c.apiAssertion
+          ? ` Assert ${JSON.stringify(c.apiAssertion)}.`
+          : '';
+      const request =
+        c.kind === 'api_check' && c.apiRequest?.body
+          ? ` Hub request ${c.apiRequest.method} body ${c.apiRequest.body}.`
+          : '';
+      return `- ${c.id} [${c.source}/${c.kind}]: When a user ${c.action}, then ${c.expectedResult}.${assertion}${request}`;
+    }),
+    '',
+    'The Hub records screenshots and journey traces (the interaction sequence, not a final-page snapshot) when you use the local-target browser worker.',
+    'Citing a path Hub did not capture for this operation is not evidence.',
+    'Do not invent API status codes. Hub records HTTP responses itself.',
+    'A 2xx at the named endpoint is not a pass; passed:false when the body does not show the expected result.',
+    '',
+    'Return ONLY a fenced ```json block:',
+    '{',
+    `  "expectedSha": "${input.expectedSha}",`,
+    '  "observedSha": "<sha reported by the live target>",',
+    `  "origin": "${input.origin}",`,
+    '  "healthCheck": { "url": "...", "ok": true },',
+    '  "capturedAt": "<ISO-8601 now>",',
+    '  "usedPreview": false,',
+    '  "criteria": [',
+    '    { "criterionId": "baseline-1", "passed": true, "kind": "browser_journey",',
+    '      "screenshotPath": "/path/shot.png", "tracePath": "/path/trace.zip",',
+    '      "observed": "the list showed the new item" }',
+    '  ]',
+    '}',
+    'Return pass/fail observations only. Subjective claims are rejected.',
+  ].join('\n');
+}
+
+export function createAutopilotEvaluateAdapter(
+  deps: AutopilotEvaluateAdapterDeps,
+): AutopilotEvaluatePort {
+  return {
+    dispatchEvaluation: async (input) =>
+      deps.ops.startEvaluationSession({
+        projectId: input.projectId,
+        runId: input.runId,
+        operationId: input.operationId,
+        workerKeyName: input.workerKeyName,
+        prompt: buildEvaluationPrompt({
+          origin: input.origin,
+          expectedSha: input.expectedSha,
+          pinned: input.pinned,
+        }),
+        deploymentId: input.deploymentId,
+        expectedSha: input.expectedSha,
+        origin: input.origin,
       }),
   };
 }

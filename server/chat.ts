@@ -39,6 +39,16 @@ import {
   EngineAuthRequiredError,
   AutopilotWorkerCredentialError,
 } from './per-user-cli-spawn.js';
+import { readAutopilotSessionBinding } from './autopilot/worker-token.js';
+import {
+  appendEvaluatorBrowserAction,
+  recordEvaluatorBrowserCapture,
+} from './autopilot/evaluation-captures.js';
+import {
+  localTargetBrowserPolicy,
+  localTargetNavigateAllowed,
+  LOCAL_TARGET_WORKER_HINT,
+} from './autopilot/local-target-worker.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import {
   resolveProjectPaths,
@@ -5945,34 +5955,58 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   }),
                 );
                 const browserOpStartMs = Date.now();
+                const evalBinding = readAutopilotSessionBinding(sessionId, config.dataDir);
+                const evalOrigin =
+                  evalBinding?.role === 'evaluator' && evalBinding.origin
+                    ? evalBinding.origin.replace(/\/+$/, '')
+                    : null;
+                const evalPolicy = evalOrigin ? localTargetBrowserPolicy(evalOrigin) : undefined;
                 let b: Awaited<ReturnType<typeof runBrowserReActStep>>;
-                try {
-                  b = await runBrowserReActStep(
-                    sessionId,
-                    {
-                      op: browserInput.op,
-                      url: browserInput.url,
-                      target: browserInput.target,
-                      text: browserInput.text,
-                      instruction: browserInput.instruction,
-                      schema: browserInput.schema,
-                      direction: browserInput.direction,
-                      condition: browserInput.condition,
+                if (
+                  evalOrigin &&
+                  browserInput.op === 'navigate' &&
+                  browserInput.url &&
+                  !localTargetNavigateAllowed(browserInput.url, evalOrigin)
+                ) {
+                  b = {
+                    markdown: `## Browser tool error\n${LOCAL_TARGET_WORKER_HINT}`,
+                    hostExit: 1,
+                    hostDetail: 'local_target_pin',
+                    ui: {
+                      summary: 'Navigation blocked',
+                      errorLine: LOCAL_TARGET_WORKER_HINT,
                     },
-                    browserLaunchOpts,
-                  );
-                } catch (err: unknown) {
-                  emitBrowserActivityEvent(
-                    buildBrowserActivityEndedThrowEvent({
-                      actionId,
-                      op: browserInput.op || 'unknown',
-                      label: startLabel,
-                      startedAtMs,
-                      durationMs: Date.now() - browserOpStartMs,
-                      err,
-                    }),
-                  );
-                  throw err;
+                  };
+                } else {
+                  try {
+                    b = await runBrowserReActStep(
+                      sessionId,
+                      {
+                        op: browserInput.op,
+                        url: browserInput.url,
+                        target: browserInput.target,
+                        text: browserInput.text,
+                        instruction: browserInput.instruction,
+                        schema: browserInput.schema,
+                        direction: browserInput.direction,
+                        condition: browserInput.condition,
+                      },
+                      browserLaunchOpts,
+                      evalPolicy,
+                    );
+                  } catch (err: unknown) {
+                    emitBrowserActivityEvent(
+                      buildBrowserActivityEndedThrowEvent({
+                        actionId,
+                        op: browserInput.op || 'unknown',
+                        label: startLabel,
+                        startedAtMs,
+                        durationMs: Date.now() - browserOpStartMs,
+                        err,
+                      }),
+                    );
+                    throw err;
+                  }
                 }
 
                 emitBrowserActivityEvent(
@@ -5992,6 +6026,34 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   screenshotWsUrl: b.ui?.screenshotWsUrl,
                 });
                 if (shot) broadcast(shot);
+                if (evalBinding?.role === 'evaluator' && evalBinding.operationId) {
+                  appendEvaluatorBrowserAction(config.dataDir, evalBinding.operationId, {
+                    op: browserInput.op,
+                    at: new Date().toISOString(),
+                    ok: b.hostExit === 0,
+                    ...(typeof browserInput.url === 'string' ? { url: browserInput.url } : {}),
+                    ...(typeof browserInput.target === 'string'
+                      ? { target: browserInput.target }
+                      : {}),
+                  });
+                }
+                if (
+                  evalBinding?.role === 'evaluator' &&
+                  (b.savedScreenshotPath || b.pageSnapshot) &&
+                  evalBinding.operationId &&
+                  evalBinding.deploymentId &&
+                  evalBinding.expectedSha
+                ) {
+                  recordEvaluatorBrowserCapture({
+                    dataDir: config.dataDir,
+                    binding: evalBinding,
+                    operationId: evalBinding.operationId,
+                    deploymentId: evalBinding.deploymentId,
+                    expectedSha: evalBinding.expectedSha,
+                    screenshotPath: b.savedScreenshotPath,
+                    page: b.pageSnapshot ?? null,
+                  });
+                }
                 if (b.markdown.trim()) {
                   assistantContextToAppend = assistantContextToAppend
                     ? `${assistantContextToAppend}\n\n${b.markdown.trim()}`
