@@ -1653,6 +1653,37 @@ export class AutopilotController {
    * concurrent caller backs off instead of double-executing the planner.
    */
   claimPlanningOperation(projectId: string): AutopilotOperationRecord | null {
+    return this.claimExclusiveStageOperation(projectId, {
+      stage: 'planning',
+      kind: 'plan-baseline',
+      eventType: 'planning_claimed',
+      busyMessage: 'plan',
+    });
+  }
+
+  /**
+   * Claim exclusive execution of documenting. Same fencing/backoff contract as
+   * planning: a concurrent caller returns null instead of double-writing the
+   * journal. Documentation retries do not merge or deploy.
+   */
+  claimDocumentingOperation(projectId: string): AutopilotOperationRecord | null {
+    return this.claimExclusiveStageOperation(projectId, {
+      stage: 'documenting',
+      kind: 'document-cycle',
+      eventType: 'documenting_claimed',
+      busyMessage: 'document',
+    });
+  }
+
+  private claimExclusiveStageOperation(
+    projectId: string,
+    input: {
+      stage: AutopilotStage;
+      kind: string;
+      eventType: string;
+      busyMessage: string;
+    },
+  ): AutopilotOperationRecord | null {
     this.requireServerEnabled();
     this.requireProjectDispatchable(projectId);
     const run = this.store.getActiveRun(projectId);
@@ -1660,16 +1691,18 @@ export class AutopilotController {
       throw new AutopilotError('no_active_run', 'No active Autopilot run');
     }
     if (run.controlState !== 'running') {
-      throw new AutopilotError('conflict', `Cannot plan while run is ${run.controlState}`);
+      throw new AutopilotError(
+        'conflict',
+        `Cannot ${input.busyMessage} while run is ${run.controlState}`,
+      );
     }
     this.requireHeldLease(projectId, run);
     const cycle = this.store.getCycle(run.id, run.cycleNumber);
     if (!cycle || cycle.status !== 'active') {
-      throw new AutopilotError('conflict', 'No active cycle to plan');
+      throw new AutopilotError('conflict', `No active cycle to ${input.busyMessage}`);
     }
     const open = this.store.getOpenStage(cycle.id);
-    if (!open || open.stage !== 'planning' || open.status !== 'pending') {
-      // Already claimed (in_progress), advanced, or no planning stage: back off.
+    if (!open || open.stage !== input.stage || open.status !== 'pending') {
       return null;
     }
     const now = this.timestamp();
@@ -1690,10 +1723,10 @@ export class AutopilotController {
         id: operationId,
         runId: run.id,
         cycleId: cycle.id,
-        kind: 'plan-baseline',
+        kind: input.kind,
         status: 'in_flight',
         fencingGeneration: run.fencingGeneration,
-        intentJson: JSON.stringify({ stage: 'planning', cycleNumber: run.cycleNumber }),
+        intentJson: JSON.stringify({ stage: input.stage, cycleNumber: run.cycleNumber }),
         sessionId: null,
         finalizeRunId: null,
         deploymentId: null,
@@ -1707,7 +1740,7 @@ export class AutopilotController {
       runId: run.id,
       cycleId: cycle.id,
       operationId,
-      type: 'planning_claimed',
+      type: input.eventType,
       payload: { attempt: open.attempt },
       fencingGeneration: run.fencingGeneration,
       createdAt: now,

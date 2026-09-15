@@ -152,7 +152,10 @@ export const AutopilotCycleSchema = registerComponent(
         'Deployment id of the cycle candidate. Exact merged SHA must be live before verifying.',
     }),
     verification: z.unknown().nullable(),
-    documentation: z.unknown().nullable(),
+    documentation: z.unknown().nullable().openapi({
+      description:
+        'Structured cycle record persisted by the documenting stage: brief/spec revision, expected benefit, actual change, decisions, links, redacted evidence, usage, and outcome. Journal and wiki pages are rebuilt from these records.',
+    }),
     selectedImprovement: z.string().nullable(),
     outcome: z.string().nullable(),
     status: z.enum(['active', 'succeeded', 'failed', 'cancelled']),

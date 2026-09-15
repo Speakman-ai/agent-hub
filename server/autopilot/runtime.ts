@@ -17,6 +17,7 @@ import {
   type AutopilotSessionResult,
 } from './orchestrator.js';
 import type { AutopilotEvaluationReport, AutopilotExecutionCapture } from './evaluate.js';
+import type { AutopilotDocumentPort } from './document.js';
 import type { AutopilotRunRecord } from './types.js';
 
 /**
@@ -30,6 +31,7 @@ export interface AutopilotAdapters {
   finalize: AutopilotFinalizePort;
   deploy: AutopilotDeployPort;
   evaluate: AutopilotEvaluatePort;
+  document?: AutopilotDocumentPort;
 }
 
 export interface AutopilotRuntimeDeps {
@@ -146,8 +148,11 @@ export class AutopilotRuntime {
       case 'verifying':
         await this.driveVerifying(orchestrator, run);
         return;
+      case 'documenting':
+        await orchestrator.runDocumenting(run.projectId);
+        return;
       default:
-        // documenting / selecting-next are owned by later cards.
+        // selecting-next is owned by the improvement-selection card.
         return;
     }
   }

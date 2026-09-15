@@ -1036,6 +1036,7 @@ components:
           nullable: true
         documentation:
           nullable: true
+          description: "Structured cycle record persisted by the documenting stage: brief/spec revision, expected benefit, actual change, decisions, links, redacted evidence, usage, and outcome. Journal and wiki pages are rebuilt from these records."
         selectedImprovement:
           type: string
           nullable: true

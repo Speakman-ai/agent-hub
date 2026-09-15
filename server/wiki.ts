@@ -129,6 +129,23 @@ export function createPage(
   return { id, slug, title, content, category, updatedBy };
 }
 
+/**
+ * Create or overwrite a page whose slug is derived from `title`. Idempotent:
+ * a second call with the same title updates content in place instead of
+ * throwing a slug collision.
+ */
+export function upsertPage(
+  projectId: string,
+  { title, content = '', category = 'general', updatedBy = 'user' }: CreatePageOptions,
+): CreatedPage {
+  const slug = slugify(title);
+  const existing = getPage(projectId, slug);
+  if (existing) {
+    return updatePage(projectId, slug, { title, content, category, updatedBy });
+  }
+  return createPage(projectId, { title, content, category, updatedBy });
+}
+
 export function updatePage(
   projectId: string,
   slug: string,

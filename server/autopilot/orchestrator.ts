@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
-import { statSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
+import { extname } from 'path';
 import { AutopilotError, isAutopilotError } from './errors.js';
 import { AutopilotStore } from './store.js';
 import { assessStorageRecoverability, type AutopilotStorageRecoveryKind } from './local-target.js';
@@ -19,6 +20,29 @@ import {
   type AutopilotPinnedCriteria,
   type AutopilotPinnedCriterion,
 } from './evaluate.js';
+import {
+  buildDocumentationPages,
+  buildStructuredCycleRecord,
+  createMemoryDocumentPort,
+  currentVerifiedRecord,
+  parseCycleDocumentation,
+  reconstructHandoff,
+  redactAutopilotValue,
+  redactCycleRecord,
+} from './document.js';
+import type {
+  AutopilotDocumentPort,
+  AutopilotEvidenceArtifact,
+  AutopilotFailedAttempt,
+  AutopilotSessionHandoff,
+  AutopilotStructuredCycleRecord,
+} from './document.js';
+
+export type {
+  AutopilotDocumentPort,
+  AutopilotSessionHandoff,
+  AutopilotStructuredCycleRecord,
+} from './document.js';
 
 /**
  * Orchestration driver for an Autopilot cycle's plan → implement → finalize
@@ -126,6 +150,8 @@ export interface AutopilotImplementationContext {
   nonGoals: string[];
   specDecisions: { key: string; decision: string }[];
   storageRecovery: AutopilotStorageRecoveryKind | null;
+  /** Reconstructed from saved cycle records so a restart does not need live chat. */
+  priorHandoff: AutopilotSessionHandoff | null;
 }
 
 export interface AutopilotSessionPort {
@@ -270,13 +296,41 @@ export interface AutopilotOrchestratorDeps {
   finalize: AutopilotFinalizePort;
   deploy: AutopilotDeployPort;
   evaluate: AutopilotEvaluatePort;
+  document?: AutopilotDocumentPort;
   randomId?: () => string;
   /** Hub-side artifact existence and mtime. Tests inject; production stats. */
   artifactExists?: ArtifactExists;
+  /** Read screenshot/trace bytes for artifact publication. Tests inject. */
+  readEvidenceFile?: AutopilotReadEvidenceFile;
   /** Load captures Hub recorded during this evaluate operation. */
   listCaptures?: (operationId: string) => AutopilotExecutionCapture[];
   /** Hub-executed API probe; never copies status from the evaluator report. */
   probeApi?: AutopilotProbeApi;
+}
+
+export type AutopilotReadEvidenceFile = (filePath: string) => {
+  body: Buffer;
+  contentType: string;
+} | null;
+
+function defaultReadEvidenceFile(filePath: string): {
+  body: Buffer;
+  contentType: string;
+} | null {
+  try {
+    return { body: readFileSync(filePath), contentType: contentTypeForEvidencePath(filePath) };
+  } catch {
+    return null;
+  }
+}
+
+function contentTypeForEvidencePath(filePath: string): string {
+  const ext = extname(filePath).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.json') return 'application/json';
+  return 'application/octet-stream';
 }
 
 function defaultArtifactExists(filePath: string): { exists: boolean; mtimeMs?: number } {
@@ -306,7 +360,9 @@ export class AutopilotOrchestrator {
   private readonly finalize: AutopilotFinalizePort;
   private readonly deploy: AutopilotDeployPort;
   private readonly evaluate: AutopilotEvaluatePort;
+  private readonly document: AutopilotDocumentPort;
   private readonly artifactExists: ArtifactExists;
+  private readonly readEvidenceFile: AutopilotReadEvidenceFile;
   private readonly listCaptures: (operationId: string) => AutopilotExecutionCapture[];
   private readonly probeApi: AutopilotProbeApi | null;
 
@@ -319,7 +375,9 @@ export class AutopilotOrchestrator {
     this.finalize = deps.finalize;
     this.deploy = deps.deploy;
     this.evaluate = deps.evaluate;
+    this.document = deps.document ?? createMemoryDocumentPort();
     this.artifactExists = deps.artifactExists ?? defaultArtifactExists;
+    this.readEvidenceFile = deps.readEvidenceFile ?? defaultReadEvidenceFile;
     this.listCaptures = deps.listCaptures ?? (() => []);
     this.probeApi = deps.probeApi ?? null;
   }
@@ -520,6 +578,12 @@ export class AutopilotOrchestrator {
           nonGoals: spec?.nonGoals ?? [],
           specDecisions: spec?.specDecisions ?? [],
           storageRecovery: spec?.storageRecovery ?? null,
+          priorHandoff: reconstructHandoff({
+            cycles: this.store.listCyclesForProject(projectId).filter((c) => c.id !== cycle.id),
+            spec,
+            lastVerifiedSha: run.lastVerifiedSha,
+            lastDeploymentId: run.lastDeploymentId,
+          }),
         },
       });
       return this.persistDispatchOrDisown(op, cycleId, 'implementation', {
@@ -570,6 +634,7 @@ export class AutopilotOrchestrator {
         outcome: 'failed',
         result: { error: input.result.error ?? 'session did not commit' },
       });
+      await this.afterFailedOperation(projectId, this.store.getOperation(input.operationId)!);
       return {
         advanced: false,
         idempotent: false,
@@ -686,6 +751,7 @@ export class AutopilotOrchestrator {
           message: input.result.message ?? null,
         },
       });
+      await this.afterFailedOperation(projectId, this.store.getOperation(input.operationId)!);
       return {
         advanced: false,
         idempotent: false,
@@ -746,6 +812,7 @@ export class AutopilotOrchestrator {
         haltReason: recover.reason,
         result: { error: recover.reason },
       });
+      await this.afterFailedOperation(projectId, this.store.getOperation(op.id)!);
       return this.store.getOperation(op.id)!;
     }
     try {
@@ -840,6 +907,7 @@ export class AutopilotOrchestrator {
         haltReason: 'experiment target required approval; unattended deploy is not authorized',
         result: { status: input.result.status, message: input.result.message ?? null },
       });
+      await this.afterFailedOperation(projectId, this.store.getOperation(input.operationId)!);
       return {
         advanced: false,
         idempotent: false,
@@ -874,6 +942,7 @@ export class AutopilotOrchestrator {
           ...extra,
         },
       });
+      await this.afterFailedOperation(projectId, this.store.getOperation(input.operationId)!);
       return {
         advanced: false,
         idempotent: false,
@@ -1126,6 +1195,284 @@ export class AutopilotOrchestrator {
   }
 
   /**
+   * Documenting stage: persist a structured cycle record, publish redacted
+   * evidence artifacts, and upsert the journal + runbook from saved records.
+   * Completes before selecting-next. A failed journal write retries this stage
+   * without merge or deployment. Duplicate completion (or a crash after the
+   * documenting operation succeeded) advances without rewriting.
+   */
+  async runDocumenting(projectId: string): Promise<AutopilotRunSnapshot> {
+    const { run, cycleId } = this.requireActiveRunningCycle(projectId);
+    if (run.stage !== 'documenting') {
+      return this.controller.getRun(projectId, run.id);
+    }
+    const documentingSucceeded = this.store
+      .listStages(cycleId)
+      .some((s) => s.stage === 'documenting' && s.status === 'succeeded');
+    if (documentingSucceeded) {
+      return this.controller.advanceStage(projectId, 'selecting-next');
+    }
+    const op = this.controller.claimDocumentingOperation(projectId);
+    if (!op) {
+      return this.controller.getRun(projectId, run.id);
+    }
+    try {
+      if (!this.operationOwnsCurrentStage(op)) {
+        return this.controller.getRun(projectId, run.id);
+      }
+      const persisted = await this.persistCycleDocumentation(projectId, run.id, cycleId);
+      if (!this.operationOwnsCurrentStage(op)) {
+        return this.controller.getRun(projectId, run.id);
+      }
+      await this.writeProjectDocumentationPages(projectId, run.id, cycleId);
+      if (!this.operationOwnsCurrentStage(op)) {
+        return this.controller.getRun(projectId, run.id);
+      }
+      await this.controller.completeOperation({
+        operationId: op.id,
+        fencingGeneration: op.fencingGeneration,
+        outcome: 'succeeded',
+        result: {
+          journalSlug: persisted.journalSlug,
+          wikiSlugs: persisted.wikiSlugs,
+          artifactIds: persisted.artifactIds,
+        },
+      });
+    } catch (err) {
+      await this.settleFailureQuiet(op, err);
+      return this.controller.getRun(projectId, run.id);
+    }
+    const settled = this.store.getRun(run.id);
+    if (settled && settled.controlState === 'running' && settled.stage === 'documenting') {
+      return this.controller.advanceStage(projectId, 'selecting-next');
+    }
+    return this.controller.getRun(projectId, run.id);
+  }
+
+  /**
+   * Write (or reuse) the redacted structured cycle record and evidence
+   * artifacts before journal/wiki side effects. Each artifact is persisted
+   * immediately after upload so a retry reuses completed keys. A retry after
+   * a journal failure reuses this persisted record and does not merge or deploy.
+   */
+  private async persistCycleDocumentation(
+    projectId: string,
+    runId: string,
+    cycleId: string,
+    opts?: { terminal?: boolean },
+  ): Promise<AutopilotStructuredCycleRecord> {
+    const run = this.store.getRun(runId);
+    const cycle = this.store.getCycleById(cycleId);
+    if (!run || !cycle) {
+      throw new AutopilotError('not_found', 'cycle not found for documentation');
+    }
+    const existing = parseCycleDocumentation(cycle.documentation);
+    let record =
+      existing ??
+      redactCycleRecord(
+        buildStructuredCycleRecord({
+          runId,
+          cycle,
+          spec: this.readSpec(run.briefId),
+          usage: run.usage,
+          origin: this.controller.getProjectState(projectId).config.target?.origin ?? null,
+          failedAttempts: this.failedAttemptsForCycle(runId, cycleId),
+          documentedAt: new Date().toISOString(),
+        }),
+      );
+    this.saveCycleRecord(cycleId, record, {
+      markFailed: !!opts?.terminal && record.kind !== 'success',
+    });
+    const sessionId = record.links.sessionId ?? cycle.sessionId;
+    if (sessionId) {
+      const artifacts = this.buildEvidenceArtifacts(record, cycle);
+      for (const artifact of artifacts) {
+        const already = record.publishedByKey[artifact.key];
+        if (already) {
+          record = this.applyPublishedArtifact(record, artifact.key, already);
+          continue;
+        }
+        const payload =
+          artifact.key === 'record.json'
+            ? { ...artifact, body: JSON.stringify(record, null, 2) }
+            : artifact;
+        const published = await this.document.publishArtifact({
+          sessionId,
+          cycleId,
+          key: payload.key,
+          filename: payload.filename,
+          contentType: payload.contentType,
+          body: payload.body,
+        });
+        record = this.applyPublishedArtifact(record, artifact.key, published.artifactId);
+        this.saveCycleRecord(cycleId, record, {
+          markFailed: !!opts?.terminal && record.kind !== 'success',
+        });
+      }
+    }
+    this.saveCycleRecord(cycleId, record, {
+      markFailed: !!opts?.terminal && record.kind !== 'success',
+    });
+    return record;
+  }
+
+  private saveCycleRecord(
+    cycleId: string,
+    record: AutopilotStructuredCycleRecord,
+    opts?: { markFailed?: boolean },
+  ): void {
+    this.store.updateCycle(cycleId, {
+      documentationJson: JSON.stringify(record),
+      outcome: record.outcome,
+      ...(opts?.markFailed ? { status: 'failed' as const } : {}),
+    });
+  }
+
+  private applyPublishedArtifact(
+    record: AutopilotStructuredCycleRecord,
+    key: string,
+    artifactId: string,
+  ): AutopilotStructuredCycleRecord {
+    const publishedByKey = { ...record.publishedByKey, [key]: artifactId };
+    const artifactIds = [...new Set(Object.values(publishedByKey))];
+    const evidence = record.evidence.map((ref) => (ref.key === key ? { ...ref, artifactId } : ref));
+    return { ...record, publishedByKey, artifactIds, evidence };
+  }
+
+  private documentedCyclesForProject(projectId: string): AutopilotStructuredCycleRecord[] {
+    return this.store
+      .listCyclesForProject(projectId)
+      .map((c) => parseCycleDocumentation(c.documentation))
+      .filter((r): r is AutopilotStructuredCycleRecord => !!r);
+  }
+
+  private async writeProjectDocumentationPages(
+    projectId: string,
+    runId: string,
+    cycleId: string,
+  ): Promise<void> {
+    const run = this.store.getRun(runId);
+    const records = this.documentedCyclesForProject(projectId);
+    const lastVerifiedSha = run?.lastVerifiedSha ?? null;
+    const lastDeploymentId = run?.lastDeploymentId ?? null;
+    const current = currentVerifiedRecord({ lastVerifiedSha, lastDeploymentId, records });
+    const pages = buildDocumentationPages({
+      lastVerifiedSha,
+      lastDeploymentId,
+      origin:
+        current?.links.deploymentOrigin ??
+        this.controller.getProjectState(projectId).config.target?.origin ??
+        null,
+      records,
+    });
+    await this.document.writePages({ projectId, runId, cycleId, pages });
+  }
+
+  private async afterFailedOperation(
+    projectId: string,
+    op: AutopilotOperationRecord,
+  ): Promise<void> {
+    const run = this.store.getRun(op.runId);
+    if (!run || !op.cycleId) return;
+    if (
+      run.controlState !== 'paused' &&
+      run.controlState !== 'failed' &&
+      run.controlState !== 'stopping' &&
+      run.controlState !== 'stopped'
+    ) {
+      return;
+    }
+    try {
+      await this.persistCycleDocumentation(projectId, run.id, op.cycleId, { terminal: true });
+      await this.writeProjectDocumentationPages(projectId, run.id, op.cycleId);
+    } catch {
+      // Halt already settled. Journal retry happens on documenting or the next terminal.
+    }
+  }
+
+  private failedAttemptsForCycle(runId: string, cycleId: string): AutopilotFailedAttempt[] {
+    const kinds = new Set(['implement', 'finalize', 'deploy', 'evaluate']);
+    return this.store
+      .listOperations(runId)
+      .filter((op) => op.cycleId === cycleId && op.status === 'failed' && kinds.has(op.kind))
+      .map((op) => {
+        const result = (op.result ?? {}) as {
+          reason?: unknown;
+          detail?: unknown;
+          error?: unknown;
+          message?: unknown;
+          status?: unknown;
+        };
+        const reason =
+          typeof result.reason === 'string'
+            ? result.reason
+            : typeof result.error === 'string'
+              ? result.error
+              : typeof result.message === 'string'
+                ? result.message
+                : typeof result.status === 'string'
+                  ? result.status
+                  : `${op.kind}-failed`;
+        return {
+          operationId: op.id,
+          reason: `${op.kind}: ${reason}`,
+          detail: typeof result.detail === 'string' ? result.detail : undefined,
+        };
+      });
+  }
+
+  private buildEvidenceArtifacts(
+    record: AutopilotStructuredCycleRecord,
+    cycle: { verification: unknown },
+  ): AutopilotEvidenceArtifact[] {
+    const artifacts: AutopilotEvidenceArtifact[] = [];
+    for (const ref of record.evidence) {
+      if ((ref.kind !== 'screenshot' && ref.kind !== 'trace') || !ref.path || !ref.key) continue;
+      const file = this.readEvidenceFile(ref.path);
+      if (!file) continue;
+      const prepared = this.prepareEvidenceBody(file.contentType, file.body);
+      artifacts.push({
+        key: ref.key,
+        filename: `cycle-${record.cycleNumber}-${ref.key.replace(/[^A-Za-z0-9._-]+/g, '-')}${extname(ref.path) || ''}`,
+        contentType: file.contentType,
+        body: prepared.body,
+      });
+    }
+    if (cycle.verification) {
+      const { value } = redactAutopilotValue(cycle.verification);
+      artifacts.push({
+        key: 'evaluation.json',
+        filename: `cycle-${record.cycleNumber}-evaluation.json`,
+        contentType: 'application/json',
+        body: JSON.stringify(value, null, 2),
+      });
+    }
+    artifacts.push({
+      key: 'record.json',
+      filename: `cycle-${record.cycleNumber}-record.json`,
+      contentType: 'application/json',
+      body: JSON.stringify(record, null, 2),
+    });
+    return artifacts;
+  }
+
+  private prepareEvidenceBody(
+    contentType: string,
+    body: Buffer,
+  ): { body: Buffer; redactions: number } {
+    if (!/json|text|javascript/i.test(contentType)) return { body, redactions: 0 };
+    const text = body.toString('utf8');
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      const { value, redactions } = redactAutopilotValue(parsed);
+      return { body: Buffer.from(JSON.stringify(value), 'utf8'), redactions };
+    } catch {
+      const { value, redactions } = redactAutopilotValue(text);
+      return { body: Buffer.from(String(value), 'utf8'), redactions };
+    }
+  }
+
+  /**
    * Reconcile last-known-good from a succeeded evaluate operation. A crash
    * between completeOperation and promote must not advance documenting
    * without recording the verified SHA.
@@ -1153,7 +1500,8 @@ export class AutopilotOrchestrator {
   /**
    * Roll back to last-known-good after a failed evaluation, then reopen
    * implementing for a budgeted repair. Never advances to documenting or
-   * selecting-next. Pinned criteria stay on the cycle.
+   * selecting-next. Failed terminal outcomes persist a cycle record in place
+   * so unsuccessful work survives into the journal and handoff.
    */
   private async recoverAfterFailedEvaluation(
     projectId: string,
@@ -1170,6 +1518,7 @@ export class AutopilotOrchestrator {
         haltReason,
         result: { reason: judgement.reason, detail: judgement.detail, ...extra },
       });
+      await this.afterFailedOperation(projectId, this.store.getOperation(input.operationId)!);
       return {
         advanced: false,
         idempotent: false,
@@ -1390,6 +1739,9 @@ export class AutopilotOrchestrator {
       outcome: 'failed',
       result: { error: message },
     });
+    const run = this.store.getRun(op.runId);
+    const settled = this.store.getOperation(op.id);
+    if (run && settled) await this.afterFailedOperation(run.projectId, settled);
   }
 }
 

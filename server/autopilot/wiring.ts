@@ -17,9 +17,13 @@ import { setSessionOwner } from '../session-ownership.js';
 import { finalizeTurnEndSubscriber, subscribeAllTurnEnds } from '../finalize/turn-end.js';
 import { writeSpawnCredsFile } from '../spawn-creds-file.js';
 import { bindAutopilotWorkerSession, readAutopilotWorkerToken } from './worker-token.js';
+import { upsertPage } from '../wiki.js';
+import { getArtifactStore, buildArtifactKey } from '../artifacts/artifact-store.js';
+import { stableAutopilotArtifactId } from './document.js';
 import {
   createAutopilotBoardAdapter,
   createAutopilotDeployAdapter,
+  createAutopilotDocumentAdapter,
   createAutopilotEvaluateAdapter,
   createAutopilotFinalizeAdapter,
   createAutopilotPlannerAdapter,
@@ -28,6 +32,7 @@ import {
   finalizeOutcomeFromSnapshot,
   type AutopilotBoardOps,
   type AutopilotDeployOps,
+  type AutopilotDocumentOps,
   type AutopilotEvaluateOps,
   type AutopilotFinalizeOps,
   type AutopilotPlannerOps,
@@ -736,11 +741,59 @@ export function buildEvaluateOps(deps: AutopilotWiringDeps): AutopilotEvaluateOp
 }
 
 /**
- * Construct the fully-wired Autopilot runtime. Board/Finalize/planner adapters
- * are backed by real Hub subsystems; the deadline-sweep interval pumps tick().
- * Only ever advances runs for projects with Autopilot enabled and the operator
- * gate on (enforced by the controller), so with the feature off it is a no-op.
+ * Wiki/journal/artifact ops the documenting stage uses. Journal upserts are
+ * idempotent; evidence is published as session artifacts with secrets already
+ * stripped by the orchestrator.
  */
+export function buildDocumentOps(routeDeps: RouteDeps): AutopilotDocumentOps {
+  return {
+    upsertPage: (projectId, input) => {
+      upsertPage(projectId, {
+        title: input.title,
+        content: input.content,
+        category: input.category,
+        updatedBy: input.updatedBy,
+      });
+    },
+    publishArtifact: async ({
+      sessionId,
+      cycleId,
+      key: artifactKey,
+      filename,
+      contentType,
+      body,
+    }) => {
+      const id = stableAutopilotArtifactId(cycleId, artifactKey);
+      const existing = routeDeps.stmts.getArtifact.get(id) as { id: string } | undefined;
+      if (existing) return { artifactId: existing.id };
+      const store = getArtifactStore(config);
+      const storageKey = buildArtifactKey(sessionId, id);
+      const storageBucket = store.kind === 's3' ? config.artifactsBucket : null;
+      const storageRegion = store.kind === 's3' ? config.artifactsBucketRegion : null;
+      await store.put(storageKey, body, contentType);
+      try {
+        routeDeps.stmts.insertArtifact.run(
+          id,
+          sessionId,
+          filename,
+          contentType,
+          body.length,
+          store.kind,
+          storageKey,
+          storageBucket,
+          storageRegion,
+          'autopilot',
+        );
+      } catch (err) {
+        const again = routeDeps.stmts.getArtifact.get(id) as { id: string } | undefined;
+        if (again) return { artifactId: again.id };
+        throw err;
+      }
+      return { artifactId: id };
+    },
+  };
+}
+
 export function buildAutopilotRuntime(deps: AutopilotWiringDeps): AutopilotRuntime {
   const { routeDeps } = deps;
   const stmts = routeDeps.stmts;
@@ -753,6 +806,7 @@ export function buildAutopilotRuntime(deps: AutopilotWiringDeps): AutopilotRunti
   const sessionOps = buildSessionOps(deps);
   const evaluateOps = buildEvaluateOps(deps);
   const deployOps = buildDeployOps(deps, deps.startDeployment, deps.runRollback);
+  const documentOps = buildDocumentOps(routeDeps);
   return createAutopilotRuntime({
     db: getDb(),
     buildController: () =>
@@ -764,6 +818,7 @@ export function buildAutopilotRuntime(deps: AutopilotWiringDeps): AutopilotRunti
       finalize: createAutopilotFinalizeAdapter({ ops: finalizeOps }),
       deploy: createAutopilotDeployAdapter({ ops: deployOps }),
       evaluate: createAutopilotEvaluateAdapter({ ops: evaluateOps }),
+      document: createAutopilotDocumentAdapter({ ops: documentOps }),
     }),
     readSessionOutcome: (sessionId) =>
       readSessionOutcome(stmts, deps.getActiveSessionIds(), sessionId),

@@ -696,6 +696,18 @@ export class AutopilotStore {
     return rows.map(mapCycle);
   }
 
+  listCyclesForProject(projectId: string): AutopilotCycleRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT c.* FROM autopilot_cycles c
+         INNER JOIN autopilot_runs r ON r.id = c.run_id
+         WHERE r.project_id = ?
+         ORDER BY r.started_at ASC, r.id ASC, c.cycle_number ASC`,
+      )
+      .all(projectId) as CycleRow[];
+    return rows.map(mapCycle);
+  }
+
   insertStage(input: {
     id: string;
     cycleId: string;

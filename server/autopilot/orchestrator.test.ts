@@ -11,6 +11,7 @@ import type {
   AutopilotFinalizePort,
   AutopilotFinalizeResult,
   AutopilotPlannerPort,
+  AutopilotSessionHandoff,
   AutopilotSessionPort,
 } from './orchestrator.js';
 import {
@@ -20,6 +21,13 @@ import {
 } from './evaluate.js';
 import { AutopilotStore } from './store.js';
 import { ensureAutopilotSchema } from './schema.js';
+import {
+  buildStructuredCycleRecord,
+  createMemoryDocumentPort,
+  parseCycleDocumentation,
+  type AutopilotDocumentPort,
+  autopilotPublicationIdentity,
+} from './document.js';
 
 const PROJECT = 'demo-app';
 const ACTOR = { userId: 'user-1' };
@@ -121,6 +129,7 @@ function harness(opts?: {
   finalize?: AutopilotFinalizePort;
   deploy?: AutopilotDeployPort;
   evaluate?: AutopilotEvaluatePort;
+  document?: AutopilotDocumentPort;
   db?: Database.Database;
   getDeployedRevision?: (projectId: string, targetId: string) => string | null;
 }) {
@@ -147,7 +156,14 @@ function harness(opts?: {
     finalize: opts?.finalize ?? fakeFinalize(),
     deploy: opts?.deploy ?? fakeDeploy(),
     evaluate: opts?.evaluate ?? fakeEvaluate(),
+    document: opts?.document,
     artifactExists: () => ({ exists: true, mtimeMs: Date.now(), journeyTrace: true }),
+    readEvidenceFile: (filePath: string) => {
+      if (filePath.endsWith('.png')) {
+        return { body: Buffer.from('PNG'), contentType: 'image/png' };
+      }
+      return { body: Buffer.from('{"actions":[]}'), contentType: 'application/json' };
+    },
   });
   const store = new AutopilotStore(db);
   return { db, controller, orchestrator, store };
@@ -1239,6 +1255,11 @@ describe('autopilot orchestrator — evaluate', () => {
     expect(store.getRun(runId)!.controlState).toBe('paused');
     expect(store.getRun(runId)!.stage).not.toBe('selecting-next');
     expect(store.getRun(runId)!.pauseReason).toMatch(/repair budget exhausted|health_only/);
+    const failedRecord = parseCycleDocumentation(store.getCycle(runId, 1)!.documentation);
+    expect(failedRecord?.kind).toBe('failure');
+    expect(failedRecord?.failedAttempts.some((a) => a.reason.startsWith('evaluate:'))).toBe(true);
+    expect(failedRecord?.actualChange).toContain('Not verified');
+    expect(store.getRun(runId)!.stage).not.toBe('selecting-next');
   });
 
   it('promotes a primary-cycle API evaluation when Hub recorded distinct requests', async () => {
@@ -1364,5 +1385,251 @@ describe('autopilot orchestrator — evaluate', () => {
     ).rejects.toThrow(/passing evaluation bound to this SHA and deployment/);
     expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
     expect(store.getRun(runId)!.stage).toBe('verifying');
+  });
+});
+
+async function reachDocumenting(
+  orchestrator: ReturnType<typeof createAutopilotOrchestrator>,
+  controller: ReturnType<typeof createAutopilotController>,
+) {
+  await reachVerifying(orchestrator, controller);
+  const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+  const passing = passingEvalReport();
+  await orchestrator.reconcileEvaluate(PROJECT, {
+    operationId: evalOp.id,
+    fencingGeneration: evalOp.fencingGeneration,
+    result: passing,
+    captures: passingEvalCaptures(evalOp.id, passing),
+  });
+}
+
+describe('autopilot orchestrator — documenting', () => {
+  it('persists a structured record, journal, and artifacts then advances to selecting-next', async () => {
+    const docs = createMemoryDocumentPort();
+    const { controller, orchestrator, store } = harness({ document: docs });
+    await reachDocumenting(orchestrator, controller);
+    const snapshot = await orchestrator.runDocumenting(PROJECT);
+    expect(snapshot.run.stage).toBe('selecting-next');
+    const runId = snapshot.run.id;
+    const cycle = store.getCycle(runId, 1)!;
+    const record = parseCycleDocumentation(cycle.documentation);
+    expect(record?.kind).toBe('success');
+    expect(record?.links.testedCommitSha).toBe('deadbeefcafe');
+    expect(record?.links.sessionId).toBe('sess-1');
+    expect(record?.artifactIds.length).toBeGreaterThan(0);
+    expect(record?.evidence.some((e) => e.kind === 'screenshot' && e.artifactId)).toBe(true);
+    expect(record?.evidence.some((e) => e.kind === 'trace' && e.artifactId)).toBe(true);
+    expect(record?.actualChange).toMatch(/Baseline:/);
+    expect(record?.actualChange).toContain('Verified at');
+    expect(cycle.outcome).toBe('verified');
+    expect(docs.pageWrites).toBe(1);
+    expect(docs.pages.map((p) => p.slug)).toEqual(['autopilot-journal', 'autopilot-runbook']);
+    expect(docs.pages[0]!.content).toContain('successful behavior');
+    expect(docs.artifacts.some((a) => a.key === 'record.json')).toBe(true);
+    expect(docs.artifacts.some((a) => a.key.startsWith('screenshot:'))).toBe(true);
+    expect(docs.artifacts.some((a) => a.key.startsWith('trace:'))).toBe(true);
+  });
+
+  it('treats duplicate documenting completion as a no-op and does not rewrite the journal', async () => {
+    const docs = createMemoryDocumentPort();
+    const { controller, orchestrator, store } = harness({ document: docs });
+    await reachDocumenting(orchestrator, controller);
+    await orchestrator.runDocumenting(PROJECT);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const first = parseCycleDocumentation(store.getCycle(runId, 1)!.documentation);
+    const again = await orchestrator.runDocumenting(PROJECT);
+    expect(again.run.stage).toBe('selecting-next');
+    expect(docs.pageWrites).toBe(1);
+    store.updateRun(runId, { stage: 'documenting' });
+    const recovered = await orchestrator.runDocumenting(PROJECT);
+    expect(recovered.run.stage).toBe('selecting-next');
+    expect(docs.pageWrites).toBe(1);
+    expect(parseCycleDocumentation(store.getCycle(runId, 1)!.documentation)?.documentedAt).toBe(
+      first?.documentedAt,
+    );
+  });
+
+  it('retries a failed journal write without merging or deploying again', async () => {
+    let failJournal = true;
+    const docs = createMemoryDocumentPort({ failPages: () => failJournal });
+    let deployCalls = 0;
+    let finalizeCalls = 0;
+    const { controller, orchestrator, store } = harness({
+      document: docs,
+      deploy: {
+        deployRevision: async () => {
+          deployCalls += 1;
+          return { deploymentId: 'dep-1' };
+        },
+        rollback: async () => ({
+          status: 'success',
+          deploymentId: 'dep-rb',
+          deployedSha: 'deadbeefcafe',
+        }),
+      },
+      finalize: {
+        startFinalize: async () => {
+          finalizeCalls += 1;
+          return { finalizeRunId: 'fin-1' };
+        },
+      },
+    });
+    await reachDocumenting(orchestrator, controller);
+    expect(deployCalls).toBe(1);
+    expect(finalizeCalls).toBe(1);
+    const first = await orchestrator.runDocumenting(PROJECT);
+    expect(first.run.stage).toBe('documenting');
+    expect(first.run.controlState).toBe('running');
+    const runId = store.getActiveRun(PROJECT)!.id;
+    expect(parseCycleDocumentation(store.getCycle(runId, 1)!.documentation)?.kind).toBe('success');
+    expect(docs.pageWrites).toBe(0);
+    failJournal = false;
+    const retried = await orchestrator.runDocumenting(PROJECT);
+    expect(retried.run.stage).toBe('selecting-next');
+    expect(docs.pageWrites).toBe(1);
+    expect(deployCalls).toBe(1);
+    expect(finalizeCalls).toBe(1);
+  });
+
+  it('reconstructs the next implementation handoff from saved records after a restart', async () => {
+    const docs = createMemoryDocumentPort();
+    const { db, controller, orchestrator, store } = harness({ document: docs });
+    await reachDocumenting(orchestrator, controller);
+    await orchestrator.runDocumenting(PROJECT);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const saved = store.getCycle(runId, 1)!;
+    const verified = store.getRun(runId)!;
+    expect(verified.lastVerifiedSha).toBe('deadbeefcafe');
+    expect(verified.lastDeploymentId).toBe('dep-1');
+
+    store.updateCycle(saved.id, { status: 'succeeded' });
+    store.insertCycle({
+      id: 'cyc-2',
+      runId,
+      cycleNumber: 2,
+      briefRevision: saved.briefRevision,
+      createdAt: new Date().toISOString(),
+    });
+    store.updateCycle('cyc-2', { cardId: 'card-2' });
+    store.updateRun(runId, { cycleNumber: 2, stage: 'implementing' });
+    store.insertStage({
+      id: 'stage-impl-2',
+      cycleId: 'cyc-2',
+      stage: 'implementing',
+      status: 'pending',
+      attempt: 1,
+      operationId: null,
+      startedAt: new Date().toISOString(),
+    });
+
+    let capturedHandoff: AutopilotSessionHandoff | null = null;
+    const restarted = harness({
+      db,
+      document: docs,
+      session: {
+        dispatchImplementation: async ({ context }) => {
+          capturedHandoff = context.priorHandoff;
+          return { sessionId: 'sess-2' };
+        },
+      },
+    });
+    await restarted.orchestrator.dispatchImplementation(PROJECT);
+    expect(capturedHandoff).toBeTruthy();
+    expect(capturedHandoff!.lastVerifiedSha).toBe('deadbeefcafe');
+    expect(capturedHandoff!.lastDeploymentId).toBe('dep-1');
+    expect(capturedHandoff!.lastSuccessfulCycle?.cycleId).toBe(saved.id);
+    expect(capturedHandoff!.records).toHaveLength(1);
+    expect(capturedHandoff!.records[0]?.links.testedCommitSha).toBe('deadbeefcafe');
+  });
+
+  it('skips already-published artifact keys when a later upload fails', async () => {
+    let failEval = true;
+    const docs = createMemoryDocumentPort({
+      failArtifact: ({ key }) => failEval && key === 'evaluation.json',
+    });
+    const { controller, orchestrator, store } = harness({ document: docs });
+    await reachDocumenting(orchestrator, controller);
+    const first = await orchestrator.runDocumenting(PROJECT);
+    expect(first.run.stage).toBe('documenting');
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const cycleId = store.getCycle(runId, 1)!.id;
+    const afterFail = parseCycleDocumentation(store.getCycle(runId, 1)!.documentation);
+    expect(afterFail?.publishedByKey['screenshot:baseline-1']).toBeTruthy();
+    expect(afterFail?.publishedByKey['evaluation.json']).toBeUndefined();
+    const screenshotIdentity = autopilotPublicationIdentity(cycleId, 'screenshot:baseline-1');
+    const screenshotPublishes = docs.publishCounts[screenshotIdentity];
+    failEval = false;
+    const retried = await orchestrator.runDocumenting(PROJECT);
+    expect(retried.run.stage).toBe('selecting-next');
+    expect(docs.publishCounts[screenshotIdentity]).toBe(screenshotPublishes);
+    const afterRetry = parseCycleDocumentation(store.getCycle(runId, 1)!.documentation);
+    expect(afterRetry?.publishedByKey['evaluation.json']).toBeTruthy();
+    expect(afterRetry?.publishedByKey['screenshot:baseline-1']).toBe(
+      afterFail?.publishedByKey['screenshot:baseline-1'],
+    );
+  });
+
+  it('rebuilds the project journal from earlier runs instead of replacing them', async () => {
+    const docs = createMemoryDocumentPort();
+    const { controller, orchestrator, store } = harness({ document: docs });
+    await reachDocumenting(orchestrator, controller);
+    store.insertRun({
+      id: 'run-prior',
+      projectId: PROJECT,
+      controlState: 'stopped',
+      stage: null,
+      fencingGeneration: 1,
+      briefId: null,
+      briefRevision: 1,
+      cycleNumber: 1,
+      credentialOwnerUserId: null,
+      targetId: null,
+      limitsJson: JSON.stringify(READY.limits),
+      usageJson: JSON.stringify({ wallTimeMs: 1, costUsd: null, costAvailable: false }),
+      startedBy: null,
+      startedAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.insertCycle({
+      id: 'cyc-prior',
+      runId: 'run-prior',
+      cycleNumber: 1,
+      briefRevision: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    const priorRecord = buildStructuredCycleRecord({
+      runId: 'run-prior',
+      cycle: {
+        id: 'cyc-prior',
+        runId: 'run-prior',
+        cycleNumber: 1,
+        briefRevision: 1,
+        specRevision: 1,
+        cardId: 'card-prior',
+        sessionId: 'sess-prior',
+        testedCommitSha: 'oldsha',
+        finalizeRunId: null,
+        deploymentId: null,
+        verification: {
+          judgement: { ok: false, reason: 'health_only', detail: 'health', recover: true },
+        },
+        documentation: null,
+        selectedImprovement: null,
+        outcome: 'health_only',
+        status: 'failed',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      spec: SPEC,
+      usage: { wallTimeMs: 1, costUsd: null, costAvailable: false },
+      origin: 'http://127.0.0.1:4310',
+      failedAttempts: [{ operationId: 'eval-prior', reason: 'evaluate: health_only' }],
+      documentedAt: '2026-01-01T01:00:00.000Z',
+    });
+    store.updateCycle('cyc-prior', { documentationJson: JSON.stringify(priorRecord) });
+    await orchestrator.runDocumenting(PROJECT);
+    const journal = docs.pages.find((p) => p.slug === 'autopilot-journal')?.content ?? '';
+    expect(journal).toContain('run-prio');
+    expect(journal).toContain('failure');
+    expect(journal).toContain('successful behavior');
   });
 });

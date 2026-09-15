@@ -16,6 +16,8 @@ import type {
   AutopilotSessionPort,
 } from './orchestrator.js';
 import type { AutopilotPinnedCriteria } from './evaluate.js';
+import { renderHandoffPrompt } from './document.js';
+import type { AutopilotDocumentPort, AutopilotJournalPage } from './document.js';
 
 /**
  * Concrete adapters that bind the Autopilot orchestrator's ports to the real
@@ -346,8 +348,11 @@ export function buildImplementationPrompt(context: AutopilotImplementationContex
     context.storageRecovery ?? 'unknown',
     '',
     'Commit your work locally on the session branch. Do not push, open a PR, or',
-    'merge — the platform Finalize flow owns review, CI, push and merge.',
+    'merge. The platform Finalize flow owns review, CI, push and merge.',
   ];
+  if (context.priorHandoff && context.priorHandoff.records.length > 0) {
+    lines.push('', renderHandoffPrompt(context.priorHandoff));
+  }
   return lines.join('\n');
 }
 
@@ -637,4 +642,62 @@ export function finalizeOutcomeFromSnapshot(
     return { status: 'ci_failed', reviewStatus: snap.reviewerVerdict };
   }
   return { status: 'error', reviewStatus: snap.reviewerVerdict, message: snap.status };
+}
+
+// ---------------------------------------------------------------------------
+// Documentation (journal, wiki, artifacts)
+// ---------------------------------------------------------------------------
+
+export interface AutopilotDocumentOps {
+  upsertPage: (
+    projectId: string,
+    input: {
+      title: string;
+      content: string;
+      category: string;
+      updatedBy: string;
+    },
+  ) => void;
+  publishArtifact: (input: {
+    sessionId: string;
+    cycleId: string;
+    key: string;
+    filename: string;
+    contentType: string;
+    body: Buffer;
+  }) => Promise<{ artifactId: string }>;
+}
+
+export function createAutopilotDocumentAdapter(deps: {
+  ops: AutopilotDocumentOps;
+}): AutopilotDocumentPort {
+  return {
+    writePages: async (input: {
+      projectId: string;
+      runId: string;
+      cycleId: string;
+      pages: AutopilotJournalPage[];
+    }) => {
+      for (const page of input.pages) {
+        deps.ops.upsertPage(input.projectId, {
+          title: page.title,
+          content: page.content,
+          category: page.category,
+          updatedBy: 'autopilot',
+        });
+      }
+    },
+    publishArtifact: async ({ sessionId, cycleId, key, filename, contentType, body }) => {
+      if (!sessionId) return { artifactId: '' };
+      const payload = typeof body === 'string' ? Buffer.from(body, 'utf8') : body;
+      return deps.ops.publishArtifact({
+        sessionId,
+        cycleId,
+        key,
+        filename,
+        contentType,
+        body: payload,
+      });
+    },
+  };
 }

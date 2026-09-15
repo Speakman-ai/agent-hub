@@ -96,3 +96,28 @@ describe('autopilot store operation lookups', () => {
     expect(store.getOperationByDeploymentId('dep-missing')).toBeNull();
   });
 });
+
+describe('autopilot store project cycles', () => {
+  it('lists cycles across runs for a project in start order', () => {
+    const { db, store } = freshStore();
+    db.exec(
+      `INSERT INTO autopilot_runs (id, project_id, control_state, fencing_generation, cycle_number, started_at)
+       VALUES ('run-older', 'proj', 'stopped', 1, 1, '2026-01-01 00:00:00')`,
+    );
+    store.insertCycle({
+      id: 'c-new',
+      runId: 'run-1',
+      cycleNumber: 1,
+      briefRevision: 1,
+      createdAt: '2026-09-15T00:00:00.000Z',
+    });
+    store.insertCycle({
+      id: 'c-old',
+      runId: 'run-older',
+      cycleNumber: 1,
+      briefRevision: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(store.listCyclesForProject('proj').map((c) => c.id)).toEqual(['c-old', 'c-new']);
+  });
+});

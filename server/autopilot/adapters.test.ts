@@ -4,6 +4,7 @@ import {
   buildImplementationPrompt,
   createAutopilotBoardAdapter,
   createAutopilotDeployAdapter,
+  createAutopilotDocumentAdapter,
   createAutopilotFinalizeAdapter,
   createAutopilotPlannerAdapter,
   createAutopilotSessionAdapter,
@@ -340,6 +341,7 @@ describe('autopilot session adapter', () => {
         nonGoals: ['auth'],
         specDecisions: [{ key: 'storage', decision: 'sqlite' }],
         storageRecovery: 'disposable',
+        priorHandoff: null,
       },
     });
     expect(out.sessionId).toBe('sess-x');
@@ -357,6 +359,7 @@ describe('autopilot session adapter', () => {
       nonGoals: ['n1'],
       specDecisions: [{ key: 'k', decision: 'd' }],
       storageRecovery: 'disposable',
+      priorHandoff: null,
     });
     expect(prompt).toContain('do j1');
     expect(prompt).toContain('see r1');
@@ -364,6 +367,64 @@ describe('autopilot session adapter', () => {
     expect(prompt).toContain('Finalize');
     expect(prompt).toContain('disposable');
     expect(prompt).toContain('do not infer recoverability');
+  });
+
+  it('includes reconstructed prior-cycle records in the implementation prompt', () => {
+    const prompt = buildImplementationPrompt({
+      specRevision: 1,
+      cardId: 'c',
+      acceptanceJourneys: [{ action: 'do j1', expectedResult: 'see r1' }],
+      nonGoals: ['n1'],
+      specDecisions: [{ key: 'k', decision: 'd' }],
+      storageRecovery: 'disposable',
+      priorHandoff: {
+        briefRevision: 3,
+        specRevision: 3,
+        lastVerifiedSha: 'deadbeefcafe',
+        lastDeploymentId: 'dep-1',
+        lastSuccessfulCycle: null,
+        records: [
+          {
+            version: 1,
+            kind: 'success',
+            runId: 'run-1',
+            cycleId: 'cyc-1',
+            cycleNumber: 1,
+            briefRevision: 3,
+            specRevision: 3,
+            expectedBenefit: 'baseline',
+            actualChange: 'Merged deadbeefcafe',
+            decisions: [],
+            links: {
+              cardId: 'c',
+              sessionId: 's',
+              testedCommitSha: 'deadbeefcafe',
+              finalizeRunId: 'f',
+              deploymentId: 'dep-1',
+              deploymentOrigin: 'http://127.0.0.1:4310',
+            },
+            evidence: [],
+            usage: { wallTimeMs: 1, costUsd: null, costAvailable: false },
+            outcome: 'verified',
+            nextAction: 'selecting-next',
+            journalSlug: 'autopilot-journal',
+            wikiSlugs: ['autopilot-journal'],
+            artifactIds: [],
+            publishedByKey: {},
+            redactions: 0,
+            documentedAt: 't',
+            failedAttempts: [],
+          },
+        ],
+        acceptanceJourneys: [],
+        nonGoals: [],
+        specDecisions: [],
+        storageRecovery: 'disposable',
+      },
+    });
+    expect(prompt).toContain('successful behavior');
+    expect(prompt).toContain('deadbeefcafe');
+    expect(prompt).toContain('Do not treat proposals or failures as current verified behavior');
   });
 });
 
@@ -530,5 +591,61 @@ describe('autopilot deploy adapter', () => {
     expect(prompt).toContain('baseline-1');
     expect(prompt).toMatch(/Hub records HTTP responses/);
     expect(prompt).toMatch(/screenshots and journey traces/);
+  });
+});
+
+describe('autopilot document adapter', () => {
+  it('upserts journal pages in place and publishes artifacts', async () => {
+    const pages: { title: string; content: string }[] = [];
+    const blobs: { filename: string }[] = [];
+    const adapter = createAutopilotDocumentAdapter({
+      ops: {
+        upsertPage: (_projectId, input) => {
+          pages.push({ title: input.title, content: input.content });
+        },
+        publishArtifact: async ({ filename }) => {
+          blobs.push({ filename });
+          return { artifactId: `id-${filename}` };
+        },
+      },
+    });
+    await adapter.writePages({
+      projectId: 'demo',
+      runId: 'run-1',
+      cycleId: 'cyc-1',
+      pages: [
+        {
+          slug: 'autopilot-journal',
+          title: 'Autopilot journal',
+          content: 'Cycle 1 (successful behavior)',
+          category: 'general',
+        },
+      ],
+    });
+    await adapter.writePages({
+      projectId: 'demo',
+      runId: 'run-1',
+      cycleId: 'cyc-1',
+      pages: [
+        {
+          slug: 'autopilot-journal',
+          title: 'Autopilot journal',
+          content: 'Cycle 1 (successful behavior)\nCycle 2 (failure)',
+          category: 'general',
+        },
+      ],
+    });
+    expect(pages).toHaveLength(2);
+    expect(pages[1]!.content).toContain('failure');
+    const published = await adapter.publishArtifact({
+      sessionId: 'sess-1',
+      cycleId: 'cyc-1',
+      key: 'record.json',
+      filename: 'cycle-1-record.json',
+      contentType: 'application/json',
+      body: '{}',
+    });
+    expect(published.artifactId).toEqual('id-cycle-1-record.json');
+    expect(blobs).toHaveLength(1);
   });
 });
