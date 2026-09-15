@@ -37,6 +37,18 @@ import type {
   AutopilotSessionHandoff,
   AutopilotStructuredCycleRecord,
 } from './document.js';
+import {
+  AUTOPILOT_NO_BENEFIT_PAUSE_STREAK,
+  applyPlannerProposal,
+  consecutiveNoBenefitStreak,
+  extraProtectedJourneys,
+  mergeInScopeSpecDecisions,
+  parseSelectedImprovementRecord,
+  rankImprovementCandidates,
+  serializeSelectedImprovement,
+  type AutopilotImprovementProposal,
+  type AutopilotSelectedImprovement,
+} from './select.js';
 
 export type {
   AutopilotDocumentPort,
@@ -91,6 +103,19 @@ export interface AutopilotPlannerInput {
   briefRevision: number;
 }
 
+export interface AutopilotImprovementPlannerInput {
+  projectId: string;
+  runId: string;
+  cycleNumber: number;
+  brief: string;
+  briefRevision: number;
+  spec: AutopilotBaselineSpec;
+  ranked: AutopilotSelectedImprovement[];
+  lastVerification: unknown;
+  failedAttempts: AutopilotFailedAttempt[];
+  priorImprovements: AutopilotSelectedImprovement[];
+}
+
 export interface AutopilotPlannerPort {
   /**
    * Expand a loose brief into a concrete baseline. The planner may lock real
@@ -98,6 +123,13 @@ export interface AutopilotPlannerPort {
    * thrown error as a planning failure (retryable by the controller).
    */
   expandBrief(input: AutopilotPlannerInput): Promise<AutopilotBaselineSpec>;
+  /**
+   * Rank or confirm a bounded improvement set. Hub re-validates the result
+   * against the frozen brief, non-goals, and baseline coverage.
+   */
+  proposeImprovements?(
+    input: AutopilotImprovementPlannerInput,
+  ): Promise<AutopilotImprovementProposal>;
 }
 
 export interface AutopilotPlannedCard {
@@ -135,6 +167,32 @@ export interface AutopilotBoardPort {
     projectId: string;
     epicId: string;
   }): Promise<{ ok: boolean; reason?: string }>;
+  /**
+   * True when every card in every predecessor phase is Done, including epic
+   * cards that still have no phase. Pass the next cycle's `idempotencyKey`
+   * so recovery excludes that cycle's own phase (empty or To Do) and still
+   * checks all earlier phases, not only the nearest.
+   */
+  priorPhaseComplete(input: {
+    projectId: string;
+    epicId: string;
+    idempotencyKey?: string;
+  }): Promise<{ ok: boolean; reason?: string }>;
+  /**
+   * File the next cycle's phase + card on the existing epic. Idempotent per
+   * `idempotencyKey` (phase key and improvement card). Callers persist the
+   * selected proposal before this write and validate phase order after it
+   * returns.
+   */
+  createImprovementBoard(input: {
+    projectId: string;
+    runId: string;
+    epicId: string;
+    idempotencyKey: string;
+    improvement: AutopilotSelectedImprovement;
+    blockedByCardIds: string[];
+    specDecisions: { key: string; decision: string }[];
+  }): Promise<AutopilotPlannedBoard>;
 }
 
 /** Enforced bounds a dispatched worker must run under. */
@@ -1250,6 +1308,94 @@ export class AutopilotOrchestrator {
   }
 
   /**
+   * selecting-next: rank a bounded improvement set from unmet brief goals and
+   * deployment evidence, then open the next cycle only after the prior phase
+   * cards are settled and this cycle's verification + documentation succeeded.
+   * Scope/authority expansion pauses immediately. Three consecutive
+   * rejected or no-benefit proposals pause the run. Finite-cycle mode and
+   * usage envelopes stop before another cycle is filed.
+   */
+  async runSelectingNext(projectId: string): Promise<AutopilotRunSnapshot> {
+    const existing = this.store.getActiveRun(projectId);
+    if (!existing) {
+      throw new AutopilotError('no_active_run', 'No active Autopilot run');
+    }
+    try {
+      await this.controller.recordUsage(projectId, {});
+    } catch (err) {
+      if (isAutopilotError(err) && err.code === 'envelope_exhausted') {
+        return this.controller.getRun(projectId, existing.id);
+      }
+      throw err;
+    }
+    const latest = this.store.getActiveRun(projectId) ?? existing;
+    if (latest.controlState !== 'running') {
+      return this.controller.getRun(projectId, latest.id);
+    }
+    if (latest.stage !== 'selecting-next') {
+      return this.controller.getRun(projectId, latest.id);
+    }
+    const unfinished = this.findUnappliedSelectionHandoff(latest.id);
+    if (unfinished) {
+      return this.finishSelectedImprovement(projectId, unfinished.cycleId);
+    }
+    const cycle = this.store.getCycle(latest.id, latest.cycleNumber);
+    const selectingStages = cycle
+      ? this.store.listStages(cycle.id).filter((s) => s.stage === 'selecting-next')
+      : [];
+    if (cycle?.cardId && cycle.selectedImprovement && selectingStages.length === 0) {
+      if (!(await this.priorPhasesSettledForTarget(projectId, latest, latest.cycleNumber))) {
+        return this.controller.getRun(projectId, latest.id);
+      }
+      return this.controller.advanceStage(projectId, 'implementing');
+    }
+    if (!cycle) {
+      throw new AutopilotError('conflict', 'No active cycle');
+    }
+    const selectingSucceeded = selectingStages.some((s) => s.status === 'succeeded');
+    if (selectingSucceeded) {
+      return this.finishSelectedImprovement(projectId, cycle.id);
+    }
+    if (cycle.status !== 'active') {
+      if (!this.canResumeSelectingFrom(latest, cycle)) {
+        throw new AutopilotError('conflict', 'No active cycle');
+      }
+      this.store.updateCycle(cycle.id, { status: 'active' });
+    }
+    if (
+      latest.limits.cycleMode === 'finite' &&
+      latest.limits.maxCycles != null &&
+      latest.cycleNumber >= latest.limits.maxCycles
+    ) {
+      return this.haltSelectingNext(
+        projectId,
+        cycle.id,
+        'finite cycle envelope is exhausted',
+        'envelope',
+      );
+    }
+
+    const open = this.store.getOpenStage(cycle.id);
+    if (!open || open.stage !== 'selecting-next' || open.status !== 'pending') {
+      this.controller.advanceStage(projectId, 'selecting-next');
+    }
+
+    const op = this.controller.claimSelectingNextOperation(projectId);
+    if (!op) {
+      return this.controller.getRun(projectId, latest.id);
+    }
+    try {
+      if (!this.operationOwnsCurrentStage(op)) {
+        return this.controller.getRun(projectId, latest.id);
+      }
+      return await this.performSelection(projectId, op, cycle.id);
+    } catch (err) {
+      await this.settleFailureQuiet(op, err);
+      return this.controller.getRun(projectId, latest.id);
+    }
+  }
+
+  /**
    * Write (or reuse) the redacted structured cycle record and evidence
    * artifacts before journal/wiki side effects. Each artifact is persisted
    * immediately after upload so a retry reuses completed keys. A retry after
@@ -1477,6 +1623,457 @@ export class AutopilotOrchestrator {
    * between completeOperation and promote must not advance documenting
    * without recording the verified SHA.
    */
+  private async performSelection(
+    projectId: string,
+    op: AutopilotOperationRecord,
+    cycleId: string,
+  ): Promise<AutopilotRunSnapshot> {
+    const run = this.store.getRun(op.runId);
+    const cycle = this.store.getCycleById(cycleId);
+    if (!run || !cycle) {
+      throw new AutopilotError('not_found', 'cycle not found for selection');
+    }
+    const spec = this.readSpec(run.briefId);
+    if (!spec) {
+      throw new AutopilotError('invalid_config', 'run has no baseline spec to select from');
+    }
+    const brief = run.briefId ? this.store.getBrief(run.briefId) : null;
+    if (!brief) {
+      throw new AutopilotError('not_found', 'brief not found for run');
+    }
+    const priorImprovements = this.store
+      .listCycles(run.id)
+      .map((row) => parseSelectedImprovementRecord(row.selectedImprovement))
+      .filter((row): row is AutopilotSelectedImprovement => row != null);
+    const failedAttempts = this.failedAttemptsForCycle(run.id, cycleId);
+    const frozen = this.findFrozenSelection(run.id, cycleId);
+    let selected = frozen;
+    if (!selected) {
+      const ranked = rankImprovementCandidates({
+        brief: brief.content,
+        briefRevision: brief.revision,
+        spec,
+        lastVerification: cycle.verification,
+        failedAttempts,
+        priorImprovements,
+      });
+      let plannerProposal: AutopilotImprovementProposal | null = null;
+      if (this.planner.proposeImprovements) {
+        plannerProposal = await this.planner.proposeImprovements({
+          projectId,
+          runId: run.id,
+          cycleNumber: cycle.cycleNumber,
+          brief: brief.content,
+          briefRevision: brief.revision,
+          spec,
+          ranked,
+          lastVerification: cycle.verification,
+          failedAttempts,
+          priorImprovements,
+        });
+        if (!this.operationOwnsCurrentStage(op)) {
+          return this.controller.getRun(projectId, run.id);
+        }
+      }
+      const proposal = applyPlannerProposal(ranked, spec, plannerProposal, brief.content);
+      if (proposal.outcome === 'needs-expanded-authority') {
+        return this.haltSelectingNext(
+          projectId,
+          cycleId,
+          proposal.reason ?? 'proposal needs expanded authority or scope',
+          'needs-expanded-authority',
+          op,
+        );
+      }
+      if (proposal.outcome === 'no-benefit' || proposal.outcome === 'rejected') {
+        return this.recordSelectionDeadEnd(projectId, op, cycleId, proposal);
+      }
+      selected = proposal.selected;
+      if (!selected) {
+        return this.recordSelectionDeadEnd(projectId, op, cycleId, {
+          ...proposal,
+          outcome: 'no-benefit',
+          reason: proposal.reason ?? 'no remaining in-scope improvement with a falsifiable benefit',
+        });
+      }
+    }
+
+    const epicId = this.findEpicId(run.id);
+    if (!epicId) {
+      throw new AutopilotError('invalid_config', 'run has no epic to file the next phase on');
+    }
+    const nextNumber = cycle.cycleNumber + 1;
+    const idempotencyKey = `autopilot:${run.id}:cycle-${nextNumber}`;
+    const prior = await this.board.priorPhaseComplete({
+      projectId,
+      epicId,
+      idempotencyKey,
+    });
+    if (!this.operationOwnsCurrentStage(op)) {
+      return this.controller.getRun(projectId, run.id);
+    }
+    if (!prior.ok) {
+      return this.reopenSelectingNext(projectId, op, {
+        outcome: 'gated',
+        reason: prior.reason ?? 'prior phase cards are not settled',
+      });
+    }
+
+    this.freezeSelection(op, selected, idempotencyKey, cycle.cycleNumber);
+    const board = await this.board.createImprovementBoard({
+      projectId,
+      runId: run.id,
+      epicId,
+      idempotencyKey,
+      improvement: selected,
+      blockedByCardIds: cycle.cardId ? [cycle.cardId] : [],
+      specDecisions: selected.specDecisions ?? [],
+    });
+    const ordering = await this.board.validatePhaseOrder({ projectId, epicId: board.epicId });
+    if (!ordering.ok) {
+      throw new AutopilotError(
+        'invalid_config',
+        `phase dependency order is invalid: ${ordering.reason ?? 'unknown'}`,
+      );
+    }
+    if (!this.operationOwnsCurrentStage(op)) {
+      return this.controller.getRun(projectId, run.id);
+    }
+    const mergedSpec = mergeInScopeSpecDecisions(spec, selected.specDecisions);
+    this.store.updateBriefSpec(run.briefId!, JSON.stringify(mergedSpec));
+
+    await this.controller.completeOperation({
+      operationId: op.id,
+      fencingGeneration: op.fencingGeneration,
+      outcome: 'succeeded',
+      result: {
+        outcome: 'selected',
+        selected,
+        epicId: board.epicId,
+        primaryCardId: board.primaryCardId,
+        cardIds: board.cards.map((c) => c.cardId),
+        specRevision: brief.revision,
+      },
+    });
+    this.store.insertEvent({
+      runId: run.id,
+      cycleId,
+      operationId: op.id,
+      type: 'improvement_selected',
+      payload: { id: selected.id, kind: selected.kind, action: selected.action },
+      fencingGeneration: run.fencingGeneration,
+      createdAt: new Date().toISOString(),
+    });
+    return this.finishSelectedImprovement(projectId, cycleId);
+  }
+
+  /**
+   * Apply a succeeded select-next onto the successor cycle. Recovery rechecks
+   * predecessor completion against the persisted target-cycle key so a
+   * reopened prior card cannot dispatch the next implementation.
+   */
+  private async finishSelectedImprovement(
+    projectId: string,
+    cycleId: string,
+  ): Promise<AutopilotRunSnapshot> {
+    const run = this.store.getActiveRun(projectId);
+    if (!run) {
+      throw new AutopilotError('no_active_run', 'No active Autopilot run');
+    }
+    const selectedOp =
+      this.store
+        .listOperations(run.id)
+        .filter(
+          (row) =>
+            row.kind === 'select-next' && row.cycleId === cycleId && row.status === 'succeeded',
+        )
+        .pop() ?? null;
+    if (!selectedOp) {
+      return this.controller.getRun(projectId, run.id);
+    }
+    const result = (selectedOp.result ?? {}) as {
+      outcome?: unknown;
+      selected?: unknown;
+      primaryCardId?: unknown;
+      specRevision?: unknown;
+    };
+    if (result.outcome !== 'selected' || typeof result.primaryCardId !== 'string') {
+      return this.controller.getRun(projectId, run.id);
+    }
+    const selected = parseSelectedFromResult(result.selected);
+    if (!selected) {
+      return this.controller.getRun(projectId, run.id);
+    }
+    if (run.controlState !== 'running') {
+      return this.controller.getRun(projectId, run.id);
+    }
+    const source = this.store.getCycleById(cycleId);
+    const nextNumber =
+      source && run.cycleNumber === source.cycleNumber ? source.cycleNumber + 1 : run.cycleNumber;
+    const intent = (selectedOp.intent ?? {}) as { idempotencyKey?: unknown };
+    const persistedKey = typeof intent.idempotencyKey === 'string' ? intent.idempotencyKey : null;
+    if (!(await this.priorPhasesSettledForTarget(projectId, run, nextNumber, persistedKey))) {
+      return this.controller.getRun(projectId, run.id);
+    }
+    const latest = this.store.getActiveRun(projectId);
+    if (!latest || latest.controlState !== 'running') {
+      return this.controller.getRun(projectId, run.id);
+    }
+    const successor =
+      source && latest.cycleNumber > source.cycleNumber
+        ? this.store.getCycle(run.id, latest.cycleNumber)
+        : null;
+    const spec = this.readSpec(latest.briefId);
+    const specRevision =
+      typeof result.specRevision === 'number'
+        ? result.specRevision
+        : (successor?.specRevision ?? source?.specRevision ?? run.briefRevision ?? 1);
+    const patch: {
+      cardId: string;
+      specRevision: number;
+      selectedImprovement: string;
+      verificationJson?: string;
+    } = {
+      cardId: result.primaryCardId,
+      specRevision,
+      selectedImprovement: serializeSelectedImprovement(selected),
+    };
+    if (spec) {
+      const prior = this.store
+        .listCycles(run.id)
+        .filter((row) => row.cycleNumber < nextNumber)
+        .map((row) => parseSelectedImprovementRecord(row.selectedImprovement))
+        .filter((row): row is AutopilotSelectedImprovement => row != null);
+      patch.verificationJson = writeCycleVerification(successor?.verification ?? null, {
+        pinned: pinCriteriaFromSpec(
+          spec,
+          specRevision,
+          extraProtectedJourneys(spec, prior, selected),
+        ),
+      });
+    }
+    this.controller.applySelectionHandoff(projectId, cycleId, patch);
+    const opened = this.store.getActiveRun(projectId);
+    if (!opened || opened.controlState !== 'running') {
+      return this.controller.getRun(projectId, run.id);
+    }
+    if (opened.stage === 'selecting-next') {
+      return this.controller.advanceStage(projectId, 'implementing');
+    }
+    return this.controller.getRun(projectId, opened.id);
+  }
+
+  /**
+   * Recheck every predecessor phase against the next cycle's key. A crash
+   * after select-next succeeds can leave a window where a human reopens a
+   * prior card; recovery must not open the successor until those cards are
+   * Done again. Prefer the key frozen on the operation intent so retries keep
+   * excluding the same target phase.
+   */
+  private async priorPhasesSettledForTarget(
+    projectId: string,
+    run: NonNullable<ReturnType<AutopilotStore['getActiveRun']>>,
+    targetCycleNumber: number,
+    persistedKey?: string | null,
+  ): Promise<boolean> {
+    const epicId = this.findEpicId(run.id);
+    if (!epicId) return false;
+    const idempotencyKey =
+      persistedKey && persistedKey.trim()
+        ? persistedKey.trim()
+        : `autopilot:${run.id}:cycle-${targetCycleNumber}`;
+    const prior = await this.board.priorPhaseComplete({
+      projectId,
+      epicId,
+      idempotencyKey,
+    });
+    return prior.ok;
+  }
+
+  /**
+   * A succeeded select-next is unfinished until some cycle holds that card and
+   * selected improvement. Recovery must finish the predecessor's handoff even
+   * after `openNextCycle` has already advanced `cycleNumber`.
+   */
+  private findUnappliedSelectionHandoff(runId: string): { cycleId: string } | null {
+    const cycles = this.store.listCycles(runId);
+    for (const op of [...this.store.listOperations(runId)].reverse()) {
+      if (op.kind !== 'select-next' || op.status !== 'succeeded' || !op.cycleId) continue;
+      const result = (op.result ?? {}) as { outcome?: unknown; primaryCardId?: unknown };
+      if (result.outcome !== 'selected' || typeof result.primaryCardId !== 'string') continue;
+      const applied = cycles.some(
+        (row) => row.cardId === result.primaryCardId && !!row.selectedImprovement,
+      );
+      if (!applied) return { cycleId: op.cycleId };
+    }
+    return null;
+  }
+
+  /**
+   * Once a proposal has been written to a select-next intent, later retries
+   * must reuse it. Re-ranking after a partial board write would file B against
+   * a card that still instructs A.
+   */
+  private findFrozenSelection(runId: string, cycleId: string): AutopilotSelectedImprovement | null {
+    for (const op of this.store.listOperations(runId)) {
+      if (op.kind !== 'select-next' || op.cycleId !== cycleId) continue;
+      const intent = (op.intent ?? {}) as { selected?: unknown };
+      const selected = parseSelectedFromResult(intent.selected);
+      if (selected) return selected;
+    }
+    return null;
+  }
+
+  private freezeSelection(
+    op: AutopilotOperationRecord,
+    selected: AutopilotSelectedImprovement,
+    idempotencyKey: string,
+    cycleNumber: number,
+  ): void {
+    const intent =
+      op.intent && typeof op.intent === 'object' && !Array.isArray(op.intent)
+        ? (op.intent as Record<string, unknown>)
+        : {};
+    this.store.updateOperation(op.id, {
+      intentJson: JSON.stringify({
+        ...intent,
+        stage: 'selecting-next',
+        cycleNumber,
+        selected,
+        idempotencyKey,
+      }),
+    });
+  }
+
+  private async haltSelectingNext(
+    projectId: string,
+    cycleId: string,
+    reason: string,
+    outcome: string,
+    existingOp?: AutopilotOperationRecord,
+  ): Promise<AutopilotRunSnapshot> {
+    const run = this.store.getActiveRun(projectId);
+    if (!run) {
+      throw new AutopilotError('no_active_run', 'No active Autopilot run');
+    }
+    const op = existingOp ?? this.controller.claimSelectingNextOperation(projectId);
+    if (op) {
+      await this.controller.completeOperation({
+        operationId: op.id,
+        fencingGeneration: op.fencingGeneration,
+        outcome: 'failed',
+        skipStageRetry: true,
+        haltReason: reason,
+        result: { outcome, reason },
+      });
+      if (outcome !== 'envelope') {
+        this.store.insertEvent({
+          runId: run.id,
+          cycleId,
+          operationId: op.id,
+          type:
+            outcome === 'needs-expanded-authority'
+              ? 'improvement_rejected'
+              : 'improvement_no_benefit',
+          payload: { reason, outcome },
+          fencingGeneration: run.fencingGeneration,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
+    return this.controller.getRun(projectId, run.id);
+  }
+
+  /**
+   * A selecting-next pause is not a finished cycle. The verified source cycle
+   * stays current so resume can rank again; closing it belongs to a succeeded
+   * selection handoff.
+   */
+  private canResumeSelectingFrom(
+    run: { stage: string | null; cycleNumber: number; id: string },
+    cycle: { status: string; cycleNumber: number },
+  ): boolean {
+    if (run.stage !== 'selecting-next') return false;
+    if (cycle.status === 'failed' || cycle.status === 'cancelled') return false;
+    if (cycle.cycleNumber !== run.cycleNumber) return false;
+    return this.store.getCycle(run.id, cycle.cycleNumber + 1) == null;
+  }
+
+  private async recordSelectionDeadEnd(
+    projectId: string,
+    op: AutopilotOperationRecord,
+    cycleId: string,
+    proposal: AutopilotImprovementProposal,
+  ): Promise<AutopilotRunSnapshot> {
+    const run = this.store.getRun(op.runId);
+    if (!run) {
+      throw new AutopilotError('not_found', 'run not found for selection');
+    }
+    const streak = consecutiveNoBenefitStreak(this.store.listEvents(run.id, 200)) + 1;
+    const reason =
+      proposal.reason ??
+      (proposal.outcome === 'rejected'
+        ? 'proposed improvement was rejected'
+        : 'no remaining in-scope improvement with a falsifiable benefit');
+    if (streak >= AUTOPILOT_NO_BENEFIT_PAUSE_STREAK) {
+      return this.haltSelectingNext(
+        projectId,
+        cycleId,
+        `three consecutive rejected/no-benefit proposals: ${reason}`,
+        proposal.outcome,
+        op,
+      );
+    }
+    await this.controller.completeOperation({
+      operationId: op.id,
+      fencingGeneration: op.fencingGeneration,
+      outcome: 'failed',
+      skipStageRetry: true,
+      result: { outcome: proposal.outcome, reason, streak },
+    });
+    this.store.insertEvent({
+      runId: run.id,
+      cycleId,
+      operationId: op.id,
+      type: proposal.outcome === 'rejected' ? 'improvement_rejected' : 'improvement_no_benefit',
+      payload: { reason, streak },
+      fencingGeneration: run.fencingGeneration,
+      createdAt: new Date().toISOString(),
+    });
+    const latest = this.store.getActiveRun(projectId);
+    if (latest && latest.controlState === 'running' && latest.stage === 'selecting-next') {
+      return this.controller.advanceStage(projectId, 'selecting-next');
+    }
+    return this.controller.getRun(projectId, run.id);
+  }
+
+  private async reopenSelectingNext(
+    projectId: string,
+    op: AutopilotOperationRecord,
+    result: { outcome: string; reason: string },
+  ): Promise<AutopilotRunSnapshot> {
+    await this.controller.completeOperation({
+      operationId: op.id,
+      fencingGeneration: op.fencingGeneration,
+      outcome: 'failed',
+      skipStageRetry: true,
+      result,
+    });
+    const latest = this.store.getActiveRun(projectId);
+    if (latest && latest.controlState === 'running' && latest.stage === 'selecting-next') {
+      return this.controller.advanceStage(projectId, 'selecting-next');
+    }
+    return this.controller.getRun(projectId, op.runId);
+  }
+
+  private findEpicId(runId: string): string | null {
+    for (const op of [...this.store.listOperations(runId)].reverse()) {
+      const result = (op.result ?? {}) as { epicId?: unknown };
+      if (typeof result.epicId === 'string' && result.epicId.trim()) return result.epicId.trim();
+    }
+    return null;
+  }
+
   private persistLastKnownGoodFromOp(projectId: string, op: AutopilotOperationRecord): void {
     const result = op.result as { sha?: unknown; deploymentId?: unknown } | null;
     const sha = typeof result?.sha === 'string' ? result.sha.trim() : '';
@@ -1743,6 +2340,16 @@ export class AutopilotOrchestrator {
     const settled = this.store.getOperation(op.id);
     if (run && settled) await this.afterFailedOperation(run.projectId, settled);
   }
+}
+
+function parseSelectedFromResult(raw: unknown): AutopilotSelectedImprovement | null {
+  if (raw && typeof raw === 'object') {
+    return parseSelectedImprovementRecord(
+      serializeSelectedImprovement(raw as AutopilotSelectedImprovement),
+    );
+  }
+  if (typeof raw === 'string') return parseSelectedImprovementRecord(raw);
+  return null;
 }
 
 export function createAutopilotOrchestrator(

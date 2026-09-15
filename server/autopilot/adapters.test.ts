@@ -50,13 +50,19 @@ const RESOLVED_SPEC = {
  */
 function recordingBoardOps(opts?: {
   seedEpicId?: string;
-  seedCards?: { id: string; key: string }[];
+  seedCards?: { id: string; key: string; phaseId?: string; columnName?: string }[];
   overrides?: Partial<AutopilotBoardOps>;
 }) {
   const state = {
     epicId: opts?.seedEpicId ?? (null as string | null),
     phaseCreated: 0,
-    cards: [...(opts?.seedCards ?? [])] as { id: string; key: string }[],
+    phases: [] as { id: string; name: string; position: number; key?: string | null }[],
+    cards: [...(opts?.seedCards ?? [])] as {
+      id: string;
+      key: string;
+      phaseId?: string;
+      columnName?: string;
+    }[],
     blockers: [] as { cardId: string; blockedByCardId: string }[],
   };
   const created = { epics: 0, cards: 0 };
@@ -71,12 +77,37 @@ function recordingBoardOps(opts?: {
     },
     nextEpicPosition: () => 0,
     ensurePhase: () => {
-      if (state.phaseCreated === 0) state.phaseCreated = 1;
-      return { phaseId: 'phase-1' };
+      if (!state.phases.length) {
+        state.phases.push({ id: 'phase-1', name: 'Baseline', position: 0 });
+      }
+      state.phaseCreated = state.phases.length;
+      return { phaseId: state.phases[0]!.id };
     },
     listCardsForEpic: () => state.cards.map((c) => ({ id: c.id, key: c.key })),
+    listPhases: () => state.phases,
+    createPhase: (a) => {
+      state.phases.push({
+        id: a.id,
+        name: a.name,
+        position: a.position,
+        key: a.key ?? null,
+      });
+      state.phaseCreated = state.phases.length;
+    },
+    listEpicCards: () =>
+      state.cards.map((c) => ({
+        id: c.id,
+        key: c.key,
+        phaseId: c.phaseId ?? 'phase-1',
+        columnName: c.columnName ?? 'To Do',
+      })),
     createCard: (a) => {
-      state.cards.push({ id: a.id, key: a.key });
+      state.cards.push({
+        id: a.id,
+        key: a.key,
+        phaseId: a.phaseId,
+        columnName: 'To Do',
+      });
       created.cards += 1;
     },
     nextCardPosition: () => seq++,
@@ -313,6 +344,315 @@ describe('autopilot board adapter', () => {
     const res = await board.validatePhaseOrder({ projectId: 'demo', epicId: 'epic-1' });
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/cycle/);
+  });
+
+  it('files the next cycle phase only after prior cards are settled', async () => {
+    let n = 0;
+    const { ops, state } = recordingBoardOps();
+    const board = createAutopilotBoardAdapter({ ops, randomId: () => `imp-${n++}` });
+    const baseline = await board.createBaselineBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      idempotencyKey: 'autopilot:run-1:cycle-1',
+      spec: SPEC,
+    });
+    for (const card of state.cards) card.columnName = 'Done';
+    const prior = await board.priorPhaseComplete({ projectId: 'demo', epicId: state.epicId! });
+    expect(prior.ok).toBe(true);
+    const next = await board.createImprovementBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      epicId: state.epicId!,
+      idempotencyKey: 'autopilot:run-1:cycle-2',
+      improvement: {
+        id: 'complete',
+        kind: 'unmet-goal',
+        action: 'complete a todo',
+        expectedResult: 'it is marked done in the list',
+        expectedBenefit: 'Users can complete todos.',
+        rationale: 'Unmet brief goal',
+      },
+      blockedByCardIds: [baseline.primaryCardId],
+      specDecisions: [],
+    });
+    expect(state.phaseCreated).toBe(2);
+    expect(next.primaryCardId).toBeTruthy();
+    expect(state.blockers.some((b) => b.blockedByCardId === baseline.primaryCardId)).toBe(true);
+  });
+
+  it('requires the Done column before filing the next phase', async () => {
+    let columnName = 'Cancelled';
+    const { ops, state } = recordingBoardOps();
+    ops.listEpicCards = () =>
+      state.cards.map((c) => ({
+        id: c.id,
+        key: c.key,
+        phaseId: 'phase-1',
+        columnName,
+      }));
+    const board = createAutopilotBoardAdapter({ ops, randomId: () => `gate-${Math.random()}` });
+    await board.createBaselineBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      idempotencyKey: 'autopilot:run-1:cycle-1',
+      spec: SPEC,
+    });
+    expect((await board.priorPhaseComplete({ projectId: 'demo', epicId: state.epicId! })).ok).toBe(
+      false,
+    );
+    columnName = 'Not Done';
+    expect((await board.priorPhaseComplete({ projectId: 'demo', epicId: state.epicId! })).ok).toBe(
+      false,
+    );
+    columnName = 'Done';
+    expect((await board.priorPhaseComplete({ projectId: 'demo', epicId: state.epicId! })).ok).toBe(
+      true,
+    );
+    ops.listEpicCards = () => [
+      ...state.cards.map((c) => ({
+        id: c.id,
+        key: c.key,
+        phaseId: 'phase-1',
+        columnName: 'Done',
+      })),
+      { id: 'human-1', key: null, phaseId: 'phase-1', columnName: 'To Do' },
+    ];
+    expect((await board.priorPhaseComplete({ projectId: 'demo', epicId: state.epicId! })).ok).toBe(
+      false,
+    );
+  });
+
+  it('fails the gate when baseline cards are Done but an unassigned epic card is not', async () => {
+    const { ops, state } = recordingBoardOps();
+    const board = createAutopilotBoardAdapter({
+      ops,
+      randomId: () => `unassigned-${Math.random()}`,
+    });
+    await board.createBaselineBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      idempotencyKey: 'autopilot:run-1:cycle-1',
+      spec: SPEC,
+    });
+    const assigned = () =>
+      state.cards.map((c) => ({
+        id: c.id,
+        key: c.key,
+        phaseId: c.phaseId ?? 'phase-1',
+        columnName: 'Done' as const,
+      }));
+    ops.listEpicCards = () => [
+      ...assigned(),
+      { id: 'unassigned-1', key: null, phaseId: null, columnName: 'To Do' },
+    ];
+    const blocked = await board.priorPhaseComplete({ projectId: 'demo', epicId: state.epicId! });
+    expect(blocked.ok).toBe(false);
+    expect(blocked.reason).toMatch(/unassigned/i);
+    expect(
+      (
+        await board.priorPhaseComplete({
+          projectId: 'demo',
+          epicId: state.epicId!,
+          idempotencyKey: 'autopilot:run-1:cycle-2',
+        })
+      ).ok,
+    ).toBe(false);
+    ops.listEpicCards = () => [
+      ...assigned(),
+      { id: 'unassigned-1', key: null, phaseId: null, columnName: 'Done' },
+    ];
+    expect((await board.priorPhaseComplete({ projectId: 'demo', epicId: state.epicId! })).ok).toBe(
+      true,
+    );
+  });
+
+  it('retries the predecessor phase after a partially created improvement board', async () => {
+    let n = 0;
+    const { ops, state } = recordingBoardOps();
+    const board = createAutopilotBoardAdapter({ ops, randomId: () => `imp-${n++}` });
+    const baseline = await board.createBaselineBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      idempotencyKey: 'autopilot:run-1:cycle-1',
+      spec: SPEC,
+    });
+    for (const card of state.cards) card.columnName = 'Done';
+    const cycle2Key = 'autopilot:run-1:cycle-2';
+    const improvement = {
+      id: 'complete',
+      kind: 'unmet-goal' as const,
+      action: 'complete a todo',
+      expectedResult: 'it is marked done in the list',
+      expectedBenefit: 'Users can complete todos.',
+      rationale: 'Unmet brief goal',
+    };
+    const created = await board.createImprovementBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      epicId: state.epicId!,
+      idempotencyKey: cycle2Key,
+      improvement,
+      blockedByCardIds: [baseline.primaryCardId],
+      specDecisions: [],
+    });
+    expect(state.phaseCreated).toBe(2);
+    expect((await board.priorPhaseComplete({ projectId: 'demo', epicId: state.epicId! })).ok).toBe(
+      false,
+    );
+    expect(
+      (
+        await board.priorPhaseComplete({
+          projectId: 'demo',
+          epicId: state.epicId!,
+          idempotencyKey: cycle2Key,
+        })
+      ).ok,
+    ).toBe(true);
+    const reused = await board.createImprovementBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      epicId: state.epicId!,
+      idempotencyKey: cycle2Key,
+      improvement,
+      blockedByCardIds: [baseline.primaryCardId],
+      specDecisions: [],
+    });
+    expect(reused.primaryCardId).toBe(created.primaryCardId);
+    expect(state.phaseCreated).toBe(2);
+  });
+
+  it('fails the gate when an earlier phase card is reopened and the immediate predecessor is still Done', async () => {
+    let n = 0;
+    const { ops, state } = recordingBoardOps();
+    const board = createAutopilotBoardAdapter({ ops, randomId: () => `imp-${n++}` });
+    const baseline = await board.createBaselineBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      idempotencyKey: 'autopilot:run-1:cycle-1',
+      spec: SPEC,
+    });
+    for (const card of state.cards) card.columnName = 'Done';
+    const cycle2 = await board.createImprovementBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      epicId: state.epicId!,
+      idempotencyKey: 'autopilot:run-1:cycle-2',
+      improvement: {
+        id: 'complete',
+        kind: 'unmet-goal',
+        action: 'complete a todo',
+        expectedResult: 'it is marked done in the list',
+        expectedBenefit: 'Users can complete todos.',
+        rationale: 'Unmet brief goal',
+      },
+      blockedByCardIds: [baseline.primaryCardId],
+      specDecisions: [],
+    });
+    for (const card of state.cards) card.columnName = 'Done';
+    const cycle3Key = 'autopilot:run-1:cycle-3';
+    await board.createImprovementBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      epicId: state.epicId!,
+      idempotencyKey: cycle3Key,
+      improvement: {
+        id: 'edit-todo',
+        kind: 'unmet-goal',
+        action: 'edit a todo title',
+        expectedResult: 'the list shows the new title',
+        expectedBenefit: 'Users can rename todos.',
+        rationale: 'Unmet brief goal',
+      },
+      blockedByCardIds: [cycle2.primaryCardId],
+      specDecisions: [],
+    });
+    const earlier = state.cards.find((c) => (c.phaseId ?? 'phase-1') === 'phase-1');
+    expect(earlier).toBeTruthy();
+    earlier!.columnName = 'To Do';
+    expect(
+      (
+        await board.priorPhaseComplete({
+          projectId: 'demo',
+          epicId: state.epicId!,
+          idempotencyKey: cycle3Key,
+        })
+      ).ok,
+    ).toBe(false);
+    earlier!.columnName = 'Done';
+    expect(
+      (
+        await board.priorPhaseComplete({
+          projectId: 'demo',
+          epicId: state.epicId!,
+          idempotencyKey: cycle3Key,
+        })
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('recovers after createPhase before the improvement card exists', async () => {
+    let n = 0;
+    const { ops, state } = recordingBoardOps();
+    const originalCreateCard = ops.createCard;
+    let failNextImprovementCard = true;
+    ops.createCard = (a) => {
+      if (failNextImprovementCard && a.key.endsWith('#improvement')) {
+        failNextImprovementCard = false;
+        throw new Error('injected crash after createPhase');
+      }
+      originalCreateCard(a);
+    };
+    const board = createAutopilotBoardAdapter({ ops, randomId: () => `imp-${n++}` });
+    const baseline = await board.createBaselineBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      idempotencyKey: 'autopilot:run-1:cycle-1',
+      spec: SPEC,
+    });
+    for (const card of state.cards) card.columnName = 'Done';
+    const cycle2Key = 'autopilot:run-1:cycle-2';
+    const improvement = {
+      id: 'complete',
+      kind: 'unmet-goal' as const,
+      action: 'complete a todo',
+      expectedResult: 'it is marked done in the list',
+      expectedBenefit: 'Users can complete todos.',
+      rationale: 'Unmet brief goal',
+    };
+    await expect(
+      board.createImprovementBoard({
+        projectId: 'demo',
+        runId: 'run-1',
+        epicId: state.epicId!,
+        idempotencyKey: cycle2Key,
+        improvement,
+        blockedByCardIds: [baseline.primaryCardId],
+        specDecisions: [],
+      }),
+    ).rejects.toThrow(/injected crash after createPhase/);
+    expect(state.phaseCreated).toBe(2);
+    expect(state.cards.some((c) => c.key === `${cycle2Key}#improvement`)).toBe(false);
+    expect(
+      (
+        await board.priorPhaseComplete({
+          projectId: 'demo',
+          epicId: state.epicId!,
+          idempotencyKey: cycle2Key,
+        })
+      ).ok,
+    ).toBe(true);
+    const recovered = await board.createImprovementBoard({
+      projectId: 'demo',
+      runId: 'run-1',
+      epicId: state.epicId!,
+      idempotencyKey: cycle2Key,
+      improvement,
+      blockedByCardIds: [baseline.primaryCardId],
+      specDecisions: [],
+    });
+    expect(state.phaseCreated).toBe(2);
+    expect(recovered.primaryCardId).toBeTruthy();
+    expect(state.cards.some((c) => c.key === `${cycle2Key}#improvement`)).toBe(true);
   });
 });
 

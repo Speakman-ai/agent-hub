@@ -151,8 +151,10 @@ export class AutopilotRuntime {
       case 'documenting':
         await orchestrator.runDocumenting(run.projectId);
         return;
+      case 'selecting-next':
+        await orchestrator.runSelectingNext(run.projectId);
+        return;
       default:
-        // selecting-next is owned by the improvement-selection card.
         return;
     }
   }

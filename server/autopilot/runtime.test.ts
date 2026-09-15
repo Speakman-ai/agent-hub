@@ -48,6 +48,12 @@ function fakeAdapters(): AutopilotAdapters {
         cards: [{ cardId: 'card-1', title: 'baseline', phase: 1, blockedBy: [] }],
       }),
       validatePhaseOrder: async () => ({ ok: true }),
+      priorPhaseComplete: async () => ({ ok: true }),
+      createImprovementBoard: async () => ({
+        epicId: 'epic-1',
+        primaryCardId: 'card-improve',
+        cards: [{ cardId: 'card-improve', title: 'improve', phase: 2, blockedBy: ['card-1'] }],
+      }),
     },
     session: {
       dispatchImplementation: async () => ({ sessionId: 'sess-1' }),

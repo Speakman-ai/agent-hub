@@ -10,6 +10,7 @@ import type {
   AutopilotFinalizePort,
   AutopilotFinalizeResult,
   AutopilotImplementationContext,
+  AutopilotImprovementPlannerInput,
   AutopilotPlannerInput,
   AutopilotPlannerPort,
   AutopilotPlannedBoard,
@@ -18,6 +19,11 @@ import type {
 import type { AutopilotPinnedCriteria } from './evaluate.js';
 import { renderHandoffPrompt } from './document.js';
 import type { AutopilotDocumentPort, AutopilotJournalPage } from './document.js';
+import {
+  applyPlannerProposal,
+  rankImprovementCandidates,
+  type AutopilotImprovementProposal,
+} from './select.js';
 
 /**
  * Concrete adapters that bind the Autopilot orchestrator's ports to the real
@@ -42,6 +48,9 @@ export interface AutopilotPlannerOps {
    * structured output; tests inject a deterministic fake.
    */
   planBaseline: (input: AutopilotPlannerInput) => Promise<unknown>;
+  proposeImprovements?: (
+    input: AutopilotImprovementPlannerInput,
+  ) => Promise<AutopilotImprovementProposal>;
 }
 
 export interface AutopilotPlannerAdapterDeps {
@@ -140,6 +149,26 @@ export function createAutopilotPlannerAdapter(
 ): AutopilotPlannerPort {
   return {
     expandBrief: async (input) => validateBaselineSpec(await deps.ops.planBaseline(input)),
+    proposeImprovements: async (input) => {
+      if (deps.ops.proposeImprovements) {
+        return applyPlannerProposal(
+          input.ranked,
+          input.spec,
+          await deps.ops.proposeImprovements(input),
+          input.brief,
+        );
+      }
+      const ranked = rankImprovementCandidates({
+        brief: input.brief,
+        briefRevision: input.briefRevision,
+        spec: input.spec,
+        lastVerification: input.lastVerification,
+        failedAttempts: input.failedAttempts,
+        priorImprovements: input.priorImprovements,
+        proposed: input.ranked,
+      });
+      return applyPlannerProposal(ranked, input.spec, null, input.brief);
+    },
   };
 }
 
@@ -188,6 +217,30 @@ export interface AutopilotBoardOps {
   addBlocker: (args: { id: string; cardId: string; blockedByCardId: string }) => void;
   /** Topologically validate + persist phase order; returns ok/false with a reason. */
   validateAndSaveOrder: (epicId: string) => { ok: boolean; reason?: string };
+  /** Optional atomic wrapper so phase + card land together when the backend allows it. */
+  transaction?: <T>(fn: () => T) => T;
+  listPhases: (epicId: string) => {
+    id: string;
+    name: string;
+    position: number;
+    /** Cycle-scoped Autopilot identity, independent of whether a card exists yet. */
+    key?: string | null;
+  }[];
+  createPhase: (args: {
+    id: string;
+    epicId: string;
+    boardId: string;
+    name: string;
+    position: number;
+    /** Durable per-cycle identity so a crash after createPhase is recoverable. */
+    key?: string;
+  }) => void;
+  listEpicCards: (epicId: string) => {
+    id: string;
+    key: string | null;
+    phaseId: string | null;
+    columnName: string;
+  }[];
 }
 
 export interface AutopilotBoardAdapterDeps {
@@ -299,7 +352,139 @@ export function createAutopilotBoardAdapter(deps: AutopilotBoardAdapterDeps): Au
     },
 
     validatePhaseOrder: async ({ epicId }) => ops.validateAndSaveOrder(epicId),
+
+    priorPhaseComplete: async ({ epicId, idempotencyKey }) => {
+      const phases = [...ops.listPhases(epicId)].sort((a, b) => a.position - b.position);
+      const cards = ops.listEpicCards(epicId);
+      const prior = predecessorPhasesToComplete(phases, cards, idempotencyKey);
+      if (!prior.ok) return { ok: false, reason: prior.reason };
+      const priorIds = new Set(prior.phaseIds);
+      const phaseCards = cards.filter((c) => c.phaseId && priorIds.has(c.phaseId));
+      if (phaseCards.length === 0) return { ok: false, reason: 'prior phase has no cards' };
+      // Unassigned epic cards are existing work with no phase, so excluding
+      // `phaseId === null` would let a To Do card ride along while assigned
+      // predecessor cards are Done. They must be Done before the next phase.
+      const gatedCards = cards.filter((c) => !c.phaseId || priorIds.has(c.phaseId));
+      const unfinished = gatedCards.filter((c) => !isDoneColumn(c.columnName));
+      if (unfinished.length > 0) {
+        const unassigned = unfinished.filter((c) => !c.phaseId).length;
+        return {
+          ok: false,
+          reason: unassigned
+            ? `${unassigned} unassigned epic card(s) are not Done`
+            : `${unfinished.length} prior-phase card(s) are not Done`,
+        };
+      }
+      return { ok: true };
+    },
+
+    createImprovementBoard: async ({
+      projectId,
+      epicId,
+      idempotencyKey,
+      improvement,
+      blockedByCardIds,
+    }): Promise<AutopilotPlannedBoard> => {
+      const { boardId } = ops.ensureBoard(projectId);
+      const existingCards = ops.listEpicCards(epicId);
+      const byKey = new Map(
+        existingCards
+          .filter((c): c is typeof c & { key: string } => !!c.key)
+          .map((c) => [c.key, c]),
+      );
+      const improvementKey = `${idempotencyKey}#improvement`;
+      const existing = byKey.get(improvementKey);
+      const phases = [...ops.listPhases(epicId)].sort((a, b) => a.position - b.position);
+      const existingPhase =
+        phases.find((p) => p.key === idempotencyKey) ??
+        phases.find((p) => p.id === existing?.phaseId) ??
+        null;
+      let phaseId = existingPhase?.id ?? existing?.phaseId ?? null;
+      const writeBoard = () => {
+        let resolvedPhaseId = phaseId;
+        if (!resolvedPhaseId) {
+          const nextPos = phases.length ? Math.max(...phases.map((p) => p.position)) + 1 : 0;
+          resolvedPhaseId = randomId();
+          phaseId = resolvedPhaseId;
+          ops.createPhase({
+            id: resolvedPhaseId,
+            epicId,
+            boardId,
+            name: `Cycle ${nextPos + 1}`,
+            position: nextPos,
+            key: idempotencyKey,
+          });
+        }
+        const columnId = ops.todoColumnId(boardId);
+        const title = `Improve: ${improvement.action}`.slice(0, 120);
+        let primaryCardId = existing?.id;
+        if (!primaryCardId) {
+          primaryCardId = randomId();
+          ops.createCard({
+            id: primaryCardId,
+            key: improvementKey,
+            columnId,
+            boardId,
+            epicId,
+            phaseId: resolvedPhaseId,
+            title,
+            description: `When a user ${improvement.action}, then ${improvement.expectedResult}.\n\nExpected benefit: ${improvement.expectedBenefit}`,
+            position: ops.nextCardPosition(columnId),
+          });
+        }
+        return { primaryCardId, title };
+      };
+      const written = ops.transaction ? ops.transaction(writeBoard) : writeBoard();
+      const primaryCardId = written.primaryCardId;
+      const title = written.title;
+      for (const blockedBy of blockedByCardIds) {
+        ops.addBlocker({ id: randomId(), cardId: primaryCardId, blockedByCardId: blockedBy });
+      }
+      return {
+        epicId,
+        primaryCardId,
+        cards: [
+          {
+            cardId: primaryCardId,
+            title,
+            phase: phases.length + (existingPhase || existing ? 0 : 1),
+            blockedBy: [...blockedByCardIds],
+          },
+        ],
+      };
+    },
   };
+}
+
+function isDoneColumn(name: string): boolean {
+  return name.trim().toLowerCase() === 'done';
+}
+
+/**
+ * Every phase before the next cycle must be Done, not only the nearest one.
+ * Recovery keys the in-progress target and excludes it so its new To Do card
+ * cannot fail the gate. When that target does not exist yet, every existing
+ * phase is a predecessor.
+ */
+function predecessorPhasesToComplete(
+  phases: { id: string; position: number; key?: string | null }[],
+  cards: { key: string | null; phaseId: string | null }[],
+  idempotencyKey?: string,
+): { ok: true; phaseIds: string[] } | { ok: false; reason: string } {
+  if (phases.length === 0) return { ok: false, reason: 'epic has no phase' };
+  if (idempotencyKey) {
+    const targetPhase = phases.find((p) => p.key === idempotencyKey);
+    const targetCard = cards.find((c) => c.key === `${idempotencyKey}#improvement`);
+    const targetId = targetPhase?.id ?? targetCard?.phaseId ?? null;
+    if (targetId) {
+      const idx = phases.findIndex((p) => p.id === targetId);
+      if (idx <= 0) {
+        return { ok: false, reason: 'improvement phase has no predecessor' };
+      }
+      return { ok: true, phaseIds: phases.slice(0, idx).map((p) => p.id) };
+    }
+  }
+  return { ok: true, phaseIds: phases.map((p) => p.id) };
 }
 
 // ---------------------------------------------------------------------------

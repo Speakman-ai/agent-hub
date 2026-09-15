@@ -82,6 +82,19 @@ function autopilotCardKey(labels: string | null): string | null {
   }
   return null;
 }
+
+/** Cycle-scoped phase identity stored in the kanban phase description. */
+function autopilotPhaseKey(description: string | null | undefined): string | null {
+  if (!description) return null;
+  const idx = description.indexOf(AUTOPILOT_KEY_LABEL);
+  if (idx < 0) return null;
+  const token =
+    description
+      .slice(idx + AUTOPILOT_KEY_LABEL.length)
+      .trim()
+      .split(/\s/)[0] ?? '';
+  return token || null;
+}
 interface FinalizeRunLite {
   status: string;
   reviewer_verdict: 'approved' | 'changes_requested' | null;
@@ -308,6 +321,42 @@ export function buildBoardOps(stmts: Stmts): AutopilotBoardOps {
       if (stmts.getBlocker.get(a.cardId, a.blockedByCardId)) return;
       if (findCycle(stmts, a.cardId, a.blockedByCardId)) return;
       stmts.createBlocker.run(a.id, a.cardId, a.blockedByCardId);
+    },
+    listPhases: (epicId) =>
+      (
+        stmts.getKanbanPhasesByEpic.all(epicId) as {
+          id: string;
+          name: string;
+          position: number;
+          description?: string | null;
+        }[]
+      ).map((p) => ({
+        id: p.id,
+        name: p.name,
+        position: p.position,
+        key: autopilotPhaseKey(p.description),
+      })),
+    createPhase: (a) => {
+      const description = a.key ? `${AUTOPILOT_KEY_LABEL}${a.key}` : null;
+      stmts.createKanbanPhase.run(a.id, a.epicId, a.boardId, a.name, description, a.position);
+    },
+    transaction: (fn) => getDb().transaction(fn)(),
+    listEpicCards: (epicId) => {
+      const cards = stmts.getKanbanCardsByEpic.all(epicId) as (KanbanCardLite & {
+        column_id?: string;
+        phase_id: string | null;
+      })[];
+      return cards.map((c) => {
+        const col = c.column_id
+          ? (stmts.getKanbanColumn.get(c.column_id) as { name?: string } | undefined)
+          : undefined;
+        return {
+          id: c.id,
+          key: autopilotCardKey(c.labels),
+          phaseId: c.phase_id,
+          columnName: col?.name ?? '',
+        };
+      });
     },
     validateAndSaveOrder: (epicId) => {
       const phases = stmts.getKanbanPhasesByEpic.all(epicId) as { id: string; position: number }[];

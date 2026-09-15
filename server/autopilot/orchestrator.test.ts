@@ -28,6 +28,8 @@ import {
   type AutopilotDocumentPort,
   autopilotPublicationIdentity,
 } from './document.js';
+import type { AutopilotSelectedImprovement } from './select.js';
+import type { AutopilotLimits } from './types.js';
 
 const PROJECT = 'demo-app';
 const ACTOR = { userId: 'user-1' };
@@ -60,11 +62,50 @@ const SPEC: AutopilotBaselineSpec = {
   qualityRubricVersion: 1,
 };
 
-function fakePlanner(spec: AutopilotBaselineSpec = SPEC): AutopilotPlannerPort {
-  return { expandBrief: async () => spec };
+const IMPROVEMENTS: AutopilotSelectedImprovement[] = [
+  {
+    id: 'complete-todo',
+    kind: 'unmet-goal',
+    action: 'complete a todo',
+    expectedResult: 'it is marked done in the list',
+    expectedBenefit: 'Users can complete todos from the list.',
+    rationale: 'Unmet brief goal',
+  },
+  {
+    id: 'edit-todo',
+    kind: 'unmet-goal',
+    action: 'edit a todo title',
+    expectedResult: 'the list shows the new title',
+    expectedBenefit: 'Users can rename todos.',
+    rationale: 'Unmet brief goal',
+  },
+];
+
+function fakePlanner(
+  spec: AutopilotBaselineSpec = SPEC,
+  improvements: AutopilotSelectedImprovement[] = IMPROVEMENTS,
+): AutopilotPlannerPort {
+  let i = 0;
+  return {
+    expandBrief: async () => spec,
+    proposeImprovements: async () => {
+      const next = improvements[i] ?? null;
+      if (next) i += 1;
+      return {
+        candidates: next ? [next] : [],
+        selected: next,
+        outcome: next ? 'selected' : 'no-benefit',
+        reason: next ? undefined : 'no remaining in-scope improvement with a falsifiable benefit',
+      };
+    },
+  };
 }
 
-function fakeBoard(opts?: { ordering?: { ok: boolean; reason?: string } }): AutopilotBoardPort {
+function fakeBoard(opts?: {
+  ordering?: { ok: boolean; reason?: string };
+  priorPhase?: { ok: boolean; reason?: string };
+}): AutopilotBoardPort {
+  let improvementSeq = 1;
   return {
     createBaselineBoard: async () => ({
       epicId: 'epic-1',
@@ -75,6 +116,23 @@ function fakeBoard(opts?: { ordering?: { ok: boolean; reason?: string } }): Auto
       ],
     }),
     validatePhaseOrder: async () => opts?.ordering ?? { ok: true },
+    priorPhaseComplete: async () => opts?.priorPhase ?? { ok: true },
+    createImprovementBoard: async ({ improvement }) => {
+      const n = improvementSeq;
+      improvementSeq += 1;
+      return {
+        epicId: 'epic-1',
+        primaryCardId: `card-improve-${n}`,
+        cards: [
+          {
+            cardId: `card-improve-${n}`,
+            title: improvement.action,
+            phase: n + 1,
+            blockedBy: ['card-1'],
+          },
+        ],
+      };
+    },
   };
 }
 
@@ -169,8 +227,19 @@ function harness(opts?: {
   return { db, controller, orchestrator, store };
 }
 
-function start(controller: ReturnType<typeof createAutopilotController>) {
-  controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+function start(
+  controller: ReturnType<typeof createAutopilotController>,
+  overlay?: { limits?: Partial<AutopilotLimits> },
+) {
+  controller.putConfig(
+    PROJECT,
+    {
+      enabled: true,
+      ...READY,
+      limits: { ...READY.limits, ...(overlay?.limits ?? {}) },
+    },
+    ACTOR,
+  );
   return controller.start(PROJECT, {}, ACTOR);
 }
 
@@ -446,7 +515,8 @@ describe('autopilot orchestrator', () => {
       },
     };
     let boardCalls = 0;
-    const countingBoard = {
+    const countingBoard: AutopilotBoardPort = {
+      ...fakeBoard(),
       createBaselineBoard: async () => {
         boardCalls += 1;
         return {
@@ -455,7 +525,6 @@ describe('autopilot orchestrator', () => {
           cards: [{ cardId: 'card-1', title: 'baseline', phase: 1, blockedBy: [] }],
         };
       },
-      validatePhaseOrder: async () => ({ ok: true }),
     };
     const { controller, orchestrator } = harness({
       planner: blockingPlanner,
@@ -772,8 +841,11 @@ describe('autopilot orchestrator', () => {
 async function reachDeploying(
   orchestrator: ReturnType<typeof createAutopilotOrchestrator>,
   controller: ReturnType<typeof createAutopilotController>,
+  overlay?: {
+    limits?: Partial<AutopilotLimits>;
+  },
 ) {
-  start(controller);
+  start(controller, overlay);
   await orchestrator.runPlanning(PROJECT);
   const implOp = await orchestrator.dispatchImplementation(PROJECT);
   await orchestrator.reconcileImplementation(PROJECT, {
@@ -1096,8 +1168,11 @@ function passingEvalReport(
 async function reachVerifying(
   orchestrator: ReturnType<typeof createAutopilotOrchestrator>,
   controller: ReturnType<typeof createAutopilotController>,
+  overlay?: {
+    limits?: Partial<AutopilotLimits>;
+  },
 ) {
-  await reachDeploying(orchestrator, controller);
+  await reachDeploying(orchestrator, controller, overlay);
   const depOp = await orchestrator.dispatchDeploy(PROJECT);
   await orchestrator.reconcileDeploy(PROJECT, {
     operationId: depOp.id,
@@ -1391,8 +1466,11 @@ describe('autopilot orchestrator — evaluate', () => {
 async function reachDocumenting(
   orchestrator: ReturnType<typeof createAutopilotOrchestrator>,
   controller: ReturnType<typeof createAutopilotController>,
+  overlay?: {
+    limits?: Partial<AutopilotLimits>;
+  },
 ) {
-  await reachVerifying(orchestrator, controller);
+  await reachVerifying(orchestrator, controller, overlay);
   const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
   const passing = passingEvalReport();
   await orchestrator.reconcileEvaluate(PROJECT, {
@@ -1631,5 +1709,520 @@ describe('autopilot orchestrator — documenting', () => {
     expect(journal).toContain('run-prio');
     expect(journal).toContain('failure');
     expect(journal).toContain('successful behavior');
+  });
+});
+
+async function reachSelectingNext(
+  orchestrator: ReturnType<typeof createAutopilotOrchestrator>,
+  controller: ReturnType<typeof createAutopilotController>,
+  overlay?: {
+    limits?: Partial<AutopilotLimits>;
+  },
+) {
+  await reachDocumenting(orchestrator, controller, overlay);
+  return orchestrator.runDocumenting(PROJECT);
+}
+
+async function driveImplementingToSelectingNext(
+  orchestrator: ReturnType<typeof createAutopilotOrchestrator>,
+) {
+  const implOp = await orchestrator.dispatchImplementation(PROJECT);
+  await orchestrator.reconcileImplementation(PROJECT, {
+    operationId: implOp.id,
+    fencingGeneration: implOp.fencingGeneration,
+    result: { committed: true, commitSha: 'abc123' },
+  });
+  const finOp = await orchestrator.dispatchFinalize(PROJECT);
+  await orchestrator.reconcileFinalize(PROJECT, {
+    operationId: finOp.id,
+    fencingGeneration: finOp.fencingGeneration,
+    result: MERGED,
+  });
+  const depOp = await orchestrator.dispatchDeploy(PROJECT);
+  await orchestrator.reconcileDeploy(PROJECT, {
+    operationId: depOp.id,
+    fencingGeneration: depOp.fencingGeneration,
+    result: { status: 'success', deploymentId: 'dep-1', deployedSha: 'deadbeefcafe' },
+  });
+  const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+  const passing = passingEvalReport();
+  await orchestrator.reconcileEvaluate(PROJECT, {
+    operationId: evalOp.id,
+    fencingGeneration: evalOp.fencingGeneration,
+    result: passing,
+    captures: passingEvalCaptures(evalOp.id, passing),
+  });
+  return orchestrator.runDocumenting(PROJECT);
+}
+
+describe('autopilot orchestrator — selecting-next', () => {
+  it('runs a baseline plus two evidence-backed improvement cycles', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachSelectingNext(orchestrator, controller);
+    const first = await orchestrator.runSelectingNext(PROJECT);
+    expect(first.run.stage).toBe('implementing');
+    expect(first.run.cycleNumber).toBe(2);
+    const cycle2 = store.getCycle(first.run.id, 2)!;
+    expect(cycle2.cardId).toBe('card-improve-1');
+    expect(cycle2.selectedImprovement).toContain('complete a todo');
+    const pinned2 = (
+      cycle2.verification as { pinned?: { criteria?: { source: string }[] } } | null
+    )?.pinned?.criteria?.map((c) => c.source);
+    expect(pinned2).toEqual(['baseline', 'baseline', 'cycle']);
+
+    await driveImplementingToSelectingNext(orchestrator);
+    const second = await orchestrator.runSelectingNext(PROJECT);
+    expect(second.run.stage).toBe('implementing');
+    expect(second.run.cycleNumber).toBe(3);
+    expect(store.getCycle(second.run.id, 3)!.selectedImprovement).toContain('edit a todo title');
+    const pinned3 = (
+      store.getCycle(second.run.id, 3)!.verification as {
+        pinned?: { criteria?: { source: string; action: string }[] };
+      } | null
+    )?.pinned?.criteria;
+    expect(pinned3?.map((c) => c.source)).toEqual(['baseline', 'baseline', 'cycle', 'cycle']);
+    expect(pinned3?.filter((c) => c.source === 'cycle').map((c) => c.action)).toEqual([
+      'complete a todo',
+      'edit a todo title',
+    ]);
+    expect(store.getCycle(second.run.id, 1)!.status).toBe('succeeded');
+    expect(store.getCycle(second.run.id, 2)!.status).toBe('succeeded');
+  });
+
+  it('pauses after three consecutive no-benefit proposals', async () => {
+    const { controller, orchestrator, store } = harness({
+      planner: {
+        expandBrief: async () => SPEC,
+        proposeImprovements: async () => ({
+          candidates: [],
+          selected: null,
+          outcome: 'no-benefit',
+          reason: 'no measured benefit remains',
+        }),
+      },
+    });
+    await reachSelectingNext(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    await orchestrator.runSelectingNext(PROJECT);
+    expect(store.getRun(runId)!.controlState).toBe('running');
+    expect(store.getRun(runId)!.cycleNumber).toBe(1);
+    await orchestrator.runSelectingNext(PROJECT);
+    expect(store.getRun(runId)!.cycleNumber).toBe(1);
+    const paused = await orchestrator.runSelectingNext(PROJECT);
+    expect(paused.run.controlState).toBe('paused');
+    expect(paused.run.pauseReason).toMatch(/three consecutive rejected\/no-benefit/);
+    expect(store.getCycle(runId, 2)).toBeNull();
+    expect(store.getCycle(runId, 1)!.status).toBe('active');
+  });
+
+  it('resumes after the three-proposal plateau and selects an improvement', async () => {
+    let plateau = true;
+    const { controller, orchestrator, store } = harness({
+      planner: {
+        expandBrief: async () => SPEC,
+        proposeImprovements: async () => {
+          if (plateau) {
+            return {
+              candidates: [],
+              selected: null,
+              outcome: 'no-benefit',
+              reason: 'no measured benefit remains',
+            };
+          }
+          return {
+            candidates: [IMPROVEMENTS[0]!],
+            selected: IMPROVEMENTS[0]!,
+            outcome: 'selected',
+          };
+        },
+      },
+    });
+    await reachSelectingNext(orchestrator, controller);
+    await orchestrator.runSelectingNext(PROJECT);
+    await orchestrator.runSelectingNext(PROJECT);
+    const paused = await orchestrator.runSelectingNext(PROJECT);
+    expect(paused.run.controlState).toBe('paused');
+    const cycle = store.getCycle(paused.run.id, 1)!;
+    store.updateCycle(cycle.id, { status: 'succeeded', outcome: 'verified' });
+    await controller.resume(PROJECT, ACTOR);
+    plateau = false;
+    const selected = await orchestrator.runSelectingNext(PROJECT);
+    expect(selected.run.controlState).toBe('running');
+    expect(selected.run.stage).toBe('implementing');
+    expect(selected.run.cycleNumber).toBe(2);
+    expect(store.getCycle(selected.run.id, 2)!.selectedImprovement).toContain('complete a todo');
+  });
+
+  it('does not file a future phase until prior-phase cards are settled', async () => {
+    let created = 0;
+    const { controller, orchestrator, store } = harness({
+      board: {
+        ...fakeBoard({ priorPhase: { ok: false, reason: 'prior phase cards are not Done' } }),
+        createImprovementBoard: async () => {
+          created += 1;
+          return {
+            epicId: 'epic-1',
+            primaryCardId: 'card-improve-1',
+            cards: [{ cardId: 'card-improve-1', title: 'x', phase: 2, blockedBy: ['card-1'] }],
+          };
+        },
+      },
+    });
+    await reachSelectingNext(orchestrator, controller);
+    const gated = await orchestrator.runSelectingNext(PROJECT);
+    expect(gated.run.cycleNumber).toBe(1);
+    expect(gated.run.stage).toBe('selecting-next');
+    expect(gated.run.controlState).toBe('running');
+    expect(created).toBe(0);
+    expect(store.getCycle(gated.run.id, 2)).toBeNull();
+  });
+
+  it('stops at the usage envelope during selection instead of opening another cycle', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachSelectingNext(orchestrator, controller, { limits: { maxCostUsd: 1 } });
+    const runId = store.getActiveRun(PROJECT)!.id;
+    await expect(controller.recordUsage(PROJECT, { costUsd: 2 })).rejects.toMatchObject({
+      code: 'envelope_exhausted',
+    });
+    const snap = await orchestrator.runSelectingNext(PROJECT);
+    expect(snap.run.controlState).toBe('paused');
+    expect(snap.run.pauseReason).toMatch(/cost envelope/);
+    expect(store.getCycle(runId, 2)).toBeNull();
+  });
+
+  it('does not open another cycle when stop is requested during selection', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let created = 0;
+    const { controller, orchestrator, store } = harness({
+      planner: {
+        expandBrief: async () => SPEC,
+        proposeImprovements: async () => {
+          entered();
+          await gate;
+          return {
+            candidates: [IMPROVEMENTS[0]!],
+            selected: IMPROVEMENTS[0]!,
+            outcome: 'selected',
+          };
+        },
+      },
+      board: {
+        ...fakeBoard(),
+        createImprovementBoard: async () => {
+          created += 1;
+          return {
+            epicId: 'epic-1',
+            primaryCardId: 'card-improve-1',
+            cards: [{ cardId: 'card-improve-1', title: 'x', phase: 2, blockedBy: ['card-1'] }],
+          };
+        },
+      },
+    });
+    await reachSelectingNext(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const pending = orchestrator.runSelectingNext(PROJECT);
+    await started;
+    await controller.stop(PROJECT, ACTOR);
+    release();
+    const snap = await pending;
+    expect(snap.run.controlState).toBe('stopped');
+    expect(created).toBe(0);
+    expect(store.listCycles(runId)).toHaveLength(1);
+    expect(store.getCycle(runId, 2)).toBeNull();
+  });
+
+  it('recovers a persisted selection after a crash between closing the cycle and opening the next', async () => {
+    const { db, controller, orchestrator, store } = harness();
+    await reachSelectingNext(orchestrator, controller);
+    const run = store.getActiveRun(PROJECT)!;
+    const cycle = store.getCycle(run.id, 1)!;
+    const selecting = store.listStages(cycle.id).find((s) => s.stage === 'selecting-next');
+    expect(selecting).toBeTruthy();
+    store.insertOperation({
+      id: 'op-select-crash',
+      runId: run.id,
+      cycleId: cycle.id,
+      kind: 'select-next',
+      status: 'succeeded',
+      fencingGeneration: run.fencingGeneration,
+      intentJson: JSON.stringify({ stage: 'selecting-next', cycleNumber: 1 }),
+      sessionId: null,
+      finalizeRunId: null,
+      deploymentId: null,
+      createdAt: new Date().toISOString(),
+    });
+    store.updateOperation('op-select-crash', {
+      resultJson: JSON.stringify({
+        outcome: 'selected',
+        selected: IMPROVEMENTS[0],
+        primaryCardId: 'card-improve-crash',
+        specRevision: 1,
+      }),
+    });
+    store.updateStage(selecting!.id, {
+      status: 'succeeded',
+      operationId: 'op-select-crash',
+      completedAt: new Date().toISOString(),
+    });
+    store.updateCycle(cycle.id, { status: 'succeeded', outcome: 'verified' });
+
+    const restarted = harness({ db });
+    const snap = await restarted.orchestrator.runSelectingNext(PROJECT);
+    expect(snap.run.cycleNumber).toBe(2);
+    expect(snap.run.stage).toBe('implementing');
+    expect(store.getCycle(run.id, 2)!.cardId).toBe('card-improve-crash');
+    expect(store.getCycle(run.id, 1)!.status).toBe('succeeded');
+  });
+
+  it('does not apply a persisted selection when a predecessor card is reopened before restart', async () => {
+    let predecessorDone = false;
+    const priorKeys: Array<string | undefined> = [];
+    const board = {
+      ...fakeBoard(),
+      priorPhaseComplete: async ({ idempotencyKey }: { idempotencyKey?: string }) => {
+        priorKeys.push(idempotencyKey);
+        return predecessorDone
+          ? { ok: true }
+          : { ok: false, reason: 'predecessor card is no longer Done' };
+      },
+    };
+    const { db, controller, orchestrator, store } = harness({ board });
+    await reachSelectingNext(orchestrator, controller);
+    const run = store.getActiveRun(PROJECT)!;
+    const cycle = store.getCycle(run.id, 1)!;
+    const selecting = store.listStages(cycle.id).find((s) => s.stage === 'selecting-next');
+    expect(selecting).toBeTruthy();
+    store.insertOperation({
+      id: 'op-select-reopened',
+      runId: run.id,
+      cycleId: cycle.id,
+      kind: 'select-next',
+      status: 'succeeded',
+      fencingGeneration: run.fencingGeneration,
+      intentJson: JSON.stringify({
+        stage: 'selecting-next',
+        cycleNumber: 1,
+        idempotencyKey: `autopilot:${run.id}:cycle-2`,
+      }),
+      sessionId: null,
+      finalizeRunId: null,
+      deploymentId: null,
+      createdAt: new Date().toISOString(),
+    });
+    store.updateOperation('op-select-reopened', {
+      resultJson: JSON.stringify({
+        outcome: 'selected',
+        selected: IMPROVEMENTS[0],
+        primaryCardId: 'card-improve-reopened',
+        specRevision: 1,
+      }),
+    });
+    store.updateStage(selecting!.id, {
+      status: 'succeeded',
+      operationId: 'op-select-reopened',
+      completedAt: new Date().toISOString(),
+    });
+    store.updateCycle(cycle.id, { status: 'succeeded', outcome: 'verified' });
+
+    const restarted = harness({ db, board });
+    const blocked = await restarted.orchestrator.runSelectingNext(PROJECT);
+    expect(blocked.run.cycleNumber).toBe(1);
+    expect(blocked.run.stage).toBe('selecting-next');
+    expect(blocked.run.controlState).toBe('running');
+    expect(store.getCycle(run.id, 2)).toBeNull();
+    expect(store.listCycles(run.id)).toHaveLength(1);
+    expect(priorKeys).toEqual([`autopilot:${run.id}:cycle-2`]);
+
+    predecessorDone = true;
+    const snap = await restarted.orchestrator.runSelectingNext(PROJECT);
+    expect(snap.run.cycleNumber).toBe(2);
+    expect(snap.run.stage).toBe('implementing');
+    expect(store.getCycle(run.id, 2)!.cardId).toBe('card-improve-reopened');
+    expect(store.getCycle(run.id, 1)!.status).toBe('succeeded');
+    expect(priorKeys.at(-1)).toBe(`autopilot:${run.id}:cycle-2`);
+  });
+
+  it('recovers a persisted selection after a crash immediately after openNextCycle', async () => {
+    const { db, controller, orchestrator, store } = harness();
+    await reachSelectingNext(orchestrator, controller);
+    const run = store.getActiveRun(PROJECT)!;
+    const cycle = store.getCycle(run.id, 1)!;
+    const selecting = store.listStages(cycle.id).find((s) => s.stage === 'selecting-next');
+    expect(selecting).toBeTruthy();
+    store.insertOperation({
+      id: 'op-select-open-crash',
+      runId: run.id,
+      cycleId: cycle.id,
+      kind: 'select-next',
+      status: 'succeeded',
+      fencingGeneration: run.fencingGeneration,
+      intentJson: JSON.stringify({ stage: 'selecting-next', cycleNumber: 1 }),
+      sessionId: null,
+      finalizeRunId: null,
+      deploymentId: null,
+      createdAt: new Date().toISOString(),
+    });
+    store.updateOperation('op-select-open-crash', {
+      resultJson: JSON.stringify({
+        outcome: 'selected',
+        selected: IMPROVEMENTS[0],
+        primaryCardId: 'card-improve-open-crash',
+        specRevision: 1,
+      }),
+    });
+    store.updateStage(selecting!.id, {
+      status: 'succeeded',
+      operationId: 'op-select-open-crash',
+      completedAt: new Date().toISOString(),
+    });
+    store.updateCycle(cycle.id, { status: 'succeeded', outcome: 'verified' });
+    await controller.openNextCycle(PROJECT);
+    expect(store.getActiveRun(PROJECT)!.cycleNumber).toBe(2);
+    expect(store.getCycle(run.id, 2)!.cardId).toBeNull();
+    expect(store.getCycle(run.id, 2)!.selectedImprovement).toBeNull();
+
+    const restarted = harness({ db });
+    const snap = await restarted.orchestrator.runSelectingNext(PROJECT);
+    expect(snap.run.cycleNumber).toBe(2);
+    expect(snap.run.stage).toBe('implementing');
+    expect(store.getCycle(run.id, 2)!.cardId).toBe('card-improve-open-crash');
+    expect(store.getCycle(run.id, 2)!.selectedImprovement).toContain('complete a todo');
+    expect(store.listCycles(run.id)).toHaveLength(2);
+  });
+
+  it('retries selection after board creation without gating on the new To Do phase', async () => {
+    let filed = false;
+    let created = 0;
+    let injectedOrderFault = false;
+    const { controller, orchestrator, store } = harness({
+      planner: {
+        expandBrief: async () => SPEC,
+        proposeImprovements: async () => ({
+          candidates: [IMPROVEMENTS[0]!],
+          selected: IMPROVEMENTS[0]!,
+          outcome: 'selected',
+        }),
+      },
+      board: {
+        ...fakeBoard(),
+        priorPhaseComplete: async ({ idempotencyKey }: { idempotencyKey?: string }) => {
+          if (filed && !idempotencyKey) {
+            return { ok: false, reason: 'latest phase cards are not Done' };
+          }
+          return { ok: true };
+        },
+        createImprovementBoard: async ({ improvement }) => {
+          filed = true;
+          created += 1;
+          return {
+            epicId: 'epic-1',
+            primaryCardId: 'card-improve-1',
+            cards: [
+              {
+                cardId: 'card-improve-1',
+                title: improvement.action,
+                phase: 2,
+                blockedBy: ['card-1'],
+              },
+            ],
+          };
+        },
+        validatePhaseOrder: async () => {
+          if (filed && !injectedOrderFault) {
+            injectedOrderFault = true;
+            return { ok: false, reason: 'injected ordering fault after board create' };
+          }
+          return { ok: true };
+        },
+      },
+    });
+    await reachSelectingNext(orchestrator, controller);
+    const first = await orchestrator.runSelectingNext(PROJECT);
+    expect(first.run.cycleNumber).toBe(1);
+    expect(first.run.stage).toBe('selecting-next');
+    expect(created).toBe(1);
+    const retried = await orchestrator.runSelectingNext(PROJECT);
+    expect(retried.run.cycleNumber).toBe(2);
+    expect(retried.run.stage).toBe('implementing');
+    expect(created).toBe(2);
+    expect(store.getCycle(retried.run.id, 2)!.cardId).toBe('card-improve-1');
+  });
+
+  it('reuses the frozen selection when the planner would pick a different improvement on retry', async () => {
+    let plannerCalls = 0;
+    const filed: string[] = [];
+    let injectedOrderFault = false;
+    const { controller, orchestrator, store } = harness({
+      planner: {
+        expandBrief: async () => SPEC,
+        proposeImprovements: async () => {
+          plannerCalls += 1;
+          const selected = plannerCalls === 1 ? IMPROVEMENTS[0]! : IMPROVEMENTS[1]!;
+          return {
+            candidates: [selected],
+            selected,
+            outcome: 'selected',
+          };
+        },
+      },
+      board: {
+        ...fakeBoard(),
+        createImprovementBoard: async ({ improvement }) => {
+          filed.push(improvement.id);
+          return {
+            epicId: 'epic-1',
+            primaryCardId: 'card-improve-1',
+            cards: [
+              {
+                cardId: 'card-improve-1',
+                title: improvement.action,
+                phase: 2,
+                blockedBy: ['card-1'],
+              },
+            ],
+          };
+        },
+        validatePhaseOrder: async () => {
+          if (filed.length > 0 && !injectedOrderFault) {
+            injectedOrderFault = true;
+            return { ok: false, reason: 'injected ordering fault after filing A' };
+          }
+          return { ok: true };
+        },
+      },
+    });
+    await reachSelectingNext(orchestrator, controller);
+    const first = await orchestrator.runSelectingNext(PROJECT);
+    expect(first.run.cycleNumber).toBe(1);
+    expect(first.run.stage).toBe('selecting-next');
+    expect(filed).toEqual(['complete-todo']);
+    expect(plannerCalls).toBe(1);
+    const retried = await orchestrator.runSelectingNext(PROJECT);
+    expect(retried.run.cycleNumber).toBe(2);
+    expect(retried.run.stage).toBe('implementing');
+    expect(plannerCalls).toBe(1);
+    expect(filed).toEqual(['complete-todo', 'complete-todo']);
+    expect(store.getCycle(retried.run.id, 2)!.selectedImprovement).toContain('complete a todo');
+    expect(store.getCycle(retried.run.id, 2)!.selectedImprovement).not.toContain(
+      'edit a todo title',
+    );
+  });
+
+  it('stops at the configured cycle count instead of selecting another improvement', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachSelectingNext(orchestrator, controller, {
+      limits: { cycleMode: 'finite', maxCycles: 1 },
+    });
+    const snap = await orchestrator.runSelectingNext(PROJECT);
+    expect(snap.run.controlState).toBe('paused');
+    expect(snap.run.pauseReason).toMatch(/finite cycle envelope/);
+    expect(store.getCycle(snap.run.id, 2)).toBeNull();
   });
 });

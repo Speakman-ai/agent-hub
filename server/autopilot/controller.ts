@@ -1445,11 +1445,10 @@ export class AutopilotController {
       });
       return;
     }
-    const cycle = this.store.getCycle(run.id, run.cycleNumber);
-    if (!cycle) return;
+    if (!this.store.getCycleById(stage.cycleId)) return;
     this.store.insertStage({
       id: this.randomId(),
-      cycleId: cycle.id,
+      cycleId: stage.cycleId,
       stage: stage.stage,
       status: 'pending',
       attempt: stage.attempt + 1,
@@ -1458,7 +1457,7 @@ export class AutopilotController {
     });
     this.store.insertEvent({
       runId: run.id,
-      cycleId: cycle.id,
+      cycleId: stage.cycleId,
       operationId,
       type: 'stage_retry_scheduled',
       payload: { stage: stage.stage, nextAttempt: stage.attempt + 1 },
@@ -1507,6 +1506,82 @@ export class AutopilotController {
       createdAt: now,
     });
     return this.snapshot(run.id);
+  }
+
+  /**
+   * Close the source cycle if it is still current, open the successor if
+   * needed, and persist the selected card/criteria in one transaction. A crash
+   * must not leave an opened next cycle without its selection handoff; recovery
+   * finishes this same write until `cardId` and `selectedImprovement` exist.
+   */
+  applySelectionHandoff(
+    projectId: string,
+    sourceCycleId: string,
+    patch: {
+      cardId: string;
+      specRevision: number;
+      selectedImprovement: string;
+      verificationJson?: string;
+    },
+  ): AutopilotRunSnapshot {
+    this.requireServerEnabled();
+    this.requireProjectDispatchable(projectId);
+    const run = this.store.getActiveRun(projectId);
+    if (!run) {
+      throw new AutopilotError('no_active_run', 'No active Autopilot run');
+    }
+    if (run.controlState !== 'running') {
+      throw new AutopilotError('conflict', `Cannot open a cycle while run is ${run.controlState}`);
+    }
+    this.requireHeldLease(projectId, run);
+    return this.store.transaction(() => {
+      const source = this.store.getCycleById(sourceCycleId);
+      if (source && source.status === 'active') {
+        this.store.updateCycle(sourceCycleId, {
+          status: 'succeeded',
+          outcome: source.outcome ?? 'verified',
+        });
+      }
+      let current = this.store.getRun(run.id);
+      if (!current) {
+        throw new AutopilotError('not_found', 'Autopilot run not found');
+      }
+      const sourceNumber = source?.cycleNumber ?? current.cycleNumber;
+      if (current.cycleNumber === sourceNumber) {
+        const now = this.timestamp();
+        const nextNumber = current.cycleNumber + 1;
+        const cycleId = this.randomId();
+        this.store.insertCycle({
+          id: cycleId,
+          runId: run.id,
+          cycleNumber: nextNumber,
+          briefRevision: current.briefRevision ?? 1,
+          createdAt: now,
+        });
+        this.store.updateRun(run.id, { cycleNumber: nextNumber, updatedAt: now });
+        this.store.insertEvent({
+          runId: run.id,
+          cycleId,
+          type: 'cycle_opened',
+          payload: { cycleNumber: nextNumber },
+          fencingGeneration: current.fencingGeneration,
+          createdAt: now,
+        });
+        current = this.store.getRun(run.id);
+        if (!current) {
+          throw new AutopilotError('not_found', 'Autopilot run not found');
+        }
+      }
+      const next = this.store.getCycle(current.id, current.cycleNumber);
+      if (!next || next.id === sourceCycleId) {
+        throw new AutopilotError('conflict', 'selection handoff has no successor cycle');
+      }
+      if (next.cardId && next.cardId !== patch.cardId) {
+        throw new AutopilotError('conflict', 'successor cycle already has a different card');
+      }
+      this.store.updateCycle(next.id, patch);
+      return this.snapshot(run.id);
+    });
   }
 
   /**
@@ -1672,6 +1747,19 @@ export class AutopilotController {
       kind: 'document-cycle',
       eventType: 'documenting_claimed',
       busyMessage: 'document',
+    });
+  }
+
+  /**
+   * Claim exclusive execution of selecting-next. Same fencing/backoff contract
+   * as planning and documenting.
+   */
+  claimSelectingNextOperation(projectId: string): AutopilotOperationRecord | null {
+    return this.claimExclusiveStageOperation(projectId, {
+      stage: 'selecting-next',
+      kind: 'select-next',
+      eventType: 'selecting_next_claimed',
+      busyMessage: 'select the next improvement',
     });
   }
 

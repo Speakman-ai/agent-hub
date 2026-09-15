@@ -32,13 +32,26 @@ describe('autopilot wiring — parseBaselineSpecJson', () => {
 /** Minimal fake Stmts: only the statements the functions under test touch. */
 function fakeStmts(rows: {
   epics?: { id: string; labels: string | null; position: number }[];
-  cardsByEpic?: { id: string; title: string; labels: string | null }[];
+  cardsByEpic?: {
+    id: string;
+    title: string;
+    labels: string | null;
+    column_id?: string;
+    phase_id?: string | null;
+  }[];
+  columns?: { id: string; name: string }[];
+  phases?: { id: string; name: string; position: number; description?: string | null }[];
   finalizeRun?: Record<string, unknown> | undefined;
   pr?: Record<string, unknown> | undefined;
 }): Stmts {
+  const columns = rows.columns ?? [];
   return {
     getKanbanEpics: { all: () => rows.epics ?? [] },
     getKanbanCardsByEpic: { all: () => rows.cardsByEpic ?? [] },
+    getKanbanColumn: {
+      get: (id: string) => columns.find((c) => c.id === id),
+    },
+    getKanbanPhasesByEpic: { all: () => rows.phases ?? [] },
     getFinalizeRun: { get: () => rows.finalizeRun },
     getPullRequestByNumber: { get: () => rows.pr },
   } as unknown as Stmts;
@@ -93,6 +106,61 @@ describe('autopilot wiring — board ops', () => {
     expect(ops.listCardsForEpic('epic-1')).toEqual([
       { id: 'c1', key: 'autopilot:run-1:cycle-1#primary' },
       { id: 'c2', key: 'autopilot:run-1:cycle-1#journey-1' },
+    ]);
+  });
+
+  it('returns unlabeled epic cards so completion checks cannot skip them', () => {
+    const ops = buildBoardOps(
+      fakeStmts({
+        cardsByEpic: [
+          {
+            id: 'c1',
+            title: 'baseline',
+            labels: 'autopilot-card:autopilot:run-1:cycle-1#primary',
+            column_id: 'col-done',
+            phase_id: 'p1',
+          },
+          {
+            id: 'c2',
+            title: 'human card',
+            labels: null,
+            column_id: 'col-todo',
+            phase_id: 'p1',
+          },
+        ],
+        columns: [
+          { id: 'col-todo', name: 'To Do' },
+          { id: 'col-done', name: 'Done' },
+        ],
+      }),
+    );
+    expect(ops.listEpicCards('epic-1')).toEqual([
+      {
+        id: 'c1',
+        key: 'autopilot:run-1:cycle-1#primary',
+        phaseId: 'p1',
+        columnName: 'Done',
+      },
+      { id: 'c2', key: null, phaseId: 'p1', columnName: 'To Do' },
+    ]);
+  });
+
+  it('reads a cycle-scoped phase identity from the phase description', () => {
+    const stmts = fakeStmts({
+      phases: [
+        { id: 'p1', name: 'Baseline', position: 0, description: null },
+        {
+          id: 'p2',
+          name: 'Cycle 2',
+          position: 1,
+          description: 'autopilot-key:autopilot:run-1:cycle-2',
+        },
+      ],
+    });
+    const ops = buildBoardOps(stmts);
+    expect(ops.listPhases('epic-1')).toEqual([
+      { id: 'p1', name: 'Baseline', position: 0, key: null },
+      { id: 'p2', name: 'Cycle 2', position: 1, key: 'autopilot:run-1:cycle-2' },
     ]);
   });
 });

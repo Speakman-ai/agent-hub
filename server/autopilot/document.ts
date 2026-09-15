@@ -13,6 +13,7 @@ import { createHash } from 'crypto';
 import { REDACTION_PLACEHOLDER, buildRedactionConfig, redactText } from '../logs/log-redaction.js';
 import type { AutopilotCycleRecord, AutopilotUsage } from './types.js';
 import { parseCycleVerification } from './evaluate.js';
+import { describeSelectedImprovement } from './select.js';
 
 export const AUTOPILOT_CYCLE_RECORD_VERSION = 1 as const;
 
@@ -305,7 +306,7 @@ export function describeDeliveredDelta(
   cycle: AutopilotCycleRecord,
   spec: AutopilotDocumentSpec | null,
 ): string {
-  const selected = cycle.selectedImprovement?.trim();
+  const selected = describeSelectedImprovement(cycle.selectedImprovement);
   if (selected) return selected;
   const journeys = spec?.acceptanceJourneys ?? [];
   if (journeys.length === 0) return '';
@@ -353,7 +354,7 @@ export function buildStructuredCycleRecord(
   const verification = parseCycleVerification(cycle.verification);
   const sha = cycle.testedCommitSha?.trim() || null;
   const expectedBenefit =
-    cycle.selectedImprovement?.trim() ||
+    describeSelectedImprovement(cycle.selectedImprovement) ||
     (cycle.cycleNumber === 1
       ? 'Establish the locked baseline and verify it on the experiment target.'
       : 'Complete the selected cycle change.');

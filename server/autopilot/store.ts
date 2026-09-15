@@ -928,6 +928,7 @@ export class AutopilotStore {
     patch: Partial<{
       status: AutopilotOperationRecord['status'];
       resultJson: string | null;
+      intentJson: string | null;
       sessionId: string | null;
       finalizeRunId: string | null;
       deploymentId: string | null;
@@ -939,6 +940,7 @@ export class AutopilotStore {
     const map: Record<string, string> = {
       status: 'status',
       resultJson: 'result_json',
+      intentJson: 'intent_json',
       sessionId: 'session_id',
       finalizeRunId: 'finalize_run_id',
       deploymentId: 'deployment_id',
