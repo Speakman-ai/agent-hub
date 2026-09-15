@@ -64,6 +64,7 @@ function freshController(opts?: {
   getDeployedRevision?: (projectId: string, targetId: string) => string | null;
   validateLocalTarget?: AutopilotLocalTargetLookup;
   credentialOwnerExists?: (userId: string) => boolean;
+  resolveCredentialOwnerUserId?: (idOrUsername: string) => string | null;
   holderId?: string;
   now?: () => Date;
   assertContainment?: (opts?: { allowHostAdapter?: boolean }) => void;
@@ -80,6 +81,7 @@ function freshController(opts?: {
     getDeployedRevision: opts?.getDeployedRevision,
     validateLocalTarget: opts?.validateLocalTarget,
     credentialOwnerExists: opts?.credentialOwnerExists ?? (() => true),
+    resolveCredentialOwnerUserId: opts?.resolveCredentialOwnerUserId,
     holderId: opts?.holderId ?? 'hub-a',
     now: opts?.now,
     assertContainment: opts?.assertContainment ?? stubs.assertContainment,
@@ -266,6 +268,31 @@ describe('autopilot controller', () => {
     const after = controller.getProjectState(PROJECT);
     expect(after.config.credentialOwnerUserId).toBe('user-1');
     expect(after.activeRun).toBeNull();
+  });
+
+  it('resolves a username to the user id when saving the credential owner', () => {
+    const { controller } = freshController({
+      resolveCredentialOwnerUserId: (raw) =>
+        raw === 'user-1' || raw === 'ryan@example.com' ? 'user-1' : null,
+    });
+    const saved = controller.putConfig(
+      PROJECT,
+      { enabled: true, ...READY, credentialOwnerUserId: 'ryan@example.com' },
+      ACTOR,
+    );
+    expect(saved.credentialOwnerUserId).toBe('user-1');
+  });
+
+  it('rejects an unknown credential owner at config time with invalid_config', () => {
+    const { controller } = freshController({
+      resolveCredentialOwnerUserId: (raw) => (raw === 'user-1' ? 'user-1' : null),
+    });
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+    expect(() =>
+      controller.putConfig(PROJECT, { credentialOwnerUserId: 'nobody@example.com' }, ACTOR),
+    ).toThrow(/not a known user id or username/);
+    // The bad write is rejected before anything is stored.
+    expect(controller.getProjectState(PROJECT).config.credentialOwnerUserId).toBe('user-1');
   });
 
   it('persists stop before cancellation and ignores late callbacks', async () => {

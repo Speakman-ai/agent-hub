@@ -743,12 +743,12 @@ export default function AutopilotSettingsSection({
               />
             </Field>
           </div>
-          <Field label="Credential owner (user id)">
+          <Field label="Credential owner (user id or username)">
             <TextInput
               value={form.credentialOwnerUserId}
               onChange={(v) => updateForm({ credentialOwnerUserId: v })}
               testid="autopilot-credential-owner"
-              placeholder="user id whose scoped credentials the worker runs under"
+              placeholder="user id or username whose scoped credentials the worker runs under"
             />
           </Field>
           <Field label="Worker isolation">
