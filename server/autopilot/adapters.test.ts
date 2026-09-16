@@ -709,6 +709,35 @@ describe('autopilot session adapter', () => {
     expect(prompt).toContain('do not infer recoverability');
   });
 
+  it('tells a repair worker to fix failed journeys instead of re-delivering the baseline', () => {
+    const prompt = buildImplementationPrompt({
+      specRevision: 1,
+      cardId: 'c',
+      acceptanceJourneys: [{ action: 'do j1', expectedResult: 'see r1' }],
+      nonGoals: ['n1'],
+      specDecisions: [{ key: 'k', decision: 'd' }],
+      storageRecovery: 'disposable',
+      priorHandoff: null,
+      repair: {
+        reason: 'baseline_regression',
+        detail: 'criterion baseline-2 failed',
+        failedCriteria: [
+          {
+            id: 'baseline-2',
+            action: 'inspect a thin-wall part',
+            expectedResult: 'the report flags the min-wall failure',
+            observed: 'walls were auto-thickened',
+          },
+        ],
+      },
+    });
+    expect(prompt).toContain('repair worker');
+    expect(prompt).not.toContain('Deliver the baseline for this card.');
+    expect(prompt).toContain('Failed journeys to fix');
+    expect(prompt).toContain('baseline-2');
+    expect(prompt).toContain('walls were auto-thickened');
+  });
+
   it('includes reconstructed prior-cycle records in the implementation prompt', () => {
     const prompt = buildImplementationPrompt({
       specRevision: 1,

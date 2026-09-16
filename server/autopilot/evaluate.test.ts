@@ -7,6 +7,7 @@ import {
   pinCriteriaFromSpec,
   shouldRecoverFromEvaluation,
   isCaptureEvidenceFailure,
+  repairHandoffFromVerification,
   stampHubEvidence,
   writeCycleVerification,
   parseHubEvidence,
@@ -421,6 +422,45 @@ describe('judgeEvaluation', () => {
     expect(isCaptureEvidenceFailure('stale_evidence')).toBe(true);
     expect(isCaptureEvidenceFailure('baseline_regression')).toBe(false);
     expect(isCaptureEvidenceFailure('wrong_revision')).toBe(false);
+  });
+
+  it('extracts failed journeys for a repair implementer', () => {
+    const pinned = pinCriteriaFromSpec(SPEC, 1);
+    const repair = repairHandoffFromVerification({
+      pinned,
+      judgement: {
+        ok: false,
+        reason: 'baseline_regression',
+        detail: 'criterion baseline-2 failed',
+        recover: true,
+      },
+      evidence: passingReport({
+        criteria: [
+          {
+            criterionId: 'baseline-1',
+            passed: true,
+            kind: 'browser_journey',
+            screenshotPath: '/tmp/ok.png',
+            tracePath: '/tmp/ok.trace',
+          },
+          {
+            criterionId: 'baseline-2',
+            passed: false,
+            kind: 'browser_journey',
+            screenshotPath: '/tmp/fail.png',
+            tracePath: '/tmp/fail.trace',
+            observed: 'walls were auto-thickened',
+          },
+        ],
+      }),
+    });
+    expect(repair?.reason).toBe('baseline_regression');
+    expect(repair?.failedCriteria).toEqual([
+      expect.objectContaining({
+        id: 'baseline-2',
+        observed: 'walls were auto-thickened',
+      }),
+    ]);
   });
 
   it('rejects an API check used as evidence for a browser journey', () => {

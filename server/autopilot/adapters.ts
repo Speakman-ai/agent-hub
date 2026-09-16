@@ -514,8 +514,11 @@ export interface AutopilotSessionAdapterDeps {
 
 /** Build the structured handoff prompt a baseline implementation worker receives. */
 export function buildImplementationPrompt(context: AutopilotImplementationContext): string {
+  const repair = context.repair;
   const lines = [
-    'You are an Autopilot implementation worker. Deliver the baseline for this card.',
+    repair
+      ? 'You are an Autopilot repair worker. The baseline happy path is already shipped. Fix only the failing evaluation journeys. Do not re-implement work that already passed.'
+      : 'You are an Autopilot implementation worker. Deliver the baseline for this card.',
     '',
     'Acceptance journeys (each must work in a browser-testable main flow):',
     ...context.acceptanceJourneys.map(
@@ -535,6 +538,16 @@ export function buildImplementationPrompt(context: AutopilotImplementationContex
     'Commit your work locally on the session branch. Do not push, open a PR, or',
     'merge. The platform Finalize flow owns review, CI, push and merge.',
   ];
+  if (repair) {
+    lines.push('', `Last evaluation failed (${repair.reason}): ${repair.detail}`);
+    if (repair.failedCriteria.length > 0) {
+      lines.push('', 'Failed journeys to fix:');
+      for (const c of repair.failedCriteria) {
+        const observed = c.observed ? ` Observed: ${c.observed}` : '';
+        lines.push(`- ${c.id}: when a user ${c.action}, then ${c.expectedResult}.${observed}`);
+      }
+    }
+  }
   if (context.priorHandoff && context.priorHandoff.records.length > 0) {
     lines.push('', renderHandoffPrompt(context.priorHandoff));
   }

@@ -643,6 +643,39 @@ export function parseCycleVerification(raw: unknown): AutopilotCycleVerification
   };
 }
 
+/** Failed evaluation the next implementer must repair, not re-deliver from scratch. */
+export interface AutopilotRepairHandoff {
+  reason: string;
+  detail: string;
+  failedCriteria: Array<{
+    id: string;
+    action: string;
+    expectedResult: string;
+    observed?: string;
+  }>;
+}
+
+export function repairHandoffFromVerification(
+  verification: unknown,
+): AutopilotRepairHandoff | null {
+  const parsed = parseCycleVerification(verification);
+  const judgement = parsed.judgement;
+  if (!judgement || judgement.ok) return null;
+  const byId = new Map((parsed.evidence?.criteria ?? []).map((c) => [c.criterionId, c]));
+  const failedCriteria = (parsed.pinned?.criteria ?? [])
+    .filter((c) => byId.get(c.id)?.passed === false)
+    .map((c) => {
+      const observed = byId.get(c.id)?.observed?.trim();
+      return {
+        id: c.id,
+        action: c.action,
+        expectedResult: c.expectedResult,
+        ...(observed ? { observed } : {}),
+      };
+    });
+  return { reason: judgement.reason, detail: judgement.detail, failedCriteria };
+}
+
 function parseJudgement(raw: unknown): AutopilotEvaluationJudgement | null {
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;

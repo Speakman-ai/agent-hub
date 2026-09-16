@@ -11,6 +11,8 @@ import {
   isCaptureEvidenceFailure,
   judgeEvaluation,
   parseCycleVerification,
+  repairHandoffFromVerification,
+  type AutopilotRepairHandoff,
   pinCriteriaFromSpec,
   stampHubEvidence,
   writeCycleVerification,
@@ -211,6 +213,8 @@ export interface AutopilotImplementationContext {
   storageRecovery: AutopilotStorageRecoveryKind | null;
   /** Reconstructed from saved cycle records so a restart does not need live chat. */
   priorHandoff: AutopilotSessionHandoff | null;
+  /** Last failed evaluation for this cycle; a repair must not re-deliver a passing happy path. */
+  repair?: AutopilotRepairHandoff | null;
 }
 
 export interface AutopilotSessionPort {
@@ -645,6 +649,7 @@ export class AutopilotOrchestrator {
             lastVerifiedSha: run.lastVerifiedSha,
             lastDeploymentId: run.lastDeploymentId,
           }),
+          repair: repairHandoffFromVerification(cycle.verification),
         },
       });
       return this.persistDispatchOrDisown(op, cycleId, 'implementation', {
