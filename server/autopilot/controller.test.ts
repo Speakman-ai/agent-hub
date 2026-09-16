@@ -1236,6 +1236,111 @@ describe('autopilot controller', () => {
     ).rejects.toThrow(/stale/i);
   });
 
+  it('resume after stage timeout opens a fresh attempt instead of re-halting', async () => {
+    const startAt = new Date('2026-09-14T12:00:00.000Z');
+    let now = startAt;
+    const { controller } = freshController({
+      now: () => now,
+      cancelSideEffects: () => undefined,
+    });
+    controller.putConfig(
+      PROJECT,
+      {
+        enabled: true,
+        ...READY,
+        limits: { ...READY.limits, maxStageTimeoutMs: 2_000 },
+      },
+      ACTOR,
+    );
+    controller.start(PROJECT, {}, ACTOR);
+    await controller.beginOperation({
+      projectId: PROJECT,
+      kind: 'implement',
+      sessionId: 'sess-hang',
+    });
+    now = new Date(startAt.getTime() + 3_000);
+    await expect(
+      controller.beginOperation({ projectId: PROJECT, kind: 'implement' }),
+    ).rejects.toMatchObject({ code: 'envelope_exhausted' });
+
+    const paused = controller.getProjectState(PROJECT).activeRun!;
+    expect(paused.run.pauseReason).toMatch(/stage timeout/);
+    expect(paused.stages.every((stage) => stage.status !== 'in_progress')).toBe(true);
+
+    const resumed = await controller.resume(PROJECT, ACTOR);
+    expect(resumed.run.controlState).toBe('running');
+    expect(resumed.run.pauseReason).toBeNull();
+    const open = resumed.stages.filter(
+      (stage) => stage.status === 'pending' || stage.status === 'in_progress',
+    );
+    expect(open).toHaveLength(1);
+    expect(open[0]?.stage).toBe(resumed.run.stage);
+    expect(open[0]?.startedAt).toBeNull();
+
+    await controller.enforceDeadlines();
+    expect(controller.getProjectState(PROJECT).activeRun?.run.controlState).toBe('running');
+
+    const next = await controller.beginOperation({
+      projectId: PROJECT,
+      kind: 'implement',
+      sessionId: 'sess-retry',
+    });
+    expect(next.status).toBe('in_flight');
+  });
+
+  it('resume after stage timeout closes leftover open stages from earlier phases', async () => {
+    const startAt = new Date('2026-09-14T12:00:00.000Z');
+    let now = startAt;
+    const { db, controller } = freshController({
+      now: () => now,
+      cancelSideEffects: () => undefined,
+    });
+    controller.putConfig(
+      PROJECT,
+      {
+        enabled: true,
+        ...READY,
+        limits: { ...READY.limits, maxStageTimeoutMs: 2_000 },
+      },
+      ACTOR,
+    );
+    const started = await controller.start(PROJECT, {}, ACTOR);
+    await controller.beginOperation({
+      projectId: PROJECT,
+      kind: 'implement',
+      sessionId: 'sess-hang',
+    });
+    now = new Date(startAt.getTime() + 3_000);
+    await expect(
+      controller.beginOperation({ projectId: PROJECT, kind: 'implement' }),
+    ).rejects.toMatchObject({ code: 'envelope_exhausted' });
+
+    const store = new AutopilotStore(db);
+    const cycle = store.getCycle(started.run.id, 1)!;
+    store.insertStage({
+      id: 'stale-deploy',
+      cycleId: cycle.id,
+      stage: 'deploying',
+      status: 'pending',
+      attempt: 2,
+      operationId: null,
+      startedAt: startAt.toISOString(),
+    });
+
+    const resumed = await controller.resume(PROJECT, ACTOR);
+    expect(resumed.run.controlState).toBe('running');
+    expect(resumed.stages.find((stage) => stage.id === 'stale-deploy')?.status).toBe('failed');
+    const open = resumed.stages.filter(
+      (stage) => stage.status === 'pending' || stage.status === 'in_progress',
+    );
+    expect(open).toEqual([
+      expect.objectContaining({ stage: resumed.run.stage, startedAt: null, status: 'pending' }),
+    ]);
+
+    await controller.enforceDeadlines();
+    expect(controller.getProjectState(PROJECT).activeRun?.run.controlState).toBe('running');
+  });
+
   it('retries a failed stage twice then pauses', async () => {
     const { controller } = freshController();
     const started = await startReady(controller);

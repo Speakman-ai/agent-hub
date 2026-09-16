@@ -309,6 +309,11 @@ function isEnvelopeHaltReason(reason: string | null): boolean {
   );
 }
 
+function isOperatorResumeableStageHalt(reason: string | null): boolean {
+  if (!reason) return false;
+  return reason === 'stage_retries_exhausted' || reason.includes('stage timeout');
+}
+
 export class AutopilotController {
   private readonly store: AutopilotStore;
   private readonly now: () => Date;
@@ -1013,14 +1018,17 @@ export class AutopilotController {
       }
       const cycle = this.store.getCycle(current.id, current.cycleNumber);
       if (
-        current.pauseReason === 'stage_retries_exhausted' &&
+        isOperatorResumeableStageHalt(current.pauseReason) &&
         current.stage &&
         cycle &&
-        (cycle.status === 'active' || cycle.status === 'failed') &&
-        !this.store.getOpenStage(cycle.id)
+        (cycle.status === 'active' || cycle.status === 'failed')
       ) {
-        // Explicit resume permits another attempt, but does not replenish the
-        // automatic retry budget. Without a stage, completion cannot advance.
+        // Timed-out stages stay in_progress after expire, and a skipped
+        // deploy can leave a second pending stage with the old clock. Close
+        // those leftovers, then open a fresh attempt so enforceDeadlines
+        // cannot immediately re-halt. Does not replenish the automatic retry
+        // budget.
+        this.closeOpenStages(cycle.id, now, current.pauseReason ?? 'operator_resume');
         this.store.updateCycle(cycle.id, {
           status: 'active',
           outcome: null,
@@ -1194,11 +1202,23 @@ export class AutopilotController {
     if (failures.length > 0) {
       this.throwCancelFailed(current.id, fencingGeneration, failures);
     }
+    const cycle = this.store.getCycle(current.id, current.cycleNumber);
+    if (cycle) this.closeOpenStages(cycle.id, cancelledAt, reason);
     const after = this.store.getRun(current.id);
     if (after && this.store.listInFlightOperations(after.id).length === 0) {
       this.store.updateRun(after.id, { controlState: 'paused', updatedAt: cancelledAt });
     }
     return this.snapshot(current.id);
+  }
+
+  private closeOpenStages(cycleId: string, now: string, reason: string): void {
+    for (const stage of this.store.listOpenStages(cycleId)) {
+      this.store.updateStage(stage.id, {
+        status: 'failed',
+        completedAt: now,
+        resultJson: JSON.stringify({ reason }),
+      });
+    }
   }
 
   async enforceDeadlines(): Promise<AutopilotRunSnapshot[]> {

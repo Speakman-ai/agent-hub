@@ -790,14 +790,18 @@ export class AutopilotStore {
   }
 
   getOpenStage(cycleId: string): AutopilotStageRecord | null {
-    const row = this.db
+    return this.listOpenStages(cycleId)[0] ?? null;
+  }
+
+  listOpenStages(cycleId: string): AutopilotStageRecord[] {
+    const rows = this.db
       .prepare(
         `SELECT * FROM autopilot_stages
          WHERE cycle_id = ? AND status IN ('pending', 'in_progress')
-         ORDER BY attempt DESC LIMIT 1`,
+         ORDER BY attempt DESC`,
       )
-      .get(cycleId) as StageRow | undefined;
-    return row ? mapStage(row) : null;
+      .all(cycleId) as StageRow[];
+    return rows.map(mapStage);
   }
 
   countStageAttempts(cycleId: string, stage: AutopilotStage): number {
