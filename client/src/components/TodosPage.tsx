@@ -14,11 +14,15 @@ import {
   ExternalLink,
   ArrowUpRight,
   Link2,
+  MessageSquarePlus,
 } from 'lucide-react';
 import PromoteTodoModal from './PromoteTodoModal';
 import LinkTodoModal from './LinkTodoModal';
+import StartSessionModal from './StartSessionModal';
 import OrgTodosSection from './OrgTodosSection';
 import { api, type UserTodoWire, type TodoPriority } from '../utils/api';
+import type { SessionWire } from '@shared/types';
+import { buildTodoSessionSeed } from '@shared/utils/sessionSeed';
 import {
   moveTodoId,
   splitTodos,
@@ -76,7 +80,13 @@ const LINK_BADGE_CLASS: Record<string, string> = {
  *   above the personal list. Null in single-tenant / no-org contexts, where only
  *   the personal list shows.
  */
-export default function TodosPage({ orgId = null }: { orgId?: string | null }) {
+export default function TodosPage({
+  orgId = null,
+  onSessionStarted,
+}: {
+  orgId?: string | null;
+  onSessionStarted?: (session: SessionWire) => void;
+}) {
   const [todos, setTodos] = useState<UserTodoWire[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -89,6 +99,9 @@ export default function TodosPage({ orgId = null }: { orgId?: string | null }) {
   const [showDone, setShowDone] = useState(false);
   const [promoteTarget, setPromoteTarget] = useState<UserTodoWire | null>(null);
   const [linkTarget, setLinkTarget] = useState<UserTodoWire | null>(null);
+  // "Start session with this todo as context": the todo whose context seeds the
+  // project/agent picker; null when closed.
+  const [sessionTarget, setSessionTarget] = useState<UserTodoWire | null>(null);
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -378,6 +391,7 @@ export default function TodosPage({ orgId = null }: { orgId?: string | null }) {
                     onUnlink={() => unlinkTodo(todo.id)}
                     onPromote={() => setPromoteTarget(todo)}
                     onLink={() => setLinkTarget(todo)}
+                    onStartSession={() => setSessionTarget(todo)}
                     onMoveUp={() => reorder(todo.id, 'up')}
                     onMoveDown={() => reorder(todo.id, 'down')}
                   />
@@ -416,6 +430,7 @@ export default function TodosPage({ orgId = null }: { orgId?: string | null }) {
                         onUnlink={() => unlinkTodo(todo.id)}
                         onPromote={() => {}}
                         onLink={() => {}}
+                        onStartSession={() => {}}
                         onMoveUp={() => {}}
                         onMoveDown={() => {}}
                       />
@@ -447,6 +462,20 @@ export default function TodosPage({ orgId = null }: { orgId?: string | null }) {
           }}
         />
       )}
+      {sessionTarget && (
+        <StartSessionModal
+          contextLabel={`Todo: ${sessionTarget.title}`}
+          seedMessage={buildTodoSessionSeed({
+            title: sessionTarget.title,
+            notes: sessionTarget.notes,
+            originLabel: todoOriginLabel(sessionTarget),
+            deepLink: todoOriginDeepLink(sessionTarget),
+          })}
+          defaultName={sessionTarget.title}
+          onClose={() => setSessionTarget(null)}
+          onStarted={(session) => onSessionStarted?.(session)}
+        />
+      )}
     </div>
   );
 }
@@ -469,6 +498,7 @@ interface TodoRowProps {
   onUnlink: () => void;
   onPromote: () => void;
   onLink: () => void;
+  onStartSession: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
 }
@@ -486,6 +516,7 @@ function TodoRow({
   onUnlink,
   onPromote,
   onLink,
+  onStartSession,
   onMoveUp,
   onMoveDown,
 }: TodoRowProps) {
@@ -701,6 +732,16 @@ function TodoRow({
               </button>
             </>
           )}
+          <button
+            type="button"
+            onClick={onStartSession}
+            aria-label="Start session with this todo as context"
+            data-testid="todo-start-session"
+            title="Start session with this todo as context"
+            className="p-1 rounded-md text-gray-500 hover:text-teal-300 hover:bg-gray-800"
+          >
+            <MessageSquarePlus size={15} />
+          </button>
           <button
             type="button"
             onClick={onMoveUp}

@@ -84,7 +84,7 @@ function HubBody({
     case 'org':
       return <DashboardScreen />;
     case 'todos':
-      return <TodosScreen />;
+      return <TodosScreen navigation={navigation} />;
     case 'calendar':
       return <CalendarScreen navigation={navigation} />;
     case 'mail':

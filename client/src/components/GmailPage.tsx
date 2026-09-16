@@ -6,15 +6,19 @@ import {
   ListPlus,
   Loader2,
   Mail,
+  MessageSquarePlus,
   RefreshCw,
   Send,
   Ticket,
   X,
 } from 'lucide-react';
 import { api } from '../utils/api';
-import { buildEmailTodoDraft } from '@shared/utils/captureTodo';
+import type { SessionWire } from '@shared/types';
+import { buildEmailTodoDraft, gmailThreadDeepLink } from '@shared/utils/captureTodo';
+import { buildEmailSessionSeed } from '@shared/utils/sessionSeed';
 import { buildEmailCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
 import CaptureToTicketModal from './CaptureToTicketModal';
+import StartSessionModal from './StartSessionModal';
 import {
   GMAIL_SURFACE_SCOPES,
   hasGmailReadScope,
@@ -193,6 +197,7 @@ function ThreadModal({
   captured,
   onCapture,
   onTicket,
+  onStartSession,
   onClose,
 }: {
   loading: boolean;
@@ -203,6 +208,7 @@ function ThreadModal({
   captured: boolean;
   onCapture: () => void;
   onTicket: () => void;
+  onStartSession: () => void;
   onClose: () => void;
 }) {
   return (
@@ -237,6 +243,16 @@ function ThreadModal({
           >
             <Ticket size={13} />
             Ticket
+          </button>
+          <button
+            type="button"
+            onClick={onStartSession}
+            disabled={loading}
+            title="Start session with this email as context"
+            className="inline-flex flex-shrink-0 items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+          >
+            <MessageSquarePlus size={13} />
+            Start session
           </button>
           <button
             type="button"
@@ -289,8 +305,10 @@ function ThreadModal({
 
 export default function GmailPage({
   onOpenAccountSettings,
+  onSessionStarted,
 }: {
   onOpenAccountSettings?: () => void;
+  onSessionStarted?: (session: SessionWire) => void;
 }) {
   const [status, setStatus] = useState<GoogleStatus | null>(null);
   const [threads, setThreads] = useState<GmailThreadSummary[]>([]);
@@ -310,6 +328,9 @@ export default function GmailPage({
   // Direct-to-ticket capture: seeds the project/column picker (spec
   // CAPTURE-PROVENANCE); null when the picker is closed.
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
+  // "Start session with this email as context": holds the pre-built seed and
+  // display label while the project/agent picker is open; null when closed.
+  const [sessionSeed, setSessionSeed] = useState<{ label: string; seed: string } | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -408,6 +429,23 @@ export default function GmailPage({
         snippet: first?.snippet ?? null,
       }),
     );
+  };
+
+  const startSessionFromThread = () => {
+    if (!openThread) return;
+    const first = threadMessages.find((m) => m.subject || m.from || m.snippet) || threadMessages[0];
+    const subject = first?.subject ?? openThread.subject;
+    setSessionSeed({
+      label: `Email: ${subject || '(no subject)'}`,
+      seed: buildEmailSessionSeed({
+        subject,
+        from: first?.from ?? null,
+        to: first?.to ?? null,
+        snippet: first?.snippet ?? null,
+        bodyText: first?.bodyText ?? null,
+        deepLink: gmailThreadDeepLink(openThread.id),
+      }),
+    });
   };
 
   const sendMessage = async (form: ComposeFormState) => {
@@ -568,11 +606,21 @@ export default function GmailPage({
           captured={captured}
           onCapture={captureThread}
           onTicket={captureThreadToTicket}
+          onStartSession={startSessionFromThread}
           onClose={() => setOpenThread(null)}
         />
       )}
       {ticketDraft && (
         <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
+      )}
+      {sessionSeed && (
+        <StartSessionModal
+          contextLabel={sessionSeed.label}
+          seedMessage={sessionSeed.seed}
+          defaultName={sessionSeed.label}
+          onClose={() => setSessionSeed(null)}
+          onStarted={(session) => onSessionStarted?.(session)}
+        />
       )}
     </div>
   );

@@ -31,8 +31,10 @@ import {
   type TodoPriority,
 } from '../utils/todos';
 import { todoOriginLabel, todoOriginDeepLink } from '@shared/utils/captureTodo';
+import { buildTodoSessionSeed } from '@shared/utils/sessionSeed';
 import PromoteTodoModal from '../components/PromoteTodoModal';
 import LinkTodoModal from '../components/LinkTodoModal';
+import StartSessionModal from '../components/StartSessionModal';
 import OrgTodosSection from '../components/OrgTodosSection';
 import { getActiveOrgApiId } from '../utils/orgs';
 
@@ -117,9 +119,9 @@ function PrioritySelect({
   );
 }
 
-export default function TodosScreen() {
+export default function TodosScreen({ navigation }: any) {
   const sidebar = useContext(SidebarContext);
-  const { lastUserTodoEvent } = useApp();
+  const { lastUserTodoEvent, setActiveAgentId, setActiveSessionId } = useApp();
   // Active org id for the shared org-todo list rendered above the personal one.
   // Null in single-tenant / no-org contexts, where only the personal list shows.
   const orgId = getActiveOrgApiId();
@@ -136,6 +138,8 @@ export default function TodosScreen() {
   const [showDone, setShowDone] = useState(false);
   const [promoteTarget, setPromoteTarget] = useState<any>(null);
   const [linkTarget, setLinkTarget] = useState<any>(null);
+  // "Start session with this todo as context": the todo seeding the picker.
+  const [sessionTarget, setSessionTarget] = useState<any>(null);
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -407,6 +411,7 @@ export default function TodosScreen() {
                     onUnlink={() => unlinkTodo(todo.id)}
                     onPromote={() => setPromoteTarget(todo)}
                     onLink={() => setLinkTarget(todo)}
+                    onStartSession={() => setSessionTarget(todo)}
                     onMoveUp={() => reorder(todo.id, 'up')}
                     onMoveDown={() => reorder(todo.id, 'down')}
                   />
@@ -445,6 +450,7 @@ export default function TodosScreen() {
                         onUnlink={() => unlinkTodo(todo.id)}
                         onPromote={() => {}}
                         onLink={() => {}}
+                        onStartSession={() => {}}
                         onMoveUp={() => {}}
                         onMoveDown={() => {}}
                       />
@@ -476,6 +482,26 @@ export default function TodosScreen() {
           }}
         />
       ) : null}
+      {sessionTarget ? (
+        <StartSessionModal
+          contextLabel={`Todo: ${sessionTarget.title}`}
+          seedMessage={buildTodoSessionSeed({
+            title: sessionTarget.title,
+            notes: sessionTarget.notes,
+            originLabel: todoOriginLabel(sessionTarget),
+            deepLink: todoOriginDeepLink(sessionTarget),
+          })}
+          defaultName={sessionTarget.title}
+          onClose={() => setSessionTarget(null)}
+          onStarted={(session: any) => {
+            if (session?.agent_id && session?.id) {
+              setActiveAgentId(session.agent_id);
+              setActiveSessionId(session.id);
+              navigation?.navigate?.('Chat');
+            }
+          }}
+        />
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -493,6 +519,7 @@ export function TodoRow({
   onUnlink,
   onPromote,
   onLink,
+  onStartSession,
   onMoveUp,
   onMoveDown,
 }: any) {
@@ -707,6 +734,14 @@ export function TodoRow({
               </TouchableOpacity>
             </>
           ) : null}
+          <TouchableOpacity
+            testID="todo-start-session"
+            onPress={onStartSession}
+            style={styles.iconButton}
+            accessibilityLabel="Start session with this todo as context"
+          >
+            <HubIcon name="Bot" size={15} color={colors.gray500} />
+          </TouchableOpacity>
           <TouchableOpacity
             onPress={onMoveUp}
             disabled={isFirst}

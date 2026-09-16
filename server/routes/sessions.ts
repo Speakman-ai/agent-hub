@@ -703,6 +703,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const useWorktree = defaultSessionUseWorktreeFlag(found?.project);
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, 0, 1);
     setSessionOwner(id, ownerUid);
+    // Optional opening user message (e.g. an email/todo context block from the
+    // User Module's "Start session with this as context" action). Pre-stored as
+    // the first user message — not auto-started — so the first-turn history
+    // bootstrap feeds it to the CLI when the user sends their follow-up.
+    const seed = parsed.seedMessage?.trim();
+    if (seed) {
+      stmts.addMessage.run(uuidv4(), id, 'user', seed, null, null, null, null, null, null, null);
+      stmts.touchSession.run(id);
+    }
     if (isWorkflowProject(found?.project)) {
       stmts.updateSessionMode.run(
         requestedMode ?? defaultSessionModeForProject(found?.project),

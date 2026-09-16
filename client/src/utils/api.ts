@@ -1694,13 +1694,14 @@ export const api = {
   createSession: (
     agentId: string,
     name?: string,
-    { consultMode }: { consultMode?: boolean } = {},
+    { consultMode, seedMessage }: { consultMode?: boolean; seedMessage?: string } = {},
   ) =>
     fetchJSON<SessionWire>(`/agents/${agentId}/sessions`, {
       method: 'POST',
       body: JSON.stringify({
         name,
         ...(consultMode ? { session_mode: 'consult' } : {}),
+        ...(seedMessage ? { seedMessage } : {}),
       }),
     }),
   /**

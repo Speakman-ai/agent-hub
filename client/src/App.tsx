@@ -6051,6 +6051,31 @@ export default function App({ initialView }: any = {}) {
     [showToast],
   );
 
+  // Navigate to a session just created from the User Module (email/todo "Start
+  // session with context"). The session already carries its seeded opening
+  // message server-side; mirror handleNewSession's nav so the sidebar splices
+  // it in and the chat view loads the seed.
+  const handleOpenCreatedSession = useCallback(
+    (session: any) => {
+      if (!session?.id || !session.agent_id) return;
+      insertCreatedSession(session.agent_id, session);
+      pendingSessionIdRef.current = session.id;
+      setActiveAgentId(session.agent_id);
+      setActiveSessionId(session.id);
+      setSessionEngine(session.engine || 'claude-code');
+      setSessionModel(
+        session.model ||
+          modelConfig?.engineDefaultModels?.[session.engine || 'claude-code'] ||
+          'claude-opus-5',
+      );
+      setSessionConsultMode(isSessionConsultModeEnabled(session));
+      setMessages([]);
+      setCurrentView('chat');
+      showToast('Session started', 'success', 4000);
+    },
+    [insertCreatedSession, modelConfig, showToast],
+  );
+
   const isElectron = typeof window !== 'undefined' && !!window.electronAPI?.isElectron;
   const keyboardShortcutList = useMemo(() => getDefaultShortcuts(isElectron), [isElectron]);
 
@@ -7051,14 +7076,22 @@ export default function App({ initialView }: any = {}) {
                       }}
                     />
                   }
-                  todos={<TodosPage orgId={getActiveOrgApiId()} />}
+                  todos={
+                    <TodosPage
+                      orgId={getActiveOrgApiId()}
+                      onSessionStarted={handleOpenCreatedSession}
+                    />
+                  }
                   calendar={
                     <CalendarAgendaPage
                       onOpenAccountSettings={() => setCurrentView('settings:account')}
                     />
                   }
                   mail={
-                    <GmailPage onOpenAccountSettings={() => setCurrentView('settings:account')} />
+                    <GmailPage
+                      onOpenAccountSettings={() => setCurrentView('settings:account')}
+                      onSessionStarted={handleOpenCreatedSession}
+                    />
                   }
                   support={
                     <SupportOverviewPage

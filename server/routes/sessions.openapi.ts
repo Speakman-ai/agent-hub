@@ -254,6 +254,17 @@ export const CreateSessionRequestSchema = z.object({
   /** @deprecated Rejected when true — use session_mode: "consult" instead. */
   ask_mode: z.boolean().optional(),
   session_mode: SessionModeSchema.optional(),
+  seedMessage: z
+    .string()
+    .max(
+      MAX_FOLLOW_UP_PROMPT_LENGTH,
+      `seedMessage exceeds maximum length of ${MAX_FOLLOW_UP_PROMPT_LENGTH} characters`,
+    )
+    .optional()
+    .openapi({
+      description:
+        'Optional opening user message to pre-store on the new session (e.g. an email or todo context block from the User Module). Stored as the first `role="user"` message and fed to the CLI by the first-turn history bootstrap on the next turn; the session is not auto-started.',
+    }),
 });
 
 /** PATCH /api/sessions/:sessionId — `name`, `max_turns`, and/or `finalize_automation`. */

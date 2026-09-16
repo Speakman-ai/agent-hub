@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
   Linking,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,12 +15,15 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SidebarContext } from '../context/SidebarContext';
+import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { GMAIL_SURFACE_SCOPES, hasGmailReadScope, hasGmailSendScope } from '../utils/googleSurface';
-import { buildEmailTodoDraft } from '@shared/utils/captureTodo';
+import { buildEmailTodoDraft, gmailThreadDeepLink } from '@shared/utils/captureTodo';
+import { buildEmailSessionSeed } from '@shared/utils/sessionSeed';
 import { buildEmailCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
 import CaptureToTicketModal from '../components/CaptureToTicketModal';
+import StartSessionModal from '../components/StartSessionModal';
 
 export { GMAIL_SURFACE_SCOPES };
 
@@ -238,6 +242,7 @@ function ComposeModal({ saving, error, onClose, onSend }: any) {
 }
 
 function ThreadModal({
+  visible,
   loading,
   error,
   subject,
@@ -246,10 +251,18 @@ function ThreadModal({
   captured,
   onCapture,
   onTicket,
+  onStartSession,
   onClose,
+  onDismiss,
 }: any) {
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+      onDismiss={onDismiss}
+    >
       <View style={styles.modalBackdrop}>
         <View style={styles.modalCard}>
           <View style={styles.threadHeader}>
@@ -273,6 +286,14 @@ function ThreadModal({
               accessibilityLabel="Create ticket"
             >
               <Text style={styles.captureButtonText}>+ Ticket</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={onStartSession}
+              disabled={loading}
+              style={styles.captureButton}
+              accessibilityLabel="Start session with this email as context"
+            >
+              <Text style={styles.captureButtonText}>Session</Text>
             </TouchableOpacity>
           </View>
           <ScrollView>
@@ -308,8 +329,36 @@ function ThreadModal({
   );
 }
 
+/**
+ * Build the "Start session with this email" seed from an open thread + its
+ * loaded messages. Pure and exported so the modal-sequencing flow is testable
+ * without a native runtime. Prefers the first message carrying real headers.
+ */
+export function buildThreadSessionSeed(
+  openThread: { id: string; subject?: string } | null,
+  threadMessages: any[],
+): { label: string; seed: string } | null {
+  if (!openThread) return null;
+  const first =
+    (threadMessages || []).find((m: any) => m.subject || m.from || m.snippet) ||
+    (threadMessages || [])[0];
+  const subject = first?.subject ?? openThread.subject ?? '';
+  return {
+    label: `Email: ${subject || '(no subject)'}`,
+    seed: buildEmailSessionSeed({
+      subject,
+      from: first?.from ?? null,
+      to: first?.to ?? null,
+      snippet: first?.snippet ?? null,
+      bodyText: first?.bodyText ?? null,
+      deepLink: gmailThreadDeepLink(openThread.id),
+    }),
+  };
+}
+
 export default function GmailScreen({ navigation }: any) {
   const sidebar = React.useContext(SidebarContext);
+  const { setActiveAgentId, setActiveSessionId } = useApp();
   const [status, setStatus] = useState<any>(null);
   const [threads, setThreads] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -319,12 +368,26 @@ export default function GmailScreen({ navigation }: any) {
   const [composeError, setComposeError] = useState<any>(null);
   const [sending, setSending] = useState(false);
   const [openThread, setOpenThread] = useState<any>(null);
+  // The thread Modal stays MOUNTED (so its native dismissal completes) while
+  // `threadVisible` toggles its presentation. A follow-up modal (ticket /
+  // session picker) is handed off only once dismissal finishes — see
+  // `requestThreadDismiss` / `finishThreadDismiss`.
+  const [threadVisible, setThreadVisible] = useState(false);
   const [threadMessages, setThreadMessages] = useState<any[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
   const [threadError, setThreadError] = useState<any>(null);
   const [capturing, setCapturing] = useState(false);
   const [captured, setCaptured] = useState(false);
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
+  const [sessionSeed, setSessionSeed] = useState<{ label: string; seed: string } | null>(null);
+  // What to open AFTER the thread modal finishes dismissing. Held in a ref (not
+  // state) because it is consumed by the dismissal-completion callback, not
+  // rendered. `null` means "just close the thread".
+  const pendingThreadHandoffRef = useRef<
+    | { kind: 'session'; seed: { label: string; seed: string } }
+    | { kind: 'ticket'; draft: CaptureCardDraft }
+    | null
+  >(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -362,6 +425,7 @@ export default function GmailScreen({ navigation }: any) {
   const openThreadDetail = async (thread: any) => {
     if (!thread?.id) return;
     setOpenThread({ id: thread.id, subject: '' });
+    setThreadVisible(true);
     setThreadMessages([]);
     setThreadError(null);
     setCaptured(false);
@@ -402,19 +466,55 @@ export default function GmailScreen({ navigation }: any) {
     }
   };
 
+  // Single handoff path: dismiss the thread modal, and only once its native
+  // dismissal has COMPLETED, open whatever comes next (ticket picker / session
+  // picker / nothing). This is the root fix for the "present a modal over a
+  // still-dismissing modal" class — every thread-originated transition goes
+  // through it, so two native Modals are never on screen at once and the next
+  // modal never races the dismissal animation.
+  const requestThreadDismiss = (
+    handoff:
+      | { kind: 'session'; seed: { label: string; seed: string } }
+      | { kind: 'ticket'; draft: CaptureCardDraft }
+      | null,
+  ) => {
+    pendingThreadHandoffRef.current = handoff;
+    setThreadVisible(false);
+    // iOS fires the Modal's onDismiss after the dismissal transition; wait for
+    // it (finishThreadDismiss). Other platforms have no present-over-dismiss
+    // restriction and no onDismiss, so complete the handoff synchronously.
+    if (Platform.OS !== 'ios') finishThreadDismiss();
+  };
+
+  const finishThreadDismiss = () => {
+    const handoff = pendingThreadHandoffRef.current;
+    pendingThreadHandoffRef.current = null;
+    setOpenThread(null);
+    if (handoff?.kind === 'session') setSessionSeed(handoff.seed);
+    else if (handoff?.kind === 'ticket') setTicketDraft(handoff.draft);
+  };
+
   const captureThreadToTicket = () => {
     if (!openThread) return;
     const first =
       threadMessages.find((m: any) => m.subject || m.from || m.snippet) || threadMessages[0];
-    setTicketDraft(
-      buildEmailCardDraft({
+    requestThreadDismiss({
+      kind: 'ticket',
+      draft: buildEmailCardDraft({
         threadId: openThread.id,
         messageId: first?.id ?? null,
         subject: first?.subject ?? openThread.subject,
         from: first?.from ?? null,
         snippet: first?.snippet ?? null,
       }),
-    );
+    });
+  };
+
+  const startSessionFromThread = () => {
+    if (!openThread) return;
+    const seed = buildThreadSessionSeed(openThread, threadMessages);
+    if (!seed) return;
+    requestThreadDismiss({ kind: 'session', seed });
   };
 
   const send = async (form: any) => {
@@ -461,6 +561,7 @@ export default function GmailScreen({ navigation }: any) {
       ) : null}
       {openThread ? (
         <ThreadModal
+          visible={threadVisible}
           loading={threadLoading}
           error={threadError}
           subject={openThread.subject}
@@ -469,11 +570,28 @@ export default function GmailScreen({ navigation }: any) {
           captured={captured}
           onCapture={captureThread}
           onTicket={captureThreadToTicket}
-          onClose={() => setOpenThread(null)}
+          onStartSession={startSessionFromThread}
+          onClose={() => requestThreadDismiss(null)}
+          onDismiss={finishThreadDismiss}
         />
       ) : null}
       {ticketDraft ? (
         <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
+      ) : null}
+      {sessionSeed ? (
+        <StartSessionModal
+          contextLabel={sessionSeed.label}
+          seedMessage={sessionSeed.seed}
+          defaultName={sessionSeed.label}
+          onClose={() => setSessionSeed(null)}
+          onStarted={(session: any) => {
+            if (session?.agent_id && session?.id) {
+              setActiveAgentId(session.agent_id);
+              setActiveSessionId(session.id);
+              navigation?.navigate?.('Chat');
+            }
+          }}
+        />
       ) : null}
     </SafeAreaView>
   );

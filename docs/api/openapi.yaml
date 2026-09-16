@@ -22889,6 +22889,10 @@ paths:
                     - skill-builder
                     - consult
                     - hub
+                seedMessage:
+                  type: string
+                  maxLength: 50000
+                  description: Optional opening user message to pre-store on the new session (e.g. an email or todo context block from the User Module). Stored as the first `role="user"` message and fed to the CLI by the first-turn history bootstrap on the next turn; the session is not auto-started.
       responses:
         "200":
           description: New session.

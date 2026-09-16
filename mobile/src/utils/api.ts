@@ -87,6 +87,7 @@ export const api = {
       body: JSON.stringify({
         name,
         ...(options.consultMode ? { session_mode: 'consult' } : {}),
+        ...(options.seedMessage ? { seedMessage: options.seedMessage } : {}),
       }),
     }),
   getMessages: async (sessionId: any, opts: any = {}) => {
