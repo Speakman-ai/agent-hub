@@ -781,7 +781,8 @@ export function createAutopilotDeployAdapter(
 
 /**
  * Read a Finalize run's outcome into the orchestrator's result shape. Returns
- * null while the run is still in progress so the runtime re-checks next tick.
+ * null while the run or its bounded merge wait is in progress, so the runtime
+ * re-checks next tick.
  * A `pushed` run whose PR merged with an approved review is a `merged` result;
  * a `changes_requested` verdict is a review rejection; other terminal states
  * are surfaced as ci_failed / error.
@@ -791,7 +792,10 @@ export interface FinalizeRunSnapshot {
   reviewerVerdict: 'approved' | 'changes_requested' | null;
   merged: boolean;
   mergedSha: string | null;
+  endedAt?: number | null;
 }
+
+const FINALIZE_MERGE_WAIT_MS = 60_000;
 
 const FINALIZE_TERMINAL = new Set([
   'pushed',
@@ -805,6 +809,7 @@ const FINALIZE_TERMINAL = new Set([
 
 export function finalizeOutcomeFromSnapshot(
   snap: FinalizeRunSnapshot | null,
+  nowMs: number = Date.now(),
 ): AutopilotFinalizeResult | null {
   if (!snap) return null;
   if (!FINALIZE_TERMINAL.has(snap.status)) return null; // still running
@@ -822,6 +827,19 @@ export function finalizeOutcomeFromSnapshot(
     snap.reviewerVerdict === 'approved'
   ) {
     return { status: 'merged', mergedSha: snap.mergedSha, reviewStatus: 'approved' };
+  }
+  if (
+    (snap.status === 'pushed' || snap.status === 'succeeded') &&
+    snap.reviewerVerdict === 'approved'
+  ) {
+    // Push completion precedes asynchronous merge recording. Use the durable
+    // push clock so retries and process restarts cannot extend the wait.
+    if (snap.endedAt != null && nowMs < snap.endedAt + FINALIZE_MERGE_WAIT_MS) return null;
+    return {
+      status: 'error',
+      reviewStatus: snap.reviewerVerdict,
+      message: 'merge_confirmation_timed_out',
+    };
   }
   if (snap.status === 'failed' || snap.status === 'timed_out' || snap.status === 'infra_error') {
     return { status: 'ci_failed', reviewStatus: snap.reviewerVerdict };

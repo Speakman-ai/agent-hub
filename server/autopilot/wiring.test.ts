@@ -3,10 +3,11 @@ import Database from 'better-sqlite3';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import type { Stmts } from '../types.js';
+import type { RouteDeps, Stmts } from '../types.js';
 import type { AutopilotRuntime } from './runtime.js';
 import {
   buildBoardOps,
+  buildFinalizeOps,
   buildLocalTargetLookup,
   handleAutopilotBroadcast,
   parseBaselineSpecJson,
@@ -230,6 +231,51 @@ describe('autopilot wiring — readFinalizeOutcome', () => {
     });
   });
 
+  it('waits for the PR row after push, then reads the recorded merge SHA', () => {
+    const endedAt = Date.now();
+    const rows = {
+      finalizeRun: {
+        status: 'pushed',
+        reviewer_verdict: 'approved',
+        pr_url: 'https://hub/git/proj/pulls/42',
+        project_id: 'proj',
+        ended_at: endedAt,
+      },
+      pr: undefined as Record<string, unknown> | undefined,
+    };
+    const stmts = fakeStmts(rows);
+    expect(readFinalizeOutcome(stmts, 'run-1')).toBeNull();
+    rows.pr = { status: 'open', merged_sha: null };
+    expect(readFinalizeOutcome(stmts, 'run-1')).toBeNull();
+    rows.pr = { status: 'merged', merged_sha: 'recorded-merge-sha' };
+    expect(readFinalizeOutcome(stmts, 'run-1')).toEqual({
+      status: 'merged',
+      mergedSha: 'recorded-merge-sha',
+      reviewStatus: 'approved',
+    });
+  });
+
+  it('bounds the merge wait using the persisted push time across readers', () => {
+    const rows = {
+      finalizeRun: {
+        status: 'pushed',
+        reviewer_verdict: 'approved',
+        pr_url: 'https://hub/git/proj/pulls/42',
+        project_id: 'proj',
+        ended_at: Date.now() - 60_000,
+      },
+      pr: { status: 'open', merged_sha: null as string | null },
+    };
+    expect(readFinalizeOutcome(fakeStmts(rows), 'run-1')).toEqual({
+      status: 'error',
+      reviewStatus: 'approved',
+      message: 'merge_confirmation_timed_out',
+    });
+    // A late merge remains recoverable on retry, even after the wait expires.
+    rows.pr = { status: 'merged', merged_sha: 'late-merge' };
+    expect(readFinalizeOutcome(fakeStmts(rows), 'run-1')?.mergedSha).toBe('late-merge');
+  });
+
   it('maps a changes_requested run to a review rejection', () => {
     const stmts = fakeStmts({
       finalizeRun: {
@@ -243,6 +289,66 @@ describe('autopilot wiring — readFinalizeOutcome', () => {
       status: 'review_rejected',
       reviewStatus: 'changes_requested',
     });
+  });
+});
+
+describe('autopilot wiring finalize retries', () => {
+  function setup() {
+    const pushed = vi.fn();
+    const updateAutomation = vi.fn();
+    const deps = {
+      stmts: {
+        getSession: { get: () => ({ id: 'sess-1', agent_id: 'agent-1' }) },
+        getPushedFinalizeRunForSession: { get: pushed },
+        updateSessionFinalizeAutomation: { run: updateAutomation },
+        getKanbanCardBySession: { get: () => ({ id: 'card-1', board_id: 'board-1' }) },
+        getKanbanBoard: { get: () => ({ id: 'board-1' }) },
+      },
+      findProject: () => ({ id: 'proj' }),
+    } as unknown as RouteDeps;
+    const startRun = vi.fn().mockResolvedValue({ ok: true, runId: 'new-run' });
+    return { pushed, updateAutomation, startRun, ops: buildFinalizeOps(deps, startRun) };
+  }
+  const input = { projectId: 'proj', sessionId: 'sess-1', cardId: 'card-1' };
+
+  it('reuses the pushed run without restarting Finalize or changing the locked session', async () => {
+    const { pushed, updateAutomation, startRun, ops } = setup();
+    pushed.mockReturnValue({ id: 'pushed-run', status: 'pushed', project_id: 'proj' });
+    await expect(ops.startMergeAutomation(input)).resolves.toEqual({ finalizeRunId: 'pushed-run' });
+    expect(pushed).toHaveBeenCalledWith('sess-1');
+    expect(startRun).not.toHaveBeenCalled();
+    expect(updateAutomation).not.toHaveBeenCalled();
+  });
+
+  it('starts merge automation when the session has not pushed', async () => {
+    const { startRun, updateAutomation, ops } = setup();
+    await expect(ops.startMergeAutomation(input)).resolves.toEqual({ finalizeRunId: 'new-run' });
+    expect(startRun).toHaveBeenCalledOnce();
+    expect(updateAutomation).toHaveBeenCalledWith('merge', 'sess-1');
+  });
+
+  it('reconciles a push that finishes between lookup and starting Finalize', async () => {
+    const { pushed, startRun, ops } = setup();
+    pushed.mockReturnValueOnce(undefined).mockReturnValue({
+      id: 'pushed-run',
+      status: 'pushed',
+      project_id: 'proj',
+    });
+    startRun.mockResolvedValue({ ok: false, error: 'session_finalized_pushed' });
+    await expect(ops.startMergeAutomation(input)).resolves.toEqual({ finalizeRunId: 'pushed-run' });
+  });
+
+  it('does not reuse a pushed run from another project', async () => {
+    const { pushed, startRun, ops } = setup();
+    pushed.mockReturnValue({ id: 'foreign-run', status: 'pushed', project_id: 'other' });
+    await expect(ops.startMergeAutomation(input)).rejects.toThrow(/project/);
+    expect(startRun).not.toHaveBeenCalled();
+  });
+
+  it('preserves unrelated Finalize start failures', async () => {
+    const { startRun, ops } = setup();
+    startRun.mockResolvedValue({ ok: false, error: 'missing_worktree' });
+    await expect(ops.startMergeAutomation(input)).rejects.toThrow('missing_worktree');
   });
 });
 

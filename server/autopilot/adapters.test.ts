@@ -791,6 +791,66 @@ describe('autopilot finalize adapter', () => {
     expect(started!.sessionId).toBe('sess-x');
   });
 
+  it.each(['pushed', 'succeeded'])(
+    'waits for an approved %s merge until the deadline',
+    (status) => {
+      const snap = {
+        status,
+        reviewerVerdict: 'approved' as const,
+        merged: false,
+        mergedSha: null,
+        endedAt: 1_000,
+      };
+      expect(finalizeOutcomeFromSnapshot(snap, 1_000)).toBeNull();
+      expect(finalizeOutcomeFromSnapshot(snap, 60_999)).toBeNull();
+      expect(finalizeOutcomeFromSnapshot(snap, 61_000)).toEqual({
+        status: 'error',
+        reviewStatus: 'approved',
+        message: 'merge_confirmation_timed_out',
+      });
+      expect(finalizeOutcomeFromSnapshot({ ...snap, merged: true }, 1_000)).toBeNull();
+      expect(
+        finalizeOutcomeFromSnapshot({ ...snap, merged: true, mergedSha: 'actual-merge' }, 90_000),
+      ).toEqual({ status: 'merged', reviewStatus: 'approved', mergedSha: 'actual-merge' });
+    },
+  );
+
+  it.each([null, undefined, NaN])(
+    'does not wait forever without a valid push timestamp (%s)',
+    (endedAt) => {
+      expect(
+        finalizeOutcomeFromSnapshot(
+          {
+            status: 'pushed',
+            reviewerVerdict: 'approved',
+            merged: false,
+            mergedSha: null,
+            endedAt,
+          },
+          1_000,
+        )?.status,
+      ).toBe('error');
+    },
+  );
+
+  it.each([null, 'changes_requested'] as const)(
+    'requires approval while the merge is pending (%s)',
+    (reviewerVerdict) => {
+      expect(
+        finalizeOutcomeFromSnapshot(
+          {
+            status: 'pushed',
+            reviewerVerdict,
+            merged: false,
+            mergedSha: null,
+            endedAt: 1_000,
+          },
+          1_001,
+        )?.status,
+      ).toBe(reviewerVerdict ? 'review_rejected' : 'error');
+    },
+  );
+
   it('maps finalize run snapshots to orchestrator results', () => {
     // Still running.
     expect(

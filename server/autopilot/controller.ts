@@ -1011,6 +1011,31 @@ export class AutopilotController {
       if (current.controlState !== 'paused') {
         throw new AutopilotError('not_paused', 'Only a paused Autopilot run can be resumed');
       }
+      const cycle = this.store.getCycle(current.id, current.cycleNumber);
+      if (
+        current.pauseReason === 'stage_retries_exhausted' &&
+        current.stage &&
+        cycle &&
+        (cycle.status === 'active' || cycle.status === 'failed') &&
+        !this.store.getOpenStage(cycle.id)
+      ) {
+        // Explicit resume permits another attempt, but does not replenish the
+        // automatic retry budget. Without a stage, completion cannot advance.
+        this.store.updateCycle(cycle.id, {
+          status: 'active',
+          outcome: null,
+          documentationJson: null,
+        });
+        this.store.insertStage({
+          id: this.randomId(),
+          cycleId: cycle.id,
+          stage: current.stage,
+          status: 'pending',
+          attempt: this.store.countStageAttempts(cycle.id, current.stage) + 1,
+          operationId: null,
+          startedAt: null,
+        });
+      }
       const next = this.bumpHeldGeneration(current, now);
       this.store.updateRun(current.id, {
         controlState: 'running',

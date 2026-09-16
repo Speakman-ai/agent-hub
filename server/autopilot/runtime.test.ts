@@ -1,7 +1,9 @@
 import Database from 'better-sqlite3';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createAutopilotController } from './controller.js';
 import { createAutopilotRuntime, type AutopilotAdapters } from './runtime.js';
+import { buildFinalizeOps, readFinalizeOutcome } from './wiring.js';
+import type { RouteDeps } from '../types.js';
 import { AutopilotStore } from './store.js';
 import { ensureAutopilotSchema } from './schema.js';
 import type {
@@ -242,6 +244,114 @@ describe('autopilot runtime driver', () => {
     await runtime.settleSession('sess-1');
     expect(store.getRun(runId)!.stage).toBe('finalizing');
   });
+
+  it.each(['pending', 'retry', 'resume', 'resume-fails'])(
+    'recovers a delayed merge without restarting a pushed session (%s)',
+    async (recovery) => {
+      const expired = recovery !== 'pending';
+      const resume = recovery.startsWith('resume');
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      ensureAutopilotSchema(db);
+      const store = new AutopilotStore(db);
+      const controller = buildController(db);
+      controller.putConfig(
+        PROJECT,
+        {
+          enabled: true,
+          ...READY,
+          limits: { ...READY.limits, maxRetriesPerStage: resume ? 0 : 2 },
+        },
+        ACTOR,
+      );
+      const runId = controller.start(PROJECT, {}, ACTOR).run.id;
+      const finalizeRun = {
+        id: 'fin-1',
+        project_id: PROJECT,
+        status: 'pushed',
+        reviewer_verdict: 'approved',
+        pr_url: 'https://hub/git/demo-app/pulls/15',
+        ended_at: Date.now() - (expired ? 60_000 : 0),
+      };
+      const pr = { status: 'open', merged_sha: null as string | null };
+      const updateAutomation = vi.fn();
+      const deps = {
+        stmts: {
+          getSession: { get: () => ({ id: 'sess-1' }) },
+          getPushedFinalizeRunForSession: { get: () => finalizeRun },
+          getFinalizeRun: { get: () => finalizeRun },
+          getPullRequestByNumber: { get: () => pr },
+          updateSessionFinalizeAutomation: { run: updateAutomation },
+        },
+        findProject: () => ({ id: PROJECT }),
+      } as unknown as RouteDeps;
+      const startRun = vi.fn();
+      const ops = buildFinalizeOps(deps, startRun);
+      const runtime = createAutopilotRuntime({
+        db,
+        buildController: () => buildController(db),
+        buildAdapters: () => ({
+          ...fakeAdapters(),
+          finalize: { startFinalize: (input) => ops.startMergeAutomation(input) },
+        }),
+        readSessionOutcome: () => ({ committed: true, commitSha: 'implementation-sha' }),
+        readFinalizeOutcome: (id) => readFinalizeOutcome(deps.stmts, id),
+        readDeployOutcome: () => null,
+        readEvaluateOutcome: () => null,
+      });
+      try {
+        await runtime.tick(); // plan
+        await runtime.tick(); // dispatch implementation
+        await runtime.tick(); // reconcile implementation
+        await runtime.tick(); // attach the pushed Finalize run
+        await runtime.settleFinalize('fin-1'); // push callback arrives before merge
+        expect(store.getRun(runId)!.stage).toBe('finalizing');
+        expect(store.getRun(runId)!.controlState).toBe(resume ? 'paused' : 'running');
+        expect(store.getCycle(runId, 1)!.testedCommitSha).toBeNull();
+        const finalizeOps = store.listOperations(runId).filter((op) => op.kind === 'finalize');
+        expect(finalizeOps).toHaveLength(1);
+        expect(finalizeOps[0].status).toBe(expired ? 'failed' : 'in_flight');
+
+        if (recovery === 'resume-fails') {
+          await controller.resume(PROJECT, ACTOR);
+          await runtime.tick();
+          await runtime.tick();
+          expect(store.getRun(runId)!.controlState).toBe('paused');
+          expect(store.getRun(runId)!.pauseReason).toBe('stage_retries_exhausted');
+          expect(
+            store
+              .listStages(store.getCycle(runId, 1)!.id)
+              .filter((stage) => stage.stage === 'finalizing'),
+          ).toMatchObject([
+            { attempt: 1, status: 'failed' },
+            { attempt: 2, status: 'failed' },
+          ]);
+          expect(startRun).not.toHaveBeenCalled();
+          return;
+        }
+
+        pr.status = 'merged';
+        pr.merged_sha = 'recorded-merge-sha';
+        if (resume) {
+          await controller.resume(PROJECT, ACTOR);
+          expect(store.getCycle(runId, 1)).toMatchObject({
+            status: 'active',
+            outcome: null,
+            documentation: null,
+          });
+        }
+        if (expired) await runtime.tick(); // retry attaches the same pushed run
+        await runtime.tick(); // reconcile merge on a later tick
+        expect(store.getRun(runId)!.stage).toBe('deploying');
+        expect(store.getCycle(runId, 1)!.testedCommitSha).toBe('recorded-merge-sha');
+        expect(store.getCycle(runId, 1)!.deploymentId).toBeNull();
+        expect(startRun).not.toHaveBeenCalled();
+        expect(updateAutomation).not.toHaveBeenCalled();
+      } finally {
+        db.close();
+      }
+    },
+  );
 
   it('settles an in-flight Finalize run from a completion callback', async () => {
     const db = new Database(':memory:');

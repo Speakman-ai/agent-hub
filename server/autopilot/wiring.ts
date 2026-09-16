@@ -1,13 +1,14 @@
 import path from 'path';
 import { readFileSync } from 'fs';
 import { randomUUID } from 'crypto';
-import type { RouteDeps, Stmts, SessionRow, Project } from '../types.js';
+import type { RouteDeps, Stmts, SessionRow, Project, FinalizeRunRow } from '../types.js';
 import { getDb } from '../db.js';
 import config from '../config.js';
 import { getOrCreateBoard } from '../routes/board.js';
 import { findCycle } from '../kanban-blockers.js';
 import { topologicallySortPhaseIds, PhaseCycleError } from '../kanban-phase-topo-sort.js';
 import { ensureKanbanCardForSession } from '../finalize/ensure-kanban-card.js';
+import { POST_FINALIZE_PUSH_LOCK_ERROR } from '../finalize/post-push-session-lock.js';
 import {
   startFinalizeRunBackground,
   type StartFinalizeRunBackgroundResult,
@@ -100,6 +101,7 @@ interface FinalizeRunLite {
   reviewer_verdict: 'approved' | 'changes_requested' | null;
   pr_url: string | null;
   project_id: string;
+  ended_at: number | null;
 }
 interface PullRequestLite {
   status: string;
@@ -455,6 +457,7 @@ export function readFinalizeOutcome(
     reviewerVerdict: run.reviewer_verdict,
     merged,
     mergedSha,
+    endedAt: run.ended_at,
   });
 }
 
@@ -480,6 +483,19 @@ export function buildFinalizeOps(
       if (!session) throw new Error(`Autopilot: session ${sessionId} not found for Finalize`);
       const project = deps.findProject(projectId);
       if (!project) throw new Error(`Autopilot: project ${projectId} not found for Finalize`);
+      const existingPushedRun = () => {
+        const pushed = deps.stmts.getPushedFinalizeRunForSession.get(sessionId) as
+          | FinalizeRunRow
+          | undefined;
+        if (pushed && pushed.project_id !== projectId) {
+          throw new Error('Autopilot: pushed Finalize run belongs to another project');
+        }
+        return pushed ? { finalizeRunId: pushed.id } : null;
+      };
+      // A pushed session is locked. Reconcile its existing run on retry/resume
+      // without changing automation or launching Finalize again.
+      const pushed = existingPushedRun();
+      if (pushed) return pushed;
       markSessionFinalizeAutomation(deps.stmts, sessionId, 'merge');
       const { card } = ensureKanbanCardForSession(
         { stmts: deps.stmts, broadcast: deps.broadcast, findAgent: deps.findAgent },
@@ -491,6 +507,10 @@ export function buildFinalizeOps(
         session,
         triggeredByUserId: 'autopilot',
       });
+      if (!res.ok && res.error === POST_FINALIZE_PUSH_LOCK_ERROR) {
+        const pushedDuringStart = existingPushedRun();
+        if (pushedDuringStart) return pushedDuringStart;
+      }
       if (!res.ok || !res.runId) {
         throw new Error(`Autopilot: Finalize did not start (${res.ok ? 'no runId' : res.error})`);
       }
