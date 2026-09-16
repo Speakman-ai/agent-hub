@@ -1,4 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// The store resolves the feature-request approval gate from the project's
+// voting config via findProject. Mock it so the count tests can flip the gate
+// on/off without seeding the in-memory project registry. Default null keeps
+// every other test on the classic (gate-off) path.
+vi.mock('./project-model.js', () => ({
+  findProject: vi.fn(() => null),
+}));
+
+import { findProject } from './project-model.js';
 
 import {
   createSupportTicket,
@@ -19,6 +29,7 @@ import {
   markSupportTicketUnread,
   markAllSupportTicketsRead,
   countUnreadSupportTickets,
+  setSupportTicketApproval,
   deriveSupportTicketReleaseState,
   markSupportTicketsCustomerNotified,
   markSupportTicketsReleasedToProd,
@@ -33,6 +44,8 @@ import { wipeTables } from './test/destructive-db.js';
 beforeEach(() => {
   // wipeTables enforces the scratch-DB check (server/test/destructive-db.ts).
   wipeTables(getDb(), ['support_tickets']);
+  // Default: approval gate off (no project / no voting config).
+  vi.mocked(findProject).mockReturnValue(null);
 });
 
 /** Force a deterministic created_at so DESC tiebreaks are testable. */
@@ -340,6 +353,55 @@ describe('support-tickets-store — read/unread', () => {
     expect(countUnreadSupportTickets('p1')).toBe(1);
     expect(countUnreadSupportTickets('p2')).toBe(1);
     expect(countUnreadSupportTickets('p3')).toBe(0);
+  });
+});
+
+describe('support-tickets-store — unread badge honors the approval gate', () => {
+  it('gate OFF: a pending feature request still counts (classic behavior)', () => {
+    // findProject returns null by default (gate off) -> no approval filtering.
+    createSupportTicket({ projectId: 'p1', body: 'please add dark mode', type: 'feature_request' });
+    createSupportTicket({ projectId: 'p1', body: 'crash on save', type: 'bug' });
+    expect(countUnreadSupportTickets('p1')).toBe(2);
+  });
+
+  it('gate ON: excludes pending/denied feature requests, keeps bugs + approved', () => {
+    // Project runs the approval gate.
+    vi.mocked(findProject).mockReturnValue({ voting: { enabled: true } } as never);
+
+    createSupportTicket({ projectId: 'p1', body: 'crash on save', type: 'bug' });
+    createSupportTicket({ projectId: 'p1', body: 'a question', type: 'question' });
+    createSupportTicket({ projectId: 'p1', body: 'pending idea', type: 'feature_request' });
+    const approved = createSupportTicket({
+      projectId: 'p1',
+      body: 'approved idea',
+      type: 'feature_request',
+    });
+    const denied = createSupportTicket({
+      projectId: 'p1',
+      body: 'denied idea',
+      type: 'feature_request',
+    });
+    setSupportTicketApproval(approved.id, 'approved', 'admin');
+    setSupportTicketApproval(denied.id, 'denied', 'admin');
+
+    // Bug + question + approved feature request = 3. Pending and denied
+    // feature requests are excluded from the "approved scope of work" count.
+    expect(countUnreadSupportTickets('p1')).toBe(3);
+  });
+
+  it('gate ON: a read approved feature request drops off the count', () => {
+    vi.mocked(findProject).mockReturnValue({ voting: { enabled: true } } as never);
+
+    const approved = createSupportTicket({
+      projectId: 'p1',
+      body: 'approved idea',
+      type: 'feature_request',
+    });
+    setSupportTicketApproval(approved.id, 'approved', 'admin');
+    expect(countUnreadSupportTickets('p1')).toBe(1);
+
+    markSupportTicketRead(approved.id);
+    expect(countUnreadSupportTickets('p1')).toBe(0);
   });
 });
 

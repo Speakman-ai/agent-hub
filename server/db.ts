@@ -6199,6 +6199,23 @@ function initDb(dataDir: string): void {
           AND status IN ('new', 'investigating')
           AND read_at IS NULL`,
     ),
+    // Same as above, but only counts "approved scope of work" — feature
+    // requests are excluded unless approved. Used for the Support sidebar
+    // badge when a project runs the approval gate (Project.voting.enabled), so
+    // pending/denied/legacy-NULL feature requests (which are hidden from the
+    // default support queue) don't inflate the badge. A NULL approval_status
+    // (non-feature ticket, or a legacy feature request) never equals
+    // 'approved', so bugs/questions/incidents/other always count and a legacy
+    // feature request is treated as pending — matching the queue's default
+    // `approved` bucket, which reads NULL as 'pending'.
+    countUnreadSupportTicketsApproved: db.prepare(
+      `SELECT COUNT(*) AS n
+         FROM support_tickets
+        WHERE project_id = ?
+          AND status IN ('new', 'investigating')
+          AND read_at IS NULL
+          AND (type != 'feature_request' OR approval_status = 'approved')`,
+    ),
     deleteSupportTicket: db.prepare('DELETE FROM support_tickets WHERE id = ?'),
     deleteSupportTicketsByProject: db.prepare('DELETE FROM support_tickets WHERE project_id = ?'),
 

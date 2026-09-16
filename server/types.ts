@@ -2585,6 +2585,7 @@ export interface Stmts {
   markSupportTicketUnread: Stmt;
   markAllSupportTicketsRead: Stmt;
   countUnreadSupportTickets: Stmt;
+  countUnreadSupportTicketsApproved: Stmt;
   deleteSupportTicket: Stmt;
   deleteSupportTicketsByProject: Stmt;
 

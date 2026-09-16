@@ -13,6 +13,7 @@
  */
 import { v4 as uuidv4 } from 'uuid';
 import { getStmts, getDb } from './db.js';
+import { findProject } from './project-model.js';
 import type {
   SupportTicketRow,
   SupportTicketReleaseState,
@@ -645,9 +646,25 @@ export function markAllSupportTicketsRead(projectId: string): number {
   return getStmts().markAllSupportTicketsRead.run(projectId).changes;
 }
 
-/** Count a project's unread open tickets (read_at IS NULL). */
+/**
+ * Count a project's actionable unread open tickets for the Support sidebar
+ * badge (`status IN ('new','investigating') AND read_at IS NULL`).
+ *
+ * When the project runs the feature-request approval gate
+ * (`Project.voting.enabled`), the badge reflects only "approved scope of work":
+ * feature requests count once approved, while pending / denied / legacy-NULL
+ * feature requests are excluded — matching the default support queue, which
+ * hides non-approved feature requests. Bugs, questions, incidents, and other
+ * types always count. With the gate off, feature requests appear in the queue
+ * immediately (no approval bucket), so they count like any other open ticket
+ * and the classic behavior is preserved.
+ */
 export function countUnreadSupportTickets(projectId: string): number {
-  const row = getStmts().countUnreadSupportTickets.get(projectId) as { n: number } | undefined;
+  const approvalGated = Boolean(findProject(projectId)?.voting?.enabled);
+  const stmt = approvalGated
+    ? getStmts().countUnreadSupportTicketsApproved
+    : getStmts().countUnreadSupportTickets;
+  const row = stmt.get(projectId) as { n: number } | undefined;
   return row?.n ?? 0;
 }
 
