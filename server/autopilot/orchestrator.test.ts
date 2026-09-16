@@ -1225,7 +1225,7 @@ describe('autopilot orchestrator — evaluate', () => {
     expect(parsePinned(store, runId).map((c) => c.source)).toContain('cycle');
   });
 
-  it('rejects health-only false positives and starts bounded repair without promoting last-known-good', async () => {
+  it('rejects health-only false positives and re-verifies the merged SHA instead of re-implementing', async () => {
     const { controller, orchestrator, store } = harness();
     await reachVerifying(orchestrator, controller);
     const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
@@ -1238,14 +1238,104 @@ describe('autopilot orchestrator — evaluate', () => {
       }),
     });
     const runId = store.getActiveRun(PROJECT)!.id;
-    expect(result.snapshot.run.stage).toBe('implementing');
+    expect(result.snapshot.run.stage).toBe('verifying');
     expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
+    expect(store.getRun(runId)!.stage).not.toBe('implementing');
     expect(store.getRun(runId)!.stage).not.toBe('selecting-next');
     expect(store.getRun(runId)!.controlState).toBe('running');
     const verification = store.getCycle(runId, 1)!.verification as {
       judgement?: { reason?: string };
     };
     expect(verification.judgement?.reason).toBe('health_only');
+  });
+
+  it('re-deploys when capture fails and a later merged SHA is not live', async () => {
+    const { controller, orchestrator, store } = harness({
+      getDeployedRevision: () => 'cafebabeface',
+    });
+    await reachVerifying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const cycle = store.getCycle(runId, 1)!;
+    store.insertOperation({
+      id: 'op-fin-repair',
+      runId,
+      cycleId: cycle.id,
+      kind: 'finalize',
+      status: 'succeeded',
+      fencingGeneration: store.getRun(runId)!.fencingGeneration,
+      intentJson: '{}',
+      sessionId: null,
+      finalizeRunId: 'fin-repair',
+      deploymentId: null,
+      createdAt: '2026-09-16T12:00:00.000Z',
+    });
+    store.updateOperation('op-fin-repair', {
+      resultJson: JSON.stringify({ mergedSha: 'cafebabeface' }),
+    });
+    store.updateCycle(cycle.id, { testedCommitSha: 'cafebabeface' });
+    const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    const result = await orchestrator.reconcileEvaluate(PROJECT, {
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      result: passingEvalReport({
+        criteria: [],
+        healthCheck: { url: 'http://127.0.0.1:4310/health', ok: false },
+      }),
+    });
+    expect(result.snapshot.run.stage).toBe('deploying');
+    expect(store.getCycle(runId, 1)!.testedCommitSha).toBe('cafebabeface');
+    expect(store.getRun(runId)!.stage).not.toBe('implementing');
+  });
+
+  it('skips a redundant baseline implement after a capture-evidence failure', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachVerifying(orchestrator, controller);
+    const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    await orchestrator.reconcileEvaluate(PROJECT, {
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      result: passingEvalReport({
+        criteria: [],
+        healthCheck: { url: 'http://127.0.0.1:4310/health', ok: true },
+      }),
+    });
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const cycle = store.getCycle(runId, 1)!;
+    const open = store.getOpenStage(cycle.id);
+    if (open) {
+      store.updateStage(open.id, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+      });
+    }
+    controller.advanceStage(PROJECT, 'implementing');
+    expect(store.getRun(runId)!.stage).toBe('implementing');
+    expect(await orchestrator.redirectRedundantRepair(PROJECT)).toBe(true);
+    expect(store.getRun(runId)!.stage).toBe('verifying');
+    expect(store.getRun(runId)!.controlState).toBe('running');
+  });
+
+  it('advances an already-delivered implement to verify when the SHA is already merged', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachVerifying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    const cycle = store.getCycle(runId, 1)!;
+    const open = store.getOpenStage(cycle.id);
+    if (open) {
+      store.updateStage(open.id, {
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+      });
+    }
+    controller.advanceStage(PROJECT, 'implementing');
+    const implOp = await orchestrator.dispatchImplementation(PROJECT);
+    const result = await orchestrator.reconcileImplementation(PROJECT, {
+      operationId: implOp.id,
+      fencingGeneration: implOp.fencingGeneration,
+      result: { committed: true, alreadyDelivered: true },
+    });
+    expect(result.snapshot.run.stage).toBe('verifying');
+    expect(store.getRun(runId)!.stage).not.toBe('finalizing');
   });
 
   it('updates testedCommitSha when a later repair finalize merges a new SHA', async () => {
@@ -1255,13 +1345,44 @@ describe('autopilot orchestrator — evaluate', () => {
     expect(store.getCycle(runId, 1)!.testedCommitSha).toBe('deadbeefcafe');
 
     const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    const failing = passingEvalReport({
+      criteria: [
+        {
+          criterionId: 'baseline-1',
+          passed: false,
+          kind: 'browser_journey',
+          screenshotPath: '/tmp/eval/fail.png',
+          tracePath: '/tmp/eval/fail.trace',
+          observed: 'list stayed empty',
+        },
+        {
+          criterionId: 'baseline-2',
+          passed: true,
+          kind: 'browser_journey',
+          screenshotPath: '/tmp/eval/ok.png',
+          tracePath: '/tmp/eval/ok.trace',
+        },
+        {
+          criterionId: 'cycle-1',
+          passed: true,
+          kind: 'browser_journey',
+          screenshotPath: '/tmp/eval/cycle1.png',
+          tracePath: '/tmp/eval/cycle1.trace',
+        },
+        {
+          criterionId: 'cycle-2',
+          passed: true,
+          kind: 'browser_journey',
+          screenshotPath: '/tmp/eval/cycle2.png',
+          tracePath: '/tmp/eval/cycle2.trace',
+        },
+      ],
+    });
     await orchestrator.reconcileEvaluate(PROJECT, {
       operationId: evalOp.id,
       fencingGeneration: evalOp.fencingGeneration,
-      result: passingEvalReport({
-        criteria: [],
-        healthCheck: { url: 'http://127.0.0.1:4310/health', ok: true },
-      }),
+      result: failing,
+      captures: passingEvalCaptures(evalOp.id, failing),
     });
     expect(store.getRun(runId)!.stage).toBe('implementing');
 
@@ -1369,7 +1490,9 @@ describe('autopilot orchestrator — evaluate', () => {
     });
     expect(store.getRun(runId)!.controlState).toBe('paused');
     expect(store.getRun(runId)!.stage).not.toBe('selecting-next');
-    expect(store.getRun(runId)!.pauseReason).toMatch(/repair budget exhausted|health_only/);
+    expect(store.getRun(runId)!.pauseReason).toMatch(
+      /repair budget exhausted|health_only|capture retry budget exhausted/,
+    );
     const failedRecord = parseCycleDocumentation(store.getCycle(runId, 1)!.documentation);
     expect(failedRecord?.kind).toBe('failure');
     expect(failedRecord?.failedAttempts.some((a) => a.reason.startsWith('evaluate:'))).toBe(true);

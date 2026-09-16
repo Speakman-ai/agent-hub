@@ -13,6 +13,7 @@ import {
   parseBaselineSpecJson,
   pinSessionEnvAdapter,
   readFinalizeOutcome,
+  readSessionOutcome,
   autopilotWorkerSessionName,
 } from './wiring.js';
 
@@ -437,5 +438,43 @@ environments:
       currentDeploymentId: null,
     });
     expect(lookup.getDeclaredEnvironment('demo', 'production')).toBeNull();
+  });
+});
+
+describe('readSessionOutcome', () => {
+  function stmtsFor(session: Record<string, unknown> | undefined) {
+    return { getSession: { get: () => session } } as unknown as Stmts;
+  }
+
+  it('waits while the session is still in an active turn', () => {
+    expect(
+      readSessionOutcome(stmtsFor({ id: 's1', changes_ready: null }), new Set(['s1']), 's1'),
+    ).toBeNull();
+  });
+
+  it('treats changes_ready or worktree mutations as committed', () => {
+    expect(
+      readSessionOutcome(stmtsFor({ id: 's1', changes_ready: '{"ok":true}' }), new Set(), 's1'),
+    ).toEqual({ committed: true });
+    expect(
+      readSessionOutcome(
+        stmtsFor({ id: 's1', changes_ready: null, code_changed_at: '2026-09-16T00:00:00Z' }),
+        new Set(),
+        's1',
+      ),
+    ).toEqual({ committed: true });
+  });
+
+  it('treats an idle session with no new commits as already delivered', () => {
+    expect(
+      readSessionOutcome(stmtsFor({ id: 's1', changes_ready: null }), new Set(), 's1'),
+    ).toEqual({ committed: true, alreadyDelivered: true });
+  });
+
+  it('fails when the session row is missing', () => {
+    expect(readSessionOutcome(stmtsFor(undefined), new Set(), 'missing')).toEqual({
+      committed: false,
+      error: 'session missing',
+    });
   });
 });

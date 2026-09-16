@@ -713,7 +713,10 @@ export function readSessionOutcome(
   // with committed work as "committed locally".
   const changesReady = (session as { changes_ready?: string | null }).changes_ready ?? null;
   if (changesReady) return { committed: true };
-  return null; // not yet observable as committed; re-check next tick
+  if (session.code_changed_at) return { committed: true };
+  // Turn is over and the worker did not leave local commits. Waiting forever
+  // for changes_ready re-dispatches the same baseline card on stage timeout.
+  return { committed: true, alreadyDelivered: true };
 }
 
 export function readEvaluateOutcome(

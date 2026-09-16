@@ -6,6 +6,7 @@ import {
   pinApiRequest,
   pinCriteriaFromSpec,
   shouldRecoverFromEvaluation,
+  isCaptureEvidenceFailure,
   stampHubEvidence,
   writeCycleVerification,
   parseHubEvidence,
@@ -410,6 +411,16 @@ describe('judgeEvaluation', () => {
     if (judgement.ok) return;
     expect(judgement.reason).toBe('health_only');
     expect(shouldRecoverFromEvaluation(judgement)).toBe(false);
+    expect(isCaptureEvidenceFailure(judgement.reason)).toBe(true);
+  });
+
+  it('classifies Hub capture failures separately from product regressions', () => {
+    expect(isCaptureEvidenceFailure('missing_evidence')).toBe(true);
+    expect(isCaptureEvidenceFailure('health_only')).toBe(true);
+    expect(isCaptureEvidenceFailure('preview_is_not_deployment')).toBe(true);
+    expect(isCaptureEvidenceFailure('stale_evidence')).toBe(true);
+    expect(isCaptureEvidenceFailure('baseline_regression')).toBe(false);
+    expect(isCaptureEvidenceFailure('wrong_revision')).toBe(false);
   });
 
   it('rejects an API check used as evidence for a browser journey', () => {

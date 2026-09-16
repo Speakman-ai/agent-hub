@@ -1492,6 +1492,22 @@ export function shouldRecoverFromEvaluation(judgement: AutopilotEvaluationJudgem
 }
 
 /**
+ * Evaluator/Hub capture failures, not product regressions. Re-verify (and
+ * redeploy if the merged SHA is not live) instead of re-implementing the
+ * same baseline card.
+ */
+export function isCaptureEvidenceFailure(
+  reason: AutopilotEvaluationRejectReason | string,
+): boolean {
+  return (
+    reason === 'missing_evidence' ||
+    reason === 'health_only' ||
+    reason === 'preview_is_not_deployment' ||
+    reason === 'stale_evidence'
+  );
+}
+
+/**
  * True when the cycle recorded a passing judgement whose SHA and Hub
  * evidence binding match this candidate. Pending or failed evaluation
  * cannot become last-known-good.

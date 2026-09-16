@@ -262,6 +262,7 @@ export class AutopilotRuntime {
     const store = new AutopilotStore(this.db);
     const cycle = store.getCycle(run.id, run.cycleNumber);
     if (!cycle) return;
+    if (await orchestrator.redirectRedundantRepair(run.projectId)) return;
     const inFlight = store
       .listInFlightOperations(run.id)
       .find((op) => op.kind === 'implement' && op.cycleId === cycle.id);

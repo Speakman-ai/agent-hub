@@ -5,9 +5,10 @@ import { AutopilotError, isAutopilotError } from './errors.js';
 import { AutopilotStore } from './store.js';
 import { assessStorageRecoverability, type AutopilotStorageRecoveryKind } from './local-target.js';
 import type { AutopilotController } from './controller.js';
-import type { AutopilotOperationRecord, AutopilotRunSnapshot } from './types.js';
+import type { AutopilotOperationRecord, AutopilotRunSnapshot, AutopilotStage } from './types.js';
 import {
   deriveCycleJourneys,
+  isCaptureEvidenceFailure,
   judgeEvaluation,
   parseCycleVerification,
   pinCriteriaFromSpec,
@@ -253,6 +254,8 @@ export interface AutopilotSessionResult {
   committed: boolean;
   commitSha?: string | null;
   error?: string;
+  /** Worker finished without new commits; reuse the cycle's merged SHA. */
+  alreadyDelivered?: boolean;
 }
 
 export type AutopilotFinalizeStatus = 'merged' | 'review_rejected' | 'ci_failed' | 'error';
@@ -683,6 +686,11 @@ export class AutopilotOrchestrator {
         outcome: outcomeFromOperation(op),
         snapshot: this.controller.getRun(projectId, runId),
       };
+    }
+
+    if (input.result.alreadyDelivered) {
+      const skipped = await this.skipImplementWhenShaAlreadyShipped(projectId, op);
+      if (skipped) return skipped;
     }
 
     if (!input.result.committed) {
@@ -2095,6 +2103,157 @@ export class AutopilotOrchestrator {
   }
 
   /**
+   * If verify already failed for Hub/evaluator capture reasons and this cycle
+   * has a merged SHA, skip another baseline implement and redeploy/re-verify
+   * that SHA instead.
+   */
+  async redirectRedundantRepair(projectId: string): Promise<boolean> {
+    const run = this.store.getActiveRun(projectId);
+    if (!run || run.controlState !== 'running' || run.stage !== 'implementing') return false;
+    const cycle = this.store.getCycle(run.id, run.cycleNumber);
+    if (!cycle || !this.lastJudgementIsCaptureFailure(cycle.verification)) return false;
+    const sha = this.latestMergedSha(run.id, cycle);
+    if (!sha) return false;
+    if (cycle.testedCommitSha !== sha) {
+      this.store.updateCycle(cycle.id, { testedCommitSha: sha });
+    }
+    const inFlight = this.findInFlightOperation(run.id, 'implement', cycle.id);
+    if (inFlight && inFlight.fencingGeneration === run.fencingGeneration) {
+      try {
+        await this.controller.completeOperation({
+          operationId: inFlight.id,
+          fencingGeneration: run.fencingGeneration,
+          outcome: 'succeeded',
+          result: { alreadyDelivered: true, commitSha: sha },
+        });
+      } catch {
+        this.markImplementAlreadyDelivered(inFlight.id, cycle.id, sha);
+      }
+    } else {
+      this.markImplementAlreadyDelivered(inFlight?.id ?? null, cycle.id, sha);
+    }
+    const next = this.nextStageAfterCaptureFailure(run.id, {
+      id: cycle.id,
+      testedCommitSha: sha,
+    });
+    this.controller.advanceStage(projectId, next);
+    this.store.insertEvent({
+      runId: run.id,
+      cycleId: cycle.id,
+      type: 'redundant_repair_skipped',
+      payload: { next, sha, reason: 'capture_evidence_failure' },
+      fencingGeneration: run.fencingGeneration,
+      createdAt: new Date().toISOString(),
+    });
+    return true;
+  }
+
+  private markImplementAlreadyDelivered(
+    operationId: string | null,
+    cycleId: string,
+    sha: string,
+  ): void {
+    const now = new Date().toISOString();
+    const resultJson = JSON.stringify({ alreadyDelivered: true, commitSha: sha });
+    if (operationId) {
+      this.store.updateOperation(operationId, {
+        status: 'succeeded',
+        resultJson,
+        updatedAt: now,
+      });
+    }
+    const open = this.store.getOpenStage(cycleId);
+    if (open?.stage === 'implementing') {
+      this.store.updateStage(open.id, {
+        status: 'succeeded',
+        completedAt: now,
+        resultJson,
+      });
+    }
+  }
+
+  private async skipImplementWhenShaAlreadyShipped(
+    projectId: string,
+    op: AutopilotOperationRecord,
+  ): Promise<AutopilotReconcileOutcome | null> {
+    const run = this.store.getRun(op.runId);
+    if (!run || !op.cycleId) return null;
+    const cycle = this.store.getCycleById(op.cycleId);
+    if (!cycle) return null;
+    const sha = this.latestMergedSha(run.id, cycle);
+    if (!sha) return null;
+    if (cycle.testedCommitSha !== sha) {
+      this.store.updateCycle(cycle.id, { testedCommitSha: sha });
+    }
+    await this.controller.completeOperation({
+      operationId: op.id,
+      fencingGeneration: op.fencingGeneration,
+      outcome: 'succeeded',
+      result: { alreadyDelivered: true, commitSha: sha },
+    });
+    const next = this.nextStageAfterCaptureFailure(run.id, {
+      id: cycle.id,
+      testedCommitSha: sha,
+    });
+    const snapshot = this.controller.advanceStage(projectId, next);
+    this.store.insertEvent({
+      runId: run.id,
+      cycleId: cycle.id,
+      type: 'redundant_repair_skipped',
+      payload: { next, sha, reason: 'already_delivered' },
+      fencingGeneration: run.fencingGeneration,
+      createdAt: new Date().toISOString(),
+    });
+    return {
+      advanced: true,
+      idempotent: false,
+      outcome: 'succeeded',
+      snapshot,
+    };
+  }
+
+  private lastJudgementIsCaptureFailure(verification: unknown): boolean {
+    const judgement = parseCycleVerification(verification).judgement;
+    return judgement?.ok === false && isCaptureEvidenceFailure(judgement.reason);
+  }
+
+  private latestMergedSha(
+    runId: string,
+    cycle: { id: string; testedCommitSha: string | null },
+  ): string | null {
+    const last = this.store
+      .listOperations(runId)
+      .filter(
+        (row) => row.kind === 'finalize' && row.status === 'succeeded' && row.cycleId === cycle.id,
+      )
+      .at(-1);
+    const sha = (last?.result as { mergedSha?: unknown } | null)?.mergedSha;
+    if (typeof sha === 'string' && sha.trim()) return sha.trim();
+    const fallback = cycle.testedCommitSha?.trim() ?? '';
+    return fallback || null;
+  }
+
+  private deployCoversSha(runId: string, cycleId: string, sha: string): boolean {
+    const last = [...this.store.listOperations(runId)]
+      .filter(
+        (row) => row.kind === 'deploy' && row.status === 'succeeded' && row.cycleId === cycleId,
+      )
+      .at(-1);
+    if (!last) return false;
+    const deployed = (last.result as { deployedSha?: unknown } | null)?.deployedSha;
+    return typeof deployed === 'string' && deployed.trim() === sha;
+  }
+
+  private nextStageAfterCaptureFailure(
+    runId: string,
+    cycle: { id: string; testedCommitSha: string | null },
+  ): Extract<AutopilotStage, 'deploying' | 'verifying'> {
+    const sha = this.latestMergedSha(runId, cycle);
+    if (sha && !this.deployCoversSha(runId, cycle.id, sha)) return 'deploying';
+    return 'verifying';
+  }
+
+  /**
    * Roll back to last-known-good after a failed evaluation, then reopen
    * implementing for a budgeted repair. Never advances to documenting or
    * selecting-next. Failed terminal outcomes persist a cycle record in place
@@ -2124,6 +2283,55 @@ export class AutopilotOrchestrator {
       };
     };
     const extra: Record<string, unknown> = {};
+    if (isCaptureEvidenceFailure(judgement.reason) && run) {
+      const cycle = this.store.getCycle(run.id, run.cycleNumber);
+      const sha = cycle ? this.latestMergedSha(run.id, cycle) : null;
+      if (cycle && sha) {
+        const stage = this.store.getStageByOperationId(op.id);
+        const maxRetries = run.limits.maxRetriesPerStage ?? 0;
+        const canRetryCapture = !!stage && stage.attempt <= maxRetries;
+        if (!canRetryCapture) {
+          return fail(`evaluation ${judgement.reason}; capture retry budget exhausted`, {
+            captureFailure: true,
+          });
+        }
+        if (cycle.testedCommitSha !== sha) {
+          this.store.updateCycle(cycle.id, { testedCommitSha: sha });
+        }
+        const next = this.nextStageAfterCaptureFailure(run.id, {
+          id: cycle.id,
+          testedCommitSha: sha,
+        });
+        await this.controller.completeOperation({
+          operationId: input.operationId,
+          fencingGeneration: input.fencingGeneration,
+          outcome: 'failed',
+          skipStageRetry: true,
+          result: {
+            reason: judgement.reason,
+            detail: judgement.detail,
+            captureFailure: true,
+            next,
+            sha,
+          },
+        });
+        const snapshot = this.controller.advanceStage(projectId, next);
+        this.store.insertEvent({
+          runId: run.id,
+          cycleId: cycle.id,
+          type: 'evaluation_capture_retry',
+          payload: { next, sha, reason: judgement.reason },
+          fencingGeneration: run.fencingGeneration,
+          createdAt: new Date().toISOString(),
+        });
+        return {
+          advanced: true,
+          idempotent: false,
+          outcome: 'failed',
+          snapshot,
+        };
+      }
+    }
     if (run?.lastVerifiedSha && run.lastDeploymentId && run.targetId) {
       let rolled;
       try {

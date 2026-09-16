@@ -10,6 +10,7 @@ import { buildFinalizeOps, readFinalizeOutcome } from './wiring.js';
 import type { RouteDeps } from '../types.js';
 import { AutopilotStore } from './store.js';
 import { ensureAutopilotSchema } from './schema.js';
+import { writeCycleVerification } from './evaluate.js';
 import type {
   AutopilotDeployResult,
   AutopilotFinalizeResult,
@@ -167,6 +168,83 @@ describe('autopilot runtime driver', () => {
     await runtime.tick();
     expect(store.getRun(runId)!.stage).toBe('verifying');
     expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
+  });
+
+  it('does not dispatch another baseline implement after a capture-evidence failure', async () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    ensureAutopilotSchema(db);
+    const store = new AutopilotStore(db);
+    const controller = buildController(db);
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+    const runId = controller.start(PROJECT, {}, ACTOR).run.id;
+
+    let implementCalls = 0;
+    const adapters = fakeAdapters();
+    adapters.session = {
+      dispatchImplementation: async () => {
+        implementCalls += 1;
+        return { sessionId: `sess-${implementCalls}` };
+      },
+    };
+
+    const runtime = createAutopilotRuntime({
+      db,
+      buildController: () => buildController(db),
+      buildAdapters: () => adapters,
+      readSessionOutcome: () => ({ committed: true, commitSha: 'abc123' }),
+      readFinalizeOutcome: () => ({
+        status: 'merged',
+        mergedSha: 'deadbeef',
+        reviewStatus: 'approved',
+      }),
+      readDeployOutcome: () => ({
+        status: 'success',
+        deploymentId: 'dep-1',
+        deployedSha: 'deadbeef',
+      }),
+      readEvaluateOutcome: () => null,
+    });
+
+    await runtime.tick(); // plan
+    await runtime.tick(); // dispatch impl
+    await runtime.tick(); // reconcile impl
+    await runtime.tick(); // dispatch finalize
+    await runtime.tick(); // reconcile finalize
+    await runtime.tick(); // dispatch deploy
+    await runtime.tick(); // settle deploy -> verifying
+    expect(store.getRun(runId)!.stage).toBe('verifying');
+    expect(implementCalls).toBe(1);
+
+    const cycle = store.getCycle(runId, 1)!;
+    const open = store.getOpenStage(cycle.id);
+    if (open) {
+      store.updateStage(open.id, { status: 'failed', completedAt: new Date().toISOString() });
+    }
+    store.updateCycle(cycle.id, {
+      verificationJson: writeCycleVerification(cycle.verification, {
+        judgement: {
+          ok: false,
+          reason: 'missing_evidence',
+          detail: 'no Hub captures',
+          recover: false,
+        },
+      }),
+    });
+    store.updateRun(runId, { stage: 'implementing' });
+    store.insertStage({
+      id: 'stg-repair',
+      cycleId: cycle.id,
+      stage: 'implementing',
+      status: 'pending',
+      attempt: 2,
+      operationId: null,
+      startedAt: new Date().toISOString(),
+    });
+
+    await runtime.tick();
+    expect(implementCalls).toBe(1);
+    expect(store.getRun(runId)!.stage).toBe('verifying');
   });
 
   it('is a no-op when no run is active', async () => {
