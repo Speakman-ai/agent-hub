@@ -389,14 +389,14 @@ export function buildSkillInjection(loaded: LoadedSkillBody): string {
     loaded.skillMd.trim(),
     '',
     '### Self-improvement',
-    'If this task teaches a durable correction or reusable rule for this skill, record it for trusted review before finishing by emitting this control block with a concise, non-secret entry:',
+    `Emitting a skill-improvement is the exception, not a per-task habit — most sessions teach nothing durable about the \`${skillName}\` skill, and in that (common) case you emit nothing here. Record one ONLY when this task revealed a correction or reusable rule about the skill's own subject matter — a better way to use it, a wrong or changed detail in its instructions, or a gotcha that will recur for anyone using it later. When it applies, emit this control block with a concise, non-secret entry:`,
     '<agenthub:skill-improvement>',
     JSON.stringify({
       name: skillName,
-      entry: 'Reusable learning that should change future uses of this skill.',
+      entry: `A correction or reusable rule about the ${skillName} skill itself.`,
     }),
     '</agenthub:skill-improvement>',
-    'Only log fundamental skill behavior, not task-specific facts. The server stores this as pending review and does not change SKILL.md automatically.',
+    `The entry must describe how the \`${skillName}\` skill itself should change, phrased so it helps a different agent on a different task. Do NOT log what happened in this session: task or session state, one-off facts, progress notes, what you did this turn, or anything specific to the current request. If the entry would not make sense to someone who never saw this session, do not emit it. When in doubt, emit nothing. The server stores entries as pending human review and never changes SKILL.md automatically.`,
     '',
     '### References',
   ];

@@ -294,6 +294,25 @@ describe('skill-invoke', () => {
     expect(out).toContain('### Available scripts');
   });
 
+  it('buildSkillInjection self-improvement guidance steers away from session noise', () => {
+    // Regression: skill-improvement suggestions were session narration rather
+    // than durable skill changes. The injected guidance must make "emit
+    // nothing" the default, forbid logging session/task state, and name the
+    // skill so the entry is scoped to the skill's own subject matter.
+    makeSkill(projectSkillsDir, 'wiki-search');
+    const loaded = loadSkillBody('wiki-search', { skillsDir: projectSkillsDir });
+    const out = buildSkillInjection(loaded!);
+
+    expect(out).toContain('most sessions teach nothing durable');
+    expect(out).toContain('emit nothing');
+    // Must explicitly forbid session/task narration.
+    expect(out).toMatch(/Do NOT log what happened in this session/);
+    expect(out).toMatch(/task or session state/);
+    // The entry must be scoped to the skill by name, not the current request.
+    expect(out).toContain('how the `wiki-search` skill itself should change');
+    expect(out).not.toContain('Reusable learning that should change future uses of this skill.');
+  });
+
   it('buildSkillInjection does NOT inline reference bodies (lazy loading)', () => {
     // Reference body is "reference for lazy-skill" — must appear in
     // loaded.references[*].body but NEVER in the injection text.
