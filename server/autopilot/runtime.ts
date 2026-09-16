@@ -318,9 +318,11 @@ export class AutopilotRuntime {
     );
     // A crash after completeOperation but before advanceAfterDeploy leaves the
     // run in deploying with a succeeded op and no in-flight row. Reconcile
-    // that settled op (idempotent advance) instead of launching a new deploy.
+    // that settled op (idempotent advance) instead of launching a new deploy —
+    // but only when it is the SHA this cycle actually needs. A repair merge
+    // must not reuse the previous deploy of an older revision.
     const succeeded = [...cycleDeploys].reverse().find((op) => op.status === 'succeeded');
-    if (succeeded && !inFlight) {
+    if (succeeded && !inFlight && succeededDeployCoversCycleSha(succeeded, cycle.testedCommitSha)) {
       await orchestrator.reconcileDeploy(run.projectId, {
         operationId: succeeded.id,
         fencingGeneration: succeeded.fencingGeneration,
@@ -375,6 +377,17 @@ export class AutopilotRuntime {
       result: outcome,
     });
   }
+}
+
+/** True when a succeeded deploy already put this cycle's tested SHA live. */
+export function succeededDeployCoversCycleSha(
+  op: { status: string; result: unknown },
+  testedCommitSha: string | null,
+): boolean {
+  if (op.status !== 'succeeded') return false;
+  const deployed = (op.result as { deployedSha?: unknown } | null)?.deployedSha;
+  const wanted = testedCommitSha?.trim() ?? '';
+  return typeof deployed === 'string' && deployed.trim() !== '' && deployed.trim() === wanted;
 }
 
 function deployResultFromSettled(op: {

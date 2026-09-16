@@ -49,6 +49,7 @@ import type {
   AutopilotSessionResult,
 } from './orchestrator.js';
 import { parseEvaluationReport, type AutopilotEvaluationReport } from './evaluate.js';
+import { describeSelectedImprovement } from './select.js';
 import { listEvaluationCaptures, probePinnedApiCriterion } from './evaluation-captures.js';
 import type { AutopilotRunRecord, AutopilotIsolationAdapter } from './types.js';
 import { getDeployment, getDeploymentEnvironment } from '../deploy/deployment-store.js';
@@ -59,6 +60,22 @@ import { buildDeployOrchestratorDeps } from '../deploy/deploy-trigger-hook.js';
 
 const AUTOPILOT_KEY_LABEL = 'autopilot-key:';
 const AUTOPILOT_CARD_LABEL = 'autopilot-card:';
+
+/** Session titles Autopilot workers appear under in the sidebar. */
+export function autopilotWorkerSessionName(input: {
+  role: 'implementer' | 'evaluator';
+  cycleNumber: number;
+  cardTitle?: string | null;
+  selectedImprovement?: string | null;
+}): string {
+  if (input.role === 'evaluator') {
+    return `Autopilot evaluator · cycle ${input.cycleNumber}`;
+  }
+  const selected = describeSelectedImprovement(input.selectedImprovement);
+  if (selected) return `Autopilot: ${selected}`.slice(0, 120);
+  const card = input.cardTitle?.trim();
+  return card || 'Autopilot implementation';
+}
 
 interface KanbanEpicLite {
   id: string;
@@ -750,15 +767,22 @@ export function buildSessionOps(deps: AutopilotWiringDeps): AutopilotSessionOps 
       if (!agent) {
         throw new Error(`Autopilot: no worker agent configured for project ${projectId}`);
       }
-      const run = new AutopilotStore(getDb()).getRun(runId);
+      const store = new AutopilotStore(getDb());
+      const run = store.getRun(runId);
       const ownerUserId = run?.credentialOwnerUserId ?? null;
       const card = stmts.getKanbanCard.get(cardId) as { id: string; title: string } | undefined;
+      const cycle = run ? store.getCycle(run.id, run.cycleNumber) : null;
       const sessionId = randomUUID();
       // createSession(id, agentId, name, engine, model, use_worktree, ask_mode, wiki_budget)
       stmts.createSession.run(
         sessionId,
         agent.agentId,
-        card?.title ?? 'Autopilot implementation',
+        autopilotWorkerSessionName({
+          role: 'implementer',
+          cycleNumber: cycle?.cycleNumber ?? run?.cycleNumber ?? 1,
+          cardTitle: card?.title,
+          selectedImprovement: cycle?.selectedImprovement,
+        }),
         agent.engine,
         agent.model,
         1,
@@ -814,7 +838,10 @@ export function buildEvaluateOps(deps: AutopilotWiringDeps): AutopilotEvaluateOp
       stmts.createSession.run(
         sessionId,
         agent.agentId,
-        'Autopilot evaluator',
+        autopilotWorkerSessionName({
+          role: 'evaluator',
+          cycleNumber: run?.cycleNumber ?? 1,
+        }),
         agent.engine,
         agent.model,
         0,

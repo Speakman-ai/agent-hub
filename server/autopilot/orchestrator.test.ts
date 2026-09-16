@@ -1248,6 +1248,48 @@ describe('autopilot orchestrator — evaluate', () => {
     expect(verification.judgement?.reason).toBe('health_only');
   });
 
+  it('updates testedCommitSha when a later repair finalize merges a new SHA', async () => {
+    const { controller, orchestrator, store } = harness();
+    await reachVerifying(orchestrator, controller);
+    const runId = store.getActiveRun(PROJECT)!.id;
+    expect(store.getCycle(runId, 1)!.testedCommitSha).toBe('deadbeefcafe');
+
+    const evalOp = await orchestrator.dispatchEvaluate(PROJECT);
+    await orchestrator.reconcileEvaluate(PROJECT, {
+      operationId: evalOp.id,
+      fencingGeneration: evalOp.fencingGeneration,
+      result: passingEvalReport({
+        criteria: [],
+        healthCheck: { url: 'http://127.0.0.1:4310/health', ok: true },
+      }),
+    });
+    expect(store.getRun(runId)!.stage).toBe('implementing');
+
+    const implOp = await orchestrator.dispatchImplementation(PROJECT);
+    await orchestrator.reconcileImplementation(PROJECT, {
+      operationId: implOp.id,
+      fencingGeneration: implOp.fencingGeneration,
+      result: { committed: true, commitSha: 'repairsha' },
+    });
+    const finOp = await orchestrator.dispatchFinalize(PROJECT);
+    await orchestrator.reconcileFinalize(PROJECT, {
+      operationId: finOp.id,
+      fencingGeneration: finOp.fencingGeneration,
+      result: { ...MERGED, mergedSha: 'cafebabeface' },
+    });
+    expect(store.getCycle(runId, 1)!.testedCommitSha).toBe('cafebabeface');
+
+    const firstFinalize = store
+      .listOperations(runId)
+      .filter((op) => op.kind === 'finalize' && op.status === 'succeeded')[0]!;
+    await orchestrator.reconcileFinalize(PROJECT, {
+      operationId: firstFinalize.id,
+      fencingGeneration: firstFinalize.fencingGeneration,
+      result: MERGED,
+    });
+    expect(store.getCycle(runId, 1)!.testedCommitSha).toBe('cafebabeface');
+  });
+
   it('treats a baseline regression as recovery plus bounded repair, not improvement selection', async () => {
     const { controller, orchestrator, store } = harness();
     await reachVerifying(orchestrator, controller);

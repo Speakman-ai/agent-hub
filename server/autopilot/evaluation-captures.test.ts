@@ -12,6 +12,7 @@ import {
   applyRedirectToRequest,
   probePinnedApiCriterion,
   recordEvaluatorBrowserCapture,
+  formatAutopilotCaptureCitation,
 } from './evaluation-captures.js';
 import {
   apiSatisfiesExpectedResult,
@@ -879,5 +880,17 @@ describe('evaluation captures', () => {
       ]);
       expect(head.method).toBe('HEAD');
     });
+  });
+});
+
+describe('formatAutopilotCaptureCitation', () => {
+  it('includes Hub screenshot and trace paths for the evaluator to cite', () => {
+    expect(formatAutopilotCaptureCitation(null)).toBe('');
+    expect(
+      formatAutopilotCaptureCitation({
+        screenshot: { path: '/data/browser-screenshots/s/shot.jpg' },
+        trace: { path: '/data/autopilot-eval-captures/op.trace.json' },
+      }),
+    ).toContain('screenshotPath: /data/browser-screenshots/s/shot.jpg');
   });
 });

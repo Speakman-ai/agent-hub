@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { consumePendingSkillInjection } from './chat.js';
+import { consumePendingSkillInjection, prependPendingContextToUserPrompt } from './chat.js';
 
 describe('consumePendingSkillInjection', () => {
   afterEach(() => {
@@ -36,6 +36,27 @@ describe('consumePendingSkillInjection', () => {
     expect(errSpy).toHaveBeenCalledWith(
       '[skill-invoke] failed to clear pending_skill_context:',
       'database locked',
+    );
+  });
+});
+
+describe('prependPendingContextToUserPrompt', () => {
+  it('leaves the user prompt alone when force is false or pending is empty', () => {
+    expect(prependPendingContextToUserPrompt('Continue.', '\n\n## ReAct Observation', false)).toBe(
+      'Continue.',
+    );
+    expect(prependPendingContextToUserPrompt('Continue.', '   ', true)).toBe('Continue.');
+  });
+
+  it('puts ReAct observations on the resume user turn so Claude Code can see them', () => {
+    expect(
+      prependPendingContextToUserPrompt(
+        'Continue using the newly loaded browser context.',
+        '\n\n## Browser: screenshot\nscreenshotPath: /data/shot.jpg',
+        true,
+      ),
+    ).toBe(
+      '## Browser: screenshot\nscreenshotPath: /data/shot.jpg\n\nContinue using the newly loaded browser context.',
     );
   });
 });

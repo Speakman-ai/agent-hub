@@ -991,6 +991,8 @@ describe('autopilot deploy adapter', () => {
     expect(prompt).toContain('baseline-1');
     expect(prompt).toMatch(/Hub records HTTP responses/);
     expect(prompt).toMatch(/screenshots and journey traces/);
+    expect(prompt).toMatch(/screenshotPath and tracePath/);
+    expect(prompt).toMatch(/5 minutes/);
   });
 });
 

@@ -2220,20 +2220,26 @@ export class AutopilotOrchestrator {
   }
 
   /**
-   * Reconcile the merged SHA from a succeeded Finalize operation's durable
-   * result onto its cycle. Returns true only when it wrote a missing SHA, so a
-   * duplicate callback is a no-op and the recorded SHA never changes.
+   * Reconcile the merged SHA from a succeeded Finalize operation onto its cycle.
+   * Duplicate callbacks of an older finalize are no-ops so they cannot rewind a
+   * later repair merge. The latest succeeded finalize for the cycle wins.
    */
   private persistMergedShaFromOp(op: AutopilotOperationRecord): boolean {
     if (!op.cycleId) return false;
     const sha = (op.result as { mergedSha?: unknown } | null)?.mergedSha;
     if (typeof sha !== 'string' || !sha) return false;
+    const latest = this.store
+      .listOperations(op.runId)
+      .filter(
+        (row) =>
+          row.kind === 'finalize' && row.status === 'succeeded' && row.cycleId === op.cycleId,
+      )
+      .at(-1);
+    if (!latest || latest.id !== op.id) return false;
     const cycle = this.store.getCycleById(op.cycleId);
-    if (cycle && !cycle.testedCommitSha) {
-      this.store.updateCycle(op.cycleId, { testedCommitSha: sha });
-      return true;
-    }
-    return false;
+    if (!cycle || cycle.testedCommitSha === sha) return false;
+    this.store.updateCycle(op.cycleId, { testedCommitSha: sha });
+    return true;
   }
 
   private readSpec(briefId: string | null): AutopilotBaselineSpec | null {

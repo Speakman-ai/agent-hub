@@ -314,6 +314,24 @@ export function recordEvaluatorBrowserCapture(
   });
 }
 
+/** Observation trailer so an evaluator can cite Hub-owned paths instead of inventing them. */
+export function formatAutopilotCaptureCitation(
+  capture: {
+    screenshot?: { path: string } | null;
+    trace?: { path: string } | null;
+  } | null,
+): string {
+  if (!capture) return '';
+  const shot = capture.screenshot?.path?.trim() || '';
+  const trace = capture.trace?.path?.trim() || '';
+  if (!shot && !trace) return '';
+  return [
+    'Hub recorded this browser step. Cite these exact paths on the matching criterion:',
+    `screenshotPath: ${shot || '(none)'}`,
+    `tracePath: ${trace || '(none)'}`,
+  ].join('\n');
+}
+
 export function apiTargetFromCriterion(
   origin: string,
   criterion: AutopilotPinnedCriterion,

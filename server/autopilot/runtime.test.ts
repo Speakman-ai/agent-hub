@@ -1,7 +1,11 @@
 import Database from 'better-sqlite3';
 import { describe, it, expect, vi } from 'vitest';
 import { createAutopilotController } from './controller.js';
-import { createAutopilotRuntime, type AutopilotAdapters } from './runtime.js';
+import {
+  createAutopilotRuntime,
+  succeededDeployCoversCycleSha,
+  type AutopilotAdapters,
+} from './runtime.js';
 import { buildFinalizeOps, readFinalizeOutcome } from './wiring.js';
 import type { RouteDeps } from '../types.js';
 import { AutopilotStore } from './store.js';
@@ -492,5 +496,86 @@ describe('autopilot runtime driver', () => {
     expect(store.listOperations(runId).filter((op) => op.kind === 'deploy')).toHaveLength(1);
     expect(deployCalls).toBe(1);
     expect(store.getRun(runId)!.lastVerifiedSha).toBeNull();
+  });
+
+  it('launches a new deploy when a repair merge is a different SHA than the last deploy', async () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    ensureAutopilotSchema(db);
+    const store = new AutopilotStore(db);
+    const controller = buildController(db);
+    controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+    const runId = controller.start(PROJECT, {}, ACTOR).run.id;
+
+    let deployCalls = 0;
+    const adapters = fakeAdapters();
+    adapters.deploy = {
+      deployRevision: async () => {
+        deployCalls += 1;
+        return { deploymentId: `dep-${deployCalls}` };
+      },
+      rollback: async () => ({
+        status: 'success' as const,
+        deploymentId: 'dep-rb',
+        deployedSha: 'verified',
+      }),
+    };
+
+    const runtime = createAutopilotRuntime({
+      db,
+      buildController: () => buildController(db),
+      buildAdapters: () => adapters,
+      readSessionOutcome: () => ({ committed: true }),
+      readFinalizeOutcome: () => ({
+        status: 'merged',
+        mergedSha: 'deadbeef',
+        reviewStatus: 'approved',
+      }),
+      readDeployOutcome: () => ({
+        status: 'success',
+        deploymentId: 'dep-1',
+        deployedSha: 'deadbeef',
+      }),
+      readEvaluateOutcome: () => null,
+    });
+
+    await runtime.tick(); // plan
+    await runtime.tick(); // dispatch impl
+    await runtime.tick(); // reconcile impl -> finalizing
+    await runtime.tick(); // dispatch finalize
+    await runtime.tick(); // reconcile finalize -> deploying
+    await runtime.tick(); // dispatch deploy 1
+    await runtime.tick(); // settle deploy 1 -> verifying
+    expect(deployCalls).toBe(1);
+    expect(store.getRun(runId)!.stage).toBe('verifying');
+
+    const cycle = store.getCycle(runId, 1)!;
+    store.updateCycle(cycle.id, { testedCommitSha: 'cafebabeface' });
+    store.updateRun(runId, { stage: 'deploying' });
+    await runtime.tick();
+    expect(deployCalls).toBe(2);
+  });
+});
+
+describe('succeededDeployCoversCycleSha', () => {
+  it('matches only a succeeded deploy of the cycle SHA', () => {
+    expect(
+      succeededDeployCoversCycleSha(
+        { status: 'succeeded', result: { deployedSha: 'abc' } },
+        'deadbeef',
+      ),
+    ).toBe(false);
+    expect(
+      succeededDeployCoversCycleSha(
+        { status: 'succeeded', result: { deployedSha: 'deadbeef' } },
+        'deadbeef',
+      ),
+    ).toBe(true);
+    expect(
+      succeededDeployCoversCycleSha(
+        { status: 'in_flight', result: { deployedSha: 'deadbeef' } },
+        'deadbeef',
+      ),
+    ).toBe(false);
   });
 });

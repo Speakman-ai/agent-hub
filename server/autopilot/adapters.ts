@@ -615,6 +615,8 @@ export function buildEvaluationPrompt(input: {
     }),
     '',
     'The Hub records screenshots and journey traces (the interaction sequence, not a final-page snapshot) when you use the local-target browser worker.',
+    'After each browser step the Hub observation includes screenshotPath and tracePath — copy those exact paths onto the matching criterion. Empty or invented paths are not evidence.',
+    'Generation and validation can take several minutes. Wait until the UI is not in a spinner/designing state and the download or report is actually present before judging. The local-target wait timeout is 5 minutes.',
     'Citing a path Hub did not capture for this operation is not evidence.',
     'Do not invent API status codes. Hub records HTTP responses itself.',
     'A 2xx at the named endpoint is not a pass; passed:false when the body does not show the expected result.',

@@ -14,6 +14,13 @@ import {
 export const LOCAL_TARGET_WORKER_HINT =
   'This is the Autopilot local-target worker (surface: experiment). Session preview is not proof of deployment; the public browser tool cannot open this origin.';
 
+/**
+ * Local-target generate/validation journeys (Codex-backed 3MF, scorecards)
+ * routinely take longer than the public-web 30s page-load default. Evaluator
+ * wait/navigate must cover a real generation, not just health.
+ */
+export const AUTOPILOT_EVAL_BROWSER_TIMEOUT_MS = 300_000;
+
 export function localTargetBrowserPolicy(origin: string): BrowserNavigationPolicyOpts {
   const trimmed = origin.trim().replace(/\/+$/, '');
   return { allowOrigins: trimmed ? [trimmed] : [] };

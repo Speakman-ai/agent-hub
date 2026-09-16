@@ -42,12 +42,14 @@ import {
 import { readAutopilotSessionBinding } from './autopilot/worker-token.js';
 import {
   appendEvaluatorBrowserAction,
+  formatAutopilotCaptureCitation,
   recordEvaluatorBrowserCapture,
 } from './autopilot/evaluation-captures.js';
 import {
   localTargetBrowserPolicy,
   localTargetNavigateAllowed,
   LOCAL_TARGET_WORKER_HINT,
+  AUTOPILOT_EVAL_BROWSER_TIMEOUT_MS,
 } from './autopilot/local-target-worker.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import {
@@ -1598,6 +1600,22 @@ export function consumePendingSkillInjection(
     console.error('[skill-invoke] failed to clear pending_skill_context:', message);
     return { suffix: '', forceSystemPromptThisTurn: false };
   }
+}
+
+/**
+ * Claude Code `--resume` keeps the first-turn system prompt, so ReAct
+ * observations stored only in `--system-prompt-file` never reach the model.
+ * Put them on the user turn when {@link consumePendingSkillInjection} says so.
+ */
+export function prependPendingContextToUserPrompt(
+  userPrompt: string,
+  pendingSuffix: string,
+  force: boolean,
+): string {
+  if (!force) return userPrompt;
+  const pending = pendingSuffix.trim();
+  if (!pending) return userPrompt;
+  return `${pending}\n\n${userPrompt}`;
 }
 
 export { stripAssistantControlBlocks };
@@ -4251,7 +4269,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         } else {
           args.push('--resume', engineSessionId!);
         }
-        let userPrompt = finalPrompt;
+        let userPrompt = prependPendingContextToUserPrompt(
+          finalPrompt,
+          pendingSkillSuffix,
+          forceSystemPromptThisTurn,
+        );
         const userPromptBytes = Buffer.byteLength(userPrompt, 'utf8');
         if (userPromptBytes > SAFE_ARG_STRLEN_BYTES) {
           const capped = applyArgvPromptCap(userPrompt);
@@ -5961,6 +5983,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     ? evalBinding.origin.replace(/\/+$/, '')
                     : null;
                 const evalPolicy = evalOrigin ? localTargetBrowserPolicy(evalOrigin) : undefined;
+                const evalBrowserOpts = evalOrigin
+                  ? { ...browserLaunchOpts, timeoutMs: AUTOPILOT_EVAL_BROWSER_TIMEOUT_MS }
+                  : browserLaunchOpts;
                 let b: Awaited<ReturnType<typeof runBrowserReActStep>>;
                 if (
                   evalOrigin &&
@@ -5991,7 +6016,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                         direction: browserInput.direction,
                         condition: browserInput.condition,
                       },
-                      browserLaunchOpts,
+                      evalBrowserOpts,
                       evalPolicy,
                     );
                   } catch (err: unknown) {
@@ -6044,7 +6069,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   evalBinding.deploymentId &&
                   evalBinding.expectedSha
                 ) {
-                  recordEvaluatorBrowserCapture({
+                  const recorded = recordEvaluatorBrowserCapture({
                     dataDir: config.dataDir,
                     binding: evalBinding,
                     operationId: evalBinding.operationId,
@@ -6053,11 +6078,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     screenshotPath: b.savedScreenshotPath,
                     page: b.pageSnapshot ?? null,
                   });
+                  const citation = formatAutopilotCaptureCitation(recorded);
+                  if (citation) {
+                    b.markdown = b.markdown.trim()
+                      ? `${b.markdown.trim()}\n\n${citation}`
+                      : citation;
+                  }
                 }
-                if (b.markdown.trim()) {
+                let observationMarkdown = b.markdown.trim();
+                if (!observationMarkdown && evalOrigin) {
+                  observationMarkdown = `## Browser: ${browserInput.op || 'action'}\nhost exit ${b.hostExit}.`;
+                }
+                if (observationMarkdown) {
                   assistantContextToAppend = assistantContextToAppend
-                    ? `${assistantContextToAppend}\n\n${b.markdown.trim()}`
-                    : b.markdown.trim();
+                    ? `${assistantContextToAppend}\n\n${observationMarkdown}`
+                    : observationMarkdown;
                   reactObservations.push(
                     `- browser(${action.op}) host step finished (exit ${b.hostExit}).`,
                   );

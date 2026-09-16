@@ -13,7 +13,31 @@ import {
   parseBaselineSpecJson,
   pinSessionEnvAdapter,
   readFinalizeOutcome,
+  autopilotWorkerSessionName,
 } from './wiring.js';
+
+describe('autopilotWorkerSessionName', () => {
+  it('names evaluator sessions by cycle and implementer sessions by selected improvement', () => {
+    expect(autopilotWorkerSessionName({ role: 'evaluator', cycleNumber: 2 })).toBe(
+      'Autopilot evaluator · cycle 2',
+    );
+    expect(
+      autopilotWorkerSessionName({
+        role: 'implementer',
+        cycleNumber: 2,
+        selectedImprovement: 'Stamp scorecard SHA with the current git revision',
+        cardTitle: 'Implement the Autopilot baseline',
+      }),
+    ).toBe('Autopilot: Stamp scorecard SHA with the current git revision');
+    expect(
+      autopilotWorkerSessionName({
+        role: 'implementer',
+        cycleNumber: 1,
+        cardTitle: 'Implement the Autopilot baseline',
+      }),
+    ).toBe('Implement the Autopilot baseline');
+  });
+});
 
 describe('autopilot wiring — parseBaselineSpecJson', () => {
   it('parses a fenced json block from planning-session output', () => {
