@@ -509,6 +509,63 @@ describe('AutopilotSettingsSection', () => {
     expect(screen.getByTestId('autopilot-doc-links').textContent).toContain('127.0.0.1:8080');
   });
 
+  it('renders a live activity feed and labels leftover failed evidence as last evaluation', async () => {
+    (api.getAutopilot as any).mockResolvedValue(
+      state({
+        config: readyConfig({ enabled: true }),
+        activeRun: {
+          run: run({ controlState: 'running', stage: 'implementing' }),
+          cycle: {
+            cycleNumber: 1,
+            selectedImprovement: null,
+            verification: {
+              judgement: { ok: false, reason: 'missing_evidence', detail: 'no Hub capture' },
+            },
+            documentation: null,
+            outcome: null,
+            status: 'active',
+            testedCommitSha: 'abc',
+            deploymentId: 'dep-1',
+          },
+          events: [
+            {
+              id: 'e-resume',
+              type: 'resumed',
+              createdAt: '2026-09-16T18:30:26.000Z',
+              seq: 56,
+            },
+            {
+              id: 'e-impl',
+              type: 'operation_started',
+              payload: { kind: 'implement' },
+              createdAt: '2026-09-16T18:30:28.000Z',
+              seq: 57,
+              operationId: 'op-1',
+            },
+          ],
+          operations: [
+            {
+              id: 'op-1',
+              kind: 'implement',
+              status: 'in_flight',
+              sessionId: 'dd09bb4b-aaaa-bbbb-cccc-ddddeeee0001',
+              createdAt: '2026-09-16T18:30:28.000Z',
+              updatedAt: '2026-09-16T18:30:28.000Z',
+            },
+          ],
+        },
+      }),
+    );
+    render(<AutopilotSettingsSection projectId="p1" />);
+    await waitFor(() => expect(screen.getByTestId('autopilot-activity')).toBeTruthy());
+    expect(screen.getByTestId('autopilot-current-work').textContent).toMatch(
+      /implement in flight/i,
+    );
+    expect(screen.getByTestId('autopilot-activity-log').textContent).toMatch(/Started implement/);
+    expect(screen.getByTestId('autopilot-evidence').textContent).toMatch(/Last evaluation/i);
+    expect(screen.getByTestId('autopilot-evidence-stale').textContent).toMatch(/implementing/i);
+  });
+
   it('resumes a paused run and applies the running snapshot', async () => {
     (api.getAutopilot as any).mockResolvedValueOnce(
       state({

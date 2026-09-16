@@ -122,9 +122,29 @@ export interface AutopilotCycleWire {
   deploymentId: string | null;
 }
 
+export interface AutopilotEventWire {
+  id: string;
+  type: string;
+  payload?: unknown;
+  createdAt: string;
+  seq: number;
+  operationId?: string | null;
+}
+
+export interface AutopilotOperationWire {
+  id: string;
+  kind: string;
+  status: string;
+  sessionId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AutopilotRunSnapshotWire {
   run: AutopilotRunWire;
   cycle: AutopilotCycleWire | null;
+  events?: AutopilotEventWire[];
+  operations?: AutopilotOperationWire[];
   /** Server-authored monotonic version; used to order overlapping responses. */
   stateVersion?: number;
 }
@@ -427,6 +447,24 @@ export interface AutopilotDocumentationView {
   wikiSlugs: string[];
 }
 
+export type AutopilotActivityTone = 'info' | 'ok' | 'warn' | 'error';
+
+export interface AutopilotActivityLine {
+  id: string;
+  seq: number;
+  createdAt: string;
+  tone: AutopilotActivityTone;
+  text: string;
+}
+
+export interface AutopilotCurrentWork {
+  kind: string;
+  kindLabel: string;
+  status: string;
+  since: string;
+  sessionId: string | null;
+}
+
 export interface AutopilotRunView {
   runId: string;
   controlState: AutopilotControlState;
@@ -444,9 +482,14 @@ export interface AutopilotRunView {
   hasEvidence: boolean;
   hasDocumentation: boolean;
   evidence: AutopilotEvidenceView | null;
+  /** "Last evaluation" when a failed scorecard is leftover from an earlier verify. */
+  evidenceLabel: string;
+  evidenceStale: boolean;
   documentation: AutopilotDocumentationView | null;
   stopping: boolean;
   active: boolean;
+  currentWork: AutopilotCurrentWork | null;
+  activity: AutopilotActivityLine[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -574,6 +617,161 @@ export function deriveDocumentationView(documentation: unknown): AutopilotDocume
   };
 }
 
+const OPERATION_KIND_LABELS: Record<string, string> = {
+  'plan-baseline': 'plan baseline',
+  implement: 'implement',
+  finalize: 'finalize',
+  deploy: 'deploy',
+  evaluate: 'evaluate',
+  'document-cycle': 'document',
+  'select-next': 'select next',
+};
+
+export function formatOperationKind(kind: string | null | undefined): string {
+  if (!kind) return 'work';
+  return OPERATION_KIND_LABELS[kind] ?? kind.replace(/-/g, ' ');
+}
+
+function payloadRecord(payload: unknown): Record<string, unknown> {
+  return asRecord(payload) ?? {};
+}
+
+function payloadString(payload: Record<string, unknown>, key: string): string | null {
+  return asString(payload[key]);
+}
+
+export function deriveCurrentWork(
+  operations: AutopilotOperationWire[] | undefined,
+): AutopilotCurrentWork | null {
+  const inflight = (operations ?? []).filter((op) => op.status === 'in_flight');
+  if (inflight.length === 0) return null;
+  const latest = inflight.reduce((best, op) => (op.createdAt >= best.createdAt ? op : best));
+  return {
+    kind: latest.kind,
+    kindLabel: formatOperationKind(latest.kind),
+    status: latest.status,
+    since: latest.createdAt,
+    sessionId: latest.sessionId ?? null,
+  };
+}
+
+export function deriveActivityLog(
+  events: AutopilotEventWire[] | undefined,
+  operations: AutopilotOperationWire[] | undefined,
+): AutopilotActivityLine[] {
+  const opsById = new Map((operations ?? []).map((op) => [op.id, op]));
+  const lines = (events ?? []).map((event) => {
+    const payload = payloadRecord(event.payload);
+    const linked = event.operationId ? (opsById.get(event.operationId) ?? null) : null;
+    const kind = payloadString(payload, 'kind') ?? linked?.kind ?? null;
+    const kindLabel = formatOperationKind(kind);
+    let text: string;
+    let tone: AutopilotActivityTone = 'info';
+    switch (event.type) {
+      case 'run_started':
+        text = 'Run started';
+        tone = 'ok';
+        break;
+      case 'resumed':
+        text = 'Resumed';
+        tone = 'ok';
+        break;
+      case 'paused':
+        text = payloadString(payload, 'reason')
+          ? `Paused: ${payloadString(payload, 'reason')}`
+          : 'Paused';
+        tone = 'warn';
+        break;
+      case 'pause_drain':
+        text = payloadString(payload, 'reason')
+          ? `Cancelling in-flight work (${payloadString(payload, 'reason')})`
+          : 'Cancelling in-flight work';
+        tone = 'warn';
+        break;
+      case 'operation_started':
+        text = `Started ${kindLabel}`;
+        if (linked?.sessionId) text += ` · session ${linked.sessionId.slice(0, 8)}`;
+        break;
+      case 'operation_completed': {
+        const outcome = payloadString(payload, 'outcome') ?? 'completed';
+        text = `${kindLabel} ${outcome}`;
+        if (outcome === 'failed' || outcome === 'ambiguous') tone = 'error';
+        else if (outcome === 'succeeded') tone = 'ok';
+        else if (outcome === 'cancelled') tone = 'warn';
+        break;
+      }
+      case 'stage_advanced': {
+        const from = payloadString(payload, 'from');
+        const to = payloadString(payload, 'to');
+        text =
+          from && to
+            ? `${stageLabel(from as AutopilotStage)} → ${stageLabel(to as AutopilotStage)}`
+            : `Advanced to ${stageLabel((to as AutopilotStage) ?? null)}`;
+        break;
+      }
+      case 'restart_reconcile':
+        text = payloadString(payload, 'action')
+          ? `Hub restart: ${payloadString(payload, 'action')}`
+          : 'Hub restarted';
+        tone = 'warn';
+        break;
+      case 'resume_rejected':
+        text = payloadString(payload, 'reason')
+          ? `Resume rejected: ${payloadString(payload, 'reason')}`
+          : 'Resume rejected';
+        tone = 'error';
+        break;
+      case 'stage_retries_exhausted':
+        text = 'Stage retries exhausted';
+        tone = 'error';
+        break;
+      case 'stage_retry_scheduled':
+        text = 'Retrying the current stage';
+        break;
+      case 'cycle_opened':
+        text = 'Opened a new cycle';
+        tone = 'ok';
+        break;
+      case 'improvement_selected':
+        text = payloadString(payload, 'action')
+          ? `Selected next: ${payloadString(payload, 'action')}`
+          : 'Selected next improvement';
+        tone = 'ok';
+        break;
+      case 'last_known_good_promoted':
+        text = 'Promoted last known good revision';
+        tone = 'ok';
+        break;
+      case 'stop_requested':
+        text = 'Stop requested';
+        tone = 'warn';
+        break;
+      case 'stopped':
+        text = 'Stopped';
+        tone = 'warn';
+        break;
+      case 'cancel_failed':
+        text = 'Failed to cancel leftover work';
+        tone = 'error';
+        break;
+      case 'outstanding_work_reconciled':
+        text = 'Reconciled leftover work';
+        break;
+      default:
+        text = event.type.replace(/_/g, ' ');
+        break;
+    }
+    return {
+      id: event.id,
+      seq: event.seq,
+      createdAt: event.createdAt,
+      tone,
+      text,
+    };
+  });
+  return lines.sort((a, b) => b.seq - a.seq);
+}
+
 export function deriveRunView(state: AutopilotProjectStateWire): AutopilotRunView | null {
   const snap = state.activeRun;
   if (!snap) return null;
@@ -586,6 +784,10 @@ export function deriveRunView(state: AutopilotProjectStateWire): AutopilotRunVie
     state.config.target && (!run.targetId || run.targetId === state.config.target.targetId)
       ? state.config.target.origin
       : null;
+  const evidence = deriveEvidenceView(cycle?.verification);
+  const evidenceStale = Boolean(
+    evidence && evidence.verdict === 'failed' && run.stage != null && run.stage !== 'verifying',
+  );
   return {
     runId: run.id,
     controlState: run.controlState,
@@ -602,10 +804,14 @@ export function deriveRunView(state: AutopilotProjectStateWire): AutopilotRunVie
     usageText: formatUsage(run.usage),
     hasEvidence: cycle?.verification != null,
     hasDocumentation: cycle?.documentation != null,
-    evidence: deriveEvidenceView(cycle?.verification),
+    evidence,
+    evidenceLabel: evidenceStale ? 'Last evaluation' : 'Verification evidence',
+    evidenceStale,
     documentation: deriveDocumentationView(cycle?.documentation),
     stopping: run.controlState === 'stopping' || run.controlState === 'pausing',
     active: isActiveRun(run),
+    currentWork: deriveCurrentWork(snap.operations),
+    activity: deriveActivityLog(snap.events, snap.operations),
   };
 }
 

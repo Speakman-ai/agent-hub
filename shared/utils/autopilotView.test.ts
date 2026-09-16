@@ -6,6 +6,7 @@ import {
   deriveRunView,
   deriveEvidenceView,
   deriveDocumentationView,
+  deriveActivityLog,
   isReady,
   isActiveRun,
   formatWallTime,
@@ -340,6 +341,64 @@ describe('deriveRunView', () => {
     });
     expect(deriveRunView(s)!.deployedUrl).toBeNull();
   });
+
+  it('labels leftover failed scorecard as last evaluation while the run is still implementing', () => {
+    const s = state({
+      config: readyConfig(),
+      activeRun: {
+        run: run({ controlState: 'running', stage: 'implementing' }),
+        cycle: {
+          cycleNumber: 1,
+          selectedImprovement: null,
+          verification: {
+            judgement: { ok: false, reason: 'missing_evidence' },
+            evidence: { observedSha: 'abc', origin: 'http://127.0.0.1:8188' },
+          },
+          documentation: null,
+          outcome: null,
+          status: 'active',
+          testedCommitSha: 'abc',
+          deploymentId: 'dep-1',
+        },
+        events: [
+          {
+            id: 'e1',
+            type: 'resumed',
+            createdAt: '2026-09-16T18:30:26.000Z',
+            seq: 56,
+          },
+          {
+            id: 'e2',
+            type: 'operation_started',
+            payload: { kind: 'implement' },
+            createdAt: '2026-09-16T18:30:28.000Z',
+            seq: 57,
+            operationId: 'op-1',
+          },
+        ],
+        operations: [
+          {
+            id: 'op-1',
+            kind: 'implement',
+            status: 'in_flight',
+            sessionId: 'dd09bb4b-de76-434e-8938-0ef77f021441',
+            createdAt: '2026-09-16T18:30:28.000Z',
+            updatedAt: '2026-09-16T18:30:28.000Z',
+          },
+        ],
+      },
+    });
+    const v = deriveRunView(s)!;
+    expect(v.evidenceStale).toBe(true);
+    expect(v.evidenceLabel).toBe('Last evaluation');
+    expect(v.currentWork).toMatchObject({
+      kind: 'implement',
+      kindLabel: 'implement',
+      sessionId: 'dd09bb4b-de76-434e-8938-0ef77f021441',
+    });
+    expect(v.activity[0]?.text).toMatch(/Started implement/);
+    expect(v.activity[1]?.text).toBe('Resumed');
+  });
 });
 
 describe('deriveEvidenceView', () => {
@@ -463,5 +522,50 @@ describe('deriveAutopilotView', () => {
     expect(view.ready).toBe(true);
     expect(view.controls.canResume).toBe(true);
     expect(view.run?.controlState).toBe('paused');
+  });
+});
+
+describe('deriveActivityLog', () => {
+  it('renders newest-first operator lines from controller events', () => {
+    const lines = deriveActivityLog(
+      [
+        {
+          id: 'a',
+          type: 'paused',
+          payload: { reason: 'stage timeout envelope is exhausted' },
+          createdAt: '2026-09-16T18:23:09.000Z',
+          seq: 54,
+        },
+        {
+          id: 'b',
+          type: 'resumed',
+          createdAt: '2026-09-16T18:30:26.000Z',
+          seq: 56,
+        },
+        {
+          id: 'c',
+          type: 'operation_completed',
+          payload: { outcome: 'failed' },
+          createdAt: '2026-09-16T06:50:09.000Z',
+          seq: 46,
+          operationId: 'op-eval',
+        },
+      ],
+      [
+        {
+          id: 'op-eval',
+          kind: 'evaluate',
+          status: 'failed',
+          createdAt: '2026-09-16T06:43:17.000Z',
+          updatedAt: '2026-09-16T06:50:09.000Z',
+        },
+      ],
+    );
+    expect(lines.map((l) => l.text)).toEqual([
+      'Resumed',
+      'Paused: stage timeout envelope is exhausted',
+      'evaluate failed',
+    ]);
+    expect(lines[2]?.tone).toBe('error');
   });
 });

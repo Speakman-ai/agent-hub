@@ -39,6 +39,8 @@ import {
   type AutopilotEvidenceView,
   type AutopilotDocumentationView,
   type AutopilotIsolationAdapter,
+  type AutopilotActivityLine,
+  type AutopilotCurrentWork,
 } from '@shared/utils/autopilotView';
 
 const ACTIVE_POLL_MS = 5000;
@@ -539,7 +541,17 @@ export default function AutopilotSettingsSection({
               Failed: {view.run.failureReason}
             </div>
           )}
-          <EvidencePanel evidence={view.run.evidence} />
+          <ActivityFeed
+            currentWork={view.run.currentWork}
+            activity={view.run.activity}
+            running={view.run.controlState === 'running'}
+          />
+          <EvidencePanel
+            evidence={view.run.evidence}
+            label={view.run.evidenceLabel}
+            stale={view.run.evidenceStale}
+            stageLabel={view.run.stageLabel}
+          />
           <DocumentationPanel documentation={view.run.documentation} />
           <p className="text-xs text-gray-500" data-testid="autopilot-run-caveats">
             Evaluator scores reduce self-grading bias but do not prove product value or guarantee
@@ -842,7 +854,82 @@ const VERDICT_STYLES: Record<AutopilotEvidenceView['verdict'], string> = {
   pending: 'bg-gray-700 text-gray-300',
 };
 
-function EvidencePanel({ evidence }: { evidence: AutopilotEvidenceView | null }) {
+const ACTIVITY_TONES: Record<AutopilotActivityLine['tone'], string> = {
+  info: 'text-gray-300',
+  ok: 'text-emerald-300',
+  warn: 'text-amber-300',
+  error: 'text-red-300',
+};
+
+function formatActivityTime(raw: string): string {
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const ms = Date.parse(
+    normalized.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(normalized) ? normalized : `${normalized}Z`,
+  );
+  if (!Number.isFinite(ms)) return raw;
+  return new Date(ms).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function ActivityFeed({
+  currentWork,
+  activity,
+  running,
+}: {
+  currentWork: AutopilotCurrentWork | null;
+  activity: AutopilotActivityLine[];
+  running: boolean;
+}) {
+  return (
+    <div className="border-t border-gray-800 pt-3 space-y-2" data-testid="autopilot-activity">
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-semibold text-gray-200">Activity</span>
+        {running && (
+          <span className="text-[10px] uppercase tracking-wide text-emerald-300">live</span>
+        )}
+      </div>
+      {currentWork && (
+        <div className="text-xs text-gray-200" data-testid="autopilot-current-work">
+          Now: {currentWork.kindLabel} in flight
+          {currentWork.sessionId ? ` · session ${currentWork.sessionId.slice(0, 8)}` : ''}
+        </div>
+      )}
+      {activity.length === 0 ? (
+        <div className="text-xs text-gray-500" data-testid="autopilot-activity-empty">
+          No controller events yet.
+        </div>
+      ) : (
+        <ol
+          className="max-h-56 overflow-y-auto space-y-1 font-mono text-[11px] leading-snug"
+          data-testid="autopilot-activity-log"
+        >
+          {activity.map((line) => (
+            <li key={line.id} className="flex gap-2">
+              <span className="shrink-0 text-gray-500">{formatActivityTime(line.createdAt)}</span>
+              <span className={ACTIVITY_TONES[line.tone]}>{line.text}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+function EvidencePanel({
+  evidence,
+  label,
+  stale,
+  stageLabel,
+}: {
+  evidence: AutopilotEvidenceView | null;
+  label: string;
+  stale: boolean;
+  stageLabel: string;
+}) {
   if (!evidence) {
     return (
       <div className="text-xs text-gray-500" data-testid="autopilot-evidence-empty">
@@ -853,7 +940,7 @@ function EvidencePanel({ evidence }: { evidence: AutopilotEvidenceView | null })
   return (
     <div className="border-t border-gray-800 pt-3 space-y-2" data-testid="autopilot-evidence">
       <div className="flex items-center gap-2">
-        <span className="text-xs font-semibold text-gray-200">Verification evidence</span>
+        <span className="text-xs font-semibold text-gray-200">{label}</span>
         <span
           className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ${VERDICT_STYLES[evidence.verdict]}`}
           data-testid="autopilot-evidence-verdict"
@@ -861,6 +948,11 @@ function EvidencePanel({ evidence }: { evidence: AutopilotEvidenceView | null })
           {evidence.verdict}
         </span>
       </div>
+      {stale && (
+        <div className="text-xs text-gray-500" data-testid="autopilot-evidence-stale">
+          Previous verify result — the run is currently {stageLabel.toLowerCase()}.
+        </div>
+      )}
       {evidence.verdict === 'failed' && (evidence.failureReason || evidence.failureDetail) && (
         <div className="text-xs text-red-300" data-testid="autopilot-evidence-failure">
           {evidence.failureReason ? `${evidence.failureReason}: ` : ''}

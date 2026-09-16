@@ -409,11 +409,40 @@ export default function ExperimentalAutopilotScreen({ route, navigation }: any) 
               </Text>
             )}
 
+            <View style={styles.subSection} testID="autopilot-activity">
+              <Text style={styles.subTitle}>Activity</Text>
+              {view.run.currentWork && (
+                <Text style={styles.rowSmall} testID="autopilot-current-work">
+                  Now: {view.run.currentWork.kindLabel} in flight
+                  {view.run.currentWork.sessionId
+                    ? ` · session ${view.run.currentWork.sessionId.slice(0, 8)}`
+                    : ''}
+                </Text>
+              )}
+              {view.run.activity.length === 0 ? (
+                <Text style={styles.rowSmall} testID="autopilot-activity-empty">
+                  No controller events yet.
+                </Text>
+              ) : (
+                view.run.activity.slice(0, 30).map((line) => (
+                  <Text key={line.id} style={styles.rowSmall}>
+                    {line.text}
+                  </Text>
+                ))
+              )}
+            </View>
+
             {view.run.evidence ? (
               <View style={styles.subSection} testID="autopilot-evidence">
                 <Text style={styles.subTitle}>
-                  Verification evidence: {view.run.evidence.verdict}
+                  {view.run.evidenceLabel}: {view.run.evidence.verdict}
                 </Text>
+                {view.run.evidenceStale && (
+                  <Text style={styles.rowSmall} testID="autopilot-evidence-stale">
+                    Previous verify result — the run is currently{' '}
+                    {view.run.stageLabel.toLowerCase()}.
+                  </Text>
+                )}
                 {view.run.evidence.verdict === 'failed' &&
                   (view.run.evidence.failureReason || view.run.evidence.failureDetail) && (
                     <Text style={styles.error} testID="autopilot-evidence-failure">
