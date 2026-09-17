@@ -42,6 +42,7 @@ import path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
 import type { RouteDeps } from '../types.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
+import { guardChildStdin } from '../child-stdin.js';
 import {
   extractCursorLoginUrl,
   parseCursorStatusJson,
@@ -668,6 +669,7 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: true,
     });
+    guardChildStdin(proc, `claude-code /login user=${userId}`);
     proc.stdin?.write('/login\n');
     trackChild(proc);
     activeLogins.set(loginKey('claude', userId), { proc, loginId });

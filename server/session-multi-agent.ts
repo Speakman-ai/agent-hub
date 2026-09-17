@@ -3,6 +3,7 @@
  */
 import { spawn, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
+import { endChildStdin } from './child-stdin.js';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
@@ -577,12 +578,10 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
       roundState.proc = proc;
       trackChild(proc);
 
-      if (stdinPrompt !== null && proc.stdin) {
-        try {
-          proc.stdin.end(stdinPrompt, 'utf8');
-        } catch {
-          /* ignore */
-        }
+      if (stdinPrompt !== null) {
+        // EPIPE-safe: a timeout/cancel SIGTERM can land while the prompt is
+        // still queued in the pipe. See child-stdin.ts.
+        endChildStdin(proc, stdinPrompt, `session-multi ${engine} session=${sessionId}`);
       }
 
       const timer = setTimeout(() => {

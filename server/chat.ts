@@ -5,6 +5,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, stmts as _stmts } from './db.js';
 import { trackChild } from './process-groups.js';
+import { endChildStdin } from './child-stdin.js';
 import {
   wrapGuestChatProcess,
   wrapHostChildProcess,
@@ -4708,15 +4709,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           // grandchildren (bash → npm → vitest workers) on cancel/shutdown.
           detached: true,
         });
-        if (stdinPrompt !== null && proc.stdin) {
-          try {
-            proc.stdin.end(stdinPrompt, 'utf8');
-          } catch (err) {
-            console.error(
-              `[chat] failed to write stdin prompt for ${engine} (${sessionId}):`,
-              err instanceof Error ? err.message : err,
-            );
-          }
+        if (stdinPrompt !== null) {
+          // EPIPE-safe: the child may die (quota error, cancel, timeout)
+          // before draining a multi-hundred-KB prompt. See child-stdin.ts.
+          endChildStdin(proc, stdinPrompt, `chat ${engine} session=${sessionId}`);
         }
         spawnPid = proc.pid ?? null;
         activeHandle = wrapHostChildProcess(proc);

@@ -33,6 +33,7 @@ import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { wrapHostChildProcess, type ActiveChatProcess } from '../active-chat-process.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
+import { endChildStdin } from '../child-stdin.js';
 import { resolveSessionCliSpawnEnv } from '../per-user-cli-spawn.js';
 import { resolveEffectiveModel } from '../effective-model.js';
 import { mergeSkillCredentialSpawnEnv } from '../skill-credentials-spawn.js';
@@ -1092,12 +1093,13 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
       }
       trackChild(proc);
 
-      if (plan.stdinPrompt !== null && proc.stdin) {
-        try {
-          proc.stdin.end(plan.stdinPrompt, 'utf8');
-        } catch {
-          /* ignore */
-        }
+      if (plan.stdinPrompt !== null) {
+        // EPIPE-safe: the reviewer-turn timeout below SIGTERMs the child, and
+        // a grok-cli/codex reviewer that never got past its API error still
+        // has the whole system+corpus prompt queued in this pipe. Without the
+        // guard that broken pipe was an uncaught exception that exited the
+        // Hub (prod 2026-09-17). See child-stdin.ts.
+        endChildStdin(proc, plan.stdinPrompt, `reviewer ${args.engine} session=${args.sessionId}`);
       }
 
       const timer = setTimeout(() => {
