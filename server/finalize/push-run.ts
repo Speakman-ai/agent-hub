@@ -38,11 +38,12 @@ import type { ReviewerVerdict } from './reviewer-dispatch.js';
 import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
 import { postFinalizeApprovalReview } from './post-finalize-approval-review.js';
 import {
-  hasPushedFinalizeRun,
+  sessionIsLockedAfterFinalizePush,
   lockSessionAfterFinalizePush,
   POST_FINALIZE_PUSH_LOCK_ERROR,
   POST_FINALIZE_PUSH_LOCK_MESSAGE,
 } from './post-push-session-lock.js';
+import { scheduleAutopilotAfterPush } from '../session-autopilot.js';
 import { stopBackgroundShellsAfterFinalizePush } from './post-push-background-shells.js';
 import {
   BASE_BRANCH_MOVED_ERROR,
@@ -485,7 +486,7 @@ async function executePush(args: {
   try {
     writeFinalizeRunPrUrl({ stmts: stmts as Stmts }, { runId: run.id, prUrl: pushResult.prUrl });
     stmts.markFinalizeRunPushed.run(run.id);
-    lockSessionAfterFinalizePush(stmts as Stmts, session.id);
+    lockSessionAfterFinalizePush(stmts as Stmts, session.id, session);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(
@@ -567,6 +568,14 @@ async function executePush(args: {
 
   await syncSessionAfterPush(run, session, pushBranch);
 
+  scheduleAutopilotAfterPush({
+    deps,
+    session,
+    sha: validatedHeadSha,
+    branch: pushBranch,
+    prUrl: pushResult.prUrl,
+  });
+
   return { ok: true, prUrl: pushResult.prUrl };
 }
 
@@ -622,7 +631,7 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     };
   }
 
-  if (hasPushedFinalizeRun(deps.stmts as Stmts, session.id)) {
+  if (sessionIsLockedAfterFinalizePush(deps.stmts as Stmts, session)) {
     return {
       ok: false,
       httpStatus: 409,
@@ -825,7 +834,7 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
               { runId: run.id, prUrl: peer.pr_url },
             );
             deps.stmts.markFinalizeRunPushed.run(run.id);
-            lockSessionAfterFinalizePush(deps.stmts as Stmts, session.id);
+            lockSessionAfterFinalizePush(deps.stmts as Stmts, session.id, session);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             return {
@@ -935,7 +944,7 @@ export async function runSessionPushToGithub(
 ): Promise<FinalizePushOutcome> {
   const { deps, project, session, card } = args;
   const resolveHead = args.resolveHeadSha ?? defaultResolveHeadSha;
-  if (hasPushedFinalizeRun(deps.stmts as Stmts, session.id)) {
+  if (sessionIsLockedAfterFinalizePush(deps.stmts as Stmts, session)) {
     return {
       ok: false,
       httpStatus: 409,

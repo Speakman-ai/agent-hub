@@ -1729,46 +1729,6 @@ describe('triggerDeployment — gated environment', () => {
     }
   });
 
-  it('runs immediately when trigger is autopilot and the env is the opted-in experiment target', async () => {
-    const fb = makeFakeBackend([{ exitCode: 0 }]);
-    const dep = await triggerDeployment(
-      {
-        projectId: PROJECT,
-        environment: 'prod',
-        ref: 'autopilot-sha',
-        worktreePath: WORKTREE,
-        config: CONFIG,
-        trigger: 'autopilot',
-        triggeredBy: 'autopilot',
-        unattendedEnvironment: 'prod',
-      },
-      makeDeps(fb.backend),
-    );
-    expect(dep.status).toBe('success');
-    expect(fb.acquireCalls).toHaveLength(1);
-    expect(listDeploymentApprovals(dep.id)).toHaveLength(0);
-  });
-
-  it('still parks a gated env when trigger is autopilot but the env is not the opted-in target', async () => {
-    const fb = makeFakeBackend([{ exitCode: 0 }]);
-    const dep = await triggerDeployment(
-      {
-        projectId: PROJECT,
-        environment: 'prod',
-        ref: 'other-sha',
-        worktreePath: WORKTREE,
-        config: CONFIG,
-        trigger: 'autopilot',
-        triggeredBy: 'autopilot',
-        unattendedEnvironment: 'local-preview',
-      },
-      makeDeps(fb.backend),
-    );
-    expect(dep.status).toBe('awaiting_approval');
-    expect(fb.acquireCalls).toHaveLength(0);
-    cancelDeployment({ deploymentId: dep.id }, makeDeps(fb.backend));
-  });
-
   it('records Admin/Owner approval, then resumes and runs the parked deployment', async () => {
     const fb = makeFakeBackend([{ exitCode: 0 }]);
     const parked = await triggerDeployment(

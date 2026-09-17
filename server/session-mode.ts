@@ -28,6 +28,7 @@
 export const SESSION_MODES = [
   'chat',
   'isolated',
+  'autopilot',
   'design',
   'scoping',
   'skill-builder',
@@ -99,14 +100,26 @@ export function isIsolatedModeActive(
 }
 
 /**
+ * Whether Autopilot session mode is active. Same ship surface as `chat`
+ * (Finalize push allowed, repeatedly), plus a startup card and a named
+ * feature branch that a human merges.
+ */
+export function isAutopilotModeActive(
+  session: { session_mode?: string | null } | null | undefined,
+): boolean {
+  return normalizeSessionMode(session?.session_mode) === 'autopilot';
+}
+
+/**
  * Modes that share chat's ship / Finalize surface (Build → Auto Merge allowed;
- * entering them must not clear finalize automation).
+ * entering them must not clear finalize automation). Autopilot pins to push
+ * (never merge) but is still a shipping mode.
  */
 export function isShippingCompatibleSessionMode(
   mode: SessionMode | string | null | undefined,
 ): boolean {
   const normalized = normalizeSessionMode(mode);
-  return normalized === 'chat' || normalized === 'isolated';
+  return normalized === 'chat' || normalized === 'isolated' || normalized === 'autopilot';
 }
 
 /**

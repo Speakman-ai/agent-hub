@@ -21,12 +21,14 @@ import {
   AddSessionAgentRequestSchema,
   PutSessionAgentModelRequestSchema,
   PutSessionAgentEngineRequestSchema,
+  StartSessionAutopilotRequestSchema,
 } from './sessions.openapi.js';
 import {
   normalizeSessionMode,
   isSkillBuilderEligibleAgent,
   defaultSessionModeForProject,
   isShippingCompatibleSessionMode,
+  isAutopilotModeActive,
   type SessionMode,
 } from '../session-mode.js';
 import {
@@ -142,6 +144,14 @@ import {
 import { mintPreviewTicket, PREVIEW_TICKET_TTL_MS } from '../preview-auth.js';
 import type { DevServerPortLookup } from '../preview/preview-runtime-lookup.js';
 import { triggerSessionShip, markSessionFinalizeAutomation } from '../session-ship.js';
+import { kickoffSeededTurn } from '../seeded-session-kickoff.js';
+import {
+  bindAutopilotBranch,
+  serializeAutopilotConfig,
+  startAutopilotConfig,
+  validateAutopilotSetupInput,
+  buildAutopilotStartUserMessage,
+} from '../session-autopilot.js';
 import { getUserProjectDefaultFinalizeAutomation } from '../user-project-settings.js';
 import {
   enrichSessionForClient,
@@ -719,6 +729,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       );
     } else if (requestedMode !== undefined && requestedMode !== 'chat') {
       stmts.updateSessionMode.run(requestedMode, id);
+    }
+    if (requestedMode === 'autopilot') {
+      markSessionFinalizeAutomation(stmts, id, 'push');
     }
     if (
       !isWorkflowProject(found?.project) &&
@@ -1712,6 +1725,16 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     const finalMode = nextMode ?? normalizeSessionMode(existing.session_mode);
+    if (
+      isAutopilotModeActive({ session_mode: finalMode }) &&
+      parsed.finalize_automation === 'merge'
+    ) {
+      return res.status(400).json({
+        error: 'autopilot_does_not_merge',
+        message:
+          'Autopilot pushes a named feature branch and never auto-merges. A human merges to the default branch.',
+      });
+    }
     const finalAskMode = parsed.ask_mode !== undefined ? 0 : Number(existing.ask_mode ?? 0);
     const finalModeBlocksFinalize =
       !isShippingCompatibleSessionMode(finalMode) || finalAskMode !== 0;
@@ -1746,6 +1769,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         // end-of-turn auto-commit (see maybeAutoStartFinalizeForSession via
         // auto-git.ts).
         stmts.updateSessionFinalizeAutomation.run(parsed.finalize_automation, sessionId);
+      } else if (nextMode === 'autopilot') {
+        stmts.updateSessionFinalizeAutomation.run('push', sessionId);
       } else if (shouldClearFinalizeAutomation) {
         stmts.updateSessionFinalizeAutomation.run('manual', sessionId);
       }
@@ -2272,6 +2297,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (enteringNonShippingMode) {
         stmts.updateSessionAskMode.run(0, req.params.sessionId);
         stmts.updateSessionFinalizeAutomation.run('manual', req.params.sessionId);
+      } else if (mode === 'autopilot') {
+        stmts.updateSessionFinalizeAutomation.run('push', req.params.sessionId);
       }
     });
     if (!deps.transitionSessionEnv) {
@@ -2296,6 +2323,76 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const enriched = enrichSessionForClient(updated, stmts, sessionProject);
     deps.broadcast({ type: 'session-updated', session: enriched });
     res.json(enriched);
+  });
+
+  router.post('/api/sessions/:sessionId/autopilot', async (req: Request, res: Response) => {
+    const parsed = parseBody(StartSessionAutopilotRequestSchema, req, res);
+    if (!parsed) return;
+    const sessionId = String(req.params.sessionId);
+    const existing = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (!existing) return res.status(404).json({ error: 'Session not found' });
+    if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    const sessionProject = findAgent(existing.agent_id)?.project ?? null;
+    if (isWorkflowProject(sessionProject)) {
+      return res.status(400).json({
+        error: 'autopilot_not_allowed_on_workflow_project',
+        message: 'Autopilot is a code-shipping session mode. Use a dev project.',
+      });
+    }
+    const validated = validateAutopilotSetupInput(parsed);
+    if (!validated.ok) {
+      return res.status(400).json({ error: 'invalid_autopilot_setup', details: validated.errors });
+    }
+    const cfg = startAutopilotConfig(validated.value);
+    const bound = await bindAutopilotBranch({
+      session: existing,
+      branch: cfg.branch,
+      persistBranch: (branch) => stmts.updateSessionWorktreeBranch.run(branch, sessionId),
+    });
+    if (!bound.ok) {
+      return res.status(400).json({ error: 'autopilot_branch_failed', message: bound.message });
+    }
+    cfg.branch = bound.branch;
+    getDb().transaction(() => {
+      stmts.updateSessionMode.run('autopilot', sessionId);
+      stmts.updateSessionFinalizeAutomation.run('push', sessionId);
+      stmts.updateSessionAskMode.run(0, sessionId);
+      stmts.updateSessionReactLoop.run(1, sessionId);
+      stmts.updateSessionAutopilotConfig.run(serializeAutopilotConfig(cfg), sessionId);
+    })();
+    const updatedAfter = stmts.getSession.get(sessionId) as SessionRow;
+    const enrichedAfter = enrichSessionWithAgents(
+      updatedAfter,
+      stmts,
+      getEnrichedAgent,
+      sessionProject,
+      config,
+    );
+    deps.broadcast({ type: 'session-updated', session: enrichedAfter });
+    try {
+      await kickoffSeededTurn({
+        handleChat,
+        agentId: existing.agent_id,
+        sessionId,
+        content: buildAutopilotStartUserMessage(cfg),
+      });
+    } catch (err) {
+      return res.status(409).json({
+        error: 'autopilot_start_failed',
+        message: err instanceof Error ? err.message : String(err),
+        session: enrichSessionWithAgents(
+          stmts.getSession.get(sessionId) as SessionRow,
+          stmts,
+          getEnrichedAgent,
+          sessionProject,
+          config,
+        ),
+      });
+    }
+    const after = stmts.getSession.get(sessionId) as SessionRow;
+    res.json(enrichSessionWithAgents(after, stmts, getEnrichedAgent, sessionProject, config));
   });
 
   /**

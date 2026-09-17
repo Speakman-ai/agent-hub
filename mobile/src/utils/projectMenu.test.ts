@@ -154,11 +154,3 @@ describe('projectNavGroups', () => {
     }
   });
 });
-
-it('hides Autopilot until the project has enabled it', () => {
-  const keys = (project: any) =>
-    projectNavGroups(project).flatMap((group) => group.entries.map((entry) => entry.key));
-  expect(keys({})).not.toContain('autopilot');
-  expect(keys({ autopilotEnabled: false })).not.toContain('autopilot');
-  expect(keys({ autopilotEnabled: true })).toContain('autopilot');
-});

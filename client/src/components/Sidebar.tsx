@@ -37,7 +37,6 @@ import {
   ShieldAlert,
   PanelLeftClose,
   Sparkles,
-  Rocket,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion';
@@ -138,7 +137,6 @@ export default function Sidebar({
   googleCalendarNavVisible: _googleCalendarNavVisible = false,
   googleGmailNavVisible: _googleGmailNavVisible = false,
   deploymentsProjectId,
-  autopilotProjectId,
   replaysProjectId,
   securityProjectId,
   wikiProjectId,
@@ -873,7 +871,6 @@ export default function Sidebar({
                         (!!project.githubRepo || project.gitHost === 'agenthub') &&
                         project.mode !== 'workflow';
                       const showDeployments = !workflowProject;
-                      const showAutopilot = !workflowProject && !!project.autopilotEnabled;
                       // Epics are available on every project mode: the epic/phase
                       // REST endpoints are not mode-gated, and workflow projects
                       // use epics to group kanban cards just like dev projects.
@@ -959,20 +956,6 @@ export default function Sidebar({
                                     >
                                       <Cloud size={14} className="flex-shrink-0" />
                                       <span className="truncate">Deployments</span>
-                                    </button>
-                                  )}
-                                  {showAutopilot && (
-                                    <button
-                                      type="button"
-                                      data-testid={`sidebar-autopilot-${project.id}`}
-                                      onClick={() => onNavigate('autopilot', project.id)}
-                                      className={projectMenuLinkClass(
-                                        currentView === 'autopilot' &&
-                                          autopilotProjectId === project.id,
-                                      )}
-                                    >
-                                      <Rocket size={14} className="flex-shrink-0" />
-                                      <span className="truncate">Autopilot</span>
                                     </button>
                                   )}
                                 </div>

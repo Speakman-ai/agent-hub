@@ -27,7 +27,6 @@ import { normalizeSmtpConfig } from './smtp-config.js';
 import { coerceSessionEnvAdapterMode } from './session-env/sysbox-capability.js';
 import { CODEX_DEFAULT_MODEL } from './codex-model-capability.js';
 import { sanitizeSpawnPythonEnv } from './spawn-python-env.js';
-import { applyAutopilotWorkerSpawnEnv } from './autopilot/worker-authority.js';
 import { deriveLocalDockerPreviewSubdomainBase } from './preview/preview-routing-mode.js';
 
 export { refreshShellPath, getCachedShellPath };
@@ -833,16 +832,6 @@ export interface BuildSpawnEnvOptions {
    * safe for a specific CLI are injected exclusively through this gate.
    */
   engine?: string | null;
-  /**
-   * Scoped Autopilot worker credential. When set, replaces `AGENT_HUB_API_KEY`
-   * (including the global break-glass key) and strips cloud/socket credentials.
-   */
-  autopilotWorker?: {
-    token: string;
-    projectId: string;
-    runId: string;
-    role?: 'implementer' | 'evaluator';
-  } | null;
 }
 
 /** Treat null / undefined / empty / whitespace-only as "not provided". */
@@ -1038,7 +1027,7 @@ export function buildSpawnEnv(
 
   const sessionId = presentString(opts.sessionId);
   const spawnCredsUserId = presentString(opts.spawnCredsUserId) ?? ownerUserId;
-  if (!opts.autopilotWorker && sessionId && spawnCredsUserId) {
+  if (sessionId && spawnCredsUserId) {
     ensureSpawnCredsForSession({ sessionId, ownerUserId: spawnCredsUserId, cfg });
   }
 
@@ -1062,10 +1051,6 @@ export function buildSpawnEnv(
   // Strip inherited venv relocation vars and pin npm/node-gyp at the image
   // Python so a leftover `.venv` cannot break native addon compiles.
   sanitizeSpawnPythonEnv(env);
-
-  if (opts.autopilotWorker) {
-    applyAutopilotWorkerSpawnEnv(env, opts.autopilotWorker);
-  }
 
   return env;
 }

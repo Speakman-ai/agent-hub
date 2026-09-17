@@ -39,7 +39,8 @@ function resolveSessionModeFromRow(session: any) {
     m === 'scoping' ||
     m === 'skill-builder' ||
     m === 'consult' ||
-    m === 'isolated'
+    m === 'isolated' ||
+    m === 'autopilot'
   )
     return m;
   return 'chat';

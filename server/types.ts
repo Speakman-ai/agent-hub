@@ -58,6 +58,12 @@ export interface SessionRow {
    */
   session_mode?: string | null;
   /**
+   * JSON blob for session-mode Autopilot (duration, brief, goal, escalation,
+   * named branch, deadline). NULL until the startup card is submitted. See
+   * `shared/utils/sessionAutopilot.ts`.
+   */
+  autopilot_session_config?: string | null;
+  /**
    * Per-session session-env adapter override ('auto' | 'host' | 'sysbox' |
    * 'container' | 'firecracker'). NULL/absent = use the global boot selection.
    * Set on Autopilot worker sessions from the project's chosen isolation adapter
@@ -2179,12 +2185,14 @@ export interface Stmts {
   resetSessionResumeAttempts: Stmt;
   updateSessionWorktree: Stmt;
   updateSessionWorktreePath: Stmt;
+  updateSessionWorktreeBranch: Stmt;
   setSessionResolvePrHeadBranch: Stmt;
   setSessionWorktreeCheckoutBranch: Stmt;
   updateSessionGitWorktreeDetected: Stmt;
   updateSessionAskMode: Stmt;
   updateSessionReactLoop: Stmt;
   updateSessionMode: Stmt;
+  updateSessionAutopilotConfig: Stmt;
   updateSessionReasoningEffort: Stmt;
   updateSessionChangesReady: Stmt;
   updateSessionCodeChangedAt: Stmt;
@@ -3687,8 +3695,6 @@ export interface Project {
    * hidden until a user opts in via Settings → Projects.
    */
   awsEnabled?: boolean;
-  /** Read-only projection of the Autopilot configuration enabled flag. */
-  autopilotEnabled?: boolean;
   /**
    * When true, the per-project Infrastructure monitoring module is visible
    * in the sidebar. Defaults to `false` (omitted) until an operator opts in.

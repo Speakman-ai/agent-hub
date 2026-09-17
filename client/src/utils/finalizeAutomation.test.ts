@@ -34,6 +34,7 @@ describe('SESSION_CONTROL_OPTIONS', () => {
       'scoping',
       'skill-builder',
       'isolated',
+      'autopilot',
       'manual',
       'review',
       'push',
@@ -193,6 +194,30 @@ describe('planSessionControlChange', () => {
     ).toEqual([
       { type: 'automation', value: 'manual' },
       { type: 'mode', value: 'design' },
+    ]);
+  });
+
+  it('selecting Autopilot pins Build and Push', () => {
+    expect(
+      planSessionControlChange(
+        { sessionMode: 'chat', askMode: false, automation: 'manual' },
+        'autopilot',
+      ),
+    ).toEqual([
+      { type: 'automation', value: 'push' },
+      { type: 'mode', value: 'autopilot' },
+    ]);
+  });
+
+  it('leaving Autopilot for a ship level returns to chat', () => {
+    expect(
+      planSessionControlChange(
+        { sessionMode: 'autopilot', askMode: false, automation: 'push' },
+        'review',
+      ),
+    ).toEqual([
+      { type: 'mode', value: 'chat' },
+      { type: 'automation', value: 'review' },
     ]);
   });
 

@@ -77,12 +77,6 @@ import {
   type VmNetworkPlan,
 } from './firecracker-vm-args.js';
 import {
-  assertAutopilotWorkerLaunch,
-  authorizedFirecrackerContainmentDrives,
-  firecrackerEffectiveHostDrives,
-  type AutopilotWorkerLaunch,
-} from '../../autopilot/containment.js';
-import {
   awaitReply,
   awaitStarted,
   deferStream,
@@ -354,7 +348,6 @@ export class FirecrackerSessionEnv implements SessionEnv {
   #lastActivityAtMs: number;
   #startPromise: Promise<void> | null = null;
   #started = false;
-  #containmentLaunch: AutopilotWorkerLaunch | null = null;
   /**
    * Set when boot fails and {@link #teardownVm} also fails. Retries of
    * ensureStarted must not spawn a second VMM against the same resources;
@@ -537,13 +530,10 @@ export class FirecrackerSessionEnv implements SessionEnv {
       );
     }
     if (this.#started) {
-      this.verifyRuntimeContainment();
       return Promise.resolve();
     }
     if (this.#startPromise) {
-      return this.#startPromise.then(() => {
-        this.verifyRuntimeContainment();
-      });
+      return this.#startPromise;
     }
     const starting = this.#doStart();
     this.#startPromise = starting;
@@ -555,12 +545,6 @@ export class FirecrackerSessionEnv implements SessionEnv {
       if (this.#startPromise === starting) this.#startPromise = null;
     });
     return starting;
-  }
-
-  verifyRuntimeContainment(): void {
-    this.#assertLive('verifyRuntimeContainment');
-    if (!this.#containmentLaunch) return;
-    assertAutopilotWorkerLaunch('firecracker', this.#containmentLaunch);
   }
 
   async #doStart(): Promise<void> {
@@ -715,29 +699,6 @@ export class FirecrackerSessionEnv implements SessionEnv {
           logPath: `${this.vmDir}/firecracker.log`,
         });
       }
-
-      const launch: AutopilotWorkerLaunch = {
-        kind: 'firecracker',
-        drives: firecrackerEffectiveHostDrives({
-          configDrives: config.drives,
-          hostRootfsPath: disks.rootfsPath,
-          hostWorkspacePath: disks.workspacePath,
-          ...(this.useJailer
-            ? {
-                stagedRootfsPath: JAILER_STAGED_ROOTFS,
-                stagedWorkspacePath: JAILER_STAGED_WORKSPACE,
-              }
-            : {}),
-        }),
-        authorizedDrives: authorizedFirecrackerContainmentDrives({
-          rootfsPath: disks.rootfsPath,
-          workspacePath: disks.workspacePath,
-        }),
-        vcpuCount: config['machine-config'].vcpu_count,
-        memSizeMib: config['machine-config'].mem_size_mib,
-      };
-      this.#containmentLaunch = launch;
-      assertAutopilotWorkerLaunch('firecracker', launch);
 
       const vmm = this.spawnVmm({
         vmId: this.vmId,

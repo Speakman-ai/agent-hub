@@ -14,6 +14,7 @@ import TopBar from './components/TopBar';
 import ChatMessage from './components/ChatMessage';
 import ThinkingIndicator from './components/ThinkingIndicator';
 import SessionTail from './components/SessionTail';
+import AutopilotSetupPrompt from './components/AutopilotSetupPrompt';
 import MessageInput from './components/MessageInput';
 import AgentSwitcher from './components/AgentSwitcher';
 import ForwardSessionModal, { filterForwardTargets } from './components/ForwardSessionModal';
@@ -102,7 +103,6 @@ import {
 import { useGoogleStatus } from './hooks/useGoogleStatus';
 import { shouldShowCalendarNav, shouldShowGmailNav } from './utils/googleSurface';
 import DeploymentsPage from './components/DeploymentsPage';
-import AutopilotSettingsSection from './components/AutopilotSettingsSection';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
 import NotesEditor from './components/NotesEditor';
@@ -248,6 +248,7 @@ import {
   planCreatedSessionCaches,
   planRemoteSessionCreatedCaches,
 } from './utils/sessionDerivedState';
+import { needsAutopilotSetup } from '@shared/utils/sessionAutopilot';
 import { appendPreviewLogTail, mergePreviewEventLogTail } from './utils/previewLogTail';
 import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySessionMerge';
 import {
@@ -627,9 +628,6 @@ export default function App({ initialView }: any = {}) {
   const [deploymentsProjectId, setDeploymentsProjectId] = useState<any>(
     initialNavigation.view === 'deployments' ? initialNavigation.projectId || null : null,
   );
-  const [autopilotProjectId, setAutopilotProjectId] = useState<any>(
-    initialNavigation.view === 'autopilot' ? initialNavigation.projectId || null : null,
-  );
   const [replaysProjectId, setReplaysProjectId] = useState<any>(
     initialNavigation.view === 'replays' ? initialNavigation.projectId || null : null,
   );
@@ -946,8 +944,6 @@ export default function App({ initialView }: any = {}) {
         return supportProjectId;
       case 'deployments':
         return deploymentsProjectId;
-      case 'autopilot':
-        return autopilotProjectId;
       case 'replays':
         return replaysProjectId;
       case 'security':
@@ -958,7 +954,6 @@ export default function App({ initialView }: any = {}) {
   }, [
     currentView,
     deploymentsProjectId,
-    autopilotProjectId,
     notesProjectId,
     pullsProjectId,
     replaysProjectId,
@@ -997,7 +992,6 @@ export default function App({ initialView }: any = {}) {
       setSupportTicketId(route?.ticketId || null);
     }
     if (view === 'deployments') setDeploymentsProjectId(route?.projectId || null);
-    if (view === 'autopilot') setAutopilotProjectId(route?.projectId || null);
     if (view === 'replays') setReplaysProjectId(route?.projectId || null);
     if (view === 'security') setSecurityProjectId(route?.projectId || null);
     if (view === 'design') setActiveDesignId(route?.designId || null);
@@ -5537,7 +5531,9 @@ export default function App({ initialView }: any = {}) {
               ? 'hub'
               : activeSession?.session_mode === 'isolated'
                 ? 'isolated'
-                : 'chat';
+                : activeSession?.session_mode === 'autopilot'
+                  ? 'autopilot'
+                  : 'chat';
   const designModeActive = sessionMode === 'design';
   const scopingModeActive = sessionMode === 'scoping';
   // The scoping pane consumes board updates while the main view is chat.
@@ -5561,6 +5557,7 @@ export default function App({ initialView }: any = {}) {
       else if (
         patch.session_mode === 'chat' ||
         patch.session_mode === 'isolated' ||
+        patch.session_mode === 'autopilot' ||
         patch.finalize_automation !== undefined
       ) {
         setSessionConsultMode(false);
@@ -6495,7 +6492,6 @@ export default function App({ initialView }: any = {}) {
                 setSupportTicketId(null);
               }
               if (view === 'deployments' && extra) setDeploymentsProjectId(extra);
-              if (view === 'autopilot' && extra) setAutopilotProjectId(extra);
               if (view === 'replays' && extra) setReplaysProjectId(extra);
               if (view === 'security' && extra) setSecurityProjectId(extra);
               setSidebarOpen(false);
@@ -6521,7 +6517,6 @@ export default function App({ initialView }: any = {}) {
             googleCalendarNavVisible={googleCalendarNavVisible}
             googleGmailNavVisible={googleGmailNavVisible}
             deploymentsProjectId={deploymentsProjectId}
-            autopilotProjectId={autopilotProjectId}
             replaysProjectId={replaysProjectId}
             securityProjectId={securityProjectId}
             pullsProjectId={pullsProjectId}
@@ -7113,21 +7108,6 @@ export default function App({ initialView }: any = {}) {
                     if (sessionId) focusAgentSession(agentId, sessionId);
                   }}
                 />
-              ) : currentView === 'autopilot' && autopilotProjectId ? (
-                <div className="flex-1 overflow-y-auto p-4 md:p-6">
-                  <div className="max-w-4xl mx-auto">
-                    {projects.find((p: any) => p.id === autopilotProjectId)?.autopilotEnabled ? (
-                      <AutopilotSettingsSection
-                        projectId={autopilotProjectId}
-                        showToast={showToast}
-                      />
-                    ) : (
-                      <p className="text-sm text-gray-400">
-                        Enable Autopilot in Project Configuration.
-                      </p>
-                    )}
-                  </div>
-                </div>
               ) : currentView === 'replays' && replaysProjectId ? (
                 <ReplaysDashboardPage
                   projectId={replaysProjectId}
@@ -7359,7 +7339,9 @@ export default function App({ initialView }: any = {}) {
                                   </>
                                 ) : (
                                   <>
-                                    <MessageCircle size={40} className="mb-3 text-gray-600" />
+                                    {needsAutopilotSetup(activeSession) ? null : (
+                                      <MessageCircle size={40} className="mb-3 text-gray-600" />
+                                    )}
                                     {sessionsListLoading && projectDataReady && activeAgent ? (
                                       <>
                                         <p className="text-lg">Loading conversation</p>
@@ -7368,20 +7350,38 @@ export default function App({ initialView }: any = {}) {
                                         </p>
                                       </>
                                     ) : activeAgent ? (
-                                      <>
-                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
-                                          Chat
-                                        </p>
-                                        <h2 className="text-xl font-semibold text-gray-200 mb-2">
-                                          Talk to {activeAgent.name}
-                                        </h2>
-                                        <p className="text-sm text-gray-500 max-w-md leading-relaxed">
-                                          This is a chat session with{' '}
-                                          <span className="text-gray-300">{activeAgent.name}</span>.
-                                          Type a message below to ask a question, hand off a task,
-                                          or pair on changes — replies stream in real time.
-                                        </p>
-                                      </>
+                                      needsAutopilotSetup(activeSession) ? (
+                                        <div className="w-full max-w-lg text-left">
+                                          <AutopilotSetupPrompt
+                                            sessionId={activeSessionId}
+                                            onStarted={(updated: any) => {
+                                              setSessions((prev: any) =>
+                                                prev.map((s: any) =>
+                                                  s.id === updated.id ? { ...s, ...updated } : s,
+                                                ),
+                                              );
+                                            }}
+                                            onError={(msg) => showToast(msg, 'error', 8000)}
+                                          />
+                                        </div>
+                                      ) : (
+                                        <>
+                                          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
+                                            Chat
+                                          </p>
+                                          <h2 className="text-xl font-semibold text-gray-200 mb-2">
+                                            Talk to {activeAgent.name}
+                                          </h2>
+                                          <p className="text-sm text-gray-500 max-w-md leading-relaxed">
+                                            This is a chat session with{' '}
+                                            <span className="text-gray-300">
+                                              {activeAgent.name}
+                                            </span>
+                                            . Type a message below to ask a question, hand off a
+                                            task, or pair on changes — replies stream in real time.
+                                          </p>
+                                        </>
+                                      )
                                     ) : (
                                       <>
                                         <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
@@ -7906,15 +7906,34 @@ export default function App({ initialView }: any = {}) {
                             </button>
                           </div>
                         )}
+                        {messages.length > 0 &&
+                        needsAutopilotSetup(activeSession) &&
+                        activeSessionId ? (
+                          <div className="mx-3 mb-2">
+                            <AutopilotSetupPrompt
+                              sessionId={activeSessionId}
+                              onStarted={(updated: any) => {
+                                setSessions((prev: any) =>
+                                  prev.map((s: any) =>
+                                    s.id === updated.id ? { ...s, ...updated } : s,
+                                  ),
+                                );
+                              }}
+                              onError={(msg) => showToast(msg, 'error', 8000)}
+                            />
+                          </div>
+                        ) : null}
                         <MessageInput
                           ref={messageInputRef}
                           onSend={handleSend}
                           onCancel={handleCancel}
-                          disabled={shouldDisableSessionComposer({
-                            hasAgent: !!activeAgent,
-                            connected,
-                            workspaceEnsureFailed: !!activeSessionWorkspaceEnsureError,
-                          })}
+                          disabled={
+                            shouldDisableSessionComposer({
+                              hasAgent: !!activeAgent,
+                              connected,
+                              workspaceEnsureFailed: !!activeSessionWorkspaceEnsureError,
+                            }) || needsAutopilotSetup(activeSession)
+                          }
                           isProcessing={isProcessing}
                           queueLength={(messageQueues[activeSessionId] || []).length}
                           agentColor={chatAccentColor}

@@ -45,6 +45,8 @@ import {
 import { latestSessionEnvLaunchStatus } from '@shared/utils/sessionEnvLaunch';
 import { resolveLiveStreamIdentity } from '@shared/utils/activeTaskSnapshot';
 import { HUB_ASSISTANT_AGENT_ID } from '@shared/utils/hub';
+import { needsAutopilotSetup } from '@shared/utils/sessionAutopilot';
+import AutopilotSetupPrompt from '../components/AutopilotSetupPrompt';
 export default function ChatScreen({
   embedded = false,
   composePrefix = '',
@@ -361,21 +363,33 @@ export default function ChatScreen({
         return null;
     }
   };
-  const renderEmpty = () => (
-    <View style={styles.emptyContainer}>
-      <Text style={styles.emptyTitle}>{hubSession ? 'Ask Hub' : 'Start a conversation'}</Text>
-      {activeAgent && !hubSession ? (
-        <Text style={styles.emptySubtitle}>with {activeAgent.name}</Text>
-      ) : null}
-      <Text style={styles.emptyHint}>
-        {emptyHint
-          ? emptyHint
-          : hubSession
-            ? 'What to focus on next, kick off an agent, or configure Agent Hub.'
-            : 'Tap the menu to switch agents'}
-      </Text>
-    </View>
-  );
+  const configuringAutopilot = needsAutopilotSetup(activeSession);
+  const renderEmpty = () =>
+    configuringAutopilot && activeSessionId ? (
+      <View style={[styles.emptyContainer, styles.autopilotEmptyContainer]}>
+        <AutopilotSetupPrompt
+          sessionId={activeSessionId}
+          onStarted={() => {
+            void reloadMessages();
+          }}
+          onError={(message) => Alert.alert('Autopilot', message)}
+        />
+      </View>
+    ) : (
+      <View style={styles.emptyContainer}>
+        <Text style={styles.emptyTitle}>{hubSession ? 'Ask Hub' : 'Start a conversation'}</Text>
+        {activeAgent && !hubSession ? (
+          <Text style={styles.emptySubtitle}>with {activeAgent.name}</Text>
+        ) : null}
+        <Text style={styles.emptyHint}>
+          {emptyHint
+            ? emptyHint
+            : hubSession
+              ? 'What to focus on next, kick off an agent, or configure Agent Hub.'
+              : 'Tap the menu to switch agents'}
+        </Text>
+      </View>
+    );
   return (
     <SafeAreaView style={styles.container} edges={embedded ? ['bottom'] : ['top', 'bottom']}>
       {embedded ? null : <TopBar />}
@@ -573,11 +587,28 @@ export default function ChatScreen({
           }}
         />
 
+        {listData.length > 0 && configuringAutopilot && activeSessionId ? (
+          <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
+            <AutopilotSetupPrompt
+              sessionId={activeSessionId}
+              onStarted={() => {
+                void reloadMessages();
+              }}
+              onError={(message) => Alert.alert('Autopilot', message)}
+            />
+          </View>
+        ) : null}
         {/* Input */}
         <MessageInput
           onSend={sendChat}
           onCancel={handleCancel}
-          disabled={!activeAgentId || !connected || isProcessing || hubComposerLocked}
+          disabled={
+            !activeAgentId ||
+            !connected ||
+            isProcessing ||
+            hubComposerLocked ||
+            configuringAutopilot
+          }
           isProcessing={isProcessing}
           agentColor={activeAgent?.color}
           skills={skills}
@@ -714,6 +745,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 80,
+  },
+  autopilotEmptyContainer: {
+    justifyContent: 'flex-start',
+    paddingVertical: 16,
+    paddingHorizontal: 16,
   },
   emptyEmoji: {
     fontSize: 48,

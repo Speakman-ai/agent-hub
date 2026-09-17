@@ -67,28 +67,11 @@ function fixture(autonomous: boolean, linkedEpic = true, phaseAutonomous = false
   };
   const saveErrorMessage = vi.fn(() => 'error-message');
   const listKilledShells = vi.fn(() => [{ id: 'shell', command: 'npm test', label: 'tests' }]);
-  const isAutopilotSession = vi.fn((_sessionId: string) => false);
-  const recover = () =>
-    reconcileOrphanedTasks({ stmts, saveErrorMessage, listKilledShells, isAutopilotSession });
-  return { db, stmts, interrupt, recover, saveErrorMessage, listKilledShells, isAutopilotSession };
+  const recover = () => reconcileOrphanedTasks({ stmts, saveErrorMessage, listKilledShells });
+  return { db, stmts, interrupt, recover, saveErrorMessage, listKilledShells };
 }
 
 describe('orphaned task recovery', () => {
-  it('leaves Autopilot-owned workers to their run controller instead of resuming or requeueing them', () => {
-    const f = fixture(true);
-    f.isAutopilotSession.mockReturnValue(true);
-    const before = f.stmts.getKanbanCard.get('card');
-    f.interrupt();
-    expect(f.recover()).toEqual([]);
-    expect(f.isAutopilotSession).toHaveBeenCalledWith('original');
-    expect(f.stmts.getKanbanCard.get('card')).toEqual(before);
-    expect(f.stmts.getEligibleAutonomousCards.all('epic')).toEqual([]);
-    expect((f.stmts.getSession.get('original') as SessionRow).resume_attempts).toBe(0);
-    expect(f.stmts.getAllActiveTasks.all()).toEqual([]);
-    expect(f.listKilledShells).not.toHaveBeenCalled();
-    expect(f.saveErrorMessage).not.toHaveBeenCalled();
-  });
-
   it.each([
     ['autonomous epic', true, true, false],
     ['independently running phase', false, true, true],

@@ -72,6 +72,12 @@ export const VM_AUTOMATION_OPTION: Record<string, any> = {
   description:
     'Run this session in an intentional Firecracker microVM — Build/Push/Merge still work like chat',
 };
+export const AUTOPILOT_AUTOMATION_OPTION: Record<string, any> = {
+  value: 'autopilot',
+  label: 'Autopilot',
+  description:
+    'Named-branch loop: implement, push, verify in preview, repeat until the goal or time runs out — never auto-merge',
+};
 // Design is offered on workflow projects too: worktree-less workflow design
 // sessions store artifacts in a Hub-managed data-dir store (server:
 // design-artifact-store.ts), so the mode runs without a worktree and ships nothing.
@@ -88,6 +94,7 @@ export const SESSION_CONTROL_OPTIONS = [
   SCOPING_AUTOMATION_OPTION,
   SKILL_BUILDER_AUTOMATION_OPTION,
   VM_AUTOMATION_OPTION,
+  AUTOPILOT_AUTOMATION_OPTION,
   ...FINALIZE_AUTOMATION_OPTIONS,
 ];
 /**
@@ -148,6 +155,7 @@ export function sessionControlValue({ sessionMode, askMode, automation }: any = 
   if (sessionMode === 'consult') return 'consult';
   if (sessionMode === 'hub') return 'consult';
   if (sessionMode === 'isolated') return 'isolated';
+  if (sessionMode === 'autopilot') return 'autopilot';
   if (askMode) return 'consult';
   return parseFinalizeAutomation(automation);
 }
@@ -190,7 +198,9 @@ export function planSessionControlChange(current: any, target: any, options: any
               ? 'hub'
               : current?.sessionMode === 'isolated'
                 ? 'isolated'
-                : 'chat';
+                : current?.sessionMode === 'autopilot'
+                  ? 'autopilot'
+                  : 'chat';
   const askMode = !!current?.askMode;
   const automation = parseFinalizeAutomation(current?.automation);
   const currentValue = sessionControlValue({ sessionMode, askMode, automation });
@@ -230,11 +240,18 @@ export function planSessionControlChange(current: any, target: any, options: any
     steps.push({ type: 'mode', value: 'isolated' });
     return steps;
   }
+  if (target === 'autopilot') {
+    if (askMode) steps.push({ type: 'ask', value: false });
+    if (automation !== 'push') steps.push({ type: 'automation', value: 'push' });
+    steps.push({ type: 'mode', value: 'autopilot' });
+    return steps;
+  }
   if (
     sessionMode === 'design' ||
     sessionMode === 'scoping' ||
     sessionMode === 'skill-builder' ||
-    sessionMode === 'consult'
+    sessionMode === 'consult' ||
+    sessionMode === 'autopilot'
   )
     steps.push({ type: 'mode', value: 'chat' });
   if (askMode) steps.push({ type: 'ask', value: false });

@@ -15,7 +15,7 @@ describe('chat.ts active_tasks cleanup on pre-spawn failures', () => {
     const idx = src.indexOf('err instanceof EngineAuthRequiredError');
     expect(idx).toBeGreaterThan(-1);
     const window = src.slice(idx, idx + 1400);
-    expect(window).toContain('err instanceof AutopilotWorkerCredentialError');
+    expect(window).toContain('err instanceof EngineAuthRequiredError');
     expect(window).toContain('stmts.deleteActiveTask.run(sessionId)');
     expect(window).toContain('drainQueue(sessionId)');
     expect(window).toContain('recomputeSessionState');

@@ -923,8 +923,8 @@ describe('collectLocalDiffInputs', () => {
     expect(runGit).toHaveBeenCalledTimes(4);
   });
 
-  it('keeps an Autopilot-scale diff whole under the attached corpus budget', async () => {
-    const body = `diff --git a/server/autopilot/store.ts b/server/autopilot/store.ts\n+${'s'.repeat(300_000)}\n`;
+  it('keeps an implementation-scale diff whole under the attached corpus budget', async () => {
+    const body = `diff --git a/server/session-autopilot.ts b/server/session-autopilot.ts\n+${'s'.repeat(300_000)}\n`;
     const runGit = vi.fn().mockImplementation((args: string[]) => {
       if (args[0] === 'rev-parse') {
         return Promise.resolve({
@@ -933,7 +933,7 @@ describe('collectLocalDiffInputs', () => {
         });
       }
       if (args[1] === '--name-only') {
-        return Promise.resolve({ stdout: 'server/autopilot/store.ts\n', stderr: '' });
+        return Promise.resolve({ stdout: 'server/session-autopilot.ts\n', stderr: '' });
       }
       return Promise.resolve({ stdout: body, stderr: '' });
     });
@@ -1964,11 +1964,14 @@ describe('truncateDiffAtFileBoundary', () => {
 
   it('keeps implementation patches when generated OpenAPI would consume the budget', () => {
     const yaml = patch('docs/api/openapi.yaml', `+${'y'.repeat(4000)}\n`);
-    const tests = patch('server/autopilot/controller.test.ts', `+${'t'.repeat(800)}\n`);
-    const impl = patch('server/autopilot/controller.ts', '+export class AutopilotController {}\n');
+    const tests = patch('server/session-autopilot.test.ts', `+${'t'.repeat(800)}\n`);
+    const impl = patch(
+      'server/session-autopilot.ts',
+      '+export function startAutopilotConfig() {}\n',
+    );
     const routes = patch(
-      'server/routes/autopilot.ts',
-      '+export default function createAutopilotRoutes() {}\n',
+      'server/routes/sessions.ts',
+      '+export default function createSessionRoutes() {}\n',
     );
     const result = truncateDiffAtFileBoundary(
       yaml + tests + impl + routes,
@@ -1976,14 +1979,14 @@ describe('truncateDiffAtFileBoundary', () => {
     );
 
     expect(result.severedPatch).toBe(false);
-    expect(result.diff).toContain('AutopilotController');
-    expect(result.diff).toContain('createAutopilotRoutes');
+    expect(result.diff).toContain('startAutopilotConfig');
+    expect(result.diff).toContain('createSessionRoutes');
     expect(result.diff).not.toContain('docs/api/openapi.yaml');
   });
 
   it('prefers implementation over tests when both cannot fit', () => {
-    const tests = patch('server/autopilot/controller.test.ts', `+${'t'.repeat(400)}\n`);
-    const impl = patch('server/autopilot/controller.ts', `+${'c'.repeat(400)}\n`);
+    const tests = patch('server/session-autopilot.test.ts', `+${'t'.repeat(400)}\n`);
+    const impl = patch('server/session-autopilot.ts', `+${'c'.repeat(400)}\n`);
     const result = truncateDiffAtFileBoundary(
       tests + impl,
       Buffer.byteLength(impl, 'utf8') + DIFF_MARKER_RESERVE_BYTES,
@@ -1996,17 +1999,14 @@ describe('truncateDiffAtFileBoundary', () => {
 
   it('keeps spawn and turn-end patches when a large fixture would consume the budget', () => {
     const fixture = patch(
-      'server/autopilot/fixtures/integrated-cycle.ts',
+      'server/session-env/fixtures/integrated-cycle.ts',
       `+${'f'.repeat(4000)}\n`,
     );
     const chat = patch(
       'server/chat.ts',
-      '+catch (err) { if (err instanceof AutopilotWorkerCredentialError) }\n',
+      '+catch (err) { if (err instanceof EngineAuthRequiredError) }\n',
     );
-    const spawn = patch(
-      'server/per-user-cli-spawn.ts',
-      '+const worker = resolveAutopilotWorkerSpawn(sessionId, cfg.dataDir);\n',
-    );
+    const spawn = patch('server/per-user-cli-spawn.ts', '+return buildSpawnEnv(cfg, buildOpts);\n');
     const turnEnd = patch(
       'server/finalize/turn-end.ts',
       '+export function subscribeAllTurnEnds(onTurnEnd) {}\n',
@@ -2021,16 +2021,16 @@ describe('truncateDiffAtFileBoundary', () => {
     expect(result.diff).toContain('server/per-user-cli-spawn.ts');
     expect(result.diff).toContain('server/finalize/turn-end.ts');
     expect(result.diff).not.toContain('integrated-cycle.ts');
-    expect(result.omittedFiles).toEqual(['server/autopilot/fixtures/integrated-cycle.ts']);
+    expect(result.omittedFiles).toEqual(['server/session-env/fixtures/integrated-cycle.ts']);
   });
 
   it('keeps a large implementation file when earlier smaller ones would crowd it out', () => {
     // Same-priority packing used to follow git order. A 25 KB store after
     // several 1–7 KB helpers filled the budget and omitted the store, which is
     // the file the reviewer has to certify. Largest-first keeps the store.
-    const errors = patch('server/autopilot/errors.ts', `+${'e'.repeat(300)}\n`);
-    const schema = patch('server/autopilot/schema.ts', `+${'c'.repeat(300)}\n`);
-    const store = patch('server/autopilot/store.ts', `+${'s'.repeat(800)}\n`);
+    const errors = patch('server/session-mode.ts', `+${'e'.repeat(300)}\n`);
+    const schema = patch('server/session-autopilot.ts', `+${'c'.repeat(300)}\n`);
+    const store = patch('server/worktree.ts', `+${'s'.repeat(800)}\n`);
     const db = patch('server/db.ts', `+${'d'.repeat(300)}\n`);
     const budget =
       Buffer.byteLength(store, 'utf8') +
@@ -2038,12 +2038,12 @@ describe('truncateDiffAtFileBoundary', () => {
       DIFF_MARKER_RESERVE_BYTES;
     const result = truncateDiffAtFileBoundary(errors + schema + store + db, budget);
 
-    expect(result.diff).toContain('server/autopilot/store.ts');
+    expect(result.diff).toContain('server/worktree.ts');
     expect(result.diff).toContain('ssss');
     expect(result.omittedFiles).toEqual(
-      expect.arrayContaining(['server/autopilot/schema.ts', 'server/db.ts']),
+      expect.arrayContaining(['server/session-autopilot.ts', 'server/db.ts']),
     );
-    expect(result.omittedFiles).not.toContain('server/autopilot/store.ts');
+    expect(result.omittedFiles).not.toContain('server/worktree.ts');
   });
 
   it('reports both a severed patch and the patches dropped alongside it', () => {
@@ -2151,21 +2151,26 @@ describe('orderUnifiedDiffForReviewCorpus', () => {
 
   it('puts implementation ahead of tests and generated OpenAPI', () => {
     const yaml = patch('docs/api/openapi.yaml', '+generated\n');
-    const tests = patch('server/autopilot/containment.test.ts', '+describe\n');
-    const impl = patch('server/autopilot/controller.ts', '+export class AutopilotController {}\n');
+    const tests = patch('server/session-env/sysbox-session-env.test.ts', '+describe\n');
+    const impl = patch(
+      'server/session-autopilot.ts',
+      '+export function startAutopilotConfig() {}\n',
+    );
     const ordered = orderUnifiedDiffForReviewCorpus(yaml + tests + impl);
 
-    expect(ordered.indexOf('controller.ts')).toBeLessThan(ordered.indexOf('containment.test.ts'));
-    expect(ordered.indexOf('controller.ts')).toBeLessThan(ordered.indexOf('openapi.yaml'));
+    expect(ordered.indexOf('session-autopilot.ts')).toBeLessThan(
+      ordered.indexOf('sysbox-session-env.test.ts'),
+    );
+    expect(ordered.indexOf('session-autopilot.ts')).toBeLessThan(ordered.indexOf('openapi.yaml'));
   });
 
   it('puts implementation ahead of disposable fixture drivers', () => {
-    const fixture = patch('server/autopilot/fixtures/integrated-cycle.ts', '+fixture\n');
+    const fixture = patch('server/session-env/fixtures/integrated-cycle.ts', '+fixture\n');
     const chat = patch('server/chat.ts', '+spawn\n');
     const ordered = orderUnifiedDiffForReviewCorpus(fixture + chat);
 
     expect(ordered.indexOf('server/chat.ts')).toBeLessThan(
-      ordered.indexOf('server/autopilot/fixtures/integrated-cycle.ts'),
+      ordered.indexOf('server/session-env/fixtures/integrated-cycle.ts'),
     );
   });
 
@@ -2330,13 +2335,13 @@ describe('buildLocalDiffReviewerPrompt — partial-input disclosure', () => {
       inputs: {
         ...fakeInputs,
         omittedFileCount: 42,
-        omittedFiles: ['server/autopilot/store.ts', 'server/routes/autopilot.openapi.ts'],
+        omittedFiles: ['server/session-autopilot.ts', 'server/routes/sessions.ts'],
       },
     });
     expect(prompt).toContain('Partial input');
     expect(prompt).toContain('42 file patch(es) were omitted');
     expect(prompt).toContain('Omitted patches');
-    expect(prompt).toContain('server/autopilot/store.ts');
+    expect(prompt).toContain('server/session-autopilot.ts');
     expect(prompt).toContain('when local reads work');
     expect(prompt).toContain('bwrap');
     expect(prompt).toContain('access failure');

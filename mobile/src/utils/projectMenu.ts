@@ -24,7 +24,6 @@ import { isWorkflowProject } from './project-mode';
 const WORKFLOW_EXCLUDED_KEYS = new Set([
   'pulls',
   'deployments',
-  'autopilot',
   'stats',
   'support',
   'security',
@@ -65,12 +64,6 @@ export function projectNavGroups(project: any) {
         },
         hasPulls && { key: 'pulls', label: 'Pulls', icon: 'ListOrdered', screen: 'PullRequests' },
         { key: 'deployments', label: 'Deployments', icon: 'Cloud', screen: 'Deployments' },
-        project?.autopilotEnabled && {
-          key: 'autopilot',
-          label: 'Autopilot',
-          icon: 'Rocket',
-          screen: 'ExperimentalAutopilot',
-        },
       ],
     },
     {

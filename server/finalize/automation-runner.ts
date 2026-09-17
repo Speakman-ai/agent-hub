@@ -25,7 +25,7 @@ import { runFinalizePush } from './push-run.js';
 import { acquirePushLock, type PushLockStmts } from './push-lock.js';
 import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
 import { startFinalizeRunBackground } from './trigger-run.js';
-import { hasPushedFinalizeRun } from './post-push-session-lock.js';
+import { sessionIsLockedAfterFinalizePush } from './post-push-session-lock.js';
 import {
   resolveSessionFinalizeAutomation,
   shouldAutoPushAfterReady,
@@ -203,7 +203,8 @@ function sessionPostFinalizePushBlocksAutomation(
   action: 'auto-start' | 'auto-push',
 ): boolean {
   if (!routeDeps) return true;
-  if (!hasPushedFinalizeRun(routeDeps.stmts, sessionId)) return false;
+  const session = routeDeps.stmts.getSession.get(sessionId) as SessionRow | undefined;
+  if (!sessionIsLockedAfterFinalizePush(routeDeps.stmts, session)) return false;
   console.warn(
     `[finalize-automation] Skipping ${action} session=${sessionId}: session already pushed ` +
       `code through Finalize and is locked in ask mode.`,

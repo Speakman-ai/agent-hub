@@ -279,11 +279,6 @@ export interface TriggerDeploymentInput {
    * and callers that manage their own worktree leave it false.
    */
   cleanupWorktreeOnTerminal?: boolean;
-  /**
-   * When `trigger` is `autopilot`, skip the approval gate only if `environment`
-   * equals this opted-in experiment target. Other environments stay gated.
-   */
-  unattendedEnvironment?: string | null;
 }
 
 export interface ApproveDeploymentInput {
@@ -1509,10 +1504,7 @@ const APPROVAL_BYPASS_TRIGGERS = new Set(['schedule', 'release_gate']);
  * parks a gated environment at `awaiting_approval` (lock retained) or runs the
  * pipeline to a terminal state. A gated environment triggered by `schedule` or
  * `release_gate` bypasses the gate and runs immediately
- * ({@link APPROVAL_BYPASS_TRIGGERS}). `trigger: 'autopilot'` bypasses approval
- * only when `environment` equals `unattendedEnvironment` (the opted-in
- * experiment target). Other environments stay gated. Autopilot is not added to
- * {@link APPROVAL_BYPASS_TRIGGERS}.
+ * ({@link APPROVAL_BYPASS_TRIGGERS}).
  *
  * Throws {@link EnvironmentBusyError} (→ 409) when the environment already has an
  * in-flight or awaiting-approval deployment, and the config parser's
@@ -1578,14 +1570,7 @@ export async function triggerDeployment(
   // remains serialized; the approval gate + resume land in a later phase.
   // Automated schedule/release-gate triggers bypass the gate: configuring one
   // is the operator's up-front approval for the unattended deployment.
-  // Autopilot opt-in authority applies ONLY to the designated experiment
-  // target (`unattendedEnvironment`); other environments stay gated.
-  const unattendedAutopilot =
-    trigger === 'autopilot' &&
-    typeof input.unattendedEnvironment === 'string' &&
-    input.unattendedEnvironment.length > 0 &&
-    input.unattendedEnvironment === environment;
-  if (envConfig.approval && !APPROVAL_BYPASS_TRIGGERS.has(trigger) && !unattendedAutopilot) {
+  if (envConfig.approval && !APPROVAL_BYPASS_TRIGGERS.has(trigger)) {
     updateDeploymentStatus(deployment.id, 'awaiting_approval');
     emitDeploymentUpdate(deps, projectId, deployment.id);
     return getDeployment(deployment.id) as DeploymentRow;

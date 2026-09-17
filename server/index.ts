@@ -157,8 +157,6 @@ import { handleWorktreeFailure } from './worktree-failure.js';
 import { installShutdownHandlers } from './process-groups.js';
 import { markSessionTermination } from './process-termination.js';
 import { cancelSessionChatRun } from './session-chat-cancel.js';
-import { cancelAutopilotSideEffects as runAutopilotSideEffectCancel } from './autopilot/cancel-side-effects.js';
-
 import { trustProxyValueFromEnv } from './trust-proxy.js';
 import { uriDecodeGuard, uriErrorHandler } from './uri-error-handler.js';
 import { publicCorsErrorHandler } from './public-cors-error-handler.js';
@@ -237,22 +235,6 @@ import createFinalizeQuarantineRoutes from './routes/finalize-quarantine.js';
 import createFinalizeWizardRoutes from './routes/finalize-wizard.js';
 import createFinalizeCiConfigRoutes from './routes/finalize-ci-config.js';
 import createDeploymentRoutes from './routes/deployments.js';
-import createAutopilotRoutes, { buildAutopilotControllerDeps } from './routes/autopilot.js';
-import { createAutopilotController, AUTOPILOT_DEADLINE_SWEEP_MS } from './autopilot/controller.js';
-import {
-  autopilotWorkerGuard,
-  configureAutopilotWorkerOperationLookup,
-} from './autopilot/worker-authority.js';
-import { AutopilotStore } from './autopilot/store.js';
-import {
-  attachAutopilotCompletionCallbacks,
-  buildAutopilotRuntime,
-  buildLocalTargetLookup,
-  handleAutopilotBroadcast,
-  readAutopilotDeployedRevision,
-} from './autopilot/wiring.js';
-import type { AutopilotRuntime } from './autopilot/runtime.js';
-import type { AutopilotCancelRefs } from './autopilot/types.js';
 import { recoverInFlightDeployments } from './deploy/deploy-orchestrator.js';
 import { prepareDeploymentCheckout } from './deploy/deployment-checkout.js';
 import { maybeRunDeployTriggers } from './deploy/deploy-trigger-hook.js';
@@ -557,15 +539,6 @@ if (_startupOrgId !== 'default') {
 // main thread (the 147 MB WAL incident). See server/db-checkpoint.ts.
 startDbCheckpointScheduler();
 
-configureAutopilotWorkerOperationLookup((operationId) => {
-  const store = new AutopilotStore(getDb());
-  const op = store.getOperation(operationId);
-  if (!op) return null;
-  const run = store.getRun(op.runId);
-  if (!run) return null;
-  return { projectId: run.projectId, runId: run.id, kind: op.kind };
-});
-
 // Legacy NULL-owner sessions are intentionally NOT backfilled to any user:
 // AI auth and session ownership are strictly per-account, with no org-owner
 // fallback. Such rows belong to nobody and are not auto-granted on upgrade.
@@ -715,10 +688,8 @@ app.use(uriDecodeGuard);
 app.use(cors(corsOptions));
 
 let _broadcast: BroadcastFn;
-let attachedAutopilotRuntime: AutopilotRuntime | null = null;
 function broadcast(data: Record<string, unknown>): void {
   _broadcast(data);
-  if (attachedAutopilotRuntime) handleAutopilotBroadcast(attachedAutopilotRuntime, data);
 }
 
 // Git smart-HTTP transport for Agent Hub-hosted repos (/git/<id>.git).
@@ -1112,7 +1083,6 @@ app.use(
 startFleetScaler();
 
 app.use(authMiddleware);
-app.use(autopilotWorkerGuard);
 
 // Releases page powers the in-app "What's new" view, only reachable from
 // the logged-in sidebar. Mount AFTER authMiddleware so the `?refresh=1`
@@ -1206,10 +1176,6 @@ export const activeProcesses = new Map<
   string,
   import('./active-chat-process.js').ActiveChatProcess
 >();
-
-function cancelAutopilotSideEffects(refs: AutopilotCancelRefs) {
-  return runAutopilotSideEffectCancel(refs, { activeProcesses, broadcast });
-}
 
 // ─── Preview runtime ────────────────────────────────────────────────────
 //
@@ -2116,13 +2082,6 @@ app.use(createFinalizeQuarantineRoutes(routeDeps));
 app.use(createFinalizeWizardRoutes(routeDeps));
 app.use(createFinalizeCiConfigRoutes(routeDeps));
 app.use(createDeploymentRoutes(routeDeps));
-app.use(
-  createAutopilotRoutes(routeDeps, {
-    cancelSideEffects: cancelAutopilotSideEffects,
-    getDeployedRevision: readAutopilotDeployedRevision,
-    validateLocalTarget: buildLocalTargetLookup(findProject),
-  }),
-);
 app.use(createReleaseNotificationSettingsRoutes(routeDeps));
 app.use(createProjectBrandingRoutes(routeDeps));
 app.use(createProjectRoutes(routeDeps));
@@ -2734,12 +2693,10 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       console.error('[browser] capability check errored:', (e as Error).message),
     );
 
-    const autopilotStore = new AutopilotStore(getDb());
     const sessionsToResume = reconcileOrphanedTasks({
       stmts: stmts!,
       saveErrorMessage: saveErrorMessage!,
       listKilledShells: (sessionId) => backgroundShellRuntime.listBootOrphans(sessionId),
-      isAutopilotSession: (sessionId) => !!autopilotStore.getOperationBySessionId(sessionId),
     });
 
     try {
@@ -2792,60 +2749,6 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       void retriggerInterruptedFinalizeRunsOnBoot(routeDeps, interruptedFinalizeRuns).catch((e) =>
         console.error('[finalize] retriggerInterruptedFinalizeRunsOnBoot', (e as Error).message),
       );
-    }
-
-    try {
-      const autopilotController = createAutopilotController(
-        buildAutopilotControllerDeps({
-          cancelSideEffects: cancelAutopilotSideEffects,
-          getDeployedRevision: readAutopilotDeployedRevision,
-          validateLocalTarget: buildLocalTargetLookup(findProject),
-        }),
-      );
-      void autopilotController
-        .reconcileAfterRestart()
-        .catch((e) => console.error('[autopilot] reconcileAfterRestart', (e as Error).message));
-      if (process.env.NODE_ENV !== 'test') {
-        // Runtime driver: advances active runs' plan → implement → finalize
-        // spine using concrete adapters. Each entry point checks project opt-in;
-        // disabled and unconfigured projects are a no-op.
-        const autopilotRuntime = buildAutopilotRuntime({
-          routeDeps,
-          resolveWorkerAgent: (projectId) => {
-            const agent = allAgents().find((a) => a.projectId === projectId);
-            if (!agent) return null;
-            return {
-              agentId: agent.id,
-              engine: agent.engine ?? 'claude',
-              model: agent.model ?? '',
-            };
-          },
-          getActiveSessionIds: () => new Set(activeProcesses.keys()),
-          controllerOptions: {
-            cancelSideEffects: cancelAutopilotSideEffects,
-            getDeployedRevision: readAutopilotDeployedRevision,
-            validateLocalTarget: buildLocalTargetLookup(findProject),
-          },
-        });
-        attachedAutopilotRuntime = autopilotRuntime;
-        attachAutopilotCompletionCallbacks(autopilotRuntime);
-        setInterval(() => {
-          void createAutopilotController(
-            buildAutopilotControllerDeps({
-              cancelSideEffects: cancelAutopilotSideEffects,
-              getDeployedRevision: readAutopilotDeployedRevision,
-              validateLocalTarget: buildLocalTargetLookup(findProject),
-            }),
-          )
-            .enforceDeadlines()
-            .catch((e) => console.error('[autopilot] enforceDeadlines', (e as Error).message));
-          void autopilotRuntime
-            .tick()
-            .catch((e) => console.error('[autopilot] runtime tick', (e as Error).message));
-        }, AUTOPILOT_DEADLINE_SWEEP_MS).unref?.();
-      }
-    } catch (e) {
-      console.error('[autopilot] reconcileAfterRestart', (e as Error).message);
     }
 
     try {

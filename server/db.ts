@@ -18,7 +18,6 @@ import {
 } from './preview/preview-schema.js';
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
 import { BACKGROUND_SHELLS_SCHEMA } from './background-shells/background-shell-schema.js';
-import { ensureAutopilotSchema } from './autopilot/schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import { FINALIZE_SERVER_CI_SCHEMA } from './finalize/ci-config-store.js';
@@ -3050,6 +3049,12 @@ function initDb(dataDir: string): void {
   }
 
   try {
+    db.prepare('SELECT autopilot_session_config FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN autopilot_session_config TEXT DEFAULT NULL');
+  }
+
+  try {
     db.prepare('SELECT card_kind FROM kanban_cards LIMIT 1').get();
   } catch {
     db.exec("ALTER TABLE kanban_cards ADD COLUMN card_kind TEXT NOT NULL DEFAULT 'task'");
@@ -3471,10 +3476,6 @@ function initDb(dataDir: string): void {
   // older `background_tasks` table (async agent prompt turns). Schema is
   // co-located with the runtime so its unit test can use an in-memory DB.
   db.exec(BACKGROUND_SHELLS_SCHEMA);
-
-  // Experimental Project Autopilot: per-project config, versioned briefs,
-  // run/cycle/stage records, operation fencing and the event journal.
-  ensureAutopilotSchema(db);
 
   // Deployment Module: deployments / steps / environments / approvals. Schema
   // is co-located with the deploy store so deployment-schema.test.ts can spin
@@ -4828,6 +4829,9 @@ function initDb(dataDir: string): void {
     updateSessionWorktreePath: db.prepare(
       "UPDATE sessions SET worktree_path = ?, worktree_branch = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    updateSessionWorktreeBranch: db.prepare(
+      "UPDATE sessions SET worktree_branch = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
     // Resolve-PR sessions: record the PR head branch so `ensureSessionWorkspace`
     // provisions the worktree directly on it (pushes update the existing PR).
     setSessionResolvePrHeadBranch: db.prepare(
@@ -4851,6 +4855,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionMode: db.prepare(
       "UPDATE sessions SET session_mode = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionAutopilotConfig: db.prepare(
+      "UPDATE sessions SET autopilot_session_config = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionReasoningEffort: db.prepare(
       "UPDATE sessions SET reasoning_effort = ?, updated_at = datetime('now') WHERE id = ?",

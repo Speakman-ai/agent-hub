@@ -31,18 +31,6 @@ export default [
   // Base recommended rules for all JS files
   js.configs.recommended,
 
-  // Disposable browser fixture for Autopilot (static HTML/JS, not Node).
-  {
-    files: ['server/autopilot/fixtures/todo-app/**/*.js'],
-    languageOptions: {
-      ecmaVersion: 'latest',
-      sourceType: 'script',
-      globals: {
-        ...globals.browser,
-      },
-    },
-  },
-
   // Server files — Node.js ES modules (TypeScript)
   {
     files: ['server/**/*.ts'],

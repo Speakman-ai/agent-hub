@@ -9,6 +9,7 @@ describe('sessionControlIcons', () => {
       'scoping',
       'skill-builder',
       'isolated',
+      'autopilot',
       'manual',
       'review',
       'push',

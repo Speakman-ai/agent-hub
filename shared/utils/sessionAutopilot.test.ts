@@ -1,0 +1,142 @@
+import { describe, it, expect } from 'vitest';
+import {
+  validateAutopilotSetupInput,
+  parseAutopilotSessionConfig,
+  needsAutopilotSetup,
+  isReservedAutopilotBranch,
+  deadlineAtFromDuration,
+  autopilotDeadlineReached,
+  buildAutopilotKickoffMessage,
+  buildAutopilotVerifyContinueMessage,
+} from './sessionAutopilot';
+
+const valid = {
+  durationHours: 4,
+  brief: 'Harden the 3D print UI',
+  goal: 'Baseline journeys pass on preview',
+  escalation: 'medium' as const,
+  branch: 'autopilot/print-ui',
+};
+
+describe('validateAutopilotSetupInput', () => {
+  it('accepts a complete setup', () => {
+    const result = validateAutopilotSetupInput(valid);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.branch).toBe('autopilot/print-ui');
+  });
+
+  it('accepts duration 0 as no limit', () => {
+    const result = validateAutopilotSetupInput({ ...valid, durationHours: 0 });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects duration outside 0–72', () => {
+    expect(validateAutopilotSetupInput({ ...valid, durationHours: 73 }).ok).toBe(false);
+    expect(validateAutopilotSetupInput({ ...valid, durationHours: -1 }).ok).toBe(false);
+    expect(validateAutopilotSetupInput({ ...valid, durationHours: 1.5 }).ok).toBe(false);
+  });
+
+  it('rejects main/master and the repo default branch', () => {
+    expect(validateAutopilotSetupInput({ ...valid, branch: 'main' }).ok).toBe(false);
+    expect(validateAutopilotSetupInput({ ...valid, branch: 'master' }).ok).toBe(false);
+    expect(
+      validateAutopilotSetupInput({ ...valid, branch: 'trunk' }, { defaultBranch: 'trunk' }).ok,
+    ).toBe(false);
+  });
+
+  it('rejects empty brief, goal, and branch', () => {
+    const result = validateAutopilotSetupInput({
+      durationHours: 1,
+      brief: '  ',
+      goal: '',
+      escalation: 'none',
+      branch: '',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.map((e) => e.field).sort()).toEqual(['branch', 'brief', 'goal']);
+    }
+  });
+
+  it('strips refs/heads/ from the branch name', () => {
+    const result = validateAutopilotSetupInput({ ...valid, branch: 'refs/heads/autopilot/x' });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.branch).toBe('autopilot/x');
+  });
+});
+
+describe('isReservedAutopilotBranch', () => {
+  it('treats production aliases as reserved', () => {
+    expect(isReservedAutopilotBranch('prod')).toBe(true);
+    expect(isReservedAutopilotBranch('autopilot/ok')).toBe(false);
+  });
+});
+
+describe('parseAutopilotSessionConfig / needsAutopilotSetup', () => {
+  it('parses a stored JSON blob', () => {
+    const cfg = parseAutopilotSessionConfig(
+      JSON.stringify({
+        ...valid,
+        startedAt: '2026-09-17T12:00:00.000Z',
+        status: 'running',
+        cycle: 2,
+      }),
+    );
+    expect(cfg?.status).toBe('running');
+    expect(cfg?.cycle).toBe(2);
+  });
+
+  it('needs setup when mode is autopilot and nothing has started', () => {
+    expect(needsAutopilotSetup({ session_mode: 'chat' })).toBe(false);
+    expect(needsAutopilotSetup({ session_mode: 'autopilot' })).toBe(true);
+    expect(
+      needsAutopilotSetup({
+        session_mode: 'autopilot',
+        autopilot: { ...valid, startedAt: '2026-09-17T12:00:00.000Z', status: 'running' },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('deadline helpers', () => {
+  it('returns null deadline for duration 0', () => {
+    expect(deadlineAtFromDuration('2026-09-17T00:00:00.000Z', 0)).toBeNull();
+  });
+
+  it('computes a deadline and detects expiry', () => {
+    const deadline = deadlineAtFromDuration('2026-09-17T00:00:00.000Z', 2);
+    expect(deadline).toBe('2026-09-17T02:00:00.000Z');
+    expect(
+      autopilotDeadlineReached(
+        { deadlineAt: deadline } as any,
+        Date.parse('2026-09-17T01:59:00.000Z'),
+      ),
+    ).toBe(false);
+    expect(
+      autopilotDeadlineReached(
+        { deadlineAt: deadline } as any,
+        Date.parse('2026-09-17T02:00:00.000Z'),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('kickoff / continue copy', () => {
+  it('mentions the named branch and no-merge rule', () => {
+    const cfg = parseAutopilotSessionConfig({
+      ...valid,
+      startedAt: '2026-09-17T12:00:00.000Z',
+      status: 'running',
+    })!;
+    expect(buildAutopilotKickoffMessage(cfg)).toContain('autopilot/print-ui');
+    expect(buildAutopilotKickoffMessage(cfg)).toContain('never merge');
+    const cont = buildAutopilotVerifyContinueMessage({
+      cfg,
+      sha: 'abcdef1234567890',
+      branch: cfg.branch,
+      prUrl: 'https://hub.example/pulls/1',
+    });
+    expect(cont).toContain('preview');
+    expect(cont.toLowerCase()).toContain('do not merge');
+  });
+});

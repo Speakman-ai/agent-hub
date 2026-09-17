@@ -2,6 +2,10 @@ import type { BroadcastFn, Project, SessionRow, Stmts } from './types.js';
 import { computeSessionState, DEFAULT_SESSION_STATE, type SessionState } from './session-state.js';
 import { isWorkflowProject, sessionCanUseDesignMode } from './project-mode-guards.js';
 import { isFirecrackerBackendRegistered } from './session-env/firecracker/firecracker-backend-status.js';
+import {
+  parseAutopilotSessionConfig,
+  type AutopilotSessionConfig,
+} from '../shared/utils/sessionAutopilot.js';
 
 /**
  * File-level checkpoint rewind is implemented by spawning the Claude Code CLI
@@ -61,6 +65,7 @@ export type SessionWireRow = SessionRow & {
    * does not hide VM after a `session-updated` overwrite.
    */
   can_isolated_mode: boolean;
+  autopilot: AutopilotSessionConfig | null;
 };
 
 /**
@@ -215,6 +220,7 @@ export function enrichSessionForClient(
       isFirecrackerBackendRegistered() &&
       resolvedProject != null &&
       !isWorkflowProject(resolvedProject),
+    autopilot: parseAutopilotSessionConfig(row.autopilot_session_config),
   };
 }
 

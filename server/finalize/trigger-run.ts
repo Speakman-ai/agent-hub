@@ -33,7 +33,7 @@ import {
   waitForSessionWorktreeLockRelease,
 } from '../session-worktree-lock.js';
 import {
-  hasPushedFinalizeRun,
+  sessionIsLockedAfterFinalizePush,
   POST_FINALIZE_PUSH_LOCK_ERROR,
   POST_FINALIZE_PUSH_LOCK_MESSAGE,
 } from './post-push-session-lock.js';
@@ -193,7 +193,7 @@ async function kickoffFinalizeRunBody(
   // early return, so a TOCTOU across worktree I/O would otherwise start a new
   // agent_block run on an already-shipped session.
   const refuseIfPushed = (): { kind: 'error'; error: string; message: string } | null => {
-    if (!hasPushedFinalizeRun(stmts, session.id)) return null;
+    if (!sessionIsLockedAfterFinalizePush(stmts, session)) return null;
     return {
       kind: 'error',
       error: POST_FINALIZE_PUSH_LOCK_ERROR,

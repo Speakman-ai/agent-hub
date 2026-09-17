@@ -43,8 +43,6 @@ import {
   type DeployTriggerEvent,
 } from './deployment-trigger-store.js';
 import type { ReleaseDigestRunner } from '../release-digest.js';
-import { getDb } from '../db.js';
-import { shouldSkipAutopilotDuplicateTrigger } from '../autopilot/deploy-ownership.js';
 
 type CheckoutResult = { worktreePath: string; resolvedRef: string };
 
@@ -112,8 +110,8 @@ export interface DeployTriggerHookDeps {
   /** Test seam — defaults to {@link defaultIsEnvironmentDeployable}. */
   isEnvironmentDeployable?: typeof defaultIsEnvironmentDeployable;
   /**
-   * Skip push/schedule deploys for an Autopilot-owned experiment target.
-   * Defaults to {@link shouldSkipAutopilotDuplicateTrigger} against the Hub DB.
+   * Skip push/schedule deploys for a caller-owned target.
+   * Tests inject this; production leaves it unset (never skip).
    */
   skipOwnedTarget?: (projectId: string, environment: string, ref?: string) => boolean;
   /** Orchestrator overrides (runner backend, clock, env, …) for tests. */
@@ -240,20 +238,7 @@ async function runTriggeredDeployments(
       continue;
     }
 
-    const skipOwned =
-      deps.skipOwnedTarget ??
-      ((projectId: string, environment: string, ref?: string) => {
-        try {
-          return shouldSkipAutopilotDuplicateTrigger({
-            projectId,
-            environment,
-            ref,
-            db: getDb(),
-          }).skip;
-        } catch {
-          return false;
-        }
-      });
+    const skipOwned = deps.skipOwnedTarget ?? (() => false);
 
     const declared = [...config.environments.keys()];
     // The config checkout is reused by the first environment that actually
@@ -270,7 +255,7 @@ async function runTriggeredDeployments(
 
       if (skipOwned(project.id, env, branch)) {
         log(
-          `[deploy-trigger] ${project.id} ${event}/${branch}: env "${env}" owned by Autopilot — skipped`,
+          `[deploy-trigger] ${project.id} ${event}/${branch}: env "${env}" owned target — skipped`,
         );
         continue;
       }

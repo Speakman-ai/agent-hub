@@ -67,7 +67,7 @@ import {
 import { createFinalizeStepLogStore } from '../finalize/finalize-log-store.js';
 import { parseFlakeGate } from '../finalize/flake-recovery.js';
 import {
-  hasPushedFinalizeRun,
+  sessionIsLockedAfterFinalizePush,
   POST_FINALIZE_PUSH_LOCK_ERROR,
   POST_FINALIZE_PUSH_LOCK_MESSAGE,
 } from '../finalize/post-push-session-lock.js';
@@ -359,7 +359,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       if (sessionBlocksFinalize(project, session)) {
         return res.status(400).json(CONSULT_FINALIZE_BLOCKED_BODY);
       }
-      if (hasPushedFinalizeRun(stmts, session.id)) {
+      if (sessionIsLockedAfterFinalizePush(stmts, session)) {
         return res.status(409).json({
           error: POST_FINALIZE_PUSH_LOCK_ERROR,
           message: POST_FINALIZE_PUSH_LOCK_MESSAGE,
@@ -411,7 +411,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       if (sessionBlocksFinalize(project, session)) {
         return res.status(400).json(CONSULT_FINALIZE_BLOCKED_BODY);
       }
-      if (hasPushedFinalizeRun(stmts, session.id)) {
+      if (sessionIsLockedAfterFinalizePush(stmts, session)) {
         return res.status(409).json({
           error: POST_FINALIZE_PUSH_LOCK_ERROR,
           message: POST_FINALIZE_PUSH_LOCK_MESSAGE,

@@ -7,6 +7,7 @@ import {
   MessageCircle,
   Network,
   Palette,
+  Rocket,
   Sparkles,
   type LucideIcon,
 } from 'lucide-react';
@@ -18,6 +19,7 @@ export const SESSION_CONTROL_ICON_MAP: Record<string, LucideIcon> = {
   scoping: Network,
   'skill-builder': Sparkles,
   isolated: Box,
+  autopilot: Rocket,
   manual: Hammer,
   review: FlaskConical,
   push: CloudUpload,

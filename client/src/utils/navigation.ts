@@ -25,10 +25,9 @@ const PROJECT_SCOPED_VIEWS = new Set([
   'deployments',
   'replays',
   'security',
-  'autopilot',
 ]);
 
-const REMOVED_GLOBAL_VIEWS = new Set(['sheets', 'drive']);
+const REMOVED_GLOBAL_VIEWS = new Set(['sheets', 'drive', 'autopilot']);
 
 export type NavigationState = {
   view: string;
