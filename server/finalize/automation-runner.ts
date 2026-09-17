@@ -25,7 +25,10 @@ import { runFinalizePush } from './push-run.js';
 import { acquirePushLock, type PushLockStmts } from './push-lock.js';
 import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
 import { startFinalizeRunBackground } from './trigger-run.js';
-import { sessionIsLockedAfterFinalizePush } from './post-push-session-lock.js';
+import {
+  sessionAllowsRepeatFinalizePush,
+  sessionIsLockedAfterFinalizePush,
+} from './post-push-session-lock.js';
 import {
   resolveSessionFinalizeAutomation,
   shouldAutoPushAfterReady,
@@ -287,7 +290,11 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
     void maybeAutoPushReadyFinalizeRun({ sessionId, runId: latest.id });
     return;
   }
-  if (latest?.status === 'pushed') return;
+  // Normal sessions Finalize once. Autopilot must start a new run after each
+  // follow-up commit — the post-push lock is already skipped for that mode, and
+  // getSessionCommittableChanges above requires unpushed commits. Same-HEAD
+  // kickoff still reuses the finished run (agent_block idempotency).
+  if (latest?.status === 'pushed' && !sessionAllowsRepeatFinalizePush(ctx.session)) return;
 
   const started = await startFinalizeRunBackground(routeDeps, {
     project: ctx.project,
