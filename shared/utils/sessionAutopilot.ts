@@ -220,6 +220,11 @@ export function autopilotConfigFromSession(
   );
 }
 
+export function formatAutopilotPrCommittedLabel(count: number): string {
+  const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+  return n === 1 ? '1 PR committed' : `${n} PRs committed`;
+}
+
 export function needsAutopilotSetup(
   session:
     | { session_mode?: string | null; autopilot?: unknown; autopilot_session_config?: unknown }

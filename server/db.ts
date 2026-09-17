@@ -6803,6 +6803,12 @@ function initDb(dataDir: string): void {
         ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
         LIMIT 1`,
     ),
+    countPushedFinalizeRunsForSession: db.prepare(
+      `SELECT COUNT(*) AS c
+         FROM finalize_runs
+        WHERE session_id = ?
+          AND status = 'pushed'`,
+    ),
     // Post-Finalize-push lock for the native-PR auto-review path. Given a
     // native PR URL AND the branch's current head sha, find a pushed Finalize
     // run that shipped *this exact head*. The pushed sha is recorded as

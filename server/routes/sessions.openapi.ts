@@ -67,6 +67,10 @@ export const SessionComponent = registerComponent(
         description:
           'Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `autopilot` (named-branch implement/push/preview-verify loop; never auto-merges), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`.',
       }),
+      finalize_pushed_count: z.number().int().optional().openapi({
+        description:
+          'Number of Finalize runs for this session that reached status `pushed` (a PR was opened or updated). Autopilot sessions show this as a committed-PR counter instead of the Finalize button.',
+      }),
       reasoning_effort: z.enum(['high', 'pro']).nullable().optional().openapi({
         description:
           'Codex reasoning ("thinking") preset: `high` (default) or `pro` (→ xhigh). NULL/absent on legacy rows and non-Codex sessions; treated as `high`.',

@@ -8,6 +8,7 @@ import {
   autopilotDeadlineReached,
   buildAutopilotKickoffMessage,
   buildAutopilotVerifyContinueMessage,
+  formatAutopilotPrCommittedLabel,
 } from './sessionAutopilot';
 
 const valid = {
@@ -84,6 +85,13 @@ describe('parseAutopilotSessionConfig / needsAutopilotSetup', () => {
     );
     expect(cfg?.status).toBe('running');
     expect(cfg?.cycle).toBe(2);
+  });
+
+  it('formats the Autopilot committed-PR counter', () => {
+    expect(formatAutopilotPrCommittedLabel(0)).toBe('0 PRs committed');
+    expect(formatAutopilotPrCommittedLabel(1)).toBe('1 PR committed');
+    expect(formatAutopilotPrCommittedLabel(2)).toBe('2 PRs committed');
+    expect(formatAutopilotPrCommittedLabel(-1)).toBe('0 PRs committed');
   });
 
   it('needs setup when mode is autopilot and nothing has started', () => {

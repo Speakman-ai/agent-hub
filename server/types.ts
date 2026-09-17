@@ -2786,6 +2786,8 @@ export interface Stmts {
    */
   getLatestFinalizeRunForSession: Stmt;
   getPushedFinalizeRunForSession: Stmt;
+  /** Count of `finalize_runs` for a session with status `pushed`. */
+  countPushedFinalizeRunsForSession: Stmt;
   /**
    * Pushed `finalize_runs` row that shipped a given native PR (project_id +
    * pr_url) at a specific head sha (matched against validated_head_sha, or

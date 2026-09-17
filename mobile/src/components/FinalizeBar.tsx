@@ -30,6 +30,8 @@ import {
 import { sessionControlAppIcon } from '../utils/sessionControlIcons';
 import { deriveFinalizeButton, canPush, isFullyValidated } from '../utils/finalizeView';
 import { describeRunPhase } from '../utils/finalizeRun';
+import { formatAutopilotPrCommittedLabel } from '@shared/utils/sessionAutopilot';
+import { useApp } from '../context/AppContext';
 const PURPLE = '#7C3AED';
 
 function resolveSessionModeFromRow(session: any) {
@@ -72,6 +74,8 @@ export default function FinalizeBar({
   const [busy, setBusy] = useState(false); // finalize/cancel in flight (optimistic)
   const [pushing, setPushing] = useState(false);
   const [mode, setMode] = useState(() => resolveSessionModeFromRow(session));
+  const { lastFinalizeRunEvent } = useApp();
+  const [prCount, setPrCount] = useState(() => Number(session?.finalize_pushed_count) || 0);
   // Re-sync the dropdown from the session whenever the session changes (the bar
   // is reused across sessions) or these fields change (e.g. session arrived
   // null and loaded later, or another surface updated the mode). Without this,
@@ -88,6 +92,24 @@ export default function FinalizeBar({
     // an in-flight optimistic selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, session?.finalize_automation, session?.ask_mode, session?.session_mode]);
+  useEffect(() => {
+    const next = Number(session?.finalize_pushed_count);
+    if (Number.isFinite(next) && next >= 0) setPrCount(Math.floor(next));
+  }, [sessionId, session?.finalize_pushed_count]);
+  useEffect(() => {
+    if (!sessionId) return;
+    if (lastFinalizeRunEvent?.sessionId !== sessionId) return;
+    if (lastFinalizeRunEvent?.status !== 'pushed') return;
+    api
+      .getSession(sessionId)
+      .then((row: { finalize_pushed_count?: unknown }) => {
+        const next = Number(row?.finalize_pushed_count);
+        if (Number.isFinite(next) && next >= 0) setPrCount(Math.floor(next));
+      })
+      .catch(() => {
+        /* keep last known count */
+      });
+  }, [sessionId, lastFinalizeRunEvent]);
   // Worktree-backed (dev) OR workflow/no-code project (data-dir design store).
   // Server `can_design_mode` covers the worktree arm; OR in the workflow arm
   // here (the bar has `project`) so stale broadcast rows still enable Design.
@@ -252,7 +274,16 @@ export default function FinalizeBar({
               <AppIcon name="chevron-down" size={12} color={colors.gray400} />
             </TouchableOpacity>
 
-            {!workflowProject && !consultActive ? (
+            {!workflowProject && !consultActive && mode === 'autopilot' ? (
+              <View
+                style={styles.prCounter}
+                testID="autopilot-pr-counter"
+                accessibilityLabel={formatAutopilotPrCommittedLabel(prCount)}
+              >
+                <AppIcon name="git-pull-request-outline" size={12} color={colors.emerald300} />
+                <Text style={styles.prCounterText}>{formatAutopilotPrCommittedLabel(prCount)}</Text>
+              </View>
+            ) : !workflowProject && !consultActive ? (
               <>
                 {/* Finalize / Stop */}
                 <TouchableOpacity
@@ -304,9 +335,11 @@ export default function FinalizeBar({
       </ScrollView>
 
       {/* Live status line while a run is active */}
-      {showFinalize && !workflowProject && !consultActive && btn.inFlight && (
-        <Text style={styles.statusLine}>{describeRunPhase(status, phase)}…</Text>
-      )}
+      {showFinalize &&
+        !workflowProject &&
+        !consultActive &&
+        mode !== 'autopilot' &&
+        btn.inFlight && <Text style={styles.statusLine}>{describeRunPhase(status, phase)}…</Text>}
 
       <SessionSummarySheet
         visible={showSummary}
@@ -457,6 +490,22 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     flexShrink: 1,
+  },
+  prCounter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.emerald700 || 'rgba(4,120,87,0.6)',
+    backgroundColor: 'rgba(6,78,59,0.4)',
+  },
+  prCounterText: {
+    color: colors.emerald300 || '#6ee7b7',
+    fontSize: 10,
+    fontWeight: '600',
   },
   btnDisabled: {
     opacity: 0.45,

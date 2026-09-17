@@ -39,6 +39,9 @@ function makeStmts(): { db: Database.Database; stmts: Stmts } {
     getLatestReviewRunForSession: db.prepare(
       "SELECT * FROM finalize_runs WHERE session_id = ? AND mode IN ('full','review') ORDER BY created_at DESC LIMIT 1",
     ),
+    countPushedFinalizeRunsForSession: db.prepare(
+      "SELECT COUNT(*) AS c FROM finalize_runs WHERE session_id = ? AND status = 'pushed'",
+    ),
     updateSessionState: db.prepare('UPDATE sessions SET state = ? WHERE id = ?'),
   } as unknown as Stmts;
   return { db, stmts };
@@ -143,10 +146,26 @@ describe('session-state DB integration', () => {
     expect(wire.finalize_status).toBe('pushed');
   });
 
+  it('enrichSessionForClient counts pushed Finalize runs', () => {
+    db.prepare(
+      'INSERT INTO finalize_runs (id, session_id, status, mode, created_at) VALUES (?,?,?,?,?)',
+    ).run('r1', 's1', 'pushed', 'full', 1);
+    db.prepare(
+      'INSERT INTO finalize_runs (id, session_id, status, mode, created_at) VALUES (?,?,?,?,?)',
+    ).run('r2', 's1', 'failed', 'full', 2);
+    db.prepare(
+      'INSERT INTO finalize_runs (id, session_id, status, mode, created_at) VALUES (?,?,?,?,?)',
+    ).run('r3', 's1', 'pushed', 'full', 3);
+    const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get('s1') as never;
+    const wire = enrichSessionForClient(row, stmts);
+    expect(wire.finalize_pushed_count).toBe(2);
+  });
+
   it('enrichSessionForClient falls back to the persisted column without stmts', () => {
     const row = { id: 's1', engine: 'claude-code', state: 'reviewing' } as never;
     const wire = enrichSessionForClient(row);
     expect(wire.state).toBe('reviewing');
+    expect(wire.finalize_pushed_count).toBe(0);
   });
 
   it('enrichSessionForClient defaults to waiting when no stmts and no stored state', () => {

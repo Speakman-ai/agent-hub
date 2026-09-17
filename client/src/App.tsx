@@ -59,6 +59,7 @@ import {
 } from './utils/sessionPreviewState';
 import { resolveSessionRightPaneFlags } from './utils/sessionRightPaneFlags';
 import FinalizeButton from './components/finalize/FinalizeButton';
+import AutopilotPrCounter from './components/finalize/AutopilotPrCounter';
 import FinalizeAutomationSelect from './components/finalize/FinalizeAutomationSelect';
 import FinalizeChecksLiveBlock from './components/finalize/FinalizeChecksLiveBlock';
 import ResolveSessionPrBanner from './components/ResolveSessionPrBanner';
@@ -7869,18 +7870,27 @@ export default function App({ initialView }: any = {}) {
                                   onControlChange={handleSessionControlChange}
                                   onError={(msg: any) => showToast(msg, 'error', 8000)}
                                 />
-                                {!chatProjectIsWorkflow && !sessionConsultActive && (
-                                  <FinalizeButton
-                                    projectId={activeChatProject.id}
-                                    cardId={activeSession?.card_id ?? null}
-                                    sessionId={activeSessionId}
-                                    branchLabel={activeSession?.worktree_branch || ''}
-                                    pendingChanges={changesReady[activeSessionId] ?? null}
-                                    onError={(msg: any) => showToast(msg, 'error', 8000)}
-                                    hosted={activeChatProject?.gitHost === 'agenthub'}
-                                    isResolveSession={isResolvePrSessionTitle(activeSession?.name)}
-                                  />
-                                )}
+                                {!chatProjectIsWorkflow &&
+                                  !sessionConsultActive &&
+                                  (activeSession?.session_mode === 'autopilot' ? (
+                                    <AutopilotPrCounter
+                                      sessionId={activeSessionId}
+                                      count={activeSession?.finalize_pushed_count ?? 0}
+                                    />
+                                  ) : (
+                                    <FinalizeButton
+                                      projectId={activeChatProject.id}
+                                      cardId={activeSession?.card_id ?? null}
+                                      sessionId={activeSessionId}
+                                      branchLabel={activeSession?.worktree_branch || ''}
+                                      pendingChanges={changesReady[activeSessionId] ?? null}
+                                      onError={(msg: any) => showToast(msg, 'error', 8000)}
+                                      hosted={activeChatProject?.gitHost === 'agenthub'}
+                                      isResolveSession={isResolvePrSessionTitle(
+                                        activeSession?.name,
+                                      )}
+                                    />
+                                  ))}
                               </>
                             ) : null}
                           </div>
