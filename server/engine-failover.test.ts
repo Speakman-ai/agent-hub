@@ -6,6 +6,9 @@ import {
   planEngineFailover,
   buildEngineFailoverNotice,
   buildNoFailoverEngineNotice,
+  parseUsageResetAtMs,
+  cleanUsageErrorText,
+  formatUsageResetHint,
   ENGINE_FAILOVER_CHAINS,
   FAILOVER_ELIGIBLE_ENGINES,
 } from './engine-failover.js';
@@ -312,5 +315,80 @@ describe('notices', () => {
     expect(notice).toContain('Grok');
     expect(notice).toContain('Cursor Agent');
     expect(notice).not.toContain('Gemini');
+  });
+});
+
+describe('subscription usage-limit reset parsing', () => {
+  it('parses the `|<epoch-seconds>` reset marker Claude emits into ms', () => {
+    expect(parseUsageResetAtMs('Claude AI usage limit reached|1751500000')).toBe(1751500000_000);
+  });
+
+  it('treats a 13-digit marker as already-milliseconds', () => {
+    expect(parseUsageResetAtMs('usage limit reached|1751500000000')).toBe(1751500000000);
+  });
+
+  it('returns null when there is no marker or it is junk', () => {
+    expect(parseUsageResetAtMs('Claude AI usage limit reached')).toBeNull();
+    expect(parseUsageResetAtMs('boom|notanumber')).toBeNull();
+    expect(parseUsageResetAtMs('')).toBeNull();
+    expect(parseUsageResetAtMs(null)).toBeNull();
+  });
+
+  it('strips the epoch marker from display text but leaves other errors alone', () => {
+    expect(cleanUsageErrorText('Claude AI usage limit reached|1751500000')).toBe(
+      'Claude AI usage limit reached',
+    );
+    expect(cleanUsageErrorText('API Error: socket closed')).toBe('API Error: socket closed');
+  });
+
+  it('formats a coarse, timezone-independent reset hint', () => {
+    const now = 1751500000_000;
+    expect(formatUsageResetHint(now + 2 * 3600_000 + 10 * 60_000, now)).toBe(
+      'resets in about 2h 10m',
+    );
+    expect(formatUsageResetHint(now + 45 * 60_000, now)).toBe('resets in about 45m');
+    expect(formatUsageResetHint(now + 26 * 3600_000, now)).toBe('resets in about 1d 2h');
+    expect(formatUsageResetHint(now - 5000, now)).toContain('may already have reset');
+    expect(formatUsageResetHint(null, now)).toBeNull();
+  });
+});
+
+describe('subscription-limit notices are humanized', () => {
+  const RAW = 'Claude AI usage limit reached|1751500000';
+  const now = 1751500000_000 - 3 * 3600_000; // 3h before the reset epoch
+
+  it('failover notice hides the raw epoch and shows when the limit resets', () => {
+    const notice = buildEngineFailoverNotice({
+      trigger: 'usage-exhausted',
+      fromEngine: 'claude-code',
+      toEngine: 'codex-cli',
+      errorText: RAW,
+      nowMs: now,
+    });
+    expect(notice).toContain('Claude AI usage limit reached');
+    expect(notice).not.toContain('1751500000');
+    expect(notice).toContain('resets in about 3h');
+  });
+
+  it('does not add a reset hint for non-usage triggers', () => {
+    const notice = buildEngineFailoverNotice({
+      trigger: 'engine-auth',
+      fromEngine: 'claude-code',
+      toEngine: 'codex-cli',
+      errorText: 'unauthorized',
+      nowMs: now,
+    });
+    expect(notice).not.toContain('resets in about');
+  });
+
+  it('no-fallback notice leads with the reset window when the account is fully out', () => {
+    const notice = buildNoFailoverEngineNotice(
+      'usage-exhausted',
+      'claude-code',
+      availability({ 'claude-code': true }),
+      { errorText: RAW, nowMs: now },
+    );
+    expect(notice).toContain('Claude Code usage resets in about 3h');
+    expect(notice).not.toContain('1751500000');
   });
 });

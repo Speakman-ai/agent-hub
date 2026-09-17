@@ -173,6 +173,68 @@ export function classifyEngineFailure(errorText: string | null | undefined): Eng
   return 'unknown';
 }
 
+/**
+ * Subscription / usage-limit errors from Claude Code arrive as
+ * `Claude AI usage limit reached|<epoch>` — a human phrase, a pipe, and the
+ * Unix time the plan window reopens. Nothing downstream parsed that marker, so
+ * the raw `|1751500000` leaked verbatim into the transcript notice. These
+ * helpers turn it into "resets in about 2h" and strip the ugly tail before it
+ * is shown.
+ */
+const USAGE_RESET_MARKER = /\|\s*(\d{9,13})\s*$/;
+
+/**
+ * Parse the reset epoch (ms) a usage-limit error carries, if any. Accepts the
+ * `|<epoch>` tail Claude emits; interprets a value below 1e12 as seconds
+ * (Claude's shape) and anything larger as already-milliseconds. Returns `null`
+ * when there is no marker or it is unparseable. Pure — never throws.
+ */
+export function parseUsageResetAtMs(errorText: string | null | undefined): number | null {
+  const text = typeof errorText === 'string' ? errorText.trim() : '';
+  if (!text) return null;
+  const match = USAGE_RESET_MARKER.exec(text);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value < 1e12 ? value * 1000 : value;
+}
+
+/**
+ * Strip the `|<epoch>` reset marker from a usage-limit error so the quoted
+ * block reads `Claude AI usage limit reached` instead of trailing a raw epoch.
+ * Leaves every other error text untouched. Pure.
+ */
+export function cleanUsageErrorText(errorText: string | null | undefined): string {
+  const text = typeof errorText === 'string' ? errorText.trim() : '';
+  if (!text) return '';
+  return text.replace(USAGE_RESET_MARKER, '').trim();
+}
+
+/**
+ * Human-readable "when does the plan window reopen" hint from a reset epoch.
+ * Relative (timezone-independent, so it reads the same for every user) and
+ * deliberately coarse — the provider windows are hourly/daily/weekly, so
+ * minute precision would imply a false exactness. Returns `null` when there is
+ * nothing useful to say. Pure: the caller supplies `nowMs`.
+ */
+export function formatUsageResetHint(
+  resetAtMs: number | null | undefined,
+  nowMs: number,
+): string | null {
+  if (typeof resetAtMs !== 'number' || !Number.isFinite(resetAtMs) || resetAtMs <= 0) return null;
+  const deltaMs = resetAtMs - nowMs;
+  if (deltaMs <= 60_000) return 'the limit window may already have reset — retrying may work now';
+  const totalMinutes = Math.round(deltaMs / 60_000);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  let span: string;
+  if (days >= 1) span = hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  else if (hours >= 1) span = minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  else span = `${minutes}m`;
+  return `resets in about ${span}`;
+}
+
 /** Why a failover fired — carried into the user-facing notice. */
 export type FailoverTrigger = 'usage-exhausted' | 'engine-auth' | 'transient-exhausted';
 
@@ -289,6 +351,8 @@ export interface EngineFailoverNoticeInput {
   toEngine: string;
   toModel?: string | null;
   errorText: string;
+  /** Clock for the reset hint; defaults to `Date.now()`. Injectable for tests. */
+  nowMs?: number;
 }
 
 function modelSuffix(model: string | null | undefined): string {
@@ -303,10 +367,16 @@ function modelSuffix(model: string | null | undefined): string {
  * letting a different model silently answer.
  */
 export function buildEngineFailoverNotice(input: EngineFailoverNoticeInput): string {
+  const cleaned = cleanUsageErrorText(input.errorText) || input.errorText.trim();
+  const resetHint =
+    input.trigger === 'usage-exhausted'
+      ? formatUsageResetHint(parseUsageResetAtMs(input.errorText), input.nowMs ?? Date.now())
+      : null;
+  const quote = resetHint ? `${cleaned.slice(0, 460)} (${resetHint})` : cleaned.slice(0, 500);
   return (
     `**Switched to ${engineLabel(input.toEngine)}${modelSuffix(input.toModel)}** — ` +
     `${engineLabel(input.fromEngine)}${modelSuffix(input.fromModel)} ${triggerPhrase(input.trigger)}.\n\n` +
-    `> ${input.errorText.trim().slice(0, 500)}\n\n` +
+    `> ${quote}\n\n` +
     `Continuing automatically on ${engineLabel(input.toEngine)}. It starts a fresh CLI ` +
     `conversation, so it does not inherit the previous engine's internal context — the ` +
     `transcript above is the shared record. Switch back from the engine picker once ` +
@@ -322,15 +392,24 @@ export function buildNoFailoverEngineNotice(
   trigger: FailoverTrigger,
   fromEngine: string,
   availability: Record<SupportedEngine, EngineAvailability>,
+  opts?: { errorText?: string; nowMs?: number },
 ): string {
   const chain = failoverChainFor(fromEngine).filter((e) => e !== fromEngine);
   const lines = chain.map(
     (e) => `  • ${engineLabel(e)}: ${availability[e]?.detail ?? 'unavailable'}`,
   );
+  // For a subscription/usage limit specifically, lead with when the plan window
+  // reopens (if the provider told us) — that is the answer the user actually
+  // wants, not "add another engine". Falls back cleanly when no reset is known.
+  const resetHint =
+    trigger === 'usage-exhausted'
+      ? formatUsageResetHint(parseUsageResetAtMs(opts?.errorText), opts?.nowMs ?? Date.now())
+      : null;
+  const resetLine = resetHint ? `Your ${engineLabel(fromEngine)} usage ${resetHint}. ` : '';
   return (
     `**${engineLabel(fromEngine)} ${triggerPhrase(trigger)} and no fallback engine is available.**\n\n` +
     `Tried, in order:\n${lines.join('\n')}\n\n` +
-    `Add credentials for one of these under Account settings to keep runs going when ` +
+    `${resetLine}Add credentials for one of these under Account settings to keep runs going when ` +
     `${engineLabel(fromEngine)} is out.`
   );
 }

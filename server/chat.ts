@@ -2405,7 +2405,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (plan.reason === 'no-engine-available' && plan.trigger) {
           persistCloseCardGateSystemMessage(
             sessionId,
-            buildNoFailoverEngineNotice(plan.trigger, currentEngine, availability),
+            buildNoFailoverEngineNotice(plan.trigger, currentEngine, availability, { errorText }),
             { kind: 'engine_failover_unavailable', trigger: plan.trigger, from: currentEngine },
           );
         }
