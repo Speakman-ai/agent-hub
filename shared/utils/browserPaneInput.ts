@@ -8,6 +8,9 @@
 
 export type BrowserPaneStatus = 'connecting' | 'waiting' | 'live' | 'closed' | 'error';
 
+/** Which Chromium the live pane is mirroring. */
+export type BrowserPaneSurface = 'web' | 'preview';
+
 export interface BrowserPaneFrame {
   data: string;
   width: number;
@@ -146,6 +149,20 @@ export function browserPaneStatusLabel(status: BrowserPaneStatus): string {
     }
   }
 }
+
+export function parseBrowserPaneSurface(raw: unknown): BrowserPaneSurface | null {
+  return raw === 'preview' || raw === 'web' ? raw : null;
+}
+
+/** Badge copy for the live surface; hidden while waiting. */
+export function browserPaneSurfaceBadge(surface: BrowserPaneSurface | null): string | null {
+  if (surface === 'preview') return 'preview';
+  if (surface === 'web') return 'public web';
+  return null;
+}
+
+export const BROWSER_PANE_WAITING_HINT =
+  'The pane goes live the moment the agent runs a browser or preview action.';
 
 /** Normalise a URL-bar submission the way a browser would (bare host → https). */
 export function normalizeUrlBarInput(raw: string): string | null {

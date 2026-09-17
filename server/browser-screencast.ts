@@ -1,30 +1,32 @@
 /**
- * browser-screencast.ts — Live mirror of a session's public-web Chromium.
+ * browser-screencast.ts — Live mirror of a session's agent-driven Chromium.
  *
- * The agent's `browser` tool drives a headless Playwright Chromium that humans
- * could previously only observe through per-action stills. This module turns
- * that Chromium into a live feed via CDP `Page.startScreencast`, and lets a
- * human viewer act on it (mouse, keyboard, URL bar).
+ * The agent's `browser` / `preview` tools drive headless Playwright Chromiums
+ * that humans could previously only observe through per-action stills. This
+ * module turns the active one into a live feed via CDP `Page.startScreencast`,
+ * and lets a human viewer act on it (mouse, keyboard, URL bar).
  *
  * Design:
- *   • One {@link ScreencastFeed} per browser-session id, created on the first
+ *   • One {@link ScreencastFeed} per browser-registry id, created on the first
  *     viewer and torn down when the last viewer detaches. Frames are fanned out
  *     to every viewer; a late viewer receives the last frame immediately.
- *   • A viewer can attach before the agent has opened a browser. The feed
- *     reports `waiting` and hooks the registry's lifecycle stream so it goes
- *     `live` the moment the session launches, and `closed` when it goes away.
+ *   • The Agent browser pane attaches with the **chat** session id. A per-chat
+ *     {@link ChatScreencastRouter} follows whichever Chromium the agent is
+ *     driving — public-web (`<chatId>`) or the origin-pinned preview drive
+ *     (`preview:<chatId>`) — so preview verify is live in the pane, not only
+ *     as stills in the transcript. The iframe preview pane stays a separate
+ *     human-owned view of the app.
+ *   • A viewer can attach before the agent has opened a browser. The router
+ *     reports `waiting` and hooks registry + in-flight-op streams so it goes
+ *     `live` the moment either surface launches, and `closed` when it goes away.
  *   • While at least one viewer is attached, the browser's idle auto-close is
  *     deferred (the same pairing an in-flight agent op uses), so a pane the
  *     human is watching never disappears under them. Closing the pane releases
  *     the hold.
  *   • Human input is refused while an agent step is in flight
  *     (`agent_busy`) — single-writer turn-taking, mirroring the shared
- *     terminal. Human navigation goes through the same URL policy as the
- *     agent's `navigate` op, so the pane cannot reach targets the agent cannot.
- *
- * This feed only ever binds to the generic `browser` session (public web). The
- * preview-drive Chromium (`preview:<sessionId>`) is intentionally not
- * screencast — the preview pane is the human's own iframe of that app.
+ *     terminal. Human navigation uses the same URL policy as that surface's
+ *     agent `navigate` (public-web egress rules, or the preview origin pin).
  */
 
 import {
@@ -34,10 +36,18 @@ import {
   incrementBrowserToolOpEntered,
   notifyBrowserToolOpEnded,
   subscribeBrowserSessionLifecycle,
+  subscribeBrowserToolOpActivity,
   type BrowserSession,
 } from './browser.js';
 import { browserNavigate, getActivePage, type HubPage } from './browser-tools.js';
 import type { CdpSessionLike } from './browser-context-fetch-guard.js';
+import { PREVIEW_OFF_ORIGIN_HINT } from './browser-navigation-url.js';
+import {
+  browserScreencastSurfaceOf,
+  previewBrowserRegistryId,
+  resolveChatBrowserScreencastTarget,
+  type BrowserScreencastSurface,
+} from './browser-screencast-target.js';
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -55,6 +65,8 @@ export interface ScreencastState {
   url: string | null;
   /** Chromium viewport (CSS px) when live. Input coordinates are in this space. */
   viewport: { width: number; height: number } | null;
+  /** Which Chromium this state describes; null while waiting for either. */
+  surface: BrowserScreencastSurface | null;
 }
 
 export interface ScreencastFrame {
@@ -251,10 +263,12 @@ class ScreencastFeed {
 
   currentState(): ScreencastState {
     const page = this.session ? pageOf(this.session) : null;
+    const live = this.status === 'live';
     return {
       status: this.status,
-      url: this.status === 'live' ? safeUrl(page) : null,
-      viewport: this.status === 'live' ? viewportOf(page) : null,
+      url: live ? safeUrl(page) : null,
+      viewport: live ? viewportOf(page) : null,
+      surface: live ? browserScreencastSurfaceOf(this.browserSessionId) : null,
     };
   }
 
@@ -495,15 +509,23 @@ class ScreencastFeed {
 }
 
 const feeds = new Map<string, ScreencastFeed>();
+const routers = new Map<string, ChatScreencastRouter>();
 
-/**
- * Attach a viewer to the live feed of `browserSessionId` (the chat session id
- * for the generic `browser` tool). Returns the detach function.
- */
-export function attachBrowserScreencastViewer(
-  browserSessionId: string,
-  viewer: ScreencastViewer,
-): () => void {
+const WAITING_STATE: ScreencastState = {
+  status: 'waiting',
+  url: null,
+  viewport: null,
+  surface: null,
+};
+
+const CLOSED_STATE: ScreencastState = {
+  status: 'closed',
+  url: null,
+  viewport: null,
+  surface: null,
+};
+
+function attachFeedViewer(browserSessionId: string, viewer: ScreencastViewer): () => void {
   let feed = feeds.get(browserSessionId);
   if (!feed) {
     feed = new ScreencastFeed(browserSessionId);
@@ -515,15 +537,173 @@ export function attachBrowserScreencastViewer(
   };
 }
 
+function agentOpsInFlight(id: string): number {
+  return Math.max(0, browserToolOpsInFlight(id) - (feeds.get(id)?.holdSlots ?? 0));
+}
+
+function resolveTarget(
+  chatSessionId: string,
+  lastDriven?: BrowserScreencastSurface | null,
+): { targetId: string; surface: BrowserScreencastSurface } | null {
+  return resolveChatBrowserScreencastTarget(chatSessionId, {
+    hasSession: (id) => getBrowserSession(id) != null,
+    agentOpsInFlight,
+    lastDriven,
+  });
+}
+
+function isRegistryIdForChat(chatSessionId: string, registryId: string): boolean {
+  return registryId === chatSessionId || registryId === previewBrowserRegistryId(chatSessionId);
+}
+
+/**
+ * Per-chat viewer set that follows the agent's active Chromium. The pane
+ * attaches with the chat session id; this retargets onto `preview:<id>` when
+ * that drive browser is the one in use.
+ */
+const NOOP_DETACH = (): void => {};
+
+class ChatScreencastRouter {
+  currentTarget: string | null = null;
+  lastDriven: BrowserScreencastSurface | null = null;
+  private readonly viewers = new Map<
+    string,
+    { viewer: ScreencastViewer; detachInner: () => void }
+  >();
+  private readonly unsubLifecycle: () => void;
+  private readonly unsubOps: () => void;
+  private retargeting = false;
+
+  constructor(readonly chatSessionId: string) {
+    this.unsubLifecycle = subscribeBrowserSessionLifecycle((ev) => {
+      if (!isRegistryIdForChat(this.chatSessionId, ev.id)) return;
+      this.retarget();
+    });
+    this.unsubOps = subscribeBrowserToolOpActivity((ev) => {
+      if (!isRegistryIdForChat(this.chatSessionId, ev.id)) return;
+      this.retarget();
+    });
+  }
+
+  addViewer(viewer: ScreencastViewer): () => void {
+    const entry = { viewer, detachInner: NOOP_DETACH };
+    this.viewers.set(viewer.id, entry);
+    this.retarget();
+    if (this.currentTarget && entry.detachInner === NOOP_DETACH) {
+      entry.detachInner = attachFeedViewer(this.currentTarget, viewer);
+    } else if (!this.currentTarget) {
+      viewer.onState(WAITING_STATE);
+    }
+    return () => {
+      const current = this.viewers.get(viewer.id);
+      if (!current) return;
+      current.detachInner();
+      this.viewers.delete(viewer.id);
+      if (this.viewers.size === 0) this.dispose();
+    };
+  }
+
+  currentState(): ScreencastState {
+    if (!this.currentTarget) return WAITING_STATE;
+    const feed = feeds.get(this.currentTarget);
+    if (feed) return feed.currentState();
+    const session = getBrowserSession(this.currentTarget);
+    const page = session ? pageOf(session) : null;
+    return session
+      ? {
+          status: 'live',
+          url: safeUrl(page),
+          viewport: viewportOf(page),
+          surface: browserScreencastSurfaceOf(this.currentTarget),
+        }
+      : WAITING_STATE;
+  }
+
+  private retarget(): void {
+    if (this.retargeting || this.viewers.size === 0) return;
+    this.retargeting = true;
+    try {
+      const next = resolveTarget(this.chatSessionId, this.lastDriven);
+      const nextId = next?.targetId ?? null;
+      if (nextId === this.currentTarget) return;
+      const hadTarget = this.currentTarget != null;
+      for (const entry of this.viewers.values()) {
+        entry.detachInner();
+        entry.detachInner = NOOP_DETACH;
+      }
+      this.currentTarget = nextId;
+      if (next) this.lastDriven = next.surface;
+      if (nextId) {
+        for (const entry of this.viewers.values()) {
+          entry.detachInner = attachFeedViewer(nextId, entry.viewer);
+        }
+        return;
+      }
+      if (hadTarget) {
+        for (const entry of this.viewers.values()) {
+          try {
+            entry.viewer.onState(CLOSED_STATE);
+          } catch {
+            /* viewer gone */
+          }
+        }
+      }
+    } finally {
+      this.retargeting = false;
+    }
+  }
+
+  dispose(): void {
+    routers.delete(this.chatSessionId);
+    this.unsubLifecycle();
+    this.unsubOps();
+    for (const entry of this.viewers.values()) entry.detachInner();
+    this.viewers.clear();
+    this.currentTarget = null;
+  }
+}
+
+/**
+ * Attach a viewer to the live feed for a chat session. Follows the public-web
+ * or preview-drive Chromium depending on which the agent is driving.
+ * Returns the detach function.
+ */
+export function attachBrowserScreencastViewer(
+  chatSessionId: string,
+  viewer: ScreencastViewer,
+): () => void {
+  let router = routers.get(chatSessionId);
+  if (!router) {
+    router = new ChatScreencastRouter(chatSessionId);
+    routers.set(chatSessionId, router);
+  }
+  return router.addViewer(viewer);
+}
+
 /** Current feed state without attaching (for diagnostics / tests). */
-export function getBrowserScreencastState(browserSessionId: string): ScreencastState {
-  const feed = feeds.get(browserSessionId);
+export function getBrowserScreencastState(chatSessionId: string): ScreencastState {
+  const router = routers.get(chatSessionId);
+  if (router) return router.currentState();
+  const resolved = resolveTarget(chatSessionId);
+  const id = resolved?.targetId ?? chatSessionId;
+  const feed = feeds.get(id);
   if (feed) return feed.currentState();
-  const session = getBrowserSession(browserSessionId);
+  const session = getBrowserSession(id);
   const page = session ? pageOf(session) : null;
   return session
-    ? { status: 'live', url: safeUrl(page), viewport: viewportOf(page) }
-    : { status: 'waiting', url: null, viewport: null };
+    ? {
+        status: 'live',
+        url: safeUrl(page),
+        viewport: viewportOf(page),
+        surface: browserScreencastSurfaceOf(id),
+      }
+    : WAITING_STATE;
+}
+
+function resolveViewerRegistryId(chatSessionId: string): string | null {
+  const router = routers.get(chatSessionId);
+  if (router?.currentTarget) return router.currentTarget;
+  return resolveTarget(chatSessionId, router?.lastDriven ?? null)?.targetId ?? null;
 }
 
 // ─── Human input ─────────────────────────────────────────────────
@@ -532,22 +712,23 @@ const AGENT_BUSY_MESSAGE =
   'The agent is driving the browser right now — wait for its step to finish.';
 
 /** True when a real agent step (not the feed's own keepalive hold) is in flight. */
-export function isAgentDrivingBrowser(browserSessionId: string): boolean {
-  const holdSlots = feeds.get(browserSessionId)?.holdSlots ?? 0;
-  return browserToolOpsInFlight(browserSessionId) > holdSlots;
+export function isAgentDrivingBrowser(chatSessionId: string): boolean {
+  const id = resolveViewerRegistryId(chatSessionId) ?? chatSessionId;
+  return agentOpsInFlight(id) > 0;
 }
 
 /** Forward a human viewer's mouse / keyboard input to the agent browser. */
 export async function dispatchBrowserViewerInput(
-  browserSessionId: string,
+  chatSessionId: string,
   input: BrowserViewerInput,
 ): Promise<BrowserViewerInputResult> {
-  const session = getBrowserSession(browserSessionId);
+  const browserSessionId = resolveViewerRegistryId(chatSessionId);
+  const session = browserSessionId ? getBrowserSession(browserSessionId) : undefined;
   const page = session ? pageOf(session) : null;
   if (!session || !page) {
     return { ok: false, code: 'no_browser', message: 'The agent has not opened a browser yet.' };
   }
-  if (isAgentDrivingBrowser(browserSessionId)) {
+  if (isAgentDrivingBrowser(chatSessionId)) {
     return { ok: false, code: 'agent_busy', message: AGENT_BUSY_MESSAGE };
   }
 
@@ -623,29 +804,70 @@ export async function dispatchBrowserViewerInput(
 }
 
 /**
- * Human URL-bar navigation. Runs the exact same policy as the agent's
- * `navigate` op — loopback / private / metadata targets are refused with the
- * same message the agent would see.
+ * Human URL-bar navigation. Public-web uses the same egress policy as the
+ * agent's `navigate` op. Preview-drive stays origin-pinned to the page the
+ * agent already opened (loopback of that preview is allowed; leaving it is
+ * not).
  */
 export async function navigateBrowserViewer(
-  browserSessionId: string,
+  chatSessionId: string,
   url: string,
 ): Promise<BrowserViewerNavigateResult> {
-  const session = getBrowserSession(browserSessionId);
+  const browserSessionId = resolveViewerRegistryId(chatSessionId);
+  const session = browserSessionId ? getBrowserSession(browserSessionId) : undefined;
   if (!session) {
     return { ok: false, code: 'no_browser', message: 'The agent has not opened a browser yet.' };
   }
-  if (isAgentDrivingBrowser(browserSessionId)) {
+  if (isAgentDrivingBrowser(chatSessionId)) {
     return { ok: false, code: 'agent_busy', message: AGENT_BUSY_MESSAGE };
   }
-  const r = await browserNavigate(session, url, session.timeoutMs || DEFAULT_TIMEOUT_MS);
+  const previewOrigins =
+    browserSessionId && browserScreencastSurfaceOf(browserSessionId) === 'preview'
+      ? previewAllowOrigins(session)
+      : undefined;
+  if (browserSessionId && browserScreencastSurfaceOf(browserSessionId) === 'preview') {
+    if (!previewOrigins) {
+      return {
+        ok: false,
+        code: 'refused',
+        message: 'The preview has no page yet — wait for the agent to open one.',
+      };
+    }
+    let destOrigin: string | null = null;
+    try {
+      destOrigin = new URL(url).origin;
+    } catch {
+      destOrigin = null;
+    }
+    if (!destOrigin || !previewOrigins.includes(destOrigin)) {
+      return { ok: false, code: 'refused', message: PREVIEW_OFF_ORIGIN_HINT };
+    }
+  }
+  const r = await browserNavigate(
+    session,
+    url,
+    session.timeoutMs || DEFAULT_TIMEOUT_MS,
+    previewOrigins ? { allowOrigins: previewOrigins } : undefined,
+  );
   if (!r.ok) return { ok: false, code: 'refused', message: r.error ?? 'Navigation failed' };
   const landed = (r.data as { url?: string } | undefined)?.url ?? url;
   return { ok: true, url: landed };
 }
 
+function previewAllowOrigins(session: BrowserSession): string[] | undefined {
+  const href = safeUrl(pageOf(session));
+  if (!href) return undefined;
+  try {
+    return [new URL(href).origin];
+  } catch {
+    return undefined;
+  }
+}
+
 /** Test-only: drop every feed without touching Chromium. */
 export async function __resetBrowserScreencastForTests(): Promise<void> {
+  for (const router of Array.from(routers.values())) router.dispose();
+  routers.clear();
   const all = Array.from(feeds.values());
   feeds.clear();
   await Promise.allSettled(all.map((f) => f.dispose()));

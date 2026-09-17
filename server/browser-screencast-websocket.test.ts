@@ -27,6 +27,7 @@ class FakeFeedHost implements BrowserScreencastFeedHost {
       status: 'live',
       url: 'https://example.com/',
       viewport: { width: 1280, height: 720 },
+      surface: 'web',
     });
     return () => {
       this.detachCount += 1;

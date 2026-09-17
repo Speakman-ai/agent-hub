@@ -2127,9 +2127,9 @@ export default function App({ initialView }: any = {}) {
             });
           }
 
-          // First `browser` action in a session pops the Agent browser pane
-          // open (like the preview does on start). A human who closed it
-          // stays closed — only the undecided state auto-opens.
+          // First `browser` or `preview` action in a session pops the Agent
+          // browser pane open (like the preview iframe does on start). A human
+          // who closed it stays closed — only the undecided state auto-opens.
           if (event?.type === 'browser_tool_activity' && event.phase === 'started') {
             const sid = data.sessionId;
             if (sid && browserPaneOpenBySessionRef.current[sid] === undefined) {
@@ -7794,7 +7794,7 @@ export default function App({ initialView }: any = {}) {
                                   label: 'Agent browser',
                                   icon: Globe,
                                   title:
-                                    "Watch and act in the agent's public-web browser (separate from the dev preview)",
+                                    "Watch the agent live — public web or this session's preview",
                                   pressed: showSessionBrowserPane,
                                   onSelect: () => {
                                     const opening =

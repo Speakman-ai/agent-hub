@@ -14,22 +14,27 @@ import { Globe, RotateCw, X } from 'lucide-react-native';
 import { colors } from '../theme/colors';
 import { getBrowserWsUrl } from '../utils/config';
 import {
+  BROWSER_PANE_WAITING_HINT,
   browserPaneStatusLabel,
+  browserPaneSurfaceBadge,
   fitFrameInBox,
   mapPointerToViewport,
   normalizeUrlBarInput,
+  parseBrowserPaneSurface,
   type BrowserPaneFrame,
   type BrowserPaneStatus,
+  type BrowserPaneSurface,
   type BrowserPaneViewport,
 } from '@shared/utils/browserPaneInput';
 
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 10000];
 
 /**
- * Mobile twin of the web `SessionBrowserPane`: a live JPEG feed of the
- * agent's public-web Chromium over `/api/sessions/:id/browser/ws`, with tap
- * → click, a text field → typed input, and a URL bar. Distinct from any
- * preview surface: this is the agent's internet browser, not the dev app.
+ * Mobile twin of the web `SessionBrowserPane`: a live JPEG feed of whichever
+ * Chromium the agent is driving (public-web or preview) over
+ * `/api/sessions/:id/browser/ws`, with tap → click, a text field → typed
+ * input, and a URL bar. Distinct from the iframe preview: this is the agent's
+ * Playwright session, so you can watch it verify the running app.
  */
 export default function MobileBrowserPane({
   sessionId,
@@ -51,6 +56,7 @@ export default function MobileBrowserPane({
   const [notice, setNotice] = useState('');
   const [frame, setFrame] = useState<BrowserPaneFrame | null>(null);
   const [viewport, setViewport] = useState<BrowserPaneViewport | null>(null);
+  const [surface, setSurface] = useState<BrowserPaneSurface | null>(null);
   const [pageUrl, setPageUrl] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState('');
   const [urlDirty, setUrlDirty] = useState(false);
@@ -90,6 +96,7 @@ export default function MobileBrowserPane({
     setError('');
     setFrame(null);
     setViewport(null);
+    setSurface(null);
     setPageUrl(null);
     setUrlDirty(false);
 
@@ -126,6 +133,7 @@ export default function MobileBrowserPane({
           reconnectAttemptRef.current = 0;
           setStatus(msg.status);
           setViewport(msg.viewport ?? null);
+          setSurface(parseBrowserPaneSurface(msg.surface));
           setPageUrl(msg.url ?? null);
           if (msg.status !== 'live') setFrame(null);
         } else if (msg.type === 'frame') {
@@ -219,13 +227,18 @@ export default function MobileBrowserPane({
   };
 
   const live = status === 'live';
+  const surfaceBadge = browserPaneSurfaceBadge(surface);
 
   return (
     <View style={styles.container} testID="mobile-browser-pane">
       <View style={styles.header}>
         <Globe size={15} color={colors.sky400} />
         <Text style={styles.title}>Agent browser</Text>
-        <Text style={styles.badge}>public web</Text>
+        {surfaceBadge ? (
+          <Text style={styles.badge} testID="mobile-browser-surface">
+            {surfaceBadge}
+          </Text>
+        ) : null}
         <Text style={styles.status} testID="mobile-browser-status">
           {browserPaneStatusLabel(status)}
         </Text>
@@ -249,7 +262,13 @@ export default function MobileBrowserPane({
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="url"
-          placeholder={live ? 'Enter a public URL' : 'No page yet'}
+          placeholder={
+            live
+              ? surface === 'preview'
+                ? 'Enter a preview URL'
+                : 'Enter a public URL'
+              : 'No page yet'
+          }
           placeholderTextColor={colors.gray600}
           accessibilityLabel="Agent browser URL"
           testID="mobile-browser-url"
@@ -293,9 +312,7 @@ export default function MobileBrowserPane({
             <Globe size={22} color={colors.gray700} />
             <Text style={styles.placeholderText}>{browserPaneStatusLabel(status)}</Text>
             {status === 'waiting' ? (
-              <Text style={styles.placeholderHint}>
-                The pane goes live the moment the agent runs a browser action.
-              </Text>
+              <Text style={styles.placeholderHint}>{BROWSER_PANE_WAITING_HINT}</Text>
             ) : null}
           </View>
         )}

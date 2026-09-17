@@ -3,13 +3,17 @@ import type { FormEvent, KeyboardEvent, PointerEvent, WheelEvent } from 'react';
 import { Globe, Loader2, RotateCw, X } from 'lucide-react';
 import { getBrowserWsUrl } from '../utils/connection';
 import {
+  BROWSER_PANE_WAITING_HINT,
   browserPaneStatusLabel,
+  browserPaneSurfaceBadge,
   fitFrameInBox,
   keyInputFromDomEvent,
   mapPointerToViewport,
   normalizeUrlBarInput,
+  parseBrowserPaneSurface,
   type BrowserPaneFrame,
   type BrowserPaneStatus,
+  type BrowserPaneSurface,
   type BrowserPaneViewport,
 } from '@shared/utils/browserPaneInput';
 
@@ -18,17 +22,17 @@ const POINTER_MOVE_MIN_INTERVAL_MS = 40;
 const defaultWebSocketFactory = (url: string) => new WebSocket(url);
 
 /**
- * Live view of the session's **public-web** Chromium — the browser the agent's
- * `browser` ReAct tool drives. Distinct from the preview pane on purpose: the
- * preview is the human's own iframe of the dev app (origin-pinned), this is a
- * screencast of the agent's internet browser. Both can exist for one session;
- * they never share cookies, history, or an input path.
+ * Live view of the Chromium the agent is driving — public-web (`browser` tool)
+ * or the origin-pinned preview drive (`preview` tool). Distinct from the
+ * iframe preview pane: that is the human's own view of the running app; this
+ * is a screencast of the agent's Playwright session so you can watch it
+ * click, screenshot, and verify. The pane follows whichever surface is
+ * in use; they never share cookies, history, or an input path.
  *
  * Input from this pane (click, type, scroll, URL bar) is forwarded to that
  * Chromium over `/api/sessions/:id/browser/ws`. The server refuses it while
- * the agent has a step in flight (`agent_busy`) and applies the same egress
- * policy the agent gets, so a human cannot steer the agent's browser to a
- * target the agent could not reach itself.
+ * the agent has a step in flight (`agent_busy`) and applies the same URL
+ * policy the agent gets on that surface.
  */
 export default function SessionBrowserPane({
   sessionId,
@@ -55,6 +59,7 @@ export default function SessionBrowserPane({
   const [notice, setNotice] = useState('');
   const [frame, setFrame] = useState<BrowserPaneFrame | null>(null);
   const [viewport, setViewport] = useState<BrowserPaneViewport | null>(null);
+  const [surface, setSurface] = useState<BrowserPaneSurface | null>(null);
   const [pageUrl, setPageUrl] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState('');
   const [urlDirty, setUrlDirty] = useState(false);
@@ -108,6 +113,7 @@ export default function SessionBrowserPane({
     setError('');
     setFrame(null);
     setViewport(null);
+    setSurface(null);
     setPageUrl(null);
     setUrlDirty(false);
 
@@ -150,6 +156,7 @@ export default function SessionBrowserPane({
           const s = msg.status as 'waiting' | 'live' | 'closed';
           setStatus(s);
           setViewport(msg.viewport ?? null);
+          setSurface(parseBrowserPaneSurface(msg.surface));
           setPageUrl(msg.url ?? null);
           if (s !== 'live') setFrame(null);
           return;
@@ -305,6 +312,7 @@ export default function SessionBrowserPane({
 
   const live = status === 'live';
   const statusText = browserPaneStatusLabel(status);
+  const surfaceBadge = browserPaneSurfaceBadge(surface);
 
   return (
     <aside
@@ -315,12 +323,19 @@ export default function SessionBrowserPane({
       <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800 bg-gray-900/80">
         <Globe size={15} className="shrink-0 text-sky-400" aria-hidden />
         <span className="text-sm font-semibold text-gray-100">Agent browser</span>
-        <span
-          className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-900/60 text-sky-200 border border-sky-800/70"
-          title="This is the agent's public-internet browser, not the dev preview"
-        >
-          public web
-        </span>
+        {surfaceBadge ? (
+          <span
+            className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-900/60 text-sky-200 border border-sky-800/70"
+            data-testid="session-browser-surface"
+            title={
+              surface === 'preview'
+                ? "This is the agent's preview-drive browser, pinned to the running app"
+                : "This is the agent's public-internet browser, not the iframe preview"
+            }
+          >
+            {surfaceBadge}
+          </span>
+        ) : null}
         <span
           className="flex-1 text-xs text-gray-500 truncate"
           data-testid="session-browser-status"
@@ -371,7 +386,13 @@ export default function SessionBrowserPane({
           onBlur={() => {
             if (urlInput.trim() === (pageUrl ?? '')) setUrlDirty(false);
           }}
-          placeholder={live ? 'Enter a public URL' : 'No page yet'}
+          placeholder={
+            live
+              ? surface === 'preview'
+                ? 'Enter a preview URL'
+                : 'Enter a public URL'
+              : 'No page yet'
+          }
           disabled={!live}
           spellCheck={false}
           className="flex-1 min-w-0 bg-gray-950 border border-gray-800 rounded px-2 py-1 text-xs text-gray-200 font-mono placeholder:text-gray-600 focus:outline-none focus:border-sky-700 disabled:opacity-60"
@@ -435,11 +456,7 @@ export default function SessionBrowserPane({
               <Globe size={22} className="mx-auto text-gray-700" aria-hidden />
             )}
             <p>{statusText}</p>
-            {status === 'waiting' && (
-              <p className="text-gray-600">
-                The pane goes live the moment the agent runs a <code>browser</code> action.
-              </p>
-            )}
+            {status === 'waiting' && <p className="text-gray-600">{BROWSER_PANE_WAITING_HINT}</p>}
             {status === 'live' && !frame && (
               <p className="text-gray-600">Waiting for the first frame…</p>
             )}

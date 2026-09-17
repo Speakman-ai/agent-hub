@@ -2228,7 +2228,7 @@ const terminalWebSocket = attachTerminalWebSocket(server, {
   },
 });
 
-// Live mirror of the session's public-web Chromium (the `browser` ReAct tool)
+// Live mirror of the Chromium the agent is driving (`browser` or `preview`)
 // for the Agent browser pane. Same auth + ownership handshake as the terminal.
 const browserScreencastWebSocket = attachBrowserScreencastWebSocket(server, {
   sessionExists: (sessionId) => {

@@ -240,6 +240,12 @@ export type BrowserSessionLifecycleEvent =
 
 const lifecycleListeners = new Set<(ev: BrowserSessionLifecycleEvent) => void>();
 
+export type BrowserToolOpActivityEvent =
+  | { type: 'entered'; id: string }
+  | { type: 'ended'; id: string };
+
+const opActivityListeners = new Set<(ev: BrowserToolOpActivityEvent) => void>();
+
 /**
  * Observe browser sessions entering / leaving the registry. Used by the live
  * screencast feed so a viewer pane opened before the agent's first `browser`
@@ -253,6 +259,30 @@ export function subscribeBrowserSessionLifecycle(
   return () => {
     lifecycleListeners.delete(listener);
   };
+}
+
+/**
+ * Observe in-flight agent browser/preview ops. The Agent browser pane uses
+ * this to follow whichever Chromium the agent is driving (public-web vs
+ * preview) without waiting for a registry register/close.
+ */
+export function subscribeBrowserToolOpActivity(
+  listener: (ev: BrowserToolOpActivityEvent) => void,
+): () => void {
+  opActivityListeners.add(listener);
+  return () => {
+    opActivityListeners.delete(listener);
+  };
+}
+
+function emitBrowserToolOpActivity(ev: BrowserToolOpActivityEvent): void {
+  for (const l of Array.from(opActivityListeners)) {
+    try {
+      l(ev);
+    } catch (err) {
+      console.warn(`[browser] op-activity listener failed: ${String(err)}`);
+    }
+  }
 }
 
 function emitBrowserSessionLifecycle(ev: BrowserSessionLifecycleEvent): void {
@@ -298,6 +328,7 @@ export function incrementBrowserToolOpEntered(chatSessionId: string): void {
     chatSessionId,
     (activeBrowserToolOpsBySessionId.get(chatSessionId) ?? 0) + 1,
   );
+  emitBrowserToolOpActivity({ type: 'entered', id: chatSessionId });
 }
 
 /** Mark the end of `runBrowserReActStep` and restart the idle countdown from completion. */
@@ -307,6 +338,7 @@ export function notifyBrowserToolOpEnded(chatSessionId: string): void {
   if (n <= 0) activeBrowserToolOpsBySessionId.delete(chatSessionId);
   else activeBrowserToolOpsBySessionId.set(chatSessionId, n);
   bumpBrowserSessionActivity(chatSessionId);
+  emitBrowserToolOpActivity({ type: 'ended', id: chatSessionId });
 }
 
 /**
