@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertCircle, CalendarClock, Loader2, Plus, Power, PowerOff, Trash2 } from 'lucide-react';
 import humanCron from '@shared/utils/humanCron';
+import { listTimezones } from '@shared/utils/timezones';
 import { api } from '../utils/api';
 import CronSchedulePicker from './CronSchedulePicker';
 import {
@@ -34,6 +35,7 @@ export default function EnvironmentSchedulesPanel({
   const [cron, setCron] = useState('0 9 * * *');
   const [timezone, setTimezone] = useState('');
   const [adding, setAdding] = useState(false);
+  const timezones = useMemo(() => listTimezones(), []);
 
   const notify = useCallback(
     (message: string, type: string = 'info') => showToast?.(message, type),
@@ -226,14 +228,19 @@ export default function EnvironmentSchedulesPanel({
           className="w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 font-mono text-xs text-gray-200 placeholder:text-gray-600"
         />
         <CronSchedulePicker value={cron} onChange={setCron} />
-        <input
-          type="text"
+        <select
           value={timezone}
           onChange={(e) => setTimezone(e.target.value)}
-          placeholder="timezone (optional, e.g. America/New_York)"
           aria-label="Timezone"
-          className="w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 font-mono text-xs text-gray-200 placeholder:text-gray-600"
-        />
+          className="w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 font-mono text-xs text-gray-200"
+        >
+          <option value="">Server default timezone</option>
+          {timezones.map((tz) => (
+            <option key={tz} value={tz}>
+              {tz}
+            </option>
+          ))}
+        </select>
         <button
           type="button"
           onClick={addSchedule}

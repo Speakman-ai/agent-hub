@@ -78,6 +78,46 @@ describe('EnvironmentSchedulesPanel', () => {
     expect(showToast).toHaveBeenCalledWith('Schedule added to prod', 'success');
   });
 
+  it('renders the timezone field as a dropdown of IANA zones', async () => {
+    (api.listDeploySchedules as any).mockResolvedValue({ schedules: [] });
+    render(<EnvironmentSchedulesPanel projectId="proj-1" environmentName="prod" />);
+    await waitFor(() => expect(screen.getByText(/No schedules yet/)).toBeTruthy());
+
+    const tz = screen.getByLabelText('Timezone') as HTMLSelectElement;
+    expect(tz.tagName).toBe('SELECT');
+    // Server default is the first (empty) option.
+    expect(tz.value).toBe('');
+    const options = within(tz).getAllByRole('option');
+    expect(options[0].textContent).toBe('Server default timezone');
+    expect(options.some((o) => (o as HTMLOptionElement).value === 'America/New_York')).toBe(true);
+    // Fixed-offset zones the old free-text field accepted remain selectable.
+    expect(options.some((o) => (o as HTMLOptionElement).value === 'Etc/GMT+5')).toBe(true);
+    expect(options.length).toBeGreaterThan(1);
+  });
+
+  it('submits the selected timezone when creating a schedule', async () => {
+    (api.listDeploySchedules as any).mockResolvedValue({ schedules: [] });
+    (api.createDeploySchedule as any).mockResolvedValue({
+      schedule: schedule({ id: 's10', ref: 'main', timezone: 'America/New_York' }),
+    });
+    render(<EnvironmentSchedulesPanel projectId="proj-1" environmentName="prod" />);
+    await waitFor(() => expect(screen.getByText(/No schedules yet/)).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText('Ref'), { target: { value: 'main' } });
+    fireEvent.change(screen.getByLabelText('Timezone'), {
+      target: { value: 'America/New_York' },
+    });
+    fireEvent.click(screen.getByText('Add schedule'));
+
+    await waitFor(() =>
+      expect(api.createDeploySchedule).toHaveBeenCalledWith('proj-1', 'prod', {
+        ref: 'main',
+        cron: '0 9 * * *',
+        timezone: 'America/New_York',
+      }),
+    );
+  });
+
   it('disables the add button for a whitespace-only ref', async () => {
     (api.listDeploySchedules as any).mockResolvedValue({ schedules: [] });
     render(<EnvironmentSchedulesPanel projectId="proj-1" environmentName="prod" />);

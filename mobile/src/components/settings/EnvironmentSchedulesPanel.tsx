@@ -1,15 +1,26 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { CalendarClock, Plus, Power, PowerOff, Trash2 } from 'lucide-react-native';
+import {
+  CalendarClock,
+  Check,
+  ChevronDown,
+  Plus,
+  Power,
+  PowerOff,
+  Trash2,
+} from 'lucide-react-native';
 import humanCron from '@shared/utils/humanCron';
+import { listTimezones } from '@shared/utils/timezones';
 import { colors } from '../../theme/colors';
 import { api } from '../../utils/api';
 import {
@@ -18,6 +29,106 @@ import {
   validateScheduleDraft,
   type DeploySchedule,
 } from '../../utils/deploySchedules';
+
+const SERVER_DEFAULT_TIMEZONE_LABEL = 'Server default timezone';
+
+/**
+ * Tap-to-open timezone dropdown. Mirrors the web `<select>` — the value is an
+ * IANA zone (or empty for the server default). Options come from the shared
+ * `listTimezones()` helper; a search box filters the (long) list. No third-party
+ * picker dependency — a Modal + ScrollView over existing RN primitives.
+ */
+export function TimezoneSelect({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const zones = useMemo(() => listTimezones(), []);
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return zones;
+    return zones.filter((z) => z.toLowerCase().includes(q));
+  }, [zones, query]);
+
+  const select = useCallback(
+    (zone: string) => {
+      onChange(zone);
+      setOpen(false);
+      setQuery('');
+    },
+    [onChange],
+  );
+
+  return (
+    <View>
+      <TouchableOpacity
+        style={styles.select}
+        onPress={() => setOpen(true)}
+        accessibilityLabel="Timezone"
+        accessibilityRole="button"
+        testID="timezone-select-trigger"
+      >
+        <Text style={[styles.selectText, !value && styles.selectPlaceholder]} numberOfLines={1}>
+          {value || SERVER_DEFAULT_TIMEZONE_LABEL}
+        </Text>
+        <ChevronDown size={14} color={colors.gray400} />
+      </TouchableOpacity>
+      <Modal
+        visible={open}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setOpen(false)}
+        testID="timezone-select-modal"
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setOpen(false)}
+          testID="timezone-select-overlay"
+        >
+          <TouchableOpacity style={styles.modalSheet} activeOpacity={1}>
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search timezones…"
+              placeholderTextColor={colors.gray600}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.input}
+              accessibilityLabel="Search timezones"
+            />
+            <ScrollView style={styles.optionList} keyboardShouldPersistTaps="handled">
+              <TouchableOpacity
+                style={styles.option}
+                onPress={() => select('')}
+                accessibilityLabel="Timezone server default"
+                testID="timezone-option-default"
+              >
+                <Text style={styles.optionText}>{SERVER_DEFAULT_TIMEZONE_LABEL}</Text>
+                {!value ? <Check size={14} color={colors.emerald300} /> : null}
+              </TouchableOpacity>
+              {filtered.map((zone) => (
+                <TouchableOpacity
+                  key={zone}
+                  style={styles.option}
+                  onPress={() => select(zone)}
+                  accessibilityLabel={`Timezone ${zone}`}
+                >
+                  <Text style={styles.optionText}>{zone}</Text>
+                  {value === zone ? <Check size={14} color={colors.emerald300} /> : null}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+    </View>
+  );
+}
 
 /**
  * Presentational body for the per-environment deploy-schedules editor. Pure and
@@ -153,16 +264,7 @@ export function EnvironmentSchedulesPanelContent({
           style={styles.input}
           accessibilityLabel="Cron expression"
         />
-        <TextInput
-          value={timezone}
-          onChangeText={onTimezoneChange}
-          placeholder="timezone (optional, e.g. America/New_York)"
-          placeholderTextColor={colors.gray600}
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={styles.input}
-          accessibilityLabel="Timezone"
-        />
+        <TimezoneSelect value={timezone} onChange={onTimezoneChange} />
         <TouchableOpacity
           onPress={onAdd}
           disabled={!canAdd}
@@ -385,6 +487,45 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: 'monospace',
   },
+  select: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    backgroundColor: colors.gray950,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  selectText: { color: colors.gray200, fontSize: 12, fontFamily: 'monospace', flex: 1 },
+  selectPlaceholder: { color: colors.gray600 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalSheet: {
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 10,
+    padding: 12,
+    gap: 8,
+    maxHeight: '70%',
+  },
+  optionList: { maxHeight: 320 },
+  option: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+  },
+  optionText: { color: colors.gray200, fontSize: 13, fontFamily: 'monospace' },
   addButton: {
     flexDirection: 'row',
     alignItems: 'center',
