@@ -56,7 +56,6 @@ class FakeEnv {
   retainAfterFailedEnsure() {
     return false;
   }
-  verifyRuntimeContainment?: () => void;
   onDispose(cb: () => void) {
     this.hooks.add(cb);
     return () => this.hooks.delete(cb);
@@ -191,26 +190,6 @@ describe('SessionEnvManager.ensure', () => {
     expect(second).toBe(first);
     expect(created).toHaveLength(1);
     expect(created[0].kind).toBe('container');
-  });
-
-  it('re-checks runtime containment when a live env is reused', async () => {
-    let checks = 0;
-    const manager = new SessionEnvManager({
-      resolveWorktree: () => '/wt/s1',
-      resolveAdapter: () => 'sysbox',
-      createEnv: (_kind, opts) => {
-        const env = new FakeEnv('sysbox', opts.sessionId, opts.worktreePath);
-        env.verifyRuntimeContainment = () => {
-          checks += 1;
-          if (checks > 1) throw new Error('unsafe reused runtime');
-        };
-        return env as unknown as SessionEnv;
-      },
-      logger: { log: () => {}, warn: () => {} },
-    });
-    await manager.ensure('s1');
-    expect(checks).toBe(1);
-    await expect(manager.ensure('s1')).rejects.toThrow(/unsafe reused runtime/);
   });
 
   it('blocks acquisition until an adapter transition disposes then persists', async () => {

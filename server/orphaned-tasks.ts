@@ -24,7 +24,6 @@ export interface OrphanedTaskDeps {
     errorText: string,
   ) => string;
   listKilledShells: (sessionId: string) => KilledBackgroundShell[];
-  isAutopilotSession: (sessionId: string) => boolean;
 }
 
 export function reconcileOrphanedTasks(deps: OrphanedTaskDeps): ResumeEntry[] {
@@ -42,11 +41,6 @@ export function reconcileOrphanedTasks(deps: OrphanedTaskDeps): ResumeEntry[] {
 
   for (const t of orphans) {
     const partial = (t.streamed_output || '').trim();
-
-    // Autopilot workers belong to their run controller, which fences and
-    // reconciles them separately on boot. Never revive a paused/stopped worker
-    // through ordinary chat recovery.
-    if (deps.isAutopilotSession(t.session_id)) continue;
 
     // Epic/card membership is not a reason to create a replacement session.
     // Keep the card assigned and in its current lane so autonomous dispatch

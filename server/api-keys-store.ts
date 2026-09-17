@@ -87,6 +87,38 @@ export function isHiddenSystemKeyName(name: string): boolean {
   );
 }
 
+/**
+ * Name prefix of the retired scoped-worker credentials the project Autopilot
+ * used to mint (`autopilot:<projectId>:<runId>[:eval]`). The issuer and the
+ * middleware guard that restricted these keys are gone; any row that survives
+ * in an upgraded DB must be treated as defunct so it can never authenticate
+ * with its owner's full membership role. Recognised both at auth time
+ * ({@link verifyApiKey} returns null) and revoked in bulk at startup
+ * ({@link revokeAutopilotWorkerKeys}).
+ */
+export const AUTOPILOT_WORKER_KEY_PREFIX = 'autopilot:';
+
+/** True when `name` is a retired scoped Autopilot worker credential. */
+export function isAutopilotWorkerKeyName(name: string): boolean {
+  return typeof name === 'string' && name.startsWith(AUTOPILOT_WORKER_KEY_PREFIX);
+}
+
+/**
+ * Revoke every still-active retired Autopilot worker key. Idempotent — a
+ * second run touches nothing because the guard only matches rows with
+ * `revoked_at IS NULL`. Returns the number of rows revoked.
+ */
+export function revokeAutopilotWorkerKeys(): number {
+  const db = getOrgsDb();
+  const result = db
+    .prepare(
+      `UPDATE api_keys SET revoked_at = datetime('now')
+       WHERE name LIKE 'autopilot:%' AND revoked_at IS NULL`,
+    )
+    .run();
+  return result.changes;
+}
+
 /** Crypto-grade random token, url-safe base64. */
 function generateRawToken(): string {
   const raw = randomBytes(TOKEN_RANDOM_BYTES)
@@ -278,6 +310,10 @@ export function verifyApiKey(
   if (!row) return null;
   if (row.revoked_at) return null;
   if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) return null;
+  // Retired scoped Autopilot worker credentials no longer have a restricting
+  // guard; honoring one would grant its owner's full membership role. Treat any
+  // surviving `autopilot:*` key as invalid regardless of TTL/revocation state.
+  if (isAutopilotWorkerKeyName(row.name)) return null;
 
   // Debounce last_used_at writes — at most once per LAST_USED_DEBOUNCE_MS.
   const now = Date.now();

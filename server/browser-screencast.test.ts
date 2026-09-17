@@ -48,9 +48,9 @@ class FakeCdp {
   }
 }
 
-function makeFakeSession(id: string) {
+function makeFakeSession(id: string, startUrl = 'https://example.com/') {
   const cdp = new FakeCdp();
-  let url = 'https://example.com/';
+  let url = startUrl;
   const page = {
     url: () => url,
     goto: vi.fn(async (u: string) => {
@@ -218,7 +218,7 @@ describe('browser screencast feed', () => {
   it('reports waiting before the agent opens a browser, then goes live when it launches', async () => {
     const v = makeViewer('early');
     attachBrowserScreencastViewer('chat-2', v.viewer);
-    expect(v.states).toEqual([{ status: 'waiting', url: null, viewport: null }]);
+    expect(v.states).toEqual([{ status: 'waiting', url: null, viewport: null, surface: null }]);
     expect(getBrowserScreencastState('chat-2').status).toBe('waiting');
 
     const { session, cdp } = makeFakeSession('chat-2');
@@ -234,13 +234,51 @@ describe('browser screencast feed', () => {
     expect(browserToolOpsInFlight('chat-2')).toBe(0);
   });
 
-  it('does not attach the preview-drive browser by accident (separate ids)', async () => {
+  it('mirrors the preview-drive Chromium when that is the live session', async () => {
     const { session, cdp } = makeFakeSession('preview:chat-3');
     __registerBrowserSessionForTests(session);
     const v = makeViewer('v');
     attachBrowserScreencastViewer('chat-3', v.viewer);
+    await vi.waitFor(() => expect(v.states.at(-1)?.status).toBe('live'));
+    expect(v.states.at(-1)).toMatchObject({
+      status: 'live',
+      surface: 'preview',
+      url: 'https://example.com/',
+    });
+    expect(cdp.sent.map((c) => c.method)).toContain('Page.startScreencast');
+  });
+
+  it('goes live when preview Chromium launches after the pane attached', async () => {
+    const v = makeViewer('early-preview');
+    attachBrowserScreencastViewer('chat-4', v.viewer);
     expect(v.states.at(-1)?.status).toBe('waiting');
-    expect(cdp.sent).toEqual([]);
+
+    const { session, cdp } = makeFakeSession('preview:chat-4');
+    __registerBrowserSessionForTests(session);
+    await vi.waitFor(() => expect(v.states.at(-1)?.status).toBe('live'));
+    expect(v.states.at(-1)?.surface).toBe('preview');
+    expect(cdp.sent.map((c) => c.method)).toContain('Page.startScreencast');
+  });
+
+  it('switches from public-web to preview when the agent starts driving preview', async () => {
+    const web = makeFakeSession('chat-5', 'https://example.com/web');
+    const preview = makeFakeSession('preview:chat-5', 'http://127.0.0.1:4123/app');
+    __registerBrowserSessionForTests(web.session);
+    __registerBrowserSessionForTests(preview.session);
+
+    const v = makeViewer('switch');
+    attachBrowserScreencastViewer('chat-5', v.viewer);
+    await vi.waitFor(() => expect(v.states.at(-1)?.status).toBe('live'));
+    // Both idle → prefer preview so verify is visible.
+    expect(v.states.at(-1)?.surface).toBe('preview');
+
+    incrementBrowserToolOpEntered('chat-5');
+    await vi.waitFor(() => expect(v.states.at(-1)?.surface).toBe('web'));
+    notifyBrowserToolOpEnded('chat-5');
+
+    incrementBrowserToolOpEntered('preview:chat-5');
+    await vi.waitFor(() => expect(v.states.at(-1)?.surface).toBe('preview'));
+    notifyBrowserToolOpEnded('preview:chat-5');
   });
 });
 
@@ -327,6 +365,18 @@ describe('human input forwarding', () => {
     const ok = await navigateBrowserViewer('chat-nav', 'https://example.org/docs');
     expect(ok).toEqual({ ok: true, url: 'https://example.org/docs' });
     expect(page.goto).toHaveBeenCalled();
+  });
+
+  it('lets the human stay on the preview origin and refuses leaving it', async () => {
+    const { session, page } = makeFakeSession('preview:chat-nav-p', 'http://127.0.0.1:4123/');
+    __registerBrowserSessionForTests(session);
+
+    const ok = await navigateBrowserViewer('chat-nav-p', 'http://127.0.0.1:4123/make');
+    expect(ok).toEqual({ ok: true, url: 'http://127.0.0.1:4123/make' });
+    expect(page.goto).toHaveBeenCalled();
+
+    const refused = await navigateBrowserViewer('chat-nav-p', 'https://example.org/');
+    expect(refused).toMatchObject({ ok: false, code: 'refused' });
   });
 
   it('translates DOM key names to Playwright key chords', () => {

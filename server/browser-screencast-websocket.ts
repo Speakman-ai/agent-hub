@@ -3,8 +3,9 @@
  *
  * Route: `/api/sessions/:sessionId/browser/ws`
  *
- * Streams the session's public-web Chromium (the `browser` ReAct tool) to a
- * human viewer as JPEG frames, and carries the viewer's mouse / keyboard /
+ * Streams the Chromium the agent is driving (the `browser` ReAct tool's
+ * public-web session, or the origin-pinned `preview` drive) to a human
+ * viewer as JPEG frames, and carries the viewer's mouse / keyboard /
  * URL-bar input back. Deliberately separate from the Hub chat WebSocket: a
  * frame stream on the global broadcast bus would hit every connected client
  * before per-recipient filtering, and would be throttled by chat traffic.

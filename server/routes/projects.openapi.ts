@@ -72,10 +72,6 @@ export const ProjectDetailComponent = registerComponent(
         .string()
         .optional()
         .openapi({ description: 'Absolute path to the project working directory on disk.' }),
-      autopilotEnabled: z.boolean().optional().openapi({
-        description:
-          'Read-only projection of Autopilot config.enabled. Defaults to false; managed through the Autopilot config and disable endpoints.',
-      }),
       githubRepo: z.string().optional().nullable().openapi({
         description:
           'GitHub repo in `owner/repo` form (e.g. `Speakman-ai/agent-hub`). Empty/null when the project has no GitHub remote.',

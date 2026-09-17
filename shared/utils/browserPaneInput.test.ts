@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   browserPaneStatusLabel,
+  browserPaneSurfaceBadge,
   fitFrameInBox,
   keyInputFromDomEvent,
   mapPointerToViewport,
   normalizeUrlBarInput,
+  parseBrowserPaneSurface,
 } from './browserPaneInput';
 
 describe('mapPointerToViewport', () => {
@@ -92,5 +94,16 @@ describe('browserPaneStatusLabel', () => {
     expect(browserPaneStatusLabel('waiting')).toMatch(/Waiting/);
     expect(browserPaneStatusLabel('live')).toBe('Live');
     expect(browserPaneStatusLabel('closed')).toMatch(/closed/);
+  });
+});
+
+describe('browserPaneSurfaceBadge', () => {
+  it('names the live surface and hides the badge while waiting', () => {
+    expect(parseBrowserPaneSurface('preview')).toBe('preview');
+    expect(parseBrowserPaneSurface('web')).toBe('web');
+    expect(parseBrowserPaneSurface('other')).toBeNull();
+    expect(browserPaneSurfaceBadge('preview')).toBe('preview');
+    expect(browserPaneSurfaceBadge('web')).toBe('public web');
+    expect(browserPaneSurfaceBadge(null)).toBeNull();
   });
 });

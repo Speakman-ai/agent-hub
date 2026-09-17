@@ -11,4 +11,8 @@ describe('sessionControlAppIcon', () => {
   it('maps VM (isolated) to cube-outline', () => {
     expect(sessionControlAppIcon('isolated')).toBe('cube-outline');
   });
+
+  it('maps Autopilot to rocket-outline', () => {
+    expect(sessionControlAppIcon('autopilot')).toBe('rocket-outline');
+  });
 });

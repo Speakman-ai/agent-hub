@@ -19,8 +19,10 @@ import {
 import {
   __registerBrowserSessionForTests,
   __resetBrowserRegistryForTests,
+  browserToolOpsInFlight,
   DEFAULT_TIMEOUT_MS,
 } from '../browser.js';
+import { getBrowserScreencastState, isAgentDrivingBrowser } from '../browser-screencast.js';
 
 const SESSION_ID = 'sess-preview-react-test';
 const PORT = 4123;
@@ -738,5 +740,61 @@ describe('preview-react — drive ops', () => {
     expect(close).toHaveBeenCalled();
     // Lifecycle untouched — close never stops the managed preview itself.
     expect(runtime.touchPreview).not.toHaveBeenCalled();
+  });
+});
+
+describe('preview-react — browser tool op activity (routing + input exclusion)', () => {
+  const registryId = previewBrowserSessionId(SESSION_ID);
+
+  it('counts a drive op as in-flight on the preview registry id while it runs', async () => {
+    const page = makeMockPage(ORIGIN);
+    registerPreviewBrowser(page);
+    // Gate the screenshot so we can observe the in-flight window.
+    let releaseShot: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseShot = resolve;
+    });
+    page.screenshot = vi.fn(async () => {
+      await gate;
+      return Buffer.from('fake-jpeg-bytes');
+    });
+
+    expect(browserToolOpsInFlight(registryId)).toBe(0);
+    expect(isAgentDrivingBrowser(SESSION_ID)).toBe(false);
+
+    const runtime = makeRuntime();
+    const pending = runPreviewReActStep(SESSION_ID, { op: 'screenshot' }, { runtime });
+
+    // While the op is pending: the counter is up, the pane routes to the
+    // preview surface (not public web), and human viewer input is excluded.
+    await vi.waitFor(() => expect(browserToolOpsInFlight(registryId)).toBeGreaterThan(0));
+    expect(isAgentDrivingBrowser(SESSION_ID)).toBe(true);
+    expect(getBrowserScreencastState(SESSION_ID).surface).toBe('preview');
+
+    releaseShot();
+    await pending;
+
+    // Paired exit clears the counter and re-admits viewer input.
+    expect(browserToolOpsInFlight(registryId)).toBe(0);
+    expect(isAgentDrivingBrowser(SESSION_ID)).toBe(false);
+  });
+
+  it('decrements even when the drive op throws (failure cleanup)', async () => {
+    const page = makeMockPage(ORIGIN);
+    registerPreviewBrowser(page);
+    page.screenshot = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const runtime = makeRuntime();
+    const r = await runPreviewReActStep(SESSION_ID, { op: 'screenshot' }, { runtime });
+    expect(r.hostExit).toBe(1);
+    expect(browserToolOpsInFlight(registryId)).toBe(0);
+  });
+
+  it('does not count lifecycle/observe ops (state) against the preview browser', async () => {
+    registerPreviewBrowser(makeMockPage(ORIGIN));
+    const runtime = makeRuntime();
+    await runPreviewReActStep(SESSION_ID, { op: 'state' }, { runtime });
+    expect(browserToolOpsInFlight(registryId)).toBe(0);
   });
 });

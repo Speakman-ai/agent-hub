@@ -412,9 +412,9 @@ export function pageSnapshotObservationLines(snap: {
 /**
  * One-line trailer naming which Chromium an observation came from, so an agent
  * that uses both tools in one turn never has to guess which world a result
- * belongs to. `web` is the generic public-internet browser (mirrored live in
- * the human's **Agent browser** pane); `preview` is the origin-pinned drive
- * browser for this session's dev preview.
+ * belongs to. `web` is the generic public-internet browser; `preview` is the
+ * origin-pinned drive browser for this session's dev preview. Both are
+ * mirrored live in the human's **Agent browser** pane.
  */
 export function surfaceObservationLines(
   surface: 'web' | 'preview',
@@ -424,7 +424,7 @@ export function surfaceObservationLines(
   const label =
     surface === 'web'
       ? 'Surface: web (agent browser — public internet; humans see it live in the Agent browser pane)'
-      : `Surface: preview (this session's dev preview${extra ? `, pinned to ${extra}` : ''})`;
+      : `Surface: preview (this session's dev preview${extra ? `, pinned to ${extra}` : ''}; humans see it live in the Agent browser pane)`;
   return ['', `${label} · URL: ${url ?? '(no page yet)'}`];
 }
 

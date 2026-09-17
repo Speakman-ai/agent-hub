@@ -65,7 +65,11 @@ export const SessionComponent = registerComponent(
       react_loop_enabled: z.number().int().nullable().optional(),
       session_mode: SessionModeSchema.nullable().optional().openapi({
         description:
-          'Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. `isolated` forces a microVM when Firecracker is registered; `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel; `skill-builder` loads the skill-authoring coach; `consult` is Hub/project Q&A with no code ship or Finalize. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`.',
+          'Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `autopilot` (named-branch implement/push/preview-verify loop; never auto-merges), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`.',
+      }),
+      finalize_pushed_count: z.number().int().optional().openapi({
+        description:
+          'Number of Finalize runs for this session that reached status `pushed` (a PR was opened or updated). Autopilot sessions show this as a committed-PR counter instead of the Finalize button.',
       }),
       reasoning_effort: z.enum(['high', 'pro']).nullable().optional().openapi({
         description:
@@ -74,6 +78,25 @@ export const SessionComponent = registerComponent(
       worktree_path: z.string().nullable().optional(),
       worktree_branch: z.string().nullable().optional(),
       worktree_checkout_branch: z.string().nullable().optional(),
+      autopilot: z
+        .object({
+          durationHours: z.number().int(),
+          brief: z.string(),
+          goal: z.string(),
+          escalation: z.enum(['none', 'low', 'medium', 'high']),
+          branch: z.string(),
+          startedAt: z.string().nullable(),
+          deadlineAt: z.string().nullable(),
+          status: z.enum(['configuring', 'running', 'paused', 'completed', 'expired', 'escalated']),
+          cycle: z.number().int(),
+          lastPushSha: z.string().nullable(),
+        })
+        .nullable()
+        .optional()
+        .openapi({
+          description:
+            'Parsed Autopilot session config when `session_mode` is `autopilot`. Null until the startup card is submitted.',
+        }),
       code_changed_at: z.string().nullable().optional(),
       engine_session_id: z.string().nullable().optional(),
       cron_id: z.number().int().nullable().optional(),
@@ -411,6 +434,14 @@ export const PutSessionReasoningEffortRequestSchema = z.object({
  */
 export const PutSessionModeRequestSchema = z.object({
   mode: SessionModeSchema,
+});
+
+export const StartSessionAutopilotRequestSchema = z.object({
+  durationHours: z.number().int().min(0).max(72),
+  brief: z.string().trim().min(1).max(8000),
+  goal: z.string().trim().min(1).max(4000),
+  escalation: z.enum(['none', 'low', 'medium', 'high']),
+  branch: z.string().trim().min(1).max(255),
 });
 
 /**
@@ -1136,6 +1167,25 @@ registerPath({
     400: errorResponse('Validation failed.'),
     404: errorResponse('Session not found.'),
     503: errorResponse('Session environment transition support is unavailable.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/sessions/{sessionId}/autopilot',
+  tags: ['Sessions'],
+  summary: 'Configure and start Autopilot on a session',
+  description:
+    'Persists duration, brief, goal, escalation, and a named feature branch, pins Finalize to push (never merge), and kicks the implement → push → preview-verify loop on this same session.',
+  request: {
+    params: sessionIdParams,
+    body: { content: jsonContent(StartSessionAutopilotRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Autopilot started.', content: jsonContent(SessionComponent) },
+    400: errorResponse('Validation failed or the named branch could not be bound.'),
+    404: errorResponse('Session not found.'),
+    409: errorResponse('The opening Autopilot turn was not accepted.'),
   },
 });
 

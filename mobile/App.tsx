@@ -47,7 +47,6 @@ import DevServerScreen from './src/screens/DevServerScreen';
 import RunnersScreen from './src/screens/RunnersScreen';
 import StatsScreen from './src/screens/StatsScreen';
 import RumSettingsScreen from './src/screens/RumSettingsScreen';
-import ExperimentalAutopilotScreen from './src/screens/ExperimentalAutopilotScreen';
 import LogSourcesScreen from './src/screens/LogSourcesScreen';
 import LogsScreen from './src/screens/LogsScreen';
 import ReplaysScreen from './src/screens/ReplaysScreen';
@@ -264,7 +263,6 @@ function AppContent() {
             <Stack.Screen name="Runners" component={RunnersScreen} />
             <Stack.Screen name="Stats" component={StatsScreen} />
             <Stack.Screen name="RumSettings" component={RumSettingsScreen} />
-            <Stack.Screen name="ExperimentalAutopilot" component={ExperimentalAutopilotScreen} />
             <Stack.Screen name="LogSources" component={LogSourcesScreen} />
             <Stack.Screen name="Logs" component={LogsScreen} />
             <Stack.Screen name="Replays" component={ReplaysScreen} />

@@ -18,12 +18,6 @@ import { perUserHomePath } from './per-user-home.js';
 import { hasPopulatedCodexDeviceAuth } from './per-user-codex-device-login.js';
 import { detectCodexAuthMode } from './codex-auth.js';
 import { detectGrokAuthMode } from './grok-device-auth-parse.js';
-import {
-  AutopilotWorkerCredentialError,
-  resolveAutopilotWorkerSpawn,
-} from './autopilot/worker-token.js';
-
-export { AutopilotWorkerCredentialError };
 
 function perUserHomeHasCursorCache(userId: string, dataDir: string): boolean {
   try {
@@ -277,10 +271,6 @@ export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): 
     spawnCredsUserId: actingUserId,
     engine,
   };
-  if (sessionId) {
-    const worker = resolveAutopilotWorkerSpawn(sessionId, cfg.dataDir);
-    if (worker) buildOpts.autopilotWorker = worker;
-  }
   return buildSpawnEnv(cfg, buildOpts);
 }
 

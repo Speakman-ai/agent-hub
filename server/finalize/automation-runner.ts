@@ -25,7 +25,10 @@ import { runFinalizePush } from './push-run.js';
 import { acquirePushLock, type PushLockStmts } from './push-lock.js';
 import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
 import { startFinalizeRunBackground } from './trigger-run.js';
-import { hasPushedFinalizeRun } from './post-push-session-lock.js';
+import {
+  sessionAllowsRepeatFinalizePush,
+  sessionIsLockedAfterFinalizePush,
+} from './post-push-session-lock.js';
 import {
   resolveSessionFinalizeAutomation,
   shouldAutoPushAfterReady,
@@ -33,6 +36,7 @@ import {
   shouldEnableAutoMergeForAutomation,
 } from './automation.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
+import { enforceAutopilotExpiry } from '../session-autopilot.js';
 import { sessionWorktreeIoFor } from '../session-worktree-io.js';
 import { resolveFinalizeGateBase } from './resolve-base-branch.js';
 import { flakeGateBlocksAutoPush, parseFlakeGate } from './flake-recovery.js';
@@ -203,7 +207,8 @@ function sessionPostFinalizePushBlocksAutomation(
   action: 'auto-start' | 'auto-push',
 ): boolean {
   if (!routeDeps) return true;
-  if (!hasPushedFinalizeRun(routeDeps.stmts, sessionId)) return false;
+  const session = routeDeps.stmts.getSession.get(sessionId) as SessionRow | undefined;
+  if (!sessionIsLockedAfterFinalizePush(routeDeps.stmts, session)) return false;
   console.warn(
     `[finalize-automation] Skipping ${action} session=${sessionId}: session already pushed ` +
       `code through Finalize and is locked in ask mode.`,
@@ -248,6 +253,11 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
   if (!ctx) return;
   if (sessionBlocksFinalize(ctx.project, ctx.session)) return;
 
+  // Autopilot deadline gate — fires even for a session that never pushed and
+  // for a turn that over-ran the clock. When expired, persists the state and
+  // posts the stop notice (no model turn); no further Finalize starts.
+  if (enforceAutopilotExpiry({ deps: routeDeps, session: ctx.session }).blocked) return;
+
   // Fail-closed turn-error gate: if the session's last turn ended in an
   // upstream engine/API error (e.g. "API Error: The socket connection was
   // closed unexpectedly"), the worktree may hold a half-finished change set.
@@ -286,7 +296,11 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
     void maybeAutoPushReadyFinalizeRun({ sessionId, runId: latest.id });
     return;
   }
-  if (latest?.status === 'pushed') return;
+  // Normal sessions Finalize once. Autopilot must start a new run after each
+  // follow-up commit — the post-push lock is already skipped for that mode, and
+  // getSessionCommittableChanges above requires unpushed commits. Same-HEAD
+  // kickoff still reuses the finished run (agent_block idempotency).
+  if (latest?.status === 'pushed' && !sessionAllowsRepeatFinalizePush(ctx.session)) return;
 
   const started = await startFinalizeRunBackground(routeDeps, {
     project: ctx.project,
@@ -313,6 +327,10 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
   const ctx = await loadSessionContext(args.sessionId);
   if (!ctx) return;
   if (sessionBlocksFinalize(ctx.project, ctx.session)) return;
+
+  // Autopilot deadline gate — a run parked at ready_to_push must not auto-push
+  // once the session's time is up (or it already stopped).
+  if (enforceAutopilotExpiry({ deps: routeDeps, session: ctx.session }).blocked) return;
 
   // Same fail-closed gate as auto-start: a ready_to_push run parked before
   // the errored turn must not auto-push/auto-merge over it.

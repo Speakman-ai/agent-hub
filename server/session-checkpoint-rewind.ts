@@ -2,6 +2,10 @@ import type { BroadcastFn, Project, SessionRow, Stmts } from './types.js';
 import { computeSessionState, DEFAULT_SESSION_STATE, type SessionState } from './session-state.js';
 import { isWorkflowProject, sessionCanUseDesignMode } from './project-mode-guards.js';
 import { isFirecrackerBackendRegistered } from './session-env/firecracker/firecracker-backend-status.js';
+import {
+  parseAutopilotSessionConfig,
+  type AutopilotSessionConfig,
+} from '../shared/utils/sessionAutopilot.js';
 
 /**
  * File-level checkpoint rewind is implemented by spawning the Claude Code CLI
@@ -33,6 +37,12 @@ export type SessionWireRow = SessionRow & {
    */
   finalize_status: string | null;
   /**
+   * How many Finalize runs for this session reached `pushed` (a PR was opened
+   * or updated). Autopilot sessions show this instead of the Finalize button.
+   * `0` when `stmts` is omitted or the table is missing.
+   */
+  finalize_pushed_count: number;
+  /**
    * Always-on lifecycle state — exactly one of `SESSION_STATES`. When `stmts`
    * is threaded this is the freshly-resolved live value (authoritative even if
    * the persisted `sessions.state` cache is stale); without `stmts` it falls
@@ -61,6 +71,7 @@ export type SessionWireRow = SessionRow & {
    * does not hide VM after a `session-updated` overwrite.
    */
   can_isolated_mode: boolean;
+  autopilot: AutopilotSessionConfig | null;
 };
 
 /**
@@ -74,6 +85,22 @@ function lookupCardIdForSession(stmts: Stmts, sessionId: string): string | null 
     return row?.id ?? null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Count of successful Finalize pushes for a session. Wrapped in try/catch so a
+ * unit-test DB lacking the statement or `finalize_runs` table falls back to 0.
+ */
+export function lookupFinalizePushedCountForSession(stmts: Stmts, sessionId: string): number {
+  try {
+    const row = stmts.countPushedFinalizeRunsForSession.get(sessionId) as
+      | { c?: number }
+      | undefined;
+    const n = Number(row?.c);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  } catch {
+    return 0;
   }
 }
 
@@ -203,6 +230,7 @@ export function enrichSessionForClient(
     checkpoint_rewind_supported: engineSupportsCheckpointRewind(row.engine),
     card_id: stmts ? lookupCardIdForSession(stmts, row.id) : null,
     finalize_status: stmts ? lookupFinalizeStatusForSession(stmts, row.id) : null,
+    finalize_pushed_count: stmts ? lookupFinalizePushedCountForSession(stmts, row.id) : 0,
     state: stmts
       ? computeSessionState(stmts, row.id)
       : ((row.state as SessionState | null | undefined) ?? DEFAULT_SESSION_STATE),
@@ -215,6 +243,7 @@ export function enrichSessionForClient(
       isFirecrackerBackendRegistered() &&
       resolvedProject != null &&
       !isWorkflowProject(resolvedProject),
+    autopilot: parseAutopilotSessionConfig(row.autopilot_session_config),
   };
 }
 

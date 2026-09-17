@@ -757,538 +757,6 @@ components:
           minLength: 1
       required:
         - token
-    AutopilotErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-        code:
-          type: string
-      required:
-        - error
-    AutopilotLimits:
-      type: object
-      properties:
-        cycleMode:
-          type: string
-          enum:
-            - continuous
-            - finite
-        maxCycles:
-          type: integer
-          nullable: true
-          minimum: 0
-          exclusiveMinimum: true
-        maxWallTimeMs:
-          type: number
-          minimum: 0
-          exclusiveMinimum: true
-        maxStageTimeoutMs:
-          type: number
-          minimum: 0
-          exclusiveMinimum: true
-        maxRetriesPerStage:
-          type: integer
-          minimum: 0
-          maximum: 2
-        maxCostUsd:
-          type: number
-          nullable: true
-          minimum: 0
-          exclusiveMinimum: true
-      required:
-        - cycleMode
-        - maxCycles
-        - maxWallTimeMs
-        - maxStageTimeoutMs
-        - maxRetriesPerStage
-        - maxCostUsd
-    AutopilotEvaluatorPolicy:
-      type: object
-      properties:
-        version:
-          type: integer
-          minimum: 0
-          exclusiveMinimum: true
-      required:
-        - version
-    AutopilotWorkerAuthority:
-      type: object
-      properties:
-        keyName:
-          type: string
-          nullable: true
-        keyId:
-          type: string
-          nullable: true
-      required:
-        - keyName
-        - keyId
-    AutopilotTarget:
-      type: object
-      properties:
-        targetId:
-          type: string
-          minLength: 1
-          description: Declared local deploy.yaml environment name used as the experiment target. That environment must declare origin and readiness that match this target.
-        readinessProbeUrl:
-          type: string
-          nullable: true
-          description: HTTP(S) loopback readiness probe on the same origin as `origin`. Required to start a run.
-        origin:
-          type: string
-          nullable: true
-          description: HTTP(S) loopback origin of the dedicated local target (scheme://host[:port], no path). Required to start a run. Public-browser loopback blocking is unchanged.
-      required:
-        - targetId
-        - readinessProbeUrl
-        - origin
-    AutopilotUsage:
-      type: object
-      properties:
-        wallTimeMs:
-          type: number
-        costUsd:
-          type: number
-          nullable: true
-        costAvailable:
-          type: boolean
-      required:
-        - wallTimeMs
-        - costUsd
-        - costAvailable
-    AutopilotProjectConfig:
-      type: object
-      properties:
-        projectId:
-          type: string
-        enabled:
-          type: boolean
-          description: Project opt-in. May be enabled before setup; start validates run readiness.
-        disabling:
-          type: boolean
-        briefId:
-          type: string
-          nullable: true
-        brief:
-          type: string
-          nullable: true
-        briefRevision:
-          type: integer
-          nullable: true
-        target:
-          allOf:
-            - $ref: "#/components/schemas/AutopilotTarget"
-            - nullable: true
-        limits:
-          allOf:
-            - $ref: "#/components/schemas/AutopilotLimits"
-            - nullable: true
-        evaluatorPolicy:
-          $ref: "#/components/schemas/AutopilotEvaluatorPolicy"
-        credentialOwnerUserId:
-          type: string
-          nullable: true
-        updatedAt:
-          type: string
-        updatedBy:
-          type: string
-          nullable: true
-        revision:
-          type: integer
-          description: Optimistic-concurrency revision. Each successful config write increments it; pass it back as `expectedRevision` on the next PUT to reject stale, out-of-order writes.
-        isolationAdapter:
-          type: string
-          enum:
-            - auto
-            - host
-            - sysbox
-            - container
-            - firecracker
-          description: Operator-selected isolation adapter for workers. `auto` keeps the managed-isolation requirement (sysbox/firecracker); `host` combined with `hostAdapterAck` lets Autopilot run on the host adapter without an isolation boundary.
-        hostAdapterAck:
-          type: boolean
-          description: Explicit acknowledgment that Autopilot may run without a managed isolation boundary. Only honored when `isolationAdapter === "host"`.
-      required:
-        - projectId
-        - enabled
-        - disabling
-        - briefId
-        - brief
-        - briefRevision
-        - target
-        - limits
-        - evaluatorPolicy
-        - credentialOwnerUserId
-        - updatedAt
-        - updatedBy
-        - revision
-        - isolationAdapter
-        - hostAdapterAck
-    AutopilotRun:
-      type: object
-      properties:
-        id:
-          type: string
-        projectId:
-          type: string
-        controlState:
-          type: string
-          enum:
-            - running
-            - pausing
-            - paused
-            - stopping
-            - stopped
-            - failed
-        stage:
-          type: string
-          nullable: true
-          enum:
-            - planning
-            - implementing
-            - finalizing
-            - deploying
-            - verifying
-            - documenting
-            - selecting-next
-            - null
-        fencingGeneration:
-          type: integer
-        briefId:
-          type: string
-          nullable: true
-        briefRevision:
-          type: integer
-          nullable: true
-        cycleNumber:
-          type: integer
-        pauseReason:
-          type: string
-          nullable: true
-        failureReason:
-          type: string
-          nullable: true
-        lastVerifiedSha:
-          type: string
-          nullable: true
-          description: Last verified SHA at the experiment target. A successful candidate deploy does not write this; verification owns last-known-good.
-        lastDeploymentId:
-          type: string
-          nullable: true
-          description: Deployment id of the last verified artifact retained for rollback.
-        credentialOwnerUserId:
-          type: string
-          nullable: true
-        targetId:
-          type: string
-          nullable: true
-        limits:
-          $ref: "#/components/schemas/AutopilotLimits"
-        usage:
-          $ref: "#/components/schemas/AutopilotUsage"
-        workerAuthority:
-          $ref: "#/components/schemas/AutopilotWorkerAuthority"
-        startedBy:
-          type: string
-          nullable: true
-        startedAt:
-          type: string
-        stoppedAt:
-          type: string
-          nullable: true
-        updatedAt:
-          type: string
-      required:
-        - id
-        - projectId
-        - controlState
-        - stage
-        - fencingGeneration
-        - briefId
-        - briefRevision
-        - cycleNumber
-        - pauseReason
-        - failureReason
-        - lastVerifiedSha
-        - lastDeploymentId
-        - credentialOwnerUserId
-        - targetId
-        - limits
-        - usage
-        - workerAuthority
-        - startedBy
-        - startedAt
-        - stoppedAt
-        - updatedAt
-    AutopilotCycle:
-      type: object
-      properties:
-        id:
-          type: string
-        runId:
-          type: string
-        cycleNumber:
-          type: integer
-        briefRevision:
-          type: integer
-        specRevision:
-          type: integer
-          nullable: true
-        cardId:
-          type: string
-          nullable: true
-        sessionId:
-          type: string
-          nullable: true
-        testedCommitSha:
-          type: string
-          nullable: true
-        finalizeRunId:
-          type: string
-          nullable: true
-        deploymentId:
-          type: string
-          nullable: true
-          description: Deployment id of the cycle candidate. Exact merged SHA must be live before verifying.
-        verification:
-          nullable: true
-        documentation:
-          nullable: true
-          description: "Structured cycle record persisted by the documenting stage: brief/spec revision, expected benefit, actual change, decisions, links, redacted evidence, usage, and outcome. Journal and wiki pages are rebuilt from these records."
-        selectedImprovement:
-          type: string
-          nullable: true
-        outcome:
-          type: string
-          nullable: true
-        status:
-          type: string
-          enum:
-            - active
-            - succeeded
-            - failed
-            - cancelled
-        createdAt:
-          type: string
-      required:
-        - id
-        - runId
-        - cycleNumber
-        - briefRevision
-        - specRevision
-        - cardId
-        - sessionId
-        - testedCommitSha
-        - finalizeRunId
-        - deploymentId
-        - selectedImprovement
-        - outcome
-        - status
-        - createdAt
-    AutopilotStageRecord:
-      type: object
-      properties:
-        id:
-          type: string
-        cycleId:
-          type: string
-        stage:
-          type: string
-          enum:
-            - planning
-            - implementing
-            - finalizing
-            - deploying
-            - verifying
-            - documenting
-            - selecting-next
-        status:
-          type: string
-          enum:
-            - pending
-            - in_progress
-            - succeeded
-            - failed
-            - cancelled
-        attempt:
-          type: integer
-        operationId:
-          type: string
-          nullable: true
-        startedAt:
-          type: string
-          nullable: true
-        completedAt:
-          type: string
-          nullable: true
-        result:
-          nullable: true
-      required:
-        - id
-        - cycleId
-        - stage
-        - status
-        - attempt
-        - operationId
-        - startedAt
-        - completedAt
-    AutopilotOperation:
-      type: object
-      properties:
-        id:
-          type: string
-        runId:
-          type: string
-        cycleId:
-          type: string
-          nullable: true
-        kind:
-          type: string
-        status:
-          type: string
-          enum:
-            - pending
-            - in_flight
-            - succeeded
-            - failed
-            - cancelled
-            - ambiguous
-        fencingGeneration:
-          type: integer
-        intent:
-          nullable: true
-        result:
-          nullable: true
-        sessionId:
-          type: string
-          nullable: true
-        finalizeRunId:
-          type: string
-          nullable: true
-        deploymentId:
-          type: string
-          nullable: true
-        createdAt:
-          type: string
-        updatedAt:
-          type: string
-      required:
-        - id
-        - runId
-        - cycleId
-        - kind
-        - status
-        - fencingGeneration
-        - sessionId
-        - finalizeRunId
-        - deploymentId
-        - createdAt
-        - updatedAt
-    AutopilotEvent:
-      type: object
-      properties:
-        id:
-          type: string
-        runId:
-          type: string
-        cycleId:
-          type: string
-          nullable: true
-        operationId:
-          type: string
-          nullable: true
-        type:
-          type: string
-        payload:
-          nullable: true
-        fencingGeneration:
-          type: integer
-          nullable: true
-        createdAt:
-          type: string
-        seq:
-          type: integer
-      required:
-        - id
-        - runId
-        - cycleId
-        - operationId
-        - type
-        - fencingGeneration
-        - createdAt
-        - seq
-    AutopilotLease:
-      type: object
-      properties:
-        projectId:
-          type: string
-        runId:
-          type: string
-        fencingGeneration:
-          type: integer
-        holderId:
-          type: string
-        leasedAt:
-          type: string
-      required:
-        - projectId
-        - runId
-        - fencingGeneration
-        - holderId
-        - leasedAt
-    AutopilotRunSnapshot:
-      type: object
-      properties:
-        run:
-          $ref: "#/components/schemas/AutopilotRun"
-        cycle:
-          allOf:
-            - $ref: "#/components/schemas/AutopilotCycle"
-            - nullable: true
-        stages:
-          type: array
-          items:
-            $ref: "#/components/schemas/AutopilotStageRecord"
-        operations:
-          type: array
-          items:
-            $ref: "#/components/schemas/AutopilotOperation"
-        events:
-          type: array
-          items:
-            $ref: "#/components/schemas/AutopilotEvent"
-        lease:
-          allOf:
-            - $ref: "#/components/schemas/AutopilotLease"
-            - nullable: true
-        stateVersion:
-          type: integer
-          description: Server-authored monotonic version (max event seq for the project). Clients order overlapping GET/mutation responses by this rather than arrival order.
-      required:
-        - run
-        - cycle
-        - stages
-        - operations
-        - events
-        - lease
-        - stateVersion
-    AutopilotProjectState:
-      type: object
-      properties:
-        config:
-          $ref: "#/components/schemas/AutopilotProjectConfig"
-        activeRun:
-          allOf:
-            - $ref: "#/components/schemas/AutopilotRunSnapshot"
-            - nullable: true
-        stateVersion:
-          type: integer
-          description: Server-authored monotonic version, present even with no active run, so clients can order overlapping GET/mutation responses by server state rather than arrival order.
-      required:
-        - config
-        - activeRun
-        - stateVersion
     BackgroundShell:
       type: object
       properties:
@@ -2868,13 +2336,17 @@ components:
           enum:
             - chat
             - isolated
+            - autopilot
             - design
             - scoping
             - skill-builder
             - consult
             - hub
             - null
-          description: "Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. `isolated` forces a microVM when Firecracker is registered; `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel; `skill-builder` loads the skill-authoring coach; `consult` is Hub/project Q&A with no code ship or Finalize. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
+          description: "Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `autopilot` (named-branch implement/push/preview-verify loop; never auto-merges), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
+        finalize_pushed_count:
+          type: integer
+          description: Number of Finalize runs for this session that reached status `pushed` (a PR was opened or updated). Autopilot sessions show this as a committed-PR counter instead of the Finalize button.
         reasoning_effort:
           type: string
           nullable: true
@@ -2892,6 +2364,57 @@ components:
         worktree_checkout_branch:
           type: string
           nullable: true
+        autopilot:
+          type: object
+          nullable: true
+          properties:
+            durationHours:
+              type: integer
+            brief:
+              type: string
+            goal:
+              type: string
+            escalation:
+              type: string
+              enum:
+                - none
+                - low
+                - medium
+                - high
+            branch:
+              type: string
+            startedAt:
+              type: string
+              nullable: true
+            deadlineAt:
+              type: string
+              nullable: true
+            status:
+              type: string
+              enum:
+                - configuring
+                - running
+                - paused
+                - completed
+                - expired
+                - escalated
+            cycle:
+              type: integer
+            lastPushSha:
+              type: string
+              nullable: true
+          required:
+            - durationHours
+            - brief
+            - goal
+            - escalation
+            - branch
+            - startedAt
+            - deadlineAt
+            - status
+            - cycle
+            - lastPushSha
+          description: Parsed Autopilot session config when `session_mode` is `autopilot`. Null until the startup card is submitted.
         code_changed_at:
           type: string
           nullable: true
@@ -12353,9 +11876,6 @@ components:
         cwd:
           type: string
           description: Absolute path to the project working directory on disk.
-        autopilotEnabled:
-          type: boolean
-          description: Read-only projection of Autopilot config.enabled. Defaults to false; managed through the Autopilot config and disable endpoints.
         githubRepo:
           type: string
           nullable: true
@@ -19422,542 +18942,6 @@ paths:
                       - true
                 required:
                   - ok
-  /api/projects/{projectId}/autopilot:
-    get:
-      tags:
-        - Autopilot
-      summary: Read Autopilot project state
-      description: Returns the project Autopilot configuration, whether the operator server setting is on, and the active run snapshot when one exists.
-      parameters:
-        - schema:
-            type: string
-            description: Project slug.
-          required: true
-          description: Project slug.
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Autopilot project state.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotProjectState"
-        "404":
-          description: Project or run not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-  /api/projects/{projectId}/autopilot/config:
-    put:
-      tags:
-        - Autopilot
-      summary: Save Autopilot project configuration
-      description: Persists the project opt-in, versioned brief, local target, limits and credential owner. Project enablement may be saved before setup. Starting requires the complete configuration, including a loopback origin and readiness probe on the dedicated experiment target. Unattended deploy authority applies only to that target. Does not start a run. Setting enabled=false while a run is active returns 409; use the disable action to stop owned work before turning the project off.
-      parameters:
-        - schema:
-            type: string
-            description: Project slug.
-          required: true
-          description: Project slug.
-          name: projectId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                enabled:
-                  type: boolean
-                brief:
-                  type: string
-                  nullable: true
-                target:
-                  type: object
-                  nullable: true
-                  properties:
-                    targetId:
-                      type: string
-                      minLength: 1
-                    readinessProbeUrl:
-                      type: string
-                      nullable: true
-                    origin:
-                      type: string
-                      nullable: true
-                limits:
-                  type: object
-                  properties:
-                    cycleMode:
-                      type: string
-                      enum:
-                        - continuous
-                        - finite
-                    maxCycles:
-                      type: integer
-                      nullable: true
-                      minimum: 0
-                      exclusiveMinimum: true
-                    maxWallTimeMs:
-                      type: number
-                      minimum: 0
-                      exclusiveMinimum: true
-                    maxStageTimeoutMs:
-                      type: number
-                      minimum: 0
-                      exclusiveMinimum: true
-                    maxRetriesPerStage:
-                      type: integer
-                      minimum: 0
-                      maximum: 2
-                    maxCostUsd:
-                      type: number
-                      nullable: true
-                      minimum: 0
-                      exclusiveMinimum: true
-                evaluatorPolicy:
-                  type: object
-                  nullable: true
-                  properties:
-                    version:
-                      type: integer
-                      minimum: 0
-                      exclusiveMinimum: true
-                credentialOwnerUserId:
-                  type: string
-                  nullable: true
-                isolationAdapter:
-                  type: string
-                  enum:
-                    - auto
-                    - host
-                    - sysbox
-                    - container
-                    - firecracker
-                  description: "Operator-selected isolation adapter for workers. Select `host` (plus `hostAdapterAck: true`) to run Autopilot without a managed isolation boundary."
-                hostAdapterAck:
-                  type: boolean
-                  description: Acknowledgment that Autopilot may run without a managed isolation boundary. Required for the host adapter to be accepted at start/resume.
-                expectedRevision:
-                  type: integer
-                  minimum: 0
-                  description: "Optimistic-concurrency guard: the config revision the caller loaded. The write is rejected with 409 if the stored revision has since advanced."
-      responses:
-        "200":
-          description: Saved configuration.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotProjectConfig"
-        "400":
-          description: Invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "403":
-          description: Autopilot is disabled.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "404":
-          description: Project or run not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "409":
-          description: Conflict with persisted Autopilot state.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-  /api/projects/{projectId}/autopilot/start:
-    post:
-      tags:
-        - Autopilot
-      summary: Start an Autopilot run
-      description: Starts the single active Autopilot run for the project. Duplicate start is rejected. Requires project opt-in, a declared local target with origin and readiness, scoped worker credentials, and enforceable runtime containment. Unattended deploy is authorized only for that experiment target; push and schedule triggers for the owned target are skipped.
-      parameters:
-        - schema:
-            type: string
-            description: Project slug.
-          required: true
-          description: Project slug.
-          name: projectId
-          in: path
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                brief:
-                  type: string
-                target:
-                  type: object
-                  properties:
-                    targetId:
-                      type: string
-                      minLength: 1
-                    readinessProbeUrl:
-                      type: string
-                      nullable: true
-                    origin:
-                      type: string
-                      nullable: true
-                limits:
-                  type: object
-                  properties:
-                    cycleMode:
-                      type: string
-                      enum:
-                        - continuous
-                        - finite
-                    maxCycles:
-                      type: integer
-                      nullable: true
-                      minimum: 0
-                      exclusiveMinimum: true
-                    maxWallTimeMs:
-                      type: number
-                      minimum: 0
-                      exclusiveMinimum: true
-                    maxStageTimeoutMs:
-                      type: number
-                      minimum: 0
-                      exclusiveMinimum: true
-                    maxRetriesPerStage:
-                      type: integer
-                      minimum: 0
-                      maximum: 2
-                    maxCostUsd:
-                      type: number
-                      nullable: true
-                      minimum: 0
-                      exclusiveMinimum: true
-                credentialOwnerUserId:
-                  type: string
-      responses:
-        "201":
-          description: Run started.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotRunSnapshot"
-        "400":
-          description: Invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "403":
-          description: Autopilot is disabled.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "404":
-          description: Project or run not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "409":
-          description: Conflict with persisted Autopilot state.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-  /api/projects/{projectId}/autopilot/runs/{runId}:
-    get:
-      tags:
-        - Autopilot
-      summary: Read an Autopilot run
-      parameters:
-        - schema:
-            type: string
-            description: Project slug.
-          required: true
-          description: Project slug.
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Autopilot run id.
-          required: true
-          description: Autopilot run id.
-          name: runId
-          in: path
-      responses:
-        "200":
-          description: Run snapshot.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotRunSnapshot"
-        "404":
-          description: Project or run not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-  /api/projects/{projectId}/autopilot/pause:
-    post:
-      tags:
-        - Autopilot
-      summary: Pause an Autopilot run
-      description: Drains the active cycle without starting another. Returns pausing until in-flight operations settle, then paused.
-      parameters:
-        - schema:
-            type: string
-            description: Project slug.
-          required: true
-          description: Project slug.
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Pause accepted.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotRunSnapshot"
-        "400":
-          description: Invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "403":
-          description: Autopilot is disabled.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "404":
-          description: Project or run not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "409":
-          description: Conflict with persisted Autopilot state.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-  /api/projects/{projectId}/autopilot/resume:
-    post:
-      tags:
-        - Autopilot
-      summary: Resume a paused Autopilot run
-      description: Rechecks ownership, limits and the deployed revision before returning the run to running. Stopped runs cannot be resumed.
-      parameters:
-        - schema:
-            type: string
-            description: Project slug.
-          required: true
-          description: Project slug.
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Run resumed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotRunSnapshot"
-        "400":
-          description: Invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "403":
-          description: Autopilot is disabled.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "404":
-          description: Project or run not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "409":
-          description: Conflict with persisted Autopilot state.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-  /api/projects/{projectId}/autopilot/stop:
-    post:
-      tags:
-        - Autopilot
-      summary: Stop an Autopilot run
-      description: Persists cancellation before cancelling sessions, Finalize, deploy and tests. Late callbacks cannot advance the stopped generation. Idempotent.
-      parameters:
-        - schema:
-            type: string
-            description: Project slug.
-          required: true
-          description: Project slug.
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Run stopped or stopping finished.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotRunSnapshot"
-        "400":
-          description: Invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "403":
-          description: Autopilot is disabled.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "404":
-          description: Project or run not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "409":
-          description: Conflict with persisted Autopilot state.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-  /api/projects/{projectId}/autopilot/disable:
-    post:
-      tags:
-        - Autopilot
-      summary: Disable Autopilot for a project
-      description: Clears the project opt-in and invokes Stop when a run is active.
-      parameters:
-        - schema:
-            type: string
-            description: Project slug.
-          required: true
-          description: Project slug.
-          name: projectId
-          in: path
-      responses:
-        "200":
-          description: Project Autopilot disabled.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotProjectState"
-        "400":
-          description: Invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "403":
-          description: Autopilot is disabled.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "404":
-          description: Project or run not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "409":
-          description: Conflict with persisted Autopilot state.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-  /api/projects/{projectId}/autopilot/operations/{operationId}/complete:
-    post:
-      tags:
-        - Autopilot
-        - internal
-      summary: Complete an Autopilot operation
-      description: Worker callback. Rejected when the fencing generation is stale or the run is stopping/stopped.
-      parameters:
-        - schema:
-            type: string
-            description: Project slug.
-          required: true
-          description: Project slug.
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            description: Stable Autopilot operation id.
-          required: true
-          description: Stable Autopilot operation id.
-          name: operationId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                fencingGeneration:
-                  type: integer
-                outcome:
-                  type: string
-                  enum:
-                    - succeeded
-                    - failed
-                    - ambiguous
-                result:
-                  nullable: true
-              required:
-                - fencingGeneration
-                - outcome
-      responses:
-        "200":
-          description: Operation settled.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotOperation"
-        "400":
-          description: Invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "403":
-          description: Autopilot is disabled.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "404":
-          description: Project or run not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
-        "409":
-          description: Conflict with persisted Autopilot state.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AutopilotErrorResponse"
   /api/sessions/{sessionId}/background-shells:
     get:
       summary: List background shells for a session
@@ -22884,6 +21868,7 @@ paths:
                   enum:
                     - chat
                     - isolated
+                    - autopilot
                     - design
                     - scoping
                     - skill-builder
@@ -23161,6 +22146,7 @@ paths:
                   enum:
                     - chat
                     - isolated
+                    - autopilot
                     - design
                     - scoping
                     - skill-builder
@@ -24246,6 +23232,7 @@ paths:
                   enum:
                     - chat
                     - isolated
+                    - autopilot
                     - design
                     - scoping
                     - skill-builder
@@ -24274,6 +23261,80 @@ paths:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "503":
           description: Session environment transition support is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/autopilot:
+    post:
+      tags:
+        - Sessions
+      summary: Configure and start Autopilot on a session
+      description: Persists duration, brief, goal, escalation, and a named feature branch, pins Finalize to push (never merge), and kicks the implement → push → preview-verify loop on this same session.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                durationHours:
+                  type: integer
+                  minimum: 0
+                  maximum: 72
+                brief:
+                  type: string
+                  minLength: 1
+                  maxLength: 8000
+                goal:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+                escalation:
+                  type: string
+                  enum:
+                    - none
+                    - low
+                    - medium
+                    - high
+                branch:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+              required:
+                - durationHours
+                - brief
+                - goal
+                - escalation
+                - branch
+      responses:
+        "200":
+          description: Autopilot started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed or the named branch could not be bound.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: The opening Autopilot turn was not accepted.
           content:
             application/json:
               schema:

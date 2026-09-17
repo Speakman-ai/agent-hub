@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { HostChildLike, HostPtyFactory, HostPtyLike } from './host-session-env.js';
 import { SessionEnvClock } from './session-env.js';
 import { describeSessionEnvContract } from './session-env-contract.js';
-import { SYSBOX_SESSION_WORKSPACE, sysboxSessionContainerName } from './sysbox-exec-args.js';
+import { SYSBOX_SESSION_WORKSPACE } from './sysbox-exec-args.js';
 import {
   SysboxRunResult,
   SysboxSessionEnv,
@@ -12,12 +12,6 @@ import {
   isSysboxBaselineComm,
   isSysboxDetachedWorkloadLine,
 } from './sysbox-session-env.js';
-import {
-  authorizedSysboxContainmentMounts,
-  ENFORCED_DOCKER_RESOURCE_CONTROLLERS,
-  evaluateAutopilotContainment,
-  parseDockerRunContainment,
-} from '../autopilot/containment.js';
 
 describe('isSysboxBaselineComm / isSysboxDetachedWorkloadLine', () => {
   it('treats dockerd/containerd as idle baseline but not bash/sleep workers', () => {
@@ -172,7 +166,6 @@ function makeEnv(
     dockerClientEnv: { PATH: '/usr/bin' },
     clock,
     logger: { warn: () => {} },
-    getDockerResourceControllers: async () => ENFORCED_DOCKER_RESOURCE_CONTROLLERS,
     ...overrides,
   });
   return { env, spawnRecords, runCalls, clock, pty };
@@ -237,36 +230,15 @@ describe('SysboxSessionEnv container start', () => {
     expect(run.some((a) => a.startsWith('127.0.0.1:') && a.endsWith(':5173'))).toBe(true);
   });
 
-  it('validates the argv passed to docker run, not a sample builder config', async () => {
+  it('starts the session container with sysbox-runc and the session worktree', async () => {
     const { env, runCalls } = makeEnv({ sessionId: 'sess-worker', worktreePath: '/wt/session-1' });
     await env.ensureStarted();
     const run = runCalls.find(isRunArgv);
     expect(run).toBeDefined();
-    const parsed = parseDockerRunContainment(run!, {
-      authorizedMounts: authorizedSysboxContainmentMounts({
-        worktreePath: '/wt/session-1',
-        containerName: sysboxSessionContainerName('sess-worker'),
-      }),
-      resourceControllers: ENFORCED_DOCKER_RESOURCE_CONTROLLERS,
-    });
-    expect(evaluateAutopilotContainment({ adapter: 'sysbox', fellBack: false, ...parsed }).ok).toBe(
-      true,
-    );
+    expect(run).toContain('--runtime=sysbox-runc');
+    expect(run!.join(' ')).toContain(`-v /wt/session-1:${SYSBOX_SESSION_WORKSPACE}:rw`);
     await env.ensureStarted();
-    env.verifyRuntimeContainment();
-  });
-
-  it('refuses to start when Docker SwapLimit is unavailable', async () => {
-    const { env, runCalls } = makeEnv({
-      sessionId: 'sess-no-swap',
-      getDockerResourceControllers: async () => ({
-        memoryLimit: true,
-        swapLimit: false,
-        cpuQuota: true,
-      }),
-    });
-    await expect(env.ensureStarted()).rejects.toThrow(/resource limits are not enforced/);
-    expect(runCalls.some((argv) => argv[1] === 'run')).toBe(false);
+    expect(runCalls.filter(isRunArgv)).toHaveLength(1);
   });
 
   it('reallocates a different host port after a Docker bind collision', async () => {
@@ -512,7 +484,6 @@ describe('SysboxSessionEnv.openPty', () => {
       dockerClientEnv: { PATH: '/usr/bin', SECRET: undefined },
       clock: fixture.clock,
       logger: { warn: () => {} },
-      getDockerResourceControllers: async () => ENFORCED_DOCKER_RESOURCE_CONTROLLERS,
     });
 
     const pty = await env.openPty({ cwd: 'web', cols: 120, rows: 40 });

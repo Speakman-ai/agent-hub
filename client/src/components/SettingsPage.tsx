@@ -1255,7 +1255,6 @@ export function ProjectsSection({
   const [repoTesting, setRepoTesting] = useState<Record<string, any>>({});
   const [repoTestResult, setRepoTestResult] = useState<Record<string, any>>({});
 
-  const [autopilotSaving, setAutopilotSaving] = useState<Record<string, boolean>>({});
   // Per-project AWS-enabled toggle (in-flight guard while persisting).
   const [awsSaving, setAwsSaving] = useState<Record<string, any>>({});
   // Per-project Infrastructure-enabled toggle (in-flight guard while persisting).
@@ -1278,26 +1277,6 @@ export function ProjectsSection({
   }, [initialExpandedProjectId, projects]);
 
   // --- Per-project handlers ---
-
-  const toggleAutopilotEnabled = async (project: any) => {
-    if (autopilotSaving[project.id]) return;
-    if (
-      project.autopilotEnabled &&
-      !window.confirm('Disable Autopilot? Any active run is stopped.')
-    )
-      return;
-    setAutopilotSaving((prev) => ({ ...prev, [project.id]: true }));
-    try {
-      if (project.autopilotEnabled) await api.disableAutopilot(project.id);
-      else await api.putAutopilotConfig(project.id, { enabled: true });
-      await onProjectsChange?.();
-    } catch (err: any) {
-      if (showToast) showToast(err?.message || 'Failed to update Autopilot', 'error');
-      else alert(err?.message || 'Failed to update Autopilot');
-    } finally {
-      setAutopilotSaving((prev) => ({ ...prev, [project.id]: false }));
-    }
-  };
 
   const toggleAwsEnabled = async (project: any) => {
     const next = !project.awsEnabled;
@@ -1423,29 +1402,6 @@ export function ProjectsSection({
         showToast={showToast}
         onProjectsChange={onProjectsChange}
       />
-
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <span className="text-sm text-gray-200">Autopilot</span>
-          <p className="text-xs text-gray-500">
-            Enable experimental Autopilot for this project. Its sidebar entry appears when enabled.
-            Disabling stops any active run.
-          </p>
-        </div>
-        <button
-          onClick={() => toggleAutopilotEnabled(p)}
-          disabled={autopilotSaving[p.id]}
-          data-testid={`project-autopilot-enabled-${p.id}`}
-          role="switch"
-          aria-label="Autopilot"
-          aria-checked={!!p.autopilotEnabled}
-          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${p.autopilotEnabled ? 'bg-emerald-600' : 'bg-gray-600'}`}
-        >
-          <span
-            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${p.autopilotEnabled ? 'translate-x-4' : 'translate-x-0.5'}`}
-          />
-        </button>
-      </div>
 
       {/* AWS toggle — when enabled, an "AWS" entry appears in the
                         per-project sidebar where SSO profiles are managed. */}

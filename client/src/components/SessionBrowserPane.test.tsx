@@ -71,6 +71,7 @@ describe('SessionBrowserPane', () => {
       /Waiting for the agent/,
     );
     expect(screen.getByText(/goes live the moment the agent runs/)).toBeInTheDocument();
+    expect(screen.queryByTestId('session-browser-surface')).toBeNull();
     expect(screen.queryByTestId('session-browser-frame')).toBeNull();
   });
 
@@ -82,6 +83,7 @@ describe('SessionBrowserPane', () => {
         status: 'live',
         url: 'https://example.com/',
         viewport: { width: 1280, height: 720 },
+        surface: 'web',
       }),
     );
     act(() =>
@@ -100,8 +102,23 @@ describe('SessionBrowserPane', () => {
     expect((screen.getByTestId('session-browser-url') as HTMLInputElement).value).toBe(
       'https://example.com/docs',
     );
-    expect(screen.getByText('public web')).toBeInTheDocument();
+    expect(screen.getByTestId('session-browser-surface').textContent).toMatch(/public web/i);
     expect(screen.getByText('Agent browser')).toBeInTheDocument();
+  });
+
+  it('labels the live surface as preview when the agent is driving the preview Chromium', () => {
+    const { socket } = mountAndOpen();
+    act(() =>
+      socket.receive({
+        type: 'state',
+        status: 'live',
+        url: 'http://127.0.0.1:4123/',
+        viewport: { width: 1280, height: 720 },
+        surface: 'preview',
+      }),
+    );
+    expect(screen.getByTestId('session-browser-surface').textContent).toMatch(/preview/i);
+    expect(screen.queryByText('public web')).toBeNull();
   });
 
   it('forwards URL-bar submissions as navigate frames and surfaces refusals', () => {

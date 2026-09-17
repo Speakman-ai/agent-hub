@@ -26,7 +26,12 @@
  */
 
 import type { BrowserSessionOptions } from '../browser.js';
-import { closeBrowserSession, DEFAULT_TIMEOUT_MS } from '../browser.js';
+import {
+  closeBrowserSession,
+  DEFAULT_TIMEOUT_MS,
+  incrementBrowserToolOpEntered,
+  notifyBrowserToolOpEnded,
+} from '../browser.js';
 import {
   browserClick,
   browserExtract,
@@ -86,6 +91,10 @@ export const PREVIEW_REACT_OP_SET: ReadonlySet<string> = new Set(PREVIEW_REACT_O
  * available even when the generic `browser` tool is off — every engine can
  * screenshot the running app. `start` / `state` / `logs` are host-side and
  * always on.
+ *
+ * These are also exactly the ops that must register as in-flight browser tool
+ * ops on `preview:<sessionId>`, so the Agent browser pane routes to the preview
+ * surface and human viewer input is excluded while an agent step runs.
  */
 export const PREVIEW_DRIVE_OPS: ReadonlySet<string> = new Set([
   'screenshot',
@@ -352,6 +361,29 @@ export function formatPreviewLaunchFailedMarkdown(msg: string): string {
  * the model can act on.
  */
 export async function runPreviewReActStep(
+  chatSessionId: string,
+  input: PreviewReActActionInput,
+  deps: PreviewReActDeps,
+): Promise<BrowserReActStepOutcome> {
+  const opRaw = typeof input.op === 'string' ? input.op.trim().toLowerCase() : '';
+  // Only the browser-driving ops must register as in-flight against the
+  // preview registry id: that is what routes the Agent browser pane onto the
+  // preview surface and blocks human viewer input mid-step. Lifecycle/observe
+  // ops (start/state/logs) run without touching the counter. Pair entry/exit
+  // in a finally so a thrown drive op still decrements (routing/input recover).
+  if (!PREVIEW_DRIVE_OPS.has(opRaw)) {
+    return runPreviewReActStepInner(chatSessionId, input, deps);
+  }
+  const previewRegistryId = previewBrowserSessionId(chatSessionId);
+  incrementBrowserToolOpEntered(previewRegistryId);
+  try {
+    return await runPreviewReActStepInner(chatSessionId, input, deps);
+  } finally {
+    notifyBrowserToolOpEnded(previewRegistryId);
+  }
+}
+
+async function runPreviewReActStepInner(
   chatSessionId: string,
   input: PreviewReActActionInput,
   deps: PreviewReActDeps,

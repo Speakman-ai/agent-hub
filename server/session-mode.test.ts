@@ -21,6 +21,7 @@ describe('session-mode helpers', () => {
     expect(SESSION_MODES).toEqual([
       'chat',
       'isolated',
+      'autopilot',
       'design',
       'scoping',
       'skill-builder',
@@ -39,6 +40,7 @@ describe('session-mode helpers', () => {
       expect(isSessionMode('skill-builder')).toBe(true);
       expect(isSessionMode('consult')).toBe(true);
       expect(isSessionMode('isolated')).toBe(true);
+      expect(isSessionMode('autopilot')).toBe(true);
     });
 
     it('rejects unknown strings and non-strings', () => {
@@ -120,9 +122,10 @@ describe('session-mode helpers', () => {
   });
 
   describe('isShippingCompatibleSessionMode', () => {
-    it('is true for chat and isolated only', () => {
+    it('is true for chat, isolated, and autopilot only', () => {
       expect(isShippingCompatibleSessionMode('chat')).toBe(true);
       expect(isShippingCompatibleSessionMode('isolated')).toBe(true);
+      expect(isShippingCompatibleSessionMode('autopilot')).toBe(true);
       expect(isShippingCompatibleSessionMode('design')).toBe(false);
       expect(isShippingCompatibleSessionMode('consult')).toBe(false);
       expect(isShippingCompatibleSessionMode('hub')).toBe(false);

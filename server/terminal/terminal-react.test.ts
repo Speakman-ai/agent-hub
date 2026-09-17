@@ -179,7 +179,7 @@ describe('runTerminalReActStep', () => {
   it('tells Finalize reviewers that op exec is not a file-read channel', async () => {
     const r = await runTerminalReActStep(
       SESSION_ID,
-      { op: 'exec', command: 'cat server/autopilot/controller.ts' },
+      { op: 'exec', command: 'cat server/session-autopilot.ts' },
       deps(makeView()),
     );
     expect(r.hostExit).toBe(1);

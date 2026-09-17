@@ -69,6 +69,13 @@ export const VM_AUTOMATION_OPTION = {
     'Run this session in an intentional Firecracker microVM — Build/Push/Merge still work like chat',
 } as Record<string, any>;
 
+export const AUTOPILOT_AUTOMATION_OPTION = {
+  value: 'autopilot',
+  label: 'Autopilot',
+  description:
+    'Named-branch loop: implement, push, verify in preview, repeat until the goal or time runs out — never auto-merge',
+} as Record<string, any>;
+
 /**
  * Session-control values offered on workflow projects (no build/push/finalize).
  * Design is included: worktree-less workflow design sessions store artifacts in
@@ -90,6 +97,7 @@ export const SESSION_CONTROL_OPTIONS = [
   SCOPING_AUTOMATION_OPTION,
   SKILL_BUILDER_AUTOMATION_OPTION,
   VM_AUTOMATION_OPTION,
+  AUTOPILOT_AUTOMATION_OPTION,
   ...FINALIZE_AUTOMATION_OPTIONS,
 ];
 
@@ -142,6 +150,7 @@ export function sessionControlValue({ sessionMode, askMode, automation }: any = 
   if (sessionMode === 'consult') return 'consult';
   if (sessionMode === 'hub') return 'consult';
   if (sessionMode === 'isolated') return 'isolated';
+  if (sessionMode === 'autopilot') return 'autopilot';
   if (askMode) return 'consult';
   return parseFinalizeAutomation(automation);
 }
@@ -166,7 +175,9 @@ export function planSessionControlChange(current: any, target: any, options: any
               ? 'hub'
               : current?.sessionMode === 'isolated'
                 ? 'isolated'
-                : 'chat';
+                : current?.sessionMode === 'autopilot'
+                  ? 'autopilot'
+                  : 'chat';
   const askMode = !!current?.askMode;
   const automation = parseFinalizeAutomation(current?.automation);
   const currentValue = sessionControlValue({ sessionMode, askMode, automation });
@@ -216,13 +227,21 @@ export function planSessionControlChange(current: any, target: any, options: any
     return steps;
   }
 
+  if (target === 'autopilot') {
+    clearLegacyAsk();
+    if (automation !== 'push') steps.push({ type: 'automation', value: 'push' });
+    steps.push({ type: 'mode', value: 'autopilot' });
+    return steps;
+  }
+
   // Ship levels: leaving design/consult/… returns to chat; leaving isolated
   // keeps session_mode isolated (same ship surface as chat).
   if (
     sessionMode === 'design' ||
     sessionMode === 'scoping' ||
     sessionMode === 'skill-builder' ||
-    sessionMode === 'consult'
+    sessionMode === 'consult' ||
+    sessionMode === 'autopilot'
   ) {
     steps.push({ type: 'mode', value: 'chat' });
   }

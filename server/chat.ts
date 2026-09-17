@@ -34,21 +34,7 @@ import { buildSessionEventBroadcast } from './session-event-broadcast.js';
 import { offloadToolResultImages } from './tool-result-images.js';
 import config, { resolveAgentHubApiBaseForSpawn, resolveGrokSpawnModel } from './config.js';
 import { cursorSandboxArgs } from './cursor-sandbox-args.js';
-import {
-  resolveSessionCliSpawnEnv,
-  EngineAuthRequiredError,
-  AutopilotWorkerCredentialError,
-} from './per-user-cli-spawn.js';
-import { readAutopilotSessionBinding } from './autopilot/worker-token.js';
-import {
-  appendEvaluatorBrowserAction,
-  recordEvaluatorBrowserCapture,
-} from './autopilot/evaluation-captures.js';
-import {
-  localTargetBrowserPolicy,
-  localTargetNavigateAllowed,
-  LOCAL_TARGET_WORKER_HINT,
-} from './autopilot/local-target-worker.js';
+import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from './per-user-cli-spawn.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import {
   resolveProjectPaths,
@@ -150,6 +136,7 @@ import {
   isConsultModeActive,
   isScopingModeActive,
   isHubModeActive,
+  isAutopilotModeActive,
 } from './session-mode.js';
 import {
   buildDesignModePreamble,
@@ -171,6 +158,7 @@ import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
 import { buildHubModePreamble } from './hub-mode-prompt.js';
+import { buildAutopilotModePreamble, parseAutopilotSessionConfig } from './session-autopilot.js';
 import { isSkillBuilderModeActive, isConsultBehaviorActive } from './session-mode.js';
 import { formatEpicSpecDecisionsForContext, loadChosenSpecItemsForEpic } from './epic-spec.js';
 import {
@@ -941,7 +929,7 @@ export function buildEnrichedPrompt(
   // reminder on later turns).
   if (browserToolsOn) {
     prompt += `\n\n## Browser Automation Available
-You have access to a real Chromium browser in this session (host Playwright). When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access or a browser. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. Ops: \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`. **Two browsers, two surfaces:** the \`browser\` tool is the public-web Chromium (observations end with \`Surface: web\`; the human watches it live in the **Agent browser** pane and can click/type there too). For this session's **dev preview** use \`{"tool":"preview",…}\` (including \`op":"start"\`) — a separate Chromium pinned to the preview origin (observations end with \`Surface: preview\`); the generic browser tool cannot reach it (loopback is blocked there) and the preview tool cannot leave it. To see whether the running app rendered, emit \`{"tool":"preview","op":"screenshot"}\` (naked XML tag, never a code fence) then read the saved image path if your engine can view images — the observation also includes visible page text so every engine can tell if \`/\` is blank.`;
+You have access to a real Chromium browser in this session (host Playwright). When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access or a browser. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. Ops: \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`. **Two browsers, two surfaces:** the \`browser\` tool is the public-web Chromium (observations end with \`Surface: web\`). For this session's **dev preview** use \`{"tool":"preview",…}\` (including \`op":"start"\`) — a separate Chromium pinned to the preview origin (observations end with \`Surface: preview\`); the generic browser tool cannot reach it (loopback is blocked there) and the preview tool cannot leave it. The human watches **whichever Chromium you are driving** live in the **Agent browser** pane and can click/type there too. To see whether the running app rendered, emit \`{"tool":"preview","op":"screenshot"}\` (naked XML tag, never a code fence) then read the saved image path if your engine can view images — the observation also includes visible page text so every engine can tell if \`/\` is blank.`;
   } else if (isDevServerConfigured(project.prEnv?.devServer)) {
     prompt += `\n\n## Preview screenshots
 The generic \`browser\` tool is off for this agent, but you can still verify **this session's running preview** with a naked \`<agenthub:react>{"actions":[{"tool":"preview","op":"screenshot"}]}</agenthub:react>\` block (never a code fence). The host returns a saved image path plus visible page text. Do not probe localhost ports with Bash.`;
@@ -3242,6 +3230,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         enrichedPrompt = `${skillBuilderPreamble}\n\n${enrichedPrompt}`;
       }
 
+      if (isAutopilotModeActive(session!)) {
+        const autopilotPreamble = buildAutopilotModePreamble(
+          parseAutopilotSessionConfig(session!.autopilot_session_config),
+        );
+        if (autopilotPreamble) enrichedPrompt = `${autopilotPreamble}\n\n${enrichedPrompt}`;
+      }
+
       if (isHubModeActive(session!)) {
         const hubTurn = augmentChatTurnForHubMode({
           session: session!,
@@ -3705,13 +3700,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           engine,
         });
       } catch (err) {
-        if (
-          err instanceof EngineAuthRequiredError ||
-          err instanceof AutopilotWorkerCredentialError
-        ) {
-          // Refuse to spawn rather than borrow another identity, run a CLI
-          // that would silently 401, or (for Autopilot workers) fall through
-          // to the Hub break-glass key after the run token was revoked.
+        if (err instanceof EngineAuthRequiredError) {
+          // Refuse to spawn rather than borrow another identity or run a CLI
+          // that would silently 401.
           saveErrorMessage(sessionId, assistantMsgId, engine, model, err.message);
           broadcast({
             type: 'error',
@@ -5955,58 +5946,34 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   }),
                 );
                 const browserOpStartMs = Date.now();
-                const evalBinding = readAutopilotSessionBinding(sessionId, config.dataDir);
-                const evalOrigin =
-                  evalBinding?.role === 'evaluator' && evalBinding.origin
-                    ? evalBinding.origin.replace(/\/+$/, '')
-                    : null;
-                const evalPolicy = evalOrigin ? localTargetBrowserPolicy(evalOrigin) : undefined;
                 let b: Awaited<ReturnType<typeof runBrowserReActStep>>;
-                if (
-                  evalOrigin &&
-                  browserInput.op === 'navigate' &&
-                  browserInput.url &&
-                  !localTargetNavigateAllowed(browserInput.url, evalOrigin)
-                ) {
-                  b = {
-                    markdown: `## Browser tool error\n${LOCAL_TARGET_WORKER_HINT}`,
-                    hostExit: 1,
-                    hostDetail: 'local_target_pin',
-                    ui: {
-                      summary: 'Navigation blocked',
-                      errorLine: LOCAL_TARGET_WORKER_HINT,
+                try {
+                  b = await runBrowserReActStep(
+                    sessionId,
+                    {
+                      op: browserInput.op,
+                      url: browserInput.url,
+                      target: browserInput.target,
+                      text: browserInput.text,
+                      instruction: browserInput.instruction,
+                      schema: browserInput.schema,
+                      direction: browserInput.direction,
+                      condition: browserInput.condition,
                     },
-                  };
-                } else {
-                  try {
-                    b = await runBrowserReActStep(
-                      sessionId,
-                      {
-                        op: browserInput.op,
-                        url: browserInput.url,
-                        target: browserInput.target,
-                        text: browserInput.text,
-                        instruction: browserInput.instruction,
-                        schema: browserInput.schema,
-                        direction: browserInput.direction,
-                        condition: browserInput.condition,
-                      },
-                      browserLaunchOpts,
-                      evalPolicy,
-                    );
-                  } catch (err: unknown) {
-                    emitBrowserActivityEvent(
-                      buildBrowserActivityEndedThrowEvent({
-                        actionId,
-                        op: browserInput.op || 'unknown',
-                        label: startLabel,
-                        startedAtMs,
-                        durationMs: Date.now() - browserOpStartMs,
-                        err,
-                      }),
-                    );
-                    throw err;
-                  }
+                    browserLaunchOpts,
+                  );
+                } catch (err: unknown) {
+                  emitBrowserActivityEvent(
+                    buildBrowserActivityEndedThrowEvent({
+                      actionId,
+                      op: browserInput.op || 'unknown',
+                      label: startLabel,
+                      startedAtMs,
+                      durationMs: Date.now() - browserOpStartMs,
+                      err,
+                    }),
+                  );
+                  throw err;
                 }
 
                 emitBrowserActivityEvent(
@@ -6026,34 +5993,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   screenshotWsUrl: b.ui?.screenshotWsUrl,
                 });
                 if (shot) broadcast(shot);
-                if (evalBinding?.role === 'evaluator' && evalBinding.operationId) {
-                  appendEvaluatorBrowserAction(config.dataDir, evalBinding.operationId, {
-                    op: browserInput.op,
-                    at: new Date().toISOString(),
-                    ok: b.hostExit === 0,
-                    ...(typeof browserInput.url === 'string' ? { url: browserInput.url } : {}),
-                    ...(typeof browserInput.target === 'string'
-                      ? { target: browserInput.target }
-                      : {}),
-                  });
-                }
-                if (
-                  evalBinding?.role === 'evaluator' &&
-                  (b.savedScreenshotPath || b.pageSnapshot) &&
-                  evalBinding.operationId &&
-                  evalBinding.deploymentId &&
-                  evalBinding.expectedSha
-                ) {
-                  recordEvaluatorBrowserCapture({
-                    dataDir: config.dataDir,
-                    binding: evalBinding,
-                    operationId: evalBinding.operationId,
-                    deploymentId: evalBinding.deploymentId,
-                    expectedSha: evalBinding.expectedSha,
-                    screenshotPath: b.savedScreenshotPath,
-                    page: b.pageSnapshot ?? null,
-                  });
-                }
                 if (b.markdown.trim()) {
                   assistantContextToAppend = assistantContextToAppend
                     ? `${assistantContextToAppend}\n\n${b.markdown.trim()}`

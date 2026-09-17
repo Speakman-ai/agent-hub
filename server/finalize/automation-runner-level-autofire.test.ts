@@ -129,6 +129,50 @@ describe('finalize automation — level drives end-of-turn auto-fire', () => {
     expect(startFinalizeRunBackground).not.toHaveBeenCalled();
   });
 
+  it('auto-starts a follow-up Finalize for Autopilot after the previous run pushed', async () => {
+    // Autopilot skips the post-push lock so it can push the named branch
+    // repeatedly. Without also skipping the latest-run `pushed` early-return,
+    // cycle 2 sits idle after the agent commits (3d-printing Autopilot stall).
+    const session = makeSession({ session_mode: 'autopilot' });
+    const pushed = { id: 'run-1', status: 'pushed' } as FinalizeRunRow;
+    setFinalizeAutomationRouteDeps({
+      stmts: {
+        getSession: { get: () => session },
+        getLatestFinalizeRunForSession: { get: () => pushed },
+        getPushedFinalizeRunForSession: { get: () => pushed },
+        getFinalizeRun: { get: () => undefined },
+      },
+      findAgent: () => ({ project: { id: 'p1' } }),
+      broadcast: vi.fn(),
+      config: {},
+    } as unknown as RouteDeps);
+
+    await maybeAutoStartFinalizeForSession('s1');
+    expect(startFinalizeRunBackground).toHaveBeenCalledTimes(1);
+  });
+
+  it('still refuses a follow-up auto-start when latest run is pushed and the session is not Autopilot', async () => {
+    const session = makeSession({ session_mode: 'chat' });
+    setFinalizeAutomationRouteDeps({
+      stmts: {
+        getSession: { get: () => session },
+        getLatestFinalizeRunForSession: {
+          get: () => ({ id: 'run-1', status: 'pushed' }) as FinalizeRunRow,
+        },
+        // Lock unset (no pushed-run lookup hit) so the latest-status gate is
+        // the one under test — Autopilot is the only mode that may pass it.
+        getPushedFinalizeRunForSession: { get: () => undefined },
+        getFinalizeRun: { get: () => undefined },
+      },
+      findAgent: () => ({ project: { id: 'p1' } }),
+      broadcast: vi.fn(),
+      config: {},
+    } as unknown as RouteDeps);
+
+    await maybeAutoStartFinalizeForSession('s1');
+    expect(startFinalizeRunBackground).not.toHaveBeenCalled();
+  });
+
   it('does not auto-push after the session has pushed through Finalize', async () => {
     wireRouteDeps(makeSession({ auto_ship_on_complete: 1 }), { status: 'pushed' });
     await maybeAutoPushReadyFinalizeRun({ sessionId: 's1', runId: 'run1' });

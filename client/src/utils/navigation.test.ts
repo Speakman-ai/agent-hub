@@ -172,6 +172,10 @@ describe('navigation defaults', () => {
       hubPane: 'today',
     });
     expect(parseNavigationHash('#/drive')).toMatchObject({ view: 'hub', projectId: null });
+    expect(parseNavigationHash('#/autopilot/agent-hub')).toMatchObject({
+      view: 'hub',
+      projectId: null,
+    });
   });
 
   it('round-trips currentView strings that already carry their own target', () => {

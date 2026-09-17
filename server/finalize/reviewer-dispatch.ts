@@ -950,7 +950,7 @@ export function renderOmittedPatchList(files: string[]): string {
 /**
  * Reorder a unified diff so implementation patches precede tests and
  * generated files. Git emits alphabetical order, which puts a 30 KB
- * `containment.test.ts` ahead of `controller.ts` / `worker-authority.ts`.
+ * `sysbox-session-env.test.ts` ahead of `session-autopilot.ts`.
  * When the model only attends to the head of a large always-apply rule,
  * that order is how acceptance-criteria files look "omitted".
  *

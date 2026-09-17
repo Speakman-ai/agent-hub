@@ -3170,6 +3170,109 @@ export async function switchSessionWorkspaceBranch(
   return positioned;
 }
 
+export type AutopilotBranchCheckoutResult =
+  | { kind: 'ready'; branch: string }
+  | { kind: 'error'; message: string };
+
+/**
+ * Position a session worktree on a user-named Autopilot branch.
+ *
+ * If the branch already exists on origin, check it out (resume). Otherwise cut
+ * a new branch from origin/<default>. Refuses the repo default branch. Hub
+ * owns this checkout — the agent must not switch branches afterwards.
+ */
+export async function checkoutAutopilotSessionBranch(
+  session: SessionRow,
+  branch: string,
+  hostedBarePath?: string | null,
+  githubRepo?: string | null,
+): Promise<AutopilotBranchCheckoutResult> {
+  const worktreePath = session.worktree_path;
+  if (!worktreePath) {
+    return { kind: 'error', message: 'Session worktree is not provisioned' };
+  }
+
+  if (hostedBarePath) {
+    await ensureOriginPointsAtHostedRepo(worktreePath, hostedBarePath);
+  }
+
+  const defaultBranch = await getDefaultBranch(worktreePath);
+  if (branch === defaultBranch) {
+    return {
+      kind: 'error',
+      message: `Cannot run Autopilot on the repository default branch '${defaultBranch}'`,
+    };
+  }
+
+  let current = '';
+  try {
+    current = (await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: worktreePath })).trim();
+  } catch {
+    current = '';
+  }
+  if (current === branch) {
+    return { kind: 'ready', branch };
+  }
+
+  let porcelain = '';
+  try {
+    porcelain = (await runGit(['status', '--porcelain'], { cwd: worktreePath })).trim();
+  } catch (err: unknown) {
+    return {
+      kind: 'error',
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+  if (porcelain) {
+    return {
+      kind: 'error',
+      message: 'Session worktree has uncommitted changes; start Autopilot from a clean session',
+    };
+  }
+
+  const tokenOwnerId = await resolveWorktreeTokenOwnerId(
+    session.owner_user_id ?? null,
+    githubRepo ?? null,
+  );
+  const userToken = await resolveUserGithubToken(tokenOwnerId, {
+    oauthCredentials: resolveOAuthAppCredentials(config),
+  });
+  const authArgs = userToken ? gitAuthArgsForGithubPat(userToken) : [];
+  const positioned = await positionCloneOnExistingBranch({
+    cloneDir: worktreePath,
+    branch,
+    authArgs,
+    userToken,
+    defaultBranch,
+  });
+  if (positioned.kind === 'positioned') {
+    return { kind: 'ready', branch };
+  }
+  if (positioned.kind === 'error') {
+    return { kind: 'error', message: positioned.message };
+  }
+
+  try {
+    await fetchWithRetry(
+      [
+        ...authArgs,
+        'fetch',
+        'origin',
+        `${defaultBranch}:refs/remotes/origin/${defaultBranch}`,
+        '--depth',
+        '1',
+      ],
+      { cwd: worktreePath, timeoutMs: FETCH_TIMEOUT_MS },
+    );
+    await runGit(['checkout', '-B', branch, `origin/${defaultBranch}`], { cwd: worktreePath });
+    return { kind: 'ready', branch };
+  } catch (err: unknown) {
+    const raw = err instanceof Error ? err.message : String(err);
+    const normalized = normalizeGitCloneAuthError(raw, authArgs.length > 0);
+    return { kind: 'error', message: redactAuthHeader(redactToken(normalized, userToken)) };
+  }
+}
+
 /**
  * Get (or create) the dedicated worktree clone for a chat session.
  *
@@ -3355,7 +3458,7 @@ async function ensureSessionWorkspaceUnlocked(
 
   const wsDir = ensureWorkspaceDir(projectCwd);
   const cloneDir = path.join(wsDir, safeName);
-  const branchName = `agent-hub/${agentId}/${safeName}`;
+  const branchName = session.worktree_branch?.trim() || `agent-hub/${agentId}/${safeName}`;
 
   if (cloneLooksComplete(cloneDir)) {
     await refreshSessionCloneRemotes({
@@ -3481,8 +3584,17 @@ async function ensureSessionWorkspaceUnlocked(
     // head is the fork-PR / deleted-branch case that safely falls back to a
     // fresh session branch, whereas a user-chosen branch that has vanished is
     // an explicit error (never silently open a new branch / duplicate PR).
+    //
+    // Autopilot is the third case: its branch is a "position on it if it exists
+    // on origin, else cut it fresh" name. Startup records it as
+    // `worktree_checkout_branch` (and `worktree_branch`) before provisioning, so
+    // an existing remote feature branch resumes from its tip instead of starting
+    // from the base. A *missing* Autopilot branch must fall back to a fresh
+    // branch of that same name, not error — so it opts out of `requireExactBranch`.
+    const isAutopilotSession = session.session_mode === 'autopilot';
     const requestedExistingBranch = resolvePrHeadBranch ?? worktreeCheckoutBranch;
-    const requireExactBranch = !resolvePrHeadBranch && !!worktreeCheckoutBranch;
+    const requireExactBranch =
+      !resolvePrHeadBranch && !!worktreeCheckoutBranch && !isAutopilotSession;
 
     if (requestedExistingBranch) {
       // Never position onto the repo default branch — Finalize would then push

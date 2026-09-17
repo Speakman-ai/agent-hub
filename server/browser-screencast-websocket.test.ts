@@ -27,6 +27,7 @@ class FakeFeedHost implements BrowserScreencastFeedHost {
       status: 'live',
       url: 'https://example.com/',
       viewport: { width: 1280, height: 720 },
+      surface: 'web',
     });
     return () => {
       this.detachCount += 1;
@@ -170,6 +171,7 @@ describe('agent browser WebSocket route', () => {
       status: 'live',
       url: 'https://example.com/',
       viewport: { width: 1280, height: 720 },
+      surface: 'web',
     });
     expect(host.attached[0]).toMatchObject({
       sessionId: 'owned',

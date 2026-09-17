@@ -175,6 +175,28 @@ export function initOrgsDb(): void {
     CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets(token_hash);
   `);
 
+  // Upgrade cleanup: revoke the retired scoped Autopilot worker credentials
+  // (`autopilot:<projectId>:<runId>[:eval]`). Their issuer and the middleware
+  // that restricted them were removed; a surviving unexpired row would
+  // otherwise authenticate with its owner's full membership role. Idempotent
+  // (matches only `revoked_at IS NULL`). Auth also rejects the namespace
+  // directly (see api-keys-store.verifyApiKey) — this clears the stored rows.
+  try {
+    const revoked = orgsDb
+      .prepare(
+        `UPDATE api_keys SET revoked_at = datetime('now')
+         WHERE name LIKE 'autopilot:%' AND revoked_at IS NULL`,
+      )
+      .run();
+    if (revoked.changes > 0) {
+      console.log(`[orgs] Revoked ${revoked.changes} retired Autopilot worker api_key(s)`);
+    }
+  } catch (err: unknown) {
+    console.warn(
+      `[orgs] Failed to revoke retired Autopilot worker keys: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   orgsDb.exec(USER_SKILL_CREDENTIALS_SCHEMA);
   orgsDb.exec(USER_SKILL_OPTIONS_SCHEMA);
   // Per-user Google OAuth connection (tokens encrypted at rest). Separate

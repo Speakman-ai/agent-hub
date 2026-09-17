@@ -54,6 +54,7 @@ describe('enrichSessionForClient', () => {
   it('finalize_status is null when stmts is omitted', () => {
     const wire = enrichSessionForClient(minimalSession({}));
     expect(wire.finalize_status).toBeNull();
+    expect(wire.finalize_pushed_count).toBe(0);
   });
 
   it('can_design_mode mirrors sessionHasUsableWorktree (worktree presence)', () => {
@@ -124,6 +125,16 @@ describe('enrichSessionForClient', () => {
       setSessionProjectResolver(null);
       setFirecrackerBackendRegistered(false);
     }
+  });
+
+  it('finalize_pushed_count counts pushed Finalize runs when stmts is provided', () => {
+    const stmts = {
+      getKanbanCardBySession: { get: () => undefined },
+      getLatestFinalizeRunForSession: { get: () => ({ status: 'pushed' }) },
+      countPushedFinalizeRunsForSession: { get: () => ({ c: 4 }) },
+    } as unknown as Stmts;
+    const wire = enrichSessionForClient(minimalSession({}), stmts);
+    expect(wire.finalize_pushed_count).toBe(4);
   });
 
   it('finalize_status reflects the latest finalize run status when stmts is provided', () => {

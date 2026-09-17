@@ -56,13 +56,14 @@ describe('deriveSessionFinalizeMode', () => {
 });
 
 describe('SESSION_CONTROL_OPTIONS', () => {
-  it('lists Consult, Design, Scoping, Skill Builder, VM, then the four finalize levels', () => {
+  it('lists Consult, Design, Scoping, Skill Builder, VM, Autopilot, then the four finalize levels', () => {
     expect(SESSION_CONTROL_OPTIONS.map((o: any) => o.value)).toEqual([
       'consult',
       'design',
       'scoping',
       'skill-builder',
       'isolated',
+      'autopilot',
       'manual',
       'review',
       'push',
@@ -159,6 +160,26 @@ describe('planSessionControlChange', () => {
       ),
     ).toEqual([{ type: 'automation', value: 'push' }]);
   });
+  it('selecting Autopilot pins Build and Push; leaving it returns to chat', () => {
+    expect(
+      planSessionControlChange(
+        { sessionMode: 'chat', askMode: false, automation: 'manual' },
+        'autopilot',
+      ),
+    ).toEqual([
+      { type: 'automation', value: 'push' },
+      { type: 'mode', value: 'autopilot' },
+    ]);
+    expect(
+      planSessionControlChange(
+        { sessionMode: 'autopilot', askMode: false, automation: 'push' },
+        'review',
+      ),
+    ).toEqual([
+      { type: 'mode', value: 'chat' },
+      { type: 'automation', value: 'review' },
+    ]);
+  });
   it('workflow project non-ship transitions do not write finalize automation', () => {
     expect(
       sessionControlPatch(
@@ -192,6 +213,7 @@ describe('sessionControlOptionsForProject', () => {
     );
     expect(opts.map((o: any) => o.value)).toContain('consult');
     expect(opts.map((o: any) => o.value)).toContain('isolated');
+    expect(opts.map((o: any) => o.value)).toContain('autopilot');
     expect(opts.map((o: any) => o.value)).toContain('manual');
   });
   it('hides VM on dev projects until the server capability is enabled', () => {
