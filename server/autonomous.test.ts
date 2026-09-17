@@ -1731,7 +1731,7 @@ describe('runAutonomousLoop — dispatch', () => {
   });
 
   it('dispatches a To Do card that still carries dispatched_by_autonomous=1 (requeue livelock)', async () => {
-    // Regression: `reconcileOrphanedTasks` (server restart) and the dispatch
+    // Regression: Manual requeue and the dispatch
     // `rollbackCard` (session spawn failed after the slot claim) both requeue a
     // card to To Do but leave `dispatched_by_autonomous = 1` — the flag is
     // never cleared. The candidate SQL (`getEligibleAutonomousCards`) ignores

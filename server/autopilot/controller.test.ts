@@ -97,6 +97,101 @@ async function startReady(controller: ReturnType<typeof createAutopilotControlle
 }
 
 describe('autopilot controller', () => {
+  it.each(['disabled', 'missing'])(
+    'leaves %s projects untouched during deadlines, restart and late completion',
+    async (configState) => {
+      let now = new Date('2026-09-17T00:00:00Z');
+      const cancel = vi.fn();
+      const { db, controller } = freshController({ now: () => now, cancelSideEffects: cancel });
+      try {
+        const started = await startReady(controller);
+        const op = await controller.beginOperation({
+          projectId: PROJECT,
+          kind: 'implement',
+          sessionId: 'sess-1',
+        });
+        if (configState === 'missing') {
+          db.prepare('DELETE FROM autopilot_project_config WHERE project_id = ?').run(PROJECT);
+        } else {
+          db.prepare('UPDATE autopilot_project_config SET enabled = 0 WHERE project_id = ?').run(
+            PROJECT,
+          );
+        }
+        const before = controller.getRun(PROJECT, started.run.id);
+        now = new Date('2026-09-17T02:00:00Z');
+        expect(await controller.enforceDeadlines()).toEqual([]);
+        expect(await controller.reconcileAfterRestart()).toEqual([]);
+        await expect(
+          controller.completeOperation({
+            operationId: op.id,
+            fencingGeneration: op.fencingGeneration,
+            outcome: 'succeeded',
+          }),
+        ).rejects.toMatchObject({ code: 'not_enabled' });
+        expect(cancel).not.toHaveBeenCalled();
+        expect(controller.getRun(PROJECT, started.run.id)).toEqual(before);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'finishes explicit disable cleanup after restart (enabled=%s)',
+    async (enabled) => {
+      const cancel = vi.fn(() => [
+        { kind: 'session' as const, id: 'owned-session', message: 'temporarily unavailable' },
+      ]);
+      const { db, controller } = freshController({ cancelSideEffects: cancel });
+      try {
+        await startReady(controller);
+        await controller.beginOperation({
+          projectId: PROJECT,
+          kind: 'implement',
+          sessionId: 'owned-session',
+        });
+        await expect(controller.disable(PROJECT, ACTOR)).rejects.toMatchObject({
+          code: 'cancel_failed',
+        });
+        db.prepare('UPDATE autopilot_project_config SET enabled = ? WHERE project_id = ?').run(
+          enabled ? 1 : 0,
+          PROJECT,
+        );
+        const recoveredCancel = vi.fn((_refs: AutopilotCancelRefs) => undefined);
+        const restarted = createAutopilotController({
+          db,
+          holderId: 'hub-b',
+          cancelSideEffects: recoveredCancel,
+        });
+        await restarted.reconcileAfterRestart();
+        expect(recoveredCancel).toHaveBeenCalledTimes(1);
+        expect(recoveredCancel.mock.calls[0][0].sessionIds).toEqual(['owned-session']);
+        const state = restarted.getProjectState(PROJECT);
+        expect(state.config.enabled).toBe(false);
+        expect(state.config.disabling).toBe(false);
+        expect(state.activeRun).toBeNull();
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it('requires the disable action to turn off a project with an active run', async () => {
+    const { db, controller } = freshController();
+    try {
+      await startReady(controller);
+      expect(() => controller.putConfig(PROJECT, { enabled: false }, ACTOR)).toThrow(
+        /disable action/i,
+      );
+      expect(controller.getProjectState(PROJECT).config.enabled).toBe(true);
+      const disabled = await controller.disable(PROJECT, ACTOR);
+      expect(disabled.config.enabled).toBe(false);
+      expect(disabled.activeRun).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
   beforeEach(() => {
     vi.useRealTimers();
   });

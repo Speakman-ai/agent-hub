@@ -392,7 +392,7 @@ registerPath({
   tags: ['Autopilot'],
   summary: 'Save Autopilot project configuration',
   description:
-    'Persists the project opt-in, versioned brief, local target, limits and credential owner. Project enablement may be saved before setup. Starting requires the complete configuration, including a loopback origin and readiness probe on the dedicated experiment target. Unattended deploy authority applies only to that target. Does not start a run.',
+    'Persists the project opt-in, versioned brief, local target, limits and credential owner. Project enablement may be saved before setup. Starting requires the complete configuration, including a loopback origin and readiness probe on the dedicated experiment target. Unattended deploy authority applies only to that target. Does not start a run. Setting enabled=false while a run is active returns 409; use the disable action to stop owned work before turning the project off.',
   request: {
     params: projectParams,
     body: { content: jsonContent(PutAutopilotConfigRequestSchema) },

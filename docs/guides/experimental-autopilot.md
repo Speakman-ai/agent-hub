@@ -35,6 +35,12 @@ control for project enablement. The module stays hidden from navigation until
 enabled, and opening its URL while disabled points back to Project Configuration.
 There is no server toggle.
 
+Autopilot timers, completion callbacks, deadline sweeps, and restart recovery skip
+projects that have not opted in, even if stale run records remain. Explicit Disable
+finishes cancelling its owned work before clearing enablement. API callers cannot
+clear `enabled` through the config endpoint while a run is active; use the
+`/autopilot/disable` action instead (config PUT returns 409).
+
 You can enable a project before supplying a brief, target, or credentials.
 Enabling reveals the module; it does not start work. The same persisted flag
 controls visibility and run eligibility, with no separate module switch.

@@ -17,7 +17,7 @@ import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { stmts, initDb, getDb } from './db.js';
 import { startDbCheckpointScheduler } from './db-checkpoint.js';
-import { MAX_RESUME_ATTEMPTS, shouldGiveUpAutoResume } from './resume-attempts.js';
+import { reconcileOrphanedTasks, type ResumeEntry } from './orphaned-tasks.js';
 import { createGitSmartHttpRoutes } from './git-host/smart-http.js';
 import createGitHostRoutes from './routes/git-host.js';
 import createSecurityAuditRoutes from './routes/security-audit.js';
@@ -156,11 +156,6 @@ import {
 import { handleWorktreeFailure } from './worktree-failure.js';
 import { installShutdownHandlers } from './process-groups.js';
 import { markSessionTermination } from './process-termination.js';
-import {
-  buildRestartResumeNotice,
-  buildRestartResumePrompt,
-  type KilledBackgroundShell,
-} from './restart-resume-notice.js';
 import { cancelSessionChatRun } from './session-chat-cancel.js';
 import { cancelAutopilotSideEffects as runAutopilotSideEffectCancel } from './autopilot/cancel-side-effects.js';
 
@@ -419,8 +414,6 @@ import type {
   SessionRow,
   ActiveTaskRow,
   MessageRow,
-  KanbanCardRow,
-  KanbanColumnRow,
   Project,
 } from './types.js';
 
@@ -2515,198 +2508,6 @@ function drainQueue(sessionId: string): void {
   }
 }
 
-interface OrphanedTaskRow extends ActiveTaskRow {
-  streamed_output: string;
-  prompt: string;
-}
-
-interface ResumeEntry {
-  sessionId: string;
-  agentId: string;
-  content: string;
-}
-
-function reconcileOrphanedTasks(): ResumeEntry[] {
-  let orphans: OrphanedTaskRow[] = [];
-  try {
-    orphans = stmts!.getAllActiveTasks.all() as OrphanedTaskRow[];
-  } catch {
-    return [];
-  }
-  if (orphans.length === 0) return [];
-  console.log(`Reconciling ${orphans.length} orphaned task(s) from prior run`);
-
-  const toResume: ResumeEntry[] = [];
-
-  for (const t of orphans) {
-    const partial = (t.streamed_output || '').trim();
-
-    let isAutonomousCard = false;
-    try {
-      const card = stmts!.getKanbanCardBySession.get(t.session_id) as KanbanCardRow | undefined;
-      if (card && card.epic_id) {
-        isAutonomousCard = true;
-        const col = stmts!.getKanbanColumn.get(card.column_id) as KanbanColumnRow | undefined;
-        if (col) {
-          const cols = stmts!.getKanbanColumns.all(col.board_id) as KanbanColumnRow[];
-          const todoCol = cols.find((c) => c.name.toLowerCase() === 'to do');
-          if (todoCol) {
-            stmts!.moveKanbanCard.run(todoCol.id, 0, card.id);
-          }
-        }
-        stmts!.updateKanbanCard.run(
-          card.title,
-          card.description,
-          card.priority,
-          null,
-          card.labels,
-          null,
-          card.github_issue_url,
-          card.pr_url,
-          card.epic_id,
-          card.phase_id ?? null,
-          card.assign_model ?? null,
-          card.assign_engine ?? null,
-          card.pr_base_branch ?? null,
-          card.id,
-        );
-        console.log(
-          `[Autonomous] Reset orphaned card "${card.title}" back to To Do for re-dispatch`,
-        );
-        const suffix = partial ? `\n\nPartial output before interruption:\n${partial}` : '';
-        saveErrorMessage!(
-          t.session_id,
-          t.message_id,
-          t.engine,
-          t.model ?? '',
-          `Task interrupted by server restart.${suffix}`,
-        );
-      }
-    } catch (err) {
-      console.error(
-        `[Autonomous] Failed to reset card for session ${t.session_id}:`,
-        (err as Error).message,
-      );
-    }
-
-    if (isAutonomousCard) continue;
-
-    const session = stmts!.getSession.get(t.session_id) as SessionRow | undefined;
-    if (!session) {
-      console.log(`[Resume] Session ${t.session_id} no longer exists, skipping`);
-      continue;
-    }
-
-    // Crash-loop guard: if this session has already been auto-resumed
-    // MAX_RESUME_ATTEMPTS times without any turn completing cleanly, stop
-    // re-spawning it and surface an error so a human can pick it up.
-    //
-    // We deliberately do NOT reset resume_attempts here — the cap must stay
-    // durable. Giving up permanently stops the loop: this orphan's
-    // active_tasks row is cleared by deleteAllActiveTasks below and we don't
-    // re-spawn, so nothing re-creates a task for this session next boot.
-    // Leaving the counter at the cap means that even if a later spawn is
-    // itself interrupted before completing, we keep failing closed instead of
-    // silently re-entering the loop with a fresh budget. The counter is reset
-    // only by a turn that actually runs to a clean process exit (see
-    // resetSessionResumeAttempts in chat.ts proc.on('close')) — i.e. real
-    // forward progress, which is exactly the human-initiated turn that
-    // supersedes the give-up state.
-    const priorAttempts = session.resume_attempts ?? 0;
-    if (shouldGiveUpAutoResume(priorAttempts)) {
-      const suffix = partial ? `\n\nPartial output before interruption:\n${partial}` : '';
-      saveErrorMessage!(
-        t.session_id,
-        t.message_id,
-        t.engine,
-        t.model ?? '',
-        `Session repeatedly interrupted by server restarts (${priorAttempts}/${MAX_RESUME_ATTEMPTS} auto-resume attempts) and was not resumed again to avoid a crash loop. Send a message to continue.${suffix}`,
-      );
-      console.warn(
-        `[Resume] Session ${t.session_id} hit MAX_RESUME_ATTEMPTS (${priorAttempts}/${MAX_RESUME_ATTEMPTS}); not auto-resuming`,
-      );
-      continue;
-    }
-
-    // The restart drained this session's CLI child by process *group*, so every
-    // background job, dev server, test run and build it had started died too.
-    // Both the transcript line and the resume prompt say so explicitly —
-    // otherwise the resumed agent keeps polling work the Hub already killed.
-    let killedShells: KilledBackgroundShell[] = [];
-    try {
-      killedShells = backgroundShellRuntime.listBootOrphans(t.session_id).map((row) => ({
-        id: row.id,
-        command: row.command,
-        label: row.label,
-      }));
-    } catch (err) {
-      console.warn(
-        `[Resume] Failed to list killed background shells for ${t.session_id}:`,
-        (err as Error).message,
-      );
-    }
-
-    const infoMsgId: string = uuidv4();
-    const infoText: string = buildRestartResumeNotice({ partial, killedShells });
-    try {
-      stmts!.addMessage.run(
-        infoMsgId,
-        t.session_id,
-        'assistant',
-        infoText,
-        t.engine,
-        t.model,
-        null,
-        null,
-        null,
-        null,
-        null,
-      );
-      stmts!.touchSession.run(t.session_id);
-    } catch (err) {
-      console.error(
-        `[Resume] Failed to save info message for session ${t.session_id}:`,
-        (err as Error).message,
-      );
-    }
-
-    const resumeContent: string = buildRestartResumePrompt({
-      hasEngineSession: Boolean(session.engine_session_id),
-      taskPrompt: t.prompt,
-      killedShells,
-    });
-
-    // Record the attempt before re-spawning. A clean process exit later resets
-    // this to 0 (see resetSessionResumeAttempts in chat.ts proc.on('close')),
-    // so the counter only grows while the server keeps dying mid-turn.
-    try {
-      stmts!.incrementSessionResumeAttempts.run(t.session_id);
-    } catch (err) {
-      console.error(
-        `[Resume] Failed to increment resume_attempts for session ${t.session_id}:`,
-        (err as Error).message,
-      );
-    }
-
-    toResume.push({
-      sessionId: t.session_id,
-      agentId: t.agent_id,
-      content: resumeContent,
-    });
-
-    const worktreeGone: boolean = !!session.worktree_path && !existsSync(session.worktree_path);
-    console.log(
-      `[Resume] Will resume session ${t.session_id} (agent: ${t.agent_id}, hasEngineSession: ${!!session.engine_session_id}${worktreeGone ? ', worktree missing — cross-worktree resume' : ''})`,
-    );
-  }
-
-  try {
-    stmts!.deleteAllActiveTasks.run();
-  } catch {}
-
-  return toResume;
-}
-
 function resumeOrphanedSessions(toResume: ResumeEntry[]): void {
   if (!toResume || toResume.length === 0) return;
 
@@ -2933,7 +2734,13 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       console.error('[browser] capability check errored:', (e as Error).message),
     );
 
-    const sessionsToResume: ResumeEntry[] = reconcileOrphanedTasks();
+    const autopilotStore = new AutopilotStore(getDb());
+    const sessionsToResume = reconcileOrphanedTasks({
+      stmts: stmts!,
+      saveErrorMessage: saveErrorMessage!,
+      listKilledShells: (sessionId) => backgroundShellRuntime.listBootOrphans(sessionId),
+      isAutopilotSession: (sessionId) => !!autopilotStore.getOperationBySessionId(sessionId),
+    });
 
     try {
       const drained = drainIdleQueuedSessions({
@@ -3000,8 +2807,8 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
         .catch((e) => console.error('[autopilot] reconcileAfterRestart', (e as Error).message));
       if (process.env.NODE_ENV !== 'test') {
         // Runtime driver: advances active runs' plan → implement → finalize
-        // spine using concrete adapters. Gated on the operator flag; a no-op
-        // when Autopilot is disabled (the default).
+        // spine using concrete adapters. Each entry point checks project opt-in;
+        // disabled and unconfigured projects are a no-op.
         const autopilotRuntime = buildAutopilotRuntime({
           routeDeps,
           resolveWorkerAgent: (projectId) => {

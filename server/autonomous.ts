@@ -1281,10 +1281,9 @@ async function runAutonomousLoopInner(
         // is a *sticky* marker (set on first dispatch, backfilled from
         // `autonomous_iterations`, read later by auto-ship). A card that was
         // dispatched once and then legitimately returned to To Do keeps the
-        // flag: `reconcileOrphanedTasks` (server restart) and the dispatch
-        // `rollbackCard` (session spawn failed after the claim) both requeue to
-        // To Do WITHOUT clearing it. Gating on the flag rejected those cards at
-        // claim on every subsequent tick while the candidate SQL (which ignores
+        // flag: the dispatch `rollbackCard` (session spawn failed after
+        // the claim) and manual requeue both return it to To Do WITHOUT clearing
+        // it. Gating on the flag rejected those cards at claim on every subsequent tick while the candidate SQL (which ignores
         // the flag) kept re-selecting them — "already claimed by a concurrent
         // dispatch loop or moved" forever, and the epic/phase never resumes.
         //

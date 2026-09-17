@@ -94,6 +94,21 @@ beforeEach(() => {
 });
 
 describe('autopilot routes', () => {
+  it('requires explicit disable to turn off an active run', async () => {
+    const app = makeApp('Admin');
+    const base = `/api/projects/${PROJECT_ID}/autopilot`;
+    await request(app).put(`${base}/config`).send(READY).expect(200);
+    await request(app).post(`${base}/start`).send({}).expect(201);
+    const rejected = await request(app).put(`${base}/config`).send({ enabled: false }).expect(409);
+    expect(rejected.body.code).toBe('conflict');
+    const state = await request(app).get(base).expect(200);
+    expect(state.body.config.enabled).toBe(true);
+    expect(state.body.activeRun.run.controlState).toBe('running');
+    const disabled = await request(app).post(`${base}/disable`).send({}).expect(200);
+    expect(disabled.body.config.enabled).toBe(false);
+    expect(disabled.body.activeRun).toBeNull();
+  });
+
   it('returns disabled project state before configuration', async () => {
     const res = await request(makeApp('User')).get(`/api/projects/${PROJECT_ID}/autopilot`);
     expect(res.status).toBe(200);

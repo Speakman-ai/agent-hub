@@ -1,7 +1,7 @@
 /**
  * Crash-loop guard for automatic post-restart session resume.
  *
- * When the server restarts mid-turn, `reconcileOrphanedTasks` (index.ts)
+ * When the server restarts mid-turn, `reconcileOrphanedTasks` (orphaned-tasks.ts)
  * re-spawns each orphaned session on boot. Without a cap, a server stuck in a
  * crash/restart loop (e.g. a bad deploy that dies before any turn completes)
  * would re-spawn the same sessions on every boot forever.

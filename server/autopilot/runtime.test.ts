@@ -6,6 +6,7 @@ import { buildFinalizeOps, readFinalizeOutcome } from './wiring.js';
 import type { RouteDeps } from '../types.js';
 import { AutopilotStore } from './store.js';
 import { ensureAutopilotSchema } from './schema.js';
+import { AUTOPILOT_STAGES, type AutopilotRunRecord } from './types.js';
 import type {
   AutopilotDeployResult,
   AutopilotFinalizeResult,
@@ -93,6 +94,87 @@ function buildController(db: Database.Database) {
 }
 
 describe('autopilot runtime driver', () => {
+  it.each(['disabled', 'missing', 'disabling'])(
+    'ignores stale runs and callbacks when project config is %s',
+    async (configState) => {
+      const db = new Database(':memory:');
+      try {
+        ensureAutopilotSchema(db);
+        const controller = buildController(db);
+        controller.putConfig(PROJECT, { enabled: true, ...READY }, ACTOR);
+        const started = controller.start(PROJECT, {}, ACTOR);
+        for (const kind of ['implement', 'evaluate', 'finalize', 'deploy']) {
+          await controller.beginOperation({
+            projectId: PROJECT,
+            kind,
+            sessionId: kind === 'implement' || kind === 'evaluate' ? kind : undefined,
+            finalizeRunId: kind === 'finalize' ? kind : undefined,
+            deploymentId: kind === 'deploy' ? kind : undefined,
+          });
+        }
+        if (configState === 'missing') {
+          db.prepare('DELETE FROM autopilot_project_config WHERE project_id = ?').run(PROJECT);
+        } else {
+          db.prepare(
+            'UPDATE autopilot_project_config SET enabled = ?, disabling = ? WHERE project_id = ?',
+          ).run(configState === 'disabled' ? 0 : 1, configState === 'disabling' ? 1 : 0, PROJECT);
+        }
+        const before = controller.getRun(PROJECT, started.run.id);
+        const adapters = vi.fn((_run: AutopilotRunRecord) => fakeAdapters());
+        const readSession = vi.fn(() => ({ committed: true, commitSha: 'abc' }));
+        const readFinalize = vi.fn(() => ({ status: 'merged' as const, mergedSha: 'abc' }));
+        const readDeploy = vi.fn(() => ({
+          status: 'success' as const,
+          deploymentId: 'deploy',
+          deployedSha: 'abc',
+        }));
+        const readEvaluate = vi.fn(() => null);
+        const log = vi.fn();
+        const runtime = createAutopilotRuntime({
+          db,
+          buildController: () => controller,
+          buildAdapters: adapters,
+          readSessionOutcome: readSession,
+          readFinalizeOutcome: readFinalize,
+          readDeployOutcome: readDeploy,
+          readEvaluateOutcome: readEvaluate,
+          log,
+        });
+        const store = new AutopilotStore(db);
+        for (const stage of AUTOPILOT_STAGES) {
+          store.updateRun(started.run.id, { stage });
+          await runtime.tick();
+        }
+        store.updateRun(started.run.id, { stage: before.run.stage });
+        await runtime.settleSession('implement');
+        await runtime.settleSession('evaluate');
+        await runtime.settleFinalize('finalize');
+        await runtime.settleDeployment('deploy');
+        for (const spy of [adapters, readSession, readFinalize, readDeploy, readEvaluate, log]) {
+          expect(spy).not.toHaveBeenCalled();
+        }
+        expect(controller.getRun(PROJECT, started.run.id)).toEqual(before);
+
+        // Unrelated ordinary sessions/finalizations/deployments never enter Autopilot.
+        await runtime.settleSession('ordinary-session');
+        await runtime.settleFinalize('ordinary-finalize');
+        await runtime.settleDeployment('ordinary-deploy');
+        expect(adapters).not.toHaveBeenCalled();
+
+        // A neighboring opted-in project still advances on the same timer.
+        controller.putConfig('enabled-neighbor', { enabled: true, ...READY }, ACTOR);
+        const neighbor = controller.start('enabled-neighbor', {}, ACTOR);
+        await runtime.tick();
+        expect(adapters).toHaveBeenCalledTimes(1);
+        expect(adapters.mock.calls[0][0].projectId).toBe('enabled-neighbor');
+        expect(store.getRun(neighbor.run.id)?.stage).toBe('implementing');
+        expect(controller.getRun(PROJECT, started.run.id)).toEqual(before);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
   it('drives a run from planning to a merged SHA across ticks', async () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');

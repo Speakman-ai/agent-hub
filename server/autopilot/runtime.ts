@@ -71,9 +71,9 @@ export interface AutopilotRuntimeDeps {
  * it advances every active run's plan → implement → finalize spine by
  * constructing the orchestrator with concrete adapters and either dispatching
  * the current stage's work or reconciling a dispatched operation's real
- * outcome. It only touches runs whose project has Autopilot enabled and whose
- * server operator gate is on (both enforced by the controller it builds), so
- * with the feature disabled by default this driver is a no-op.
+ * outcome. Every entry point checks project opt-in before constructing adapters
+ * or reading outcomes. Disabled, unconfigured and disabling projects are no-ops;
+ * the controller separately owns explicit stop/disable cleanup.
  */
 export class AutopilotRuntime {
   private readonly db: Database.Database;
@@ -107,7 +107,7 @@ export class AutopilotRuntime {
   async tick(): Promise<void> {
     const store = new AutopilotStore(this.db);
     for (const run of store.listActiveRuns()) {
-      if (run.controlState !== 'running') continue;
+      if (!this.canDriveRun(store, run)) continue;
       try {
         await this.driveRun(run);
       } catch (err) {
@@ -118,6 +118,11 @@ export class AutopilotRuntime {
         }
       }
     }
+  }
+
+  private canDriveRun(store: AutopilotStore, run: AutopilotRunRecord): boolean {
+    const config = store.getConfig(run.projectId);
+    return run.controlState === 'running' && config.enabled && !config.disabling;
   }
 
   private isBenign(err: unknown): boolean {
@@ -170,7 +175,7 @@ export class AutopilotRuntime {
       const op = store.getOperationBySessionId(sessionId);
       if (!op || op.status !== 'in_flight') return;
       const run = store.getRun(op.runId);
-      if (!run || run.controlState !== 'running') return;
+      if (!run || !this.canDriveRun(store, run)) return;
       if (op.kind === 'implement') {
         const outcome = this.readSessionOutcome(sessionId);
         if (!outcome) return;
@@ -207,7 +212,7 @@ export class AutopilotRuntime {
       const op = store.getOperationByFinalizeRunId(finalizeRunId);
       if (!op || op.kind !== 'finalize' || op.status !== 'in_flight') return;
       const run = store.getRun(op.runId);
-      if (!run || run.controlState !== 'running') return;
+      if (!run || !this.canDriveRun(store, run)) return;
       const outcome = this.readFinalizeOutcome(finalizeRunId);
       if (!outcome) return;
       const orchestrator = this.orchestratorFor(run);
@@ -231,7 +236,7 @@ export class AutopilotRuntime {
       const op = store.getOperationByDeploymentId(deploymentId);
       if (!op || op.kind !== 'deploy' || op.status !== 'in_flight') return;
       const run = store.getRun(op.runId);
-      if (!run || run.controlState !== 'running') return;
+      if (!run || !this.canDriveRun(store, run)) return;
       const outcome = this.readDeployOutcome(deploymentId);
       if (!outcome) return;
       const orchestrator = this.orchestratorFor(run);

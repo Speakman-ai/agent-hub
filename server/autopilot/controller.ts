@@ -484,15 +484,21 @@ export class AutopilotController {
     return config.isolationAdapter === 'host' && config.hostAdapterAck === true;
   }
 
+  private requireProjectEnabled(projectId: string): AutopilotProjectConfig {
+    const config = this.store.getConfig(projectId);
+    if (!config.enabled) {
+      throw new AutopilotError('not_enabled', 'Autopilot is not enabled for this project');
+    }
+    return config;
+  }
+
   private requireProjectDispatchable(projectId: string): AutopilotProjectConfig {
-    const config = this.requireNotDisabling(projectId);
+    this.requireNotDisabling(projectId);
+    const config = this.requireProjectEnabled(projectId);
     this.assertContainment({
       allowHostAdapter: this.allowHostAdapter(config),
       adapterMode: config.isolationAdapter,
     });
-    if (!config.enabled) {
-      throw new AutopilotError('not_enabled', 'Autopilot is not enabled for this project');
-    }
     return config;
   }
 
@@ -665,6 +671,12 @@ export class AutopilotController {
         throw new AutopilotError(
           'conflict',
           'Autopilot configuration was modified since it was loaded; reload and retry',
+        );
+      }
+      if (!enabled && this.store.getActiveRun(projectId)) {
+        throw new AutopilotError(
+          'conflict',
+          'Use the Autopilot disable action to stop the active run before turning off the project',
         );
       }
       if (pendingBrief) {
@@ -1204,6 +1216,8 @@ export class AutopilotController {
   async enforceDeadlines(): Promise<AutopilotRunSnapshot[]> {
     const snapshots: AutopilotRunSnapshot[] = [];
     for (const run of this.store.listActiveRuns()) {
+      const config = this.store.getConfig(run.projectId);
+      if (!config.enabled || config.disabling) continue;
       if (run.controlState === 'stopped' || run.controlState === 'stopping') continue;
       try {
         this.requireHeldLease(run.projectId, run);
@@ -1436,6 +1450,7 @@ export class AutopilotController {
         'Late callback cannot advance a stopped generation',
       );
     }
+    this.requireProjectEnabled(run.projectId);
     if (
       input.fencingGeneration !== run.fencingGeneration ||
       op.fencingGeneration !== run.fencingGeneration
@@ -1968,6 +1983,10 @@ export class AutopilotController {
     const snapshots: AutopilotRunSnapshot[] = [];
     for (const run of this.store.listActiveRuns()) {
       if (run.controlState === 'stopped') continue;
+      const config = this.store.getConfig(run.projectId);
+      // An explicit disable owns cleanup until stop has finished. Other
+      // disabled/unconfigured projects must not be changed by boot recovery.
+      if (!config.enabled && !(config.disabling && run.controlState === 'stopping')) continue;
       const fencingGeneration = this.store.transaction(() => {
         const next = this.fenceRestartLease(run, now);
         this.store.updateRun(run.id, { fencingGeneration: next, updatedAt: now });
