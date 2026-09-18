@@ -1099,7 +1099,7 @@ registerPath({
   tags: ['Sessions'],
   summary: 'Switch the model for a session',
   description:
-    "Two-step validation: `model` must be in `config.allValidModels` (the cross-engine union), AND in the current session engine's `engineValidModels` list. Returns 400 otherwise.",
+    "Validates the model against the current engine's allowed models, including installed Codex capabilities. A changed model on a running session interrupts the current turn and sends Continue with the saved model. Idle sessions and unchanged selections do not start a turn.",
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(PutSessionModelRequestSchema) },

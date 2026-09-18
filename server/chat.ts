@@ -437,7 +437,6 @@ interface BuildEnrichedPromptOptions {
 }
 
 interface InternalChatMessage extends ChatMessage {
-  interrupt?: boolean;
   hookSpecificOutput?: { sessionTitle?: string; [key: string]: unknown };
   _autoContinuation?: boolean;
   _continuationDepth?: number;

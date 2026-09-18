@@ -80,6 +80,7 @@ import type {
   MessageRow,
   SessionRow,
   BackgroundTaskRow,
+  ActiveTaskRow,
   SessionEventRow,
   SessionProgressRow,
   CheckpointRow,
@@ -99,6 +100,7 @@ import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
 import { buildExtractSkillKickoffPrompt, buildExtractSkillSessionName } from '../skill-extract.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
+import { isSessionChatBusy } from '../session-chat-busy.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 import { buildForwardedSessionTitle } from '../session-title.js';
 import { checkWorktreeChanges } from '../auto-git.js';
@@ -2185,7 +2187,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(enrichSessionForClient(session, stmts));
   });
 
-  router.put('/api/sessions/:sessionId/model', (req: Request, res: Response) => {
+  router.put('/api/sessions/:sessionId/model', async (req: Request, res: Response) => {
     const parsed = parseBody(PutSessionModelRequestSchema, req, res);
     if (!parsed) return;
     const { model } = parsed;
@@ -2212,9 +2214,24 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         error: `Model "${model}" is not valid for engine "${engine}". Allowed: ${allowed.join(', ')}`,
       });
     }
+    const modelChanged = session.model !== model;
     stmts.updateSessionModel.run(model, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
-    res.json(enrichSessionForClient(updated, stmts));
+    const enriched = enrichSessionForClient(updated, stmts);
+    broadcast({ type: 'session-updated', session: enriched });
+    const task = stmts.getActiveTask.get(session.id) as ActiveTaskRow | undefined;
+    if (modelChanged && isSessionChatBusy(session.id, activeProcesses, task)) {
+      // The interrupt queue preserves pending messages and starts Continue only
+      // after the current turn exits, reading the newly persisted model.
+      await handleChat(null, {
+        type: 'chat',
+        sessionId: session.id,
+        agentId: session.agent_id,
+        content: 'Continue',
+        interrupt: true,
+      });
+    }
+    res.json(enriched);
   });
 
   // NOTE: `PUT /api/sessions/:sessionId/worktree` was removed when Agent

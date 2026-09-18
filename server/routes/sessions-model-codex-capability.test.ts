@@ -2,7 +2,7 @@ import express from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CodexModelsCache } from '../codex-model-capability.js';
-import type { RouteDeps, SessionRow } from '../types.js';
+import type { ChatMessage, RouteDeps, SessionRow } from '../types.js';
 
 // Stub only the per-user cache read; keep the real `resolveSelectableCodexModels`
 // so the overlay logic under test actually runs. This mirrors what
@@ -61,6 +61,7 @@ function makeApp(options: { session?: Partial<SessionRow> } = {}) {
       }),
     },
     getSession: { get: vi.fn(() => session) },
+    getActiveTask: { get: vi.fn(() => undefined as unknown) },
     getSessionAgents: { all: vi.fn(() => []) },
     getKanbanCardBySession: { get: vi.fn(() => undefined) },
   };
@@ -84,11 +85,13 @@ function makeApp(options: { session?: Partial<SessionRow> } = {}) {
       projectName: 'agent-hub',
     })),
     broadcast: vi.fn(),
+    activeProcesses: new Map(),
+    handleChat: vi.fn().mockResolvedValue(undefined),
   } as unknown as RouteDeps;
   const app = express();
   app.use(express.json());
   app.use(createSessionRoutes(deps));
-  return { app, session, stmts };
+  return { app, session, stmts, deps };
 }
 
 describe('PUT /api/sessions/:sessionId/model — codex capability overlay', () => {
@@ -140,5 +143,76 @@ describe('PUT /api/sessions/:sessionId/model — codex capability overlay', () =
     await request(app).put('/api/sessions/sess-1/model').send({ model: 'gpt-5.5' }).expect(200);
 
     expect(stmts.updateSessionModel.run).toHaveBeenCalledWith('gpt-5.5', 'sess-1');
+  });
+});
+
+describe('PUT /api/sessions/:sessionId/model during a turn', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    readCodexModelsCacheForUser.mockReturnValue(null);
+  });
+
+  it('saves the selected model before interrupting with Continue', async () => {
+    const { app, session, deps } = makeApp();
+    deps.activeProcesses.set(session.id, { kind: 'guest', kill: vi.fn() });
+    vi.mocked(deps.handleChat).mockImplementation(async () => {
+      expect(session.model).toBe('gpt-5-codex');
+    });
+
+    await request(app).put('/api/sessions/sess-1/model').send({ model: 'gpt-5-codex' }).expect(200);
+
+    expect(deps.handleChat).toHaveBeenCalledExactlyOnceWith(null, {
+      type: 'chat',
+      sessionId: session.id,
+      agentId: session.agent_id,
+      content: 'Continue',
+      interrupt: true,
+    } satisfies ChatMessage);
+    expect(deps.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session-updated',
+        session: expect.objectContaining({ id: session.id, model: 'gpt-5-codex' }),
+      }),
+    );
+  });
+
+  it('also interrupts a turn that is preparing to spawn', async () => {
+    const { app, stmts, deps } = makeApp();
+    stmts.getActiveTask.get.mockReturnValue({ status: 'running', pid: null });
+
+    await request(app).put('/api/sessions/sess-1/model').send({ model: 'gpt-5-codex' }).expect(200);
+
+    expect(deps.handleChat).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({ interrupt: true }),
+    );
+  });
+
+  it('does not send Continue for an idle session', async () => {
+    const { app, deps } = makeApp();
+    await request(app).put('/api/sessions/sess-1/model').send({ model: 'gpt-5-codex' }).expect(200);
+    expect(deps.handleChat).not.toHaveBeenCalled();
+  });
+
+  it('does not send Continue for a completed task row', async () => {
+    const { app, stmts, deps } = makeApp();
+    stmts.getActiveTask.get.mockReturnValue({ status: 'done', pid: null });
+    await request(app).put('/api/sessions/sess-1/model').send({ model: 'gpt-5-codex' }).expect(200);
+    expect(deps.handleChat).not.toHaveBeenCalled();
+  });
+
+  it('does not interrupt when the selected model is unchanged', async () => {
+    const { app, session, deps } = makeApp();
+    deps.activeProcesses.set(session.id, { kind: 'guest', kill: vi.fn() });
+    await request(app).put('/api/sessions/sess-1/model').send({ model: session.model }).expect(200);
+    expect(deps.handleChat).not.toHaveBeenCalled();
+  });
+
+  it('does not interrupt or save an invalid model', async () => {
+    const { app, session, stmts, deps } = makeApp();
+    deps.activeProcesses.set(session.id, { kind: 'guest', kill: vi.fn() });
+    await request(app).put('/api/sessions/sess-1/model').send({ model: 'unknown' }).expect(400);
+    expect(stmts.updateSessionModel.run).not.toHaveBeenCalled();
+    expect(deps.handleChat).not.toHaveBeenCalled();
   });
 });

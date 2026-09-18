@@ -155,6 +155,39 @@ describe('handleChat — interrupt-now existing queued row', () => {
     }
   });
 
+  it('queues Continue ahead of pending work and interrupts after a model change', async () => {
+    const { agentId, sessionId, queuedMsgId } = seedQueuedSession('model');
+    const stmts = getStmts();
+    stmts.updateSessionModel.run('claude-sonnet-5', sessionId);
+    const kill = vi.fn();
+    const activeProcesses = new Map<string, ActiveChatProcess>([
+      [sessionId, { kind: 'guest', kill }],
+    ]);
+    const { handleChat, broadcasts } = stubChatDeps(sessionId, agentId, activeProcesses);
+
+    vi.useFakeTimers();
+    await handleChat(null, {
+      type: 'chat',
+      agentId,
+      sessionId,
+      content: 'Continue',
+      interrupt: true,
+    });
+
+    expect(kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
+    expect(stmts.getQueuedMessages.all(sessionId)).toEqual([
+      expect.objectContaining({ content: 'Continue', agent_id: agentId }),
+      expect.objectContaining({ id: queuedMsgId, content: 'queued content' }),
+    ]);
+    expect(stmts.getSession.get(sessionId)).toMatchObject({ model: 'claude-sonnet-5' });
+    expect(broadcasts).toContainEqual(
+      expect.objectContaining({
+        type: 'message',
+        message: expect.objectContaining({ content: 'Continue', interrupted: true }),
+      }),
+    );
+  });
+
   it('broadcasts primary agent metadata on ordinary thinking events', async () => {
     const agentId = `${testPrefix}-agent-meta`;
     const sessionId = `${testPrefix}-sess-meta`;

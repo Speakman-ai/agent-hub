@@ -4310,6 +4310,8 @@ export interface ChatMessage {
   agentId: string;
   sessionId: string;
   content: string;
+  /** Interrupt the active turn and prioritize this message in the queue. */
+  interrupt?: boolean;
   images?: string[];
   _fromQueue?: boolean;
   _existingMsgId?: string;
