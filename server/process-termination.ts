@@ -16,6 +16,7 @@ export type ProcessTerminationReason =
   | 'task_stopped'
   | 'server_shutdown'
   | 'reviewer_cleanup'
+  | 'autopilot_unstick'
   | 'unknown_signal';
 
 const pendingBySession = new Map<string, ProcessTerminationReason>();
@@ -71,6 +72,8 @@ export function terminationReasonLabel(reason: ProcessTerminationReason): string
       return 'the Agent Hub server is shutting down';
     case 'reviewer_cleanup':
       return 'reviewer session cleanup reclaimed this run';
+    case 'autopilot_unstick':
+      return 'Autopilot unstick stopped this hung run so the loop can continue';
     case 'unknown_signal':
       return 'the CLI process was terminated (cause not recorded)';
     default: {

@@ -76,6 +76,7 @@ export default function FinalizeBar({
   const [mode, setMode] = useState(() => resolveSessionModeFromRow(session));
   const { lastFinalizeRunEvent } = useApp();
   const [prCount, setPrCount] = useState(() => Number(session?.finalize_pushed_count) || 0);
+  const [unsticking, setUnsticking] = useState(false);
   // Re-sync the dropdown from the session whenever the session changes (the bar
   // is reused across sessions) or these fields change (e.g. session arrived
   // null and loaded later, or another surface updated the mode). Without this,
@@ -173,6 +174,18 @@ export default function FinalizeBar({
     },
     [sessionId, mode, automation, askMode, canDesignMode, project, onChanged, reportError],
   );
+  const handleUnstick = useCallback(async () => {
+    if (!sessionId || unsticking) return;
+    setUnsticking(true);
+    try {
+      await api.unstickSessionAutopilot(sessionId);
+      await onChanged?.();
+    } catch (err: any) {
+      reportError(err?.message || 'Failed to unstick Autopilot');
+    } finally {
+      setUnsticking(false);
+    }
+  }, [sessionId, unsticking, onChanged, reportError]);
   const handleFinalize = useCallback(async () => {
     if (busy) return;
     setBusy(true);
@@ -275,14 +288,35 @@ export default function FinalizeBar({
             </TouchableOpacity>
 
             {!workflowProject && !consultActive && mode === 'autopilot' ? (
-              <View
-                style={styles.prCounter}
-                testID="autopilot-pr-counter"
-                accessibilityLabel={formatAutopilotPrCommittedLabel(prCount)}
-              >
-                <AppIcon name="git-pull-request-outline" size={12} color={colors.emerald300} />
-                <Text style={styles.prCounterText}>{formatAutopilotPrCommittedLabel(prCount)}</Text>
-              </View>
+              <>
+                <TouchableOpacity
+                  testID="autopilot-unstick-button"
+                  accessibilityRole="button"
+                  accessibilityLabel="Unstick Autopilot"
+                  onPress={() => void handleUnstick()}
+                  disabled={unsticking}
+                  style={[styles.unstickBtn, unsticking && styles.btnDisabled]}
+                >
+                  {unsticking ? (
+                    <ActivityIndicator size="small" color={colors.amber400} />
+                  ) : (
+                    <AppIcon name="arrow-redo-outline" size={12} color={colors.amber400} />
+                  )}
+                  <Text style={styles.unstickBtnText}>
+                    {unsticking ? 'Unsticking…' : 'Unstick'}
+                  </Text>
+                </TouchableOpacity>
+                <View
+                  style={styles.prCounter}
+                  testID="autopilot-pr-counter"
+                  accessibilityLabel={formatAutopilotPrCommittedLabel(prCount)}
+                >
+                  <AppIcon name="git-pull-request-outline" size={12} color={colors.emerald300} />
+                  <Text style={styles.prCounterText}>
+                    {formatAutopilotPrCommittedLabel(prCount)}
+                  </Text>
+                </View>
+              </>
             ) : !workflowProject && !consultActive ? (
               <>
                 {/* Finalize / Stop */}
@@ -504,6 +538,22 @@ const styles = StyleSheet.create({
   },
   prCounterText: {
     color: colors.emerald300 || '#6ee7b7',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  unstickBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.amber400,
+    backgroundColor: colors.amber900_40,
+  },
+  unstickBtnText: {
+    color: colors.amber400,
     fontSize: 10,
     fontWeight: '600',
   },

@@ -6,6 +6,7 @@ import type { RouteDeps, SessionRow } from '../types.js';
 const mocks = vi.hoisted(() => ({
   kickoffSeededTurn: vi.fn(async (_args: { content?: string }) => undefined),
   checkWorktreeChanges: vi.fn(async () => ({ hasUncommitted: false, hasUnpushed: false })),
+  unstickAutopilotSession: vi.fn(),
 }));
 
 vi.mock('../seeded-session-kickoff.js', () => ({
@@ -16,6 +17,9 @@ vi.mock('../auto-git.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return { ...actual, checkWorktreeChanges: mocks.checkWorktreeChanges };
 });
+vi.mock('../session-autopilot-unstick.js', () => ({
+  unstickAutopilotSession: mocks.unstickAutopilotSession,
+}));
 
 vi.mock('../db.js', () => {
   const fakeDb = {
@@ -294,5 +298,44 @@ describe('session Autopilot routes', () => {
       .expect(409);
     expect(res.body.error).toBe('autopilot_worktree_dirty');
     expect(mocks.kickoffSeededTurn).not.toHaveBeenCalled();
+  });
+
+  it('POST /autopilot/unstick kills the hung turn and continues', async () => {
+    mocks.unstickAutopilotSession.mockResolvedValue({
+      ok: true,
+      killedProcess: true,
+      cancelledFinalizeRunId: 'run-1',
+    });
+    const { app } = makeApp({
+      session: {
+        session_mode: 'autopilot',
+        finalize_automation: 'push',
+      },
+    });
+    const res = await request(app)
+      .post('/api/sessions/sess-1/autopilot/unstick')
+      .send({})
+      .expect(200);
+    expect(mocks.unstickAutopilotSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'sess-1' }),
+    );
+    expect(res.body.killedProcess).toBe(true);
+    expect(res.body.cancelledFinalizeRunId).toBe('run-1');
+    expect(res.body.session_mode).toBe('autopilot');
+  });
+
+  it('POST /autopilot/unstick forwards helper errors', async () => {
+    mocks.unstickAutopilotSession.mockResolvedValue({
+      ok: false,
+      status: 409,
+      error: 'autopilot_not_running',
+      message: 'Autopilot is not running on this session.',
+    });
+    const { app } = makeApp({ session: { session_mode: 'autopilot' } });
+    const res = await request(app)
+      .post('/api/sessions/sess-1/autopilot/unstick')
+      .send({})
+      .expect(409);
+    expect(res.body.error).toBe('autopilot_not_running');
   });
 });

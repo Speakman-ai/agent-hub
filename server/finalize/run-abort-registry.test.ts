@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   createFinalizeRunSignal,
+  isFinalizeRunLive,
   registerFinalizeRunAbort,
   unregisterFinalizeRunAbort,
   abortFinalizeRunInProcess,
@@ -64,6 +65,15 @@ describe('run-abort-registry', () => {
       abort();
       expect(fired).toEqual(['second']);
     });
+  });
+
+  it('keeps cancellation separate from confirmed orchestrator settlement', () => {
+    const { abort } = createFinalizeRunSignal();
+    registerFinalizeRunAbort('pending-rebase', abort);
+    abortFinalizeRunInProcess('pending-rebase');
+    expect(isFinalizeRunLive('pending-rebase')).toBe(true);
+    unregisterFinalizeRunAbort('pending-rebase');
+    expect(isFinalizeRunLive('pending-rebase')).toBe(false);
   });
 
   describe('abortFinalizeRunInProcess', () => {

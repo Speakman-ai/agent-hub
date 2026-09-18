@@ -14,10 +14,17 @@
 import './test/setup.js';
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'crypto';
+import { once } from 'node:events';
+import {
+  buildRunCancelledSystemMessage,
+  consumeSessionTermination,
+  markSessionTermination,
+} from './process-termination.js';
 import { mkdtempSync, writeFileSync, rmSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { getStmts } from './db.js';
+import { beginSessionRecovery, endSessionRecovery } from './session-recovery.js';
 import createChatHandler, { type ChatHandlerDeps } from './chat.js';
 import type { ChildProcess } from 'child_process';
 import type { ActiveChatProcess } from './active-chat-process.js';
@@ -122,6 +129,119 @@ async function waitFor(cond: () => boolean, timeoutMs = 5_000): Promise<void> {
 }
 
 describe('turn-error gate lifecycle (sessions.last_turn_error)', () => {
+  it.each([
+    { code: null, signal: 'SIGKILL' as const },
+    { code: 0, signal: null },
+  ])(
+    'preserves the replacement cancellation when an old close arrives ($code, $signal)',
+    async ({ code, signal }) => {
+      const { agentId, sessionId } = seedSession(`late-close-${code ?? signal}`);
+      const deps = makeDeps(agentId, slowCleanBin);
+      const broadcast = vi.fn();
+      deps.broadcast = broadcast;
+      const { handleChat } = createChatHandler(deps);
+      const stmts = getStmts();
+
+      // Capture the actual chat close handler and reap the fixture process now,
+      // so callback delivery order is controlled without timers or real CLIs.
+      const startTurnWithDelayedClose = async () => {
+        await handleChat(null, { type: 'chat', agentId, sessionId, content: 'do work' });
+        const handle = deps.activeProcesses.get(sessionId)!;
+        expect(handle?.hostChild).toBeDefined();
+        const child = handle.hostChild as ChildProcess;
+        const close = child.listeners('close').at(-1)!;
+        expect(close).toBeTypeOf('function');
+        child.removeListener('close', close);
+        const closed = once(child, 'close');
+        handle.kill('SIGKILL');
+        await closed;
+        return {
+          handle,
+          close: (code: number | null, signal: NodeJS.Signals | null) =>
+            close.call(child, code, signal),
+        };
+      };
+
+      try {
+        const old = await startTurnWithDelayedClose();
+        // Model the deregistration/replacement that makes the old callback stale.
+        deps.activeProcesses.delete(sessionId);
+        stmts.deleteActiveTask.run(sessionId);
+        const replacement = await startTurnWithDelayedClose();
+        const replacementTask = stmts.getActiveTask.get(sessionId);
+        expect(replacementTask).toBeDefined();
+        markSessionTermination(sessionId, 'user_cancel');
+        broadcast.mockClear();
+        vi.mocked(deps.drainQueue).mockClear();
+
+        await old.close(code, signal);
+        expect(deps.activeProcesses.get(sessionId)).toBe(replacement.handle);
+        expect(stmts.getActiveTask.get(sessionId)).toEqual(replacementTask);
+        expect(broadcast).not.toHaveBeenCalled();
+        expect(deps.drainQueue).not.toHaveBeenCalled();
+
+        // Its own close must still see the explicit Stop reason, not unknown_signal.
+        await replacement.close(null, 'SIGTERM');
+        expect(broadcast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'message',
+            sessionId,
+            message: expect.objectContaining({
+              role: 'system',
+              content: buildRunCancelledSystemMessage('user_cancel'),
+            }),
+          }),
+        );
+        expect(broadcast).toHaveBeenCalledWith({ type: 'interrupted', sessionId });
+        expect(deps.drainQueue).toHaveBeenCalledTimes(1);
+        expect(deps.activeProcesses.has(sessionId)).toBe(false);
+        expect(stmts.getActiveTask.get(sessionId)).toBeUndefined();
+        expect(consumeSessionTermination(sessionId)).toBeNull();
+      } finally {
+        consumeSessionTermination(sessionId);
+        deps.activeProcesses.delete(sessionId);
+        stmts.deleteActiveTask.run(sessionId);
+      }
+    },
+  );
+
+  it('rejects new chat dispatch while recovery is stopping the old operation', async () => {
+    const { agentId, sessionId } = seedSession('recovering');
+    const deps = makeDeps(agentId, slowCleanBin);
+    const accepted = vi.fn();
+    const { handleChat } = createChatHandler(deps);
+    beginSessionRecovery(sessionId);
+    try {
+      await handleChat(null, {
+        type: 'chat',
+        agentId,
+        sessionId,
+        content: 'new work',
+        _onUserMessagePersisted: accepted,
+      });
+      expect(accepted).toHaveBeenCalledWith(false);
+      expect(deps.activeProcesses.has(sessionId)).toBe(false);
+      expect(getStmts().getNextQueuedMessage.get(sessionId)).toBeUndefined();
+    } finally {
+      endSessionRecovery(sessionId);
+    }
+  });
+
+  it('sets the error gate before draining after an ENOENT spawn and preserves it on close', async () => {
+    const { agentId, sessionId } = seedSession('enoent');
+    const deps = makeDeps(agentId, path.join(binDir, 'missing-fixture'));
+    const flagsAtDrain: Array<string | null> = [];
+    deps.drainQueue = vi.fn(() => flagsAtDrain.push(getFlag(sessionId)));
+    const { handleChat } = createChatHandler(deps);
+    expect(getFlag(sessionId)).toBeNull();
+    await handleChat(null, { type: 'chat', agentId, sessionId, content: 'do work' });
+    await waitFor(() => flagsAtDrain.length > 0);
+    expect(flagsAtDrain[0]).toBe('claude-code failed to spawn');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(getFlag(sessionId)).toBe('claude-code failed to spawn');
+    expect(deps.activeProcesses.has(sessionId)).toBe(false);
+  });
+
   it('an errored close sets the flag (no-output, non-transient exit)', async () => {
     const { agentId, sessionId } = seedSession('err');
     const { handleChat } = createChatHandler(makeDeps(agentId, failBin));

@@ -2050,6 +2050,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  unstickSessionAutopilot: (sessionId: string) =>
+    fetchJSON(`/sessions/${sessionId}/autopilot/unstick`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   /** Codex reasoning ("thinking") level: 'high' (default) or 'pro' (→ xhigh). */
   setSessionReasoningEffort: (sessionId: any, effort: any) =>
     fetchJSON(`/sessions/${sessionId}/reasoning-effort`, {

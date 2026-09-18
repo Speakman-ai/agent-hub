@@ -8,6 +8,7 @@ import {
   autopilotDeadlineReached,
   buildAutopilotKickoffMessage,
   buildAutopilotVerifyContinueMessage,
+  buildAutopilotUnstickContinueMessage,
   formatAutopilotPrCommittedLabel,
   autopilotEscalationInstruction,
   autopilotStopNoticeContent,
@@ -148,6 +149,19 @@ describe('kickoff / continue copy', () => {
     });
     expect(cont).toContain('preview');
     expect(cont.toLowerCase()).toContain('do not merge');
+  });
+
+  it('unstick continue copy picks up from the worktree instead of restarting', () => {
+    const cfg = parseAutopilotSessionConfig({
+      ...valid,
+      startedAt: '2026-09-17T12:00:00.000Z',
+      status: 'running',
+    })!;
+    const text = buildAutopilotUnstickContinueMessage(cfg);
+    expect(text).toContain('unstuck');
+    expect(text).toContain('autopilot/print-ui');
+    expect(text).toContain(cfg.goal);
+    expect(text.toLowerCase()).toContain('do not restart');
   });
 });
 

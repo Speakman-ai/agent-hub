@@ -46,3 +46,24 @@ export function cancelSessionChatRun(deps: SessionChatCancelDeps): void {
     proc.kill('SIGKILL');
   }, CANCEL_SIGKILL_GRACE_MS);
 }
+
+/**
+ * Unstick path: SIGTERM then SIGKILL immediately so a hung CLI cannot keep
+ * `activeProcesses` occupied while the continue turn queues.
+ *
+ * Returns the handle that was registered (if any) so the caller can wait for
+ * it to leave the map without racing a replacement spawn.
+ */
+export function forceKillSessionChatRun(
+  deps: SessionChatCancelDeps,
+): ActiveChatProcess | undefined {
+  const { sessionId, activeProcesses } = deps;
+  requestReactChainCancel(sessionId);
+  const proc = activeProcesses.get(sessionId);
+  if (!proc) return undefined;
+  markSessionTermination(sessionId, 'autopilot_unstick');
+  console.info(`[chat] autopilot_unstick: sending SIGTERM+SIGKILL session=${sessionId}`);
+  proc.kill('SIGTERM');
+  proc.kill('SIGKILL');
+  return proc;
+}

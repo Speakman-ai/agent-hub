@@ -1189,6 +1189,28 @@ registerPath({
   },
 });
 
+registerPath({
+  method: 'post',
+  path: '/api/sessions/{sessionId}/autopilot/unstick',
+  tags: ['Sessions'],
+  summary: 'Unstick a hung Autopilot session and continue',
+  description:
+    'Kills the in-flight agent process, cancels running Finalize/CI, clears the message queue, and sends a continue prompt so Autopilot resumes from the current worktree. Use after a dropped network leaves the session busy so new messages only queue.',
+  request: { params: sessionIdParams },
+  responses: {
+    200: {
+      description: 'Autopilot unstuck and a continue turn was accepted.',
+      content: jsonContent(SessionComponent),
+    },
+    400: errorResponse('The session is not in Autopilot mode.'),
+    404: errorResponse('Session not found.'),
+    409: errorResponse(
+      'Autopilot is not running, the previous operation has not stopped, or the continue turn was not accepted.',
+    ),
+    500: errorResponse('Recovery cleanup failed; no continue turn was started.'),
+  },
+});
+
 // GET /api/sessions/:sessionId/design-files
 const SessionDesignFileComponent = z
   .object({

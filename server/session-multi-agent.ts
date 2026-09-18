@@ -1,6 +1,7 @@
 /**
  * Multi-agent session orchestration — advisor ping-pong with primary executor.
  */
+import { isSessionRecovering } from './session-recovery.js';
 import { spawn, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { endChildStdin } from './child-stdin.js';
@@ -175,6 +176,7 @@ export function handleMultiAgentCancel(sessionId: string): void {
 }
 
 function drainQueue(sessionId: string, agentId: string): void {
+  if (isSessionRecovering(sessionId)) return;
   const d = getDeps();
   if (drainingLock.has(sessionId)) return;
   drainingLock.add(sessionId);

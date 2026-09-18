@@ -183,6 +183,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  unstickSessionAutopilot: (sessionId: string) =>
+    fetchJSON(`/sessions/${sessionId}/autopilot/unstick`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   // List the design artifacts a design-mode session has produced in its
   // worktree `design/` dir. Returns `{ files: [{ path, size, mtime }] }`.
   // Mobile renders this flat list (no in-app iframe canvas) plus open-in-web.

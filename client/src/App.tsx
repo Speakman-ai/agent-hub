@@ -60,6 +60,7 @@ import {
 import { resolveSessionRightPaneFlags } from './utils/sessionRightPaneFlags';
 import FinalizeButton from './components/finalize/FinalizeButton';
 import AutopilotPrCounter from './components/finalize/AutopilotPrCounter';
+import AutopilotUnstickButton from './components/finalize/AutopilotUnstickButton';
 import FinalizeAutomationSelect from './components/finalize/FinalizeAutomationSelect';
 import FinalizeChecksLiveBlock from './components/finalize/FinalizeChecksLiveBlock';
 import ResolveSessionPrBanner from './components/ResolveSessionPrBanner';
@@ -7873,10 +7874,17 @@ export default function App({ initialView }: any = {}) {
                                 {!chatProjectIsWorkflow &&
                                   !sessionConsultActive &&
                                   (activeSession?.session_mode === 'autopilot' ? (
-                                    <AutopilotPrCounter
-                                      sessionId={activeSessionId}
-                                      count={activeSession?.finalize_pushed_count ?? 0}
-                                    />
+                                    <>
+                                      <AutopilotUnstickButton
+                                        sessionId={activeSessionId}
+                                        onStarted={handleCancel}
+                                        onError={(msg: any) => showToast(msg, 'error', 8000)}
+                                      />
+                                      <AutopilotPrCounter
+                                        sessionId={activeSessionId}
+                                        count={activeSession?.finalize_pushed_count ?? 0}
+                                      />
+                                    </>
                                   ) : (
                                     <FinalizeButton
                                       projectId={activeChatProject.id}

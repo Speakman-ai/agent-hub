@@ -23,7 +23,8 @@ vi.mock('./react-chain-cancel.js', async (importOriginal) => {
   return { ...actual, requestReactChainCancel: requestReactChainCancelMock };
 });
 
-const { cancelSessionChatRun, CANCEL_SIGKILL_GRACE_MS } = await import('./session-chat-cancel.js');
+const { cancelSessionChatRun, forceKillSessionChatRun, CANCEL_SIGKILL_GRACE_MS } =
+  await import('./session-chat-cancel.js');
 
 function wrap(proc: ChildProcess): ActiveChatProcess {
   return wrapHostChildProcess(proc);
@@ -139,5 +140,35 @@ describe('cancelSessionChatRun', () => {
     expect(requestReactChainCancelMock).toHaveBeenCalledWith(sessionId);
     expect(killProcessGroupMock).not.toHaveBeenCalled();
     expect(markSessionTerminationMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('forceKillSessionChatRun', () => {
+  beforeEach(() => {
+    killProcessGroupMock.mockClear();
+    markSessionTerminationMock.mockClear();
+    requestReactChainCancelMock.mockClear();
+  });
+
+  it('sends SIGTERM then SIGKILL and marks autopilot_unstick', () => {
+    const sessionId = 'sess-unstick';
+    const proc = Object.assign(new EventEmitter(), { pid: 88 }) as ChildProcess;
+    const handle = wrap(proc);
+    const activeProcesses = new Map<string, ActiveChatProcess>([[sessionId, handle]]);
+
+    const returned = forceKillSessionChatRun({ sessionId, activeProcesses });
+
+    expect(returned).toBe(handle);
+    expect(markSessionTerminationMock).toHaveBeenCalledWith(sessionId, 'autopilot_unstick');
+    expect(killProcessGroupMock).toHaveBeenCalledWith(proc, 'SIGTERM');
+    expect(killProcessGroupMock).toHaveBeenCalledWith(proc, 'SIGKILL');
+    expect(requestReactChainCancelMock).toHaveBeenCalledWith(sessionId);
+  });
+
+  it('returns undefined when no proc is registered', () => {
+    expect(
+      forceKillSessionChatRun({ sessionId: 'idle', activeProcesses: new Map() }),
+    ).toBeUndefined();
+    expect(killProcessGroupMock).not.toHaveBeenCalled();
   });
 });

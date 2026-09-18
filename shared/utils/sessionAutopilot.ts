@@ -335,3 +335,23 @@ export function buildAutopilotVerifyContinueMessage(args: {
   lines.push(autopilotEscalationInstruction(cfg.escalation));
   return lines.join('\n');
 }
+
+/**
+ * Human-initiated recovery after a hung Autopilot turn (dropped network,
+ * zombie CLI, stuck Finalize). Tells the agent to pick up from the worktree,
+ * not to restart the brief from scratch.
+ */
+export function buildAutopilotUnstickContinueMessage(cfg: AutopilotSessionConfig): string {
+  return [
+    'Autopilot was unstuck by the user after a stalled turn (network drop, hung process, or stuck CI).',
+    '',
+    'The in-flight agent process, queued messages, and any running Finalize/CI for this session were stopped.',
+    'Continue from the current worktree — do not restart the Autopilot brief from scratch.',
+    '',
+    `Branch: \`${cfg.branch}\` (push here only — never merge to the default branch)`,
+    `Goal: ${cfg.goal}`,
+    '',
+    'Check git status and the latest transcript, then pick up the next incomplete step (implement, leave committable changes so Finalize can push, or verify the session preview).',
+    'Never switch branches. Never merge to main/master.',
+  ].join('\n');
+}

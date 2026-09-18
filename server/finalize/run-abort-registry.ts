@@ -57,29 +57,33 @@ export function createFinalizeRunSignal(): { signal: CancelSignal; abort: () => 
 }
 
 const abortFns = new Map<string, () => void>();
+// Aborting requests shutdown; only the orchestrator finally confirms settlement.
+const liveRuns = new Set<string>();
 
 /** Associate an abort handle with a live run so cancel can find it. */
 export function registerFinalizeRunAbort(runId: string, abort: () => void): void {
   if (!runId) return;
   abortFns.set(runId, abort);
+  liveRuns.add(runId);
 }
 
 /** Drop a run's registration once it settles (terminal or thrown). */
 export function unregisterFinalizeRunAbort(runId: string): void {
   if (!runId) return;
   abortFns.delete(runId);
+  liveRuns.delete(runId);
 }
 
 /**
  * Is an orchestrator currently driving this run in THIS process? True iff an
- * abort handle is registered (kickoff registers one and `.finally`
+ * lifetime is registered (kickoff registers it and `.finally`
  * unregisters when `runFinalize` settles — including on throw). The runtime
  * stuck-run reaper (`stuck-run-reaper.ts`) uses this as its liveness oracle:
  * a non-terminal DB row with NO live handle is, under the single-process
  * architecture, definitively not being driven and is safe to reap once idle.
  */
 export function isFinalizeRunLive(runId: string): boolean {
-  return abortFns.has(runId);
+  return liveRuns.has(runId);
 }
 
 /**
@@ -102,4 +106,5 @@ export function abortFinalizeRunInProcess(runId: string): boolean {
 /** Test-only: clear all registrations. */
 export function __clearFinalizeRunAbortRegistry(): void {
   abortFns.clear();
+  liveRuns.clear();
 }

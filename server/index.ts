@@ -146,6 +146,7 @@ import {
   isFirecrackerBackendRegistered,
   resolveSessionEnvAdapterForSession,
 } from './session-env/resolve-session-adapter.js';
+import { isSessionRecovering } from './session-recovery.js';
 import { isSessionWorktreeLocked } from './session-worktree-lock.js';
 import {
   ensureSessionWorkspace,
@@ -2426,6 +2427,7 @@ function handleEditQueueItem(sessionId: string, messageId: string, content: stri
 }
 
 function drainQueue(sessionId: string): void {
+  if (isSessionRecovering(sessionId)) return;
   if (activeProcesses.has(sessionId)) return;
   if (isSessionWorktreeLocked(sessionId)) return;
   if (drainingLock.has(sessionId)) return;

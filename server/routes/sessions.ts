@@ -154,6 +154,7 @@ import {
   validateAutopilotSetupInput,
   buildAutopilotStartUserMessage,
 } from '../session-autopilot.js';
+import { unstickAutopilotSession } from '../session-autopilot-unstick.js';
 import { getUserProjectDefaultFinalizeAutomation } from '../user-project-settings.js';
 import {
   enrichSessionForClient,
@@ -2486,6 +2487,32 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
     const after = stmts.getSession.get(sessionId) as SessionRow;
     res.json(enrichSessionWithAgents(after, stmts, getEnrichedAgent, sessionProject, config));
+  });
+
+  router.post('/api/sessions/:sessionId/autopilot/unstick', async (req: Request, res: Response) => {
+    const sessionId = String(req.params.sessionId);
+    const existing = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (!existing) return res.status(404).json({ error: 'Session not found' });
+    if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    const result = await unstickAutopilotSession({
+      sessionId,
+      stmts,
+      broadcast,
+      activeProcesses,
+      handleChat,
+    });
+    if (!result.ok) {
+      return res.status(result.status).json({ error: result.error, message: result.message });
+    }
+    const sessionProject = findAgent(existing.agent_id)?.project ?? null;
+    const after = stmts.getSession.get(sessionId) as SessionRow;
+    res.json({
+      ...enrichSessionWithAgents(after, stmts, getEnrichedAgent, sessionProject, config),
+      killedProcess: result.killedProcess,
+      cancelledFinalizeRunId: result.cancelledFinalizeRunId,
+    });
   });
 
   /**

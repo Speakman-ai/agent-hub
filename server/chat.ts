@@ -159,6 +159,7 @@ import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
 import { buildHubModePreamble } from './hub-mode-prompt.js';
+import { isSessionRecoveryBlockingChat } from './session-recovery.js';
 import { buildAutopilotModePreamble, parseAutopilotSessionConfig } from './session-autopilot.js';
 import { isSkillBuilderModeActive, isConsultBehaviorActive } from './session-mode.js';
 import { formatEpicSpecDecisionsForContext, loadChosenSpecItemsForEpic } from './epic-spec.js';
@@ -2494,6 +2495,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
     try {
       const { agentId, content, images, hookSpecificOutput } = msg;
+      if (isSessionRecoveryBlockingChat(sessionId)) {
+        ws?.send(
+          JSON.stringify({
+            type: 'error',
+            sessionId,
+            error:
+              'Autopilot recovery is stopping the previous operation. Retry after recovery completes.',
+          }),
+        );
+        return;
+      }
       const isAutoContinuation = msg._autoContinuation === true;
       const continuationDepth = msg._continuationDepth || 0;
 
@@ -5056,7 +5068,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       cliIo.onClose(async (code: number | null, signal: NodeJS.Signals | null) => {
         handleParsedEvents(parser.flush());
         await codexEventHandler?.drain();
-        activeProcesses.delete(sessionId);
+        const stillCurrent = activeProcesses.get(sessionId) === activeHandle;
+        if (stillCurrent) {
+          activeProcesses.delete(sessionId);
+        }
         // Best-effort cleanup of the per-spawn system-prompt temp file
         // (claude-code only — see writeSystemPromptFile in
         // spawn-prompt-payload.ts). Failures are swallowed inside
@@ -5064,6 +5079,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (systemPromptFileCleanup) {
           systemPromptFileCleanup();
           systemPromptFileCleanup = null;
+        }
+        if (!stillCurrent) {
+          // Autopilot unstick (or another spawn) replaced this handle. Do not
+          // delete the new turn's active_task, broadcast interrupted, or drain.
+          // Termination markers are session-scoped and belong to the current
+          // turn, so a stale callback must leave them for that turn's close.
+          return;
         }
         try {
           S.deleteActiveTask.run(sessionId);
@@ -6853,7 +6875,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       cliIo.onError((err: Error) => {
         spawnErrored = true;
-        activeProcesses.delete(sessionId);
+        // A stale error must not alter a newer turn's task or error gate.
+        if (activeProcesses.get(sessionId) !== activeHandle) return;
+        try {
+          S.updateSessionLastTurnError.run(`${engine} failed to spawn`, sessionId);
+        } catch {}
+        if (activeProcesses.get(sessionId) === activeHandle) {
+          activeProcesses.delete(sessionId);
+        }
         // Also clean up the per-spawn system-prompt temp file when
         // spawn itself fails (e.g. ENOENT before exec). The close
         // handler will still fire, but it runs after this and we want

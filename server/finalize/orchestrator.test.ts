@@ -40,7 +40,18 @@ import type { ReviewerDispatchOutcome } from './reviewer-dispatch.js';
 import type { StepRunResult } from './step-runner.js';
 import type { FixDispatchResult } from './fix-dispatch.js';
 import type { CardLifecycle } from './card-lifecycle.js';
-import { createFinalizeRunSignal } from './run-abort-registry.js';
+import {
+  createFinalizeRunSignal,
+  registerFinalizeRunAbort,
+  unregisterFinalizeRunAbort,
+} from './run-abort-registry.js';
+import { unstickAutopilotSession } from '../session-autopilot-unstick.js';
+import { getStmts } from '../db.js';
+import {
+  tryAcquireSessionWorktreeLock,
+  releaseSessionWorktreeLock,
+  getSessionWorktreeLockOwner,
+} from '../session-worktree-lock.js';
 
 // ─── Fixtures ────────────────────────────────────────────────────────
 
@@ -1055,6 +1066,73 @@ describe('runFinalize — happy path', () => {
 });
 
 describe('runFinalize — rebase failure', () => {
+  it('Unstick cannot resume editing while the cancelled rebase phase is pending', async () => {
+    let finishRebase!: (result: RebasePhaseOutcome) => void;
+    const pendingRebase = new Promise<RebasePhaseOutcome>((resolve) => {
+      finishRebase = resolve;
+    });
+    const runRebasePhase = vi.fn(() => pendingRebase);
+    const { deps, stmts } = makeDeps({ runRebasePhase });
+    const { signal, abort } = createFinalizeRunSignal();
+    const sessionId = 'pending-rebase-unstick';
+    const dbStmts = getStmts();
+    dbStmts.createSession.run(sessionId, 'agent-1', 'Autopilot', 'claude-code', 'test', 1, 0, 1);
+    dbStmts.updateSessionMode.run('autopilot', sessionId);
+    dbStmts.updateSessionAutopilotConfig.run(
+      JSON.stringify({
+        durationHours: 0,
+        brief: 'test',
+        goal: 'test',
+        escalation: 'medium',
+        branch: 'autopilot/test',
+        startedAt: new Date().toISOString(),
+        deadlineAt: null,
+        status: 'running',
+        cycle: 0,
+        lastPushSha: null,
+      }),
+      sessionId,
+    );
+    expect(tryAcquireSessionWorktreeLock(sessionId, 'finalize')).toBe(true);
+    const finalize = runFinalize(deps, baseOpts({ sessionId, signal })).finally(() => {
+      unregisterFinalizeRunAbort('run-1');
+      releaseSessionWorktreeLock(sessionId, 'finalize');
+    });
+    await vi.waitFor(() => expect(runRebasePhase).toHaveBeenCalledTimes(1));
+    registerFinalizeRunAbort('run-1', abort);
+    const handleChat = vi.fn(async (_ws, msg) => {
+      msg._onUserMessagePersisted(true);
+    });
+    let waiting!: () => void;
+    const enteredWait = new Promise<void>((resolve) => {
+      waiting = resolve;
+    });
+    const recovery = unstickAutopilotSession({
+      sessionId,
+      stmts: {
+        ...dbStmts,
+        getActiveFinalizeRunForSession: { get: () => stmts.rows.get('run-1') },
+        failFinalizeRun: deps.stmts.failFinalizeRun,
+      } as unknown as ReturnType<typeof getStmts>,
+      activeProcesses: new Map(),
+      broadcast: vi.fn(),
+      handleChat,
+      sleep: async () => {
+        waiting();
+        await finalize;
+      },
+    });
+    await enteredWait;
+    expect(signal.aborted).toBe(true);
+    expect(handleChat).not.toHaveBeenCalled();
+    expect(getSessionWorktreeLockOwner(sessionId)).toBe('finalize');
+    finishRebase(REBASE_OK);
+    expect((await finalize).kind).toBe('cancelled');
+    expect(await recovery).toMatchObject({ ok: true, cancelledFinalizeRunId: 'run-1' });
+    expect(handleChat).toHaveBeenCalledTimes(1);
+    expect(getSessionWorktreeLockOwner(sessionId)).toBeNull();
+  });
+
   it('terminates with rebase_aborted when the rebase phase fails', async () => {
     const { deps } = makeDeps({
       runRebasePhase: fakeRunRebase({

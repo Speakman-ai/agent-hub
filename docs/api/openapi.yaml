@@ -23339,6 +23339,51 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/autopilot/unstick:
+    post:
+      tags:
+        - Sessions
+      summary: Unstick a hung Autopilot session and continue
+      description: Kills the in-flight agent process, cancels running Finalize/CI, clears the message queue, and sends a continue prompt so Autopilot resumes from the current worktree. Use after a dropped network leaves the session busy so new messages only queue.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Autopilot unstuck and a continue turn was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: The session is not in Autopilot mode.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: Autopilot is not running, the previous operation has not stopped, or the continue turn was not accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "500":
+          description: Recovery cleanup failed; no continue turn was started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
   /api/sessions/{sessionId}/design-files:
     get:
       tags:
