@@ -39515,8 +39515,8 @@ paths:
     patch:
       tags:
         - Projects
-      summary: Edit the title/body of an open native pull request
-      description: Agent Hub-hosted projects only. Closed/merged PRs are immutable (409). At least one of title/body must be supplied.
+      summary: Edit the title/body/base branch of an open native pull request
+      description: Agent Hub-hosted projects only. Closed/merged PRs are immutable (409). At least one of title/body/baseBranch must be supplied. baseBranch retargets the PR onto a different base that exists on the hosted repo (the diff recomputes on the next read).
       parameters:
         - schema:
             type: string
@@ -39540,6 +39540,9 @@ paths:
                   minLength: 1
                 body:
                   type: string
+                baseBranch:
+                  type: string
+                  minLength: 1
       responses:
         "200":
           description: Updated PR summary (same shape as the list rows).

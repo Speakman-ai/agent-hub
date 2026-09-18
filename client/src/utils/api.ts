@@ -1786,7 +1786,7 @@ export const api = {
     if (!res.ok) throw new Error(`Diff fetch failed (${res.status})`);
     return res.text();
   },
-  // Edit a native (Agent Hub-hosted) pull request's title/body.
+  // Edit a native (Agent Hub-hosted) pull request's title/body/baseBranch.
   updateNativePr: (projectId: any, number: any, data: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}`, {
       method: 'PATCH',

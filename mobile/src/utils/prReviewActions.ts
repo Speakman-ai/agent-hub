@@ -6,7 +6,7 @@
  *   - POST  .../pulls/:n/reviews   { state: approved|changes_requested|commented, body? }
  *     ('commented' requires a non-empty body)
  *   - POST  .../pulls/:n/comments  { filePath, line, side?: old|new, body }
- *   - PATCH .../pulls/:n           { title?, body? } (open PRs only)
+ *   - PATCH .../pulls/:n           { title?, body?, baseBranch? } (open PRs only)
  *   - POST  .../pulls/:n/reopen    (closed, non-merged PRs only)
  *
  * The UI speaks GitHub verbs (APPROVE / REQUEST_CHANGES / COMMENT); these
@@ -72,10 +72,22 @@ export function canDismissReview(detail: any, review: any) {
   return state === 'APPROVED' || state === 'CHANGES_REQUESTED';
 }
 /** Build the body for PATCH .../pulls/:n (edit title/description). */
-export function buildEditPrPayload({ title, body }: any = {}) {
+export function buildEditPrPayload({ title, body, baseBranch, headBranch, currentBase }: any = {}) {
   const t = typeof title === 'string' ? title.trim() : '';
   if (!t) return { ok: false, error: 'Title is required.' };
-  return { ok: true, payload: { title: t, body: typeof body === 'string' ? body : '' } };
+  const payload: any = { title: t, body: typeof body === 'string' ? body : '' };
+  // Base-branch retarget is optional: only validate/emit it when a caller
+  // supplies baseBranch, so title/body-only edits keep their prior shape.
+  if (typeof baseBranch === 'string') {
+    const base = baseBranch.trim();
+    if (!base) return { ok: false, error: 'Base branch is required.' };
+    if (headBranch && base === headBranch) {
+      return { ok: false, error: 'Base branch cannot equal the head branch.' };
+    }
+    const current = typeof currentBase === 'string' && currentBase ? currentBase : 'main';
+    if (base !== current) payload.baseBranch = base;
+  }
+  return { ok: true, payload };
 }
 /** Build the body for POST .../pulls/:n/comments (inline diff comment). */
 export function buildInlineCommentPayload({ filePath, line, side, body }: any = {}) {

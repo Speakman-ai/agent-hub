@@ -23,6 +23,7 @@ import {
   markClosed,
   markMerged,
   markReverted,
+  retargetBase as retargetBaseRow,
   type PrListState,
 } from './store.js';
 import {
@@ -36,6 +37,7 @@ import {
   type PrFileEntry,
 } from './git-read.js';
 import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
+import { isSafeBranchName } from '../git-host/repo-read.js';
 import { parseCiConfig } from '../finalize/ci-config.js';
 import { expandJobInstances } from '../finalize/ci-config-jobs.js';
 import { isKnownHubUserId } from './author-user.js';
@@ -288,6 +290,19 @@ export interface NativePrService {
     actor: string;
   }): Promise<{ ok: true; revertSha: string } | { ok: false; status: number; error: string }>;
   close(args: { project: Project; number: number }): { row: PullRequestRow };
+  /**
+   * Retarget an open PR onto a different base branch (GitHub's "Edit → change
+   * base"). Validates the new base is a safe branch name that exists on the
+   * hosted repo and differs from the head branch; the diff/mergeability/commits
+   * recompute from base_branch on the next getDetail read. Open PRs only. A
+   * no-op retarget (same base) returns the row unchanged without bumping
+   * updated_at or broadcasting.
+   */
+  retargetBase(args: {
+    project: Project;
+    number: number;
+    baseBranch: string;
+  }): Promise<{ row: PullRequestRow }>;
 }
 
 function toIso(epochMs: number | null): string | null {
@@ -1138,6 +1153,39 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         projectId: project.id,
         prNumber: number,
         action: 'closed',
+      });
+      return { row: updated };
+    },
+
+    async retargetBase({ project, number, baseBranch }) {
+      const repoPath = requireHostedRepo(project);
+      const row = requirePr(stmts, project, number);
+      if (row.status !== 'open') {
+        throw new NativePrError(`PR #${number} is ${row.status} — the base branch is locked`, 409);
+      }
+      const trimmed = typeof baseBranch === 'string' ? baseBranch.trim() : '';
+      if (!trimmed || !isSafeBranchName(trimmed)) {
+        throw new NativePrError('invalid base branch', 400);
+      }
+      if (trimmed === row.head_branch) {
+        throw new NativePrError('base branch cannot equal the head branch', 400);
+      }
+      // Same base → no-op. Return unchanged so we don't bump updated_at (which
+      // reshuffles list order) or broadcast a phantom edit.
+      if (trimmed === row.base_branch) {
+        return { row };
+      }
+      const baseSha = await revParse(repoPath, `refs/heads/${trimmed}`);
+      if (!baseSha) {
+        throw new NativePrError(`base branch "${trimmed}" not found on the hosted repo`, 404);
+      }
+      const updated = retargetBaseRow(stmts, row, trimmed);
+      if (!updated) throw new NativePrError(`PR #${number} is no longer open`, 409);
+      broadcast({
+        type: 'native_pr_update',
+        projectId: project.id,
+        prNumber: number,
+        action: 'edited',
       });
       return { row: updated };
     },

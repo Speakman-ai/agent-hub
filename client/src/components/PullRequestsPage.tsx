@@ -542,6 +542,7 @@ function PrDetail({
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editBody, setEditBody] = useState('');
+  const [editBase, setEditBase] = useState('');
   const [saving, setSaving] = useState(false);
   const [closing, setClosing] = useState(false);
   const [reopening, setReopening] = useState(false);
@@ -939,17 +940,28 @@ function PrDetail({
   const startEdit = () => {
     setEditTitle(pr.title || '');
     setEditBody(pr.body || '');
+    setEditBase(pr.base || 'main');
     setEditing(true);
   };
 
   const saveEdit = async () => {
     if (!editTitle.trim()) return;
+    const nextBase = editBase.trim();
+    if (!nextBase) return;
+    if (nextBase === pr.head) {
+      if (onToast) onToast('Base branch cannot equal the head branch.', 'error');
+      return;
+    }
     setSaving(true);
     try {
-      await api.updateNativePr(projectId, pr.number, {
+      const payload: Record<string, unknown> = {
         title: editTitle.trim(),
         body: editBody,
-      });
+      };
+      // Only send baseBranch when it actually changed — a no-op retarget is
+      // harmless server-side but this keeps the request minimal.
+      if (nextBase !== (pr.base || 'main')) payload.baseBranch = nextBase;
+      await api.updateNativePr(projectId, pr.number, payload);
       setEditing(false);
       onRefresh();
     } catch (err: any) {
@@ -1310,6 +1322,18 @@ function PrDetail({
               className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 font-mono focus:outline-none focus:border-gray-600"
               placeholder="Description (markdown)"
             />
+            <label className="flex items-center gap-2 text-xs text-gray-400">
+              <span className="shrink-0">Base branch</span>
+              <code className="bg-gray-800/60 px-1 rounded text-gray-300">{pr.head}</code>
+              <span aria-hidden>→</span>
+              <input
+                value={editBase}
+                onChange={(e: any) => setEditBase(e.target.value)}
+                data-testid="pr-edit-base"
+                className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-gray-200 font-mono focus:outline-none focus:border-gray-600"
+                placeholder="main"
+              />
+            </label>
             <div className="flex items-center gap-2">
               <button
                 type="button"

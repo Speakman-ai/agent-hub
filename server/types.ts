@@ -3011,6 +3011,8 @@ export interface Stmts {
   updatePullRequestHead: Stmt;
   /** Title/body edit (open PRs only). Params: (title, body, updated_at, id). */
   updatePullRequestText: Stmt;
+  /** Retarget an open PR's base branch (open PRs only). Params: (base_branch, updated_at, id). */
+  updatePullRequestBase: Stmt;
   /** Arm/disarm per-PR auto-merge (open PRs only). Params: (auto_merge, updated_at, id). */
   setPullRequestAutoMerge: Stmt;
   /** Upsert a pending auto-merge intent for a branch. Params: (project_id, branch, requested_by, created_at). */

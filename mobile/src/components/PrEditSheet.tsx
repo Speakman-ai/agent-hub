@@ -12,6 +12,7 @@ import PrActionSheet from './PrActionSheet';
 export default function PrEditSheet({ visible, pr, onClose, onSubmit }: any) {
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
+  const [base, setBase] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<any>(null);
   // Re-seed from the PR each time the sheet opens.
@@ -19,13 +20,20 @@ export default function PrEditSheet({ visible, pr, onClose, onSubmit }: any) {
     if (visible) {
       setTitle(pr?.title || '');
       setBody(pr?.body || '');
+      setBase(pr?.base || 'main');
       setError(null);
       setBusy(false);
     }
   }, [visible, pr]);
   const submit = async () => {
     if (busy) return;
-    const built = buildEditPrPayload({ title, body });
+    const built = buildEditPrPayload({
+      title,
+      body,
+      baseBranch: base,
+      headBranch: pr?.head,
+      currentBase: pr?.base,
+    });
     if (!built.ok) {
       setError(built.error);
       return;
@@ -72,6 +80,19 @@ export default function PrEditSheet({ visible, pr, onClose, onSubmit }: any) {
         multiline
         editable={!busy}
       />
+      <TextInput
+        style={styles.baseInput}
+        value={base}
+        onChangeText={(t: any) => {
+          setBase(t);
+          if (error) setError(null);
+        }}
+        placeholder="Base branch (e.g. main)"
+        placeholderTextColor={colors.gray500}
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!busy}
+      />
     </PrActionSheet>
   );
 }
@@ -99,5 +120,16 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     minHeight: 160,
     textAlignVertical: 'top',
+  },
+  baseInput: {
+    backgroundColor: colors.gray950,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    color: colors.gray200,
+    fontSize: 13,
+    fontFamily: 'monospace',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
 });

@@ -236,6 +236,92 @@ describe('PATCH /api/projects/:projectId/pulls/:number', () => {
       .expect(200);
     await authedPatch(`/api/projects/${id}/pulls/1`).send({ title: 'nope' }).expect(409);
   });
+
+  it('retargets the base branch of an open PR', async () => {
+    const { id, branch, work } = await hostedProjectWithBranch();
+    // A second base branch on the hosted repo to repoint onto.
+    git(work, 'checkout main');
+    git(work, 'checkout -b develop');
+    git(work, 'push -u origin develop');
+    git(work, `checkout ${branch}`);
+
+    await postPulls(id)
+      .send({ headBranch: branch, title: 'Repoint', body: 'body', baseBranch: 'main' })
+      .expect(201);
+
+    // Retarget base alone (no title/body) succeeds and the detail recomputes.
+    await authedPatch(`/api/projects/${id}/pulls/1`).send({ baseBranch: 'develop' }).expect(200);
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.pr).toMatchObject({ base: 'develop' });
+
+    // A base that isn't on the hosted repo 404s.
+    await authedPatch(`/api/projects/${id}/pulls/1`)
+      .send({ baseBranch: 'ghost-branch' })
+      .expect(404);
+    // Base equal to head is refused.
+    await authedPatch(`/api/projects/${id}/pulls/1`).send({ baseBranch: branch }).expect(400);
+    // An unsafe branch name is refused.
+    await authedPatch(`/api/projects/${id}/pulls/1`).send({ baseBranch: '../evil' }).expect(400);
+
+    // Title + base together in one request.
+    const both = await authedPatch(`/api/projects/${id}/pulls/1`)
+      .send({ title: 'Retitled', baseBranch: 'main' })
+      .expect(200);
+    expect(both.body.pr).toMatchObject({ title: 'Retitled', base_branch: 'main' });
+  });
+
+  it('preserves a concurrent title edit that lands while a base retarget is validating', async () => {
+    const { id, branch, work } = await hostedProjectWithBranch();
+    git(work, 'checkout main');
+    git(work, 'checkout -b develop');
+    git(work, 'push -u origin develop');
+    git(work, `checkout ${branch}`);
+
+    await postPulls(id)
+      .send({ headBranch: branch, title: 'Original', body: 'orig body', baseBranch: 'main' })
+      .expect(201);
+
+    // Pause the retarget mid-"validation" so a concurrent title-only PATCH can
+    // land during the await. The stale-snapshot bug would clobber that title.
+    const { routeDeps } = await import('../index.js');
+    const realRetarget = routeDeps.nativePr!.retargetBase.bind(routeDeps.nativePr);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const spy = vi
+      .spyOn(routeDeps.nativePr!, 'retargetBase')
+      .mockImplementation(async (args: any) => {
+        await gate;
+        return realRetarget(args);
+      });
+
+    try {
+      // A base+body edit blocks inside retargetBase on the gate.
+      const baseEdit = authedPatch(`/api/projects/${id}/pulls/1`)
+        .send({ baseBranch: 'develop', body: 'new body' })
+        .then((r) => r);
+      await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+
+      // Concurrent title-only edit lands while the base edit is paused.
+      await authedPatch(`/api/projects/${id}/pulls/1`)
+        .send({ title: 'Concurrent title' })
+        .expect(200);
+
+      // Resume the base edit; it must NOT overwrite the concurrent title.
+      release();
+      await baseEdit;
+
+      const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+      expect(detail.body.pr).toMatchObject({
+        title: 'Concurrent title',
+        body: 'new body',
+        base: 'develop',
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe('POST /api/projects/:projectId/pulls/:number/auto-merge', () => {

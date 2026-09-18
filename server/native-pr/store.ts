@@ -168,6 +168,21 @@ export function markReverted(
   return getPullRequest(stmts, row.project_id, row.number);
 }
 
+/**
+ * Retargets an open PR onto a new base branch. Returns null when the row
+ * wasn't open (the guard lives in SQL). The diff/mergeability recompute from
+ * base_branch at read time, so this row update is the whole retarget.
+ */
+export function retargetBase(
+  stmts: Stmts,
+  row: PullRequestRow,
+  baseBranch: string,
+): PullRequestRow | null {
+  const result = stmts.updatePullRequestBase.run(baseBranch, Date.now(), row.id);
+  if (result.changes === 0) return null;
+  return getPullRequest(stmts, row.project_id, row.number);
+}
+
 /** Guarded open → closed transition; null when the row wasn't open. */
 export function markClosed(stmts: Stmts, row: PullRequestRow): PullRequestRow | null {
   const now = Date.now();

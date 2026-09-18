@@ -7508,6 +7508,12 @@ function initDb(dataDir: string): void {
     updatePullRequestText: db.prepare(
       `UPDATE pull_requests SET title = ?, body = ?, updated_at = ? WHERE id = ? AND status = 'open'`,
     ),
+    // Retarget an open PR's base branch from the PR detail UI. Open PRs only —
+    // the diff/mergeability/commits recompute from base_branch at read time
+    // (native-pr/service.getDetail), so the row update is the whole change.
+    updatePullRequestBase: db.prepare(
+      `UPDATE pull_requests SET base_branch = ?, updated_at = ? WHERE id = ? AND status = 'open'`,
+    ),
     // Arm/disarm per-PR auto-merge (PR-page toggle or push-option). Open PRs
     // only — a merged/closed PR cannot be armed.
     setPullRequestAutoMerge: db.prepare(

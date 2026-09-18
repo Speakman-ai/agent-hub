@@ -115,6 +115,28 @@ describe('buildEditPrPayload', () => {
     });
     expect(buildEditPrPayload({ title: 'T' }).payload).toEqual({ title: 'T', body: '' });
   });
+  it('omits baseBranch when unchanged, includes it when retargeted', () => {
+    // No base supplied → payload shape unchanged.
+    expect(buildEditPrPayload({ title: 'T', body: '' }).payload.baseBranch).toBeUndefined();
+    // Same as current base → omitted.
+    expect(
+      buildEditPrPayload({ title: 'T', baseBranch: 'main', currentBase: 'main' }).payload,
+    ).toEqual({ title: 'T', body: '' });
+    // Changed → included (trimmed).
+    expect(
+      buildEditPrPayload({ title: 'T', baseBranch: '  develop ', currentBase: 'main' }).payload,
+    ).toEqual({ title: 'T', body: '', baseBranch: 'develop' });
+    // Defaults currentBase to 'main' when absent.
+    expect(buildEditPrPayload({ title: 'T', baseBranch: 'develop' }).payload.baseBranch).toBe(
+      'develop',
+    );
+  });
+  it('rejects an empty base and a base equal to the head branch', () => {
+    expect(buildEditPrPayload({ title: 'T', baseBranch: '   ' }).ok).toBe(false);
+    expect(buildEditPrPayload({ title: 'T', baseBranch: 'feat', headBranch: 'feat' }).ok).toBe(
+      false,
+    );
+  });
 });
 describe('buildInlineCommentPayload', () => {
   it('builds a valid payload and defaults side to "new"', () => {

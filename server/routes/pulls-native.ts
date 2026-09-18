@@ -247,9 +247,9 @@ registerPath({
   method: 'patch',
   path: '/api/projects/{projectId}/pulls/{number}',
   tags: ['Projects'],
-  summary: 'Edit the title/body of an open native pull request',
+  summary: 'Edit the title/body/base branch of an open native pull request',
   description:
-    'Agent Hub-hosted projects only. Closed/merged PRs are immutable (409). At least one of title/body must be supplied.',
+    'Agent Hub-hosted projects only. Closed/merged PRs are immutable (409). At least one of title/body/baseBranch must be supplied. baseBranch retargets the PR onto a different base that exists on the hosted repo (the diff recomputes on the next read).',
   request: {
     params: z.object({ projectId: z.string(), number: z.string() }),
     body: {
@@ -257,6 +257,7 @@ registerPath({
         z.object({
           title: z.string().min(1).optional(),
           body: z.string().optional(),
+          baseBranch: z.string().min(1).optional(),
         }),
       ),
       required: true,
@@ -819,7 +820,7 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
     },
   );
 
-  router.patch('/api/projects/:projectId/pulls/:number', (req: Request, res: Response) => {
+  router.patch('/api/projects/:projectId/pulls/:number', async (req: Request, res: Response) => {
     const project = deps.findProject(req.params.projectId as string) as Project | null;
     if (!project) return res.status(404).json({ error: 'Project not found' });
     if (!isAgentHubHosted(project)) {
@@ -833,8 +834,9 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const title = typeof body.title === 'string' ? body.title.trim() : undefined;
     const prBody = typeof body.body === 'string' ? body.body : undefined;
-    if (title === undefined && prBody === undefined) {
-      return res.status(400).json({ error: 'Provide title and/or body' });
+    const baseBranch = typeof body.baseBranch === 'string' ? body.baseBranch.trim() : undefined;
+    if (title === undefined && prBody === undefined && baseBranch === undefined) {
+      return res.status(400).json({ error: 'Provide title, body, and/or baseBranch' });
     }
     if (title !== undefined && !title) {
       return res.status(400).json({ error: 'title cannot be empty' });
@@ -848,18 +850,49 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       return res.status(409).json({ error: `PR #${number} is ${row.status} — edits are locked` });
     }
 
-    deps.stmts.updatePullRequestText.run(
-      title ?? row.title,
-      prBody ?? row.body,
-      Date.now(),
-      row.id,
-    );
-    deps.broadcast({
-      type: 'native_pr_update',
-      projectId: project.id,
-      prNumber: number,
-      action: 'edited',
-    });
+    // Retarget the base branch first — it validates the ref against the hosted
+    // repo and can 404/400, so we don't want a title/body write to land before
+    // an invalid base rejects the whole PATCH.
+    if (baseBranch !== undefined) {
+      if (!deps.nativePr) {
+        return res.status(503).json({ error: 'Native PR service not available' });
+      }
+      try {
+        await deps.nativePr.retargetBase({ project, number, baseBranch });
+      } catch (err: unknown) {
+        return sendNativeError(res, err);
+      }
+    }
+
+    if (title !== undefined || prBody !== undefined) {
+      // Re-read the row here (after the awaited retarget) so an OMITTED
+      // title/body field is written from the current value, not the pre-await
+      // snapshot. `row` was read before `retargetBase`'s ref validation, and a
+      // concurrent title-only PATCH can land during that await — writing the
+      // stale `row.title`/`row.body` would clobber it. The read and the
+      // UPDATE below are both synchronous (better-sqlite3), so nothing can
+      // interleave between them.
+      const fresh = deps.stmts.getPullRequestByNumber.get(project.id, number) as
+        | { id: string; title: string; body: string; status: string }
+        | undefined;
+      if (!fresh || fresh.status !== 'open') {
+        return res
+          .status(409)
+          .json({ error: `PR #${number} is no longer open — edits are locked` });
+      }
+      deps.stmts.updatePullRequestText.run(
+        title ?? fresh.title,
+        prBody ?? fresh.body,
+        Date.now(),
+        fresh.id,
+      );
+      deps.broadcast({
+        type: 'native_pr_update',
+        projectId: project.id,
+        prNumber: number,
+        action: 'edited',
+      });
+    }
     const updated = deps.stmts.getPullRequestByNumber.get(project.id, number);
     return res.json({ pr: updated });
   });

@@ -581,4 +581,71 @@ describe('NativePrService', () => {
       service.listPullsForBranch({ project: { ...project, gitHost: 'github' }, branch }),
     ).toThrow(NativePrError);
   });
+
+  it('retargetBase: repoints an open PR onto another base, recomputes diff, guards invalid targets', async () => {
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = makeProject(projectId);
+    const branch = 'agent-hub/dev/session-basere00';
+    const { work, headSha } = await seedHostedRepoWithBranch(projectId, branch);
+
+    // A second base branch to retarget onto.
+    git(work, 'checkout main');
+    git(work, 'checkout -b develop');
+    git(work, 'push -u origin develop');
+    git(work, 'checkout main');
+
+    const broadcasts: Array<Record<string, unknown>> = [];
+    const service = createNativePrService({
+      stmts,
+      broadcast: (data) => broadcasts.push(data),
+    });
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'Repoint me',
+      body: '',
+      author: TEST_PR_AUTHOR,
+    });
+
+    // Successful retarget updates the row and broadcasts an edit.
+    const { row } = await service.retargetBase({ project, number: 1, baseBranch: 'develop' });
+    expect(row.base_branch).toBe('develop');
+    expect(broadcasts.at(-1)).toMatchObject({
+      type: 'native_pr_update',
+      prNumber: 1,
+      action: 'edited',
+    });
+    // getDetail recomputes against the new base with no extra plumbing.
+    const detail = await service.getDetail({ project, number: 1 });
+    expect(detail.pr).toMatchObject({ base: 'develop' });
+
+    // No-op retarget (same base) returns the row without a fresh broadcast.
+    const before = broadcasts.length;
+    const noop = await service.retargetBase({ project, number: 1, baseBranch: 'develop' });
+    expect(noop.row.base_branch).toBe('develop');
+    expect(broadcasts.length).toBe(before);
+
+    // A base that isn't on the hosted repo 404s.
+    await expect(
+      service.retargetBase({ project, number: 1, baseBranch: 'nope-missing' }),
+    ).rejects.toThrow(/not found/);
+
+    // Base equal to the head branch is refused.
+    await expect(service.retargetBase({ project, number: 1, baseBranch: branch })).rejects.toThrow(
+      /cannot equal/,
+    );
+
+    // An unsafe branch name is refused.
+    await expect(
+      service.retargetBase({ project, number: 1, baseBranch: '../evil' }),
+    ).rejects.toThrow(/invalid base branch/);
+
+    // A closed PR locks the base branch.
+    service.close({ project, number: 1 });
+    await expect(service.retargetBase({ project, number: 1, baseBranch: 'main' })).rejects.toThrow(
+      /locked/,
+    );
+  });
 });
