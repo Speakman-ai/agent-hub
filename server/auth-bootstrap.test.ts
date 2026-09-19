@@ -116,6 +116,40 @@ describe('auth-bootstrap — maybeAutoProvisionOwner', () => {
     expect(existsSync(credentialsFilePath(TMP_DIR))).toBe(false);
   });
 
+  it('provisions the preview Owner with password and preserves it on restart', async () => {
+    const env = { AGENT_HUB_PREVIEW: '1', AGENT_HUB_DEFAULT_PASSWORD: 'password' };
+    const result = await maybeAutoProvisionOwner({ env, ...baseOpts() });
+    expect(result.provisioned).toBe(true);
+    const record = getAuthRecord()!;
+    expect(record.username).toBe('admin');
+    expect(record.role).toBe('Owner');
+    expect(await verifyPassword('password', record.passwordHash)).toBe(true);
+
+    expect(await maybeAutoProvisionOwner({ env, ...baseOpts() })).toEqual({
+      provisioned: false,
+      reason: 'auth-already-configured',
+    });
+    expect(getAuthRecord()?.passwordHash).toBe(record.passwordHash);
+  });
+
+  it.each([undefined, '0', 'true'])('rejects password when preview mode is %s', async (preview) => {
+    const result = await maybeAutoProvisionOwner({
+      env: { AGENT_HUB_PREVIEW: preview, AGENT_HUB_DEFAULT_PASSWORD: 'password' },
+      ...baseOpts(),
+    });
+    expect(result).toEqual({ provisioned: false, reason: 'invalid-password' });
+    expect(getAuthRecord()).toBeNull();
+  });
+
+  it('still rejects other short passwords in preview mode', async () => {
+    const result = await maybeAutoProvisionOwner({
+      env: { AGENT_HUB_PREVIEW: '1', AGENT_HUB_DEFAULT_PASSWORD: 'short' },
+      ...baseOpts(),
+    });
+    expect(result).toEqual({ provisioned: false, reason: 'invalid-password' });
+    expect(getAuthRecord()).toBeNull();
+  });
+
   it('honors AGENT_HUB_DEFAULT_USERNAME when set', async () => {
     const result = await maybeAutoProvisionOwner({
       env: {

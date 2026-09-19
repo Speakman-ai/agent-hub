@@ -45,6 +45,8 @@ describe('Agent Hub preview config', () => {
     // the start command itself. Losing AGENT_HUB_DATA_DIR would point the
     // preview's Hub at the HOST Hub's SQLite database.
     expect(cfg.startCommand).toContain('AGENT_HUB_PREVIEW=1');
+    expect(cfg.startCommand).toContain('AGENT_HUB_DEFAULT_USERNAME=admin');
+    expect(cfg.startCommand).toContain('AGENT_HUB_DEFAULT_PASSWORD=password');
     expect(cfg.startCommand).toContain('.agent-hub-preview/data');
     expect(cfg.startCommand).toMatch(/AGENT_HUB_PORT=\d+/);
     expect(cfg.env).toEqual({});

@@ -9,6 +9,8 @@
  *           remains the only path to create an Owner.
  *       literal value → use as-is. Must satisfy the same length bounds
  *           enforced by `/api/auth/setup` (`auth-validation.ts`).
+ *           Preview mode (`AGENT_HUB_PREVIEW=1`) also accepts the literal
+ *           `password` used by the repository's preview startup config.
  *       `auto`        → generate a URL-safe random password and write it
  *           to `<dataDir>/initial-credentials.txt` (mode 0600). The
  *           operator retrieves it via SSM Session Manager / SSH and is
@@ -152,7 +154,10 @@ export async function maybeAutoProvisionOwner(
   // capitalise environment values to make them stand out.
   const isAuto = rawPassword.trim().toLowerCase() === AUTO_KEYWORD;
   const password = isAuto ? randomPassword() : rawPassword;
-  const validatedPassword = sanitizePassword(password);
+  // Only the known preview credential bypasses the normal length minimum.
+  // Keep interactive account creation and non-preview provisioning strict.
+  const isPreviewPassword = env.AGENT_HUB_PREVIEW === '1' && !isAuto && password === 'password';
+  const validatedPassword = isPreviewPassword ? password : sanitizePassword(password);
   if (!validatedPassword) {
     if (isAuto) {
       // The default RNG cannot produce a too-short password (18 bytes
