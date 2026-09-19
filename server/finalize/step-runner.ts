@@ -306,6 +306,11 @@ export interface StepResult {
 /** Tagged failure surface — mirrors §10 of the design doc. */
 export type StepRunStatus = 'success' | 'failure' | 'timeout' | 'infra_error';
 
+export interface StepTimeoutDetails {
+  limitMs: number;
+  elapsedMs: number;
+}
+
 /**
  * One failed step's full context — everything the §7 dispatch body needs to
  * describe a single red. Carried singly (`failedStep`) for the primary failure
@@ -318,6 +323,7 @@ export interface FailedStepDetail {
   run: string;
   exitCode: number;
   outputTail: string[];
+  timeout?: StepTimeoutDetails;
   /**
    * Signal-aware excerpt of the failing step's output — the lines that
    * matched a test/build failure marker ({@link FAILURE_SIGNAL_RE}) plus
@@ -703,6 +709,7 @@ export async function runStepsSequence(
         opts.runId,
         stepIndex,
         stepForRun,
+        'passed',
         0,
         attempt,
         persistMeta,
@@ -717,6 +724,7 @@ export async function runStepsSequence(
       opts.runId,
       stepIndex,
       stepForRun,
+      'failed',
       runOutcome.result.exitCode,
       attempt,
       persistMeta,
@@ -729,6 +737,9 @@ export async function runStepsSequence(
       run: step.run,
       exitCode: runOutcome.result.exitCode,
       outputTail: runOutcome.outputTail,
+      ...(runOutcome.kind === 'timeout'
+        ? { timeout: { limitMs: stepHardTimeoutMs, elapsedMs: runOutcome.result.durationMs } }
+        : {}),
       ...(runOutcome.failureExcerpt.length ? { failureExcerpt: runOutcome.failureExcerpt } : {}),
       ...(persistMeta?.jobId ? { jobId: persistMeta.jobId } : {}),
       ...(persistMeta?.matrixKey ? { matrixKey: persistMeta.matrixKey } : {}),
@@ -1565,12 +1576,12 @@ function announceStepEnd(
   runId: string,
   stepIndex: number,
   step: CiStep,
+  state: 'passed' | 'failed',
   exitCode: number,
   attempt: string,
   meta?: StepPersistMeta,
 ): void {
   const endedAt = Date.now();
-  const state = exitCode === 0 ? 'passed' : 'failed';
   let changes = 0;
   try {
     const res = deps.stmts.finishFinalizeRunStepIfAttempt.run(

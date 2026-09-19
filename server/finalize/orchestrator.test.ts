@@ -1716,10 +1716,8 @@ describe('runFinalize — step phase status mapping', () => {
   // timeout look like the run had used up its 60-min budget. The step-phase
   // timeout must post the pipeline-step header instead, carrying the CI
   // timeout_minutes, NOT the active-budget framing.
-  it('posts the pipeline-step timeout header (not the active-budget message) on a step timeout', async () => {
+  it.each([0, 1])('posts timeout diagnostics when a timed-out child exits %i', async (exitCode) => {
     const { deps, stmts } = makeDeps({
-      // A step killed by its wall-clock cap; its child can exit 1 on the kill
-      // signal, so a timeout outcome legitimately carries exitCode 1.
       runJobPhase: fakeRunSteps({
         status: 'timeout',
         stepResults: [],
@@ -1728,7 +1726,8 @@ describe('runFinalize — step phase status mapping', () => {
           index: 1,
           name: 'backend / Backend tests',
           run: 'npm run test:backend',
-          exitCode: 1,
+          exitCode,
+          timeout: { limitMs: 120000, elapsedMs: 120500 },
           outputTail: ['FAIL backend', 'timed out'],
         },
       }),
@@ -1751,16 +1750,19 @@ describe('runFinalize — step phase status mapping', () => {
     });
     expect(timeoutInsert).toBeDefined();
     const body = timeoutInsert![3] as string;
-    expect(body).toContain('a CI step exceeded the pipeline timeout');
+    expect(body).toContain('CI execution reached a time limit');
     // CI_OK pins timeout_minutes: 60 — the message must cite the pipeline cap.
-    expect(body).toContain('Pipeline step timeout: 60min.');
-    expect(body).toContain('Last attempted step: "backend / Backend tests" (exit 1).');
+    expect(body).toContain('Configured pipeline budget: 60min.');
+    expect(body).toContain(`Last attempted step: "backend / Backend tests" (exit ${exitCode}).`);
+    expect(body).toContain('Step time limit: 120s. Elapsed step time: 120.5s.');
+    expect(body.includes('Exit code 0 does not mark this step as passed')).toBe(exitCode === 0);
     // The misleading active-time-budget framing must NOT appear.
     expect(body).not.toContain('active-time budget exhausted');
     expect(body).not.toContain('(active time). Consumed:');
     const metadata = JSON.parse(timeoutInsert![7] as string) as Record<string, unknown>;
     expect(metadata.timeoutClass).toBe('pipeline_step');
     expect(metadata.timeoutMinutes).toBe(60);
+    expect(metadata.lastStepTimeout).toEqual({ limitMs: 120000, elapsedMs: 120500 });
   });
 
   it('maps infra_error to infra_error outcome', async () => {

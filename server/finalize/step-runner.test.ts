@@ -875,6 +875,52 @@ describe('runJobSteps — timeout (fake timers)', () => {
     vi.useRealTimers();
   });
 
+  it('keeps a timed-out step failed when the child reports exit zero', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fake = makeFakeChild();
+    const resultP = runJobSteps(
+      {
+        stmts: stmts as never,
+        broadcast,
+        spawnStep: () => fake.child,
+        now: () => Date.now(),
+        spawnHardTimeoutMs: 100,
+        logStore: makeLogStore().store,
+      },
+      {
+        runId: RUN_ID,
+        config: makeConfig([{ name: 'pytest', run: 'pytest' }]),
+        worktreePath: WORKTREE,
+        sessionId: SESSION_ID,
+      },
+    );
+    await vi.advanceTimersByTimeAsync(150);
+    fake.emitter.emit('close', 0);
+    const result = await resultP;
+
+    expect(result.status).toBe('timeout');
+    expect(stmts.finishFinalizeRunStepIfAttempt.run).toHaveBeenCalledWith(
+      'failed',
+      0,
+      expect.any(Number),
+      RUN_ID,
+      1,
+      expect.any(String),
+    );
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'finalize_run_step_state',
+        state: 'failed',
+        exit_code: 0,
+      }),
+    );
+    expect(result.failedStep).toMatchObject({
+      exitCode: 0,
+      timeout: { limitMs: 100, elapsedMs: 150 },
+    });
+  });
+
   it('hard-spawn timeout kills the child and surfaces timeout outcome', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();

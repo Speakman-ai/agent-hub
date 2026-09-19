@@ -2916,6 +2916,7 @@ function postBudgetTimeoutMessageIfPossible(
         lastOutputTail: lastStepOutcome?.failedStep?.outputTail,
         lastStepName: lastStepOutcome?.failedStep?.name,
         lastStepExitCode: lastStepOutcome?.failedStep?.exitCode,
+        lastStepTimeout: lastStepOutcome?.failedStep?.timeout,
       },
     );
   } catch (err) {

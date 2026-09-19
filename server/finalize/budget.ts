@@ -46,6 +46,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { BroadcastFn, FinalizeRunRow, FinalizeRunStatus, Stmts } from '../types.js';
 import { classifyFailureReason } from './infra-retry.js';
+import type { StepTimeoutDetails } from './step-runner.js';
 
 /** Hard ceiling on the active-time budget (seconds). 4 hours at v0. */
 export const FINALIZE_BUDGET_HARD_CEILING_SECONDS = 4 * 60 * 60;
@@ -332,22 +333,9 @@ export function billSessionTurnDurationIfTaggedToFinalize(
 export const TIMEOUT_DISPATCH_HEADER =
   'Finalize Code Changes: timed out — active-time budget exhausted.';
 
-/**
- * Header used when a CI **step / pipeline** ran past the per-run
- * `timeout_minutes` wall-clock cap and was stopped — distinct from the
- * §13 active-time budget header above.
- *
- * Why the split: the active-time budget meters total Hub processing
- * (rebase + reviewer + agent turns), whereas a step timeout means a
- * single test/build step hung or ran too slow against the pipeline
- * wall-clock cap. Surfacing a step timeout with the active-budget header
- * is actively misleading: it reads "Budget: 3600s. Consumed: 96s." —
- * making it look like the run stopped despite barely using its budget,
- * because step execution wall-clock bills only a flat tick to active
- * time. The two outcomes deserve two different messages.
- */
+/** CI wall-clock limits are independent of the agent/reviewer active-time budget. */
 export const STEP_TIMEOUT_DISPATCH_HEADER =
-  'Finalize Code Changes: timed out — a CI step exceeded the pipeline timeout.';
+  'Finalize Code Changes: timed out. CI execution reached a time limit.';
 
 /** Which clock tripped: the §13 active-time budget or a pipeline-step wall-clock cap. */
 export type FinalizeTimeoutClass = 'active_budget' | 'pipeline_step';
@@ -361,10 +349,9 @@ export type FinalizeTimeoutClass = 'active_budget' | 'pipeline_step';
  * `timeoutClass` selects which clock tripped:
  *   - `'active_budget'` (default) → the §13 active-time budget exhausted;
  *     surfaced with the budget/consumed summary.
- *   - `'pipeline_step'` → a single CI step ran past the per-run
- *     `timeout_minutes` wall-clock cap; surfaced with the step-timeout
- *     header and the pipeline timeout (NOT the active-time budget, which
- *     was not exhausted).
+ *   - `'pipeline_step'`: CI reached a wall-clock limit. Report the configured
+ *     pipeline budget separately from the effective step limit, which may be
+ *     shorter because of prior steps or a per-step/process cap.
  */
 export function composeTimeoutMessageBody(args: {
   timeoutClass?: FinalizeTimeoutClass;
@@ -375,6 +362,7 @@ export function composeTimeoutMessageBody(args: {
   lastOutputTail?: string[];
   lastStepName?: string;
   lastStepExitCode?: number;
+  lastStepTimeout?: StepTimeoutDetails;
 }): string {
   const timeoutClass: FinalizeTimeoutClass = args.timeoutClass ?? 'active_budget';
   const lines: string[] = [];
@@ -383,8 +371,8 @@ export function composeTimeoutMessageBody(args: {
     lines.push('');
     lines.push(
       typeof args.timeoutMinutes === 'number' && Number.isFinite(args.timeoutMinutes)
-        ? `Pipeline step timeout: ${args.timeoutMinutes}min. A step ran past the per-run wall-clock limit and was stopped.`
-        : 'A CI step ran past the per-run wall-clock limit and was stopped.',
+        ? `Configured pipeline budget: ${args.timeoutMinutes}min. Step limits may be shorter than this budget.`
+        : 'CI execution reached a time limit.',
     );
   } else {
     lines.push(TIMEOUT_DISPATCH_HEADER);
@@ -396,6 +384,23 @@ export function composeTimeoutMessageBody(args: {
   if (args.lastStepName) {
     const ec = args.lastStepExitCode ?? null;
     lines.push(`Last attempted step: "${args.lastStepName}"${ec !== null ? ` (exit ${ec})` : ''}.`);
+  }
+  if (timeoutClass === 'pipeline_step') {
+    if (args.lastStepTimeout) {
+      const { limitMs, elapsedMs } = args.lastStepTimeout;
+      const seconds = (ms: number) => Math.round(ms / 100) / 10;
+      lines.push(
+        `Step time limit: ${seconds(limitMs)}s. Elapsed step time: ${seconds(elapsedMs)}s.`,
+      );
+    }
+    if (args.lastStepExitCode === 0) {
+      lines.push(
+        'Exit code 0 does not mark this step as passed: its time limit was reached before completion was confirmed.',
+      );
+    }
+    lines.push(
+      'Inspect the step log and timings before retrying. A timeout alone does not establish a test failure.',
+    );
   }
   if (args.lastOutputTail && args.lastOutputTail.length > 0) {
     lines.push('');
@@ -437,6 +442,7 @@ export function postTimeoutDispatchMessage(
     lastOutputTail?: string[];
     lastStepName?: string;
     lastStepExitCode?: number;
+    lastStepTimeout?: StepTimeoutDetails;
   },
 ): { messageId: string } | null {
   const log = deps.log ?? ((m: string) => console.warn(m));
@@ -458,6 +464,7 @@ export function postTimeoutDispatchMessage(
     timeoutMinutes: args.timeoutMinutes ?? null,
     lastStepName: args.lastStepName ?? null,
     lastStepExitCode: args.lastStepExitCode ?? null,
+    lastStepTimeout: args.lastStepTimeout ?? null,
   });
   try {
     deps.stmts.addMessage.run(

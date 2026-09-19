@@ -550,11 +550,29 @@ describe('composeTimeoutMessageBody', () => {
       lastStepExitCode: 1,
     });
     expect(body).toContain(STEP_TIMEOUT_DISPATCH_HEADER);
-    expect(body).toContain('Pipeline step timeout: 60min.');
+    expect(body).toContain('Configured pipeline budget: 60min.');
     expect(body).toContain('Last attempted step: "backend / Backend tests" (exit 1).');
     // The misleading active-budget framing must be gone.
     expect(body).not.toContain(TIMEOUT_DISPATCH_HEADER);
     expect(body).not.toContain('Budget: 3600s (active time). Consumed: 96s.');
+  });
+
+  it('explains exit zero after a timeout and separates the pipeline budget from step timing', () => {
+    const body = composeTimeoutMessageBody({
+      timeoutClass: 'pipeline_step',
+      budgetSeconds: 3600,
+      activeSecondsConsumed: 5,
+      timeoutMinutes: 30,
+      lastStepName: 'pytest',
+      lastStepExitCode: 0,
+      lastStepTimeout: { limitMs: 120000, elapsedMs: 120500 },
+    });
+    expect(body).toContain('Configured pipeline budget: 30min.');
+    expect(body).toContain('Step time limit: 120s. Elapsed step time: 120.5s.');
+    expect(body).toContain(
+      'Exit code 0 does not mark this step as passed: its time limit was reached before completion was confirmed.',
+    );
+    expect(body).not.toContain('Pipeline step timeout: 30min');
   });
 
   it('falls back to a generic step-timeout line when timeoutMinutes is absent', () => {
@@ -564,7 +582,7 @@ describe('composeTimeoutMessageBody', () => {
       activeSecondsConsumed: 96,
     });
     expect(body).toContain(STEP_TIMEOUT_DISPATCH_HEADER);
-    expect(body).toContain('A CI step ran past the per-run wall-clock limit and was stopped.');
+    expect(body).toContain('CI execution reached a time limit.');
     expect(body).not.toContain('Pipeline step timeout:');
   });
 });
