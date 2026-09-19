@@ -141,7 +141,7 @@ describe('server/routes — no dead imports', () => {
       ).toEqual([]);
     });
 
-    // ── Lexical shadowing: the reference belongs to the inner binding ──
+    // Lexical shadowing: the reference belongs to the inner binding
     it('does not count a shadowing function parameter as usage', () => {
       expect(
         dead("import { foo } from './x.js';\nexport function f(foo: string) {\n  return foo;\n}\n"),
@@ -186,7 +186,7 @@ describe('server/routes — no dead imports', () => {
       ).toEqual([]);
     });
 
-    // ── Property positions are not references ──
+    // Property positions are not references
     it('does not count an object-literal key as usage', () => {
       expect(dead("import { foo } from './x.js';\nexport const value = { foo: 1 };\n")).toEqual([
         'foo',
@@ -217,7 +217,7 @@ describe('server/routes — no dead imports', () => {
       ).toEqual(['foo']);
     });
 
-    // ── Positions that genuinely ARE references and must still count ──
+    // Positions that genuinely ARE references and must still count
     it('counts shorthand property assignment as usage', () => {
       expect(dead("import { foo } from './x.js';\nexport const value = { foo };\n")).toEqual([]);
     });

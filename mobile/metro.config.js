@@ -26,7 +26,7 @@ config.watchFolders = [repoRoot];
 // `node_modules` as an additional resolver root so these repo-root imports always
 // fall back to the copy installed alongside the Expo app. This augments (does not
 // disable) hierarchical lookup, so `expo`'s nested transitive deps still resolve.
-// Logic lives in `withAppNodeModulesResolverPaths` so it can be unit-tested.
+// Logic lives in `withAppNodeModulesResolverPaths`.
 config.resolver.nodeModulesPaths = withAppNodeModulesResolverPaths(
   config.resolver.nodeModulesPaths,
   path.join(projectRoot, 'node_modules'),

@@ -1,10 +1,6 @@
 /**
- * Pure view-helpers for the mobile Finalize UI on the Changes screen.
- *
- * Kept free of React / React Native imports so the logic that drives the
- * Finalize button, the CI card, and the review card can be unit-tested in the
- * node vitest suite. Mirrors the derivations in the web finalize components
- * (`FinalizeButton.jsx`, `FinalizeChecksRoundBlock.jsx`, `ReviewerThreadsPanel.jsx`).
+ * Mobile Finalize UI on the Changes screen. Mirrors FinalizeButton,
+ * FinalizeChecksRoundBlock, and ReviewerThreadsPanel.
  */
 import { isFinalizeBlocked } from './finalizeRun';
 /**

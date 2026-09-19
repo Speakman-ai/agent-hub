@@ -1,5 +1,5 @@
 /**
- * Tests for the fix-dispatch helper. The helper owns three things:
+ * The helper owns three things:
  *
  *   1. The §7 message composer (pure — exhaustively covered here).
  *   2. The DB side effects (phase flip, active-seconds bump, addMessage
@@ -27,7 +27,7 @@ import {
 } from './fix-dispatch.js';
 import { RUNNER_TEARDOWN_DISPATCH_HINT } from './runner-teardown.js';
 
-// ─── §7 composer tests ────────────────────────────────────────────────
+// §7 composer tests
 
 describe('composeDispatchBody', () => {
   const trailerLines = ['', DISPATCH_TRAILER];
@@ -364,7 +364,7 @@ describe('composeDispatchBody', () => {
   });
 });
 
-// ─── dispatch flow tests ──────────────────────────────────────────────
+// dispatch flow tests
 
 interface FakeStmts {
   updateFinalizeRunPhase: { run: ReturnType<typeof vi.fn> };

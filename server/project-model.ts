@@ -27,11 +27,11 @@ import {
 } from './reviewer-agent-prompt.js';
 export { deleteProjectSkillsDir, resolveProjectSkillsDir } from './project-skill-paths.js';
 
-// ─── Mutable state ──────────────────────────────────────────────────
+// Mutable state
 let PROJECTS_PATH: string = path.join(config.dataDir, 'projects.json');
 let projects: Project[] = [];
 
-// ─── Bootstrap ──────────────────────────────────────────────────────
+// Bootstrap
 
 function initProjects(dataDir?: string): void {
   if (dataDir) {
@@ -154,7 +154,7 @@ function migrateStaleMcpConfigFiles(): void {
   removeStaleMcpConfigFiles(cwds);
 }
 
-// ─── Core accessors ─────────────────────────────────────────────────
+// Core accessors
 
 function getProjects(): Project[] {
   return projects;
@@ -168,7 +168,7 @@ function getProjectsPath(): string {
   return PROJECTS_PATH;
 }
 
-// ─── Computed data-dir helpers ──────────────────────────────────────
+// Computed data-dir helpers
 
 function getProjectDataDir(projectId: string): string {
   return path.join(config.projectsDir, projectId);
@@ -276,7 +276,7 @@ function warnOnMissingProjectCwds(): void {
   }
 }
 
-// ─── Persistence ────────────────────────────────────────────────────
+// Persistence
 
 function saveProjects(): void {
   const toSave = projects.map((p) => {
@@ -313,7 +313,7 @@ function reloadProjects(dataDir: string): void {
   ensureContextFiles();
 }
 
-// ─── Migration ──────────────────────────────────────────────────────
+// Migration
 
 interface RawProject {
   id: string;
@@ -427,7 +427,7 @@ function migrateWebhookRepoToProject(): void {
   }
 }
 
-// ─── Lookup helpers ─────────────────────────────────────────────────
+// Lookup helpers
 
 function allAgents(): EnrichedAgent[] {
   return projects.flatMap((p) =>
@@ -470,7 +470,7 @@ function getEnrichedAgent(agentId: string): EnrichedAgent | null {
   };
 }
 
-// ─── Auto-create helpers ────────────────────────────────────────────
+// Auto-create helpers
 
 /**
  * RETIREMENT SWEEP — "Ticket Intake" agents (role: 'intake') are decommissioned
@@ -667,7 +667,7 @@ function ensureContextFiles(): void {
   }
 }
 
-// ─── Exports ────────────────────────────────────────────────────────
+// Exports
 export {
   // Bootstrap
   initProjects,

@@ -19,10 +19,8 @@ const previewServer = buildPreviewServerConfig(process.env);
 // client talks same-origin (Vite proxies /api to the nested API on loopback).
 const apiPort = isPreviewMode(process.env) ? '' : (process.env.VITE_API_PORT ?? '3051');
 
-// Resolve the app version baked into the bundle. Implementation lives in
-// `./src/utils/resolveBuildVersion.ts` so it's directly unit-testable; see
-// that file for the priority order (env var → repo-root package.json) and
-// for the rationale on why we no longer fall back to client/package.json.
+// Resolve the app version baked into the bundle. Priority and why we no longer
+// fall back to client/package.json live in `./src/utils/resolveBuildVersion.ts`.
 const clientVersion = resolveBuildVersion({
   env: process.env,
   rootPkgPath: path.resolve(__dirname, '..', 'package.json'),

@@ -1,5 +1,5 @@
 /**
- * cursor-sandbox-args.ts — single source of truth for the `--sandbox` flag on
+ * Single source of truth for the `--sandbox` flag on
  * every `cursor-agent` spawn.
  *
  * Cursor runs its shell / file tools inside a bubblewrap sandbox. Inside a

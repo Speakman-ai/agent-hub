@@ -1,5 +1,5 @@
 /**
- * db-checkpoint.ts: WAL checkpoint cadence for every SQLite file the Hub opens.
+ * WAL checkpoint cadence for every SQLite file the Hub opens.
  *
  * ## The incident this prevents
  *
@@ -311,7 +311,7 @@ export function checkpointDbOnceSync(
   };
 }
 
-// ── Off-main-thread checkpoint worker ──────────────────────────────────────
+// Off-main-thread checkpoint worker
 
 type WorkerInboundMsg =
   | { type: 'ready' }
@@ -573,7 +573,7 @@ export function __setCheckpointDispatcherForTests(d: CheckpointDispatcher | null
   dispatcherOverride = d;
 }
 
-// ── Unbounded-growth guard ─────────────────────────────────────────────────
+// Unbounded-growth guard
 
 export interface SustainedWalGrowthInfo {
   label: string;
@@ -728,7 +728,7 @@ function trackWalGrowth(entry: RegisteredDb, walBytes: number): void {
   }
 }
 
-// ── Registry + sweep ───────────────────────────────────────────────────────
+// Registry + sweep
 
 interface RegisteredDb {
   db: Database.Database;

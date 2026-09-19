@@ -1,5 +1,5 @@
 /**
- * quarantine.ts — Finalize flaky-test quarantine lane (pure logic).
+ * Finalize flaky-test quarantine lane (pure logic).
  *
  * The industry-standard alternative to silent retry-until-green: when a job
  * instance is flaky, instead of blocking the whole gate (the flake-recovery
@@ -10,7 +10,7 @@
  * cannot become a permanent escape hatch — an expired entry is surfaced as
  * "overdue" until a human renews or removes it.
  *
- * This module owns the time math + the gate-excusal decision; the DB layer
+ * Time math + the gate-excusal decision; the DB layer
  * (`finalize_quarantine` table) and the orchestrator wiring live elsewhere.
  */
 
@@ -147,7 +147,7 @@ export interface QuarantinedGate {
  *   - `clean` / `blocked` → returned unchanged (nothing to excuse). `blocked`
  *     stays fail-closed.
  *
- * Pure: the caller loads the entries + supplies `nowMs`.
+ * The caller loads the entries + supplies `nowMs`.
  */
 export function applyQuarantineToGate(
   gate: FlakeGateResult,

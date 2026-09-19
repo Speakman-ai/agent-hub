@@ -32,7 +32,7 @@ class FakePty implements SessionEnvPty {
     this.killSignal = signal;
   }
 
-  // ── test drivers ──
+  // test drivers
   emit(data: string): void {
     for (const cb of this.#data) cb(data);
   }
@@ -275,7 +275,7 @@ describe('PtySession', () => {
       pty.emit('line-1\r\nline-2\r\n');
       const snap = await session.readSnapshot();
       expect(snap).toBe('line-1\r\nline-2\r\n');
-      // Pure read — no viewer registered, so no SIGWINCH redraw was issued.
+      // Read — no viewer registered, so no SIGWINCH redraw was issued.
       expect(session.viewerCount).toBe(0);
       expect(pty.resizes).toEqual([]);
     });

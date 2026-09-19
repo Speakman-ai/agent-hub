@@ -1,9 +1,8 @@
 /**
- * Tests for connection.js — focused on `appendAuthToWsUrl`, which is the
- * shim that lets server-issued provisioning wsUrls authenticate without
- * requiring browsers to set headers on `new WebSocket(...)`. Background:
- * see `appendAuthToWsUrl` jsdoc and the WS auth path in
- * `server/auth.ts:authenticateWsDetailed`.
+ * Focused on `appendAuthToWsUrl`, the shim that lets server-issued
+ * provisioning wsUrls authenticate without requiring browsers to set
+ * headers on `new WebSocket(...)`. Background: see `appendAuthToWsUrl`
+ * jsdoc and the WS auth path in `server/auth.ts:authenticateWsDetailed`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 

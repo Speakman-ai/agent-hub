@@ -191,9 +191,7 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
   const { findProject, findAgent, stmts, handleChat, broadcast, config } = deps;
   const router = Router();
 
-  // ───────────────────────────────────────────────────────────────
   // GET /api/projects/:projectId/finalize/environment-draft
-  // ───────────────────────────────────────────────────────────────
   router.get(
     '/api/projects/:projectId/finalize/environment-draft',
     requireRole('Admin'),
@@ -213,9 +211,7 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/finalize/setup-wizard
-  // ───────────────────────────────────────────────────────────────
   router.post(
     '/api/projects/:projectId/finalize/setup-wizard',
     requireRole('Admin'),
@@ -312,9 +308,7 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/finalize/setup-apply
-  // ───────────────────────────────────────────────────────────────
   router.post(
     '/api/projects/:projectId/finalize/setup-apply',
     requireRole('Admin'),
@@ -566,9 +560,7 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/finalize/wizard-complete
-  // ───────────────────────────────────────────────────────────────
   //
   // Broadcast consumer (one): `FinalizeSettingsSection.jsx` in the web
   // client listens for `agenthub:finalize_wizard_complete` and calls

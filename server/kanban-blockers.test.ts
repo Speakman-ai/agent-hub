@@ -17,7 +17,7 @@ import {
 } from './kanban-blockers.js';
 import type { Stmts } from './types.js';
 
-// ─── In-memory DB scaffolding ──────────────────────────────────────────────
+// In-memory DB scaffolding
 //
 // The helper only ever touches four statements. Building a minimal fake
 // `Stmts` keeps these tests fast and decoupled from the real prepare() wiring
@@ -103,7 +103,7 @@ function link(db: Database.Database, cardId: string, blockedBy: string): void {
   ).run(`link-${cardId}-${blockedBy}`, cardId, blockedBy);
 }
 
-// ─── Tests ─────────────────────────────────────────────────────────────────
+// Tests
 
 describe('isColumnDone', () => {
   it('matches exact "Done"', () => {
@@ -347,7 +347,7 @@ describe('loadBoardBlockers + hasUnresolvedBlockers', () => {
     expect(hasUnresolvedBlockers('A', idx)).toBe(true);
   });
 
-  // ─── AC coverage — autonomous dispatcher eligibility predicate ──────────
+  // AC coverage — autonomous dispatcher eligibility predicate
   //
   // The four cases below map 1:1 to the acceptance criteria from the
   // "Autonomous mode does not handle blockers well" ticket. They cover the

@@ -1,33 +1,6 @@
 /**
- * Per-project pending skill-lesson count tracking, shared by the web sidebar
- * badge (a per-project map) and the mobile drawer badge (a summed total).
- *
- * The hard part is the fetch *lifecycle*, not the arithmetic. Rules, each
- * learned from a concrete bug:
- *
- * 1. **Only a successful fetch marks a project seeded.** Marking a project
- *    seeded when the request is merely *dispatched* means a request that is
- *    later cancelled or that fails is never retried — the badge stays blank
- *    forever. Only {@link applyPendingLessonSuccess} adds to `seeded`.
- *
- * 2. **A failure/cancellation preserves the last known count.** Treating a
- *    failed request as zero erases counts we already know, so one transient
- *    error blanks the badge after an unrelated refresh.
- *    {@link applyPendingLessonFailure} never touches `counts`.
- *
- * 3. **Projects that leave the list are pruned.** A project revisited after an
- *    org switch must refetch fresh, so {@link reconcilePendingLessonProjects}
- *    drops departed projects from every map/set.
- *
- * 4. **Stale completions are ignored.** Overlapping fetches for one project
- *    (a background seed plus a WebSocket-triggered refresh) can resolve out of
- *    order, and a response can arrive after its project has departed. Every
- *    fetch is issued a monotonic token via {@link beginPendingLessonFetch} /
- *    {@link reconcilePendingLessonProjects}; a completion applies only if its
- *    token is still the newest one for that project. Tokens come from a global
- *    counter and are never reused, so a slow old response can never alias a
- *    newer fetch, and a pruned project has no token so its late response is
- *    dropped instead of re-seeding it.
+ * Pending skill-lesson counts. Seeded only on success. Failures keep last count.
+ * Departed projects are pruned. Completions apply only if the fetch token is newest.
  */
 export interface PendingLessonCountsState {
   /** Last successfully fetched pending count per project. Survives failures. */
@@ -39,10 +12,8 @@ export interface PendingLessonCountsState {
   /** Newest issued fetch token per project; a completion with a different token is stale. */
   token: Record<string, number>;
   /**
-   * Projects present in the most recently reconciled list. A WebSocket-driven
-   * refresh must not start a fetch for a project that already departed — its
-   * response would re-seed the project and hide the fresh-seed a later revisit
-   * needs. Updated on every {@link reconcilePendingLessonProjects}.
+   * Projects in the last reconciled list. A WS refresh must not fetch a
+   * project that already left (that would re-seed it).
    */
   present: Set<string>;
   /** Monotonic global token source — never reused, so stale responses can't alias newer fetches. */
@@ -85,12 +56,9 @@ function issueToken(state: PendingLessonCountsState, projectId: string): number 
 }
 
 /**
- * Reconcile tracked state against the current project list and return the
- * fetches to dispatch (each with its token). Prunes departed projects from
- * every map/set — including their token, so an in-flight response for a
- * departed project is dropped rather than re-seeding it. In `seed` mode,
- * returns present projects that are neither seeded nor in flight; in `refresh`
- * mode, returns every present project not already in flight.
+ * Reconcile against the current list and return fetches to dispatch.
+ * Prunes departed projects (including tokens). `seed`: unseeded, not in flight.
+ * `refresh`: every present project not already in flight.
  */
 export function reconcilePendingLessonProjects(
   state: PendingLessonCountsState,
@@ -102,8 +70,7 @@ export function reconcilePendingLessonProjects(
     if (typeof id === 'string' && id) current.add(id);
   }
 
-  // Prune departed projects so a later revisit refetches, and so a slow
-  // in-flight response can no longer match (its token entry is gone).
+  // Prune so a revisit refetches and a slow in-flight response cannot match.
   for (const id of Object.keys(state.counts)) {
     if (!current.has(id)) delete state.counts[id];
   }
@@ -116,7 +83,7 @@ export function reconcilePendingLessonProjects(
   for (const id of Object.keys(state.token)) {
     if (!current.has(id)) delete state.token[id];
   }
-  // Record membership so a later WS refresh can reject a departed project.
+  // Membership so a later WS refresh can reject a departed project.
   state.present = current;
 
   const toFetch: PendingLessonFetch[] = [];
@@ -129,12 +96,8 @@ export function reconcilePendingLessonProjects(
 }
 
 /**
- * Begin a one-off fetch for a single project (e.g. a WebSocket-triggered
- * refresh), returning its token. Supersedes any in-flight fetch for the same
- * project so out-of-order completions are ignored. Returns null for an invalid
- * id OR for a project that is not in the most recently reconciled list — a
- * refresh event that arrives after the project departed (e.g. an org switch)
- * must not mint a token that would re-seed the departed project.
+ * One-off fetch. Returns null for an invalid id or a project not in the last
+ * reconciled list (would re-seed a departed project).
  */
 export function beginPendingLessonFetch(
   state: PendingLessonCountsState,
@@ -145,11 +108,7 @@ export function beginPendingLessonFetch(
   return { projectId, token: issueToken(state, projectId) };
 }
 
-/**
- * Record a successful fetch. No-ops (returning false) if the token is stale —
- * a newer fetch superseded this one, or the project departed and was pruned.
- * On acceptance: clears in-flight, marks seeded, stores the count.
- */
+/** Success. No-op if the token is stale. */
 export function applyPendingLessonSuccess(
   state: PendingLessonCountsState,
   projectId: string,
@@ -163,12 +122,7 @@ export function applyPendingLessonSuccess(
   return true;
 }
 
-/**
- * Record a failed or cancelled fetch. No-ops if the token is stale (a newer
- * fetch owns the in-flight slot, or the project departed). On acceptance:
- * drops the in-flight marker so the next reconcile retries, WITHOUT touching
- * the last known count or the seeded flag.
- */
+/** Failure/cancel. Drops in-flight so the next reconcile retries; keeps last count. */
 export function applyPendingLessonFailure(
   state: PendingLessonCountsState,
   projectId: string,

@@ -1,4 +1,4 @@
-// Pure epic-list filtering for the mobile Epics toolbar.
+// Mobile Epics toolbar filtering.
 // Mirrors client/src/utils/epicListFilters.ts so web and mobile apply the same
 // search / scope / state / label / user filters and the same
 // empty-epics-last ordering.

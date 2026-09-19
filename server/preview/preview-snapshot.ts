@@ -36,8 +36,7 @@
  *
  * The functions here are intentionally pure: no WebSocket access, no
  * filesystem access, no globals. The caller (websocket.ts) does the
- * broadcast-filter check + ws.send, so this module stays trivially
- * unit-testable with an in-memory runtime stub.
+ * broadcast-filter check + ws.send. Callers can stub the runtime in memory.
  */
 
 import type { PreviewPortEntry } from './preview-runtime-lookup.js';
@@ -130,9 +129,7 @@ export type PreviewSnapshotEvent = {
  * `resolvePreviewReactRuntime`; wrapping nullable runtimes in an
  * always-truthy array must not defeat the WS connect handler's
  * null-guard. The caller is responsible for filtering each event
- * through `shouldDeliverBroadcast` before sending — we don't take a
- * visibility stamp here so the helper stays pure and trivially
- * testable.
+ * through `shouldDeliverBroadcast` before sending. No visibility stamp here.
  *
  * Ordering matches `listActive` (started_at ASC) per runtime so a
  * multi-session replay is deterministic.

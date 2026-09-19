@@ -15,7 +15,7 @@
 // matcher has unit coverage over representative samples; widen the samples
 // (not the parser) when a real CLI build surfaces a new format.
 //
-// This module is read-only with respect to the CLI — it never writes auth.json.
+// Read-only with respect to the CLI; never writes auth.json.
 
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';

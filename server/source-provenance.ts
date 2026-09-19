@@ -1,5 +1,5 @@
 /**
- * source-provenance.ts — the shared capture-provenance shape (spec
+ * The shared capture-provenance shape (spec
  * CAPTURE-PROVENANCE).
  *
  * Personal todos (`user_todos`) and kanban cards (`kanban_cards`) both carry the

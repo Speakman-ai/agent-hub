@@ -1178,7 +1178,7 @@ export const activeProcesses = new Map<
   import('./active-chat-process.js').ActiveChatProcess
 >();
 
-// ─── Preview runtime ────────────────────────────────────────────────────
+// Preview runtime
 //
 // The reaper is scheduled below the runtime construction so it picks up
 // the same instance the chat handler + session archive hooks use; a
@@ -1686,7 +1686,7 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
   // row. This once-a-minute sweep flips such runs to infra_error (+ stranded
   // steps skipped, terminal broadcast) and re-triggers a fresh, non-destructive
   // run via the boot-retrigger path (its crash-loop cap bounds reap→retrigger).
-  // Pure SQLite + broadcast, so NOT docker-gated. See stuck-run-reaper.ts.
+  // SQLite + broadcast, so NOT docker-gated. See stuck-run-reaper.ts.
   cron.schedule(
     STUCK_RUN_REAPER_CRON,
     () => {

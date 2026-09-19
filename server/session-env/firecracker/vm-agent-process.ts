@@ -4,7 +4,7 @@
  *
  * Kept separate from the adapter so the full lifecycle of a command running
  * "inside a VM" — output, exit codes, signals, resize, abrupt VM death — is
- * unit-testable against an in-memory stream, with no KVM and no VMM.
+ * driven against an in-memory stream, with no KVM and no VMM.
  *
  * The invariant every consumer depends on: a handle settles exactly once. The
  * agent normally sends an `exit` frame, but a VM can also disappear

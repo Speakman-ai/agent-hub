@@ -86,7 +86,7 @@ export default function ReplayPlaylistsPanel({ projectId, onNotify }: any) {
   );
 }
 
-// ── Playlist list + create form ─────────────────────────────────────
+// Playlist list + create form
 function ReplayPlaylistsList({
   playlists,
   loading,
@@ -233,7 +233,7 @@ function ReplayPlaylistsList({
   );
 }
 
-// ── Playlist detail (items + rename/delete/keep) ────────────────────
+// Playlist detail (items + rename/delete/keep)
 function PlaylistDetail({ projectId, playlistId, onBack, onNotify }: any) {
   const [playlist, setPlaylist] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -430,7 +430,7 @@ function PlaylistDetail({ projectId, playlistId, onBack, onNotify }: any) {
   );
 }
 
-// ── Create / rename modal ───────────────────────────────────────────
+// Create / rename modal
 function PlaylistFormModal({
   title,
   submitLabel,

@@ -1,7 +1,6 @@
 /**
  * Template substitution for Hub workflow steps: {{trigger.payload...}} and
- * {{steps.<stepId>.output}}. Pure helpers — used by the sequential runner
- * and unit-tested without DB or spawn.
+ * {{steps.<stepId>.output}}.
  */
 
 export type WorkflowTemplateContext = {

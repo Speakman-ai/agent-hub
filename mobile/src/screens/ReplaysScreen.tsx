@@ -65,8 +65,7 @@ export function buildWebReplaysUrl(projectId: string, base: string = getServerBa
 }
 
 /** Detach a replay from its ticket, then reload the list. Swallows transient
- *  failures (the row is left as-is). Extracted so the unlink → reload path is
- *  unit-testable without driving RN touch events. */
+ *  failures (the row is left as-is). */
 export async function unlinkReplayCapture({ api: apiClient, projectId, replayId, reload }: any) {
   try {
     await apiClient.unlinkReplay(projectId, replayId);
@@ -76,13 +75,12 @@ export async function unlinkReplayCapture({ api: apiClient, projectId, replayId,
   }
 }
 
-// ── Extended-retention flag ─────────────────────────────────────────
+// Extended-retention flag
 // Flag / unflag a monolithic capture for extended retention (up to 15 months;
 // the clock starts now). Returns the new `retainedUntil` — the server's echoed
 // value, or a SQLite-UTC (`YYYY-MM-DD HH:MM:SS`) truthiness sentinel matching
 // what the server stores when the response omitted it (null when unflagging).
-// `nowIso` is injected so the fallback is deterministic in tests. Extracted from
-// the modal so the toggle path is unit-testable without RN touch events. Mirrors
+// `nowIso` is injected so the fallback is deterministic in tests. Mirrors
 // the web ReplayPlayerModal toggle.
 export async function setReplayRetentionFlag({
   api: apiClient,
@@ -95,7 +93,7 @@ export async function setReplayRetentionFlag({
   return updated?.retainedUntil ?? (extend ? stamp : null);
 }
 
-// ── Session player ──────────────────────────────────────────────────
+// Session player
 // Full-screen in-app rrweb player. Embeds ReplayWebViewPlayer, which streams the
 // session's segments (or a monolithic capture's paginated events) into an
 // opaque-origin WebView and renders playback + view-chapter seek. For a
@@ -211,7 +209,7 @@ export function ReplayPlayerModal({ target, projectId, onClose }: any) {
   );
 }
 
-// ── Session row ─────────────────────────────────────────────────────
+// Session row
 export function RumSessionRow({ session, onPlay }: any) {
   const s = session;
   const user = s.usrEmail || s.usrName || s.usrId;
@@ -251,7 +249,7 @@ export function RumSessionRow({ session, onPlay }: any) {
   );
 }
 
-// ── Capture row ─────────────────────────────────────────────────────
+// Capture row
 export function ReplayCaptureRow({ replay, onWatch, onLink, onUnlink, onAddToPlaylist }: any) {
   const r = replay;
   return (
@@ -326,7 +324,7 @@ function Stat({ label, value, danger, warn }: any) {
   );
 }
 
-// ── Sessions tab ────────────────────────────────────────────────────
+// Sessions tab
 export function RumSessionsList({ sessions, loading, error, active, onPlay }: any) {
   if (error) {
     return (
@@ -364,7 +362,7 @@ export function RumSessionsList({ sessions, loading, error, active, onPlay }: an
   );
 }
 
-// ── Replays tab ─────────────────────────────────────────────────────
+// Replays tab
 export function ReplayCaptureList({
   replays,
   loading,
@@ -469,7 +467,7 @@ export default function ReplaysScreen({ route }: any) {
     if (type === 'error') Alert.alert('Playlists', message);
   }, []);
 
-  // ── Sessions tab state ──
+  // Sessions tab state
   const [draft, setDraft] = useState<FilterDraft>({});
   const [applied, setApplied] = useState<FilterDraft>({});
   const [rangeId, setRangeId] = useState(DEFAULT_RANGE_ID);
@@ -543,7 +541,7 @@ export default function ReplaysScreen({ route }: any) {
       ],
     });
 
-  // ── Replays tab state ──
+  // Replays tab state
   const [rFilter, setRFilter] = useState('all');
   const [rKind, setRKind] = useState('all');
   const [rPage, setRPage] = useState<any>(null);

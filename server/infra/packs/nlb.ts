@@ -98,7 +98,7 @@ function hostCount(metricName: string, stat: string, description: string): Infra
 }
 
 const NLB_METRICS: readonly InfraPackMetric[] = Object.freeze([
-  // ── Flows ────────────────────────────────────────────────────────────────
+  // Flows
   {
     namespace: NS,
     metricName: 'ActiveFlowCount',
@@ -126,7 +126,7 @@ const NLB_METRICS: readonly InfraPackMetric[] = Object.freeze([
     'Flows established from clients to targets during the period. A per-period total, unlike ActiveFlowCount immediately above it in the AWS docs, which is a concurrent level — the two look like a pair and are a counter and a gauge.',
   ),
 
-  // ── Resets ───────────────────────────────────────────────────────────────
+  // Resets
   nlbCounter(
     'TCP_ELB_Reset_Count',
     'RST packets the load balancer itself generated. AWS documents two causes: a connection idle past the timeout, and a target being marked unhealthy while client connections are open. A spike here just before UnHealthyHostCount rises is a target that was failing before health checks caught it.',
@@ -140,13 +140,13 @@ const NLB_METRICS: readonly InfraPackMetric[] = Object.freeze([
     'RST packets a client sent to a target, forwarded by the load balancer. Ordinary in bulk (clients abandon connections constantly); useful as the baseline the other two reset counters are read against.',
   ),
 
-  // ── Port exhaustion ──────────────────────────────────────────────────────
+  // Port exhaustion
   nlbCounter(
     'PortAllocationErrorCount',
     'Ephemeral port allocation failures during client IP translation. AWS: "A non-zero value indicates dropped client connections." It applies when client IP preservation is *disabled* (or for PrivateLink traffic), because that is when the load balancer must source-NAT and therefore allocate a port per flow — the limit is about 55,000 simultaneous connections per unique target. The fix is more targets in the target group, not a bigger load balancer.',
   ),
 
-  // ── Target group health (TargetGroup dimension is mandatory) ─────────────
+  // Target group health (TargetGroup dimension is mandatory)
   hostCount(
     'HealthyHostCount',
     // Maximum: the most optimistic node's view, and AWS's explicit

@@ -8,12 +8,9 @@ import {
 } from '../utils/sessionActionMenu';
 
 /**
- * Pure helper: given the `{ name: stanza }` map returned by GET
- * /projects/:id/aws-profiles, return the sorted names of the SSO profiles.
- * Only profiles that authenticate through `aws sso login` belong here:
- * `static` and `role` profiles have no device flow to start. Mirrors the
- * backend `isProjectAwsSsoProfile`, where a legacy stanza with no `type`
- * defaults to SSO.
+ * Sorted SSO profile names from GET /projects/:id/aws-profiles.
+ * `static` and `role` have no device flow. Legacy stanzas with no `type`
+ * default to SSO, matching `isProjectAwsSsoProfile`.
  */
 export function extractSsoProfileNames(profiles: any): string[] {
   if (!profiles || typeof profiles !== 'object') return [];

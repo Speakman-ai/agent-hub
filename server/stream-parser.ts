@@ -121,7 +121,7 @@ function enrichCursorEditInputFromToolResult(
   return input;
 }
 
-// ─── agenthub:ask fenced-block protocol ────────────────────────────────
+// agenthub:ask fenced-block protocol
 //
 // We teach Claude (via the enriched system prompt) to emit a fenced code
 // block tagged `agenthub:ask` whenever it wants to ask the user a multi-
@@ -178,7 +178,7 @@ export function extractAskBlocks(text: string): AskExtractionResult {
 
 export { parseAskPayload };
 
-// ─── [[STEP:...]] progress-marker protocol ─────────────────────────────
+// [[STEP:...]] progress-marker protocol
 //
 // Long-running sessions (reviewer, autofix, heartbeat, cron) can emit
 // `[[STEP:<status>:<label>]]` markers in their assistant text to drive a
@@ -364,7 +364,7 @@ function parseLine(line: string, normalize: NormalizeFn): StreamEvent[] {
   }
 }
 
-// ─── Claude Code normalizer ────────────────────────────────────────────
+// Claude Code normalizer
 
 /**
  * Under `--verbose`, Claude Code interleaves frames from sidechains (inner
@@ -549,7 +549,7 @@ function normalizeClaudeFrame(raw: Record<string, unknown>): StreamEvent[] {
   }
 }
 
-// ─── Cursor Agent normalizer ───────────────────────────────────────────
+// Cursor Agent normalizer
 
 function normalizeCursor(
   raw: Record<string, unknown>,
@@ -779,8 +779,6 @@ function normalizeCursor(
   }
 }
 
-// ─── Helpers ───────────────────────────────────────────────────────────
-
 export interface ExtractedToolResult {
   output: string;
   images: ToolResultImageRef[];
@@ -905,7 +903,7 @@ function friendlyCursorToolName(variant: string | undefined): string {
   return stripped.charAt(0).toUpperCase() + stripped.slice(1);
 }
 
-// ─── Gemini CLI normalizer ─────────────────────────────────────────────
+// Gemini CLI normalizer
 //
 // Shape reference: https://geminicli.com/docs/cli/headless
 // Gemini's stream-json output is a newline-delimited sequence of events:
@@ -1064,7 +1062,7 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
   }
 }
 
-// ─── Grok Build CLI normalizer ─────────────────────────────────────────
+// Grok Build CLI normalizer
 //
 // Shape reference: xAI Grok Build CLI headless mode
 // (https://docs.x.ai/build/cli/headless-scripting). `grok -p "..."
@@ -1366,7 +1364,7 @@ function normalizeGrok(
   return [{ type: 'unknown', text: `unhandled grok event: ${JSON.stringify(raw).slice(0, 200)}` }];
 }
 
-// ─── Codex CLI normalizer ──────────────────────────────────────────────
+// Codex CLI normalizer
 //
 // Shape reference: https://developers.openai.com/codex/noninteractive.
 // `codex exec --json` emits a newline-delimited event stream:

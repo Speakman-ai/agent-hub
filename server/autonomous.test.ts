@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import type { Project, KanbanCardRow, KanbanEpicRow, KanbanPhaseRow, SessionRow } from './types.js';
 
-// ─── Module mocks (hoisted before imports) ────────────────────────────────
+// Module mocks (hoisted before imports)
 
 vi.mock('node-cron', () => ({
   default: {
@@ -33,7 +33,7 @@ vi.mock('./session-ownership.js', () => ({
   userOwnsSession: vi.fn(() => true),
 }));
 
-// ─── Secrets mock (controls cross-hub label gate) ─────────────────────────
+// Secrets mock (controls cross-hub label gate)
 // Use the real `cardNeedsDevHubKey` so the label set in secrets.ts is the
 // single source of truth — the test never re-implements the matching logic.
 // Only `getDevHubApiKey` is stubbed so no AWS calls are made during tests.
@@ -69,8 +69,6 @@ const mockGetDevHubApiKeyFn = mockGetDevHubApiKey as Mock;
 const { markSessionFinalizeAutomation: mockMarkFinalizeAutomation } =
   await import('./session-ship.js');
 const mockMarkFinalizeAutomationFn = mockMarkFinalizeAutomation as Mock;
-
-// ─── Helpers ──────────────────────────────────────────────────────────────
 
 interface MockStmts {
   getAutonomousEpic: { get: Mock };
@@ -861,7 +859,7 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-progress', 0, 'phase1-build');
   });
 
-  // ─── Phase auto-advance: when a phase finishes, start the next armed phase ──
+  // Phase auto-advance: when a phase finishes, start the next armed phase
   function makePhase(overrides: Partial<KanbanPhaseRow> = {}): KanbanPhaseRow {
     return {
       id: 'phase-1',
@@ -2034,8 +2032,8 @@ describe('runAutonomousLoop — dispatch', () => {
     );
   });
 
-  // ── Cross-engine model override (regression for "Autonomous model
-  // selection not applied (Composer 2.5 ignored, runs as Claude Opus)") ─────
+  // Cross-engine model override (regression for "Autonomous model
+  // selection not applied (Composer 2.5 ignored, runs as Claude Opus)")
   it('spawns under the model-owning engine when epic autonomous_model is from a different engine', async () => {
     const card = makeCard();
     const epicWithModel = {
@@ -3195,7 +3193,7 @@ describe('runAutonomousLoop — blocker filter', () => {
     expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('r-card');
   });
 
-  // ─── Visible-signal contract ────────────────────────────────────────────
+  // Visible-signal contract
   //
   // Before this fix the only signal that the dispatcher had skipped a card
   // for blocker reasons was a `console.log` line — invisible to anyone

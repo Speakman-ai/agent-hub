@@ -2236,7 +2236,7 @@ function CustomerSupportPageInner(
     approvalFilter,
   ]);
 
-  // ── WebSocket-driven live updates (pushed from App.jsx via the ref) ──
+  // WebSocket-driven live updates (pushed from App.jsx via the ref)
   const matchesFilter = (ticket: any) =>
     activeStatusFilter.statuses.includes(ticket.status) &&
     (typeFilter === 'all' || ticket.type === typeFilter) &&

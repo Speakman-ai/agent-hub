@@ -1,7 +1,7 @@
 /**
- * deploy-runner-loss.ts — classification of a failed deploy step as runner loss.
+ * Classification of a failed deploy step as runner loss.
  *
- * Pure unit tests: no DB, no backend, no spawn. The regression these lock in is
+ * Unit tests: no DB, no backend, no spawn. The regression these lock in is
  * the historical behaviour where a runner-agent that died under a deploy step
  * surfaced as a plain step failure and terminalized the whole deployment.
  */

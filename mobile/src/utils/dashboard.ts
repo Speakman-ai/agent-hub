@@ -1,11 +1,4 @@
-/**
- * Pure helpers for the mobile DashboardScreen.
- *
- * The screen itself is a thin RN view over these — keeping the data
- * shaping in plain JS means we can unit-test the mobile dashboard via
- * `vitest` (which only runs `src/utils/`) without booting the RN
- * environment.
- */
+/** Mobile DashboardScreen data shaping. */
 import { parseNativePrUrl } from './prFormatting';
 import { colors } from '../theme/colors';
 export const HEADLINE_TILES = [

@@ -1,5 +1,5 @@
 /**
- * deploy-config-error.ts — shared error type for deploy.yaml parsing.
+ * Shared error type for deploy.yaml parsing.
  *
  * Extracted from `deploy-config.ts` so `github-workflow-step.ts` can throw the
  * same typed error without importing `deploy-config.ts` (which imports the

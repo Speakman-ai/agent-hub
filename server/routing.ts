@@ -1,6 +1,6 @@
 import type { Agent, KanbanCardRow, Project } from './types.js';
 
-// ─── Label-based routing ─────────────────────────────────────────────────────
+// Label-based routing
 //
 // Replaces the synchronous triage step with a stateless label-match: cards
 // carry specialty labels, and the autonomous
@@ -9,7 +9,7 @@ import type { Agent, KanbanCardRow, Project } from './types.js';
 // matches, the card falls through to the project lead, who can implement it
 // directly.
 //
-// Pure — no DB / no broadcast. Tested in routing.test.ts.
+// No DB / no broadcast. Tested in routing.test.ts.
 
 /** Split a comma-separated label string into a normalized lower-case array. */
 export function parseLabels(raw: string | null | undefined): string[] {

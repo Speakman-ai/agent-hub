@@ -1,5 +1,5 @@
 /**
- * ci-runs.ts — run-history read surface for the Runners page.
+ * Run-history read surface for the Runners page.
  *
  * Lists past CI executions for a project across every trigger source
  * (Finalize runs and report-only push-CI runs share the finalize_runs

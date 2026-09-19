@@ -13,7 +13,7 @@
  */
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 
-// ─── Request schemas ────────────────────────────────────────────────
+// Request schemas
 
 export const CreateLogSourceRequestSchema = z.object({
   name: z.string().min(1).max(100),
@@ -29,7 +29,7 @@ export const UpdateLogSourceRequestSchema = z
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'at least one field is required' });
 
-// ─── Response component schemas ──────────────────────────────────────
+// Response component schemas
 
 const LogSourceComponent = registerComponent(
   'LogSource',
@@ -111,7 +111,7 @@ const LogSourceErrorComponent = registerComponent(
   z.object({ error: z.string() }).openapi({ description: 'Error envelope.' }),
 );
 
-// ─── Path registrations ──────────────────────────────────────────────
+// Path registrations
 
 const projectIdParams = z.object({
   projectId: z.string().openapi({ description: 'Project ID (slug).' }),

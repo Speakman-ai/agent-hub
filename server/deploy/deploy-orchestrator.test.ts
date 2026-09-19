@@ -1,5 +1,5 @@
 /**
- * deploy-orchestrator.ts — Phase 3 orchestrator.
+ * Phase 3 orchestrator.
  *
  * Exercised against the shared test DB (test/setup.ts) with a FAKE RunnerBackend
  * — no real CLI/container is ever spawned (the global guard would throw). The

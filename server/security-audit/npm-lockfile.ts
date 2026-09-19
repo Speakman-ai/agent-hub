@@ -1,5 +1,5 @@
 /**
- * npm-lockfile.ts — parse `package-lock.json` / `npm-shrinkwrap.json` into a
+ * Parse `package-lock.json` / `npm-shrinkwrap.json` into a
  * flat list of resolved dependencies.
  *
  * Supports all three lockfile formats npm has shipped:

@@ -1,8 +1,8 @@
 /**
  * Exponential backoff schedule for job retries.
  *
- * Pure and deterministic given its inputs (jitter is opt-in and takes an
- * injected RNG), so the retry-delay math is unit-testable without timers.
+ * Deterministic given its inputs (jitter is opt-in and takes an
+ * injected RNG). No timers.
  *
  * The delay for attempt N (1-based — the attempt that just failed) is
  *   baseMs * factor^(N-1)

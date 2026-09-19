@@ -1,5 +1,5 @@
 /**
- * me-dashboard.ts — per-user cross-project aggregation for the User Module
+ * Per-user cross-project aggregation for the User Module
  * dashboard (spec AGGREGATION).
  *
  * One server-side, RBAC-filtered fan-out keyed by the authenticated uid. It
@@ -160,7 +160,7 @@ export function buildMyWork(deps: RouteDeps, uid: string, caller: VisibilityCall
   return { cards, counts: { total: cards.length, open, byPriority } };
 }
 
-// ─── Per-uid dashboard cache ─────────────────────────────────────────────────
+// Per-uid dashboard cache
 
 export const ME_DASHBOARD_CACHE_TTL_MS = 15_000;
 

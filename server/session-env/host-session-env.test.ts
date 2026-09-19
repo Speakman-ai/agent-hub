@@ -14,7 +14,7 @@ vi.mock('node-pty', () => ({
   spawn: vi.fn(() => new FakePty()),
 }));
 
-// ── Fakes ─────────────────────────────────────────────────────────
+// Fakes
 
 class FakeChild extends EventEmitter implements HostChildLike {
   pid: number;
@@ -139,7 +139,7 @@ function makeEnv(overrides: Partial<HostSessionEnvDeps> = {}): Fixture {
   return { env, records, clock, killCalls };
 }
 
-// ── Interface contract (adapter-agnostic suite) ───────────────────
+// Interface contract (adapter-agnostic suite)
 
 const contractFixtures: Fixture[] = [];
 // Each contract test creates one fixture; reset between tests so the
@@ -166,7 +166,7 @@ describeSessionEnvContract('host adapter', {
   },
 });
 
-// ── Host-adapter specifics ────────────────────────────────────────
+// Host-adapter specifics
 
 describe('HostSessionEnv.spawn', () => {
   it('runs the command via sh -c in its own process group with merged env', () => {

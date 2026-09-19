@@ -1,5 +1,5 @@
 /**
- * runner-queue-schema.ts — DDL for the multi-tenant Finalize runner control plane.
+ * DDL for the multi-tenant Finalize runner control plane.
  *
  * Lives in the shared cross-org `orgs.db` (the only store that spans orgs), NOT a
  * per-org `agent-hub.db`: one runner fleet serves every tenant, so the queue is
@@ -7,7 +7,7 @@
  * state (`finalize_runs`/`finalize_run_steps`/`finalize_run_jobs`); this queue is
  * a routing/lease layer the remote backend writes results back from.
  *
- * Pure leaf module (no imports) so `orgs.ts` can apply it without an import cycle.
+ * Leaf module (no imports) so `orgs.ts` can apply it without an import cycle.
  */
 export const RUNNER_QUEUE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS runner_jobs (

@@ -1,5 +1,5 @@
 /**
- * runner-agent.ts — the pull-based runner agent that executes one Finalize job.
+ * The pull-based runner agent that executes one Finalize job.
  *
  * Runs inside a fleet task. Loop: register → claim → materialize the worktree
  * bundle → start a fresh DinD container (via the SHARED runner-exec-args, for
@@ -7,9 +7,8 @@
  * container while streaming stdout/stderr back, report each exit code → on a
  * `finish` directive (or 410 = channel gone) tear the container down and exit.
  *
- * The job loop takes injected `transport` + `docker` so it's unit-testable with
- * fakes (no real HTTP/Docker); `realDockerOps`/`httpTransport`/`runAgentMain`
- * wire the production implementations.
+ * The job loop takes injected `transport` + `docker`.
+ * `realDockerOps`/`httpTransport`/`runAgentMain` wire the production implementations.
  */
 import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
@@ -224,7 +223,7 @@ export async function deliverCritical(
 
 /**
  * Run a single claimed job to completion. Returns the per-step exit codes.
- * Pure control flow over the injected transport/docker — the unit of test.
+ * Control flow over the injected transport/docker — the unit of test.
  */
 export async function runAgentJob(args: {
   jobId: string;
@@ -506,7 +505,7 @@ function logJobResourceSummary(
   );
 }
 
-// ── Production implementations ──────────────────────────────────────────────
+// Production implementations
 
 const JOB_LABELS = (spec: RunnerJobWireSpec): Record<string, string> => ({
   'agent-hub.finalize.run_id': spec.runId,

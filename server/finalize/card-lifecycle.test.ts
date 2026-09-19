@@ -20,7 +20,7 @@ import {
 } from './card-lifecycle.js';
 import type { KanbanCardRow, KanbanColumnRow } from '../types.js';
 
-// ─── Fixtures ────────────────────────────────────────────────────────
+// Fixtures
 
 function fakeCard(overrides: Partial<KanbanCardRow> = {}): KanbanCardRow {
   return {
@@ -125,7 +125,7 @@ function makeDeps(cardOverride: Partial<KanbanCardRow> = {}): {
   return { deps, card, comments, moves, broadcast, log };
 }
 
-// ─── NOOP ────────────────────────────────────────────────────────────
+// NOOP
 
 describe('NOOP_CARD_LIFECYCLE', () => {
   it('exposes every method and returns without side effects', () => {
@@ -153,7 +153,7 @@ describe('NOOP_CARD_LIFECYCLE', () => {
   });
 });
 
-// ─── onStarted ───────────────────────────────────────────────────────
+// onStarted
 
 describe('createCardLifecycle.onStarted', () => {
   it('moves the card to In Progress and posts the start comment', () => {
@@ -280,7 +280,7 @@ describe('createCardLifecycle.onStarted', () => {
   });
 });
 
-// ─── Rebase comments ─────────────────────────────────────────────────
+// Rebase comments
 
 describe('createCardLifecycle — rebase transitions', () => {
   it('onRebaseClean posts the clean comment, no move', () => {
@@ -306,7 +306,7 @@ describe('createCardLifecycle — rebase transitions', () => {
   });
 });
 
-// ─── Reviewer verdict + step failed ──────────────────────────────────
+// Reviewer verdict + step failed
 
 describe('createCardLifecycle — reviewer + step', () => {
   it('onReviewerVerdict approved', () => {
@@ -333,7 +333,7 @@ describe('createCardLifecycle — reviewer + step', () => {
   });
 });
 
-// ─── onPushed: comment + move to Review ──────────────────────────────
+// onPushed: comment + move to Review
 
 describe('createCardLifecycle.onPushed', () => {
   it('delegates to post-push detach: posts handoff comment then moves card to Review (order matters)', () => {
@@ -400,7 +400,7 @@ describe('createCardLifecycle.onPushed', () => {
   });
 });
 
-// ─── onStalled ───────────────────────────────────────────────────────
+// onStalled
 
 describe('createCardLifecycle.onStalled', () => {
   it('posts the 24hr-no-response comment with the recovery actions', () => {
@@ -413,7 +413,7 @@ describe('createCardLifecycle.onStalled', () => {
   });
 });
 
-// ─── onTerminalFailed ────────────────────────────────────────────────
+// onTerminalFailed
 
 describe('createCardLifecycle.onTerminalFailed', () => {
   it('posts the failure_reason on the card timeline', () => {
@@ -431,7 +431,7 @@ describe('createCardLifecycle.onTerminalFailed', () => {
   });
 });
 
-// ─── Non-throwing contract ───────────────────────────────────────────
+// Non-throwing contract
 
 describe('createCardLifecycle — non-throwing', () => {
   beforeEach(() => {

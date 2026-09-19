@@ -1,20 +1,6 @@
 /**
- * Framework-free helpers for the infrastructure fleet dashboard, shared by the
- * web Infrastructure module and the mobile Infrastructure screen.
- *
- * The third peer of `infraMetrics.ts` and `infraSpend.ts`, and here for the
- * same reason they are: the parts that decide *what* an operator reads are one
- * implementation, because a phone that formats 1.5 GiB of freeable memory as
- * "1610612736" while the desktop says "1.5 GB" is a parity bug that no amount
- * of per-surface polish fixes.
- *
- * The pixel mapping stays out, as in both peers. `sparklineFractions` emits
- * 0..1, and each surface maps that into an SVG viewbox or a stack of `View`s.
- *
- * Nothing here recomputes a metric. The server already reduced each headline to
- * a latest value and a bucketed sparkline; a null is a real answer ("collected,
- * nothing came back") and must survive to the screen as one rather than being
- * defaulted to zero somewhere in here.
+ * Fleet dashboard helpers. Server already reduced headlines; a null is "nothing
+ * came back", not zero. Pixel mapping stays per surface.
  */
 
 import { normalizeValueRange } from './infraMetrics.js';
@@ -86,17 +72,8 @@ export function infraServiceLabel(service: string): string {
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
 
 /**
- * Format a headline value for a tile.
- *
- * Null renders as an em-dash rather than `0`, and that distinction is the whole
- * reason this takes a nullable: a stopped instance and an idle one produce very
- * different operational responses, and a dashboard that draws both as zero
- * hides the one worth acting on.
- *
- * Bytes use 1024-step units with the decimal names AWS's own console uses. The
- * `FreeStorageSpace` doc note is the reason a raw number is not acceptable
- * here: CloudWatch stores bytes while the RDS console shows GB, and an
- * unformatted figure reads a billion times off.
+ * Headline tile. Null → dash, not `0`. Bytes use 1024-step units with AWS's
+ * decimal names (CloudWatch stores bytes; RDS console shows GB).
  */
 export function formatHeadlineValue(value: number | null, unit: InfraHeadlineUnit): string {
   if (value == null || !Number.isFinite(value)) return '—';
@@ -132,16 +109,8 @@ export function formatHeadlineValue(value: number | null, unit: InfraHeadlineUni
 }
 
 /**
- * A sparkline as 0..1 fractions, oldest first, with `1` at the top of the plot.
- *
- * Scaling is per-series rather than per-unit on purpose. A tile is 40 pixels
- * tall and its job is "did this change", not "how does it compare to the one
- * below it" — a shared axis across metrics measured in percent and bytes has no
- * meaning, and a CPU series pinned to 0..100 draws a flat line at the bottom
- * for every instance that is merely healthy.
- *
- * Returns an empty array for fewer than two points: one observation is a value,
- * not a trend, and drawing it as a line implies a slope that was never measured.
+ * Sparkline as 0..1, oldest first, `1` at the top. Scaled per series. Empty
+ * when fewer than two points (one observation is not a trend).
  */
 export function sparklineFractions(points: readonly InfraFleetPointWire[]): number[] {
   const values = points.map((p) => p.value).filter((v) => Number.isFinite(v));
@@ -153,14 +122,7 @@ export function sparklineFractions(points: readonly InfraFleetPointWire[]): numb
   });
 }
 
-/**
- * SVG polyline points for a sparkline inside a `width` × `height` viewbox.
- *
- * Web-only geometry, and the reason it lives beside the fractions rather than
- * in the component is that mobile's bar mapping consumes the same fractions
- * directly — keeping both derivations adjacent is what stops one of them
- * silently inverting the y axis.
- */
+/** SVG polyline in a `width` × `height` viewbox. Same fractions as mobile bars. */
 export function sparklinePolyline(
   points: readonly InfraFleetPointWire[],
   width: number,

@@ -1,9 +1,6 @@
 /**
- * google-oauth.ts — pure helpers for the Google OAuth 2.0 Authorization Code
- * flow (web-server flow). Token exchange, the per-user connection store, and
- * the callback handler are owned by the connection-management ticket; this
- * module currently provides the authorize-URL builder used by
- * `/api/auth/google/start`.
+ * Google OAuth 2.0 Authorization Code (web-server flow) authorize-URL builder
+ * for `/api/auth/google/start`. Token exchange and the callback live elsewhere.
  *
  * Refs:
  *   https://developers.google.com/identity/protocols/oauth2/web-server

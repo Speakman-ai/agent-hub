@@ -13,7 +13,7 @@
  * over to **claude-code first** — an engine that is itself already exhausted —
  * before it can ever reach grok. The user sees "Codex did not switch to grok".
  *
- * This module is the pure, persistence-agnostic seam that closes the gap. The
+ * Persistence-agnostic seam that closes the gap. The
  * chat close-handler serializes the returned map into
  * `sessions.failover_exhausted_engines` (JSON `{ "<engine>": <epochMs> }`) and:
  *

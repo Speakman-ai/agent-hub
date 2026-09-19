@@ -107,7 +107,7 @@ export interface PendingAttach {
 /**
  * Re-anchor a pending attachment across a content edit so its insertion point
  * survives edits made while the picker/upload awaits are pending (see
- * transformRange). Pure so the mobile attach flow is unit-testable.
+ * transformRange).
  */
 export function nextPendingRangeOnEdit(
   pending: PendingAttach | null,
@@ -124,7 +124,6 @@ export function nextPendingRangeOnEdit(
  * switched/created a note) — the attachment is dropped rather than written into
  * the wrong buffer. Otherwise inserts the snippet at the pending (edit-tracked)
  * range, falling back to end-of-content when there is no live pending anchor.
- * Pure so the mobile attach flow is unit-testable without the native pickers.
  */
 export function computeAttachInsertion(opts: {
   session: number;

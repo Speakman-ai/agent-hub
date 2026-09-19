@@ -3,7 +3,7 @@
 // Project analyze, heartbeats, crons, and memory reconciliation all
 // historically called their own `spawn(claudeBin, …)` block with subtly
 // different flag sets. That hardcoded Claude Code as the only engine
-// for non-session prompts. This module wraps the per-engine flag
+// for non-session prompts. Wraps the per-engine flag
 // conventions so callers can do:
 //
 //     const result = await runOneShotPrompt({

@@ -40,7 +40,7 @@ export const SEVERITY_NUMBER = {
  */
 export const ERROR_SEVERITY_FLOOR = SEVERITY_NUMBER.ERROR;
 
-// ── Store-wide bounds (decision LOG-STORE) ────────────────────────────────
+// Store-wide bounds (decision LOG-STORE)
 /** Default retention window before the reaper deletes a record, in days. */
 export const DEFAULT_RETENTION_DAYS = 7;
 /** Operator-configurable retention bounds (inclusive). */
@@ -74,7 +74,7 @@ export const MAX_QUERY_LIMIT = 500;
 /** Default page size when a query omits `limit`. */
 export const DEFAULT_QUERY_LIMIT = 100;
 
-// ── Batch-writer queue bounds (decision LOG-STORE) ─────────────────────────
+// Batch-writer queue bounds (decision LOG-STORE)
 /**
  * The single in-process batch-writer queue decouples ingest request handling
  * from synchronous SQLite writes so a burst coalesces into fewer, larger write
@@ -90,7 +90,7 @@ export const DEFAULT_WRITE_QUEUE_FLUSH_RECORDS = 1_000;
 /** Idle flush cadence for the tail of a burst, in ms. */
 export const DEFAULT_WRITE_QUEUE_FLUSH_INTERVAL_MS = 250;
 
-// ── Log-source management bounds (decision LOG-AUTH) ───────────────────────
+// Log-source management bounds (decision LOG-AUTH)
 /** Ingest-token wire prefix — `ahlog_<random>`; identifies the token scheme. */
 export const LOG_SOURCE_TOKEN_PREFIX = 'ahlog_';
 /** Max length of a source's display name. */

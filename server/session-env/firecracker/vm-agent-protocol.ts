@@ -109,7 +109,7 @@ export interface VmAgentFrame {
   payload: Buffer;
 }
 
-// ── Request / response payloads ──────────────────────────────────
+// Request / response payloads
 
 export interface VmAgentExecRequest {
   kind: 'exec';
@@ -222,7 +222,7 @@ export type VmAgentControl =
   /** Close the child's stdin without killing it. */
   | { kind: 'stdin-eof' };
 
-// ── Encoding ─────────────────────────────────────────────────────
+// Encoding
 
 export function encodeFrame(type: VmAgentFrameType, payload: Buffer): Buffer {
   if (payload.length > MAX_FRAME_PAYLOAD_BYTES) {

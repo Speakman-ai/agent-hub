@@ -355,7 +355,7 @@ export default function FinalizeButton({
 }
 // Status helpers (`isTerminalStatus`, `isFinalizeBlocked`,
 // `describeRunPhase`) live in `mobile/src/utils/finalizeRun.js` so they
-// can be unit-tested and shared. Keep them in sync with
+// can be shared. Keep them in sync with
 // `client/src/hooks/useFinalizeRun.js`.
 const PURPLE = '#7C3AED';
 const styles = StyleSheet.create({

@@ -1,5 +1,5 @@
 /**
- * deploy-acquire-retry.ts — bounded auto-retry for the deploy runner-acquire
+ * Bounded auto-retry for the deploy runner-acquire
  * step.
  *
  * A deploy runs on the SAME runner backend as Finalize (local DinD or the
@@ -17,7 +17,7 @@
  * Finalize already treats this exact class as infra and auto-retries it on a
  * fresh agent ({@link ../finalize/infra-retry}). Deploys historically did not:
  * a single transient blip terminalized the whole deployment as `error` and
- * forced a manual re-trigger. This module closes that gap for the acquire path
+ * forced a manual re-trigger. Closes that gap for the acquire path
  * ONLY — retrying the acquire is safe because it runs BEFORE any deploy step,
  * so a retry can never cause a partial or double deploy. (The riskier mid-run
  * "runner died under a step" case is tracked separately.)

@@ -675,8 +675,7 @@ const GIT_EXCLUDE_PATHS = [
 /**
  * Given the current contents of a `.git/info/exclude` file, return the new
  * contents with the Agent-Hub-managed paths present, or `null` when every
- * managed path is already listed (so the caller can skip the write). Pure so it
- * can be unit-tested without a real repo.
+ * managed path is already listed (so the caller can skip the write).
  *
  * When the marker exists but the block predates a newly-introduced managed path
  * (e.g. the Cursor session rule added to an already-excluded worktree), the
@@ -1450,8 +1449,7 @@ async function getDefaultBranch(cwd: string): Promise<string> {
  * Does `git ls-remote --heads origin <branch>` output advertise an *exact*
  * `refs/heads/<branch>` ref? `ls-remote <pattern>` tail-matches, so a bare
  * name like `foo` would also match `refs/heads/bar/foo`; we require the full
- * ref to avoid provisioning a resolve session on the wrong branch. Pure so the
- * exact-match guard is unit-testable without git I/O.
+ * ref to avoid provisioning a resolve session on the wrong branch.
  */
 export function lsRemoteHasExactHead(lsRemoteOutput: string, branch: string): boolean {
   const suffix = `\trefs/heads/${branch}`;
@@ -1670,8 +1668,8 @@ function needsDependencyInstall(cloneDir: string): boolean {
  * on the healer's hardcoded `/app` fallback. Returns null when this server itself
  * has no node-pty (nothing to donate; the healer then degrades the Terminal).
  *
- * `requireResolve` is injectable so the resolution is unit-testable without a real
- * node-pty on disk.
+ * `requireResolve` is injectable so resolution works without a real node-pty
+ * on disk.
  */
 export function resolveHostNodePtyDonor(
   requireResolve: (id: string) => string = createRequire(import.meta.url).resolve,
@@ -1691,8 +1689,7 @@ export function resolveHostNodePtyDonor(
  *   2. Otherwise default to this server's own node-pty (`hostDonor`).
  *   3. If neither exists, contribute nothing (the healer degrades the Terminal).
  * Returns the env patch to merge into the install env — `{}` in cases 1 and 3
- * (case 1 already carries the value through the `process.env` spread). Pure and
- * unit-testable.
+ * (case 1 already carries the value through the `process.env` spread).
  */
 export function nodePtyDonorEnvOverride(
   env: NodeJS.ProcessEnv,

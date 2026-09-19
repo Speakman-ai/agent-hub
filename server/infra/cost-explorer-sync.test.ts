@@ -128,8 +128,6 @@ function forbiddenClient(): CostExplorerClientLike {
   };
 }
 
-// ─── Pure helpers ───────────────────────────────────────────────────────────
-
 describe('utcDayString', () => {
   it('formats in UTC, not the host timezone', () => {
     expect(utcDayString(Date.UTC(2026, 7, 7, 23, 59, 59))).toBe('2026-08-07');
@@ -320,7 +318,7 @@ describe('parseCostExplorerPage', () => {
   });
 });
 
-// ─── The guards ─────────────────────────────────────────────────────────────
+// The guards
 
 describe('runInfraCostExplorerSync guards', () => {
   it('issues nothing for a project that never opted in', () => {
@@ -427,7 +425,7 @@ describe('runInfraCostExplorerSync guards', () => {
   });
 });
 
-// ─── The request AWS actually receives ──────────────────────────────────────
+// The request AWS actually receives
 
 describe('the GetCostAndUsage request', () => {
   beforeEach(() => {
@@ -464,7 +462,7 @@ describe('the GetCostAndUsage request', () => {
   });
 });
 
-// ─── Spend accounting ───────────────────────────────────────────────────────
+// Spend accounting
 
 describe('per-page spend accounting', () => {
   beforeEach(() => {
@@ -577,7 +575,7 @@ describe('per-page spend accounting', () => {
   });
 });
 
-// ─── The pagination cap ─────────────────────────────────────────────────────
+// The pagination cap
 
 describe('the pagination cap', () => {
   beforeEach(() => {
@@ -614,7 +612,7 @@ describe('the pagination cap', () => {
   });
 });
 
-// ─── End to end into the cache ──────────────────────────────────────────────
+// End to end into the cache
 
 describe('what lands in the cache', () => {
   beforeEach(() => {

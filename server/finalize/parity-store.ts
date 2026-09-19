@@ -1,5 +1,5 @@
 /**
- * parity-store.ts — persistence + recording surface for the Finalize↔GitHub
+ * Persistence + recording surface for the Finalize↔GitHub
  * parity harness.
  *
  * The harness records, per commit, the Finalize verdict and the GitHub Actions
@@ -29,7 +29,7 @@ import {
   type ParityVerdict,
 } from './parity-classifier.js';
 
-// ─── DDL ──────────────────────────────────────────────────────────────
+// DDL
 
 /**
  * One row per (project, commit). `finalize_jobs` / `github_jobs` are JSON
@@ -60,7 +60,7 @@ export const FINALIZE_PARITY_SCHEMA = `
     ON finalize_github_parity(project_id, divergence_class);
 `;
 
-// ─── Types ────────────────────────────────────────────────────────────
+// Types
 
 /** Raw `finalize_github_parity` row as stored (jobs are JSON strings). */
 export interface ParityRow {
@@ -122,7 +122,7 @@ export interface ParityStoreDeps {
   onFalseGreen?: (record: ParityRecord) => void;
 }
 
-// ─── Record ───────────────────────────────────────────────────────────
+// Record
 
 /**
  * Record (or update) one parity observation. Derives the divergence class,
@@ -211,7 +211,7 @@ export function recordParity(deps: ParityStoreDeps, input: ParityObservationInpu
   return record;
 }
 
-// ─── Read ─────────────────────────────────────────────────────────────
+// Read
 
 function parseJobs(json: string): ParityJob[] {
   try {
@@ -295,7 +295,7 @@ export function summarizeParity(records: ReadonlyArray<ParityRecord>): ParitySum
   return summary;
 }
 
-// ─── Seed ─────────────────────────────────────────────────────────────
+// Seed
 
 /**
  * Known parity observations to seed a fresh dataset with. The first entry is

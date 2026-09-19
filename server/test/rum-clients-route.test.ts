@@ -107,7 +107,7 @@ function preloadProjectBucket(projectId: string, count: number): void {
   _projectRateBuckets.set(projectId, { count, resetAt: Date.now() + 60 * 60 * 1000 });
 }
 
-// ─── Store unit tests ────────────────────────────────────────────────
+// Store unit tests
 
 describe('rum-clients-store', () => {
   it('mints a rum_-prefixed token returned once and verifiable', () => {
@@ -172,7 +172,7 @@ describe('rum-clients-store', () => {
   });
 });
 
-// ─── Admin route tests ───────────────────────────────────────────────
+// Admin route tests
 
 describe('POST /api/projects/:projectId/rum/clients', () => {
   it('403 when the caller is below Admin', async () => {
@@ -250,7 +250,7 @@ describe('POST /api/projects/:projectId/rum/clients', () => {
   });
 });
 
-// ─── Ingest gate (X-RUM-Token) ───────────────────────────────────────
+// Ingest gate (X-RUM-Token)
 
 describe('POST /api/replays — X-RUM-Token gate', () => {
   beforeEach(() => {

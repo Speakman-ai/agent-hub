@@ -1,5 +1,5 @@
 /**
- * infra-retention-store.ts — the persistence half of `infra.db`'s retention
+ * The persistence half of `infra.db`'s retention
  * story (decision INFRA-STORE).
  *
  * `infra-retention-reaper.ts` owns the tick and the shared delete budget; this
@@ -47,7 +47,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 const DELETE_CHUNK = 2_000;
 
-// ── Config resolution ──────────────────────────────────────────────────────
+// Config resolution
 
 /** Clamp a retention window to the documented bounds; NaN falls back to the default. */
 export function clampInfraRetentionDays(days: number): number {
@@ -155,7 +155,7 @@ export function listInfraRetentionOverrides(): InfraRetentionConfig[] {
   }));
 }
 
-// ── Byte accounting ────────────────────────────────────────────────────────
+// Byte accounting
 
 /**
  * On-disk footprint of `infra.db`, in bytes (page_count × page_size).
@@ -212,7 +212,7 @@ export function getInfraProjectByteSize(projectId: string): number {
   return row.bytes;
 }
 
-// ── Deletes ────────────────────────────────────────────────────────────────
+// Deletes
 
 /** Delete metric points by id, sliced into bounded transactions. */
 function deleteMetricPointIds(db: Database.Database, ids: number[]): void {

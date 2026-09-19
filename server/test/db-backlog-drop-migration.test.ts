@@ -82,7 +82,7 @@ function seedPreMigrationSchema(dbPath: string): void {
     'INSERT INTO kanban_cards (id, column_id, board_id, title, position) VALUES (?, ?, ?, ?, ?)',
   );
 
-  // ── Board A: Backlog + To Do both present (branch 1) ────────────────────
+  // Board A: Backlog + To Do both present (branch 1)
   // Pre-migration column order: Backlog(0), To Do(1), In Progress(2), Done(3)
   // Backlog has 2 cards (positions 0,1). To Do has 1 card (position 0).
   // Expected after migration:
@@ -99,7 +99,7 @@ function seedPreMigrationSchema(dbPath: string): void {
   insertCard.run('card-a-bl-2', 'col-a-backlog', 'board-a', 'Backlog card 2', 1);
   insertCard.run('card-a-td-1', 'col-a-todo', 'board-a', 'Existing To Do card', 0);
 
-  // ── Board B: Backlog with NO To Do (branch 2 — rename in place) ─────────
+  // Board B: Backlog with NO To Do (branch 2 — rename in place)
   // The migration should rename the column from 'Backlog' to 'To Do' and
   // keep its single card untouched.
   insertBoard.run('board-b', 'proj-b', 'Board B');
@@ -108,13 +108,13 @@ function seedPreMigrationSchema(dbPath: string): void {
   insertCol.run('col-b-done', 'board-b', 'Done', 2, '#10B981');
   insertCard.run('card-b-bl-1', 'col-b-backlog', 'board-b', 'Lone Backlog card', 0);
 
-  // ── Board C: no Backlog column at all (branch 3 — no-op / untouched) ───
+  // Board C: no Backlog column at all (branch 3 — no-op / untouched)
   insertBoard.run('board-c', 'proj-c', 'Board C');
   insertCol.run('col-c-todo', 'board-c', 'To Do', 0, '#3B82F6');
   insertCol.run('col-c-done', 'board-c', 'Done', 1, '#10B981');
   insertCard.run('card-c-td-1', 'col-c-todo', 'board-c', 'Untouched card', 0);
 
-  // ── Board D: column literally named "Project Backlog" (substring, not exact) ─
+  // Board D: column literally named "Project Backlog" (substring, not exact)
   // Migration uses `name = 'Backlog'` with exact case-sensitive equality,
   // so this column must survive unchanged. Locks in the
   // exact-vs-substring contract documented in the wiki.
@@ -143,7 +143,7 @@ describe('kanban Backlog-drop migration', () => {
     // 3. Inspect the resulting state via a fresh read-only connection.
     const verify = new Database(dbPath, { readonly: true });
 
-    // ── Board A: Backlog merged into To Do ─────────────────────────────
+    // Board A: Backlog merged into To Do
     const boardACols = verify
       .prepare('SELECT name, position FROM kanban_columns WHERE board_id = ? ORDER BY position ASC')
       .all('board-a') as { name: string; position: number }[];
@@ -172,7 +172,7 @@ describe('kanban Backlog-drop migration', () => {
       { id: 'card-a-bl-2', title: 'Backlog card 2', position: 2 },
     ]);
 
-    // ── Board B: Backlog renamed in place (no To Do existed) ───────────
+    // Board B: Backlog renamed in place (no To Do existed)
     const boardBCols = verify
       .prepare(
         'SELECT id, name, position FROM kanban_columns WHERE board_id = ? ORDER BY position ASC',
@@ -188,7 +188,7 @@ describe('kanban Backlog-drop migration', () => {
       .get('card-b-bl-1') as { column_id: string; position: number };
     expect(cardB).toEqual({ column_id: 'col-b-backlog', position: 0 });
 
-    // ── Board C: no Backlog at all — untouched ─────────────────────────
+    // Board C: no Backlog at all — untouched
     const boardCCols = verify
       .prepare('SELECT name, position FROM kanban_columns WHERE board_id = ? ORDER BY position ASC')
       .all('board-c') as { name: string; position: number }[];
@@ -199,7 +199,7 @@ describe('kanban Backlog-drop migration', () => {
       .get('card-c-td-1') as { column_id: string; position: number };
     expect(cardC).toEqual({ column_id: 'col-c-todo', position: 0 });
 
-    // ── Board D: "Project Backlog" survives the exact-case filter ──────
+    // Board D: "Project Backlog" survives the exact-case filter
     const boardDCols = verify
       .prepare(
         'SELECT id, name, position FROM kanban_columns WHERE board_id = ? ORDER BY position ASC',
@@ -208,7 +208,7 @@ describe('kanban Backlog-drop migration', () => {
     expect(boardDCols.map((c) => c.name)).toEqual(['Project Backlog', 'Done']);
     expect(boardDCols.find((c) => c.name === 'Project Backlog')?.id).toBe('col-d-projbl');
 
-    // ── Idempotency: no Backlog-named columns remain board-wide ────────
+    // Idempotency: no Backlog-named columns remain board-wide
     const remainingBacklog = verify
       .prepare("SELECT COUNT(*) AS n FROM kanban_columns WHERE name = 'Backlog'")
       .get() as { n: number };

@@ -4,7 +4,7 @@ import { extractJsonFromTagBody } from './action-block-parsing.js';
 import { closeTagPatternSource } from '../shared/utils/controlTagPattern.js';
 import { recomputeSessionState } from './session-state.js';
 
-// ─── Kanban card auto-close — `<agenthub:close-card>` block protocol ─────────
+// Kanban card auto-close — `<agenthub:close-card>` block protocol
 //
 // When an agent picks up a card and discovers the work is redundant — either
 // because an earlier ticket already covered the same scope (a duplicate) or
@@ -81,7 +81,7 @@ export interface CardAutoCloseDeps {
   author?: string;
 }
 
-// ─── Parser ──────────────────────────────────────────────────────────────
+// Parser
 
 /**
  * Extract an `<agenthub:close-card>...</agenthub:close-card>` block from
@@ -182,7 +182,7 @@ export function parseCloseCardBlock(text: string): CloseCardTask | null {
   return detectCloseCardBlock(text).task;
 }
 
-// ─── Comment body rendering ──────────────────────────────────────────────
+// Comment body rendering
 
 /**
  * Render the comment appended to an auto-closed card. Pure function —
@@ -206,7 +206,7 @@ export function buildAutoCloseCommentBody(args: {
   return lines.join('\n');
 }
 
-// ─── Done-column resolution ──────────────────────────────────────────────
+// Done-column resolution
 
 /**
  * Given the columns of a board, pick the one that represents "done" work.
@@ -227,7 +227,7 @@ export function pickDoneColumn(columns: readonly KanbanColumnRow[]): KanbanColum
   return columns.slice().sort((a, b) => b.position - a.position)[0] ?? null;
 }
 
-// ─── Handler ─────────────────────────────────────────────────────────────
+// Handler
 
 /**
  * Move the card linked to `sessionId` into the board's Done column and

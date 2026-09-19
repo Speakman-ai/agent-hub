@@ -1,5 +1,5 @@
 /**
- * Pure helpers shared by the web and mobile Agent browser panes.
+ * Shared by the web and mobile Agent browser panes.
  *
  * The pane renders a downscaled JPEG of the agent's Chromium; input has to be
  * mapped back into the Chromium viewport's CSS-pixel space before it is sent

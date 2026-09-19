@@ -91,7 +91,7 @@ export const FLUSH_TIMEOUT_MS = UPLOAD_TIMEOUT_MS + BACKSTOP_MARGIN_MS;
 // submit result so we never cache a timeout as `lastResult`.
 const FLUSH_TIMED_OUT = Symbol('flush-timed-out');
 
-// ─── Continuous capture (whole-session streaming) ─────────────────
+// Continuous capture (whole-session streaming)
 //
 // When a project opts into the continuous tier, the recorder streams the WHOLE
 // session as appended chunks to the chunked-ingest endpoint
@@ -125,7 +125,7 @@ export const REPLAY_MAX_CHUNK_MS = 30 * 60 * 1000;
  * Clamp a continuous-flush cadence into the deliverable range. A non-finite /
  * unset value resolves to the 5-min default; a sub-minute value is raised to the
  * floor (the MVP storage can't go faster), an excessive one capped to the
- * ceiling. Pure — unit-testable in isolation.
+ * ceiling.
  */
 export function clampContinuousFlushInterval(value: any) {
   // null / undefined are "unset" → default (NOT coerced to 0, which would floor).
@@ -171,9 +171,8 @@ const REPLAY_CLASS_OPTIONS = Object.freeze({
 });
 
 /**
- * Build the rrweb `record()` privacy options for a masking mode. Pure — no DOM,
- * no rrweb import — so it is unit-testable in isolation. Unknown modes fall back
- * to the strict `mask-all` default (the safe direction).
+ * rrweb `record()` privacy options for a masking mode. Unknown modes fall
+ * back to the strict `mask-all` default.
  */
 export function buildRecordPrivacyOptions(mode: any) {
   if (mode === MASKING_MODES.PASSWORDS) {
@@ -350,9 +349,6 @@ export function resolveReplayRumToken() {
  * card 1106. So this card intentionally consumes only `sampleRate` (the
  * server-delivered rate, this card's deliverable) and `maskAllEnforced` (the
  * privacy guarantee), and does NOT itself switch to whole-session capture.
- *
- * Pure setter — no fetch, no DOM — so it is unit-testable. Returns the stored
- * rate.
  */
 export function applyServerReplayConfig(policy: any) {
   // Prefer the server's precomputed two-level effective rate (sessionSampleRate ×
@@ -578,8 +574,6 @@ export function shouldSample(rate: any, rng: any = Math.random) {
  * retained slice always opens with a snapshot rrweb can replay from. `maxEvents`
  * is a coarse memory guard: when exceeded, the buffer is trimmed to the most
  * recent `maxEvents` and re-anchored to the first full snapshot within them.
- *
- * Pure function — no DOM, no rrweb import — so it is unit-testable in isolation.
  */
 export function pruneBuffer(
   events: any,
@@ -648,7 +642,7 @@ export function pruneBuffer(
  * Count the element nodes (rrweb serialized NodeType.Element === 2 — distinct
  * from the rrweb EventType.FullSnapshot, which is also 2) inside a serialized
  * rrweb node and its entire `childNodes` subtree. Returns 0 for a null/leaf
- * node. Iterative to stay safe on deep DOMs. Pure — no DOM, no rrweb import.
+ * node. Iterative to stay safe on deep DOMs.
  */
 export function countElementsInNode(root: any) {
   if (!root) return 0;
@@ -669,7 +663,7 @@ export function countElementsInNode(root: any) {
 /**
  * Count the element nodes inside a full-snapshot event's captured DOM tree.
  * Returns 0 when the event carries no node tree (synthetic/legacy events), so
- * callers treat "unknown" as "don't skip / not a shell". Pure.
+ * callers treat "unknown" as "don't skip / not a shell".
  */
 export function countSnapshotElements(snapshotEvent: any) {
   return countElementsInNode(snapshotEvent && snapshotEvent.data && snapshotEvent.data.node);
@@ -696,11 +690,8 @@ export function countSnapshotElements(snapshotEvent: any) {
  *   - Otherwise (every snapshot predates the window) anchor to the NEWEST
  *     snapshot overall — the freshest state available rather than the oldest.
  * The Meta event rrweb emits immediately before a snapshot is included so the
- * slice always opens replayable.
- *
- * Pure — no DOM, no rrweb import — so it is unit-testable in isolation. Returns
- * the array unchanged when it holds no full snapshot (flush() then declines it
- * as non-replayable).
+ * slice always opens replayable. Unchanged when there is no full snapshot
+ * (`flush()` then declines it as non-replayable).
  */
 export function selectFlushWindow(events: any, now: any, windowMs: any = DEFAULT_WINDOW_MS) {
   if (!Array.isArray(events) || events.length === 0) return events;
@@ -911,10 +902,6 @@ export async function submitReplayBatch(
  * every chunk (async and beacon) so the server attributes the stream to its
  * project — required for first-chunk creation and to keep later chunks from
  * being rejected 403 against an already-attributed capture.
- *
- * All side-effecting collaborators (the batch transport, the interval timer
- * functions, the beacon, the clock) are injected so the whole class is
- * unit-testable without a DOM, rrweb, or network.
  */
 export class ContinuousReplayFlusher {
   [key: string]: any;
@@ -1406,7 +1393,7 @@ function utf8ByteLength(s: any): number {
  * first event is always included (so a single over-budget event is still
  * attempted — the transport then refuses it), and chronological order is
  * preserved so the snapshot (at the front of an uncreated capture) stays in the
- * prefix. Pure — no DOM/network — so it is unit-testable.
+ * prefix.
  */
 export function takeKeepalivePrefix(events: any, meta: any, maxBytes: any) {
   if (!Array.isArray(events) || events.length === 0) return [];
@@ -1501,7 +1488,7 @@ export function defaultReplayBeacon(url: any, body: any, rumToken: any = null) {
   }
 }
 
-// ─── Segment capture (Datadog view-scoped segments) ───────────────
+// Segment capture (Datadog view-scoped segments)
 //
 // The forward write path that replaces monolithic continuous append. Instead of
 // re-uploading a growing blob each flush (O(n²)), the recorder emits VIEW-SCOPED
@@ -1527,7 +1514,7 @@ export const MIN_SEGMENTED_FLUSH_INTERVAL_MS = 1_000;
 /**
  * Clamp a server-delivered segment cadence into the segment-rollover
  * (`maxDurationMs`) range. Unset/non-finite → the ~5s Datadog default; below the
- * 1s floor → 1s; above the 1h ceiling → 1h. Pure — mirrors the server's
+ * 1s floor → 1s; above the 1h ceiling → 1h. Mirrors the server's
  * segmented `clampFlushIntervalMs` so the recorder honours the same bound the
  * policy delivered instead of re-flooring a valid sub-minute value to 60s.
  */
@@ -1555,7 +1542,7 @@ export const SEGMENT_IDLE_CHECK_MS = 1_000;
 /**
  * The per-segment append URL for a `(session, view, index_in_view)` slot. The
  * server keys the object + manifest row on exactly these three components, so
- * the path carries all three. Pure.
+ * the path carries all three.
  */
 export function segmentBatchEndpoint(
   sessionId: any,
@@ -1623,7 +1610,7 @@ export async function submitReplaySegment(
   return res.json();
 }
 
-// ─── User attribution (Datadog setUser, forward-only) ─────────────
+// User attribution (Datadog setUser, forward-only)
 //
 // Customer-supplied identity for the current page. `setUser` / `setUserProperty`
 // / `clearUser` mirror the Datadog RUM SDK. Semantics are FORWARD-ONLY: the
@@ -1708,10 +1695,6 @@ export function getActiveUser(): Record<string, any> | null {
  * `ContinuousReplayFlusher`'s creating chunk — it holds the view's only snapshot
  * anchor, so it is sent as a COPY and retained until confirmed (a killed unload
  * flush can then still beacon it); incremental segments drain immediately.
- *
- * All side-effecting collaborators (the segment transport, the timer functions,
- * the beacon, the clock, the snapshot request) are injected so the whole class is
- * unit-testable without a DOM, rrweb, or network.
  */
 export class SegmentReplayFlusher {
   [key: string]: any;
@@ -2141,7 +2124,7 @@ export class SegmentReplayFlusher {
   }
 }
 
-// ─── Sessionization (Datadog session→view model) ──────────────────
+// Sessionization (Datadog session→view model)
 //
 // The producer that MINTS the client-side session.id / view.id the segment
 // ingest path keys on (`segmentBatchEndpoint` embeds both in the URL, so minting
@@ -2153,11 +2136,9 @@ export class SegmentReplayFlusher {
 // are minted client-side (not server-derived) so an offline→online session stays
 // deterministically the same session.
 //
-// Pure and clock-injected — no DOM, no rrweb, no network — so the rollover rules
-// are unit-testable in isolation. The recorder-wiring layer feeds it activity
-// (every rrweb event) and navigation (route change), then threads the returned
-// ids into a `SegmentReplayFlusher` (rebuilding it on a session change, calling
-// `notifyViewChange` on a view change).
+// The recorder-wiring layer feeds it activity (every rrweb event) and navigation
+// (route change), then threads the returned ids into a `SegmentReplayFlusher`
+// (rebuilding it on a session change, calling `notifyViewChange` on a view change).
 
 /** End a session after this long with no activity (Datadog parity: 15 min). */
 export const SESSION_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
@@ -2496,8 +2477,7 @@ export interface SegmentedControllerOptions {
  * Exposes the same lifecycle surface the module singleton drives on the monolithic
  * `ContinuousReplayFlusher` (`start` / `stop` / `flushTail` / `_drainAfterInflight`),
  * so the tail-flush listeners and runtime-disable teardown treat both tiers
- * uniformly. All collaborators are injected so the wiring is unit-testable without
- * a DOM, rrweb, or network.
+ * uniformly.
  */
 export class SegmentedContinuousController {
   private readonly _recorder: SegmentControllerRecorder | null;
@@ -3028,7 +3008,7 @@ export class SessionReplayRecorder {
   }
 }
 
-// ─── Module singleton wiring ──────────────────────────────────────
+// Module singleton wiring
 
 let _recorder: any = null;
 let _initialized = false;
@@ -3341,7 +3321,7 @@ export async function initSessionReplay(opts: any = {}) {
   return startRecorder();
 }
 
-// ─── Null-flush breadcrumbs ───────────────────────────────────────
+// Null-flush breadcrumbs
 //
 // A bug-report flush that yields no replay ref is best-effort by design (it
 // must never block the report). That historically made a missing replay

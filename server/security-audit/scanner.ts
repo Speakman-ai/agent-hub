@@ -1,5 +1,5 @@
 /**
- * scanner.ts — orchestrate a dependency scan of a Hub-hosted repo at a ref.
+ * Orchestrate a dependency scan of a Hub-hosted repo at a ref.
  *
  * The flow, all pluggable:
  *   1. List the repo's tracked files at `ref` ({@link RepoFileReader}).
@@ -7,10 +7,9 @@
  *   3. Read + parse each lockfile into resolved dependencies.
  *   4. Hand the deduped dependency set to the {@link AdvisorySource}.
  *
- * `scanResolvedDependencies` is the pure core (no git, no network — both
- * injected), so the orchestration is fully unit-testable with a fake
- * reader + fake source. {@link gitRepoFileReader} is the production reader
- * that shells out to `git -C <bare>`.
+ * `scanResolvedDependencies` is the core (no git, no network — both injected).
+ * {@link gitRepoFileReader} is the production reader that shells out to
+ * `git -C <bare>`.
  */
 
 import path from 'path';
@@ -97,7 +96,7 @@ function parserForFile(
 }
 
 /**
- * Pure core: given a way to read files and an advisory source, find the
+ * Core: given a way to read files and an advisory source, find the
  * lockfiles, resolve dependencies, and return findings. No git/network
  * knowledge — both are injected.
  */

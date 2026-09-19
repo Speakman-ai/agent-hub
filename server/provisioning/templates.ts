@@ -22,7 +22,7 @@
  *     "recommendedFor": ["bot", "ml", ...]        // drives default picker hint
  *   }
  *
- * This module owns loading, validating, and resolving those manifests.
+ * Loads, validates, and resolves those manifests.
  * It is pure data access — the real work of copying the tree and
  * running the commands lives in `template-executor.ts`.
  */

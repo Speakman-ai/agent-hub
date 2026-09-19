@@ -10,9 +10,8 @@ import React from 'react';
 // pipeline (`inheritedStyles` + rule style) intact means markdown formatting
 // is unaffected.
 //
-// The `Text` component is injected rather than imported so the rules are
-// unit-testable in a plain-node Vitest environment (which can't resolve
-// `react-native`).
+// The `Text` component is injected rather than imported so these rules run
+// under plain-node Vitest (which cannot resolve `react-native`).
 export function trimTrailingNewline(content: any) {
   if (typeof content === 'string' && content.charAt(content.length - 1) === '\n') {
     return content.substring(0, content.length - 1);

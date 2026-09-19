@@ -438,7 +438,7 @@ describe('ReAct block parse', () => {
     }
   });
 
-  // ─── Robustness: action-block parser shape variants ────────────────────
+  // Robustness: action-block parser shape variants
   // Regression coverage for the "action blocks sometimes only print, don't
   // execute" bug. Each of these shapes used to return malformed/invalid-JSON.
 

@@ -1,6 +1,4 @@
 /**
- * Unit tests for server/secrets.ts
- *
  * The AWS SDK client is replaced with a hand-rolled fake via the test-only
  * escape hatch so no real AWS credentials or network calls are needed.
  */
@@ -8,7 +6,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
-// ─── Module under test (dynamic import after mocks are in place) ───────────
+// Module under test (dynamic import after mocks are in place)
 
 const {
   cardNeedsDevHubKey,
@@ -17,7 +15,7 @@ const {
   __clearSecretsCacheForTests,
 } = await import('./secrets.js');
 
-// ─── Fake Secrets Manager client ──────────────────────────────────────────
+// Fake Secrets Manager client
 
 function makeFakeClient(
   response: { SecretString?: string } | 'AccessDenied' | 'ResourceNotFound',
@@ -37,7 +35,7 @@ function makeFakeClient(
   } as unknown as SecretsManagerClient;
 }
 
-// ─── cardNeedsDevHubKey ────────────────────────────────────────────────────
+// cardNeedsDevHubKey
 
 describe('cardNeedsDevHubKey', () => {
   it('returns false for null labels', () => {
@@ -89,7 +87,7 @@ describe('cardNeedsDevHubKey', () => {
   });
 });
 
-// ─── getDevHubApiKey ──────────────────────────────────────────────────────
+// getDevHubApiKey
 
 describe('getDevHubApiKey — happy path', () => {
   beforeEach(() => {

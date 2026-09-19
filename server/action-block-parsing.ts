@@ -1,4 +1,4 @@
-// ─── Shared helpers for parsing agent action-block payloads ──────────────
+// Shared helpers for parsing agent action-block payloads
 //
 // Action blocks (`<agenthub:close-card>`,
 // `<agenthub:skill>`, `<agenthub:react>`, …) all share the same shape:
@@ -273,8 +273,7 @@ export function parseTagBodyAsJson(rawBody: string): { ok: true; value: unknown 
  * count) so callers can still scan the surrounding prose without the
  * fenced contents leaking into their regex matches.
  *
- * Why this exists
- * ───────────────
+ * Why this exists.
  * The agent-side action-block detectors (`<agenthub:skill>`,
  * `<agenthub:react>`, `<agenthub:wiki>`) historically did a naive
  * `text.match(/<tag>.*?<\/tag>/)` on the assistant's raw output. That
@@ -293,7 +292,6 @@ export function parseTagBodyAsJson(rawBody: string): { ok: true; value: unknown 
  * ` ``` ` or `~~~` are inert.
  *
  * Conservative scope
- * ──────────────────
  * - Only fenced (```/~~~) blocks are masked. Inline backtick spans
  *   (`` ` ``) and indented (4-space) code blocks are left alone — the
  *   bug we're fixing only manifests in multi-line fences, and inline

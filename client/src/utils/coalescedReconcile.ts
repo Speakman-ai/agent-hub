@@ -1,6 +1,5 @@
 /**
- * Coalesced, pass-capped reconcile runner extracted from KanbanBoard so its
- * concurrency contract is unit-testable without rendering the board.
+ * Coalesced, pass-capped reconcile runner extracted from KanbanBoard.
  *
  * Contract:
  *  - While a reconcile is in flight, a new call does not start a second one; it

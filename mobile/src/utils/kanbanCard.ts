@@ -7,9 +7,7 @@
  * Tailwind class strings; here the colour helpers return raw hex/`{bg,text}`
  * pairs because RN has no class system.
  *
- * `cardMetaModel` is the pure "card-meta formatting" helper the card component
- * consumes — it normalises a raw card row into the fields the dense layout
- * draws, so the renderer stays declarative and the formatting is unit-testable.
+ * `cardMetaModel` normalises a raw card row into the fields the dense layout draws.
  */
 import { findEpic } from './epics';
 const FALLBACK_PREFIX = 'CARD';
@@ -105,7 +103,7 @@ export function cardLabelList(labels: any) {
 }
 /**
  * Toggle a single label on/off and return the resulting comma-joined string
- * (the shape `updateKanbanCard` persists). Pure, so chaining is well-defined:
+ * (the shape `updateKanbanCard` persists). Chaining is well-defined:
  * feeding the previous result back in accumulates selections —
  *   toggleLabelCsv(toggleLabelCsv('', 'bug'), 'ui') === 'bug,ui'
  * which is exactly the multi-toggle case the action sheet relies on. Existing
@@ -130,8 +128,7 @@ function prNumber(prUrl: any) {
 }
 /**
  * Normalise a raw card row into the fields the dense mobile card renders.
- * Pure: same inputs -> same output (no Date.now / no rendering). Date display
- * is left to the `time` util so this stays deterministic.
+ * Date display is left to the `time` util so this stays deterministic.
  */
 export function cardMetaModel(card: any, { board, epics = [] }: any = {}) {
   const epic = card?.epic_id ? findEpic(epics, card.epic_id) || null : null;

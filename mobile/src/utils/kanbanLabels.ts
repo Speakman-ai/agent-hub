@@ -1,4 +1,4 @@
-// Pure label helpers for kanban cards/epics (mobile).
+// Kanban card/epic labels (mobile).
 // Mirrors client/src/utils/kanbanLabels.ts so web and mobile agree on how a
 // comma-separated labels field splits, dedupes, and filters.
 

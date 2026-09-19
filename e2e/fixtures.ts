@@ -44,7 +44,7 @@ export interface SeedWikiPage {
   title: string;
 }
 
-// ─── API helpers (used in fixtures and tests) ──────────────────
+// API helpers (used in fixtures and tests)
 
 let _counter = 0;
 function uid(prefix = 'e2e') {
@@ -177,7 +177,7 @@ type AgentHubFixtures = {
   seededApp: SeededAppFixture;
 };
 
-// ─── Extended test fixture ─────────────────────────────────────
+// Extended test fixture
 
 export const test = base.extend<AgentHubFixtures>({
   /**

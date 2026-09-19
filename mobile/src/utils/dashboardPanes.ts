@@ -8,9 +8,6 @@
  * which affordance a Google pane should show — the live surface, a
  * connect-Google prompt, a reconnect prompt, an incremental-consent prompt, or
  * a "not configured" notice when the server has no Google OAuth app at all.
- *
- * Kept as a pure function so the gating is unit-testable without rendering the
- * dashboard (acceptance: "Test for shared gating/aggregation-render logic").
  */
 
 export type GooglePaneState =

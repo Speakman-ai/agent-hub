@@ -215,7 +215,7 @@ describe('exportDesignPdf', () => {
     expect(savedAs!).toMatch(/\.pdf$/);
   });
 
-  // ─── Cross-origin guard ──────────────────────────────────────────────
+  // Cross-origin guard
   //
   // When the hub page (e.g. Vite on :3050) and the API base (e.g. :3051)
   // differ in origin, iframe contentDocument is blocked by Same-Origin
@@ -236,7 +236,7 @@ describe('exportDesignPdf', () => {
     expect(saveMock!).not.toHaveBeenCalled();
   });
 
-  // ─── Pre-flight probe ────────────────────────────────────────────────
+  // Pre-flight probe
   //
   // If the artifact URL 404s (e.g. design was deleted) or the fetch throws
   // (network error, dev server not proxying /design-files/), we should
@@ -264,7 +264,7 @@ describe('exportDesignPdf', () => {
     expect(document.querySelectorAll('iframe').length).toBe(0);
   });
 
-  // ─── srcdoc fallback ─────────────────────────────────────────────────
+  // srcdoc fallback
   //
   // If the iframe loads but contentDocument is unexpectedly null (a rare
   // transient case — usually a CSP or navigation edge case), we fall back

@@ -61,7 +61,7 @@ export default function createReplaysDashboardRoutes(deps: RouteDeps): Router {
     });
   };
 
-  // ── List: paginated, filterable replay table ──────────────────────
+  // List: paginated, filterable replay table
   router.get('/api/projects/:projectId/replays', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -115,7 +115,7 @@ export default function createReplaysDashboardRoutes(deps: RouteDeps): Router {
     });
   });
 
-  // ── Link: attach a replay to one of this project's support tickets ─
+  // Link: attach a replay to one of this project's support tickets
   router.post('/api/projects/:projectId/replays/:id/link', async (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -188,7 +188,7 @@ export default function createReplaysDashboardRoutes(deps: RouteDeps): Router {
     });
   });
 
-  // ── Unlink: detach a replay from its support ticket ───────────────
+  // Unlink: detach a replay from its support ticket
   router.delete('/api/projects/:projectId/replays/:id/link', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });

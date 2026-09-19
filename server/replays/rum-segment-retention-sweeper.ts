@@ -1,5 +1,5 @@
 /**
- * rum-segment-retention-sweeper.ts — periodic TTL garbage collection for the
+ * Periodic TTL garbage collection for the
  * SEGMENTED replay index rows (`rum_sessions` + `rum_segments`).
  *
  * The monolithic sweeper (`replay-retention-sweeper.ts`) reaps the

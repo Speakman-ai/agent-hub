@@ -1,5 +1,5 @@
 /**
- * git-host.ts — lifecycle routes for Agent Hub-hosted git repos.
+ * Lifecycle routes for Agent Hub-hosted git repos.
  *
  * `Project.gitHost` transitions ONLY happen through these endpoints (the
  * projects PATCH rejects direct writes): enabling creates/imports the

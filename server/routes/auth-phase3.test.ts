@@ -658,7 +658,7 @@ describe('GET /api/auth/users', () => {
   });
 });
 
-// ─── Regression tests for review feedback on PR #418 ─────────────────
+// Regression tests for review feedback on PR #418
 // Each `describe` below targets a specific blocker from the code review.
 // Keep the titles self-describing so a future reader can map a reopened
 // bug back to the originating finding.

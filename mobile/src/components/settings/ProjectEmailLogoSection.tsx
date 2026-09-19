@@ -41,7 +41,7 @@ export default function ProjectEmailLogoSection({ projectId }: { projectId?: str
   // completions (even for the same project) can never win.
   const requestRef = useRef(0);
 
-  // ── One root cause: this component instance is reused across projects (the
+  // One root cause: this component instance is reused across projects (the
   // `projectId` prop changes on navigation), so it must (1) never render a
   // previous project's state and (2) never let a previous project's async op
   // write into the current one. Both are handled synchronously against the

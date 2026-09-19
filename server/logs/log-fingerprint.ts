@@ -19,7 +19,7 @@
  * fixed-then-recurring bug reopens the same group rather than forking a new one
  * per release.
  *
- * Pure and IO-free — hashes inputs, touches no DB or clock — so the
+ * IO-free — hashes inputs, touches no DB or clock — so the
  * normalization rules unit-test in isolation.
  */
 

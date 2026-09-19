@@ -1,7 +1,7 @@
 /**
  * Unit tests for the RUM instrumentation detection scanner.
  *
- * Pure function over a temp directory — no DB, no spawning, no network.
+ * Function over a temp directory — no DB, no spawning, no network.
  */
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';

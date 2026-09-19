@@ -1,4 +1,4 @@
-// replay-capture-kind.ts — classify a session replay as a CONTINUOUS
+// classify a session replay as a CONTINUOUS
 // (whole-session) capture vs an ON-ERROR (record-on-error / manual bug-report)
 // capture, and derive a best-effort "live" (still being appended) signal for
 // the Replays Explorer dashboard.

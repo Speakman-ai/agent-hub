@@ -1,5 +1,5 @@
 /**
- * terminal-react.ts — host-mediated `tool: terminal` ReAct actions.
+ * Host-mediated `tool: terminal` ReAct actions.
  *
  * Lets an agent co-observe and take a turn on the **shared PTY** that a human
  * already opened for the agent's own session: read the current terminal
@@ -97,8 +97,6 @@ export interface TerminalReActDeps {
   /** Output-quiet window (ms) required before an inject is allowed. */
   quietWindowMs?: number;
 }
-
-// ─── Helpers ─────────────────────────────────────────────────────
 
 function outcome(
   markdown: string,
@@ -219,7 +217,7 @@ export function validateInjectCommand(
   return { ok: true, command: raw };
 }
 
-// ─── Main entry ──────────────────────────────────────────────────
+// Main entry
 
 /**
  * Run one `tool: terminal` action for `chatSessionId`. Mirrors the

@@ -1,26 +1,18 @@
 /**
- * promoteTodo.ts — the pure logic behind the promote-to-ticket picker (spec
- * TODO-TO-TICKET PROMOTE op), shared 1:1 between the web `PromoteTodoModal` and
- * the mobile one so both clients build the same write payload and pick the same
- * defaults. Kept free of React / network so it is unit-testable in isolation.
- *
- * The picker collects a destination (project + column + optional epic) and the
- * card priority, then POSTs `POST /api/me/todos/:id/promote`. The endpoint
- * defaults the column to the board's "To Do" lane and carries the todo's
- * priority — these helpers mirror those defaults on the client so the picker
- * pre-fills sensibly.
+ * Promote-to-ticket picker: destination + priority for `POST /api/me/todos/:id/promote`.
+ * Defaults match the endpoint (To Do lane, todo's own priority).
  */
 
-/** Card priority — mirrors the kanban-card enum so a promote maps 1:1. */
+/** Card priority; maps 1:1 onto a kanban card. */
 export type PromotePriority = 'urgent' | 'high' | 'medium' | 'low';
 
-/** A project board column / epic narrowed to what the picker chips need. */
+/** `{ id, name }` for picker chips. */
 export interface PromoteOption {
   id: string;
   name: string;
 }
 
-/** The exact body `POST /api/me/todos/:id/promote` accepts. */
+/** Body for `POST /api/me/todos/:id/promote`. */
 export interface PromotePayload {
   projectId: string;
   columnId: string;
@@ -30,11 +22,7 @@ export interface PromotePayload {
 
 export const PROMOTE_PRIORITY_OPTIONS: PromotePriority[] = ['urgent', 'high', 'medium', 'low'];
 
-/**
- * Normalize an unknown board sub-array (`board.columns` or `board.epics`) into
- * `{ id, name }` options, dropping anything that isn't an object. Ids/names are
- * stringified so a numeric id from the API still compares cleanly.
- */
+/** Normalize `board.columns` / `board.epics` to `{ id, name }`. Ids stringified. */
 export function normalizePromoteOptions(rows: unknown): PromoteOption[] {
   if (!Array.isArray(rows)) return [];
   return rows
@@ -42,23 +30,19 @@ export function normalizePromoteOptions(rows: unknown): PromoteOption[] {
     .map((r) => ({ id: String((r as any).id), name: String((r as any).name) }));
 }
 
-/** The default selected option (the board's first / leftmost lane), or '' if none. */
+/** Leftmost lane, or ''. */
 export function defaultPromoteOptionId(options: PromoteOption[]): string {
   return options.length ? options[0].id : '';
 }
 
-/** The picker's default priority: the todo's own priority, falling back to medium. */
+/** Todo's own priority, else medium. */
 export function defaultPromotePriority(todo: {
   priority?: PromotePriority | null;
 }): PromotePriority {
   return todo?.priority ?? 'medium';
 }
 
-/**
- * Build the promote request body from the picker selections. `epicId` is omitted
- * entirely when unset (the endpoint treats a missing epic as "no epic"); a blank
- * string is never sent.
- */
+/** Omit `epicId` when unset; never send a blank string. */
 export function buildPromotePayload(input: {
   projectId: string;
   columnId: string;
@@ -73,7 +57,7 @@ export function buildPromotePayload(input: {
   };
 }
 
-/** Whether the picker has enough selected to submit (project + column). */
+/** Project + column selected, and not currently submitting/loading. */
 export function canSubmitPromote(input: {
   projectId: string;
   columnId: string;

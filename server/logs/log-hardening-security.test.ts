@@ -1,5 +1,5 @@
 /**
- * log-hardening-security.test.ts — consolidated store-level security invariants
+ * Consolidated store-level security invariants
  * for the customer log module (card "Harden log operations and scale limits").
  *
  * These exercise the real `logs.db` code paths (no mocks, scratch data dir) and

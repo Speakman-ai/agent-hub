@@ -1,6 +1,4 @@
-// Pure helpers for kanban epic management (mobile).
-// Mirrors the semantics of client/src/components/KanbanBoard.jsx so that web
-// and mobile agree on what "autonomous", "card count", and filtering mean.
+// Kanban epic helpers (mobile).
 import { parseCardLabels } from './kanbanLabels';
 
 /** Dedupe (case-insensitive) a comma-separated labels field into the server's

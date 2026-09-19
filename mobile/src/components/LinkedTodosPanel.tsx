@@ -78,9 +78,7 @@ export default function LinkedTodosPanel({ targetType, entity, projectId }: Prop
 }
 
 /**
- * Pure presentational list — no context / network, so the mobile test env
- * (node, no RN testing-library) can serialize it. Renders nothing when the
- * list is empty.
+ * Linked-todos list. Renders nothing when empty.
  */
 export function LinkedTodosPanelContent({ todos }: { todos: LinkedTodoSummary[] }) {
   if (todos.length === 0) return null;

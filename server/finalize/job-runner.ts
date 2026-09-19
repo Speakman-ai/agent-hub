@@ -1,5 +1,5 @@
 /**
- * job-runner.ts — v2 Finalize tasks phase: parallel GHA-style jobs + matrix.
+ * v2 Finalize tasks phase: parallel GHA-style jobs + matrix.
  *
  * Expands ci.yaml `jobs` × `matrix.include` into isolated DinD runner
  * containers (or host bash for `runs-on: host`) and schedules shards

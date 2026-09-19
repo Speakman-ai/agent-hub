@@ -1,6 +1,4 @@
 /**
- * worktree-process-clone-pat.test.ts
- *
  * Heartbeat/cron process clones use the same repo-aware GitHub token
  * resolution and `-c http.…extraheader` injection as session clones.
  */

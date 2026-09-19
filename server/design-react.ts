@@ -1,5 +1,5 @@
 /**
- * design-react.ts — host-mediated `tool: design` ReAct action.
+ * Host-mediated `tool: design` ReAct action.
  *
  * Lets ANY agent, on ANY session and engine, render HTML/CSS/JS (a chart, a
  * mockup, a diagram, a small app) inline mid-turn — without switching the
@@ -49,7 +49,7 @@ import {
   type DesignArtifactLocation,
 } from './design-artifact-store.js';
 
-// ─── Ops ─────────────────────────────────────────────────────────
+// Ops
 
 /** Single source of truth for ReAct `tool: design` operations (keep in sync with parseReActBlock). */
 export const DESIGN_REACT_OPS = ['render'] as const;
@@ -66,7 +66,7 @@ export const DESIGN_RENDER_FILENAME = 'index.html';
  */
 export const MAX_DESIGN_HTML_BYTES = 512 * 1024;
 
-// ─── Inputs / deps ───────────────────────────────────────────────
+// Inputs / deps
 
 /** Fields parsed from `<agenthub:react>` design actions (see chat.ts). */
 export interface DesignReActActionInput {
@@ -98,8 +98,6 @@ export interface DesignReActDeps {
   /** Session id, for naming the persisted screenshot. */
   sessionId: string;
 }
-
-// ─── Helpers ─────────────────────────────────────────────────────
 
 /** Stable browser-registry id for a session's design render browser. */
 export function designBrowserSessionId(chatSessionId: string): string {
@@ -220,7 +218,7 @@ export async function renderDesignHtmlScreenshot(
   }
 }
 
-// ─── Main entry ──────────────────────────────────────────────────
+// Main entry
 
 /**
  * Run one `tool: design` action for `chatSessionId`. Mirrors the

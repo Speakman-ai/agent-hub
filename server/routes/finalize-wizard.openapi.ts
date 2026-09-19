@@ -21,7 +21,7 @@ const errorResponse = (description: string) => ({
   content: jsonContent(ErrorResponse),
 });
 
-// ─── /finalize/setup-wizard ──────────────────────────────────────────
+// /finalize/setup-wizard
 
 const FinalizeSetupSubproject = registerComponent(
   'FinalizeSetupSubproject',
@@ -165,7 +165,7 @@ registerPath({
   },
 });
 
-// ─── /finalize/setup-apply ───────────────────────────────────────────
+// /finalize/setup-apply
 
 const FinalizeSetupApplyRequest = registerComponent(
   'FinalizeSetupApplyRequest',
@@ -276,7 +276,7 @@ registerPath({
   },
 });
 
-// ─── /finalize/wizard-complete ───────────────────────────────────────
+// /finalize/wizard-complete
 
 const FinalizeWizardCompleteResponse = registerComponent(
   'FinalizeWizardCompleteResponse',

@@ -1,5 +1,5 @@
 /**
- * routes/ios-builds.ts — REST API for iOS PR preview builds.
+ * REST API for iOS PR preview builds.
  *
  * Endpoints:
  *   GET    /api/ios-builds/status                          — Infrastructure availability
@@ -28,7 +28,7 @@ export default function createIosBuildRoutes(deps: RouteDeps): Router {
   const { stmts, findProject } = deps;
   const router = Router();
 
-  // ─── Global status ──────────────────────────────────────────────
+  // Global status
 
   router.get('/api/ios-builds/status', async (_req: Request, res: Response) => {
     try {
@@ -46,7 +46,7 @@ export default function createIosBuildRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── List builds for a project ─────────────────────────────────
+  // List builds for a project
 
   router.get('/api/projects/:projectId/ios-builds', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
@@ -56,7 +56,7 @@ export default function createIosBuildRoutes(deps: RouteDeps): Router {
     res.json(builds);
   });
 
-  // ─── Queue a new build ─────────────────────────────────────────
+  // Queue a new build
 
   router.post('/api/projects/:projectId/ios-builds', async (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
@@ -97,7 +97,7 @@ export default function createIosBuildRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Get build details ─────────────────────────────────────────
+  // Get build details
 
   router.get('/api/projects/:projectId/ios-builds/:id', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
@@ -111,7 +111,7 @@ export default function createIosBuildRoutes(deps: RouteDeps): Router {
     res.json(build);
   });
 
-  // ─── Cancel a build ─────────────────────────────────────────────
+  // Cancel a build
 
   router.post(
     '/api/projects/:projectId/ios-builds/:id/cancel',
@@ -134,7 +134,7 @@ export default function createIosBuildRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ─── Get build logs ────────────────────────────────────────────
+  // Get build logs
 
   router.get('/api/projects/:projectId/ios-builds/:id/logs', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
@@ -153,7 +153,7 @@ export default function createIosBuildRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Delete build record ───────────────────────────────────────
+  // Delete build record
 
   router.delete('/api/projects/:projectId/ios-builds/:id', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
@@ -177,7 +177,7 @@ export default function createIosBuildRoutes(deps: RouteDeps): Router {
     res.json({ success: true });
   });
 
-  // ─── List build artifacts ──────────────────────────────────────
+  // List build artifacts
 
   router.get('/api/projects/:projectId/ios-builds/:id/artifacts', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);

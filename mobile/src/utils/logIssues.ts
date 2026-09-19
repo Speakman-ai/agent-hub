@@ -1,11 +1,6 @@
 /**
- * Pure helpers for the mobile Issues view (LOG-GROUP lifecycle).
- *
- * Mirrors the state math embedded in `client/src/components/logs/IssuesView.tsx`
- * (status tabs, page merge, optimistic transition apply). Kept transport-free
- * and UI-free so the list/detail state transitions are unit-testable without a
- * React tree. All issue text is UNTRUSTED (LOG-TRUST) — callers render it as
- * <Text> only.
+ * Mobile Issues view (LOG-GROUP). Mirrors IssuesView.tsx state math.
+ * All issue text is UNTRUSTED (LOG-TRUST); callers render it as <Text> only.
  */
 import type { LogRecord } from './logStream';
 import { logIssueSeenMs } from '@shared/utils/logIssueTime';

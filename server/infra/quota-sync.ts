@@ -115,7 +115,7 @@ function accountIdFromQuotaArn(arn: string | null | undefined): string | null {
  * Turn one `ServiceQuota` into an inventory row plus a stored limit, or explain
  * why it cannot become one.
  *
- * Pure: no DB, no AWS, no clock. The `syncedAt` stamp is applied by the caller
+ * No DB, no AWS, no clock. The `syncedAt` stamp is applied by the caller
  * so a whole sweep shares one timestamp (see {@link upsertInfraServiceQuotas}).
  *
  * The three rejections are deliberately distinct rather than one falsy return,

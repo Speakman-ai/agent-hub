@@ -602,7 +602,7 @@ describe('POST /api/auth/logout', () => {
   });
 });
 
-// ── Role-based permissions (Phase 2) ────────────────────────────
+// Role-based permissions (Phase 2)
 describe('Phase 2 — role assignment', () => {
   beforeEach(() => {
     TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
@@ -703,9 +703,7 @@ describe('GET /api/auth/users (requireRole Admin)', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────
 //  Zod body validation — surfaces 400 with structured Zod issues
-// ─────────────────────────────────────────────────────────────────────
 //
 // These guard the OpenAPI-migration contract: every route that used to
 // extract fields off `req.body` ad-hoc now runs the body through a Zod

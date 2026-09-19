@@ -1,5 +1,5 @@
 /**
- * finalize-setup-draft.ts — server-side scan for the Finalize ci.yaml
+ * Server-side scan for the Finalize ci.yaml
  * setup wizard. Mirrors the shape of the other setup-draft modules but
  * with CI-relevant signal:
  *
@@ -12,7 +12,7 @@
  *   - a server-pre-built `proposedSteps` YAML the wizard can show to the
  *     user as a starting point
  *
- * This module is pure: no spawning, no DB. It reads files from
+ * No spawning, no DB. Reads files from
  * `workspaceDir` and returns a JSON-serialisable struct that the wizard
  * route embeds in the kickoff prompt.
  *
@@ -25,7 +25,7 @@ import { parse as parseYaml } from 'yaml';
 import { scanEnvKeys } from './preview-setup-scans.js';
 import { scanReadme, type ReadmeScanResult } from './preview-readme-scan.js';
 
-// ─── Public types ─────────────────────────────────────────────────────
+// Public types
 
 export type FinalizeStack = 'node' | 'python' | 'rust' | 'go' | 'mixed' | 'unknown';
 
@@ -85,7 +85,7 @@ export interface FinalizeSetupDraft {
   proposedCiYaml: string;
 }
 
-// ─── Internals ────────────────────────────────────────────────────────
+// Internals
 
 const MAX_CI_FILE_BYTES = 64 * 1024;
 const MAX_NPM_SCRIPTS = 20;
@@ -322,7 +322,7 @@ function scanNpmScripts(workspaceDir: string): FinalizeNpmScriptHit[] {
   return out;
 }
 
-// ─── Proposed YAML builder ────────────────────────────────────────────
+// Proposed YAML builder
 
 interface ProposedStep {
   name: string;
@@ -799,7 +799,7 @@ function yamlScalar(value: string): string {
   return `"${escaped}"`;
 }
 
-// ─── Public entry point ───────────────────────────────────────────────
+// Public entry point
 
 export function collectFinalizeSetupDraft(workspaceDir: string): FinalizeSetupDraft {
   const subprojects = findSubprojects(workspaceDir);

@@ -1,5 +1,5 @@
 /**
- * auto-review.ts — the review safety net for EXTERNAL commits.
+ * The review safety net for EXTERNAL commits.
  *
  * Agent Hub-originated work is reviewed inside its session (Finalize's
  * in-hub reviewer runs pre-push with the fix loop attached), and a

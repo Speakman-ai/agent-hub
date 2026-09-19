@@ -244,7 +244,7 @@ describe('agent-hub-user-data.tftpl', () => {
     });
   });
 
-  // ── ECR-pull bootstrap renders the standard docker run invocation ────────
+  // ECR-pull bootstrap renders the standard docker run invocation
   describe('ECR-pull bootstrap', () => {
     const rendered = renderTemplate(tpl, { ...RENDER_VARS_BASE });
 

@@ -1,6 +1,4 @@
-// Pure helpers for the kanban-card "Assign agent" flow on mobile. Kept in
-// src/utils/ so they're covered by the existing vitest config
-// (include: ['src/utils/**/*.test.js']).
+// Kanban-card "Assign agent" flow (mobile).
 /**
  * Look up an agent in the context list by its display name. The server stores
  * `card.assignee` as the agent's *name* (not id), matching the web client's

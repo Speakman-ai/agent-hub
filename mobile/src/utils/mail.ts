@@ -1,7 +1,4 @@
-/**
- * Pure formatting helpers for rendering Gmail message rows on the dashboard.
- * Shared shape mirrored in `client/src/utils/mail.ts` — keep the two in sync.
- */
+/** Gmail dashboard row formatting. Keep in sync with `client/src/utils/mail.ts`. */
 
 /**
  * A recent-mail row from `GET /api/me/dashboard` (`google.mail.messages[]`).

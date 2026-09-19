@@ -1,10 +1,6 @@
 /**
- * Pure helpers for the Settings → Finalize panel on mobile. The
- * component lives in `mobile/src/components/FinalizeSection.js`; this
- * file exists so the picker / state logic can be unit-tested without
- * rendering React Native (mobile tests run under plain Node — no RN
- * renderer is wired up). Mirrors the web pattern of
- * `client/src/components/FinalizeSettingsSection.jsx`.
+ * Settings → Finalize panel (mobile). Picker/state for FinalizeSection;
+ * mirrors `client/src/components/FinalizeSettingsSection.jsx`.
  */
 /**
  * Pick the project id the picker should land on, given the current list

@@ -1,4 +1,4 @@
-// replay-list-store.ts — read/aggregation queries that back the Replays
+// read/aggregation queries that back the Replays
 // Explorer dashboard (a Datadog-RUM-Explorer-style table of session replays).
 //
 // The single-replay read path lives in replay-store.ts; this module adds the

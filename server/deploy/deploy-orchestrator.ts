@@ -1,5 +1,5 @@
 /**
- * deploy-orchestrator.ts — Deployment Module, Phase 3.
+ * Deployment Module, Phase 3.
  *
  * Executes a project's `.agent-hub/deploy.yaml` environment pipeline inside a
  * RunnerBackend lease (the SAME local-DinD / remote-fleet seam Finalize uses,

@@ -222,7 +222,7 @@ export default function MyClaudeAuthSection({ bare = false }: { bare?: boolean }
         </p>
       </div>
 
-      {/* ── Anthropic API key ───────────────────────────── */}
+      {/* Anthropic API key */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h5 className="text-xs font-medium text-gray-300 flex items-center gap-2">
@@ -301,7 +301,7 @@ export default function MyClaudeAuthSection({ bare = false }: { bare?: boolean }
 
       <div className="h-px bg-gray-700/50" />
 
-      {/* ── Claude Code OAuth token ─────────────────────── */}
+      {/* Claude Code OAuth token */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h5 className="text-xs font-medium text-gray-300 flex items-center gap-2">

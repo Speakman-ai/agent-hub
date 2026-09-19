@@ -9,11 +9,8 @@
  * existing mobile callers keep one import site. Only the parts that render
  * differently (Tailwind classes on web, RN styles here) stay per platform.
  *
- * Transport-free and UI-free: no WebSocket, no React, no RN primitives, so
- * every function here is unit-testable in the `node` env.
- *
  * Every value that originates from an ingested log record is UNTRUSTED
- * (decision LOG-TRUST). This module never builds markup from log text: callers
+ * (decision LOG-TRUST). Never builds markup from log text: callers
  * render the returned strings as React Native <Text>. `parseAttributes`
  * tolerates malformed JSON and never throws.
  */

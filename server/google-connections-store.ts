@@ -1,5 +1,5 @@
 /**
- * google-connections-store.ts — Per-user Google identity + token persistence.
+ * Per-user Google identity + token persistence.
  *
  * Stores the link between an Agent Hub user (`users.id` in orgs.db) and their
  * Google account from the OAuth 2.0 web-server flow. Unlike the GitHub store

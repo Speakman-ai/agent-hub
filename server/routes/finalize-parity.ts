@@ -1,5 +1,5 @@
 /**
- * finalize-parity.ts — REST surface for the Finalize↔GitHub parity harness.
+ * REST surface for the Finalize↔GitHub parity harness.
  *
  * The harness records, per commit, the Finalize verdict vs the GitHub Actions
  * verdict and a derived divergence class (see
@@ -84,7 +84,7 @@ export default function createFinalizeParityRoutes(deps: RouteDeps): Router {
     },
   };
 
-  // ── GET parity records + summary ────────────────────────────────────
+  // GET parity records + summary
   router.get('/api/projects/:projectId/finalize/parity', (req: Request, res: Response) => {
     const projectId = req.params.projectId as string;
     const project = findProject(projectId);
@@ -154,7 +154,7 @@ export default function createFinalizeParityRoutes(deps: RouteDeps): Router {
     });
   });
 
-  // ── POST record one observation ─────────────────────────────────────
+  // POST record one observation
   router.post('/api/projects/:projectId/finalize/parity', (req: Request, res: Response) => {
     const projectId = req.params.projectId as string;
     const project = findProject(projectId);
@@ -215,7 +215,7 @@ export default function createFinalizeParityRoutes(deps: RouteDeps): Router {
     return res.status(201).json({ record });
   });
 
-  // ── POST seed known false-greens ────────────────────────────────────
+  // POST seed known false-greens
   router.post('/api/projects/:projectId/finalize/parity/seed', (req: Request, res: Response) => {
     const projectId = req.params.projectId as string;
     const project = findProject(projectId);

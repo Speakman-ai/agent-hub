@@ -1,8 +1,6 @@
 /**
- * Provisioning client — thin wrapper over the /api/projects/provision
- * endpoint + its WebSocket event stream.
+ * Thin wrapper over `/api/projects/provision` and its WebSocket event stream.
  *
- * ─────────────────────────────────────────────────────────────────────
  * Contract (to be implemented by hub-backend):
  *
  *   POST /api/projects/provision
@@ -26,7 +24,6 @@
  * The client helpers here own transport concerns (fetch, auth headers,
  * socket URL wiring, watchdog, reconnect) and hand raw events back to
  * the caller. State reduction happens in provisioningStatus.js.
- * ─────────────────────────────────────────────────────────────────────
  */
 
 import {

@@ -269,7 +269,7 @@ describe('PUT /api/auth/me/claude-auth', () => {
   });
 });
 
-// ── Expiry normalisation parity with the host-config path ─────────────
+// Expiry normalisation parity with the host-config path
 //
 // Regression for the user-visible bug "Auth UI keeps showing token
 // expired when it is not". Before this fix, the per-user route echoed

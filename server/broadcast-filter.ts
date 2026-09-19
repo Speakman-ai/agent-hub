@@ -24,7 +24,7 @@
  *   - localBypass clients always see every event (single-tenant local
  *     mode and the global apiKey path).
  *
- * Pure module: all collaborators are injected so the filter has no
+ * Collaborators are injected so the filter has no
  * direct dependency on the running db / project model.
  */
 

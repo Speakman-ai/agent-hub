@@ -33,8 +33,7 @@ export interface GuestExecResult {
 }
 
 /**
- * The subset of the microVM env this needs. Narrow on purpose: it keeps the
- * class unit-testable without a VM, and makes explicit that worktree IO is
+ * The subset of the microVM env this needs. Narrow on purpose: worktree IO is
  * built from exec plus the two file ops, nothing privileged.
  */
 export interface GuestWorktreeChannel {

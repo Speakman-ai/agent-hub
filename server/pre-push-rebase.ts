@@ -1,5 +1,5 @@
 /**
- * pre-push-rebase.ts — fold `origin/<base>` into a clean session worktree
+ * Fold `origin/<base>` into a clean session worktree
  * right before the session pushes.
  *
  * Why this exists: `worktree.ts#detectAndHandleBaseBranchDrift` already

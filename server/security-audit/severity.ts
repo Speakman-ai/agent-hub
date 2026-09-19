@@ -1,5 +1,5 @@
 /**
- * severity.ts — normalise a vulnerability's severity into one of five
+ * Normalise a vulnerability's severity into one of five
  * buckets (critical/high/medium/low/unknown).
  *
  * Two inputs feed this:
@@ -44,7 +44,7 @@ export function severityFromLabel(label: string | null | undefined): Severity {
   }
 }
 
-// ─── CVSS v3.1 base score ───────────────────────────────────────────────
+// CVSS v3.1 base score
 
 const AV: Record<string, number> = { N: 0.85, A: 0.62, L: 0.55, P: 0.2 };
 const AC: Record<string, number> = { L: 0.77, H: 0.44 };

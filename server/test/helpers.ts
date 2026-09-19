@@ -19,7 +19,7 @@ export async function getApp(): Promise<Express> {
   return _app!;
 }
 
-// ─── Fixture factories ──────────────────────────────────────────
+// Fixture factories
 
 let _counter = 0;
 function uid(prefix = 'test'): string {

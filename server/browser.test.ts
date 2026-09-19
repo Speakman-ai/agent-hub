@@ -1,8 +1,7 @@
 /**
- * Tests for browser.ts — covers the pure pieces (options builder, session
- * registry) without launching real Chromium. A separate smoke-test (not
- * run in CI by default) will exercise `launchBrowserSession` against a
- * real browser binary.
+ * Covers the options builder and session registry without launching real
+ * Chromium. A separate smoke-test (not run in CI by default) will exercise
+ * `launchBrowserSession` against a real browser binary.
  */
 
 import { fileURLToPath } from 'url';

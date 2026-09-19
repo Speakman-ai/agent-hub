@@ -668,7 +668,7 @@ describe('infra scope routes', () => {
   });
 });
 
-// ── Resource browser and metric charts (decision INFRA-UI) ─────────────────
+// Resource browser and metric charts (decision INFRA-UI)
 
 const CHART_NOW = Date.now();
 const CHART_HOUR = 60 * 60 * 1000;

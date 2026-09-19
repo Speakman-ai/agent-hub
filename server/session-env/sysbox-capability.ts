@@ -5,7 +5,7 @@
  * backends: HOST (direct host processes — the local-dev/Mac path), SYSBOX
  * (per-session container via sysbox-runc, the strongest boundary), and
  * CONTAINER (per-session privileged DinD container, the boundary available on
- * any Docker host). This module decides which backend the Hub uses at boot:
+ * any Docker host). Decides which backend the Hub uses at boot:
  *
  *   1. `probeSysboxCapability()` checks the host: Linux, kernel >= 5.12
  *      (idmapped-mounts baseline for non-shiftfs distros; >= 5.19 removes the

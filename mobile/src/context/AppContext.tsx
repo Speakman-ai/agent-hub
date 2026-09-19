@@ -935,7 +935,7 @@ export function AppProvider({ children }: any) {
             });
           }
           break;
-        // ── Thread events (persistent output logs) ───────────────
+        // Thread events (persistent output logs)
         case 'thread_created':
           if (isRetiredHeartbeatThread(data.thread)) break;
           setLastThreadEvent({
@@ -1045,7 +1045,7 @@ export function AppProvider({ children }: any) {
         case 'design_cancelled':
           setLastDesignEvent({ ...data, bump: Date.now() });
           break;
-        // ── Finalize setup wizard (Settings → Finalize) ─────────
+        // Finalize setup wizard (Settings → Finalize)
         // The web client listens for `agenthub:finalize_wizard_*` window
         // CustomEvents to refresh the panel. Mobile has no DOM event bus,
         // so we mirror the broadcast through `lastFinalizeWizardEvent`
@@ -1240,9 +1240,8 @@ export function AppProvider({ children }: any) {
       case 'support':
       case 'pulls':
       case 'infra': {
-        // Navigator-driven kinds share one pure param mapper so the screen +
-        // params (including the `pulls` PR number and the `infra` alert id)
-        // stay unit-testable.
+        // Navigator-driven kinds share one param mapper (screen + params,
+        // including the `pulls` PR number and the `infra` alert id).
         const nav = notificationRouteToNavigation(route);
         if (nav) navigatorRef.current?.(nav.screen, nav.params);
         break;
@@ -1587,7 +1586,7 @@ export function AppProvider({ children }: any) {
   // screens (e.g. ChatScreen on navigation focus, DrawerContent when the user
   // re-taps the already-active session) can force a refresh without waiting
   // for `activeSessionId` to change. The race-guard logic lives in the pure
-  // `createReloadMessages` factory so it can be unit-tested in isolation.
+  // `createReloadMessages` factory.
   const reloadMessages = useMemo<any>(
     () =>
       createReloadMessages({

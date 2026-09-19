@@ -114,7 +114,7 @@ const QUOTA_FEATURES: readonly InfraPackFeature[] = Object.freeze([
 ]);
 
 const QUOTA_METRICS: readonly InfraPackMetric[] = Object.freeze([
-  // ── Collected from CloudWatch ────────────────────────────────────
+  // Collected from CloudWatch
   Object.freeze({
     namespace: QUOTA_USAGE_NAMESPACE,
     metricName: 'ResourceCount',
@@ -164,7 +164,7 @@ const QUOTA_METRICS: readonly InfraPackMetric[] = Object.freeze([
       'Calls AWS rejected for exceeding the rate quota. Unlike the other two this is not headroom, it is the quota already being hit.',
   }),
 
-  // ── Derived by the Hub ───────────────────────────────────────────
+  // Derived by the Hub
   Object.freeze({
     namespace: QUOTA_DERIVED_NAMESPACE,
     metricName: QUOTA_UTILIZATION_METRIC_NAME,

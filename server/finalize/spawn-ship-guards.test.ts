@@ -64,7 +64,7 @@ describe('applySessionGitGuards', () => {
   });
 });
 
-// ─── git shim: branch-creation enforcement ───────────────────────────
+// git shim: branch-creation enforcement
 // Exercises the actual shell shim (the mechanism that runs in the spawned
 // agent's PATH), not just the installer. A fake REAL_GIT stands in for the
 // real binary so the test is hermetic (no real repo, no real git/network).

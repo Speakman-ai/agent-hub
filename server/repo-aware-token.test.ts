@@ -1,6 +1,4 @@
 /**
- * repo-aware-token.test.ts
- *
  * Tests for `resolveOwnerWithRepoAccess` — the helper that walks
  * Owner-role users in `created_at` order and returns the first user
  * whose stored GitHub token can read `<owner>/<repo>`.

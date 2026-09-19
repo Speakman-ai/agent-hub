@@ -1,4 +1,4 @@
-// Pure helpers for the Settings → My CLI Keys tab (mobile). Mirrors the
+// Settings → My CLI Keys (mobile). Mirrors the
 // per-user credential routes in server/routes/auth.ts:
 //   GET/PUT /api/auth/me/claude-auth   → { anthropicApiKey, claudeCodeOAuthToken, ... }
 //   GET/PUT /api/auth/me/cursor-auth   → { engine, apiKey, hostConfigFallback }

@@ -112,7 +112,7 @@ export default function SessionChangesPane({
 
   const apiBase = getApiBase();
 
-  // ── Resizable width (persisted per session) ──────────────────────
+  // Resizable width (persisted per session)
   const wKey = widthKeyFor(sessionId);
   const [width, setWidth] = useState<any>(() => {
     if (!wKey) return DEFAULT_WIDTH;
@@ -164,7 +164,7 @@ export default function SessionChangesPane({
     };
   }, [isResizing]);
 
-  // ── Fetch the change summary ─────────────────────────────────────
+  // Fetch the change summary
   const loadSummary = useCallback(async () => {
     if (!sessionId) return;
     const seq = ++loadSeqRef.current;
@@ -221,7 +221,7 @@ export default function SessionChangesPane({
     [summary, selected],
   );
 
-  // ── Fetch the selected file's diff (cached) ──────────────────────
+  // Fetch the selected file's diff (cached)
   useEffect(() => {
     if (!sessionId || !selectedFile) return;
     const path = selectedFile.path;

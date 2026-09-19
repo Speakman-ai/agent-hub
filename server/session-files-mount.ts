@@ -8,7 +8,7 @@
  * renders on the web client (SessionDesignModePane → DesignCanvas).
  *
  * Extracted into a factory so the security guards (id shape, session existence,
- * worktree requirement, path-traversal containment) are unit-testable with a
+ * worktree requirement, path-traversal containment) can be exercised with a
  * fake `getSession` + a temp worktree, without booting the full server.
  *
  * Security model (mirrors `/design-files`):

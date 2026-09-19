@@ -77,7 +77,7 @@ import type { AuthenticatedRequest } from '../auth.js';
 import { registerPath, z } from '../openapi/registry.js';
 import { ErrorResponse } from '../openapi/schemas/auth.js';
 
-// ── OpenAPI registrations ──────────────────────────────────────────────
+// OpenAPI registrations
 const PerUserCursorStatus = z.object({
   uiStatus: z.string(),
   binary: z.object({ present: z.boolean(), path: z.string() }),
@@ -355,7 +355,7 @@ registerPath({
   },
 });
 
-// ── P4: per-user Codex device-login (engine-isolated CODEX_HOME) ──────
+// P4: per-user Codex device-login (engine-isolated CODEX_HOME)
 //
 // These supersede the `/browser/device-login` shape above for the Codex
 // engine. Instead of HOME-pinning the whole spawn we set `CODEX_HOME`
@@ -401,7 +401,7 @@ registerPath({
   },
 });
 
-// ── Grok (xAI Grok Build CLI) ───────────────────────────────────────────
+// Grok (xAI Grok Build CLI)
 //
 // Mirrors the legacy Codex `/browser/device-login` shape: `grok login
 // --device-auth` prints a verification URL + short code, and the resulting
@@ -504,7 +504,7 @@ registerPath({
   },
 });
 
-// ── Helpers ────────────────────────────────────────────────────────────
+// Helpers
 interface RunResult {
   stdout: string;
   stderr: string;
@@ -596,7 +596,7 @@ function cancelP4CodexLogin(userId: string): boolean {
   return true;
 }
 
-// ── Router factory ─────────────────────────────────────────────────────
+// Router factory
 export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
   const { config, broadcast, getCursorBin, getCodexBin, getGrokBin } = deps;
   const router = Router();
@@ -606,7 +606,7 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
   const grokBinPath = (): string => getGrokBin?.() ?? config.grokBin;
   const claudeBinPath = (): string => deps.getClaudeBin?.() ?? config.claudeBin;
 
-  // ── Claude Code ─────────────────────────────────────────────────────
+  // Claude Code
   // Claude Code stores browser-login credentials at
   // `$HOME/.claude/.credentials.json`. Keep the process HOME pinned to the
   // same per-user tree used by buildSpawnEnv so a mobile login is immediately
@@ -779,7 +779,7 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     res.json({ ok: true, output: 'Per-user Claude Code cache cleared' });
   });
 
-  // ── Cursor ──────────────────────────────────────────────────────────
+  // Cursor
   router.get('/api/auth/me/cursor-auth/browser', async (req: Request, res: Response) => {
     const userId = requireAuthUserId(req, res);
     if (!userId) return;
@@ -1019,7 +1019,7 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     res.json({ ok: true, output: summary });
   });
 
-  // ── Codex ───────────────────────────────────────────────────────────
+  // Codex
   router.get('/api/auth/me/codex-auth/browser', (req: Request, res: Response) => {
     const userId = requireAuthUserId(req, res);
     if (!userId) return;
@@ -1214,7 +1214,7 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     res.json({ ok: true, output: summary });
   });
 
-  // ── P4: per-user Codex device-login (CODEX_HOME isolated tree) ──────
+  // P4: per-user Codex device-login (CODEX_HOME isolated tree)
   router.post('/api/auth/me/codex-auth/login', (req: Request, res: Response) => {
     const userId = requireAuthUserId(req, res);
     if (!userId) return;
@@ -1370,7 +1370,7 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     res.json({ ok: true, output: 'Device login cancelled' });
   });
 
-  // ── Grok (xAI Grok Build CLI) device-auth ───────────────────────────
+  // Grok (xAI Grok Build CLI) device-auth
   router.get('/api/auth/me/grok-auth/browser', (req: Request, res: Response) => {
     const userId = requireAuthUserId(req, res);
     if (!userId) return;

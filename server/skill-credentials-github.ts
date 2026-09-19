@@ -1,5 +1,5 @@
 /**
- * skill-credentials-github.ts — Targeted accessor for the GitHub skill's
+ * Targeted accessor for the GitHub skill's
  * `GH_TOKEN` row in `user_skill_credentials`.
  *
  * The general-purpose decryption path

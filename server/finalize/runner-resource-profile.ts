@@ -1,5 +1,5 @@
 /**
- * runner-resource-profile.ts — CPU/memory caps for Finalize DinD runners.
+ * CPU/memory caps for Finalize DinD runners.
  *
  * Why this exists: the Finalize gate must NOT be more powerful than the
  * GitHub-hosted runner it stands in for. PR webapp#1001 was Finalize-green

@@ -1,5 +1,5 @@
 /**
- * host.ts — the single predicate + path helpers shared by every native-PR
+ * The single predicate + path helpers shared by every native-PR
  * branch point (routes, finalize push step, client-facing URL builders).
  */
 

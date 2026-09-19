@@ -1,5 +1,5 @@
 /**
- * user-todos-store.ts — Cross-project personal todos, keyed by user_id.
+ * Cross-project personal todos, keyed by user_id.
  *
  * A todo is a per-user, global capture primitive that lives in the shared
  * orgs.db (schema in `user-todos-schema.ts`), independent of any project board

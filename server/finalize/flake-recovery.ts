@@ -1,5 +1,5 @@
 /**
- * flake-recovery.ts — detect "retry-until-green" laundering in a Finalize run.
+ * Detect "retry-until-green" laundering in a Finalize run.
  *
  * A Finalize run re-runs CI checks on every fix-loop iteration (loop_round).
  * A job that FAILED on an earlier round and PASSED on a later round is only
@@ -9,7 +9,7 @@
  * it into a green merge signal. Industry data puts ~68% of rerun-recovered
  * CI builds in the flaky bucket, so a bare rerun-to-green is NOT merge-safe.
  *
- * This module is pure: it classifies per-job retry history given (a) the
+ * Is pure: it classifies per-job retry history given (a) the
  * recorded attempts and (b) a way to ask which files changed between two
  * heads (+ optional per-job path globs). The orchestrator owns the git I/O
  * and DB persistence; this module owns only the decision, so the full
@@ -85,7 +85,7 @@ export interface ClassifyDeps {
   jobPaths?: Map<string, string[]>;
 }
 
-// ─── Glob matching ────────────────────────────────────────────────────────
+// Glob matching
 
 /**
  * Translate a small glob (`**`, `*`, `?`) into an anchored RegExp.
@@ -138,7 +138,7 @@ export function matchesAnyGlob(file: string, globs: string[]): boolean {
   return false;
 }
 
-// ─── Classification ─────────────────────────────────────────────────────────
+// Classification
 
 function instanceKey(jobId: string, matrixKey: string): string {
   return `${jobId}\u0000${matrixKey}`;
@@ -276,7 +276,7 @@ function classifyRecovery(
   return 'fixed';
 }
 
-// ─── Gate result + persistence helpers ──────────────────────────────────────
+// Gate result + persistence helpers
 
 /**
  * The auto-push gate's verdict for a finalize run.

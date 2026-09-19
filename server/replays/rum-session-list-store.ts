@@ -1,8 +1,8 @@
-// rum-session-list-store.ts — the read/query surface that backs the RUM
+// the read/query surface that backs the RUM
 // Session Explorer (the Datadog-parity, session-grain dashboard table).
 //
 // `rum-session-store.ts` maintains one `rum_sessions` row per client-minted
-// session id, rolled forward as segments ingest. This module adds the *list*
+// session id, rolled forward as segments ingest. Adds the *list*
 // surface the dashboard needs: a tenant-scoped, paginated query with the same
 // facets Datadog's Session Explorer exposes — user (email/name/id), device,
 // browser, os, geo country, duration, view/action/error/frustration counts, and

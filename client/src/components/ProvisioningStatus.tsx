@@ -100,9 +100,7 @@ export default function ProvisioningStatus({
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Header                                                              */
-/* ------------------------------------------------------------------ */
+/* Header */
 
 function Header({ state }: any) {
   const label =
@@ -136,9 +134,7 @@ function Header({ state }: any) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Phase checklist                                                     */
-/* ------------------------------------------------------------------ */
+/* Phase checklist */
 
 function PhaseChecklist({ state }: any) {
   return (
@@ -217,9 +213,7 @@ function Elapsed({ phase }: any) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Streaming log tail                                                  */
-/* ------------------------------------------------------------------ */
+/* Streaming log tail */
 
 function LogTail({ logs }: any) {
   const [expanded, setExpanded] = useState(true);
@@ -289,9 +283,7 @@ function LogTail({ logs }: any) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Terminal-state cards                                                */
-/* ------------------------------------------------------------------ */
+/* Terminal-state cards */
 
 function SuccessCard({ state, onClose, onOpenRepo, onOpenProject, buildHandoffTimedOut }: any) {
   return (

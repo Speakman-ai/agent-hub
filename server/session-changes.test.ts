@@ -504,7 +504,7 @@ describe('computeFileDiff', () => {
     expect(res.unifiedDiff).toContain('+x');
   });
 
-  // ── Path-safety guard (reviewer hardening) ────────────────────────
+  // Path-safety guard (reviewer hardening)
   // computeFileDiff must never hand an absolute or traversal path to git,
   // or `git diff --no-index` becomes an arbitrary file-read oracle.
   it.each([

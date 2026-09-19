@@ -1,14 +1,12 @@
 /**
- * sysbox-exec-args.ts — pure argv/name/mount/port-publish builders for the
+ * Argv/name/mount/port-publish builders for the
  * SessionEnv sysbox adapter.
  *
  * Everything here is string/argv construction only; the runtime that spawns
- * `docker` lives in sysbox-session-env.ts (and injects fakes in tests). The
- * split mirrors finalize/runner-exec-args.ts, where keeping the builders pure
- * is what makes the container invocations unit-testable without a daemon.
+ * `docker` lives in sysbox-session-env.ts (and injects fakes in tests). Same
+ * split as finalize/runner-exec-args.ts: builders stay out of the spawn path.
  *
- * Isolation runtimes
- * ──────────────────
+ * Isolation runtimes.
  * The builders emit one of two container shapes, selected per env:
  *
  *   - `sysbox-runc` — `--runtime=sysbox-runc`, a real user-namespace
@@ -391,7 +389,7 @@ export function buildRemoveSysboxGraphVolumeArgv(containerName: string): string[
   return ['docker', 'volume', 'rm', '-f', sysboxGraphVolumeName(containerName)];
 }
 
-// ── Reconcile sweep (leaked container/volume GC) ───────────────────
+// Reconcile sweep (leaked container/volume GC)
 
 /** List ALL session-env containers (running or exited), ids only. */
 export function buildListSysboxSessionContainersArgv(): string[] {

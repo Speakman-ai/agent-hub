@@ -83,7 +83,7 @@ describe('autofix prompt templates', () => {
     }
   });
 
-  // ── Anti-disengagement framing ────────────────────────────────────
+  // Anti-disengagement framing
   //
   // The autofix-stall conversation (see today's notes + the round-counter
   // PR) identified the dev session deciding "I've been here three times,

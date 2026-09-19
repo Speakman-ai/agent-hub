@@ -1,5 +1,5 @@
 /**
- * types.ts — shared types for the dependency security-audit module.
+ * Shared types for the dependency security-audit module.
  *
  * The audit pipeline has three stages, each pluggable:
  *
@@ -14,9 +14,8 @@
  *   3. The scanner persists findings, de-dupes against prior scans and
  *      dismissals, and surfaces them (REST + kanban card).
  *
- * Keeping these as interfaces (not concrete classes) is what makes the
- * whole pipeline unit-testable without network or a real git repo: tests
- * inject a fake reader / fake advisory source and assert on pure data.
+ * Interfaces, not concrete classes: tests inject a fake reader / fake
+ * advisory source and assert on data, with no network or real git repo.
  */
 
 /** Severity bucket, mirroring the GitHub Advisory DB labels. */

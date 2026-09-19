@@ -1,5 +1,5 @@
 /**
- * rebase.ts — Finalize Code Changes, Phase 1 (rebase phase).
+ * Finalize Code Changes, Phase 1 (rebase phase).
  *
  * Per design (`finalize-code-changes-architecture-v0` §3): before any other
  * Finalize phase runs, the session's existing worktree branch is rebased
@@ -413,8 +413,6 @@ export async function runRebasePhase(
     billedSeconds,
   );
 }
-
-// ─── helpers ─────────────────────────────────────────────────────
 
 function setPhase(
   stmts: RebasePhaseDeps['stmts'],

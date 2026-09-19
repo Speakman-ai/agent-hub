@@ -1,5 +1,5 @@
 /**
- * quarantine-gate.ts — orchestrator-side glue for cross-run flake history +
+ * Orchestrator-side glue for cross-run flake history +
  * the quarantine lane. Keeps the DB fan-out out of orchestrator.ts.
  *
  *   1. {@link recordRunTestHistory} — once per loop_round (right after the

@@ -1,5 +1,5 @@
 /**
- * ci-config-source.ts — resolve WHICH Finalize CI config a run should use.
+ * Resolve WHICH Finalize CI config a run should use.
  *
  * Finalize no longer requires a committed `.agent-hub/ci.yaml`. The config can
  * come from one of two places, in strict precedence order:

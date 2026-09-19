@@ -1,6 +1,4 @@
-// replayFormat.ts — pure presentation helpers for the mobile Replays dashboard.
-// 1:1 port of client/src/utils/replayFormat.ts so the web and mobile tables
-// render identical labels. Kept framework-free for trivial unit testing.
+// Mobile Replays dashboard labels. 1:1 with client/src/utils/replayFormat.ts.
 
 /** Format an rrweb capture span (ms) as a compact `Xm Ys` / `Ys` / `0s` label
  *  (Datadog "Time Spent" column). Negative / non-finite → `0s`. */

@@ -1,5 +1,5 @@
 /**
- * runner-logs-db.test.ts — the dedicated `runner_job_logs` spool DB.
+ * The dedicated `runner_job_logs` spool DB.
  *
  * Regression guard for spec hot-write-isolation: the spool must live in its own
  * SQLite file (own connection + WAL), writes must NOT land in the shared orgs.db

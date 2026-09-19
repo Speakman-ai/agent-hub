@@ -1,5 +1,5 @@
 /**
- * deploy-config.ts parser — pure validation tests (no IO).
+ * Deploy-config parser validation tests (no IO).
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

@@ -1,5 +1,5 @@
 /**
- * runner-teardown.ts — recognise a Finalize runner that was torn down mid
+ * Recognise a Finalize runner that was torn down mid
  * `docker exec`, as distinct from a genuine test/build failure.
  *
  * When a runner container's job context is cancelled while a step's
@@ -11,7 +11,7 @@
  * classifies this as a CI-class `step_failed`: it does NOT auto-retry and it
  * DOES dispatch a wasted fix round to the agent with every test green.
  *
- * This module exposes TWO predicates over the same signature, deliberately at
+ * Exposes TWO predicates over the same signature, deliberately at
  * different strictnesses because the two consumers have different blast radii:
  *
  *   - Layer A — {@link isRunnerTeardownExit} (STRICT). Drives reclassification

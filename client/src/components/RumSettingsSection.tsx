@@ -589,7 +589,7 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
         </p>
       </div>
 
-      {/* ── Session replay recording (global on/off) ────────────── */}
+      {/* Session replay recording (global on/off) */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
         <div className="flex items-center gap-4">
           <div className="flex-1 min-w-0">
@@ -674,7 +674,7 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
         </div>
       </div>
 
-      {/* ── Per-project replay sample rate (server-delivered) ───── */}
+      {/* Per-project replay sample rate (server-delivered) */}
       <div
         className="bg-gray-800/50 border border-gray-700 rounded-xl p-4"
         data-testid="rum-replay-config"
@@ -837,7 +837,7 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
         )}
       </div>
 
-      {/* ── Per-project retention (two-tier) ────────────────────── */}
+      {/* Per-project retention (two-tier) */}
       <div
         className="bg-gray-800/50 border border-gray-700 rounded-xl p-4"
         data-testid="rum-retention-config"
@@ -916,7 +916,7 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
         )}
       </div>
 
-      {/* ── Repo scan summary ───────────────────────────────────── */}
+      {/* Repo scan summary */}
       <div className="bg-gray-800/30 border border-gray-700 rounded-xl p-4">
         <div className="flex items-center justify-between gap-2 mb-3">
           <h4 className="text-sm font-semibold text-gray-300">Repo scan</h4>
@@ -1040,7 +1040,7 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
         )}
       </div>
 
-      {/* ── Guided setup ────────────────────────────────────────── */}
+      {/* Guided setup */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -1114,7 +1114,7 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
         )}
       </div>
 
-      {/* ── Ingest tokens ───────────────────────────────────────── */}
+      {/* Ingest tokens */}
       <div className="bg-gray-800/30 border border-gray-700 rounded-xl p-4 space-y-4">
         <div>
           <h4 className="text-sm font-semibold text-gray-300 mb-1 flex items-center gap-2">

@@ -1,5 +1,4 @@
-// Pure helpers for the environments management surface (web + shared logic).
-// Kept framework-free so they can be unit-tested and reused by the mobile screen.
+// Environments management helpers.
 
 export interface ResolvedEnvironment {
   name: string;

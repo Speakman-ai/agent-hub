@@ -471,7 +471,7 @@ export function formatFactsForPrompt(facts: DailySummaryFacts): string {
 }
 
 export function readDailySummary(userId: string, date: string): HubDailySummaryStored | null {
-  // Pure read: return the stored report only when it is for the requested date,
+  // Read: return the stored report only when it is for the requested date,
   // otherwise null. Never mutate here — a GET must not drop a still-valid report
   // just because the caller's timezone (or an omitted `tz`, defaulting to UTC)
   // resolved a different local date. Two devices in different zones would

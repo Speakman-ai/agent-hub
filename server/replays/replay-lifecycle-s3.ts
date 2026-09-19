@@ -1,5 +1,5 @@
 /**
- * replay-lifecycle-s3.ts — SDK-backed port + boot provisioning for the RUM S3
+ * SDK-backed port + boot provisioning for the RUM S3
  * lifecycle policy. The AWS SDK import is confined here (mirrors the
  * SDK-isolation of `artifacts/artifact-store-s3.ts`); the policy math lives in
  * the pure `replay-lifecycle.ts`.

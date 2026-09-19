@@ -1,5 +1,5 @@
 /**
- * runner-job-log-reaper.ts: periodic retention prune for `runner_job_logs`.
+ * Periodic retention prune for `runner_job_logs`.
  *
  * `runner_job_logs` (its own `runner-logs.db`, split out of orgs.db per spec
  * hot-write-isolation) is an append-only spool of CI stdout/stderr frames posted

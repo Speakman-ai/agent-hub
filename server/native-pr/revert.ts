@@ -1,5 +1,5 @@
 /**
- * revert.ts — worktree-free revert of a merged native PR's commit, applied
+ * Worktree-free revert of a merged native PR's commit, applied
  * directly in the hosted bare repo:
  *
  *   1. `git diff --binary <merged> <merged>^1` — the reverse patch. Taking

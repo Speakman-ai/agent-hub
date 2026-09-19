@@ -131,9 +131,7 @@ export function TimezoneSelect({
 }
 
 /**
- * Presentational body for the per-environment deploy-schedules editor. Pure and
- * props-driven so it can be render-tested (react-dom/server) without effects or
- * a live API — mirrors the EnvironmentTriggersPanelContent split.
+ * Per-environment deploy-schedules editor body.
  */
 export function EnvironmentSchedulesPanelContent({
   environmentName,

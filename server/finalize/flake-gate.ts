@@ -1,5 +1,5 @@
 /**
- * flake-gate.ts — orchestrator-side glue for flake-recovery detection.
+ * Orchestrator-side glue for flake-recovery detection.
  *
  * Two responsibilities, both kept out of orchestrator.ts so the heavy git
  * I/O and DB fan-out don't clutter the state machine:

@@ -14,7 +14,7 @@
  * leaves the high-water mark untouched, so an older in-flight foreground result
  * is still allowed to land.
  *
- * Pure on purpose: no React/DOM, so it unit-tests with no environment. Callers
+ * No React/DOM. Callers
  * hold the state in a ref and combine `canCommit()` with their own mounted ref.
  */
 export interface RequestGenerationState {

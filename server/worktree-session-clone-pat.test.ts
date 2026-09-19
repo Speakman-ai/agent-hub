@@ -1,6 +1,4 @@
 /**
- * worktree-session-clone-pat.test.ts
- *
  * Tests the PAT-credential injection paths added to `ensureSessionWorkspace`:
  *
  *   - Stored GitHub PAT is forwarded as `-c http.…extraheader` args when the
@@ -25,12 +23,12 @@ import os from 'os';
 import { homedir } from 'os';
 import type { SessionRow } from './types.js';
 
-// ── Config mock ──────────────────────────────────────────────────────────────
+// Config mock
 vi.mock('./config.js', () => ({
   default: { defaultCwd: '/tmp' },
 }));
 
-// ── skill-credentials-github mock ────────────────────────────────────────────
+// skill-credentials-github mock
 // We re-implement `gitAuthArgsForGithubPat` faithfully here so tests don't
 // depend on an import of the real module (which might pull in orgs DB). The
 // `resolveUserGithubToken` helper is mocked synchronously-resolving so tests
@@ -76,7 +74,7 @@ vi.mock('./repo-aware-token.js', () => ({
   resolveOwnerWithRepoAccess: (repo: string) => mockResolveOwnerWithRepoAccess(repo),
 }));
 
-// ── child_process.execFile intercept ─────────────────────────────────────────
+// child_process.execFile intercept
 // Recorded git calls: each entry is { args, opts } for one execFile call.
 type GitCallRecord = { args: string[]; opts: Record<string, unknown> };
 const recorded: { calls: GitCallRecord[] } = { calls: [] };
@@ -122,10 +120,10 @@ vi.mock('child_process', async () => {
   return { ...actual, execFile: stubExecFile };
 });
 
-// ── Module under test (imported after all mocks are set up) ──────────────────
+// Module under test (imported after all mocks are set up)
 const { ensureSessionWorkspace, removeWorkspace } = await import('./worktree.js');
 
-// ── Test helpers ─────────────────────────────────────────────────────────────
+// Test helpers
 
 function makeSession(id: string, ownerId: string | null = null): SessionRow {
   return {
@@ -154,7 +152,7 @@ function uniqueSessionId(): string {
   return `sess${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// ── Test suite ───────────────────────────────────────────────────────────────
+// Test suite
 
 describe('ensureSessionWorkspace — PAT credential injection', () => {
   let sourceDir: string;
@@ -196,7 +194,7 @@ describe('ensureSessionWorkspace — PAT credential injection', () => {
     }
   });
 
-  // ── PAT injection into clone args ─────────────────────────────────────────
+  // PAT injection into clone args
 
   it('forwards PAT auth args (-c extraheader) into git clone for github-https remotes', async () => {
     const USER_PAT = 'ghp_testPAT_abcde12345';
@@ -298,7 +296,7 @@ describe('ensureSessionWorkspace — PAT credential injection', () => {
     expect(cloneCall!.args).not.toContain('-c');
   });
 
-  // ── No PAT passthrough ────────────────────────────────────────────────────
+  // No PAT passthrough
 
   it('passes no auth args to git clone when user has no stored PAT', async () => {
     // mockGetGithubPatForUser already returns null from beforeEach
@@ -320,7 +318,7 @@ describe('ensureSessionWorkspace — PAT credential injection', () => {
     expect(cloneCall!.args.join(' ')).not.toContain('extraheader');
   });
 
-  // ── Non-github-https no-leak ──────────────────────────────────────────────
+  // Non-github-https no-leak
 
   it('does not forward auth args for non-github-https remotes even when user has a PAT', async () => {
     const USER_PAT = 'ghp_leak_guard_9999';
@@ -345,7 +343,7 @@ describe('ensureSessionWorkspace — PAT credential injection', () => {
     expect(cloneCall!.args.join(' ')).not.toContain(b64Pat);
   });
 
-  // ── cloneSourceUrl canonicalization ──────────────────────────────────────
+  // cloneSourceUrl canonicalization
 
   it('strips embedded installation token from remote URL before cloning', async () => {
     const EMBEDDED_TOKEN = 'ghs_install_token_MUST_NOT_REACH_GIT';
@@ -389,7 +387,7 @@ describe('ensureSessionWorkspace — PAT credential injection', () => {
     expect(cloneCall!.args.join(' ')).toContain('https://github.com/owner/clean-repo.git');
   });
 
-  // ── Error redaction ───────────────────────────────────────────────────────
+  // Error redaction
 
   it('redacts an embedded installation token from error messages on clone failure', async () => {
     const EMBEDDED_TOKEN = 'ghs_embed_SECRET_redact_me_xyz';

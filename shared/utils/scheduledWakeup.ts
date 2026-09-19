@@ -1,16 +1,7 @@
 /**
- * ScheduleWakeup — pure helpers for rendering a countdown.
- *
- * `ScheduleWakeup` is the Claude Code tool an agent calls to ask the harness to
- * re-enter the same task after a delay. Its input carries only a *relative*
- * `delaySeconds`, so a wall-clock fire time only exists once the call is paired
- * with the timestamp of the session-event that carried it. Callers pass that
- * anchor in as epoch ms (the web/mobile clients convert the server's SQLite
- * datetime string via their own `parseDate`, which keeps timezone handling in
- * one place per surface).
- *
- * Everything here is pure so both clients can share it and unit-test it without
- * a React environment.
+ * ScheduleWakeup countdown. Input has only relative `delaySeconds`; wall-clock
+ * fire time needs the session-event timestamp as epoch ms. Never fall back to
+ * "now" (that restarts the countdown on every load).
  */
 
 export const SCHEDULE_WAKEUP_TOOL = 'ScheduleWakeup';
@@ -39,12 +30,8 @@ function asTrimmedString(val: unknown): string {
 }
 
 /**
- * Normalize a raw `ScheduleWakeup` tool input into display-ready fields.
- *
- * `scheduledAtMs` is the wall clock of the tool call. When it is missing (an
- * older persisted event with no timestamp, say) the countdown is simply not
- * shown — we never fall back to "now", which would restart the countdown on
- * every page load and render a stale wakeup as freshly scheduled.
+ * Normalize tool input. Missing `scheduledAtMs` hides the countdown; never use
+ * "now".
  */
 export function parseScheduledWakeup(
   input: unknown,
@@ -112,19 +99,14 @@ export interface WakeupCountdown {
 }
 
 /**
- * Derive the countdown chip for a parsed wakeup at wall clock `nowMs`.
- *
- * `due` does not mean "the agent woke up" — the Hub has no visibility into
- * whether the harness re-entered the loop — so the label deliberately says the
- * time has arrived rather than claiming the wakeup fired.
+ * Countdown chip at `nowMs`. `due` means the time arrived, not that the agent woke.
  */
 export function wakeupCountdown(wakeup: ScheduledWakeup, nowMs: number): WakeupCountdown {
   if (wakeup.stop) {
     return { state: 'stopped', label: 'loop stopped', remainingMs: null, progress: null };
   }
   if (wakeup.firesAtMs === null) {
-    // No anchor (or no delay) — fall back to the requested delay as static text
-    // so the user still learns how long the agent asked for.
+    // No anchor/delay: show the requested delay as static text.
     if (wakeup.delaySeconds !== null) {
       return {
         state: 'unknown',
@@ -151,11 +133,7 @@ export function wakeupCountdown(wakeup: ScheduledWakeup, nowMs: number): WakeupC
   };
 }
 
-/**
- * How often the UI should re-render the countdown. Sub-minute countdowns tick
- * every second; longer ones every 15s, which is enough for a "19m" readout and
- * keeps a backgrounded tab from waking once a second for an hour.
- */
+/** Tick every 1s under a minute, else every 15s. */
 export function wakeupTickIntervalMs(remainingMs: number | null): number {
   if (remainingMs === null) return 0;
   return remainingMs <= 60_000 ? 1_000 : 15_000;
@@ -174,14 +152,8 @@ export interface WakeupResultPanel {
 }
 
 /**
- * What the expanded card should show for the tool's own response.
- *
- * The dedicated wakeup card replaced a generic tool row that displayed
- * `result.output`, and initially dropped it — which hid scheduling
- * confirmations and, worse, the actual message when the call errored. Both
- * surfaces derive the panel from here so they cannot drift apart again.
- *
- * Returns null only while the call is still in flight (no result yet).
+ * Expanded card body for the tool response. Null only while in flight.
+ * An errored result with an empty body still renders (the 'error' label is the signal).
  */
 export function wakeupResultPanel(
   result: { output?: unknown; isError?: unknown } | null | undefined,
@@ -190,8 +162,7 @@ export function wakeupResultPanel(
   const errored = result.isError === true;
   const raw = typeof result.output === 'string' ? result.output : '';
   const truncated = raw.length > WAKEUP_RESULT_MAX_CHARS;
-  // An errored result with an empty body still needs to render: the 'error'
-  // label is itself the signal, and a silent card reads as success.
+  // Errored result with empty body still needs to render; silence reads as success.
   const text = raw ? raw.slice(0, WAKEUP_RESULT_MAX_CHARS) : '(empty)';
   return { label: errored ? 'error' : 'result', text, errored, truncated };
 }

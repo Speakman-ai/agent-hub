@@ -1,14 +1,7 @@
 /**
- * Pure reducer helpers for the client-side `awaitingInputBySession` map.
- *
- * Extracted from `App.jsx` so the WebSocket-event handling has unit coverage
- * outside the App's giant useReducer-by-hand. The map's shape is
- *
- *   { [sessionId: string]: { askIds: string[], agentId, sessionName } }
- *
- * and every reducer returns the **same object reference** when the call would
- * be a no-op. App.jsx relies on that referential equality to short-circuit
- * effect-dependency comparisons.
+ * `awaitingInputBySession` reducers. Shape:
+ * `{ [sessionId]: { askIds, agentId, sessionName } }`.
+ * Same object reference on no-op so App.jsx can short-circuit effects.
  */
 
 /**

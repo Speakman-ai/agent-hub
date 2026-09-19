@@ -892,7 +892,7 @@ export async function runWikiMemorySync(): Promise<void> {
   }
 }
 
-// ─── Background agents (scheduled, project-scoped) ────────────────
+// Background agents (scheduled, project-scoped)
 //
 // Distinct from crons (which are user-authored prompts) and from the
 // retired per-agent heartbeats: background agents are built-in unattended

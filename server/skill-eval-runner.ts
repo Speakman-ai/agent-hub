@@ -7,9 +7,8 @@
  * without (baseline) — grades both against the eval's assertions, and renders a
  * side-by-side Markdown report the coach surfaces to the user.
  *
- * The actual CLI spawn is injected (`OneShotRunner`) so this module stays
- * pure-ish and unit-testable without ever touching `child_process`. The route
- * builds the real runner from `runOneShotPrompt`; tests pass a stub.
+ * The actual CLI spawn is injected (`OneShotRunner`). The route builds the
+ * real runner from `runOneShotPrompt`; tests pass a stub.
  */
 
 import { gradeOutput, type GradeResult, type SkillEval } from './skill-evals.js';

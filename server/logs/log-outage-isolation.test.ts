@@ -1,5 +1,5 @@
 /**
- * log-outage-isolation.test.ts — a logging outage must never degrade the source
+ * A logging outage must never degrade the source
  * application or the rest of the Hub (decision LOG-STORE: "never let logging
  * failure block the source application or exhaust the Hub's memory/disk").
  *

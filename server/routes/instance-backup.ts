@@ -309,7 +309,7 @@ export default function createInstanceBackupRoutes(deps: RouteDeps): Router {
       const workspacesDir = getWorkspacesDir(dataDir);
 
       try {
-        // ── DB: full ──────────────────────────────────────────────
+        // DB: full
         if (requested.has('db.full')) {
           const tmp = path.join(tmpRoot, 'agent-hub.db');
           tmpFiles.push(tmp);
@@ -318,7 +318,7 @@ export default function createInstanceBackupRoutes(deps: RouteDeps): Router {
           appended.push({ id: 'db.full', path: 'db/agent-hub.db', bytes: safeStatSize(tmp) });
         }
 
-        // ── DB: slim ──────────────────────────────────────────────
+        // DB: slim
         if (requested.has('db.slim')) {
           const tmp = path.join(tmpRoot, 'agent-hub-slim.db');
           tmpFiles.push(tmp);
@@ -348,7 +348,7 @@ export default function createInstanceBackupRoutes(deps: RouteDeps): Router {
           appended.push({ id: 'db.slim', path: 'db/agent-hub.db', bytes: safeStatSize(tmp) });
         }
 
-        // ── DB: orgs ──────────────────────────────────────────────
+        // DB: orgs
         if (requested.has('db.orgs') && existsSync(orgsPath)) {
           const tmp = path.join(tmpRoot, 'orgs.db');
           tmpFiles.push(tmp);
@@ -357,7 +357,7 @@ export default function createInstanceBackupRoutes(deps: RouteDeps): Router {
           appended.push({ id: 'db.orgs', path: 'db/orgs.db', bytes: safeStatSize(tmp) });
         }
 
-        // ── Config files ──────────────────────────────────────────
+        // Config files
         if (requested.has('config')) {
           if (existsSync(configPath)) {
             archive.file(configPath, { name: 'config/config.json' });
@@ -377,7 +377,7 @@ export default function createInstanceBackupRoutes(deps: RouteDeps): Router {
           }
         }
 
-        // ── Workspaces ────────────────────────────────────────────
+        // Workspaces
         if (requested.has('workspaces') && existsSync(workspacesDir)) {
           // Walk manually so we can skip session-* dirs and .git/node_modules.
           const entries = readdirSync(workspacesDir, { withFileTypes: true });
@@ -402,13 +402,13 @@ export default function createInstanceBackupRoutes(deps: RouteDeps): Router {
           });
         }
 
-        // ── Designs ───────────────────────────────────────────────
+        // Designs
         if (requested.has('designs') && existsSync(designsDir)) {
           archive.directory(designsDir, 'designs');
           appended.push({ id: 'designs', path: 'designs/', bytes: dirSize(designsDir) });
         }
 
-        // ── JSON dumps ────────────────────────────────────────────
+        // JSON dumps
         const jsonGroups: Array<{ id: string; tables: string[]; out: string }> = [
           {
             id: 'json.kanban',
@@ -451,7 +451,7 @@ export default function createInstanceBackupRoutes(deps: RouteDeps): Router {
           appended.push({ id: group.id, path: group.out, bytes: buf.length });
         }
 
-        // ── Manifest ──────────────────────────────────────────────
+        // Manifest
         let pkgVersion = 'unknown';
         try {
           const pkgJson = path.join(deps.serverDir, 'package.json');

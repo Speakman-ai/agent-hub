@@ -222,8 +222,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// ─── Pure helpers ───────────────────────────────────────────────────────────
-
 describe('resolvePeriod', () => {
   it('uses 60s inside the 15-day retention tier', () => {
     expect(resolvePeriod(NOW - 60_000, NOW)).toBe(60);
@@ -721,7 +719,7 @@ describe('INFRA_COLLECT_CRON', () => {
   });
 });
 
-// ─── Collection ─────────────────────────────────────────────────────────────
+// Collection
 
 describe('runInfraMetricCollection', () => {
   function collect(
@@ -1285,7 +1283,7 @@ describe('runInfraMetricCollection', () => {
   });
 });
 
-// ─── Cost guardrails (decision INFRA-COST) ──────────────────────────────────
+// Cost guardrails (decision INFRA-COST)
 
 describe('cost ceiling degradation', () => {
   function echoClient(): CloudWatchMetricDataClient & { calls: GetMetricDataCommand[] } {
@@ -1758,7 +1756,7 @@ describe('incremental spend accounting', () => {
   });
 });
 
-// ─── Derived quota utilization ──────────────────────────────────────────────
+// Derived quota utilization
 
 describe('quota utilization is stored as a real series', () => {
   const QUOTA_DIMENSIONS = {

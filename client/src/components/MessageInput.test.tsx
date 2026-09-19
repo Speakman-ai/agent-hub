@@ -329,7 +329,7 @@ describe('MessageInput media attachments across sessions', () => {
   });
 });
 
-// ─── Voice transcription / mic button ─────────────────────────────
+// Voice transcription / mic button
 
 describe('MessageInput voice transcription', () => {
   const baseProps = {
@@ -343,7 +343,7 @@ describe('MessageInput voice transcription', () => {
     askMode: false,
   };
 
-  // ── Helper: install a deterministic fake MediaRecorder ───────────
+  // Helper: install a deterministic fake MediaRecorder
   function installFakeMediaRecorder({ supportedTypes = ['audio/webm;codecs=opus'] }: any = {}) {
     const instances: any[] = [];
     class FakeMediaRecorder {

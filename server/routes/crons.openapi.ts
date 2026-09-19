@@ -1,7 +1,7 @@
 /**
  * Zod schemas + OpenAPI registrations for the crons route group.
  *
- * This module is imported for two reasons:
+ * Imported for:
  *
  *   1. `server/routes/crons.ts` imports the exported request schemas and
  *      uses `safeParse(...)` to validate incoming bodies. The handlers
@@ -49,7 +49,7 @@ import cron from 'node-cron';
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { ALL_SUPPORTED_ENGINES } from '../engine-availability.js';
 
-// ─── Custom refinements ──────────────────────────────────────────
+// Custom refinements
 
 const cronExpression = z
   .string({ error: 'schedule must be a valid cron expression' })
@@ -101,7 +101,7 @@ const sharedFlag = z
   })
   .optional();
 
-// ─── Domain component schemas (response shapes) ──────────────────
+// Domain component schemas (response shapes)
 
 export const CronComponent = registerComponent(
   'Cron',
@@ -194,7 +194,7 @@ export const CronErrorResponseComponent = registerComponent(
     }),
 );
 
-// ─── Request schemas ──────────────────────────────────────────────
+// Request schemas
 
 /**
  * `engine` accepts one of `ALL_SUPPORTED_ENGINES`, null, or empty string
@@ -263,7 +263,7 @@ export const UpdateCronRequestSchema = z.object({
   engine: cronEngine,
 });
 
-// ─── OpenAPI path registrations ───────────────────────────────────
+// OpenAPI path registrations
 
 const cronIdParams = z.object({
   id: z.string().openapi({ description: 'Cron job numeric id (URL string).' }),

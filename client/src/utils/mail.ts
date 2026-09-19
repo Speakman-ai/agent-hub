@@ -1,7 +1,4 @@
-/**
- * Pure formatting helpers for rendering Gmail message rows on the dashboard.
- * Shared shape mirrored in `mobile/src/utils/mail.ts` — keep the two in sync.
- */
+/** Gmail dashboard row formatting. Keep in sync with `mobile/src/utils/mail.ts`. */
 
 /**
  * The human sender name from an RFC 2822 `From` header.

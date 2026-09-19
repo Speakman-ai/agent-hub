@@ -2,7 +2,6 @@
  * Cron tick wrapper — keeps node-cron Runner heartbeats non-blocking.
  *
  * Background
- * ----------
  * node-cron v4 schedules each task on its own `setTimeout`-based heartbeat
  * (see `node_modules/node-cron/dist/esm/scheduler/runner.js`). When the
  * heartbeat fires it:
@@ -25,7 +24,6 @@
  * from this exact pattern.
  *
  * Strategy
- * --------
  * `wrapCronTick(fn)` returns a wrapper that defers `fn` to a fresh
  * macrotask via `setImmediate`. The Runner heartbeat sees the wrapper
  * return synchronously in O(microseconds), so the next heartbeat is

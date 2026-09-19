@@ -6,8 +6,8 @@
  * a private project they do not own (e.g. an Electron banner fires off
  * a `done` event for a private project belonging to someone else).
  *
- * This module provides a pure-ish helper that inspects a broadcast
- * payload and returns the projectId the event is "about", so the
+ * Inspects a broadcast payload and returns the projectId the event is
+ * "about", so the
  * broadcast filter can call `canViewProject` per recipient before
  * sending. Resolution is best-effort:
  *

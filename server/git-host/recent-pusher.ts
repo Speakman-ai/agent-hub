@@ -1,5 +1,5 @@
 /**
- * recent-pusher.ts — correlate a smart-HTTP `git-receive-pack` request's
+ * Correlate a smart-HTTP `git-receive-pack` request's
  * authenticated user to the project's post-receive `onPush` notification.
  *
  * Why this exists: the bare repo's post-receive hook calls back into the

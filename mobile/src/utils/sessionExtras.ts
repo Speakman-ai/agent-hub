@@ -1,10 +1,5 @@
-// Pure helpers for the Chat screen "session extras" — the session summary
-// sheet (linked PR / skills / agent roster) and the View-changes entry point.
-//
-// Lives in src/utils/ (not inside a component) so the normalization rules can
-// be asserted by plain Vitest tests without a React Native renderer. The
-// summary shape mirrors GET /api/sessions/:id/summary (server/routes/
-// sessions.ts):
+// Chat session extras: summary sheet (linked PR / skills / agent roster) and
+// View-changes. Shape mirrors GET /api/sessions/:id/summary:
 //
 //   {
 //     session: { id, name, engine, model, updatedAt },

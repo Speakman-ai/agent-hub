@@ -1,4 +1,4 @@
-// Pure helpers for the Security page's "fix findings automatically" control.
+// Security page "fix findings automatically" control.
 //
 // The server persists a per-project `securityAutoPr` block
 // (`{ enabled?: boolean; autoMerge?: boolean; actorUserId?: string }`). When

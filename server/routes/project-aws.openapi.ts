@@ -10,7 +10,7 @@
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 
-// ─── Reusable building blocks ─────────────────────────────────────
+// Reusable building blocks
 
 const ProjectIdParam = z.object({
   projectId: z.string().openapi({ description: 'Project slug (e.g. `agent-hub`).' }),
@@ -293,7 +293,7 @@ const SsoLoginResponse = registerComponent(
     }),
 );
 
-// ─── Path registrations ───────────────────────────────────────────
+// Path registrations
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },

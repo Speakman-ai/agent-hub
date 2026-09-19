@@ -39,8 +39,7 @@ export function formatBytes(bytes: any): string {
 /**
  * Build a two-button destructive-confirmation dialog: a non-destructive Cancel
  * and a destructive confirm that runs `onConfirm` only when tapped. Extracted
- * so the confirmation contract (rotate / revoke / delete never fire without an
- * explicit confirm tap) is unit-testable without a native Alert runtime.
+ * so rotate / revoke / delete never fire without an explicit confirm tap.
  */
 export function buildConfirm(opts: {
   title: string;

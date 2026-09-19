@@ -1,11 +1,6 @@
 /**
- * Pure helpers for the chat reverse-infinite-scroll loader in App.jsx.
- *
- * The complex parts of "load older messages on scroll-up" are extracted here
- * so they can be unit-tested without a DOM: when to trigger a fetch, how to
- * infer there are more older pages, how to prepend a page without duplicating
- * messages already loaded, and how to keep the viewport anchored after the
- * prepend grows the scroll container.
+ * Chat reverse-infinite-scroll loader: when to fetch, when older pages remain,
+ * prepend without duplicating, and keep the viewport anchored after prepend.
  */
 
 /** Messages fetched per page (initial load + each older page). */

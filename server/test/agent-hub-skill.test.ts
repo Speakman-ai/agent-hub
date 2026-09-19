@@ -74,7 +74,7 @@ const SUB_SKILLS = [
   },
 ] as const;
 
-// --- shared fs helpers --------------------------------------------------
+// Shared fs helpers
 
 function collectMarkdownFiles(dir: string): string[] {
   const out: string[] = [];
@@ -105,9 +105,7 @@ function assertExecutable(file: string, label: string): void {
   );
 }
 
-// =====================================================================
 // 1) Coverage — every agent-facing surface gets a distinctive marker
-// =====================================================================
 
 const REQUIRED_MARKERS: Array<{ surface: string; patterns: RegExp[] }> = [
   {
@@ -183,9 +181,7 @@ describe('agent-hub skill — required surface coverage', () => {
   });
 });
 
-// =====================================================================
 // 2) Distribution — scripts/ executable bits + cpSync preserves modes
-// =====================================================================
 
 const STRUCTURE_DIRS = ['scripts', 'references', 'evals'] as const;
 
@@ -226,9 +222,7 @@ describe('agent-hub skill — distribution integrity', () => {
   });
 });
 
-// =====================================================================
 // 3) Evals — JSON shape + run.mjs --dry-run
-// =====================================================================
 
 const REQUIRED_EVAL_IDS = ['create-ticket', 'move-card', 'search-wiki'];
 const VALID_MATCHER_TYPES = new Set([
@@ -352,9 +346,7 @@ describe('agent-hub skill — evals harness', () => {
   });
 });
 
-// =====================================================================
 // 4) No prod infra — forbidden hostname/bucket/IAM/PM2 strings
-// =====================================================================
 
 const FORBIDDEN_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: 'prod EC2 IP (3.22.232.193)', regex: /3\.22\.232\.193/ },
@@ -409,9 +401,7 @@ describe('agent-hub skill — no production infrastructure leaks', () => {
   });
 });
 
-// =====================================================================
 // 5) SKILL.md shape — frontmatter + body invariants
-// =====================================================================
 
 const MAX_NAME = 64;
 const MAX_DESCRIPTION = 1024;
@@ -557,9 +547,7 @@ describe('agent-hub SKILL.md — discovery rewrite shape', () => {
   });
 });
 
-// =====================================================================
 // 6) Sub-skills — domain split shape + loader smoke + reference layout
-// =====================================================================
 
 // Sub-skills share the core skill's scripts/ tree and are intentionally
 // thinner than the core SKILL.md. They DON'T need to enumerate all the

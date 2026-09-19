@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getToken as getJwtToken } from './auth';
 const STORAGE_KEY = 'agent-hub-connection';
-// ─── Connection config (AsyncStorage-backed) ───────────────────
+// Connection config (AsyncStorage-backed)
 // Mobile app is always remote — connects to an Agent Hub server.
 const DEFAULT_CONFIG: Record<string, any> = {
   remoteUrl: '',
@@ -35,7 +35,7 @@ export async function saveConnectionConfig(config: any) {
   _cachedConfig = { ...DEFAULT_CONFIG, ...cleaned };
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(_cachedConfig));
 }
-// ─── URL resolution ─────────────────────────────────────────────
+// URL resolution
 /** Get API base URL — always remote. */
 export function getApiBaseUrl() {
   if (_cachedConfig?.remoteUrl) {

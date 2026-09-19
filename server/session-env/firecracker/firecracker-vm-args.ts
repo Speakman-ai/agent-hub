@@ -1,9 +1,9 @@
 /**
- * Pure builders for a session microVM: naming, network plan, Firecracker
+ * Builders for a session microVM: naming, network plan, Firecracker
  * boot config, and the `firecracker` / `jailer` argv.
  *
- * Everything here is a pure function of its inputs so the shape of a VM is
- * unit-testable on a laptop with no KVM, no root, and no tap devices — the
+ * Everything here is a function of its inputs so the VM shape can be checked
+ * on a laptop with no KVM, no root, and no tap devices — the
  * same parity seam `finalize/runner-exec-args.ts` gives the CI runner.
  *
  * Addressing: one host bridge carries every session VM, and each VM is

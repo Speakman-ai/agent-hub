@@ -1,5 +1,5 @@
 /**
- * rum-session-store.ts — the session-grain rollup row the RUM dashboard lists
+ * The session-grain rollup row the RUM dashboard lists
  * and filters on (Datadog "session" grain).
  *
  * The segment store (`segment-store.ts`) writes one `rum_segments` row per

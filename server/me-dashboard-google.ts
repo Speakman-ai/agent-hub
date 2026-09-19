@@ -1,5 +1,5 @@
 /**
- * me-dashboard-google.ts — resilient, in-process Google reads for the personal
+ * Resilient, in-process Google reads for the personal
  * dashboard aggregation (`GET /api/me/dashboard`).
  *
  * The dashboard must render for users who have not linked Google at all, so

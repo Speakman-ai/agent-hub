@@ -1,5 +1,5 @@
 /**
- * replay-retention.ts — pure retention-window math for the two-tier replay
+ * Retention-window math for the two-tier replay
  * retention model (Datadog parity).
  *
  * Two tiers:
@@ -17,9 +17,7 @@
  * That "clock starts at enable" rule is why flagging persists an absolute
  * `retained_until` rather than a relative "keep for N months" flag.
  *
- * Pure (no DB, no Express, injectable clock) so the clamp / window math is
- * unit-testable in isolation and used by the flag route
- * (`POST /api/replays/:id/retention`).
+ * Used by the flag route (`POST /api/replays/:id/retention`). Clock is injectable.
  */
 
 /**

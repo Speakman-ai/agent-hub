@@ -6,11 +6,8 @@
  * Assignee, Labels, Epic, Copy, Delete). Each row either carries `options`
  * (a second sheet of choices) or is a `leaf` that fires immediately.
  *
- * `buildCardActions` is pure — it maps a card + board metadata into a
- * serialisable model. Each option carries an `action` descriptor
- * (`{ type, ... }`) that the screen's single dispatcher executes, so the
- * mapping (what's offered, what's checked, which leaves exist) is
- * unit-testable without rendering anything.
+ * `buildCardActions` maps a card + board metadata into a serialisable model.
+ * Each option carries an `action` descriptor the screen's dispatcher executes.
  */
 import { PRIORITIES, priorityMeta, cardLabelList, cardMetaModel, cardShareUrl } from './kanbanCard';
 const cap = (s: any) => (s ? `${s[0].toUpperCase()}${s.slice(1)}` : s);

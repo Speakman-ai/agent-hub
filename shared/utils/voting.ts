@@ -1,17 +1,6 @@
-// Pure voting logic shared by the web and mobile Customer Support Voting tab
-// (SPEC-3: one implementation in shared/, the platform seam injected by each
-// client). A votable item is a `feature_request` support ticket; the server
-// keys one vote per (ticket, voter_key).
-//
-// The only platform-specific piece — persisting the per-device voter token — is
-// NOT here: the web client reads it synchronously from localStorage and the
-// mobile client reads it asynchronously from AsyncStorage. Both build their token
-// helper from the `VOTER_KEY_STORAGE` key and `randomToken()` exported below, so
-// the storage seam is injected rather than forked.
-
 export const VOTER_KEY_STORAGE = 'agent-hub-voter-key';
 
-/** Mint an opaque per-device voter token (no PII). */
+/** Opaque per-device voter token (no PII). Storage is injected by each client. */
 export function randomToken(): string {
   const g: { crypto?: { randomUUID?: () => string } } = globalThis as any;
   if (g.crypto && typeof g.crypto.randomUUID === 'function') {
@@ -30,9 +19,8 @@ export interface VoteTally {
 }
 
 export interface OptimisticVote {
-  // The value to send: the target vote, or null to retract.
+  /** Target vote, or null to retract. */
   value: 1 | -1 | null;
-  // The tally to show immediately, reconciled by the server response / WS event.
   tally: VoteTally;
 }
 
@@ -45,12 +33,7 @@ function toTally(voting: any): VoteTally {
   return { score, upvotes, downvotes, myVote };
 }
 
-/**
- * Compute the optimistic tally for pressing a direction. Pressing the same
- * direction you already voted retracts (value=null); pressing the opposite
- * flips. Counts and score are recomputed from the current tally so the UI
- * updates without waiting for the round-trip.
- */
+/** Optimistic tally for a vote press. Same direction retracts; opposite flips. */
 export function computeOptimisticVote(voting: any, direction: VoteDirection): OptimisticVote {
   const current = toTally(voting);
   const target: 1 | -1 = direction === 'up' ? 1 : -1;
@@ -66,11 +49,7 @@ export function computeOptimisticVote(voting: any, direction: VoteDirection): Op
   };
 }
 
-/**
- * Sort the voting feed: highest score first, ties broken by newest first —
- * matching the server's ORDER BY so a WebSocket-patched row lands in the right
- * place without a refetch.
- */
+/** Highest score first, newest on ties. Matches the server ORDER BY. */
 export function sortVotingItems(list: any[]): any[] {
   return [...list].sort((a: any, b: any) => {
     const sa = Number(a?.voting?.score) || 0;

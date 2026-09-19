@@ -10,7 +10,7 @@
  *   deployment (trigger=push) for the mapped environment, honoring the per-env
  *   concurrency lock; failures logged/swallowed. No deploy.yaml trigger block.
  *
- * This module owns the STORE + CRUD only. The hook path is a sibling card that
+ * STORE + CRUD only. The hook path is a sibling card that
  * calls {@link findMatchingTriggers} to resolve which environments a branch
  * update should deploy.
  */

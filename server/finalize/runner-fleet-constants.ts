@@ -1,5 +1,5 @@
 /**
- * runner-fleet-constants.ts — fleet-sizing defaults shared by the autoscaler and
+ * Fleet-sizing defaults shared by the autoscaler and
  * the Hub-side job dispatcher.
  *
  * Deliberately dependency-free (no AWS SDK, no queue/DB) so `job-runner.ts` can

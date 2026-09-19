@@ -1,5 +1,5 @@
 /**
- * github-connections-store.ts — Per-user GitHub identity persistence.
+ * Per-user GitHub identity persistence.
  *
  * Stores the link between an Agent Hub user (`users.id` in orgs.db) and
  * their GitHub account via user-to-server OAuth. Tokens live in six

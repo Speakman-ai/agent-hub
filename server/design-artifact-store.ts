@@ -14,12 +14,12 @@
  *     data dir: `<dataDir>/design-sessions/<sessionId>/`. This keeps the shared
  *     project checkout clean while still giving the canvas something to render.
  *
- * This module is the single source of truth for that decision so the spawn path
+ * Single source of truth for that decision so the spawn path
  * (chat.ts), the static file mount (session-files-mount.ts), and the artifact
  * listing (session-design-files.ts) all agree on the same root — otherwise the
  * agent could write to one place and the canvas read from another.
  *
- * Pure (path math only, no I/O) so it unit-tests without a DB or filesystem.
+ * Path math only; no I/O.
  */
 import path from 'path';
 import type { Project } from './types.js';

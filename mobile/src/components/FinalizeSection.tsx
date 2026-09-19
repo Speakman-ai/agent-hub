@@ -1,16 +1,10 @@
 /**
- * FinalizeSection — Settings → Finalize panel (React Native).
- *
- * Mirrors the web `FinalizeSettingsSection`. The wizard runs as a
- * normal worktree-backed session in the mobile chat surface; this
- * section is the entry point:
+ * Settings → Finalize panel. Mirrors FinalizeSettingsSection.
+ * Wizard runs as a worktree-backed chat session:
  *   - project picker
- *   - "Set up CI" button → POST /api/projects/:id/finalize/setup-wizard
- *   - on success, open the spawned chat session
- *
- * Pure state helpers live in `mobile/src/utils/finalizeWizard.js` so
- * they can be exercised by the existing pure-JS vitest suite. WS
- * refresh is delivered via `useApp().lastFinalizeWizardEvent`.
+ *   - "Set up CI" → POST /api/projects/:id/finalize/setup-wizard
+ *   - on success, open the spawned session
+ * WS refresh via `useApp().lastFinalizeWizardEvent`.
  */
 import React, { useState, useEffect, useCallback } from 'react';
 import {

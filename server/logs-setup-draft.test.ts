@@ -1,7 +1,7 @@
 /**
  * Unit tests for the logs-instrumentation detection scanner.
  *
- * Pure function over a temp directory — no DB, no spawning, no network.
+ * Function over a temp directory — no DB, no spawning, no network.
  */
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'fs';

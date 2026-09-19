@@ -1,7 +1,5 @@
 /**
- * github-skill-auth-resolve.ts
- *
- * Thin helper that resolves the GitHub token for the github default skill.
+ * Resolves the GitHub token for the github default skill.
  *
  * Resolution order (mirrors scripts/_common.sh):
  *  1. `env.GH_TOKEN`       — Agent Hub injects this at spawn time when the user

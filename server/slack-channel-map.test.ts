@@ -1,5 +1,5 @@
 /**
- * Unit tests for the channel_map dispatch path in server/slack.ts.
+ * Channel_map dispatch path.
  *
  * Covers:
  *   1. dbBotToAccount — parses {label?, agentId?} channel_map shape from JSON

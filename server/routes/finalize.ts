@@ -203,9 +203,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
   const stepLogStore = createFinalizeStepLogStore(deps.config);
   const router = Router();
 
-  // ───────────────────────────────────────────────────────────────
   // GET /api/projects/:projectId/finalize/:runId/reviewer-threads
-  // ───────────────────────────────────────────────────────────────
   router.get(
     '/api/projects/:projectId/finalize/:runId/reviewer-threads',
     (req: Request, res: Response) => {
@@ -231,9 +229,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // GET /api/sessions/:sessionId/finalize-runs/latest
-  // ───────────────────────────────────────────────────────────────
   router.get(
     '/api/sessions/:sessionId/finalize-runs/latest',
     async (req: Request, res: Response) => {
@@ -306,9 +302,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/cards/:cardId/finalize
-  // ───────────────────────────────────────────────────────────────
   router.post(
     '/api/projects/:projectId/cards/:cardId/finalize',
     async (req: Request, res: Response) => {
@@ -377,9 +371,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/sessions/:sessionId/finalize
-  // ───────────────────────────────────────────────────────────────
   router.post(
     '/api/projects/:projectId/sessions/:sessionId/finalize',
     async (req: Request, res: Response) => {
@@ -438,9 +430,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/finalize/:runId/cancel
-  // ───────────────────────────────────────────────────────────────
   router.post('/api/projects/:projectId/finalize/:runId/cancel', (req: Request, res: Response) => {
     const projectId = req.params.projectId as string;
     const runId = req.params.runId as string;
@@ -516,9 +506,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     return res.json({ ok: true, status: 'cancelled' });
   });
 
-  // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/finalize/:runId/push
-  // ───────────────────────────────────────────────────────────────
   router.post(
     '/api/projects/:projectId/finalize/:runId/push',
     async (req: Request, res: Response) => {
@@ -564,9 +552,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // GET /api/projects/:projectId/finalize/:runId/steps/:stepIndex/output
-  // ───────────────────────────────────────────────────────────────
   router.get(
     '/api/projects/:projectId/finalize/:runId/steps/:stepIndex/output',
     async (req: Request, res: Response) => {
@@ -642,9 +628,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/sessions/:sessionId/push-to-github
-  // ───────────────────────────────────────────────────────────────
   router.post(
     '/api/projects/:projectId/sessions/:sessionId/push-to-github',
     async (req: Request, res: Response) => {
@@ -716,9 +700,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // GET /api/projects/:projectId/finalize/metrics
-  // ───────────────────────────────────────────────────────────────
   //
   // Adoption-metrics surface for the Finalize Code Changes dogfood
   // window. Returns aggregated counters and histogram summaries for the
@@ -793,14 +775,12 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     });
   });
 
-  // ───────────────────────────────────────────────────────────────
   // GET /api/projects/:projectId/finalize/:runId/job-resources
   //
   // Per-job resource high-water marks for ONE run: peak host memory and
   // peak CPU each CI job reached (reported by the runner at job end). Powers
   // the inline run/step badges; the aggregate histograms come from
   // /finalize/metrics. One row per (job_name, matrix_key).
-  // ───────────────────────────────────────────────────────────────
   router.get(
     '/api/projects/:projectId/finalize/:runId/job-resources',
     (req: Request, res: Response) => {
@@ -868,9 +848,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // GET /api/sessions/:sessionId/finalize-ship-gate
-  // ───────────────────────────────────────────────────────────────
   router.get('/api/sessions/:sessionId/finalize-ship-gate', async (req: Request, res: Response) => {
     const sessionId = req.params.sessionId as string;
     if (!userCanReadSession(req as AuthenticatedRequest, sessionId)) {

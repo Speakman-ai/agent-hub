@@ -1,8 +1,4 @@
-// replayPlaylist.ts — pure presentation/branching helpers for the replay
-// playlists UI. Kept separate from the components so the add-to-playlist
-// message logic is unit-testable across all branches (mirrors the mobile
-// `addToPlaylistMessage` in mobile/src/components/ReplayPlaylistsView.tsx so the
-// two clients derive identical notice copy).
+// Replay playlist helpers. Keep add-to-playlist copy in sync with mobile.
 
 /** Notification copy after adding a capture to a playlist. `createdName` is set
  *  when a new playlist was created inline (always a fresh add); otherwise the

@@ -1,32 +1,14 @@
 /**
- * captureTodo.ts — the pure capture mapping from a Gmail message/thread or a
- * Google Calendar event into a personal-todo create payload (spec
- * CAPTURE-PROVENANCE).
- *
- * The Gmail / Calendar panes read their data through the owner-scoped
- * `/api/google/*` proxy; this module never touches Google itself. It only shapes
- * already-loaded pane data into the `{ title, notes?, sourceType, sourceId,
- * sourceMeta }` body that `POST /api/me/todos` accepts, stamping the
- * capture-provenance triple so a captured todo can be traced back to (and reopen)
- * the Gmail message / Calendar event it came from.
- *
- * `sourceMeta.deepLink` is the reopen target the Todos pane surfaces as the
- * origin link — a plain public web URL (mail.google.com / the event's htmlLink),
- * never a token.
- *
- * Kept free of React / network so the mapping is unit-testable in isolation and
- * shared 1:1 between the web and mobile clients.
+ * Map a Gmail message or Calendar event into a personal-todo create payload.
+ * `sourceMeta.deepLink` is a public web URL, never a token.
  */
 
 import type { CalendarEventLike } from './calendarEvents.js';
 
-/** Provenance a capture can stamp (the origin subset of the todo source types). */
+/** Origin subset of todo source types. */
 export type CaptureSourceType = 'email' | 'calendar';
 
-/**
- * The create-todo payload a capture produces. Assignable to the
- * `POST /api/me/todos` request body (title + provenance triple).
- */
+/** Create-todo body: title plus provenance triple. */
 export interface CaptureTodoDraft {
   title: string;
   notes?: string;
@@ -49,11 +31,7 @@ function clean(value: string | null | undefined): string {
   return (value || '').trim();
 }
 
-/**
- * Gmail web-UI permalink that opens a thread. Gmail's `#all/<id>` anchor resolves
- * a thread id regardless of which label it lives under. Returns null for a blank
- * id so callers can omit the origin link.
- */
+/** `#all/<id>` opens a Gmail thread regardless of label. Null if blank. */
 export function gmailThreadDeepLink(threadId: string | null | undefined): string | null {
   const id = clean(threadId);
   return id ? `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(id)}` : null;
@@ -68,11 +46,7 @@ export interface GmailCaptureInput {
   snippet?: string | null;
 }
 
-/**
- * Map a Gmail message/thread into a todo draft. Title prefers the subject, then
- * the snippet, then a generic fallback. `sourceId` is the message id when known
- * (more specific), else the thread id. `sourceMeta.deepLink` reopens the thread.
- */
+/** Title: subject, then snippet, then fallback. `sourceId` prefers message id. */
 export function buildEmailTodoDraft(input: GmailCaptureInput): CaptureTodoDraft {
   const subject = clean(input.subject);
   const snippet = clean(input.snippet);
@@ -103,11 +77,7 @@ function eventBoundary(time: CalendarEventLike['start']): string | null {
   return clean(time?.dateTime) || clean(time?.date) || null;
 }
 
-/**
- * Map a Google Calendar event into a todo draft. Title is the event summary (or
- * a generic fallback); location becomes the note. `sourceMeta.deepLink` is the
- * event's own `htmlLink`, which opens it in Google Calendar.
- */
+/** Title from summary; location becomes the note. Deep link is `htmlLink`. */
 export function buildCalendarTodoDraft(event: CalendarEventLike): CaptureTodoDraft {
   const summary = clean(event.summary);
   const location = clean(event.location);
@@ -134,22 +104,12 @@ export function buildCalendarTodoDraft(event: CalendarEventLike): CaptureTodoDra
 }
 
 /**
- * A capture deep link is only ever an `https:` URL on a Google host (Gmail /
- * Calendar), built by `gmailThreadDeepLink` or taken from a Calendar event's
- * `htmlLink`. But `source_meta` is persisted from a create request that accepts
- * an arbitrary `sourceMeta`, so a stored deep link can be attacker-influenced.
- * The origin displays hand this value straight to `<a href>` / `Linking.openURL`,
- * so we harden it here: only surface an `https:` URL whose host is `google.com`
- * or a subdomain of it. This rejects `javascript:`, `data:`, `file:`, arbitrary
- * app schemes, and look-alike hosts (`google.com.evil.com`, `notgoogle.com`).
+ * Only `https://*.google.com` / `google.com`. `source_meta` is attacker-influenced
+ * and is handed to `<a href>` / `Linking.openURL`.
  */
 const SAFE_CAPTURE_DEEP_LINK = /^https:\/\/([a-z0-9-]+\.)*google\.com([/?#]|$)/i;
 
-/**
- * Validate a persisted provenance deep link before a client opens it. Returns
- * the trimmed URL when it is a safe Google https link, else null. Shared by the
- * todo and card origin displays so both clients reject the same unsafe payloads.
- */
+/** Trimmed URL if it is a safe Google https link, else null. */
 export function safeCaptureDeepLink(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -174,10 +134,7 @@ export function todoOriginLabel(todo: TodoOriginLike): string | null {
   }
 }
 
-/**
- * The reopen URL stored on a captured todo, or null when there isn't one or the
- * stored value isn't a safe Google https link (see `safeCaptureDeepLink`).
- */
+/** Reopen URL, or null if missing/unsafe. */
 export function todoOriginDeepLink(todo: TodoOriginLike): string | null {
   return safeCaptureDeepLink(todo.sourceMeta?.deepLink);
 }

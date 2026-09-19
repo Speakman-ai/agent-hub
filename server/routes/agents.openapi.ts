@@ -1,7 +1,7 @@
 /**
  * Zod schemas + OpenAPI registrations for the agents route group.
  *
- * This module is imported for two reasons:
+ * Imported for:
  *
  *   1. `server/routes/agents.ts` imports the exported request schemas and
  *      uses `safeParse(...)` to validate incoming bodies. The handler
@@ -32,7 +32,7 @@
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 
-// ─── Domain component schemas (response shapes) ──────────────────
+// Domain component schemas (response shapes)
 
 export const AgentComponent = registerComponent(
   'Agent',
@@ -119,7 +119,7 @@ export const AgentErrorResponseComponent = registerComponent(
     }),
 );
 
-// ─── Request schemas ──────────────────────────────────────────────
+// Request schemas
 
 /**
  * Browser viewport dimension — finite int in [min, max], or `null` to
@@ -244,7 +244,7 @@ export const UpdateAgentContextRequestSchema = z.object({
   content: z.string({ error: 'content must be a string' }),
 });
 
-// ─── OpenAPI path registrations ───────────────────────────────────
+// OpenAPI path registrations
 
 const agentIdParams = z.object({
   agentId: z.string().openapi({ description: 'Agent ID.' }),

@@ -7,7 +7,7 @@
  * dispatch body reflects the CURRENT pass only), so cross-round recurrence
  * cannot be read back from the DB. The orchestrator accumulates each round's
  * findings in-memory for the life of one run's fix loop and hands the history
- * here. This module is pure — no I/O — so it is unit-testable in isolation.
+ * here. No I/O.
  *
  * A "cluster" is keyed by file path: the reviewer anchors every finding to a
  * file, and the failure mode this targets (one root-cause defect flagged at N

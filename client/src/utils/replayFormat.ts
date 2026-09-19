@@ -1,5 +1,4 @@
-// replayFormat.ts — pure presentation helpers for the Replays Explorer table.
-// Kept framework-free so they're trivially unit-testable.
+// Replay table presentation helpers.
 
 /** Format an rrweb capture span (ms) as a compact `Xm Ys` / `Ys` / `0s` label
  *  (Datadog "Time Spent" column). Negative / non-finite → `0s`. */

@@ -1,5 +1,5 @@
 /**
- * Pure helpers for the mobile Workflows list load.
+ * Mobile Workflows list load.
  *
  * The list view enriches each workflow with its latest run (+ step detail).
  * Doing that naively — one `getWorkflowRuns` and one `getWorkflowRunDetail`

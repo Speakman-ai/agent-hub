@@ -2,8 +2,7 @@
  * Design Studio → design-mode session migration (mobile parity with the web
  * client's utils/designRedirect.js). Once a standalone design has been imported
  * (server sets `designs.imported_session_id`), tapping it should open the
- * design-mode session instead of the read-only standalone canvas. Pure so it
- * unit-tests without React Navigation.
+ * design-mode session instead of the read-only standalone canvas.
  *
  * Returns `{ sessionId }` when the design has been migrated, otherwise null.
  */

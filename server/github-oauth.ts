@@ -1,5 +1,5 @@
 /**
- * github-oauth.ts — GitHub user-to-server OAuth for "Sign in with GitHub".
+ * GitHub user-to-server OAuth for "Sign in with GitHub".
  *
  * Issues user tokens for push, PR list, merge, and comment flows. PAT
  * connect is an alternative that does not require OAuth App credentials.

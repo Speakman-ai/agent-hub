@@ -1,5 +1,5 @@
 /**
- * pre-finalize-background-shells.ts — wait for a session's Hub-owned
+ * Wait for a session's Hub-owned
  * background shells before Finalize touches the worktree, and keep the
  * watch loop from waking a new agent process while that happens.
  *

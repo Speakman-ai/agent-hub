@@ -1,5 +1,5 @@
 /**
- * run-summary-llm.ts — LLM narrative for the end-of-run Finalize summary.
+ * LLM narrative for the end-of-run Finalize summary.
  *
  * The deterministic half of the summary (commit subjects, diff stat, reviewer
  * findings) is always available. What a human actually wants on top of that is

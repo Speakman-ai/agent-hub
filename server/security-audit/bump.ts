@@ -1,12 +1,9 @@
 /**
- * bump.ts — pure helpers that turn vulnerable findings into a concrete
- * "bump this package to its fixed version" edit of an npm `package-lock.json`
- * (and the sibling `package.json` range), plus the planner that groups raw
- * findings into one bump per (manifest, package, installed-version).
- *
- * Everything here is a pure string/JSON transform — no git, no network, no
- * disk — so the whole bump surface is unit-testable in isolation. The git
- * write + PR open lives in {@link ./auto-pr.ts}.
+ * Turn vulnerable findings into a "bump this package to its fixed version"
+ * edit of an npm `package-lock.json` (and the sibling `package.json` range),
+ * plus the planner that groups raw findings into one bump per
+ * (manifest, package, installed-version). Git write + PR open lives in
+ * {@link ./auto-pr.ts}.
  *
  * Lockfile completeness: a correct npm lockfile entry carries the target
  * version's `resolved` (tarball URL) + `integrity` (SRI hash). Those can't be

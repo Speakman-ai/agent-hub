@@ -1,5 +1,5 @@
 /**
- * finalize-reaper.ts — periodic safety-net cleanup for Finalize DinD runners.
+ * Periodic safety-net cleanup for Finalize DinD runners.
  *
  * Per-job teardown (`stopJobContainer`) already `docker rm -f -v`s the runner
  * and removes its named graph volume. But when a run is HARD-killed — OOM,
@@ -15,8 +15,7 @@
  *      container (also catches the historical named-volume leak).
  *
  * Active runs (those with `ended_at IS NULL`) and their containers/volumes are
- * never touched. Docker ops are injected so the tick is unit-testable without
- * shelling out.
+ * never touched. Docker ops are injected.
  */
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -47,7 +46,7 @@ export interface FinalizeContainerInfo {
   createdAtMs: number | null;
 }
 
-/** Docker operations, injectable so the reaper can be unit-tested. */
+/** Docker operations; injectable. */
 export interface FinalizeReaperDocker {
   /** `docker ps -a` filtered to finalize runner containers. */
   listFinalizeContainers(): Promise<FinalizeContainerInfo[]>;

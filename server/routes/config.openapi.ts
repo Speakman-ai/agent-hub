@@ -36,7 +36,7 @@ const ErrorResponse = registerComponent(
     .openapi({ description: 'Error envelope for config / github routes.' }),
 );
 
-// ─── Component schemas ───────────────────────────────────────────
+// Component schemas
 
 export const AppConfigComponent = registerComponent(
   'AppConfig',
@@ -321,7 +321,7 @@ export const ImportResultComponent = registerComponent(
     }),
 );
 
-// ─── Request schemas ─────────────────────────────────────────────
+// Request schemas
 
 export const PatchConfigRequestSchema = z
   .object({
@@ -486,7 +486,7 @@ const errorResponse = (description: string) => ({
   content: jsonContent(ErrorResponse),
 });
 
-// ─── Path registrations ──────────────────────────────────────────
+// Path registrations
 
 registerPath({
   method: 'get',
@@ -654,7 +654,7 @@ registerPath({
   },
 });
 
-// ─── Google OAuth app (server-global, Admin/Owner-gated) ──────────
+// Google OAuth app (server-global, Admin/Owner-gated)
 
 registerPath({
   method: 'get',
@@ -709,7 +709,7 @@ registerPath({
   },
 });
 
-// ─── GitHub App (server-global, Admin/Owner-gated) ────────────────
+// GitHub App (server-global, Admin/Owner-gated)
 
 registerPath({
   method: 'get',
@@ -767,7 +767,7 @@ registerPath({
   },
 });
 
-// ─── DB instrumentation ──────────────────────────────────────────
+// DB instrumentation
 
 const DbStatsComponent = registerComponent(
   'DbInstrumentationStats',
@@ -828,7 +828,7 @@ registerPath({
   },
 });
 
-// ─── GitHub CLI ──────────────────────────────────────────────────
+// GitHub CLI
 
 registerPath({
   method: 'get',
@@ -870,7 +870,7 @@ registerPath({
   },
 });
 
-// ─── Project + config import/export ──────────────────────────────
+// Project + config import/export
 
 registerPath({
   method: 'get',

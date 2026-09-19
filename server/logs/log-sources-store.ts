@@ -199,7 +199,7 @@ function appendAudit(opts: {
     );
 }
 
-// ── Reads ──────────────────────────────────────────────────────────────────
+// Reads
 
 /** All sources for a project, newest-first. Never includes token material. */
 export function listLogSources(projectId: string): LogSourceRecord[] {
@@ -259,7 +259,7 @@ export function listLogSourceAudit(
   }));
 }
 
-// ── Ingest identity resolution ──────────────────────────────────────────────
+// Ingest identity resolution
 
 /**
  * Resolve a presented ingest token to its (project, source) identity.
@@ -297,7 +297,7 @@ export function resolveLogSourceByToken(token: string): ResolvedLogSource | null
   };
 }
 
-// ── Writes ───────────────────────────────────────────────────────────────────
+// Writes
 
 export interface CreateLogSourceInput {
   projectId: string;

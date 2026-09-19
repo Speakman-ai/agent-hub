@@ -1,6 +1,5 @@
 /**
- * Tests for server/session-ownership.ts — the helper layer that
- * gates session reads/mutations to the user that created them.
+ * Gates session reads/mutations to the user that created them.
  *
  * The module reads through the shared `getDb()` + `listUsers()`
  * surfaces, so we drive it via real DB operations against the test

@@ -2,7 +2,7 @@
  * Zod schemas + OpenAPI registrations for the sessions / messages route
  * group.
  *
- * This module is imported for two reasons:
+ * Imported for:
  *
  *   1. `server/routes/sessions.ts` imports the exported request schemas
  *      and uses `safeParse(...)` to validate incoming bodies. The
@@ -41,7 +41,7 @@ import { MAX_FOLLOW_UP_PROMPT_LENGTH } from '../session-follow-up.js';
 /** Shared enum for session_mode across request/response schemas. */
 const SessionModeSchema = z.enum(SESSION_MODES);
 
-// ─── Domain component schemas (response shapes) ──────────────────
+// Domain component schemas (response shapes)
 
 export const SessionComponent = registerComponent(
   'Session',
@@ -259,7 +259,7 @@ export const SessionErrorResponseComponent = registerComponent(
     }),
 );
 
-// ─── Request schemas ──────────────────────────────────────────────
+// Request schemas
 
 /**
  * Boolean toggle body shared by /ask-mode, /react-loop, /worktree.
@@ -561,7 +561,7 @@ export const FollowUpSessionRequestSchema = z.object({
   }),
 });
 
-// ─── OpenAPI path registrations ───────────────────────────────────
+// OpenAPI path registrations
 
 const agentIdParams = z.object({
   agentId: z.string().openapi({ description: 'Agent ID.' }),
@@ -1492,7 +1492,7 @@ registerPath({
   },
 });
 
-// ─── Session code-diff pane ──────────────────────────────────────────
+// Session code-diff pane
 
 const ChangeStatusSchema = z.enum([
   'added',

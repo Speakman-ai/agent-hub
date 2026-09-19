@@ -105,7 +105,7 @@ describe('translateContainerPathToHost', () => {
     expect(r.skippedReason).toMatch(/empty container path/);
   });
 
-  // ─── Workspaces-root translation ─────────────────────────────────────
+  // Workspaces-root translation
   // Card 9b868252: per-session worktrees must be host-visible for compose
   // previews launched from worktrees (the iframe a chat session opens).
   // Before this change the worktree case returned null and the daemon

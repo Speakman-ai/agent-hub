@@ -1,5 +1,5 @@
 /**
- * merge.ts — worktree-free merge of a native PR into its base branch,
+ * Worktree-free merge of a native PR into its base branch,
  * performed directly in the hosted bare repo:
  *
  *   1. `git merge-tree --write-tree` — dry-run merge → tree OID or
@@ -10,7 +10,7 @@
  *      a CAS race the whole sequence re-runs once from step 1.
  *
  * No scratch clones: atomic (the CAS either lands or doesn't), no
- * cleanup path, and trivially testable against fixture bare repos.
+ * cleanup path. Tests use fixture bare repos.
  */
 
 import { execFile } from 'child_process';

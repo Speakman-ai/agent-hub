@@ -1,6 +1,4 @@
-// Pure helpers for the Settings → Agents tab (mobile). Kept in src/utils/
-// so they're covered by the existing vitest config
-// (include: ['src/utils/**/*.test.js']) without importing react-native.
+// Settings → Agents tab (mobile).
 /**
  * Group the flat `/api/agents` list (each row enriched with `projectId`)
  * by project. Projects with zero agents are still returned so the user can
@@ -103,7 +101,7 @@ export function buildUpdateAgentPayload(original: any, edit: any) {
   }
   return payload;
 }
-// ─── Per-agent "Dev" flag (autonomous-ticket eligibility) ────────────────────
+// Per-agent "Dev" flag (autonomous-ticket eligibility)
 // Mirror of server/agent-autonomy.ts — keep in sync with the server + web util.
 // `skill-builder` is a conversational coach (not a code-shipping recipient), so
 // its Dev toggle is locked OFF like docs/reviewer.

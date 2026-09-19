@@ -112,7 +112,7 @@ export default function createSlackRoutes(deps: RouteDeps) {
   const { stmts, allAgents } = deps;
   const router = Router();
 
-  // ── List bots ──────────────────────────────────────────────────────────────
+  // List bots
   router.get('/api/slack/bots', (_req: Request, res: Response) => {
     try {
       const bots = stmts.listSlackBots.all() as SlackBotRow[];
@@ -122,7 +122,7 @@ export default function createSlackRoutes(deps: RouteDeps) {
     }
   });
 
-  // ── Create bot ─────────────────────────────────────────────────────────────
+  // Create bot
   router.post('/api/slack/bots', requireRole('Admin'), async (req: Request, res: Response) => {
     const { name, bot_token, app_token, agent_id, channel_map = {}, enabled = true } = req.body;
     if (!name || !bot_token || !app_token || !agent_id) {
@@ -152,7 +152,7 @@ export default function createSlackRoutes(deps: RouteDeps) {
     }
   });
 
-  // ── Update bot ─────────────────────────────────────────────────────────────
+  // Update bot
   router.put('/api/slack/bots/:id', requireRole('Admin'), async (req: Request, res: Response) => {
     const { id } = req.params;
     const existing = stmts.getSlackBot.get(id) as SlackBotRow | undefined;
@@ -191,7 +191,7 @@ export default function createSlackRoutes(deps: RouteDeps) {
     }
   });
 
-  // ── Toggle enabled ─────────────────────────────────────────────────────────
+  // Toggle enabled
   router.post(
     '/api/slack/bots/:id/toggle',
     requireRole('Admin'),
@@ -219,7 +219,7 @@ export default function createSlackRoutes(deps: RouteDeps) {
     },
   );
 
-  // ── Delete bot ─────────────────────────────────────────────────────────────
+  // Delete bot
   router.delete(
     '/api/slack/bots/:id',
     requireRole('Admin'),
@@ -238,7 +238,7 @@ export default function createSlackRoutes(deps: RouteDeps) {
     },
   );
 
-  // ── Test connection ────────────────────────────────────────────────────────
+  // Test connection
   // Validates the bot token by calling Slack auth.test — does NOT require the
   // full Bolt app startup. Can be called with either the bot's id (uses stored
   // token) or with raw tokens in the body (for new-bot wizard before saving).
@@ -289,7 +289,7 @@ export default function createSlackRoutes(deps: RouteDeps) {
     },
   );
 
-  // ── Test with raw tokens (for wizard pre-save) ─────────────────────────────
+  // Test with raw tokens (for wizard pre-save)
   router.post('/api/slack/test-tokens', async (req: Request, res: Response) => {
     const { bot_token } = req.body;
     if (!bot_token) return res.status(400).json({ error: 'bot_token is required' });
@@ -326,7 +326,7 @@ export default function createSlackRoutes(deps: RouteDeps) {
     }
   });
 
-  // ── Existing endpoints (kept here for co-location) ──────────────────────────
+  // Existing endpoints (kept here for co-location)
 
   router.get('/api/slack/status', (_req: Request, res: Response) => {
     res.json(getSlackStatus());

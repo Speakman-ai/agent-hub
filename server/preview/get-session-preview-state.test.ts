@@ -1,6 +1,5 @@
 /**
- * Unit tests for `get-session-preview-state.ts` — the resolver behind
- * `GET /api/sessions/:id/preview/state`.
+ * Resolver behind `GET /api/sessions/:id/preview/state`.
  *
  * No DB, no runtime — we hand the resolver a tiny stub that satisfies
  * `SessionPreviewStateRuntime`. The contract under test is: pick the

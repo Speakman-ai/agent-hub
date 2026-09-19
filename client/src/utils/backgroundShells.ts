@@ -9,9 +9,6 @@
  * snapshot matters more than it looks — a shell can run for hours, so a tab
  * sleep or Wi-Fi switch will drop every update in between, and without a
  * replace-the-world message the indicator would be stuck on stale state.
- *
- * Kept as pure functions so the reducer logic is unit-testable without
- * mounting the app.
  */
 
 export type BackgroundShellStatus = 'running' | 'exited' | 'failed' | 'stopped' | 'timed_out';

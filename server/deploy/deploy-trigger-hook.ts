@@ -1,5 +1,5 @@
 /**
- * deploy-trigger-hook.ts — evaluate operator-configured deploy triggers when a
+ * Evaluate operator-configured deploy triggers when a
  * Hub-hosted repo branch moves, and enqueue the mapped environment's deployment.
  *
  * Locked epic decision `deploy-triggers`:

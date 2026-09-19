@@ -19,7 +19,7 @@
  *     can't know: where to write artifacts (`design/`), the linked-project
  *     design-system docs, and a snapshot of the files already produced.
  *
- * Pure except for filesystem reads, so it unit-tests against a temp worktree.
+ * Filesystem reads only (no DB).
  */
 import {
   readFileSync,
@@ -57,7 +57,7 @@ export const DESIGN_SKILL_ID = 'design';
  * loads these by id every applicable turn so the SKILL.md body is always present
  * alongside the design-mode preamble.
  *
- * Pure: derives only from `session_mode` via the canonical `isDesignModeActive`
+ * Derives only from `session_mode` via the canonical `isDesignModeActive`
  * (the single normalization path — no second looser lowercase/trim check).
  */
 /** Bundled skills force-loaded in skill-builder mode. */

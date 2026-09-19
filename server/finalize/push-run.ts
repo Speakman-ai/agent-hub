@@ -1,8 +1,8 @@
 /**
- * push-run.ts — explicit human-confirmed git push + PR open for Finalize.
+ * Explicit human-confirmed git push + PR open for Finalize.
  *
  * After rebase, review, and ci.yaml steps pass, the orchestrator parks the
- * run in `ready_to_push`. This module performs phase 8 only when the
+ * run in `ready_to_push`. Performs phase 8 only when the
  * operator clicks **Push to GitHub**.
  */
 import { v4 as uuidv4 } from 'uuid';

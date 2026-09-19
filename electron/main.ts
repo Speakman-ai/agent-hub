@@ -62,7 +62,7 @@ interface RemoteOrg {
 let mainWindow: BrowserWindow | null = null;
 let serverProcess: ChildProcess | null = null;
 
-// ─── Connection config (file-backed for Electron) ───────────────
+// Connection config (file-backed for Electron)
 
 const CONNECTION_CONFIG_PATH = path.join(USER_DATA, 'connection.json');
 const REMOTE_ORGS_PATH = path.join(USER_DATA, 'remote-orgs.json');
@@ -142,7 +142,7 @@ function isAuthTokenValid(record: AuthTokenRecord | null | undefined) {
   return true;
 }
 
-// ─── Remote orgs (file-backed for Electron, survives origin changes) ──
+// Remote orgs (file-backed for Electron, survives origin changes)
 
 function readRemoteOrgs() {
   try {
@@ -192,7 +192,7 @@ function isRemoteMode() {
   return config.mode === 'remote' && !!config.remoteUrl;
 }
 
-// ─── Server boot ─────────────────────────────────────────────────
+// Server boot
 
 function startServer(): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -291,7 +291,7 @@ function startServer(): Promise<void> {
   });
 }
 
-// ─── Window ──────────────────────────────────────────────────────
+// Window
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -388,7 +388,7 @@ function createWindow() {
   });
 }
 
-// ─── IPC handlers ────────────────────────────────────────────────
+// IPC handlers
 
 // Connection config IPC — file-backed persistence for remote mode
 ipcMain.on('get-connection-config', (event) => {
@@ -511,7 +511,7 @@ ipcMain.handle('design-pdf:save', async (event, { defaultFilename, data }) => {
   });
 });
 
-// ─── Preview Pane — Detached Window ───────────────────────────────
+// Preview Pane — Detached Window
 //
 // Renderer can ask the main process to open the session preview URL in
 // a dedicated, sandboxed BrowserWindow so the running app can sit on a
@@ -667,14 +667,14 @@ ipcMain.handle('agenthub-fetch-health', async (_event, rawUrl) => {
   }
 });
 
-// ─── Notification IPC handlers ───────────────────────────────────
+// Notification IPC handlers
 
 const notifHandlers = createNotificationHandlers(() => mainWindow);
 
 ipcMain.on('show-notification', notifHandlers.handleShowNotification);
 ipcMain.on('get-notification-support', notifHandlers.handleGetSupport);
 
-// ─── App menu ────────────────────────────────────────────────────
+// App menu
 
 function buildMenu() {
   const template: MenuItemConstructorOptions[] = [
@@ -717,7 +717,7 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-// ─── Lifecycle ───────────────────────────────────────────────────
+// Lifecycle
 
 app.whenReady().then(async () => {
   buildMenu();

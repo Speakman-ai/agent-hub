@@ -37,7 +37,7 @@ class MockWebSocket {
     this.onclose?.();
   }
 
-  // ── test drivers ────────────────────────────────────────────────
+  // test drivers
   simulateOpen() {
     this.readyState = MockWebSocket.OPEN;
     this.onopen?.();

@@ -1,14 +1,5 @@
 /**
- * skillCredentialForm.ts — pure helpers for the per-user skill-credential entry
- * form, shared by the web client (`SkillCard` in SkillsPage) and mobile
- * (`SkillCredentialSection` in SkillsScreen). Both surfaces render the same
- * schema-driven form: one input per declared credential spec, a saved-value
- * masked preview, required-field validation, and a secret/plaintext input mode.
- * Keeping the pure decisions here means the two clients cannot drift on which
- * saves are blocked or which inputs are masked.
- *
- * Everything here is PURE (schema + rows in → decision out) so it is trivially
- * unit-testable without React, a DB, or the network.
+ * Per-user skill-credential form helpers: required-field validation and masked vs plaintext.
  */
 
 /** A single declared credential from a skill's `credentials:` frontmatter. */
@@ -39,21 +30,12 @@ export function findCredentialRow(
   return rows.find((r) => r?.key_name === keyName);
 }
 
-/**
- * A secret-type credential (`secret` or `json`) is entered through a masked
- * input (web `type="password"`, mobile `secureTextEntry`); everything else is
- * plain text.
- */
+/** Mask `secret`/`json`; everything else is plain text. */
 export function isSecretCredential(spec: SkillCredentialSpec | null | undefined): boolean {
   return spec?.type === 'secret' || spec?.type === 'json';
 }
 
-/**
- * Validate a pending input value for a spec. Returns an error string when a
- * required credential is left blank (whitespace-only counts as blank),
- * otherwise `null`. Mirrors the web `saveCredential` guard so both clients
- * block empty required saves identically.
- */
+/** Error string if a required credential is blank (whitespace counts). */
 export function validateCredentialValue(
   spec: SkillCredentialSpec | null | undefined,
   value: unknown,

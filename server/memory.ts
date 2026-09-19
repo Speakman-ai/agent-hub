@@ -196,7 +196,7 @@ export function getMemoryData(workspace: string | undefined): MemoryData {
   return { memory, dailyNotes };
 }
 
-// ─── Memory Reconciliation ─────────────────────────────────────────
+// Memory Reconciliation
 
 let reconcileLock: Promise<unknown> = Promise.resolve();
 

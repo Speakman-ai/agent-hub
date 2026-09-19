@@ -1,5 +1,5 @@
 /**
- * rum-events-db.test.ts — the dedicated RUM ingest event DB (`rum.db`).
+ * The dedicated RUM ingest event DB (`rum.db`).
  *
  * Regression guard for spec hot-write-isolation: the segment-ingest flood
  * tables (`rum_segments` + `rum_sessions`) must live in their own SQLite file

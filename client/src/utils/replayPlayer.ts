@@ -1,5 +1,4 @@
-// Sandboxed rrweb-player playback — pure helpers (no JSX, no `?raw` imports) so
-// they stay unit-testable without the bundler. ReplayPlayerModal imports the
+// Sandboxed rrweb-player playback (no JSX, no `?raw` imports). ReplayPlayerModal imports the
 // rrweb-player UMD + CSS as raw strings, builds the player document with
 // `buildReplayPlayerSrcDoc`, and loads it via `buildReplayPlayerDataUrl`.
 //
@@ -278,7 +277,7 @@ export async function streamReplayEvents({
   return total;
 }
 
-// ── Session-grouped multi-view playback (segmented captures) ──────────────
+// Session-grouped multi-view playback (segmented captures)
 // A continuous (segmented) capture is stored as per-segment objects grouped
 // session → view → segment (see server/replays/segment-store.ts). The player
 // fetches the session manifest, then pulls each segment's events in playback

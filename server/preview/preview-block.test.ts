@@ -28,7 +28,7 @@ import {
 } from './preview-block.js';
 import type { Project } from '../types.js';
 
-// ─── Test doubles ──────────────────────────────────────────────────────
+// Test doubles
 
 function recordBroadcast(): {
   broadcast: (e: Record<string, unknown>) => void;
@@ -140,7 +140,7 @@ function makeDeps(over: Partial<PreviewHandlerDeps> = {}): PreviewHandlerDeps & 
   return Object.assign(deps, { events });
 }
 
-// ─── Parser tests ──────────────────────────────────────────────────────
+// Parser tests
 
 describe('detectPreviewBlock — happy paths', () => {
   it('extracts a well-formed block with all fields', () => {
@@ -270,7 +270,7 @@ describe('detectPreviewBlock — malformed payloads produce reasons, not crashes
   });
 });
 
-// ─── Handler tests ─────────────────────────────────────────────────────
+// Handler tests
 
 describe('handlePreviewBlock — declining and failing are visible on the log', () => {
   // Every decline and the early failure used to communicate over the session's

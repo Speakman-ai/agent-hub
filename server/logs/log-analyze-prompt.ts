@@ -14,7 +14,7 @@
  * The `contextBlock` argument already carries the untrusted-data safety preamble
  * and BEGIN/END fences, so the trusted task section is appended OUTSIDE that
  * block — the only instructions the agent may act on live here, never in the
- * log text. Pure and IO-free so the prompt contract is unit-testable.
+ * log text. IO-free.
  */
 
 export interface AnalyzeSessionContextInput {

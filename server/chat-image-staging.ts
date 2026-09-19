@@ -1,5 +1,5 @@
 /**
- * chat-image-staging.ts — resolve a chat attachment to a readable host path.
+ * Resolve a chat attachment to a readable host path.
  *
  * Attachments are uploaded through `/api/upload` and stored by the configured
  * `UploadStore`: the local uploads dir on single-host installs, or S3 (an

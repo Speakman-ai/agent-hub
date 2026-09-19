@@ -21,9 +21,7 @@ import {
 } from '../../utils/deployTriggers';
 
 /**
- * Presentational body for the per-environment deploy-triggers editor. Pure and
- * props-driven so it can be render-tested (react-dom/server) without effects or
- * a live API — mirrors the CalendarAgendaContent / GoogleConnectionContent split.
+ * Per-environment deploy-triggers editor body.
  */
 export function EnvironmentTriggersPanelContent({
   environmentName,

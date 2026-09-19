@@ -13,7 +13,7 @@ import {
   formatZodError,
 } from '../openapi/schemas/auth.js';
 
-// ── OpenAPI registrations (Gemini CLI auth) ────────────────────────────
+// OpenAPI registrations (Gemini CLI auth)
 //
 // These run at module load time so the generator picks them up without
 // needing the router to be instantiated.
@@ -173,7 +173,7 @@ export default function createGeminiAuthRoutes(deps: RouteDeps): Router {
   const { config } = deps;
   const router = Router();
 
-  // ── Status ───────────────────────────────────────────────────────────
+  // Status
   router.get('/api/config/gemini-auth', (_req: Request, res: Response) => {
     const apiKeyConfigured = !!(config.geminiApiKey || process.env.GEMINI_API_KEY);
     const apiKeySource = process.env.GEMINI_API_KEY
@@ -201,7 +201,7 @@ export default function createGeminiAuthRoutes(deps: RouteDeps): Router {
     });
   });
 
-  // ── Set / clear API key ──────────────────────────────────────────────
+  // Set / clear API key
   router.post('/api/config/gemini-auth/api-key', (req: Request, res: Response) => {
     const parsed = ApiKeyOnlyBody.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -235,7 +235,7 @@ export default function createGeminiAuthRoutes(deps: RouteDeps): Router {
     });
   });
 
-  // ── Validate API key against the CLI ─────────────────────────────────
+  // Validate API key against the CLI
   router.post('/api/config/gemini-auth/validate-key', async (req: Request, res: Response) => {
     const parsed = ApiKeyRequiredBody.safeParse(req.body ?? {});
     if (!parsed.success) {
@@ -274,7 +274,7 @@ export default function createGeminiAuthRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ── Clear / logout ───────────────────────────────────────────────────
+  // Clear / logout
   router.delete('/api/config/gemini-auth', (_req: Request, res: Response) => {
     const configPath = path.join(config.dataDir, 'config.json');
     let fileConfig: Record<string, unknown> = {};

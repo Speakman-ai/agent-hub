@@ -4,8 +4,7 @@
  * switches sessions while the fetch is in flight, the incoming response is
  * discarded instead of overwriting the new session's messages.
  *
- * Extracted from AppContext so it can be unit-tested without pulling in
- * React, Expo, or AsyncStorage.
+ * Extracted from AppContext so tests skip React, Expo, and AsyncStorage.
  *
  * @param {object} deps
  * @param {(sessionId: string) => Promise<any[]>} deps.fetchMessages

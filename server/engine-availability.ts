@@ -8,7 +8,7 @@
 // it is host-configured (it backs wiki embeddings + the Gemini CLI), so its
 // availability reads the host `geminiApiKey` / `GEMINI_API_KEY`.
 //
-// This module is read-only with respect to credentials — it never writes
+// Read-only with respect to credentials; never writes
 // auth files.
 
 import { existsSync } from 'fs';

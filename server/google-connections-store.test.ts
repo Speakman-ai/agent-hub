@@ -74,7 +74,7 @@ describe('google-connections-store — CRUD', () => {
     expect(conn!.grantedScopes).toEqual(SCOPES);
   });
 
-  // ── Encrypt round-trip ──────────────────────────────────────────
+  // Encrypt round-trip
   it('encrypts tokens at rest — raw columns hold ciphertext, not plaintext', () => {
     const user = createUser({ username: 'alice', passwordHash: 'x' });
     upsertGoogleConnection({
@@ -221,7 +221,7 @@ describe('getActiveAccessToken — transparent refresh', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  // ── Refresh-window ──────────────────────────────────────────────
+  // Refresh-window
   it('refreshes inside the safety window and persists the rotated access token', async () => {
     const user = createUser({ username: 'alice', passwordHash: 'x' });
     upsertGoogleConnection({
@@ -328,7 +328,7 @@ describe('getActiveAccessToken — transparent refresh', () => {
     warn.mockRestore();
   });
 
-  // ── Revoke clears the row ───────────────────────────────────────
+  // Revoke clears the row
   it('clears the row on invalid_grant (revoked token)', async () => {
     const user = createUser({ username: 'alice', passwordHash: 'x' });
     upsertGoogleConnection({

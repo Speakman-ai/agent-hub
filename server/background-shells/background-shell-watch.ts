@@ -7,15 +7,14 @@
  * looks like it crashed mid-thought.
  *
  * `BackgroundShellRuntime` already owns those processes in the long-lived Hub
- * process and knows the exact moment each one goes terminal. This module is
- * the policy layer on top: given what just finished and what the session is
- * doing right now, decide whether to wake it, wait, or stay quiet — and build
- * the text of the wake.
+ * process and knows the exact moment each one goes terminal. Policy on top:
+ * given what just finished and what the session is doing right now, decide
+ * whether to wake it, wait, or stay quiet, and build the text of the wake.
  *
  * Deliberately IO-free. Every decision here is a pure function of its input so
  * the interesting cases (a busy session, a burst of simultaneous completions,
- * a shell that finishes instantly and could ping-pong) are unit-testable
- * without a database, a process, or a clock.
+ * a shell that finishes instantly and could ping-pong) need no database,
+ * process, or clock.
  */
 
 import {

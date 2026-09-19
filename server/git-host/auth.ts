@@ -1,5 +1,5 @@
 /**
- * auth.ts — self-contained authentication for the git smart-HTTP routes.
+ * Self-contained authentication for the git smart-HTTP routes.
  *
  * `/git/*` is mounted BEFORE `express.json` and outside `/api/*`, so the
  * main `authMiddleware` (server/auth.ts:213 only gates `/api/*`) never

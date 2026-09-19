@@ -105,7 +105,6 @@ describe('SSM deploy workflows', () => {
         }
       });
 
-      // ---------------------------------------------------------------------
       // Privilege-drop wrapper: setpriv (NOT sudo, NOT runuser).
       //
       // Both `sudo -u agenthub -H bash -l` (PR #358) and `runuser -u agenthub
@@ -122,7 +121,6 @@ describe('SSM deploy workflows', () => {
       // Accept either `bash -l` (legacy) or `bash --noprofile --norc`
       // (hypothesis-5 in deploy-dev.yml — avoids ~/.bash_profile and
       // ~/.bash_logout teardown leaking exit 1 under errexit).
-      // ---------------------------------------------------------------------
       if (/aws ssm send-command/.test(content)) {
         it('uses setpriv (PAM-free) to drop privileges to agenthub', () => {
           // Matches `setpriv --reuid agenthub --regid agenthub` with any
@@ -151,7 +149,6 @@ describe('SSM deploy workflows', () => {
           ).toBe(false);
         });
 
-        // -------------------------------------------------------------------
         // File-based exec (NOT a nested heredoc fed via stdin).
         //
         // Even with setpriv (PAM-free), run 24589322286 surfaced the same
@@ -167,7 +164,6 @@ describe('SSM deploy workflows', () => {
         // <file>`. The `exec` replaces dash, so amazon-ssm-agent waits on
         // bash's PID directly and the exit code propagates with zero
         // wrapper layers.
-        // -------------------------------------------------------------------
         it('materializes the inner script to a tempfile (no nested bash heredoc)', () => {
           // The old broken form was `bash -l <<'BASH'` (or the same with
           // --noprofile --norc). The new form must pass a positional file

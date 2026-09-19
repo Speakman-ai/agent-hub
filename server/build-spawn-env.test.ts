@@ -351,10 +351,8 @@ describe('buildSpawnEnv — per-user Cursor / Codex (per-account) + global Gemin
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // extraEnv gate — uses production `mergeAllowlistedExtraEnv` from
 // `extra-env-allowlist.ts` (same path as `chat.ts`).
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('mergeAllowlistedExtraEnv — spawn env integration', () => {
   it('allowlisted key (DEV_HUB_API_KEY) is accepted when spawnEnv does not have it', () => {
@@ -383,13 +381,11 @@ describe('mergeAllowlistedExtraEnv — spawn env integration', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // AGENT_HUB_API_KEY + AGENT_HUB_DATA_DIR injection — every spawn site
 // (heartbeat, cron, room-chat, slack, design-chat, one-shot, …)
 // goes through `buildSpawnEnv`, so config rotations propagate uniformly
 // instead of only through the chat.ts spawn path. See server/spawn-creds-file.ts
 // for the long-running-chat recovery path that complements this.
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('buildSpawnEnv — AGENT_HUB_API_KEY injection', () => {
   it('injects AGENT_HUB_API_KEY from cfg.apiKey when present', () => {
@@ -425,12 +421,10 @@ describe('buildSpawnEnv — AGENT_HUB_API_KEY injection', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Per-user HOME pin — Cursor/Codex/Gemini CLI caches under `.cursor`,
 // `.codex`, etc. are isolated per Hub user when the spawn carries a
 // userId. See server/per-user-home.ts for the directory contract and
 // the "Per-user browser-button auth for Cursor & Codex" card.
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('buildSpawnEnv — per-user HOME pin', () => {
   let tmpDataDir: string;
@@ -519,14 +513,12 @@ describe('buildSpawnEnv — per-user HOME pin', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // P4 — Per-user CODEX_HOME injection. When a user has completed a per-user
 // device login via POST /api/auth/me/codex-auth/login, an auth.json lands in
 // <dataDir>/per-user-cli-home/codex/<userId>. Subsequent spawns owned by that
 // user must point the codex CLI at the same path via CODEX_HOME — otherwise
 // codex falls back to ~/.codex (the per-user HOME's .codex, which is empty)
 // and re-prompts for login.
-// ─────────────────────────────────────────────────────────────────────────────
 
 describe('buildSpawnEnv — per-user CODEX_HOME injection (P4)', () => {
   let tmpDataDir: string;

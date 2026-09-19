@@ -1904,7 +1904,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ─── Card blockers ────────────────────────────────────────────────────
+  // Card blockers
   //
   // Soft enforcement: the move endpoint does NOT gate on blocker state.
   // Clients show a confirm dialog; the autonomous dispatcher silently
@@ -3208,7 +3208,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ─── Review Logs ─────────────────────────────────────────────────────
+  // Review Logs
   router.get('/api/projects/:projectId/reviews', (req: Request, res: Response) => {
     const limit = parseInt(req.query.limit as string) || 50;
     const projectId = req.params.projectId;

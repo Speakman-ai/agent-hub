@@ -1,5 +1,5 @@
 /**
- * infra-retry.ts — Finalize Code Changes, §10 failure classifier + one
+ * Finalize Code Changes, §10 failure classifier + one
  * auto-retry orchestration.
  *
  * Single source of truth for the §10 distinction between **CI-class** and
@@ -36,7 +36,7 @@ import { createHash } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import type { BroadcastFn, FinalizeRunRow, Stmts } from '../types.js';
 
-// ─── Classifier ───────────────────────────────────────────────────────
+// Classifier
 
 /**
  * Failure-reason codes that classify as **CI**. These are the codes
@@ -329,7 +329,7 @@ export type FailureClass = 'ci' | 'infra' | 'unknown';
  *   - `'unknown'` — code is in neither list. Callers MUST treat unknown
  *     as non-retryable.
  *
- * Pure / synchronous / no I/O. Safe to call from any thread of the
+ * Synchronous / no I/O. Safe to call from any thread of the
  * orchestrator state machine.
  */
 export function classifyFailureReason(reason: string | null | undefined): FailureClass {
@@ -352,7 +352,7 @@ export function isInfraFailureReason(reason: string | null | undefined): boolean
   return classifyFailureReason(reason) === 'infra';
 }
 
-// ─── Retry-row helpers ────────────────────────────────────────────────
+// Retry-row helpers
 
 /**
  * Compute the idempotency key for an infra-retry row. Distinct from the
@@ -574,7 +574,7 @@ export function openInfraRetryRun(
   return { runId };
 }
 
-// ─── Terminal session message ─────────────────────────────────────────
+// Terminal session message
 
 /**
  * Header on the system message posted into the originating session when

@@ -1,7 +1,7 @@
 /**
  * Unit tests for the Dev Server setup draft scanner.
  *
- * Pure filesystem reads against temp dirs — no CLI, no network. Covers
+ * Filesystem reads against temp dirs — no CLI, no network. Covers
  * start-command candidate ordering + package-manager awareness, framework/
  * port inference, explicit `--port` flag override, monorepo detection, the
  * existing-config passthrough, and graceful degradation on a missing/broken

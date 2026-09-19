@@ -1,5 +1,5 @@
 /**
- * infra-retention-reaper.ts — periodic retention + quota prune for `infra.db`.
+ * Periodic retention + quota prune for `infra.db`.
  *
  * Metric points arrive at collector cadence for every series in every scope, so
  * without a bound the store grows for as long as monitoring is enabled
@@ -14,7 +14,7 @@
  * keep, so the quota pass — the one that throws away data inside a window an
  * operator explicitly chose — only ever spends what the cheap pass left behind.
  *
- * Pure SQLite against `infra.db`. Never touches `agent-hub.db` / `orgs.db`, and
+ * SQLite against `infra.db`. Never touches `agent-hub.db` / `orgs.db`, and
  * is not docker- or fleet-gated, so it runs on every Hub.
  */
 

@@ -1,5 +1,5 @@
 /**
- * finalize-keys.ts — shared Finalize constants and idempotency helpers.
+ * Shared Finalize constants and idempotency helpers.
  *
  * Kept separate from `orchestrator.ts` so lightweight callers (ship gate,
  * route pre-checks) do not import the full state machine module graph.

@@ -12,7 +12,7 @@
 
 import type { KanbanBlockerLink, Stmts } from './types.js';
 
-// ─── Column semantics ──────────────────────────────────────────────────────
+// Column semantics
 
 /**
  * A blocker counts as "resolved" once its card sits in a Done-ish column.
@@ -103,7 +103,7 @@ export function isColumnBlockerSensitive(columnName: string | null | undefined):
   return true;
 }
 
-// ─── Cycle detection ───────────────────────────────────────────────────────
+// Cycle detection
 
 /**
  * Walk the blocker graph upward from `candidateBlockerId`. If we can reach
@@ -164,7 +164,7 @@ export function findCycle(
   return null;
 }
 
-// ─── Enrichment for GET /board ─────────────────────────────────────────────
+// Enrichment for GET /board
 
 interface BoardBlockerRow {
   card_id: string;

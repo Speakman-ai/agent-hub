@@ -31,8 +31,6 @@ hljs.registerLanguage('py', python);
 const OTHER_SENTINEL = '__other__';
 
 /**
- * AskUserQuestion
- * ---------------
  * Renders a multi-question picker in-line in the chat transcript when Claude
  * emits an `agenthub:ask` fenced block (see server/stream-parser.ts).
  *

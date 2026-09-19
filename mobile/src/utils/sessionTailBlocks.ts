@@ -4,8 +4,6 @@
  * Walks session-events and produces display blocks with the same kinds and
  * coalescing rules as the web client (explored burst, todos, plan_proposal,
  * checkpoint/rate_limit suppressed, etc.).
- *
- * Pure functions — unit-tested without a React Native environment.
  */
 import { stripAssistantControlBlocks } from '@shared/utils/stripAssistantControlBlocks';
 import { shouldSuppressStreamEvent } from '@shared/utils/benignStreamEvents';

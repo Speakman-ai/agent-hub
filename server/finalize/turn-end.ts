@@ -1,5 +1,5 @@
 /**
- * turn-end.ts — in-process turn-end bus for Finalize Code Changes.
+ * In-process turn-end bus for Finalize Code Changes.
  *
  * Production wires {@link finalizeTurnEndSubscriber} into the fix-dispatch
  * loop and the rebase conflict `dispatchAndWaitForTurnEnd` seam.

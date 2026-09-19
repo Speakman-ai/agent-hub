@@ -1,5 +1,5 @@
 /**
- * provenance.ts — Finalize Code Changes, PR provenance marker (design §11).
+ * Finalize Code Changes, PR provenance marker (design §11).
  *
  * Reliable way for the webhook side to tell whether a GitHub PR was pushed
  * by the Finalize orchestrator (internal) or by an external actor

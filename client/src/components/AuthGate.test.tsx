@@ -176,7 +176,7 @@ describe('AuthGate — remote unreachable', () => {
   });
 });
 
-// ─── Active-org local bypass (card 3d72338d) ────────────────────────
+// Active-org local bypass (card 3d72338d)
 // Matrix covered here:
 //   authConfigured | activeOrgIsLocal | token? | expected
 //   ---------------+------------------+--------+-----------------

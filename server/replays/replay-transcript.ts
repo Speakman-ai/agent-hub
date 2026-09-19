@@ -8,7 +8,7 @@
  * into the triage prompt) delivered zero interactions and zero errors: 4 KB of
  * a FullSnapshot is the `<head>` of the document.
  *
- * This module turns that event stream into the thing a human or an agent
+ * Turns that event stream into the thing a human or an agent
  * actually needs — a timeline:
  *
  *     +00:00.0  page      https://app.example.com/checkout (1440×900)
@@ -23,14 +23,14 @@
  * sources (mouse moves, style/canvas/font mutations) are dropped and counted;
  * mutation bursts and repeated clicks are coalesced.
  *
- * Pure and IO-free — events in, transcript out, same input always yields the
+ * IO-free — events in, transcript out, same input always yields the
  * same output. All replay-derived text is redacted through the shared log
  * secret pipeline before it is rendered; prompt-fencing is the caller's job
  * (see replay-context-pack.ts).
  */
 import { buildRedactionConfig, redactText, type RedactionConfig } from '../logs/log-redaction.js';
 
-// ─── rrweb constants (inlined; the server has no rrweb dependency) ─
+// rrweb constants (inlined; the server has no rrweb dependency)
 
 /** rrweb `EventType`. */
 export const EventType = {
@@ -97,7 +97,7 @@ const NodeType = { Document: 0, DocumentType: 1, Element: 2, Text: 3, CDATA: 4, 
 export const REPLAY_CONSOLE_TAG = 'agent-hub/console';
 export const REPLAY_NETWORK_TAG = 'agent-hub/network';
 
-// ─── Tunables ─────────────────────────────────────────────────────
+// Tunables
 
 /** Max transcript lines before head/tail elision kicks in. */
 export const DEFAULT_MAX_LINES = 400;
@@ -129,7 +129,7 @@ const LABEL_ATTRIBUTES = [
   'href',
 ];
 
-// ─── Types ────────────────────────────────────────────────────────
+// Types
 
 /** Loosely-typed rrweb event (the store persists them opaquely). */
 export interface RrwebEventLike {
@@ -184,7 +184,7 @@ export interface ReplayTranscript {
   redactions: number;
 }
 
-// ─── Node mirror ──────────────────────────────────────────────────
+// Node mirror
 
 interface MirrorNode {
   id: number;
@@ -335,7 +335,7 @@ export class ReplayNodeMirror {
   }
 }
 
-// ─── Transcript ───────────────────────────────────────────────────
+// Transcript
 
 interface PendingLine {
   at: number;
@@ -718,7 +718,7 @@ export function summarizeInputValue(raw: string, redact: (v: string) => string):
   return `(${value.length} chars) "${clip(value, 24)}"`;
 }
 
-// ─── Small helpers ────────────────────────────────────────────────
+// Small helpers
 
 function asArray(value: unknown): any[] {
   return Array.isArray(value) ? value : [];

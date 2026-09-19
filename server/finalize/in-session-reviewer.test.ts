@@ -50,7 +50,7 @@ import { createUser } from '../users-store.js';
 import { replaceUserPreferencesJson } from '../user-preferences-store.js';
 import type { AppConfig, EnrichedAgent, KanbanCardRow, Project, SessionRow } from '../types.js';
 
-// ─── Fixtures ────────────────────────────────────────────────────────
+// Fixtures
 
 const fakeCard: KanbanCardRow = {
   id: 'card-1',
@@ -132,7 +132,7 @@ const fakeConfig: AppConfig = {
   codexProfile: null,
 } as unknown as AppConfig;
 
-// ─── Stub CLI process ────────────────────────────────────────────────
+// Stub CLI process
 
 class FakeStdout extends EventEmitter {}
 
@@ -328,7 +328,7 @@ function availabilityWith(
   ) as Record<SupportedEngine, EngineAvailability>;
 }
 
-// ─── Common deps factory ─────────────────────────────────────────────
+// Common deps factory
 
 function makeDeps(
   spawnFn: typeof import('child_process').spawn,
@@ -425,7 +425,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// ─── Unit tests for pure helpers ─────────────────────────────────────
+// Unit tests for pure helpers
 
 describe('pickReviewerAgentId', () => {
   it('returns the first reviewer-role agent id', () => {
@@ -477,7 +477,7 @@ describe('composeReviewerSystemPrompt', () => {
   });
 });
 
-// ─── Driver behavior ──────────────────────────────────────────────────
+// Driver behavior
 
 /**
  * Claude-shaped spawn fake that behaves differently on each successive spawn
@@ -1100,7 +1100,7 @@ describe('runReviewerTurn — cancellation', () => {
   });
 });
 
-// ─── Eject lifecycle ─────────────────────────────────────────────────
+// Eject lifecycle
 // The reviewer must leave the session roster once its turn ends — clean
 // verdict, parse failure, or a cancel that kills the CLI mid-turn. The
 // flow is: attach (bring in) → review → remove (eject). The persisted
@@ -1183,7 +1183,7 @@ describe('runReviewerTurn — eject lifecycle', () => {
   });
 });
 
-// ─── Runtime engine failover ─────────────────────────────────────────
+// Runtime engine failover
 // The reviewer's configured engine can die mid-turn on usage exhaustion, an
 // auth rejection, or a wedged provider that only surfaces as a timeout. Rather
 // than failing the whole Finalize run, the reviewer turn re-runs the same

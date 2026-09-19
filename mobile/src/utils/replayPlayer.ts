@@ -8,12 +8,10 @@
 // rrweb rebuild the DOM at each view boundary and seek across boundaries
 // natively.
 //
-// This module carries ONLY the framework-agnostic data layer (manifest walk,
-// view chapters, seek-baseline reasoning) so it stays unit-testable without a
-// bundler. The in-app rrweb WebView player that consumes these helpers is a
-// separate ticket ("Mobile: in-app rrweb WebView replay player"); until it
-// lands, ReplaysScreen uses `computeSessionViews` to surface the session's view
-// breakdown in the player modal.
+// Framework-agnostic data layer (manifest walk, view
+// chapters, seek-baseline). The in-app rrweb WebView player is a separate
+// ticket; until it lands, ReplaysScreen uses `computeSessionViews` in the
+// player modal.
 
 // rrweb EventType.FullSnapshot — the event that starts each view. Kept here so
 // the stitch helpers can reason about view boundaries without importing rrweb.
@@ -160,7 +158,7 @@ export function seekBaselineIndex(
   return baseline;
 }
 
-// ── In-app rrweb WebView player ───────────────────────────────────────────
+// In-app rrweb WebView player
 // Mobile parity of client/src/components/ReplayPlayerModal + its inline iframe
 // bootstrap. The player document is the SAME sandboxed, no-network island the
 // web player builds (rrweb-player UMD + CSS inlined, restrictive CSP), loaded
@@ -327,7 +325,6 @@ export function buildReplayPlayerDataUrl(playerJs?: string, playerCss?: string):
  * The `injectJavaScript` payload that pushes one host→frame message. Returns a
  * self-terminating statement (`; true;`) as react-native-webview expects, with
  * the message JSON-embedded so the frame's `__ahReplayReceive` handler runs it.
- * Pure so the transport is unit-testable without a WebView.
  */
 export function buildInjectedReceive(msg: Record<string, unknown>): string {
   return `window.__ahReplayReceive(${JSON.stringify({ ch: REPLAY_CHANNEL, ...msg })});true;`;
@@ -335,8 +332,8 @@ export function buildInjectedReceive(msg: Record<string, unknown>): string {
 
 /**
  * Walk the paginated replay-events API, invoking `onChunk(events, page)` for each
- * non-empty page. Pure over injected `getEvents(replayId, offset, limit)` so it's
- * testable without a network. Returns the total event count reported by the API.
+ * non-empty page. `getEvents(replayId, offset, limit)` is injected. Returns the
+ * total event count reported by the API.
  * Honors an optional AbortSignal between pages. Mirrors the web helper.
  */
 export async function streamReplayEvents({
@@ -427,8 +424,7 @@ export interface ReplayPlayerApi {
  * vs. monolithic mode exactly like the web ReplayPlayerModal. Pushes each event
  * chunk to the frame via `post({ type: 'chunk', events })`, reports progress via
  * `onProgress`, surfaces the session's view chapters via `onViews`, and posts a
- * terminal `{ type: 'end' }`. Pure over its injected `api` + `post` so it's fully
- * unit-testable without a WebView. Honors an AbortSignal (checked between pages /
+ * terminal `{ type: 'end' }`. Honors an AbortSignal (checked between pages /
  * segments by the underlying walkers). Returns the number of events streamed.
  */
 export async function streamReplayTarget({

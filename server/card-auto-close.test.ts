@@ -88,7 +88,7 @@ describe('parseCloseCardBlock', () => {
     expect(parseCloseCardBlock(text)?.note).toBe('first');
   });
 
-  // ─── Robustness: action-block parser shape variants ────────────────────
+  // Robustness: action-block parser shape variants
   // Regression coverage for the "action blocks sometimes only print, don't
   // execute" bug — parsers used to choke when the agent wrapped the JSON in
   // a markdown fence, lead-in prose, or emitted multi-line strings with raw

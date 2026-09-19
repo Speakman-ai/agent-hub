@@ -1,9 +1,5 @@
 /**
- * Pure helpers for attaching images/files to project notes. Notes are plain
- * markdown, so an attachment is just an uploaded asset referenced by markdown:
- * an image embed for pictures, a plain link for everything else. Shared by the
- * web (NotesEditor) and mobile (NotesScreen) flows so detection and markdown
- * shaping live in exactly one, unit-tested place.
+ * Note attachments as markdown: image embed or a plain link.
  */
 
 const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|bmp|svg|avif|heic|heif)$/i;
@@ -18,11 +14,7 @@ export function isImageAttachment(
   return false;
 }
 
-/**
- * Sanitize a filename for use as markdown link/alt text: collapse whitespace and
- * strip the `[` / `]` characters that would break the `![alt](url)` syntax.
- * Falls back to a generic label so the reference is never empty.
- */
+/** Strip `[]` and collapse whitespace. Never empty. */
 export function attachmentLabel(name: string | null | undefined, isImage: boolean): string {
   const cleaned = String(name || '')
     .replace(/[[\]]/g, '')
@@ -32,12 +24,7 @@ export function attachmentLabel(name: string | null | undefined, isImage: boolea
   return isImage ? 'image' : 'file';
 }
 
-/**
- * Build the markdown snippet that references an uploaded attachment. Images use
- * the `![alt](url)` embed form; other files use a plain `[name](url)` link. The
- * snippet is wrapped in newlines so it lands as its own block regardless of
- * where the cursor sits.
- */
+/** `![alt](url)` for images, `[name](url)` otherwise. Wrapped in newlines. */
 export function buildAttachmentMarkdown(opts: {
   name?: string | null;
   url: string;
@@ -49,12 +36,7 @@ export function buildAttachmentMarkdown(opts: {
   return `\n${ref}\n`;
 }
 
-/**
- * Insert `snippet` into `text` at the given selection range, replacing whatever
- * the selection covered. Returns the new text plus the caret position that
- * should follow the inserted snippet, so a caller can restore the cursor. When
- * the selection is unknown (null), the snippet is appended to the end.
- */
+/** Insert `snippet` at the selection (or append). Returns text plus caret after it. */
 export function insertAtSelection(
   text: string,
   snippet: string,
@@ -77,11 +59,8 @@ export function insertAtSelection(
 }
 
 /**
- * Describe the single contiguous edit between two strings as the region
- * `[p, oldEnd)` in the old text that was replaced by `[p, newEnd)` in the new
- * text. A textarea `onChange` always yields one such contiguous replacement
- * (insert, delete, or replace), so common-prefix / common-suffix scanning
- * recovers it exactly without a full diff.
+ * Single contiguous edit between two strings as `[p, oldEnd)` → `[p, newEnd)`.
+ * A textarea `onChange` is always one such replacement.
  */
 export function diffEdit(
   oldText: string,
@@ -101,15 +80,8 @@ export function diffEdit(
 }
 
 /**
- * Map a single offset from the old text to the new text across one contiguous
- * edit (see `diffEdit`). Uses a RIGHT bias at the edit boundary so an anchor
- * sitting exactly where text is inserted rides to AFTER the inserted text — that
- * is what keeps two attachments queued at the same caret in insertion order, and
- * makes an attachment land after text the user types at its anchor:
- *   - offset strictly before the edit start → unchanged,
- *   - offset strictly after the edit end    → shifted by the length delta,
- *   - offset at the boundary or inside the edited region → rides to the end of
- *     the new region (its original surrounding context no longer exists).
+ * Map an offset across one contiguous edit. Right bias at the boundary so
+ * queued attachments at the same caret stay in insertion order.
  */
 export function transformOffset(offset: number, oldText: string, newText: string): number {
   const { p, oldEnd, newEnd } = diffEdit(oldText, newText);
@@ -119,14 +91,9 @@ export function transformOffset(offset: number, oldText: string, newText: string
 }
 
 /**
- * Transform a pending insertion range across one contiguous edit so an
- * attachment whose upload started earlier still lands at the intended logical
- * position after the user has typed elsewhere. Two safety rules:
- *   - result offsets are clamped to the new text length;
- *   - if the edit disturbed the interior of a NON-empty selection, the range
- *     collapses to a caret so applying the attachment can never delete freshly
- *     typed text (a stale "replace the selection" intent is void once the user
- *     edits within it).
+ * Transform a pending insertion range across one edit. Clamp to the new length.
+ * If the edit hit the interior of a non-empty selection, collapse to a caret
+ * so applying the attachment cannot delete freshly typed text.
  */
 export function transformRange(
   range: { start: number; end: number },

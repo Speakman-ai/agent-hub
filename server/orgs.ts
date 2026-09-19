@@ -104,7 +104,7 @@ export function initOrgsDb(): void {
       org_id TEXT NOT NULL DEFAULT 'default'
     );
 
-    -- ── Phase 3 multi-user tables ────────────────────────────────
+    -- Phase 3 multi-user tables
     -- Users live in the shared orgs.db so a single account can belong
     -- to multiple orgs. Per-org roles are expressed via memberships.
     CREATE TABLE IF NOT EXISTS users (
@@ -141,7 +141,7 @@ export function initOrgsDb(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_invites_org ON invites(org_id);
 
-    -- ── Per-user API keys (long-lived programmatic credentials) ────
+    -- Per-user API keys (long-lived programmatic credentials)
     -- Distinct from JWTs (session tokens, 7-day TTL) and from the
     -- legacy global AGENT_HUB_API_KEY (Owner-role break-glass shared
     -- across the deployment). Each row is owned by a single user and

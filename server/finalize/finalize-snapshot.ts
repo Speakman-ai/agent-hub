@@ -1,6 +1,6 @@
 /**
- * finalize-snapshot — build `finalize_run_phase_changed` snapshot events for
- * a WebSocket client that just (re)connected.
+ * Build `finalize_run_phase_changed` snapshot events for a WebSocket client
+ * that just (re)connected.
  *
  * Why this exists: `useFinalizeRun` on the client mirrors a Finalize run's
  * live state purely from streamed `finalize_run_*` events. The server replays
@@ -16,8 +16,8 @@
  * Two prior fixes were both CLIENT-side heuristics: refetch on a detected
  * reconnect (`agenthub:ws_reconnected`) and a pong-liveness watchdog to detect
  * a half-open socket. Both depend on the client *noticing* a disconnect; any
- * gap the heuristics miss still strands the checks UI. This module is the
- * server-side counterpart that closes the class: on EVERY connection the
+ * gap the heuristics miss still strands the checks UI. Server-side
+ * counterpart: on EVERY connection the
  * server re-emits one `finalize_run_phase_changed` per non-terminal run, which
  * the client's existing `onPhaseChanged` handler turns into an authoritative
  * `refetchRun` — converging run + steps + phases to the server's truth
@@ -30,7 +30,7 @@
  *
  * The functions here are intentionally pure: no WebSocket access, no globals.
  * The caller (websocket.ts) does the broadcast-filter check + ws.send, so this
- * module stays trivially unit-testable.
+ * module stays free of WebSocket and globals.
  */
 
 import type { FinalizeRunPhase, FinalizeRunStatus } from '../types.js';

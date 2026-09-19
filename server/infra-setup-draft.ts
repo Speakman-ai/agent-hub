@@ -2,7 +2,7 @@
  * Hub-local draft for the **Infrastructure setup wizard**
  * (`GET .../infra/setup-draft`).
  *
- * Pure, AWS-free, DB-free, spawn-free: a total function over the project record
+ * AWS-free, DB-free, spawn-free: a total function over the project record
  * plus already-read Hub state, returning a JSON-serializable summary of what is
  * configured and what still blocks unattended monitoring.
  *

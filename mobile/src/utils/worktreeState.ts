@@ -1,10 +1,6 @@
 /**
- * Pure helpers for the git-worktree isolation toggle + CLI-detection badge.
- *
- * Ported from `client/src/App.jsx` (session-load + session-switch branches and
- * the `session-worktree-detected` WebSocket handler). Keeping this logic in a
- * standalone module means we can unit-test the normalisation rules without
- * mounting the React Native context.
+ * Git-worktree isolation toggle + CLI-detection badge.
+ * Ported from `client/src/App.jsx` (session-load, session-switch, WS handler).
  *
  * Server row conventions (SQLite columns):
  *   - `use_worktree`            — 0 or 1; defaults to 1 (isolated) when unset

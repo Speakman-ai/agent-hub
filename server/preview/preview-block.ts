@@ -49,7 +49,7 @@ export interface PreviewRuntimeLike {
   getLogTail: (previewId: string) => string[];
 }
 
-// ─── Types ──────────────────────────────────────────────────────────────
+// Types
 
 /**
  * Which side of the application the agent wants previewed.
@@ -231,7 +231,7 @@ export interface PreviewHandlerDeps {
   now?: () => number;
 }
 
-// ─── Parser ─────────────────────────────────────────────────────────────
+// Parser
 
 const BLOCK_TAG_RE = /<agenthub:preview>\s*([\s\S]*?)\s*<\/agenthub:preview>/;
 
@@ -318,7 +318,7 @@ export function describePreviewReason(reason: PreviewMalformedReason): string {
   }
 }
 
-// ─── Handler ────────────────────────────────────────────────────────────
+// Handler
 
 const DEFAULT_READY_TIMEOUT_MS = 120_000;
 
@@ -404,7 +404,7 @@ export async function handlePreviewBlock(
   } = deps;
   const readyTimeoutMs = deps.readyTimeoutMs ?? resolvePreviewHandlerReadyTimeoutMs(project);
 
-  // ── Gate 1: project has a preview config? ───────────────────────────
+  // Gate 1: project has a preview config?
   const devServerConfigured = isDevServerConfigured(project.prEnv?.devServer);
   if (!project.prEnv || !devServerConfigured) {
     // Both gates below decline by broadcasting to the session's socket and
@@ -431,7 +431,7 @@ export async function handlePreviewBlock(
     return;
   }
 
-  // ── Gate 2: runtime wired? ──────────────────────────────────────────
+  // Gate 2: runtime wired?
   if (!runtime) {
     console.warn(
       `[preview] declining start for session ${sessionId}: dev-server runtime is not wired ` +
@@ -452,7 +452,7 @@ export async function handlePreviewBlock(
     return;
   }
 
-  // ── Start managed dev server ────────────────────────────────────────
+  // Start managed dev server
   let previewId = '';
   let port: number;
   let url: string;
@@ -496,7 +496,7 @@ export async function handlePreviewBlock(
     return;
   }
 
-  // ── Broadcast initial `starting` so the pane swaps from the empty
+  // Broadcast initial `starting` so the pane swaps from the empty
   //    placeholder to the boot-log surface immediately. The runtime is
   //    already polling its health-check budget; this event tells the
   //    UI "we're alive, here's an (empty) log to start filling in".
@@ -516,7 +516,7 @@ export async function handlePreviewBlock(
   };
   emitStarting();
 
-  // ── Wait for ready ──────────────────────────────────────────────────
+  // Wait for ready
   // While we wait, periodically rebroadcast `preview_starting` with the
   // current logTail so the user sees boot output as it arrives — not
   // just on terminal success/failure. Throttled by
@@ -566,7 +566,7 @@ export async function handlePreviewBlock(
     return;
   }
 
-  // ── Ready: take screenshot + broadcast ──────────────────────────────
+  // Ready: take screenshot + broadcast
   const fullUrl = url + (task.route.startsWith('/') ? task.route : `/${task.route}`);
   let screenshotPath: string | null = null;
   if (takeScreenshot) {

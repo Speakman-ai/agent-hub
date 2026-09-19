@@ -1,5 +1,5 @@
 /**
- * Tests for `pre-push-rebase.ts`. Uses a real ephemeral git repo (no remote
+ * Uses a real ephemeral git repo (no remote
  * is needed — we set up a bare `origin` and clone it locally). The whole
  * thing runs under `os.tmpdir()` and is cleaned up after each test.
  */

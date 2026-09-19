@@ -5,9 +5,6 @@
  * and must never render as siblings. A *ready* preview is the exception
  * that keeps the iframe: a Terminal request then selects the footer tab
  * instead of mounting SessionTerminalPane next to SessionPreviewPane.
- *
- * Kept as a pure function so the double-render cannot regress without a
- * failing unit test (review: ready-vs-full-size exclusivity).
  */
 
 export type SessionPreviewFooterTab = 'boot' | 'terminal';

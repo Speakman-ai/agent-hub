@@ -1,5 +1,5 @@
 /**
- * service.ts — NativePrService: the single in-process API for native
+ * NativePrService: the single in-process API for native
  * pull requests. Both the REST routes (pr-list/pr-actions branching) and
  * the Finalize push step call THIS, never the store/git layers directly.
  *

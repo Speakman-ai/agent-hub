@@ -1,5 +1,5 @@
 /**
- * reviewer-dispatch.ts — Finalize Code Changes, Phase 3 (review phase).
+ * Finalize Code Changes, Phase 3 (review phase).
  *
  * Numbering matches §3 of the design doc, where the pipeline runs:
  *   1. rebase   → `server/finalize/rebase.ts`
@@ -625,8 +625,6 @@ function clearReviewerStateForFailedPass(
     /* best-effort: terminal failure write below is more important */
   }
 }
-
-// ─── helpers ─────────────────────────────────────────────────────
 
 function reviewerTimelineDeps(deps: ReviewerDispatchDeps): TimelineMessageDeps {
   return { stmts: deps.stmts, broadcast: deps.broadcast };
@@ -1572,9 +1570,9 @@ function renderAnchor(t: Pick<ReviewerThreadRow, 'line_start' | 'line_end'>): st
  *   1. A verdict (`approved` | `changes_requested`).
  *   2. Zero or more anchored findings.
  *
- * The prompt is pure — no I/O — so it stays unit-testable. Production
- * wires it as the system-message body for the reviewer agent's session;
- * tests assert on its substrings rather than running an LLM.
+ * The prompt is pure (no I/O). Production wires it as the system-message
+ * body for the reviewer agent's session; tests assert on its substrings
+ * rather than running an LLM.
  *
  * The prompt explicitly forbids GitHub API calls (the PR does not exist
  * yet) and instructs the reviewer to use only the inputs provided. The

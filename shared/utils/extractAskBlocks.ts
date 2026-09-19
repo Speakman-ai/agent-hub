@@ -234,7 +234,7 @@ export function parseAskPayload(raw: string): AskQuestion[] | null {
   return parseAskEnvelope(raw)?.questions ?? null;
 }
 
-// ─── Fence scanning ────────────────────────────────────────────────────
+// Fence scanning
 //
 // A regex alone cannot find the end of an ask fence: a `preview` string may
 // itself contain a "```" run, and models open the block with anything from

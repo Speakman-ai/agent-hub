@@ -1,5 +1,5 @@
 /**
- * lifecycle.ts — enable/disable Agent Hub git hosting for a project.
+ * Enable/disable Agent Hub git hosting for a project.
  *
  * State transitions for `Project.gitHost` happen ONLY through here (the
  * projects PATCH endpoint rejects direct writes): enabling has filesystem

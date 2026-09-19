@@ -149,9 +149,7 @@ describe('GitHub Actions test-suite execution', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // helpers
-// ---------------------------------------------------------------------------
 
 /** Returns the text of a top-level job block, or null if no such job exists. */
 function extractJob(yml: string, jobName: string): string | null {

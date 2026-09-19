@@ -1,5 +1,5 @@
 /**
- * review-verdict-block.ts — parse the structured tail block the reviewer
+ * Parse the structured tail block the reviewer
  * agent emits at the end of its in-session review turn.
  *
  * Per the in-session reviewer design (wiki:

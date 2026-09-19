@@ -29,7 +29,7 @@ import { getStmts } from './db.js';
 export type { SkillInfo, SkillWithSource };
 
 /**
- * Pure allowlist filter shared by the prompt builder. When `allowedSkills` is
+ * Allowlist filter shared by the prompt builder. When `allowedSkills` is
  * not an array (`null`/`undefined`), the agent is unrestricted and every skill
  * passes through. When it is an array, only skills whose `id` is in the list
  * survive (an empty array filters everything out).
@@ -44,7 +44,7 @@ export function filterSkillsByAllowlist(
 }
 
 /**
- * Pure predicate used by the `<agenthub:skill>` trigger to enforce the
+ * Predicate used by the `<agenthub:skill>` trigger to enforce the
  * allowlist. Unrestricted agents (`null`/`undefined`) may load anything.
  */
 export function isSkillAllowed(

@@ -1,5 +1,5 @@
 /**
- * spawn-credentials.ts — git credential helper for the Hub's own smart-
+ * Git credential helper for the Hub's own smart-
  * HTTP remotes, injected into every agent spawn. Exact parallel of
  * `applyGithubSpawnCredentials` (spawn-github-credentials.ts) but scoped
  * to the Hub's origin(s) instead of `https://github.com`.

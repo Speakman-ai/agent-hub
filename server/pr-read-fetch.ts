@@ -1,5 +1,5 @@
 /**
- * pr-read-fetch.ts — Server-side PR diff / changed-files for the PR read proxy.
+ * Server-side PR diff / changed-files for the PR read proxy.
  *
  * Strictly per-user: reads use the acting user's own OAuth/PAT.
  */

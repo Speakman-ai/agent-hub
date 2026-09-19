@@ -1,9 +1,6 @@
 /**
- * Formatting utilities for conference room exports (mobile).
- *
- * Mirrors `client/src/utils/export.js` `formatRoomExport` so the mobile and
- * web clients emit identical transcript text. Kept as a pure function to make
- * it easy to unit-test without pulling in any React Native / Expo modules.
+ * Conference room export formatting (mobile).
+ * Mirrors `client/src/utils/export.js` `formatRoomExport` so transcripts match.
  */
 /**
  * Format a conference room conversation as copyable markdown text.

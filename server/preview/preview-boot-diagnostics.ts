@@ -10,7 +10,7 @@
  * with code 1". The user sees an opaque failure for a condition that has a
  * one-line, self-serve fix.
  *
- * This module scans the retained boot-log tail for known, high-precision
+ * Scans the retained boot-log tail for known, high-precision
  * infrastructure signatures and returns a short operator hint the runtime
  * appends to the surfaced failure message. Signatures must be specific enough
  * that a match is never a false positive — an unrecognised failure returns

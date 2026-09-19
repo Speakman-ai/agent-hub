@@ -18,7 +18,7 @@
  * contract: `agentId` (or legacy `toAgent` for the same field), `task`,
  * `owner`, `scope`, `expectedArtifact`, `deadline`, and `returnFormat`.
  *
- * This module gives the renderer:
+ * Gives the renderer:
  *   - parseHandoffBlock(text)      → { toAgent, note } | null
  *   - parseDelegateBlock(text)     → Array<{ agentId, task }> | null
  *   - detectHandoffBlock(text)     → { present, task, reason, rawBody }

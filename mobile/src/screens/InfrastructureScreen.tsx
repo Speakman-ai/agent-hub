@@ -334,9 +334,6 @@ export interface LoadMorePageDeps {
 /**
  * Fetch and apply one more page of resources.
  *
- * Extracted from the component so the settle rules are unit-testable without a
- * native runtime — the same reason `runLogClear` is extracted in LogsScreen.
- *
  * Two guards, because "may I write rows?" and "may I release the flag?" are
  * different questions with different owners, and collapsing them into one
  * breaks whichever case the single predicate does not describe:
@@ -388,11 +385,8 @@ export function alertsEmptyCopy(statusFilter: InfraAlertStatus | 'all'): string 
 }
 
 /**
- * Confirmation dialog for a lifecycle action.
- *
- * Pure so the contract (nothing fires without an explicit confirm tap) is
- * testable without a native Alert runtime — the same reason `buildClearConfirm`
- * exists in LogsScreen.
+ * Confirmation dialog for a lifecycle action. Nothing fires without an
+ * explicit confirm tap (same contract as `buildClearConfirm` in LogsScreen).
  */
 export function buildAlertActionConfirm(opts: {
   label: string;
@@ -460,10 +454,6 @@ export function spendServiceRows(
  * price is in the dialog rather than only in the panel copy the operator may
  * have scrolled past. Disabling needs no such warning: stopping a billed poll
  * is never the surprising direction.
- *
- * Pure for the same reason `buildAlertActionConfirm` is: the contract that
- * nothing bills without an explicit confirm tap has to be testable without a
- * native Alert runtime.
  */
 export function buildSpendOptInConfirm(opts: { enabling: boolean; onConfirm: () => void }): {
   title: string;
@@ -588,7 +578,7 @@ function Chip({
   );
 }
 
-// ── Overview ────────────────────────────────────────────────────────────────
+// Overview
 
 /** Columns in the spend plot. A 30 day window draws one bar per day inside this. */
 const SPEND_BAR_COUNT = 30;
@@ -1128,7 +1118,7 @@ function SpendSection({ projectId }: { projectId: string }) {
   );
 }
 
-// ── AWS Health ──────────────────────────────────────────────────────────────
+// AWS Health
 
 /**
  * Dot and label colour per severity — the RN peer of the web panel's Tailwind
@@ -1722,7 +1712,7 @@ function OverviewTab({
   );
 }
 
-// ── Resources ───────────────────────────────────────────────────────────────
+// Resources
 
 function ResourcesTab({ projectId, onSelectResource, selectedResourceKey }: any) {
   const [filters, setFilters] = useState<ResourceFilterState>(EMPTY_FILTERS);
@@ -1916,7 +1906,7 @@ function ResourcesTab({ projectId, onSelectResource, selectedResourceKey }: any)
   );
 }
 
-// ── Metrics ─────────────────────────────────────────────────────────────────
+// Metrics
 
 /**
  * What the service pack says that a chart cannot.
@@ -2222,7 +2212,7 @@ function MetricsTab({ projectId, resource, pack }: any) {
   );
 }
 
-// ── Alerts ──────────────────────────────────────────────────────────────────
+// Alerts
 
 const STATUS_FILTERS: ReadonlyArray<{ key: InfraAlertStatus | 'all'; label: string }> = [
   { key: 'open', label: 'Open' },
@@ -2251,8 +2241,6 @@ export function initialAlertStatusFilter(focusAlertId: string | null | undefined
  * is a bounded page ordered by state and recency, so an older alert can be
  * absent from page one even under `all`. Fetching it directly and pinning it to
  * the top is what actually guarantees the tap lands on something.
- *
- * Pure so both halves of that guarantee are testable without a screen.
  */
 export function mergeFocusedAlert(
   rows: readonly InfraAlertRow[],
@@ -2420,7 +2408,7 @@ function AlertsTab({ projectId, focusAlertId, pack }: any) {
   );
 }
 
-// ── Screen ──────────────────────────────────────────────────────────────────
+// Screen
 
 export default function InfrastructureScreen({ route, navigation }: any) {
   const { projects, lastInfraAlertEvent, setActiveAgentId, setActiveSessionId } = useApp();

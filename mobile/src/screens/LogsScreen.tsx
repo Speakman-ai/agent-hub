@@ -117,10 +117,8 @@ export interface LogClearDeps {
 
 /**
  * Execute a "Clear logs" purge: DELETE the records, drop the live tail buffer
- * and loaded history, then toast the outcome. Extracted from the component so
- * the destructive wiring is unit-testable without a native runtime (mobile's
- * test env has no RN event dispatch). On failure nothing is reset and the error
- * is surfaced — a failed purge must not blank the view as if it succeeded.
+ * and loaded history, then toast the outcome. On failure nothing is reset and
+ * the error is surfaced — a failed purge must not blank the view as if it succeeded.
  */
 export async function runLogClear(deps: LogClearDeps): Promise<void> {
   const { projectId, clearLogs, reset, clearHistory, showToast } = deps;
@@ -148,8 +146,7 @@ export interface BulkIssueStatusDeps {
 }
 
 /**
- * Batch-transition the selected issues and toast the outcome. Extracted from
- * the component so the wiring is unit-testable without a native runtime.
+ * Batch-transition the selected issues and toast the outcome.
  * Returns `null` on failure so the caller leaves the selection intact — a
  * failed batch must not look like it applied.
  */
@@ -204,7 +201,7 @@ function fmtAbs(ms: number): string {
   }
 }
 
-// ── Severity chip ────────────────────────────────────────────────────────────
+// Severity chip
 function SeverityChip({ severityNumber, text }: { severityNumber: number; text: string | null }) {
   const tone = severityToneKey(severityNumber);
   return (
@@ -214,7 +211,7 @@ function SeverityChip({ severityNumber, text }: { severityNumber: number; text: 
   );
 }
 
-// ── One log record row ───────────────────────────────────────────────────────
+// One log record row
 export function LogRecordRow({ record }: { record: LogRecord }) {
   const [expanded, setExpanded] = useState(false);
   const hasDetail = recordHasDetail(record);
@@ -317,7 +314,7 @@ function KeyValueBlock({
   );
 }
 
-// ── Reusable horizontal chip selector (severity / source / environment) ──────
+// Reusable horizontal chip selector (severity / source / environment)
 function ChipRow<T extends string | number>({
   options,
   value,
@@ -353,7 +350,7 @@ function ChipRow<T extends string | number>({
   );
 }
 
-// ── Reconnect-status badge ───────────────────────────────────────────────────
+// Reconnect-status badge
 function StatusBadge({ status }: { status: LogTailStatus }) {
   if (status === 'open') {
     return <Text style={[styles.statusBadge, { color: colors.emerald400 }]}>● Live</Text>;
@@ -368,7 +365,7 @@ function StatusBadge({ status }: { status: LogTailStatus }) {
   return <Text style={[styles.statusBadge, { color: colors.gray500 }]}>○ Disconnected</Text>;
 }
 
-// ── Live tail view ───────────────────────────────────────────────────────────
+// Live tail view
 export function LiveLogsView({
   projectId,
   showToast,
@@ -651,7 +648,7 @@ export function LiveLogsView({
   );
 }
 
-// ── Issues view ──────────────────────────────────────────────────────────────
+// Issues view
 const BULK_ACTIONS: readonly LogIssueBulkAction[] = ['resolve', 'ignore', 'reopen'];
 
 const ACTION_LABEL: Record<IssueAction, string> = {
@@ -1336,7 +1333,7 @@ function Fact({ label, value, mono }: { label: string; value: string | null; mon
   );
 }
 
-// ── Module shell ─────────────────────────────────────────────────────────────
+// Module shell
 const TABS: ReadonlyArray<{ key: LogsTab; label: string }> = [
   { key: 'live', label: 'Live' },
   { key: 'issues', label: 'Issues' },

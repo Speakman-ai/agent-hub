@@ -1,5 +1,5 @@
 /**
- * on-push.ts — run the dependency security audit when a Hub-hosted repo's
+ * Run the dependency security audit when a Hub-hosted repo's
  * DEFAULT BRANCH moves (smart-HTTP push or native PR merge).
  *
  * Opt-in via `Project.securityScan.onPush`. Mirrors push-ci's shape: gate on

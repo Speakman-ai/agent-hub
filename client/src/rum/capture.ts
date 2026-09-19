@@ -1,5 +1,5 @@
 /**
- * capture.js: DOM to serializable snapshot for RUM, masking at capture time.
+ * DOM to serializable snapshot for RUM, masking at capture time.
  *
  * This is the single chokepoint between the live DOM and anything that leaves
  * the browser. Every input value and text node passes through the masking

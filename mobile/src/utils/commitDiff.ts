@@ -1,5 +1,5 @@
 /**
- * commitDiff.js — split a unified diff into per-file sections (mobile).
+ * Split a unified diff into per-file sections (mobile).
  * Mirrors client/src/utils/commitDiff.js.
  */
 function filenameFromHeader(headerLine: any) {

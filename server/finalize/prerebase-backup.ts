@@ -1,5 +1,5 @@
 /**
- * prerebase-backup.ts — Finalize rebase-phase commit-loss guard.
+ * Finalize rebase-phase commit-loss guard.
  *
  * The rebase phase rewrites the session's worktree branch onto `origin/<base>`.
  * If the rebase drops the session's commits — patch-equivalent to changes that
@@ -133,7 +133,7 @@ export async function capturePreRebaseBaseline(
 }
 
 /**
- * Pure decision: given the pre-rebase baseline and whether the post-rebase
+ * Decision: given the pre-rebase baseline and whether the post-rebase
  * branch still has changes vs base, did the rebase silently drop the session's
  * commits? Only fires when we captured a real baseline (a SHA we could read
  * that had net changes) and the post-rebase branch has none — so an

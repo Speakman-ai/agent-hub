@@ -21,9 +21,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.join(__dirname, '..', 'default-skills', 'gcloud');
 const SCRIPTS_DIR = path.join(SKILL_DIR, 'scripts');
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 function isExecutable(file: string): boolean {
   const mode = statSync(file).mode;
@@ -89,9 +87,7 @@ function runBash(
   return { status: res.status, stdout: res.stdout, stderr: res.stderr };
 }
 
-// ---------------------------------------------------------------------------
 // 1. SKILL.md shape
-// ---------------------------------------------------------------------------
 
 describe('gcloud SKILL.md', () => {
   const skillMd = path.join(SKILL_DIR, 'SKILL.md');
@@ -138,9 +134,7 @@ describe('gcloud SKILL.md', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // 2. TRIGGER / DO-NOT-TRIGGER contract
-// ---------------------------------------------------------------------------
 
 describe('gcloud SKILL.md — trigger contract', () => {
   const skillMd = path.join(SKILL_DIR, 'SKILL.md');
@@ -179,9 +173,7 @@ describe('gcloud SKILL.md — trigger contract', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // 3. References present
-// ---------------------------------------------------------------------------
 
 describe('gcloud references', () => {
   const REQUIRED_REFS = [
@@ -248,9 +240,7 @@ describe('gcloud references', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // 4. Scripts present and executable
-// ---------------------------------------------------------------------------
 
 describe('gcloud scripts', () => {
   const REQUIRED_SCRIPTS = ['_common.sh', 'gcloud-whoami.sh', 'gcloud-q.sh'];
@@ -266,9 +256,7 @@ describe('gcloud scripts', () => {
   }
 });
 
-// ---------------------------------------------------------------------------
 // 5. mask_secrets() — redaction helper (bash subprocess)
-// ---------------------------------------------------------------------------
 
 describe('mask_secrets() — redaction helper', () => {
   const commonSh = path.join(SCRIPTS_DIR, '_common.sh');
@@ -329,9 +317,7 @@ describe('mask_secrets() — redaction helper', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // 6. gcloud-q.sh — bad invocation exits 2 with usage
-// ---------------------------------------------------------------------------
 
 describe('gcloud-q.sh invocation guard', () => {
   const gcloudQ = path.join(SCRIPTS_DIR, 'gcloud-q.sh');
@@ -345,9 +331,7 @@ describe('gcloud-q.sh invocation guard', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // 7. gcloud-whoami.sh — missing credentials surfaces a helpful error
-// ---------------------------------------------------------------------------
 
 describe('gcloud-whoami.sh credential error handling', () => {
   const gcloudWhoami = path.join(SCRIPTS_DIR, 'gcloud-whoami.sh');
@@ -411,9 +395,7 @@ STUB
   });
 });
 
-// ---------------------------------------------------------------------------
 // 8. _common.sh — config resolution chain
-// ---------------------------------------------------------------------------
 
 describe('_common.sh — active config resolution', () => {
   const commonSh = path.join(SCRIPTS_DIR, '_common.sh');

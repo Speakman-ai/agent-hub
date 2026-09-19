@@ -198,7 +198,7 @@ describe('<ForwardSessionModal />', () => {
     );
   });
 
-  // ─── Model override ────────────────────────────────────────────
+  // Model override
 
   const modelConfig = {
     engineValidModels: {

@@ -2,7 +2,7 @@
  * The `infra_cost_daily` cache: writing what Cost Explorer returned, and reading
  * it back as a spend trend.
  *
- * This module is the reason the Overview tab is free to open. AWS's own
+ * Why the Overview tab is free to open. AWS's own
  * best-practices page asks for exactly this shape — *"we recommend architecting
  * the application so that it has a caching layer. This enables you to regularly
  * update the underlying data for your end users, but doesn't trigger queries

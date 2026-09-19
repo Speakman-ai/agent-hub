@@ -1,5 +1,5 @@
 /**
- * security-audit.openapi.ts — Zod schemas + OpenAPI path registrations for
+ * Zod schemas + OpenAPI path registrations for
  * the dependency security-audit routes. Kept in a companion file so the
  * route module stays focused on handlers (the project convention for
  * larger route files).

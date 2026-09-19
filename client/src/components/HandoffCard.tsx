@@ -4,8 +4,6 @@ import remarkGfm from 'remark-gfm';
 import { ArrowRight, Send, ExternalLink, AlertTriangle } from 'lucide-react';
 
 /**
- * HandoffCard
- * -----------
  * Renders a `<handoff>` block as a compact, human-readable card instead of
  * the raw `<handoff>{...}</handoff>` JSON wall that ends up in saved
  * assistant message content.

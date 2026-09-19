@@ -1,5 +1,4 @@
-// Pure helpers for chat voice transcription — mirrors the web composer's
-// insertTranscriptAtAnchor / baseAudioContentType logic in MessageInput.jsx.
+// Chat voice transcription. Mirrors MessageInput.jsx insertTranscriptAtAnchor.
 /**
  * Inserts transcribed text at `anchor` within `prev`, adding spaces so words
  * do not run together. Returns `{ text, caret }` — caret is the index after

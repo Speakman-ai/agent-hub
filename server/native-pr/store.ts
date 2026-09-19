@@ -1,5 +1,5 @@
 /**
- * store.ts — DB layer for native pull requests.
+ * DB layer for native pull requests.
  *
  * Number allocation runs inside a better-sqlite3 transaction together
  * with the insert; better-sqlite3 is synchronous, so MAX(number)+1 is

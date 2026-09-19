@@ -1,5 +1,5 @@
 /**
- * backfill-skill-builder-agents.ts — one-shot, per-org backfill that seeds the
+ * One-shot, per-org backfill that seeds the
  * conversational **Skill Builder** coach into projects that predate the
  * feature.
  *

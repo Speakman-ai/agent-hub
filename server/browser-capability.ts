@@ -9,7 +9,7 @@
  * when an agent first tried to screenshot, and easily mistaken by the model for
  * "no browser capability exists here."
  *
- * This module launches Chromium once and records the outcome so the failure is
+ * Launches Chromium once and records the outcome so the failure is
  * loud at boot (operators see it in the server log immediately) and queryable
  * (`getLastBrowserCapability`) rather than latent until first use. The probe is
  * best-effort and never throws — a broken browser must not block server boot.

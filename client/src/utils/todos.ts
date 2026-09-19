@@ -1,9 +1,5 @@
 /**
- * Pure helpers for the cross-project personal Todos pane (spec NAV-PLACEMENT).
- *
- * Kept free of React / network so the reorder + due-date logic is unit-testable
- * in isolation. The component (`TodosPage`) owns fetching and rendering; these
- * functions own the ordering business rules and display formatting.
+ * Personal Todos pane helpers. Owns ordering and due-date rules; the page owns fetch/render.
  */
 
 /** Todo priority — mirrors the kanban-card enum so a promote maps 1:1. */

@@ -133,8 +133,6 @@ describe('deriveHeuristicTitle', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-
 describe('pickInitialSessionTitle', () => {
   it('prefers the explicit hint over everything else', () => {
     const pick = pickInitialSessionTitle({
@@ -189,8 +187,6 @@ describe('pickInitialSessionTitle', () => {
     expect(pick.usedHeuristic).toBe(true);
   });
 });
-
-// ---------------------------------------------------------------------------
 
 describe('pickTurnSessionTitle', () => {
   it('renames a placeholder title on the first user message', () => {
@@ -461,8 +457,6 @@ describe('pickTurnSessionTitle', () => {
     expect(titleSourceForPick('hint')).toBe('hint');
   });
 });
-
-// ---------------------------------------------------------------------------
 
 describe('buildTitleTranscript', () => {
   it('returns an empty string for no usable messages', () => {
@@ -770,8 +764,6 @@ describe('generateLlmTitle', () => {
     }
   });
 });
-
-// ---------------------------------------------------------------------------
 
 describe('scheduleTitleUpgrade', () => {
   function makeHarness(initialName: string, initialTitleSource: string | null = 'auto') {

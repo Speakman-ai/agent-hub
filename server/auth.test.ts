@@ -4,7 +4,7 @@ import type { AuthRecord } from './auth-store.js';
 import type { Role } from './roles.js';
 import type { UserRow } from './users-store.js';
 
-// ── Mocks ────────────────────────────────────────────────────────
+// Mocks
 // `./config.js` is stubbed so tests can flip `apiKey` between cases. The
 // auth-store mock lets us simulate "no JWT user configured" vs "user
 // configured" without touching the filesystem.
@@ -666,7 +666,7 @@ describe('authenticateWs', () => {
   });
 });
 
-// ─── Local-bundled-server bypass ─────────────────────────────────
+// Local-bundled-server bypass
 // When the server is launched with `AGENT_HUB_MODE=local` (Electron
 // desktop / single-tenant dev box), the REST middleware and WS
 // handshake short-circuit the JWT/apiKey gate and install a synthetic

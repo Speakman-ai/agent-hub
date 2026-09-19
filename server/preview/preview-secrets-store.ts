@@ -28,7 +28,7 @@ import { encryptSecret, decryptSecret, MASK } from '../secret-crypto.js';
 import { getDb } from '../db.js';
 import { RESERVED_KEY_RE } from './reserved-env-keys.js';
 
-// ─── Reserved namespace ─────────────────────────────────────────────
+// Reserved namespace
 
 /**
  * Keys we refuse to accept from user input. Canonical definition lives in
@@ -107,7 +107,7 @@ export class PreviewSecretValidationError extends Error {
   }
 }
 
-// ─── Internal helpers ───────────────────────────────────────────────
+// Internal helpers
 
 function splitIvTag(blob: string): { iv: string; tag: string } {
   // encryptSecret returns `${iv}:${tag}:${ciphertext}` (all base64).
@@ -206,7 +206,7 @@ function appendAudit(opts: {
   );
 }
 
-// ─── Public API ─────────────────────────────────────────────────────
+// Public API
 
 /**
  * List all secrets for a project. `secret`-kind rows return the MASK
@@ -629,7 +629,7 @@ export function loadProjectEnvForSpawn(
   return env;
 }
 
-// ─── Test helpers (not part of the public surface) ──────────────────
+// Test helpers (not part of the public surface)
 
 /**
  * List the recent audit rows for a project. Exposed primarily so route

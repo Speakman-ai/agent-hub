@@ -1,5 +1,5 @@
 /**
- * card-lifecycle.ts — Finalize → kanban card surface.
+ * Finalize → kanban card surface.
  *
  * The orchestrator drives a `finalize_runs` row through phases; this
  * module mirrors the user-actionable subset of those transitions onto
@@ -61,7 +61,7 @@ import { randomUUID } from 'crypto';
 import type { BroadcastFn, KanbanCardRow, KanbanColumnRow, Stmts } from '../types.js';
 import { runPostPushDetach, type PostPushTriggerSource } from './post-push-detach.js';
 
-// ─── Public types ────────────────────────────────────────────────────
+// Public types
 
 /**
  * Narrow facade the orchestrator uses to mirror its state machine onto
@@ -167,7 +167,7 @@ export interface CreateCardLifecycleOpts {
   moveToDoneOnPush?: boolean;
 }
 
-// ─── Public API ──────────────────────────────────────────────────────
+// Public API
 
 /**
  * Build a {@link CardLifecycle} bound to a single (card, project). One

@@ -65,7 +65,7 @@ describe('PATCH /api/projects/:projectId — securityAutoPr', () => {
     );
   });
 
-  // ── auto-merge + actor user (unattended automation identity) ──────────
+  // auto-merge + actor user (unattended automation identity)
   // The harness runs auth-disabled, so getMembershipRole is null and actor
   // eligibility falls back to isKnownHubUserId, which accepts any non-sentinel
   // string in no-auth mode. That's enough to exercise persistence + coupling.

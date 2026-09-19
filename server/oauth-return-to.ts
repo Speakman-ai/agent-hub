@@ -1,5 +1,5 @@
 /**
- * oauth-return-to.ts — shared allowlist for OAuth `returnTo` targets.
+ * Shared allowlist for OAuth `returnTo` targets.
  *
  * The personal OAuth flows ("Sign in with GitHub", etc.) round-trip a
  * `returnTo` through a signed state JWT so the callback can send the user

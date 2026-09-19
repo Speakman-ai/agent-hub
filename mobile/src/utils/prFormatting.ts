@@ -1,5 +1,4 @@
-// Pure formatting helpers for the mobile PR viewer.
-// Extracted so they can be unit-tested without rendering React Native.
+// Mobile PR viewer formatting.
 import { colors } from '../theme/colors';
 /**
  * Extract the numeric ID from a PR URL.

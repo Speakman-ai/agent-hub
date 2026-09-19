@@ -1,5 +1,5 @@
 /**
- * budget.ts — Finalize Code Changes, active-time budget accounting.
+ * Finalize Code Changes, active-time budget accounting.
  *
  * Single source of truth for the §13 active-time budget contract
  * (4-hour hard ceiling at v0). The orchestrator and every phase module
@@ -354,7 +354,7 @@ export type FinalizeTimeoutClass = 'active_budget' | 'pipeline_step';
 
 /**
  * Compose the body of the timeout message dropped into the session.
- * Pure — exposed for tests and the orchestrator. Mirrors the wording
+ * Exposed for tests and the orchestrator. Mirrors the wording
  * of the §7 fix-dispatch message so the UI / agent can identify the
  * structured handoff.
  *

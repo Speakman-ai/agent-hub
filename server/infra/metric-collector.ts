@@ -1,5 +1,5 @@
 /**
- * metric-collector.ts — the batched `GetMetricData` poller (decision
+ * The batched `GetMetricData` poller (decision
  * INFRA-COLLECT).
  *
  * Every tick reads its query list from `infra_resources` (never from
@@ -139,8 +139,6 @@ export const THROTTLE_BACKOFF_BASE_MS = 500;
 export const THROTTLE_BACKOFF_MAX_MS = 20_000;
 /** Retries per request after a throttle. Beyond this the batch is an error. */
 export const DEFAULT_MAX_THROTTLE_RETRIES = 5;
-
-// ─── Pure helpers ───────────────────────────────────────────────────────────
 
 /**
  * The shortest period CloudWatch still holds data at for a window reaching back
@@ -320,7 +318,7 @@ export function backoffDelayMs(attempt: number, opts: BackoffOptions = {}): numb
   return Math.max(base, Math.round(rand * cap));
 }
 
-// ─── Query planning ─────────────────────────────────────────────────────────
+// Query planning
 
 /** One resource-metric series the collector intends to fetch. */
 export interface PlannedQuery {
@@ -639,7 +637,7 @@ export function pointsFromResult(
   return points;
 }
 
-// ─── Collection ─────────────────────────────────────────────────────────────
+// Collection
 
 /** Just enough of a `CloudWatchClient` to fetch metric data; keeps tests SDK-free. */
 export interface CloudWatchMetricDataClient {

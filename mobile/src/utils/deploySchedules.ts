@@ -1,7 +1,4 @@
-// Pure helpers for the per-environment deploy-schedules surface. Framework-free
-// so they can be unit-tested and mirror the web client (client/src/utils/
-// deploySchedules.ts). Backend contract lives in server/deploy/
-// deployment-schedule-store.ts (cron/timezone validation + limits).
+// Per-environment deploy-schedules. Mirror of client/src/utils/deploySchedules.ts.
 
 export interface DeploySchedule {
   id: string;

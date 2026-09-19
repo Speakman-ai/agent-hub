@@ -310,7 +310,7 @@ export interface SessionEnv {
    */
   readonly worktreeIo: SessionWorktreeIo;
 
-  // ── Lifecycle / reap hooks ─────────────────────────────────────
+  // Lifecycle / reap hooks
   /** Processes + PTYs currently alive inside the env. */
   liveProcessCount(): number;
   /**

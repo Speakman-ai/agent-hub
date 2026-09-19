@@ -1,5 +1,5 @@
 /**
- * finalize-ci-config.ts — REST surface for a project's SERVER-STORED Finalize
+ * REST surface for a project's SERVER-STORED Finalize
  * CI config (the fallback used when a repo does not commit `.agent-hub/ci.yaml`).
  *
  *   - `GET    /api/projects/:projectId/finalize/ci-config`
@@ -60,7 +60,7 @@ export default function createFinalizeCiConfigRoutes(deps: RouteDeps): Router {
   const { stmts, findProject } = deps;
   const router = Router();
 
-  // ── GET stored config(s) ────────────────────────────────────────────
+  // GET stored config(s)
   router.get(
     '/api/projects/:projectId/finalize/ci-config',
     requireRole('Admin'),
@@ -79,7 +79,7 @@ export default function createFinalizeCiConfigRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── PUT (upsert) a stored config ────────────────────────────────────
+  // PUT (upsert) a stored config
   router.put(
     '/api/projects/:projectId/finalize/ci-config',
     requireRole('Admin'),
@@ -135,7 +135,7 @@ export default function createFinalizeCiConfigRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── DELETE a stored config ──────────────────────────────────────────
+  // DELETE a stored config
   router.delete(
     '/api/projects/:projectId/finalize/ci-config',
     requireRole('Admin'),

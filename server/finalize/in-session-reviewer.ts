@@ -1,5 +1,5 @@
 /**
- * in-session-reviewer.ts — Finalize Code Changes, in-session reviewer driver.
+ * Finalize Code Changes, in-session reviewer driver.
  *
  * Replaces the out-of-band reviewer that produced a JSON envelope with a
  * driver that:
@@ -366,7 +366,7 @@ export async function runReviewerTurn(
     }
   }
 
-  // ─── Reviewer turn body ────────────────────────────────────────────
+  // Reviewer turn body
   // Hoisted into a closure so the attach/eject lifecycle above can wrap
   // it in a single try/finally without re-indenting the whole body. The
   // `sessionId` / `reviewer` / `session` params shadow the outer consts
@@ -834,8 +834,6 @@ export async function runReviewerTurn(
  */
 export const REVIEWER_GENERAL_FEEDBACK_ANCHOR = 'General review feedback';
 
-// ─── Helpers ──────────────────────────────────────────────────────────
-
 /**
  * Pick the project's reviewer-role agent id. Returns the first agent
  * with `role: 'reviewer'`; the autonomy + spawn-cleanup paths already
@@ -937,7 +935,7 @@ REMINDER — Finalize local-diff review (read-only). This survives even if the t
  * enriched workspace prompt, then a read-only reinforcement that no GitHub
  * PR exists yet.
  *
- * Pure (no I/O), exported for tests.
+ * No I/O, exported for tests.
  */
 export function composeReviewerSystemPrompt(
   enrichedPrompt: string,

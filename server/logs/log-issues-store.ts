@@ -2,7 +2,7 @@
  * Issue-group store for repeated-error grouping (decision LOG-GROUP).
  *
  * An **issue** is one distinct error fingerprint (see `log-fingerprint.ts`).
- * This module owns the aggregate + lifecycle state that sits ON TOP of the
+ * Aggregate + lifecycle state that sits ON TOP of the
  * immutable raw records:
  *
  *   - `recordIssueOccurrence` runs on the write path, inside the same
@@ -71,7 +71,7 @@ export interface LogIssueReleaseRow {
   event_count: number;
 }
 
-// ── Write path ──────────────────────────────────────────────────────────────
+// Write path
 
 /**
  * Fold one committed record occurrence into its issue group. MUST be called
@@ -175,7 +175,7 @@ export function recordIssueOccurrence(
   return { issueId, reopened };
 }
 
-// ── Read path ─────────────────────────────────────────────────────────────
+// Read path
 
 export interface IssueListQuery {
   projectId: string;
@@ -592,7 +592,7 @@ export function releaseIssueFixClaimsForSession(sessionId: string): void {
   releaseIssueFixClaimsBy('session_id', sessionId);
 }
 
-// ── Serialization ───────────────────────────────────────────────────────────
+// Serialization
 
 /**
  * Wire (camelCase) representation of an issue for the REST API.

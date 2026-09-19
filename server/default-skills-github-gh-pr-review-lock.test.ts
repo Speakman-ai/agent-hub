@@ -19,7 +19,6 @@
  * lock (`AGENT_HUB_REVIEWER_ROLE_LOCK=1`) covers those for reviewers.
  *
  * Notes
- * -----
  * The script sources `_common.sh`, which sourced `require_gh_cli` at
  * top level (hard-exits if `gh` is missing). To avoid coupling this
  * test to whether `gh` is installed in CI, we synthesise a tiny `gh`

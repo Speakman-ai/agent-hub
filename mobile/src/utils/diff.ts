@@ -1,9 +1,6 @@
 /**
- * Mobile twin of `client/src/utils/diff.js`.
- *
- * Pure, dependency-free helpers for rendering compact inline diffs for
- * file-modifying tools (Edit, Write) in the chat stream. Kept in sync with
- * the web util so both clients produce the same structure.
+ * Mobile twin of `client/src/utils/diff.js`. Compact inline diffs for
+ * Edit/Write tools; keep in sync with web.
  */
 /** Returns true for tools that modify files (Edit, Write). */
 export function isFileModifyingTool(tool: any) {

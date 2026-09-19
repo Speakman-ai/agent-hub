@@ -1,13 +1,7 @@
 /**
- * Provisioning status — pure state model + helpers.
- *
- * Drives the "New Project → Provisioning" UI after the Adaptive Questionnaire
- * is submitted. The backend scaffold-builder runs a
- * short-lived scaffold container that creates/pushes the GitHub repo and
- * lands the starter tree. While it runs, the server streams phase events
- * and raw log lines over an event channel (SSE or WS). This module is the
- * pure reducer over those events — deliberately decoupled from transport
- * so it can be unit-tested without spinning up a server.
+ * New Project → Provisioning UI state after the Adaptive Questionnaire.
+ * The scaffold-builder streams phase events and log lines (SSE or WS); this
+ * is the reducer over those events.
  *
  * Event shape (server → client):
  *   {type:'phase', phase:'validate'|'mint-token'|'copy-template'|'rewrite-pkg'|'wire-tests'|'wire-lint'|'git-init'|'gh-create'|'gh-push', status:'started'|'ok'|'failed'|'skipped', message?, at:<ISO>}
@@ -72,8 +66,7 @@ export function initialState({
 }
 
 /**
- * Pure reducer: apply one server event to the previous state. Unknown
- * event types are no-ops (forward-compat with future phases).
+ * Apply one server event to the previous state. Unknown types are no-ops.
  *
  * We cap the log buffer at LOG_BUFFER_MAX to keep long-running tails from
  * ballooning memory. The UI can show "…truncated" when state.logs.length

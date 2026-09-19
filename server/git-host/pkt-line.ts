@@ -1,10 +1,10 @@
 /**
- * pkt-line.ts — minimal pkt-line encoding for the git smart-HTTP protocol.
+ * Minimal pkt-line encoding for the git smart-HTTP protocol.
  *
  * The smart-HTTP ref advertisement (`GET /info/refs?service=…`) must begin
  * with a pkt-line announcing the service, followed by a flush packet,
- * before the raw `--advertise-refs` output is streamed. This module holds
- * only the encoding side — Agent Hub never needs to *parse* pkt-lines
+ * before the raw `--advertise-refs` output is streamed. Encoding only;
+ * Agent Hub never needs to *parse* pkt-lines
  * because request/response payloads are piped verbatim between the HTTP
  * socket and the spawned `git upload-pack` / `git receive-pack` process.
  *

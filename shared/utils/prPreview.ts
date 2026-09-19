@@ -1,13 +1,5 @@
-// Pure view-state derivation for the PR-scoped preview control.
-//
-// The server's `GET /pulls/:number/preview/state` returns
-// `{ sessionId, preview }` where `preview` is an `agenthub_preview` snapshot
-// event (or null). This maps that (plus a transient client "starting" flag,
-// set the instant the user clicks Enable and cleared once a poll returns a
-// real snapshot) to the four render states the PR page shows.
-//
-// Keeping it pure makes the loading/ready/failed logic unit-testable without
-// mounting the component or hitting the network.
+// PR preview control: map `/preview/state` plus a transient `pending` flag
+// (Enable just clicked) to idle/loading/ready/failed.
 
 export type PrPreviewStatus = 'idle' | 'loading' | 'ready' | 'failed';
 
@@ -29,11 +21,7 @@ interface PreviewStateResponse {
   } | null;
 }
 
-/**
- * @param state The `/preview/state` response, or null before the first fetch.
- * @param opts  `pending: true` — the user just clicked Enable and no snapshot
- *   has come back yet, so render loading even though `preview` is still null.
- */
+/** `pending: true` means Enable was just clicked and no snapshot has arrived. */
 export function prPreviewViewState(
   state: PreviewStateResponse | null | undefined,
   opts: { pending?: boolean } = {},
@@ -60,13 +48,12 @@ export function prPreviewViewState(
           logTail,
         };
       default:
-        // Unknown kind — treat as loading rather than claiming success.
+        // Unknown kind: treat as loading, not success.
         return { status: 'loading', url: null, reason: null, logTail };
     }
   }
 
-  // No snapshot. A freshly-clicked Enable shows loading until the first poll;
-  // otherwise there is simply no preview running.
+  // No snapshot. Fresh Enable → loading; otherwise idle.
   if (opts.pending) {
     return { status: 'loading', url: null, reason: null, logTail: [] };
   }
@@ -74,13 +61,8 @@ export function prPreviewViewState(
 }
 
 /**
- * Whether the PR page should surface the preview control for this detail.
- * Native (Agent Hub-hosted) PRs only, only when the project has a dev server
- * configured (`preview_available`), and only while the PR is OPEN. Gating to
- * open PRs is load-bearing: a merged PR's preview is torn down automatically
- * on merge, so re-showing the control (or auto-starting via
- * `preview_default_on`) on a merged/closed PR would fight that teardown. The
- * server enforces the same open-only invariant on the start route.
+ * Native Hub PRs only, with a configured dev server, and only while OPEN.
+ * A merged PR's preview is torn down on merge.
  */
 export function prPreviewAvailable(
   detail:
@@ -99,17 +81,8 @@ export function prPreviewAvailable(
 }
 
 /**
- * Whether a live session worktree actually backs this PR's preview. A PR's
- * preview IS the worktree preview for the session that owns its head branch;
- * once that session is archived/deleted the worktree is reaped and
- * `POST /preview/start` 409s with "No live session worktree is associated with
- * this pull request". The server reports this as `preview_session_available`
- * so the client can show an explanatory note instead of an Enable button that
- * only errors.
- *
- * Defaults to `true` when the field is absent (older servers, or a non-native
- * detail shape) so this never hides a working control — `prPreviewAvailable`
- * remains the primary gate.
+ * True unless the server reports no live session worktree (`preview_session_available`).
+ * Defaults true when the field is absent so older servers keep a working control.
  */
 export function prPreviewSessionLive(
   detail: { preview_session_available?: boolean } | null | undefined,

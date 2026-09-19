@@ -9,7 +9,7 @@
  *     (`coerceSessionEnvAdapterMode`), and the *availability policy* —
  *     a forced `sysbox` that fails the probe degrades to host with a
  *     loud warning so the Hub never boots a runtime that cannot spawn.
- *   - This module owns the adapter registry, construction
+ *   - Adapter registry, construction
  *     (`createSessionEnv`), and the **pure, strict** resolver below:
  *     explicit `sysbox` + unavailable/unregistered **throws** — an
  *     explicitly requested isolation boundary never silently degrades

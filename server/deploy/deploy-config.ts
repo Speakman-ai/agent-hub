@@ -1,5 +1,5 @@
 /**
- * deploy-config.ts — `.agent-hub/deploy.yaml` parser for the Deployment Module.
+ * `.agent-hub/deploy.yaml` parser for the Deployment Module.
  *
  * A project declares one or more deploy ENVIRONMENTS (dev / staging /
  * production / …); each environment is an ordered list of shell `steps:` that
@@ -49,9 +49,8 @@
  *   - Unknown top-level / environment / step keys are HARD ERRORS — we never
  *     silently drop a directive an author believed they enabled.
  *
- * Everything here is PURE (string in → validated object out); IO (reading the
- * file off disk) is the thin {@link loadDeployConfig} wrapper so the parser is
- * trivially unit-testable.
+ * Everything here is string in → validated object out; IO (reading the
+ * file off disk) is the thin {@link loadDeployConfig} wrapper.
  */
 import { promises as fs } from 'fs';
 import { parse as parseYaml, YAMLParseError } from 'yaml';

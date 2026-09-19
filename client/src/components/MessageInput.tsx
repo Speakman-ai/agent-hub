@@ -209,7 +209,7 @@ function MessageInput(
     }
   }, [disabled]);
 
-  // ── Slash-command autocomplete helpers ────────────────────────
+  // Slash-command autocomplete helpers
 
   const filteredSkills = (skills || []).filter((s: any) =>
     slashQuery === null
@@ -290,7 +290,7 @@ function MessageInput(
     [value, slashStart, closeSlash],
   );
 
-  // ── Voice transcription ───────────────────────────────────────
+  // Voice transcription
 
   // Inserts `text` at the captured caret position (or appends to the end
   // if no anchor was captured). Joins with a single space when splicing
@@ -591,7 +591,7 @@ function MessageInput(
     };
   }, [teardownRecording]);
 
-  // ── Image helpers (unchanged) ─────────────────────────────────
+  // Image helpers (unchanged)
 
   // Resize image using canvas to keep uploads reasonable
   const resizeImage = useCallback((dataUrl: any, maxDim: any = 2000) => {
@@ -682,7 +682,7 @@ function MessageInput(
     });
   }, []);
 
-  // ── Input handlers ────────────────────────────────────────────
+  // Input handlers
 
   const handleInputChange = (e: any) => {
     const val = e.target.value;

@@ -1,9 +1,4 @@
-// Pure helpers for the deployment notification-recipients audit surface.
-// Framework-free so they can be unit-tested. Mirror of
-// client/src/utils/deployRecipients.ts. Backend contract lives in the
-// Admin-gated read endpoint
-// GET /api/projects/:projectId/deployments/:deploymentId/notification-recipients
-// (server/release-notification-outbox.ts → releaseNotificationRecipientItem).
+// Notification-recipients audit. Mirror of client/src/utils/deployRecipients.ts.
 
 export interface ReleaseNotificationRecipient {
   id: string;

@@ -1,5 +1,5 @@
 /**
- * stuck-run-clock-sql.ts — the single definition of a Finalize run's progress
+ * The single definition of a Finalize run's progress
  * clock, shared by the two statements that must agree on it.
  *
  * WHY A SHARED FRAGMENT. The stuck-run reaper reads this expression twice: once

@@ -39,7 +39,7 @@ import type {
   StepLogSnapshot,
 } from './finalize-log-store.js';
 
-// ─── Fake log store ─────────────────────────────────────────────────
+// Fake log store
 // Captures what each step would upload so tests assert on the blob the store
 // receives instead of on per-line chat messages (the old contract).
 function makeLogStore(): {
@@ -64,7 +64,7 @@ function makeLogStore(): {
   return { store, writes };
 }
 
-// ─── Fakes ──────────────────────────────────────────────────────────
+// Fakes
 
 interface FakeStmts {
   getFinalizeRun: { get: ReturnType<typeof vi.fn> };
@@ -240,7 +240,7 @@ const SESSION_ID = 'sess-1';
 const RUN_ID = 'run-1';
 const WORKTREE = '/tmp/finalize-step-runner-fake';
 
-// ─── Tests ──────────────────────────────────────────────────────────
+// Tests
 
 describe('runJobSteps — per-step timeout_minutes', () => {
   it('passes a step-level timeout_minutes as the spawn deadline, tightening the budget', async () => {
@@ -1823,7 +1823,7 @@ describe('defaultSpawnStep — production wiring', () => {
   });
 });
 
-// ─── Stop Finalize — cancel signal kills the in-flight step ─────────
+// Stop Finalize — cancel signal kills the in-flight step
 //
 // Regression: pressing Stop during the checks phase used to flip the DB row to
 // `cancelled` but leave the running test step executing to completion (the job
@@ -1911,8 +1911,6 @@ describe('runStepsSequence — Stop Finalize kills the in-flight step', () => {
   });
 });
 
-// ─── Helpers ────────────────────────────────────────────────────────
-
 function makeMonoClock(): () => number {
   let t = 1_000;
   return () => {
@@ -1937,7 +1935,7 @@ function stripPrefixForTail(s: string): string {
   return s.replace(/^\[stdout\] |^\[stderr\] /, '');
 }
 
-// ─── Output flood regression ────────────────────────────────────────
+// Output flood regression
 //
 // A single verbose CI step (Cypress E2E, tsc/webpack ANSI spam, DB migration
 // chatter) once wrote one `messages` row + one `message` WebSocket broadcast
@@ -1997,7 +1995,7 @@ describe('runJobSteps — output never floods the message stream', () => {
   });
 });
 
-// ─── Terminal state must not block on the log upload (regression) ────
+// Terminal state must not block on the log upload (regression)
 //
 // The store write is best-effort. If announceStepEnd is awaited BEHIND the
 // upload (the original bug), a slow/hung S3 or local backend keeps the step

@@ -168,7 +168,7 @@ function isSessionFinalizeFullyValidated(stmts: Stmts, sessionId: string): boole
  * forwarded session, finalize trigger) thread `stmts` and get the full
  * wire shape; transient broadcasts that don't have it stay null.
  *
- * ─── Contract for new callers ──────────────────────────────────────────
+ * Contract for new callers
  *
  * If you are wiring a NEW emitter that broadcasts a session payload to
  * the client (a `session_created` / `session-updated` / similar event),

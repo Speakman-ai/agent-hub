@@ -1,7 +1,7 @@
 /**
- * push-gate.ts — Finalize Code Changes §9 push gate.
+ * Finalize Code Changes §9 push gate.
  *
- * Pure, synchronous evaluation of the three conditions that must hold
+ * Synchronous evaluation of the three conditions that must hold
  * before the orchestrator pushes a branch + opens a PR (per design doc
  * `finalize-code-changes-architecture-v0`, §9):
  *
@@ -31,7 +31,7 @@
 
 import type { ReviewerVerdict } from './reviewer-dispatch.js';
 
-// ─── Public types ─────────────────────────────────────────────────────
+// Public types
 
 /**
  * The signals the gate decides on. The orchestrator captures these
@@ -110,7 +110,7 @@ export type PushGateRefusalCode =
   | 'reviewer_verdict_missing'
   | 'head_sha_moved';
 
-// ─── Public API ───────────────────────────────────────────────────────
+// Public API
 
 /**
  * Evaluate the §9 push gate against this iteration's signals.
@@ -139,7 +139,7 @@ export type PushGateRefusalCode =
  *   // → { kind: 'pass', validatedHeadSha: 'abc' }
  */
 export function evaluatePushGate(inputs: PushGateInputs): PushGateOutcome {
-  // ── §9 condition 1: every declared step exited 0 ───────────────────
+  // §9 condition 1: every declared step exited 0
   if (inputs.stepStatus !== 'success') {
     return {
       kind: 'refuse',
@@ -148,7 +148,7 @@ export function evaluatePushGate(inputs: PushGateInputs): PushGateOutcome {
     };
   }
 
-  // ── §9 condition 2: reviewer approved ──────────────────────────────
+  // §9 condition 2: reviewer approved
   if (inputs.reviewerVerdict === null) {
     // Reviewer phase failed to produce a verdict. The orchestrator
     // shouldn't have called the gate in that case, but this branch
@@ -168,7 +168,7 @@ export function evaluatePushGate(inputs: PushGateInputs): PushGateOutcome {
     };
   }
 
-  // ── §9 condition 3: head_sha unchanged through review + steps ──────
+  // §9 condition 3: head_sha unchanged through review + steps
   // Inside one loop iteration, headBeforePhases is the sha the reviewer
   // + steps actually validated. If headAtPushGate differs, a commit
   // landed *during* this iteration — the green + approved signals are

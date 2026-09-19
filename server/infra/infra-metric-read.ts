@@ -1,5 +1,5 @@
 /**
- * infra-metric-read.ts — the pure half of the chart read path (decision
+ * The pure half of the chart read path (decision
  * INFRA-UI).
  *
  * Three problems live here, all of them IO-free so they can be tested without
@@ -143,7 +143,7 @@ export function aggregationForStat(stat: string): BucketAggregation {
  * The bucket arrives from SQL carrying all four aggregates because computing
  * them together costs one scan, and choosing between them is a decision about
  * meaning rather than about storage — so it is made here, next to
- * {@link aggregationForStat}, and unit-tested without a database.
+ * {@link aggregationForStat}.
  */
 export function selectBucketValue(
   aggregation: BucketAggregation,

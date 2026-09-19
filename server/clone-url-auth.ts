@@ -1,5 +1,5 @@
 /**
- * clone-url-auth.ts — Classify clone URLs and inject OAuth/PAT credentials.
+ * Classify clone URLs and inject OAuth/PAT credentials.
  *
  * The "Clone from GitHub" wizard accepts arbitrary git URLs but the only
  * URL family we can authenticate transparently is GitHub HTTPS. SSH URLs
@@ -9,8 +9,7 @@
  * (gitlab, bitbucket, plain `https://github.com/...` for public repos)
  * still pass through unchanged.
  *
- * This module is pure — no DB, no spawn — so the URL-rewrite logic can
- * be unit-tested without bringing up the Express app or the orgs DB.
+ * No DB, no spawn.
  */
 
 export type CloneUrlKind = 'github-https' | 'github-ssh' | 'other';
@@ -47,7 +46,7 @@ export function classifyCloneUrl(url: string): ParsedCloneUrl {
   const fail: ParsedCloneUrl = { kind: 'other', original: url, owner: null, repo: null };
   if (!trimmed) return fail;
 
-  // ── GitHub HTTPS ────────────────────────────────────────────────
+  // GitHub HTTPS
   // Match http(s)://[www.]github.com/owner/repo[.git][/]
   const httpsMatch = trimmed.match(
     /^https?:\/\/(?:www\.)?github\.com\/([^/\s?#]+)\/([^/\s?#]+?)(?:\.git)?\/?(?:[?#].*)?$/i,
@@ -61,13 +60,13 @@ export function classifyCloneUrl(url: string): ParsedCloneUrl {
     };
   }
 
-  // ── GitHub SSH (scp-like) ───────────────────────────────────────
+  // GitHub SSH (scp-like)
   const scpMatch = trimmed.match(/^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i);
   if (scpMatch) {
     return { kind: 'github-ssh', original: url, owner: scpMatch[1], repo: scpMatch[2] };
   }
 
-  // ── GitHub SSH (ssh:// URL form) ────────────────────────────────
+  // GitHub SSH (ssh:// URL form)
   const sshUrlMatch = trimmed.match(
     /^ssh:\/\/git@github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i,
   );

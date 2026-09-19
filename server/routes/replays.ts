@@ -95,7 +95,7 @@ const MAX_UNCOMPRESSED_BYTES = (() => {
 // cannot be reconstructed, so we refuse it rather than store a dead ref.
 const RRWEB_FULL_SNAPSHOT = 2;
 
-// ── Chunked-append endpoint (POST /api/replays/:id/events) ──────────
+// Chunked-append endpoint (POST /api/replays/:id/events)
 // A streaming client picks an id and flushes batches over the lifetime of a
 // session, so the per-IP budget is far more generous than the one-shot ingest.
 const EVENTS_RATE_LIMIT_MAX = 600; // ~10 batches/min/IP over the hour window
@@ -121,7 +121,7 @@ const SEGMENT_PART_RE = /^[A-Za-z0-9._-]{1,200}$/;
 // index_in_view path component: a small non-negative integer.
 const SEGMENT_INDEX_RE = /^\d{1,7}$/;
 
-// ─── Rate limit ──────────────────────────────────────────────────
+// Rate limit
 export const _rateBuckets = new Map<string, { count: number; resetAt: number }>();
 export const _eventsRateBuckets = new Map<string, { count: number; resetAt: number }>();
 // Token-authenticated ingest budget, keyed by project id (not IP).
@@ -185,7 +185,7 @@ function bucketPeek(
   return { ok: true, retryAfterMs: 0 };
 }
 
-// ─── Validation ──────────────────────────────────────────────────
+// Validation
 
 export interface ReplayEvent {
   type: number;
@@ -316,7 +316,7 @@ export function decodeReplayBatchBody(
   }
 }
 
-// ─── Route factory ───────────────────────────────────────────────
+// Route factory
 
 export default function createReplayRoutes(deps: RouteDeps): Router {
   const { serverDir, stmts, config, findProject } = deps;
@@ -509,7 +509,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Chunked append (public) ──────────────────────────────────────
+  // Chunked append (public)
   // A streaming client picks a replay id and POSTs gzipped batches of rrweb
   // events over the lifetime of a capture. The first batch creates the replay
   // (and must carry a full snapshot); later batches append. Public + CORS *,
@@ -680,7 +680,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Segment append (public, view-scoped) ─────────────────────────
+  // Segment append (public, view-scoped)
   // The forward write path for continuous capture: instead of re-uploading a
   // growing monolithic blob, the recorder streams VIEW-SCOPED segments — one
   // gzipped object per `(sessionId, viewId, index_in_view)` slot, an O(1) append
@@ -850,7 +850,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Read: per-project replay policy (public) ──────────────────────
+  // Read: per-project replay policy (public)
   // Server-delivered replay config a recorder fetches at boot to learn the
   // sample rate / continuous-tier opt-in for its project. Replaces the legacy
   // per-browser localStorage sample rate so the policy applies to every user.
@@ -894,7 +894,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     res.json(policy);
   });
 
-  // ── Read: metadata ────────────────────────────────────────────────
+  // Read: metadata
   // Authenticated (not in PUBLIC_PATHS / no CORS *). Replay events can carry
   // masked DOM content, so reads require normal Hub auth.
   router.get('/api/replays/:id', (req: Request, res: Response) => {
@@ -903,7 +903,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     return res.json(toReplayView(row));
   });
 
-  // ── Flag / unflag a capture for extended retention ────────────────
+  // Flag / unflag a capture for extended retention
   // Two-tier retention: an operator keeps an individual session past the default
   // window (up to 15 months). `{ extend: true }` stamps an absolute
   // `retained_until` = now + the tenant's extension window (clamped [1,15]
@@ -950,7 +950,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     return res.json(toReplayView(updated ?? row));
   });
 
-  // ── Read: paginated events ────────────────────────────────────────
+  // Read: paginated events
   // Large captures must not load in one request — the blob is gunzipped once
   // server-side and sliced by `offset`/`limit` (defaults applied + capped in
   // `paginateEvents`). The page carries `total`/`hasMore` so callers can walk.
@@ -978,7 +978,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ── Read: agent-readable transcript ───────────────────────────────
+  // Read: agent-readable transcript
   // The events endpoint above returns raw rrweb — a DOM-diff stream keyed by
   // opaque node ids, useless to anything but a player. This renders the same
   // capture as a timeline (clicks, inputs, navigations, console errors,
@@ -1022,7 +1022,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ── Read: segmented-capture playback manifest ─────────────────────
+  // Read: segmented-capture playback manifest
   // A `segmented` capture (server/replays/segment-store.ts) stores its bytes as
   // append-only per-segment objects indexed by `rum_segments`, keyed by the
   // client-minted session id (not a `session_replays` row). Playback lists the
@@ -1040,7 +1040,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     return res.json(buildSessionSegmentManifest(String(req.params.sessionId), segments));
   });
 
-  // ── Read: one segment's decoded events ────────────────────────────
+  // Read: one segment's decoded events
   // The player fetches each manifest segment here and concatenates the events
   // client-side. The segment must belong to the path session id (keeps URLs
   // coherent and blocks cross-session id-guessing), and is authorized on its own
@@ -1107,7 +1107,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
 }
 
 /**
- * May `caller` read this replay? Pure (no IO) so it can be unit-tested.
+ * May `caller` read this replay? No IO.
  *
  *   - Project-linked replay: defer to `canViewProject` on the resolved project.
  *     A dangling `project_id` (project deleted / not found → `project` is null)

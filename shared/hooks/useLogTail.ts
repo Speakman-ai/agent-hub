@@ -1,28 +1,7 @@
 /**
- * Live application-log tail hook (LOG-QUERY WebSocket contract), shared by the
- * web Logs module (`client/src/components/logs/LiveLogsView.tsx`) and the
- * mobile one (`mobile/src/screens/LogsScreen.tsx`).
- *
- * Wire protocol (server `websocket.ts`):
- *   → { type: 'logs_subscribe', projectId, cursor, seed?, sinceUnixNano? }
- *   ← { type: 'logs_tail_backfill', projectId, records[], cursor, nextCursor }
- *   ← { type: 'logs_tail',          projectId, records[], cursor, dropped }
- *   ← { type: 'logs_tail_recovery_required', projectId, dropped }  (then close 1013)
- *
- * The hook owns a dedicated socket so the tail is isolated from the main app
- * WebSocket. It reconnects with backoff, always re-subscribing from the last
- * durable cursor so a bounded-tail loss replays through backfill instead of
- * leaving a silent gap. `mergeTailRecords` dedupes replayed ids by id, so a
- * reconnect never doubles rows.
- *
- * Pausing freezes the visible list: incoming records buffer (bounded) and the
- * cursor still advances so reconnect math stays correct; resume merges them in.
- *
- * `seed: true` asks the server for the newest window page in one frame instead
- * of a forward drain from the cursor. That is lossy (everything older than the
- * page is skipped, with no continue-token), so the hook sends it only while it
- * holds no records at all, the one state where there is nothing to lose. Every
- * reconnect that carries accepted rows drains forward instead.
+ * Live log tail (LOG-QUERY WebSocket), isolated from the main app socket.
+ * Reconnects from the last cursor. `seed: true` is lossy (newest page only);
+ * send it only while we hold no records.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -46,50 +25,25 @@ export interface SocketLike {
 }
 
 export interface UseLogTailOptions {
-  /** Max records retained in the visible tail (bounded client tail). */
   cap?: number;
-  /** Base reconnect delay in ms (exponential backoff, capped). */
   reconnectBaseMs?: number;
   maxReconnectMs?: number;
-  /**
-   * Platform seam: resolves the authenticated WebSocket URL to connect to.
-   * Web passes `getWsUrl` from `client/src/utils/connection`, mobile passes the
-   * one from `mobile/src/utils/config`. Required so this hook holds no
-   * knowledge of how either app stores its connection config.
-   */
   getWsUrl: () => string;
-  /**
-   * Socket factory. Defaults to the ambient global `WebSocket`, which is the
-   * browser's on web and React Native's on mobile.
-   */
   createSocket?: (url: string) => SocketLike;
-  /**
-   * Lower bound (nanoseconds) on the initial backfill window. Seeds the tail
-   * with only recent records instead of the full retained history. Changing it
-   * tears the socket down and re-seeds from the new window. Undefined = full
-   * history ("All time").
-   */
+  /** Lower bound (ns) on the initial backfill. Undefined = all time. Changing it reseeds. */
   sinceUnixNano?: number;
 }
 
 export interface UseLogTailResult {
   records: LogRecord[];
   status: LogTailStatus;
-  /** Cumulative records the server told us were dropped (bounded-tail loss). */
   dropped: number;
-  /** Dismiss the dropped-count notice once the user has acknowledged it. */
   clearDropped: () => void;
   paused: boolean;
   setPaused: (paused: boolean) => void;
-  /** Buffered records waiting while paused. */
   pendingCount: number;
-  /** Merge buffered records into the visible tail and stay live. */
   resume: () => void;
-  /**
-   * Empty the visible tail locally (after a server-side "Clear logs" purge).
-   * Clears displayed + buffered records and rewinds the cursor so the socket
-   * stays connected and only surfaces records ingested after the purge.
-   */
+  /** Local clear after a server-side purge: rewind cursor, stay connected. */
   reset: () => void;
   error: string | null;
 }
@@ -117,12 +71,8 @@ export function useLogTail(
   const [pendingCount, setPendingCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  // Refs survive reconnects without re-triggering the connect effect.
   const cursorRef = useRef(0);
-  // Has this subscription ever durably accepted a record? Drives the `seed`
-  // flag: it is the precondition for asking for a lossy newest-page seed, and
-  // it is deliberately NOT the same fact as `cursorRef.current === 0` (an empty
-  // frame advances the cursor without delivering rows).
+  // Not the same as cursor===0: an empty frame advances the cursor without rows.
   const hasRecordsRef = useRef(false);
   const pausedRef = useRef(false);
   const pendingRef = useRef<LogRecord[]>([]);
@@ -131,12 +81,8 @@ export function useLogTail(
   const attemptsRef = useRef(0);
   const closedRef = useRef(false);
 
-  // Latest-value refs. The socket handlers and reconnect timers are long-lived
-  // (a timer may fire seconds after the render that scheduled it), so they must
-  // never close over a specific render's props. Reading current config through
-  // refs keeps a reconnect bound to the *current* project/options rather than a
-  // stale closure — the effect below still tears the socket down and reconnects
-  // whenever `projectId` actually changes.
+  // Handlers/timers must not close over a stale render; the effect still
+  // reconnects when `projectId` changes.
   const capRef = useRef(cap);
   capRef.current = cap;
   const createSocketRef = useRef(createSocket);
@@ -152,8 +98,6 @@ export function useLogTail(
   const sinceUnixNanoRef = useRef(sinceUnixNano);
   sinceUnixNanoRef.current = sinceUnixNano;
 
-  // Mutually-recursive connect/scheduleReconnect, kept stable via refs so the
-  // cycle needs no dependency array and no handler ever outlives its context.
   const connectRef = useRef<() => void>(() => {});
   const scheduleReconnectRef = useRef<() => void>(() => {});
 
@@ -199,8 +143,6 @@ export function useLogTail(
       setStatus('open');
       setError(null);
       try {
-        // `buildLogSubscribeFrame` owns the seed decision (see its doc): a seed
-        // is lossy, so it is requested only while we hold no records.
         socket.send(
           JSON.stringify(
             buildLogSubscribeFrame({
@@ -212,8 +154,7 @@ export function useLogTail(
           ),
         );
       } catch {
-        // A send failure on a freshly-open socket is a transport fault; the
-        // close handler will schedule a reconnect from the same cursor.
+        // Close handler reconnects from the same cursor.
       }
     };
 
@@ -224,15 +165,10 @@ export function useLogTail(
       } catch {
         return;
       }
-      // This socket only ever accepts frames for the project it subscribed to.
       if (msg.projectId && msg.projectId !== pid) return;
       const type = msg.type;
       if (type === 'logs_tail_backfill' || type === 'logs_tail') {
         const recs = Array.isArray(msg.records) ? (msg.records as LogRecord[]) : [];
-        // Backfill frames advance by the server's `nextCursor` continue-token
-        // (falling back to `cursor` on the final page / live frames), so a
-        // reconnect never resubscribes from a stale page cursor and replays the
-        // same backfill window. `applyIncoming` keeps the advance monotonic.
         const nextCursor = resolveTailCursor(msg, cursorRef.current);
         applyIncoming(recs, nextCursor);
         if (typeof msg.dropped === 'number' && msg.dropped > 0) {
@@ -242,15 +178,13 @@ export function useLogTail(
         if (typeof msg.dropped === 'number' && msg.dropped > 0) {
           setDropped((d) => d + (msg.dropped as number));
         }
-        // Server closes right after; reconnect replays from cursorRef.
+        // Server closes next; reconnect replays from cursorRef.
       } else if (type === 'error') {
         setError(typeof msg.error === 'string' ? msg.error : 'Log stream error');
       }
     };
 
-    socket.onerror = () => {
-      // Surface nothing here; onclose drives the reconnect + status.
-    };
+    socket.onerror = () => {};
 
     socket.onclose = () => {
       if (socketRef.current === socket) socketRef.current = null;
@@ -282,13 +216,7 @@ export function useLogTail(
   }, []);
 
   const reset = useCallback(() => {
-    // Purge barrier for a destructive "Clear logs": the server store is now
-    // empty, so we must tear the current socket down — detaching its handlers
-    // first — and reconnect from a rewound cursor. Detaching `onmessage`
-    // guarantees any `logs_tail` frame that was queued before/during the DELETE
-    // can never land after this point and re-add now-deleted rows. The fresh
-    // socket resubscribes from cursor 0 (the start of the now-empty history), so
-    // the live view reflects only records ingested AFTER the purge.
+    // Detach handlers first so a queued logs_tail cannot re-add purged rows.
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
@@ -310,8 +238,6 @@ export function useLogTail(
     setRecords([]);
     setPendingCount(0);
     setDropped(0);
-    // Reconnect immediately unless the component is tearing down or has no
-    // project (the mount effect owns connection in those cases).
     if (!closedRef.current && projectIdRef.current) {
       setStatus('connecting');
       connectRef.current();
@@ -335,10 +261,7 @@ export function useLogTail(
     setStatus('connecting');
     connectRef.current();
     return () => {
-      // Tear down before the next project connects. Setting closedRef first and
-      // nulling the socket handlers means a late async `onclose` (real
-      // WebSocket) can neither flip status nor schedule a cross-project
-      // reconnect, and any pending reconnect timer is cleared here.
+      // closedRef first so a late onclose cannot reconnect across projects.
       closedRef.current = true;
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
@@ -355,8 +278,7 @@ export function useLogTail(
         }
       }
     };
-    // `sinceUnixNano` is a primitive, so a changed time window tears the socket
-    // down (cursor rewinds to 0 above) and re-seeds from the new window.
+    // Changing the time window reseeds from cursor 0.
   }, [projectId, sinceUnixNano]);
 
   return {

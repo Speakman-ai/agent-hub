@@ -1,5 +1,5 @@
 /**
- * Designs store — Claude-Design-style canvas.
+ * Claude-Design-style canvas store.
  *
  * Phase 1 MVP. Designs are hub-level (not project-scoped) with optional links
  * to N projects. Each design has an on-disk artifact directory at
@@ -7,7 +7,7 @@
  * Claude Code CLI process and (b) the source for an `express.static` mount
  * rendered in an iframe.
  *
- * This module owns both the DB rows (designs, design_projects, design_messages)
+ * Owns both the DB rows (designs, design_projects, design_messages)
  * and the filesystem artifact dir lifecycle. Routes + the chat handler call
  * into these helpers.
  */
@@ -266,7 +266,7 @@ export function listFilesUnder(root: string): DesignFileEntry[] {
   return out;
 }
 
-// ─── Internal ───────────────────────────────────────────────────────
+// Internal
 
 function hydrate(row: DesignRow, lookup: (id: string) => Project | null): DesignWithProjects {
   const links = getStmts().listDesignProjects.all(row.id) as DesignProjectRow[];

@@ -104,7 +104,7 @@ export function updateUserUsername(id: string, username: string): UserRow | null
   return getUserById(id);
 }
 
-// ── MFA state + JWT revocation version ──────────────────────────────
+// MFA state + JWT revocation version
 
 export interface UserMfaState {
   userId: string;
@@ -345,7 +345,7 @@ function parseRecoveryHashes(raw: string | null): string[] {
   }
 }
 
-// ── Per-user engine credential encryption-at-rest ──────────────────
+// Per-user engine credential encryption-at-rest
 //
 // Every per-user engine credential column (anthropic_api_key,
 // claude_code_oauth_token, cursor_api_key, gemini_api_key,
@@ -475,7 +475,7 @@ function backfillEncryptedColumn(userId: string, column: string, plaintext: stri
   }
 }
 
-// ── Per-user Claude credentials ─────────────────────────────────────
+// Per-user Claude credentials
 //
 // Each user may attach an Anthropic API key and/or a `claude setup-token`
 // OAuth bearer. `buildSpawnEnv` injects these from the acting user's row
@@ -638,7 +638,7 @@ function normalizeStoredCredential(raw: string | null): string | null {
   return trimmed.length === 0 ? null : trimmed;
 }
 
-// ── Per-user Cursor / Gemini / Codex credentials ────────────────────
+// Per-user Cursor / Gemini / Codex credentials
 //
 // Each non-Claude engine carries a single API key column today. The
 // `<engine>_auth_updated_at` audit column lets the UI render "Last
@@ -803,7 +803,7 @@ export function setUserGrokAuth(
   );
 }
 
-// ── Audit-row reader (admin tooling + tests) ────────────────────────
+// Audit-row reader (admin tooling + tests)
 
 export interface EngineAuthAuditRow {
   id: string;

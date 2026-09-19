@@ -1,5 +1,5 @@
 /**
- * routes/pr-list.ts — Project-scoped read-only PR viewer endpoints.
+ * Project-scoped read-only PR viewer endpoints.
  *
  * GET  /api/projects/:projectId/pulls             — list PRs for the project's GitHub repo
  * GET  /api/projects/:projectId/pulls/:number     — full detail: PR + reviews + check-runs + comments
@@ -156,7 +156,7 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
   const { config, findProject } = deps;
   const router = Router();
 
-  // ─── List PRs for a project ─────────────────────────────────────
+  // List PRs for a project
 
   router.get(
     '/api/projects/:projectId/pulls',
@@ -261,7 +261,7 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ─── PR detail: PR + reviews + check-runs + issue comments ──────
+  // PR detail: PR + reviews + check-runs + issue comments
 
   router.get(
     '/api/projects/:projectId/pulls/:number',
@@ -309,7 +309,7 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
   return router;
 }
 
-// ─── Normalizers (exported for tests) ─────────────────────────────
+// Normalizers (exported for tests)
 
 export function normalizeReviews(raw: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(raw)) return [];

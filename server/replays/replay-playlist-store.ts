@@ -1,5 +1,5 @@
 /**
- * replay-playlist-store.ts — CRUD + view mappers for replay playlists (Datadog
+ * CRUD + view mappers for replay playlists (Datadog
  * "playlist"): named, project-scoped groups of saved replay captures.
  *
  * Playlists reuse the per-session two-tier retention model (card 1369): flagging
@@ -12,8 +12,8 @@
  * (they may be pinned independently or belong to another retained playlist) and
  * can be released individually via `POST /api/replays/:id/retention`.
  *
- * The DB helpers wrap prepared statements; the pure view mappers + the retention
- * fan-out math live here so the route stays thin and the mapping is unit-testable.
+ * The DB helpers wrap prepared statements; view mappers and retention fan-out
+ * math live here so the route stays thin.
  */
 
 import { v4 as uuidv4 } from 'uuid';

@@ -1,4 +1,4 @@
-// ─── Worktree-failure cause classifier ───────────────────────────────────────
+// Worktree-failure cause classifier
 //
 // `ensureSessionWorkspace` can fail for a handful of distinct reasons, but the
 // failure surface (chat system message + kanban card comment, see
@@ -8,9 +8,8 @@
 // it?*
 //
 // `classifyWorktreeFailure` maps a raw error string to a stable cause code plus
-// a one-line human explanation and a concrete prevention step. It is a pure
-// function (no I/O) so it is trivially testable and can run in the hot failure
-// path without side effects.
+// a one-line human explanation and a concrete prevention step. Pure (no I/O)
+// so it can run in the hot failure path without side effects.
 
 export type WorktreeFailureCause =
   | 'auth'

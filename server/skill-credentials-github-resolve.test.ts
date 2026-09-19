@@ -1,6 +1,4 @@
 /**
- * skill-credentials-github-resolve.test.ts
- *
  * Tests for `resolveUserGithubToken` — the unified per-user GitHub token
  * resolver used by the pre-spawn worktree-clone path.
  *

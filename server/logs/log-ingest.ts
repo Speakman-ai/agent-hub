@@ -14,9 +14,9 @@
  *   - and the batch cap (overflow is rejected, not silently dropped — the count
  *     surfaces in the OTLP partial-success reply).
  *
- * Pure and IO-free (identity + redaction config are passed in), so it unit-tests
- * without a DB or the network. The route calls `insertLogRecords` with the
- * returned records and adds the store's oversize rejections to `rejected`.
+ * IO-free: identity + redaction config are passed in. The route calls
+ * `insertLogRecords` with the returned records and adds the store's oversize
+ * rejections to `rejected`.
  */
 
 import { recordByteSize, type LogRecordInput } from './logs-db.js';
@@ -51,7 +51,7 @@ export interface NormalizeResult {
   redactions: number;
 }
 
-// ─── AnyValue projection ────────────────────────────────────────────
+// AnyValue projection
 
 // Match `redactStructured`'s recursion ceiling: JSON.parse can construct a
 // deeply nested AnyValue tree that is still well below the request byte cap.
@@ -100,7 +100,7 @@ export function kvListToObject(kvs: unknown, valueDepth = 0): Record<string, unk
   return out;
 }
 
-// ─── Severity mapping ───────────────────────────────────────────────
+// Severity mapping
 
 /** Base OTel severity label for a number (nearest tier floor). */
 export function severityNumberToText(n: number): string | null {
@@ -136,7 +136,7 @@ export function severityTextToNumber(text: string): number {
   return SEVERITY_BY_TEXT[text.trim().toUpperCase()] ?? SEVERITY_NUMBER.UNSPECIFIED;
 }
 
-// ─── Shared helpers ─────────────────────────────────────────────────
+// Shared helpers
 
 function firstString(...vals: Array<unknown>): string | null {
   for (const v of vals) {
@@ -287,7 +287,7 @@ function finalizeBatch(
   return { records, rejectedOversize, redactions: counter.redactions };
 }
 
-// ─── OTLP normalization ─────────────────────────────────────────────
+// OTLP normalization
 
 function resolveSeverity(
   severityNumber: unknown,
@@ -372,7 +372,7 @@ export function normalizeOtlpLogsData(data: JsonLogsData, ctx: IngestContext): N
   };
 }
 
-// ─── Agent Hub JSON batch normalization ─────────────────────────────
+// Agent Hub JSON batch normalization
 
 export interface AhLogRecordInput {
   timeUnixNano?: number | string;

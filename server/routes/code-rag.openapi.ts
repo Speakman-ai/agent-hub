@@ -13,7 +13,7 @@
  */
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 
-// ─── Request schemas ────────────────────────────────────────────────
+// Request schemas
 
 const LimitQuery = z.preprocess(
   (v) => (v === undefined || v === '' ? undefined : Number(v)),
@@ -32,7 +32,7 @@ export const CodeIndexRequestSchema = z
   })
   .optional();
 
-// ─── Response component schemas ──────────────────────────────────────
+// Response component schemas
 
 const CodeSearchResultComponent = registerComponent(
   'CodeSearchResult',
@@ -98,7 +98,7 @@ const CodeRagErrorResponseComponent = registerComponent(
   z.object({ error: z.string() }).openapi({ description: 'Error envelope.' }),
 );
 
-// ─── Path registrations ──────────────────────────────────────────────
+// Path registrations
 
 const projectIdParams = z.object({
   projectId: z.string().openapi({ description: 'Project ID (slug).' }),

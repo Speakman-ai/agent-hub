@@ -1,5 +1,5 @@
 /**
- * infra-cost.ts — the pure arithmetic behind decision INFRA-COST.
+ * The pure arithmetic behind decision INFRA-COST.
  *
  * "Treat AWS API spend as a first-class, visible, capped resource — not an
  * emergent property of the poll loop. Monitoring tools that surprise you with a
@@ -34,7 +34,7 @@ import {
   type InfraMetricSpec,
 } from './service-metric-packs.js';
 
-// ─── Published AWS prices ───────────────────────────────────────────────────
+// Published AWS prices
 
 /**
  * `GetMetricData` list price per 1,000 metrics requested — the rate 33 of the
@@ -163,7 +163,7 @@ export const PROJECTION_DAYS_PER_MONTH = 31;
 /** Seconds in the projection month. */
 export const PROJECTION_SECONDS_PER_MONTH = PROJECTION_DAYS_PER_MONTH * 24 * 60 * 60;
 
-// ─── Cost of a quantity of requests ─────────────────────────────────────────
+// Cost of a quantity of requests
 
 /**
  * Metrics *requested* — the quantity AWS bills — converted to dollars.
@@ -189,7 +189,7 @@ export function estimateGetMetricDataCostUsd(
   return (metricsRequested / 1000) * getMetricDataPricePer1000(region);
 }
 
-// ─── Cost Explorer ──────────────────────────────────────────────────────────
+// Cost Explorer
 
 /**
  * `GetCostAndUsage` list price, per **paginated request**.
@@ -273,7 +273,7 @@ export const COST_EXPLORER_LOOKBACK_DAYS = 30;
  */
 export const MIN_COST_EXPLORER_SYNC_INTERVAL_MS = 7 * 60 * 60 * 1000;
 
-// ─── Poll interval resolution ───────────────────────────────────────────────
+// Poll interval resolution
 
 /**
  * The collector's own tick cadence in seconds, mirroring `INFRA_COLLECT_CRON`.
@@ -358,7 +358,7 @@ export function ticksPerMonth(intervalSeconds: number): number {
   return Math.ceil(PROJECTION_SECONDS_PER_MONTH / intervalSeconds);
 }
 
-// ─── Monthly projection ─────────────────────────────────────────────────────
+// Monthly projection
 
 /** One (service, resource count) pair the projection prices. */
 export interface ProjectedScope {
@@ -488,7 +488,7 @@ export function projectMonthlyApiCost(
   return { metricsRequestedPerMonth, estimatedMonthlyCostUsd, perScope };
 }
 
-// ─── Ceiling ────────────────────────────────────────────────────────────────
+// Ceiling
 
 /**
  * What the collector should do for a project given what it has spent this month.

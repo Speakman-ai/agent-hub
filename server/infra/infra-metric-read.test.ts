@@ -104,7 +104,7 @@ describe('selectBucketValue', () => {
   });
 });
 
-// ── Alert overlay ──────────────────────────────────────────────────────────
+// Alert overlay
 
 function alert(over: Partial<InfraAlertRow> = {}): InfraAlertRow {
   return {

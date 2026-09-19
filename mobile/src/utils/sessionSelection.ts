@@ -1,10 +1,6 @@
 /**
- * Session selection helpers.
- *
- * Pure functions used by `AppContext`'s agent-change sessions-load effect so
- * the "pending target" vs "default to newest" logic can be unit-tested
- * without mounting the context provider. Mirrors the behaviour of the web
- * client at `client/src/App.jsx:1302-1304`:
+ * Session selection for AppContext's agent-change sessions-load.
+ * Mirrors web `client/src/App.jsx`:
  *
  *   const target = targetSessionId
  *     ? data.find((s) => s.id === targetSessionId) || data[0]

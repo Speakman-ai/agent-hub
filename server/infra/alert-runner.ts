@@ -1,10 +1,10 @@
 /**
- * alert-runner.ts — the sweep that feeds the pure evaluator (decision
+ * The sweep that feeds the pure evaluator (decision
  * INFRA-ALERT).
  *
  * Three modules split alerting along one seam and this is the third:
  * `alert-evaluator.ts` is pure and answers "what state does this range put this
- * rule in"; `alert-store.ts` owns every row and every transition; this module is
+ * rule in"; `alert-store.ts` owns every row and every transition; this is
  * the only one that holds a clock, expands a rule's selector into resources,
  * and reads the series out of `infra_metric_points`.
  *
@@ -17,7 +17,7 @@
  * alarm into INSUFFICIENT_DATA and back once the spend resets — an alarm should
  * not page because we stopped looking.
  *
- * ## This module owns the evaluation range length
+ * ## Evaluation range length
  *
  * `alert-evaluator.ts` deliberately does not compute one; its header explains
  * why, and hands the choice to this ticket. CloudWatch "attempts to retrieve a
@@ -283,7 +283,7 @@ export interface MetricEvaluationRange {
  * incomplete, and evaluating it would compare a partial aggregate to a threshold
  * tuned for a whole one.
  *
- * Pure, so the bucketing can be tested without a database.
+ * The bucketing does not touch a database.
  *
  * **Callers must hand this one series.** `resolveSeriesDimensionsHash()` is what
  * guarantees that, and the guarantee is load-bearing: collapsing two dimension

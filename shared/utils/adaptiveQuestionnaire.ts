@@ -1,13 +1,6 @@
 /**
- * Adaptive Questionnaire — state model and pure helpers.
- *
- * Drives the "What are you building?" wizard that scaffolds a brand-new
- * project. The description is the product spec: the first build session
- * chooses the stack, writes the code/tests/CI/Docker, and wires preview.
- * The wizard only collects platform plumbing (hosting, name, visibility).
- *
- * The first step is required (no idk); hosting / name / visibility expose
- * an "idk" escape hatch that records "defer to agent/default" semantics.
+ * "What are you building?" wizard. First step is required; hosting/name/visibility
+ * have an "idk" hatch that means defer to agent/default.
  */
 
 /** Sentinel value stored in the draft when the user picks "idk". */

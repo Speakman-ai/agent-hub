@@ -1,10 +1,10 @@
 /**
- * github-app.ts — MINIMAL GitHub App installation-token support.
+ * MINIMAL GitHub App installation-token support.
  *
  * Scope note: the full GitHub App integration (reviewer, inbound webhooks,
  * the `/api/pr/review` endpoint, App manifest provisioning) was removed in
  * PR #1205 in favour of strictly per-account AI auth. That removal stays.
- * This module restores ONLY the piece needed to mint a short-lived
+ * Restores ONLY the piece needed to mint a short-lived
  * installation access token, so the Hub → GitHub mirror push can use a
  * GitHub App identity that an operator has added to a repository ruleset's
  * bypass list — letting the mirror push a branch-protected default branch

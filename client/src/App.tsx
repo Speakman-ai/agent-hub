@@ -2574,7 +2574,7 @@ export default function App({ initialView }: any = {}) {
           if (forActiveSession) setSessionRoundProcessing(false);
           break;
 
-        // ─── Claude Design events ────────────────────────────────
+        // Claude Design events
         case 'design_created':
           // Broadcast from any client creating a design — refresh list
           if (data.design) {
@@ -2677,7 +2677,7 @@ export default function App({ initialView }: any = {}) {
           }
           break;
 
-        // ─── Delegation events ────────────────────────────────
+        // Delegation events
         case 'delegation_start':
           if (data.sessionId === activeSessionIdRef.current) {
             const delegationStartedAt = Date.now();
@@ -2976,7 +2976,7 @@ export default function App({ initialView }: any = {}) {
           window.dispatchEvent(new CustomEvent('task-complete', { detail: data }));
           break;
         }
-        // ── Message queue events ────────────────────────────────────
+        // Message queue events
         case 'queue_updated':
           setMessageQueues((prev: any) => ({
             ...prev,
@@ -3086,7 +3086,7 @@ export default function App({ initialView }: any = {}) {
           break;
         }
 
-        // ── Ticket lifecycle notifications ─────────────────────────
+        // Ticket lifecycle notifications
         case 'card_moved': {
           const colLower = (data.columnName || '').toLowerCase();
           const navigateCardToast = () => {
@@ -3128,7 +3128,7 @@ export default function App({ initialView }: any = {}) {
           break;
         }
 
-        // ── Thread notifications ─────────────────────────────────
+        // Thread notifications
         case 'thread_created': {
           if (isRetiredHeartbeatThread(data.thread)) break;
           // Live-update ThreadList if viewing threads for this project
@@ -3211,7 +3211,7 @@ export default function App({ initialView }: any = {}) {
           break;
         }
 
-        // ── Support ticket queue ─────────────────────────────────
+        // Support ticket queue
         case 'support_ticket_created': {
           if (data.projectId && typeof data.unreadCount === 'number') {
             setUnreadTicketCounts((prev: any) => ({ ...prev, [data.projectId]: data.unreadCount }));
@@ -4456,7 +4456,7 @@ export default function App({ initialView }: any = {}) {
     };
   }, [activeSessionId]);
 
-  // ─── Cron sessions (scheduled tasks) ───────────────────
+  // Cron sessions (scheduled tasks)
   const refreshCronSessions = useCallback(() => {
     api
       .getCronSessions()
@@ -4476,7 +4476,7 @@ export default function App({ initialView }: any = {}) {
     );
   }, []);
 
-  // ─── Designs data loading ───────────────────────────────────
+  // Designs data loading
   const refreshDesigns = useCallback(() => {
     api.getDesigns().then(setDesigns).catch(console.error);
   }, []);
@@ -5934,7 +5934,7 @@ export default function App({ initialView }: any = {}) {
     doneVerifyLogBySession,
   ]);
 
-  // ─── Global keyboard shortcut actions ───────────────────────
+  // Global keyboard shortcut actions
   // Resolve the "current project" for navigation shortcuts: prefer the
   // project currently displayed (kanban/wiki/etc.) and fall back to the
   // project owning the active agent, then the first project.

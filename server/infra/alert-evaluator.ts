@@ -11,7 +11,7 @@
  * The price of that choice is paid here. Operators *will* diff our state
  * against the CloudWatch console, and a divergence in the missing-data rules is
  * indistinguishable from a bug in their infrastructure — the worst possible
- * failure for a monitoring tool. So this module reproduces the published
+ * failure for a monitoring tool. Reproduces the published
  * behaviour rather than a reasonable approximation of it, and every rule below
  * is traceable to a specific sentence or table row in AWS's own documentation
  * (verified August 2026):
@@ -41,7 +41,7 @@
  *
  * ## Known parity limitation — the caller chooses the evaluation range
  *
- * This module evaluates whatever range it is handed; it deliberately does not
+ * Evaluates whatever range it is handed; it deliberately does not
  * compute one, and that is the single largest parity risk in the design.
  *
  * CloudWatch "attempts to retrieve a higher number of data points than the

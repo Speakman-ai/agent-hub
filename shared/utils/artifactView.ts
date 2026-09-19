@@ -1,6 +1,6 @@
-// Pure view-model helpers for the session Artifacts panel. No React / DOM /
-// network here so they're cheap to unit test and shared verbatim by the web
-// client (SessionArtifactsPane) and the mobile app (SessionArtifactsPanel).
+// View-model helpers for the session Artifacts panel. No React / DOM /
+// network. Shared by the web client (SessionArtifactsPane) and the mobile
+// app (SessionArtifactsPanel).
 
 /** Human-readable byte size: 0 B, 512 B, 1.0 KB, 3.4 MB, … */
 export function formatBytes(bytes: any) {

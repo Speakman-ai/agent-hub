@@ -1,5 +1,5 @@
 /**
- * push-and-create-pr-agenthub.ts — Finalize §8 push step for Agent
+ * Finalize §8 push step for Agent
  * Hub-hosted projects (`gitHost: 'agenthub'`).
  *
  * Differences from the GitHub path (push-and-create-pr.ts):

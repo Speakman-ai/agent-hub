@@ -74,9 +74,6 @@ export interface ChartGeometry {
 /**
  * Map a series and its alert overlay onto the SVG viewbox.
  *
- * Pure, so the arithmetic that decides whether a flat series renders at all is
- * unit-testable without a DOM.
- *
  * A constant series is the case that breaks a naive implementation: `max ===
  * min` makes the vertical scale a division by zero, and the line either
  * vanishes or renders at NaN. The range is padded so a flat line draws through

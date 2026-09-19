@@ -48,7 +48,7 @@ import {
   prPreviewSessionLive,
 } from '@shared/utils/prPreview';
 
-// ─── Shared atoms ──────────────────────────────────────────────
+// Shared atoms
 
 function Badge({ label, color, bg, title }: any) {
   return (
@@ -111,7 +111,7 @@ const CHECK_ICONS = {
   unknown: AlertCircle,
 } as Record<string, any>;
 
-// ─── List view ─────────────────────────────────────────────────
+// List view
 
 const STATE_TABS = [
   { key: 'open', label: 'Open' },
@@ -289,7 +289,7 @@ function PrListItem({
   );
 }
 
-// ─── Detail view ───────────────────────────────────────────────
+// Detail view
 
 function SectionHeader({ children }: any) {
   return (
@@ -572,7 +572,7 @@ function PrDetail({
   // the one whose body the user chose to expand.
   const [expandedDismissedId, setExpandedDismissedId] = useState<string | null>(null);
 
-  // ── PR-scoped preview ──────────────────────────────────────────────
+  // PR-scoped preview
   // Only native PRs whose project has a dev server configured can preview.
   const previewAvailable = prPreviewAvailable(detail);
   const previewDefaultOn = Boolean(detail?.preview_default_on);
@@ -2226,7 +2226,7 @@ function NewPrPanel({ projectId, onCreate, onClose, excludedBranches = new Set()
   );
 }
 
-// ─── Main page ─────────────────────────────────────────────────
+// Main page
 
 export default function PullRequestsPage({
   projectId,
@@ -2684,7 +2684,7 @@ export default function PullRequestsPage({
       !openPrHeadBranches.has(push.branch),
   );
 
-  // ── Detail view ──
+  // Detail view
   if (selectedNumber) {
     if (detailLoading && !detail) {
       return (
@@ -2741,7 +2741,7 @@ export default function PullRequestsPage({
     }
   }
 
-  // ── List view ──
+  // List view
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-6">
       <div className="w-full">

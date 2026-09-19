@@ -1,5 +1,5 @@
 /**
- * pr-detail-fetch.ts — Shared helper that fetches full PR detail from GitHub.
+ * Shared helper that fetches full PR detail from GitHub.
  *
  * Strictly per-user: reads use the acting user's own OAuth/PAT.
  */

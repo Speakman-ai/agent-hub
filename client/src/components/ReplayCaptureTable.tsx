@@ -401,7 +401,7 @@ export default function ReplayCaptureTable({ projectId, onNotify }: any) {
   );
 }
 
-// ── Add-to-playlist picker ──────────────────────────────────────────
+// Add-to-playlist picker
 // Lists the project's playlists and adds this capture to the chosen one, or
 // creates a new playlist inline and adds it. Mirrors the Playlists tab
 // (ReplayPlaylistsPanel) but scoped to a single capture.
@@ -534,7 +534,7 @@ function AddToPlaylistModal({ projectId, replay, onClose, onAdded, onError }: an
   );
 }
 
-// ── Link-to-ticket picker ───────────────────────────────────────────
+// Link-to-ticket picker
 function LinkToTicketModal({ projectId, replay, onClose, onLinked, onError }: any) {
   const [tickets, setTickets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);

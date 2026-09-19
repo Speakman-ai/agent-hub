@@ -1,5 +1,5 @@
 /**
- * job-container.ts — job-scoped DinD runner lifecycle (Hub-local backend).
+ * Job-scoped DinD runner lifecycle (Hub-local backend).
  *
  * One privileged runner container per ci.yaml job instance (matrix shard).
  * Steps run via `docker exec`; inner compose uses the runner's own dockerd.

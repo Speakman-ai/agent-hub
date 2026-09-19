@@ -1,16 +1,5 @@
 /**
- * Service metric pack helpers shared by the web Infrastructure module and the
- * mobile Infrastructure screen.
- *
- * The pack catalog answers a question a chart cannot: *why is this empty?* An
- * empty series has three quite different causes — the metric does not exist for
- * this instance type, the metric requires a monitoring mode that is not
- * enabled, or collection is broken — and they look identical on screen. The
- * server ships the declarations; these helpers turn them into the one or two
- * lines each surface renders.
- *
- * Framework-free on purpose: web renders the same strings into `<p>` elements
- * and mobile into `<Text>`, and the strings themselves must not diverge.
+ * Why is this empty? Metric missing, monitoring mode off, or collection broken.
  */
 
 export type InfraPackMetricType = 'gauge' | 'counter' | 'flag' | 'balance' | 'latency';
@@ -23,10 +12,8 @@ export interface InfraPackMetricWire {
   /** The exact CloudWatch dimension-name set this series is keyed on. */
   dimensions: string[];
   /**
-   * Dimension values the series is additionally pinned to, when the dimension
-   * names alone do not identify it. Absent for almost every metric — S3's
-   * `NumberOfObjects` (`StorageType=AllStorageTypes` and nowhere else) is the
-   * case it exists for.
+   * Extra dimension values when names alone do not identify the series.
+   * S3 `NumberOfObjects` (`StorageType=AllStorageTypes`) is the usual case.
    */
   dimensionValues?: Record<string, string>;
   metricType: InfraPackMetricType;
@@ -116,13 +103,8 @@ export function findServicePack(
 }
 
 /**
- * Which service's declarations annotate the current view.
- *
- * The charted resource decides it when there is one. The Alerts tab never has a
- * resource selected, so it falls back to the only pack when exactly one is
- * declared — which is the shape of every deployment until a second service
- * ships. With two or more and nothing selected there is no honest answer, so it
- * returns null rather than presenting one service's caveats as the project's.
+ * Pack for the current view. Resource wins; Alerts with exactly one pack uses
+ * that pack; two+ packs and nothing selected → null.
  */
 export function notesPackFor(
   packs: readonly InfraServicePackWire[] | null | undefined,
@@ -134,21 +116,15 @@ export function notesPackFor(
 }
 
 /**
- * The declaration behind a stored series.
- *
- * Matched on the full series identity rather than the metric name alone,
- * because the same metric collected on two statistics is two series and only
- * one of them is the one the pack declares.
+ * Declaration behind a stored series. Match full identity, not metric name
+ * (same metric on two stats is two series).
  */
 export function findPackMetric(
   pack: InfraServicePackWire | null | undefined,
   series: InfraSeriesIdentity | null | undefined,
   /**
-   * The dimension names the stored series is keyed on, when the caller knows
-   * them. A pack may declare the same metric on two dimension sets — `AWS/ECS`
-   * `CPUUtilization` is one number for a cluster and a different one for a
-   * service — and without this the first declaration wins and the chart is
-   * annotated with the wrong caveats.
+   * Dimension names the stored series is keyed on. Same metric can exist on two
+   * sets (ECS `CPUUtilization` cluster vs service).
    */
   dimensionNames?: readonly string[] | null,
 ): InfraPackMetricWire | null {
@@ -171,13 +147,7 @@ export function sameDimensionSet(a: readonly string[], b: readonly string[]): bo
   return b.every((name) => seen.has(name));
 }
 
-/**
- * Whether a resource has a provider feature turned on.
- *
- * Strict `true`, so an absent flag, a stale row from before the flag existed,
- * and an explicit `false` all read as off. That matches the collector, which
- * refuses to spend money on a feature it cannot confirm.
- */
+/** Strict `true` only. Absent/stale/`false` all read as off. */
 export function resourceHasFeature(
   resource: InfraPackResource | null | undefined,
   feature: string,
@@ -193,18 +163,8 @@ export interface InfraFeatureNotice {
 }
 
 /**
- * The features that are off for a resource, with what each of them is hiding.
- *
- * This is the answer to the question an empty Metrics tab raises and cannot
- * answer for itself. Decision INFRA-COST: "The UI states plainly which panels
- * are empty because a paid AWS feature is off, rather than rendering a broken
- * chart." A gated metric is never requested for a resource without the feature,
- * so those series do not merely look empty — they genuinely do not exist, and
- * the only honest thing to render is the reason and the price.
- *
- * Returns an empty array with no resource selected: a feature is a property of
- * a cluster, not of a project, so "Container Insights is off" is a claim there
- * is nothing to base without knowing which resource is being asked about.
+ * Features that are off, plus what they hide. Empty with no resource selected:
+ * a feature is per cluster, not per project.
  */
 export function featureNotices(
   pack: InfraServicePackWire | null | undefined,
@@ -225,13 +185,7 @@ export function featureNotices(
   return notices;
 }
 
-/**
- * Short caveats to show beside a metric, most surprising first.
- *
- * Returns an empty array for a metric that every resource publishes under
- * either monitoring mode — which is most of them, so the common case renders
- * nothing rather than reassurance nobody reads.
- */
+/** Caveats beside a metric. Empty when every resource publishes it. */
 export function metricCaveats(metric: InfraPackMetricWire | null | undefined): string[] {
   if (!metric) return [];
   const out: string[] = [];
@@ -239,8 +193,7 @@ export function metricCaveats(metric: InfraPackMetricWire | null | undefined): s
     out.push(metric.appliesTo.condition);
   }
   if (metric.availability === 'basic-only') {
-    // The counter-intuitive one: paying for detailed monitoring removes this
-    // series rather than sharpening it.
+    // Paying for detailed monitoring removes this series rather than sharpening it.
     out.push('Published under basic monitoring only. Detailed monitoring removes this metric.');
   } else if (metric.availability === 'detailed-only') {
     out.push('Published only when detailed monitoring is enabled on the resource.');

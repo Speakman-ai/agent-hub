@@ -40,8 +40,7 @@ import SessionArtifactViewerModal from './SessionArtifactViewerModal';
  * touching state. A load is stale if a newer load superseded its sequence, or
  * if the mounted session changed out from under it (the component instance is
  * reused across `activeSessionId`, so a slow prior-session response could
- * otherwise clobber the current session's list). Pure so it can be unit-tested
- * without a hook renderer (mobile vitest env is `node`).
+ * otherwise clobber the current session's list).
  */
 export function isStaleLoad(
   seq: number,
@@ -53,10 +52,7 @@ export function isStaleLoad(
 }
 
 /**
- * Pure presentational half — no fetching / native modules, so it renders in
- * the react-dom/server test harness. Returns null when there is nothing to
- * show (no artifacts, not loading, no error) to stay invisible on ordinary
- * sessions.
+ * Artifact list body. Null when there is nothing to show.
  */
 export function SessionArtifactsPanelContent({
   artifacts = [],

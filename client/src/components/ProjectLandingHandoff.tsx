@@ -73,9 +73,7 @@ export default function ProjectLandingHandoff({
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Summary                                                             */
-/* ------------------------------------------------------------------ */
+/* Summary */
 
 function SummarySection({ repoUrl, description, hostingLabel }: any) {
   return (
@@ -135,9 +133,7 @@ function SummaryRow({ label, children }: any) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Next steps                                                          */
-/* ------------------------------------------------------------------ */
+/* Next steps */
 
 function NextStepsPanel({ onOpenProject, onOpenStarterTask }: any) {
   return (
@@ -199,11 +195,6 @@ function NextStepButton({ icon, title, description, onClick, primary, testId }: 
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Pure helpers                                                        */
-/* ------------------------------------------------------------------ */
-
-/** Normalize the questionnaire's `integrations` into a list of display chips. */
 export function normalizeIntegrations(integrations: any) {
   if (!integrations || integrations === 'idk') return [];
   if (!Array.isArray(integrations)) return [];

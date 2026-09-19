@@ -71,8 +71,6 @@ import {
 import { useRunInTerminal } from './RunInTerminalContext';
 
 /**
- * SessionTail
- * -----------
  * Renders the full event timeline for an assistant message — including tool
  * uses, tool results, thinking blocks, partial streaming text, and the final
  * result summary. Replaces the old single-bubble ChatMessage/StreamingMessage
@@ -512,7 +510,7 @@ function SessionTail({
   );
 }
 
-// ─── Reducer: events → display blocks ──────────────────────────────────
+// Reducer: events → display blocks
 
 /**
  * Tools whose tool_use we coalesce into a single "Explored …" chip when they
@@ -744,7 +742,7 @@ export function eventsToBlocks(events: any) {
   return blocks;
 }
 
-// ─── Sub-components ────────────────────────────────────────────────────
+// Sub-components
 
 const ENGINE_BADGES = {
   'claude-code': {
@@ -1784,7 +1782,7 @@ function PlanProposalCard({ use, result, defaultOpen }: any) {
   );
 }
 
-// ─── Subagent type labels and colors ──────────────────────────────────
+// Subagent type labels and colors
 const SUBAGENT_TYPES = {
   'general-purpose': { label: 'General', color: 'text-indigo-400' },
   Explore: { label: 'Explore', color: 'text-cyan-400' },

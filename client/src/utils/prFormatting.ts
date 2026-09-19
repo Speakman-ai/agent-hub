@@ -1,8 +1,4 @@
-// Pure formatting helpers for the web PR viewer.
-// Ported from mobile/src/utils/prFormatting.js — RN inline styles are replaced
-// with Tailwind class-name strings so the same semantic helpers can drive
-// <span className={`${bg} ${color}`}> badges. Kept pure so they're trivial to
-// unit test without rendering React.
+// Web PR viewer formatting. Ported from mobile; RN inline styles became Tailwind classes.
 
 // Tailwind class tokens (kept terse so badges stay visually consistent with
 // the rest of the app).

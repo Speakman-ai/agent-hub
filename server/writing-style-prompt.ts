@@ -1,5 +1,5 @@
 /**
- * writing-style-prompt.ts — the anti-slop writing rules injected into every
+ * The anti-slop writing rules injected into every
  * spawned agent's system prompt.
  *
  * Two variants exist because the system prompt is rebuilt and re-sent on every

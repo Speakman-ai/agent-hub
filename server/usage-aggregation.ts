@@ -1,6 +1,6 @@
 // Usage-stat aggregation for the /api/usage dashboard.
 //
-// ── Background: why this module exists ─────────────────────────────────
+// Why this exists.
 // The Claude Code CLI sometimes emits MULTIPLE `result` events under the
 // same `parent_id` (i.e. within the same assistant message / CLI process).
 // The Anthropic Agent SDK docs describe `total_cost_usd` on the result
@@ -20,7 +20,7 @@
 //
 // Across a 14-day window this inflated booked spend by ~$450 (~11%).
 //
-// ── Aggregation rule ────────────────────────────────────────────────────
+// Aggregation rule
 //   cost     → MAX per parent_id, then SUM across parents   (cumulative)
 //   duration → SUM across all result events                 (per-emission)
 //   turns    → SUM across all result events                 (per-emission)

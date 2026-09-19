@@ -1,5 +1,5 @@
 /**
- * mirror.ts — one-way Hub → GitHub mirror sync for hosted repos.
+ * One-way Hub → GitHub mirror sync for hosted repos.
  *
  * Triggered by the post-receive notify endpoint after a push lands in a
  * hosted bare repo. By construction the Hub push has ALREADY succeeded

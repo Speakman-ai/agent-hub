@@ -1,5 +1,5 @@
 /**
- * dispatch-and-wait.ts — rebase conflict dispatch + turn-end wait seam.
+ * Rebase conflict dispatch + turn-end wait seam.
  *
  * Used by `rebase.ts` when a non-trivial merge conflict must be resolved
  * in the originating session before the orchestrator re-enters the rebase

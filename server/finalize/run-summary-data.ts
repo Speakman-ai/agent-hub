@@ -1,9 +1,9 @@
 /**
- * run-summary-data.ts — pure shaping for the end-of-run Finalize summary.
+ * Shaping for the end-of-run Finalize summary.
  *
  * Kept free of git, DB, and network calls so the collection rules (which review
- * rounds count, how findings are clipped, what the markdown body reads like) are
- * unit-testable on plain values.
+ * rounds count, how findings are clipped, what the markdown body reads like)
+ * run on plain values.
  *
  * Review history comes from the append-only `finalize_review_round` timeline
  * messages rather than `reviewer_threads`, because the orchestrator calls

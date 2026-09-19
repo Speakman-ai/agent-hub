@@ -1,8 +1,4 @@
-// rumSessionFilters.ts — pure filter-state helpers for the mobile Replays
-// dashboard. Ported from client/src/components/RumSessionsExplorer.tsx so the
-// mobile Sessions tab builds byte-identical server query params and applies the
-// same "did the effective filter set change?" short-circuit. Framework-free so
-// the filter-state logic is unit-testable without rendering React Native.
+// Mobile Replays filter state. Port of RumSessionsExplorer so query params match.
 
 export type FilterDraft = Record<string, string>;
 
@@ -97,7 +93,7 @@ export function hasActiveFilters(applied: FilterDraft): boolean {
   return Object.values(applied).some((v) => v?.trim());
 }
 
-// ── Capture-grain (Replays tab) filters ─────────────────────────────
+// Capture-grain (Replays tab) filters
 // Ticket-link filter, mirrors ReplayCaptureTable FILTERS. `orphans` is only
 // shown to privileged callers (canViewOrphans from the list response).
 export const REPLAY_LINK_FILTERS: { id: string; label: string; orphanOnly?: boolean }[] = [

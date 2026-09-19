@@ -351,7 +351,7 @@ export async function getCachedDefaultBranch(cwd: string): Promise<string | null
   return detected;
 }
 
-// ─── Internal types ─────────────────────────────────────────────
+// Internal types
 
 interface ImageRef {
   filename: string;
@@ -597,7 +597,7 @@ export const MAX_PENDING_CONTEXT_BYTES = 128 * 1024;
 /**
  * Max times an auto-continuation turn will reschedule itself when the
  * session already has an active task.
- * Pure constant so callers (and tests) can reason about the cap
+ * Callers (and tests) can reason about the cap
  * independently of the `setTimeout`-based scheduler.
  */
 export const AUTO_CONTINUATION_MAX_RETRIES = 12;
@@ -612,10 +612,8 @@ export type AutoContinuationRetryPlan =
   | { action: 'drop'; reason: 'retries-exhausted' };
 
 /**
- * Pure planner for the auto-continuation retry loop. Given the current
- * retry count, decide whether we should schedule another attempt or give
- * up. Kept as a small exported helper so the "12-retry cap" semantics are
- * unit-testable without spinning up a real chat session.
+ * Planner for the auto-continuation retry loop. Given the current retry
+ * count, decide whether to schedule another attempt or give up (12-retry cap).
  */
 export function planAutoContinuationRetry(opts: {
   retries: number;
@@ -743,7 +741,7 @@ interface ParsedReActMalformed {
   detail: string;
 }
 
-// ─── Project agent roster (same project) ───────────────────────────
+// Project agent roster (same project)
 
 export type ProjectAgentRosterPeer = { id: string; name: string; role?: string };
 
@@ -797,7 +795,7 @@ export const SKILL_DESCRIPTION_MAX_BYTES = 160;
  * whitespace, prefers cutting at a sentence boundary, and appends an
  * ellipsis when truncation actually happened.
  *
- * Pure — no DB / FS / env access — so it is cheap to unit-test.
+ * No DB / FS / env access.
  */
 export function compressSkillDescription(
   raw: string | null | undefined,
@@ -819,7 +817,7 @@ export function compressSkillDescription(
   return `${body.trim()}${ELLIPSIS}`;
 }
 
-// ─── buildEnrichedPrompt ───────────────────────────────────────────
+// buildEnrichedPrompt
 
 /**
  * Render the `## Project AWS` system-prompt section for a project that has
@@ -1993,8 +1991,7 @@ export interface DesignModeTurnAugmentation {
 }
 
 /**
- * Design-mode (`session_mode === 'design'`) turn augmentation, extracted so it
- * is unit-testable independently of the streaming chat handler.
+ * Design-mode (`session_mode === 'design'`) turn augmentation.
  *
  * Two responsibilities, both required by the design-mode fold and neither of
  * which the message-driven skill router can guarantee:
@@ -2210,7 +2207,7 @@ export function buildInlineHubPrompt(args: {
   return args.committable ? withLocalCommitReminder(combined) : combined;
 }
 
-// ─── createChatHandler (factory) ───────────────────────────────────
+// createChatHandler (factory)
 
 export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerResult {
   const {
@@ -6588,7 +6585,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           }
         }
 
-        // ── `<agenthub:preview>` dispatch ───────────────────────────────
+        // `<agenthub:preview>` dispatch
         // Malformed blocks: surface a system message so the agent learns
         // why the request was dropped — same shape as the close-card gate.
         const previewSyncDeps = {

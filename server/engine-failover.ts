@@ -9,7 +9,7 @@
  *     engine installed + authenticated for this user?" and picks another one
  *     before anything spawns. It cannot see a run that starts fine and then
  *     hits "5-hour limit reached" ten minutes in.
- *   - This module is the **post-flight** half. It classifies the error text a
+ *   - **Post-flight** half. Classifies the error text a
  *     dead run left behind and decides whether another engine could plausibly
  *     do better, then names the next candidate from a per-engine chain.
  *

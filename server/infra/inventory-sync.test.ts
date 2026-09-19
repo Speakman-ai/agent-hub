@@ -524,7 +524,7 @@ describe('runInfraInventorySync — failure isolation', () => {
   });
 });
 
-// ─── ECS ────────────────────────────────────────────────────────────────────
+// ECS
 
 /**
  * An ECS stub built from a plain description of an account.
@@ -1041,7 +1041,7 @@ describe('runInfraInventorySync — ECS', () => {
   });
 });
 
-// ─── Networking services (ALB, NLB, NAT Gateway) ────────────────────────────
+// Networking services (ALB, NLB, NAT Gateway)
 
 const ELB_ARN_PREFIX = 'arn:aws:elasticloadbalancing:us-east-1:111122223333';
 
@@ -1860,7 +1860,7 @@ describe('DescribeTags deletion race — recovering the survivors', () => {
   });
 });
 
-// ─── S3 ─────────────────────────────────────────────────────────────────────
+// S3
 
 interface S3StubOptions {
   buckets?: Bucket[];
@@ -2460,7 +2460,7 @@ describe('runInfraInventorySync — S3', () => {
   });
 });
 
-// ─── RDS ────────────────────────────────────────────────────────────────────
+// RDS
 
 /** An RDS stub answering `DescribeDBInstances` with the given pages in order. */
 function stubRds(
@@ -2646,7 +2646,7 @@ describe('runInfraInventorySync — RDS', () => {
   });
 });
 
-// ─── Lambda ─────────────────────────────────────────────────────────────────
+// Lambda
 
 interface LambdaStubOptions {
   functionPages?: Array<Partial<ListFunctionsCommandOutput>>;

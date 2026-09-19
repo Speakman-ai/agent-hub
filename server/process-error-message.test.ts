@@ -1,4 +1,4 @@
-// Unit tests for the error-message picker used by chat.ts's close handler.
+// Error-message picker used by the chat close handler.
 //
 // Regression context:
 //   Session "Codex not working" → users saw error messages like

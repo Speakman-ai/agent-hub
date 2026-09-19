@@ -1,5 +1,5 @@
 /**
- * github-auto-merge.ts - wait for GitHub checks, then merge the PR.
+ * Wait for GitHub checks, then merge the PR.
  *
  * GitHub native auto-merge only waits for requirements enforced by branch
  * protection. A plain `gh pr merge` (and `gh pr merge --auto` on an

@@ -257,7 +257,7 @@ describe('getActiveAccessToken — transparent refresh', () => {
     expect(token).toBeNull();
   });
 
-  // ── Non-expiring access tokens ──────────────────────────────────
+  // Non-expiring access tokens
   //
   // Classic OAuth Apps and GitHub Apps without "Expire user
   // authorization tokens" issue access tokens with no expiry and no

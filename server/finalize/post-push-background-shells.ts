@@ -1,5 +1,5 @@
 /**
- * post-push-background-shells.ts — stop a session's Hub-owned background
+ * Stop a session's Hub-owned background
  * shells at the `pushed` terminal of a finalize run.
  *
  * A session that pushes through Finalize is locked into ask mode and demoted

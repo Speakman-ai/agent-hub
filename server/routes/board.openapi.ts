@@ -1,7 +1,7 @@
 /**
  * Zod schemas + OpenAPI registrations for the board / epics route group.
  *
- * This module is imported for two reasons:
+ * Imported for:
  *
  *   1. `server/routes/board.ts` imports the exported request schemas and
  *      uses `safeParse(...)` to validate incoming bodies. The handler
@@ -46,8 +46,6 @@ import { CARD_SOURCE_TYPES } from '../source-provenance.js';
 /** Capture-provenance source enum for cards (spec CAPTURE-PROVENANCE). */
 const CardSourceType = z.enum([...CARD_SOURCE_TYPES]);
 
-// ─── Helpers ──────────────────────────────────────────────────────
-
 /**
  * Merge snake_case keys into their camelCase equivalents before Zod
  * validation. Always camelCase-wins when both are present — the
@@ -66,7 +64,7 @@ function aliasPreprocess(aliases: Record<string, string>): (input: unknown) => u
   };
 }
 
-// ─── Domain component schemas (response shapes) ──────────────────
+// Domain component schemas (response shapes)
 
 const PrioritySchema = z.enum(['low', 'medium', 'high', 'urgent']);
 const ReviewStatusSchema = z
@@ -453,7 +451,7 @@ export const ErrorResponseComponent = registerComponent(
     }),
 );
 
-// ─── Request schemas ──────────────────────────────────────────────
+// Request schemas
 
 /**
  * Capture-provenance source ref accepted on card create/convert (spec
@@ -794,7 +792,7 @@ export const AssignCardRequestSchema = z.object({
     }),
 });
 
-// ─── OpenAPI path registrations ───────────────────────────────────
+// OpenAPI path registrations
 //
 // Every route in board.ts that's listed in the migration card scope is
 // declared here. Path params use OpenAPI `{name}` syntax; Express uses
@@ -1494,7 +1492,7 @@ registerPath({
   },
 });
 
-// ── Phases ──────────────────────────────────────────────────────────────
+// Phases
 registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/board/phases',
@@ -1597,7 +1595,7 @@ registerPath({
   },
 });
 
-// ── Spec items ──────────────────────────────────────────────────────────
+// Spec items
 registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/board/spec-items',

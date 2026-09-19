@@ -1,4 +1,4 @@
-// Pure helpers for the Settings → Project Secrets tab (mobile). Mirrors
+// Settings → Project Secrets (mobile). Mirrors
 // server/routes/preview-secrets.ts + server/preview/preview-secrets-store.ts:
 //   GET  /api/projects/:id/secrets          (Admin+)  → { secrets: [{key, value, kind}] }
 //   PUT  /api/projects/:id/secrets          (Owner)   ← { secrets: [...] } (full replace)

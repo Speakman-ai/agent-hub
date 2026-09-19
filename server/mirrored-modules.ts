@@ -14,7 +14,7 @@
 //     baseline to shrink as pairs migrate to `shared/`. Otherwise the list would
 //     rot into a permanent allowlist that never reaches zero.
 //
-// This module is pure: it takes two lists of filenames and returns a verdict.
+// Takes two lists of filenames and returns a verdict.
 // The CLI wrapper at `scripts/check-mirrored-modules.ts` is the only piece that
 // touches the filesystem. Unit tests live at `server/mirrored-modules.test.ts`.
 

@@ -1,5 +1,5 @@
 /**
- * runner-logs-db.ts — dedicated SQLite store for the `runner_job_logs` spool.
+ * Dedicated SQLite store for the `runner_job_logs` spool.
  *
  * `runner_job_logs` is the hot-write flood table of the runner control plane:
  * remote Finalize agents append CI stdout/stderr frames at up to ~1M rows/day.
@@ -16,7 +16,7 @@
  * still resolves a queue-job id there before reading frames here (two separate
  * queries, never a cross-file JOIN).
  *
- * Pure leaf-ish module: imports only better-sqlite3 + node stdlib so `orgs.ts`
+ * Leaf-ish module: imports only better-sqlite3 + node stdlib so `orgs.ts`
  * can wire it in without an import cycle.
  */
 import Database from 'better-sqlite3';

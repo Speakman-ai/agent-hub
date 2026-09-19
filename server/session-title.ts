@@ -1,5 +1,5 @@
 /**
- * session-title.ts — derive a concise session name from user messages.
+ * Derive a concise session name from user messages.
  *
  * Three layers:
  *  1. `deriveHeuristicTitle(content)` — pure, synchronous. Strips conversational
@@ -395,9 +395,7 @@ export function deriveHeuristicTitle(content: string): string {
   return candidate || 'New chat';
 }
 
-// ---------------------------------------------------------------------------
 // Forwarded-session titles
-// ---------------------------------------------------------------------------
 
 /**
  * Compact marker appended to a forwarded session's title so it stays
@@ -547,9 +545,7 @@ export function buildTitleTranscript(userMessages: readonly string[]): string {
     .join('\n');
 }
 
-// ---------------------------------------------------------------------------
 // LLM-backed title generation
-// ---------------------------------------------------------------------------
 
 export interface LlmTitleOptions {
   content: string;
@@ -708,9 +704,7 @@ export async function generateLlmTitle(opts: LlmTitleOptions): Promise<string | 
   }
 }
 
-// ---------------------------------------------------------------------------
 // scheduleTitleUpgrade — orchestrator with TOCTOU guard
-// ---------------------------------------------------------------------------
 
 export interface ScheduleTitleUpgradeOptions {
   sessionId: string;

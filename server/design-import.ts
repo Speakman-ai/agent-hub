@@ -22,9 +22,9 @@
  * production parity). Re-running on an already-imported design is a no-op.
  *
  * The mapping logic (target-agent resolution, session naming, message mapping,
- * skip detection) is split into pure functions so it unit-tests without a DB,
- * a filesystem, or worktree provisioning. The executor at the bottom wires them
- * to the real stores.
+ * skip detection) is split into pure functions with no DB, filesystem, or
+ * worktree provisioning. The executor at the bottom wires them to the real
+ * stores.
  */
 import { cpSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
@@ -141,7 +141,7 @@ export function resolveImportTargetAgentId(
 }
 
 /**
- * Pure plan for importing a single design. No DB / FS access — the executor
+ * Plan for importing a single design. No DB / FS access — the executor
  * resolves `targetAgentId` and message rows and passes them in.
  */
 export function planDesignImport(
@@ -183,7 +183,7 @@ export function copyDesignArtifacts(
   cpSync(src, dest, { recursive: true });
 }
 
-// ─── Executor ────────────────────────────────────────────────────
+// Executor
 
 /** Outcome of a single design import. */
 export interface DesignImportResult {

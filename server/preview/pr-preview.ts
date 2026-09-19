@@ -12,9 +12,9 @@
  * So "launch a preview for this PR" resolves the session that owns the PR's
  * head branch and drives the existing session preview surface
  * (`startSessionPreview` / `getSessionPreviewStateEvent` /
- * `DevServerRuntime.stopBySessionId`). This module holds the pure bridge:
+ * `DevServerRuntime.stopBySessionId`). Bridge:
  * head-branch → session-id-prefix → session row. It has no runtime
- * dependency and never spawns anything, so it is unit-testable in isolation.
+ * dependency and never spawns anything.
  */
 import { SESSION_BRANCH_REF_RE } from '../kanban-pr-link.js';
 import type { SessionRow } from '../types.js';

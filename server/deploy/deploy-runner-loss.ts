@@ -1,11 +1,11 @@
 /**
- * deploy-runner-loss.ts — tell "the runner died under this deploy step" apart
+ * Tell "the runner died under this deploy step" apart
  * from "this deploy step failed", and bound how often we re-acquire because of
  * it.
  *
  * {@link ../deploy-acquire-retry} covers the window BEFORE any step runs: the
  * fleet had no capacity, or an agent claimed the job and died during bring-up.
- * This module covers the window after that. Once a step is in flight, the
+ * Covers the window after that. Once a step is in flight, the
  * runner-agent can still disappear — process crash, OOM kill, lost contact with
  * the Hub, or an EC2 Spot reclaim. The Hub-side reaper (or the agent's own error
  * report) then calls `RunnerJobChannel.fail()`, which fires `error` on the

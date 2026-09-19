@@ -1,5 +1,5 @@
 /**
- * run-summary.ts — emit the end-of-run Finalize briefing into the session.
+ * Emit the end-of-run Finalize briefing into the session.
  *
  * A Finalize run's timeline already records each step as it happens (rebase,
  * review round N, checks round N, ready to push), but nothing answers the three

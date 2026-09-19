@@ -400,7 +400,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ profile }),
     }),
-  // ── AI-assisted Dev Server (prEnv.devServer) setup wizard ──
+  // AI-assisted Dev Server (prEnv.devServer) setup wizard
   getDevServerSetupDraft: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/dev-server/setup-draft`),
   startDevServerWizard: (projectId: any) =>
@@ -425,14 +425,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
-  // ── AI logs setup wizard ──
+  // AI logs setup wizard
   getLogsSetupDraft: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/setup-draft`),
   startLogsWizard: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/logs/setup-wizard`, {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-  // ── Infrastructure (AWS monitoring) — mirrors client/src/utils/api.ts ──
+  // Infrastructure (AWS monitoring) — mirrors client/src/utils/api.ts
   // Read surface for the Resources, Metrics and Alerts tabs, plus the alert
   // status write. Polled on an interval; there is no metric WebSocket
   // (decision INFRA-UI). All Admin-gated server-side.
@@ -493,7 +493,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ status }),
     }),
-  // ── AI infrastructure setup wizard ──
+  // AI infrastructure setup wizard
   // Hub-side readiness only: which profiles exist and their types, whether a
   // monitoring profile is designated, whether scopes exist. Calls AWS zero
   // times (decision INFRA-WIZARD), so it is safe to fetch on screen open even
@@ -506,7 +506,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-  // ── Application log sources (write-only `ahlog_` ingest creds) ──
+  // Application log sources (write-only `ahlog_` ingest creds)
   // Mirrors client/src/utils/api.ts. List/create/rotate/revoke/delete sources;
   // create + rotate return the plaintext `token` exactly once.
   getLogSources: (projectId: any) => fetchJSON(`/projects/${projectId}/log-sources`),
@@ -522,7 +522,7 @@ export const api = {
   deleteLogSource: (projectId: any, sourceId: any) =>
     fetchJSON(`/projects/${projectId}/log-sources/${sourceId}`, { method: 'DELETE' }),
   getLogsMetrics: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/metrics`),
-  // ── Application log reads (LOG-QUERY) — mirrors client/src/utils/api.ts ──
+  // Application log reads (LOG-QUERY) — mirrors client/src/utils/api.ts
   // Bounded, newest-first, cursor-paginated historical query. `params` is a
   // plain object of the query filters (severity, source, service, text, …).
   queryLogs: (projectId: any, params: Record<string, any> = {}) => {
@@ -537,7 +537,7 @@ export const api = {
   // Destructive "Clear logs" — purge every ingested record for the project.
   // Admin-gated server-side; resolves to `{ purged: <count> }`.
   clearLogs: (projectId: any) => fetchJSON(`/projects/${projectId}/logs`, { method: 'DELETE' }),
-  // ── Grouped error issues (LOG-GROUP) ──
+  // Grouped error issues (LOG-GROUP)
   listLogIssues: (projectId: any, params: Record<string, any> = {}) => {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
@@ -581,7 +581,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ startAnother: options.startAnother === true }),
     }),
-  // ── Replays / RUM dashboard (mirrors client/src/utils/api.ts) ──
+  // Replays / RUM dashboard (mirrors client/src/utils/api.ts)
   // Segmented (continuous) session playback. The manifest lists every segment
   // for a client-minted session in playback order (chronological across views,
   // each view opening with a fresh full snapshot at index_in_view=0); the
@@ -656,7 +656,7 @@ export const api = {
   // Detach a replay from its support ticket (keeps project attribution).
   unlinkReplay: (projectId: any, replayId: any) =>
     fetchJSON(`/projects/${projectId}/replays/${replayId}/link`, { method: 'DELETE' }),
-  // ── Replay playlists (Datadog "playlist") — 1:1 with client/src/utils/api.ts.
+  // Replay playlists (Datadog "playlist") — 1:1 with client/src/utils/api.ts.
   // Named, project-scoped groups of saved captures + playlist-level extended
   // retention. Backend: server/routes/replay-playlists.ts.
   listReplayPlaylists: (projectId: any) => fetchJSON(`/projects/${projectId}/replay-playlists`),
@@ -1682,7 +1682,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-  // ── PR-scoped previews (native Agent Hub-hosted PRs) ────────────────
+  // PR-scoped previews (native Agent Hub-hosted PRs)
   // Launch a live preview for the session that owns the PR's head branch.
   // Returns immediately; poll getPullPreviewState for loading → ready/failed.
   startPullPreview: (projectId: any, number: any, opts: any = {}) =>

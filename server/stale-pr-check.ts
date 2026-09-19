@@ -6,7 +6,7 @@
  * a one-shot `changes_ready` event. If the user ignores the banner for a while,
  * the work sits in limbo — there's no reminder push (removed from mobile taxonomy).
  *
- * This module still wakes up every `STALE_PR_CHECK_INTERVAL_MS` and emits a
+ * Still wakes up every `STALE_PR_CHECK_INTERVAL_MS` and emits a
  * `pr_creation_stale` WebSocket broadcast for desktop clients.
  *
  * Both constants are hardcoded here rather than pulled from `config.json` —
@@ -14,11 +14,11 @@
  */
 import type { Stmts } from './types.js';
 
-// ── Tunables (module-level exports so tests can read the same values) ──
+// Tunables (module-level exports so tests can read the same values)
 export const STALE_PR_THRESHOLD_MS = 30 * 60 * 1000;
 export const STALE_PR_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
-// ── Shape of a row returned by stmts.getStalePendingPrSessions ─────────
+// Shape of a row returned by stmts.getStalePendingPrSessions
 interface StalePendingPrRow {
   id: string;
   name: string | null;

@@ -1,5 +1,5 @@
 /**
- * runner-lost.ts — the cross-module contract for marking a reaped Finalize
+ * The cross-module contract for marking a reaped Finalize
  * job as a single dead runner (crash, OOM, Spot kill that missed IMDS, dropped
  * transport) rather than a deterministic environment fault.
  *

@@ -17,7 +17,7 @@ vi.mock('../prompts/autofix/index.js', async (importOriginal) => {
   };
 });
 
-// config.ts — avoid touching real config loaders.
+// avoid touching real config loaders.
 vi.mock('../config.js', () => ({
   default: { apiKey: null },
   defaultModelForEngine: () => 'sonnet',
@@ -197,7 +197,7 @@ describe('pr-resolve — pure helpers', () => {
   });
 });
 
-// ─── Route integration ───────────────────────────────────────────
+// Route integration
 
 function buildDeps(overrides: Partial<RouteDeps> = {}): RouteDeps {
   return {

@@ -96,7 +96,7 @@ export function deploymentEventFromSnapshot(snapshot: any, at = new Date().toISO
  * Patch the open deployment's `selected` snapshot with a `release_notification_update`
  * WS event. Returns `prev` unchanged unless the event targets the same project AND the
  * currently-open deployment — so background notification churn for other deployments
- * never disturbs the visible detail view. Pure so it can be unit-tested in isolation.
+ * never disturbs the visible detail view.
  */
 export function applyReleaseNotificationEvent(
   prev: any,

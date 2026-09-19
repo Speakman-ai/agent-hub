@@ -1,10 +1,9 @@
 /**
- * workflow-drift.ts — detect drift between `.github/workflows/*.yml` (the
+ * Detect drift between `.github/workflows/*.yml` (the
  * literal GitHub Actions gate) and `.agent-hub/ci.yaml` (what the Finalize gate
  * actually runs).
  *
  * Why this exists
- * ----------------
  * The Finalize gate stands in for the GitHub PR check, but it runs a SEPARATE
  * config (`.agent-hub/ci.yaml`). The two can silently diverge: someone adds a
  * job to `ci.yml`, the Finalize config never learns about it, and Finalize goes
@@ -20,7 +19,6 @@
  * for why the sidecar matters (ci.yaml fails closed on unknown keys).
  *
  * Contract
- * --------
  * When there is no `.agent-hub/ci-mirror.yaml`, the repo is "not configured for
  * drift checking" and this returns a neutral report (no findings). When it IS
  * configured:
@@ -136,7 +134,7 @@ export interface WorkflowDriftReport {
   hasWarnings: boolean;
 }
 
-// ─── GitHub workflow parsing ──────────────────────────────────────────
+// GitHub workflow parsing
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
@@ -229,7 +227,7 @@ export async function loadGithubWorkflows(workflowsDir: string): Promise<GithubW
   return out;
 }
 
-// ─── Mirror manifest (sidecar) parsing ────────────────────────────────
+// Mirror manifest (sidecar) parsing
 
 export type MirrorManifestParseResult =
   | { ok: true; manifest: WorkflowMirrorManifest }
@@ -325,7 +323,7 @@ export async function loadMirrorManifest(manifestPath: string): Promise<MirrorMa
   return { ok: true, manifest: parsed.manifest };
 }
 
-// ─── Command canonicalization ─────────────────────────────────────────
+// Command canonicalization
 
 /**
  * Shell scaffolding lines that carry no gate semantics. Retry loops, control
@@ -382,7 +380,7 @@ export function canonicalCommands(runScripts: string[]): Set<string> {
   return out;
 }
 
-// ─── Mirror ref parsing ───────────────────────────────────────────────
+// Mirror ref parsing
 
 interface ParsedMirrorRef {
   kind: 'finalize-only' | 'github' | 'invalid';
@@ -414,7 +412,7 @@ export function parseMirrorRef(raw: string): ParsedMirrorRef {
   return { kind: 'invalid' };
 }
 
-// ─── Drift computation ────────────────────────────────────────────────
+// Drift computation
 
 function buildGithubJobIndex(
   workflows: GithubWorkflow[],
@@ -510,7 +508,7 @@ export function computeWorkflowDrift({
   // Track which GitHub jobs got claimed by a mirror mapping or an ignore entry.
   const claimed = new Set<string>();
 
-  // ── ci.yaml jobs → mirror mapping (from the sidecar manifest) ──
+  // ci.yaml jobs → mirror mapping (from the sidecar manifest)
   for (const [jobId, job] of Object.entries(ciConfig.jobs)) {
     const ciRef = `jobs.${jobId}`;
     const mirrorRef = manifest.jobs[jobId];
@@ -573,7 +571,7 @@ export function computeWorkflowDrift({
     }
   }
 
-  // ── ignore entries ──
+  // ignore entries
   for (const ignoreRef of manifest.ignore) {
     claimed.add(ignoreRef);
     if (!githubJobs.has(ignoreRef)) {
@@ -586,7 +584,7 @@ export function computeWorkflowDrift({
     }
   }
 
-  // ── in-scope GitHub jobs not claimed by any mirror or ignore ──
+  // in-scope GitHub jobs not claimed by any mirror or ignore
   for (const ref of githubJobs.keys()) {
     if (!claimed.has(ref)) {
       findings.push({

@@ -1,5 +1,5 @@
 /**
- * runner-backend-local.ts — the Hub-local DinD backend.
+ * The Hub-local DinD backend.
  *
  * Wraps the existing job-container lifecycle (`startJobContainer` /
  * `createJobScopedSpawnStep` / `stopJobContainer`) behind the `RunnerBackend`

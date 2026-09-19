@@ -173,11 +173,11 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     const projectCount = projects.length;
     const agentCount = allAgents().length;
 
-    // ── Headline counters ──────────────────────────────────────────
+    // Headline counters
     const sessionsTotal =
       (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number }).c || 0;
 
-    // ── Active sessions queue (detail + count) ─────────────────────
+    // Active sessions queue (detail + count)
     // The queue surfaces *every in-flight session* in this org, not just the
     // ones whose CLI is currently streaming. A session that is running tests,
     // under review, pending a push, or waiting for user input is still work
@@ -361,7 +361,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
           .get(...doneColumnIds) as { c: number }
       ).c || 0;
 
-    // ── Open PRs (count + detail list) ─────────────────────────────
+    // Open PRs (count + detail list)
     // "Open PRs" means native *Agent Hub repository* PRs — rows in the
     // `pull_requests` table with status='open' for one of this org's
     // projects. This is the *same* source of truth the Pulls page reads
@@ -490,7 +490,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
 
     const escalations = (stmts.getAllActiveEscalations.all() as unknown[]).length;
 
-    // ── Kanban breakdown ──────────────────────────────────────────
+    // Kanban breakdown
     const totalBoards =
       (db.prepare('SELECT COUNT(*) as c FROM kanban_boards').get() as { c: number }).c || 0;
     const totalCards =
@@ -534,7 +534,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       }
     }
 
-    // ── Recent activity (union of card/session/escalation/PR sources, sorted by timestamp) ─
+    // Recent activity (union of card/session/escalation/PR sources, sorted by timestamp)
     const ACTIVITY_LIMIT = 20;
 
     const recentCards = db

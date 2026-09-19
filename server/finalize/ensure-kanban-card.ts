@@ -1,5 +1,5 @@
 /**
- * ensure-kanban-card.ts — create/link a kanban card for a card-less session.
+ * Create/link a kanban card for a card-less session.
  *
  * Ad-hoc chat sessions can ship through Finalize Code Changes without the
  * operator manually filing a board card first. The session-scoped finalize

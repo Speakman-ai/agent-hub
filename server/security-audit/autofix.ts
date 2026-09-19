@@ -1,5 +1,5 @@
 /**
- * autofix.ts — the single "a scan just finished; should we dispatch a fix
+ * The single "a scan just finished; should we dispatch a fix
  * session?" decision, shared by every scan trigger.
  *
  * Three call sites reach it and must behave identically:

@@ -1,7 +1,7 @@
 /**
  * Repo scan for the **Logs setup wizard** (`POST .../logs/setup-wizard`).
  *
- * Pure, DB-free, spawn-free: reads files under `workspaceDir` with sync `fs`
+ * DB-free, spawn-free: reads files under `workspaceDir` with sync `fs`
  * and returns a JSON-serializable draft describing how to wire the target
  * application's logs into Agent Hub — detected stack, existing logging
  * libraries / OpenTelemetry setup, the best files to instrument, a recommended

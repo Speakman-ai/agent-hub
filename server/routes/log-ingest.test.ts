@@ -26,7 +26,7 @@ let projectId: string;
 let token: string;
 let sourceId: string;
 
-// ── test-local protobuf encoder (independent of the module) ─────────
+// test-local protobuf encoder (independent of the module)
 function varint(n: number | bigint): Buffer {
   const bytes: number[] = [];
   let v = BigInt(n);

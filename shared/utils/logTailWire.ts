@@ -1,14 +1,6 @@
 /**
- * Wire contract for the LOG-QUERY live tail, shared by the web
- * (`client/src/utils/logStream.ts`) and mobile (`mobile/src/utils/logStream.ts`)
- * Logs modules and by `shared/hooks/useLogTail.ts`.
- *
- * Only the transport-shaped half lives here: the record shape, the
- * `logs_subscribe` frame, the reconnect-safe merge, and the keyset cursor. The
- * presentation helpers (severity tones, filters, scroll geometry) stay per
- * platform because they render to Tailwind classes on web and React Native
- * styles on mobile. Nothing here touches React, the DOM, or a WebSocket, so
- * every function is unit-testable in the `node` env.
+ * LOG-QUERY live tail wire: record shape, subscribe frame, reconnect-safe merge.
+ * Presentation stays per platform.
  */
 
 /** Wire shape of a serialized log record (server `serializeLogRecord`). */
@@ -44,27 +36,10 @@ export interface LogSubscribeFrameInput {
 }
 
 /**
- * Build a `logs_subscribe` frame.
- *
- * The `seed` flag is the whole point of this helper. A seed makes the server
- * answer with the newest page of the window in one frame. That is **lossy**:
- * everything older than the page is skipped and `nextCursor` comes back null,
- * so the client can never page back for it. Only the subscriber knows whether
- * it holds any tail state, so it must say so explicitly; the server must not
- * infer it from `cursor === 0`, which is also the legitimate resume cursor for
- * a client that has accepted nothing yet.
- *
- * Rule: request a seed only when we hold no records. Any subscription carrying
- * accepted rows drains forward from its cursor, which is lossless.
- *
- * `sinceUnixNano` rides along on EVERY subscribe, seed or reconnect. It used to
- * be sent only on the seed, on the reasoning that every `id > cursor` is already
- * newer than the window. That reasoning silently assumed ingest id and event
- * time agree, which is exactly the assumption this module exists to break: a
- * delayed batch ingested after the cursor carries event times older than the
- * window, so an unbounded reconnect drain replays hours-old rows into a bounded
- * Live view. The window is a property of the subscription, not of the first
- * frame, so the server needs it every time.
+ * Build a `logs_subscribe` frame. Seed is lossy (newest page, no continue-token);
+ * request it only when we hold no records. `cursor === 0` is also a valid empty
+ * resume, so the server must not infer seed from that. `sinceUnixNano` goes on
+ * every subscribe: ingest id and event time can disagree (delayed batches).
  */
 export function buildLogSubscribeFrame(input: LogSubscribeFrameInput): Record<string, unknown> {
   const seed = !input.hasRecords;
@@ -78,33 +53,14 @@ export function buildLogSubscribeFrame(input: LogSubscribeFrameInput): Record<st
   return frame;
 }
 
-/**
- * Chronological comparator for the rendered tail: event time first, ingest id
- * as the tiebreak.
- *
- * `id` alone is ingest order, not event order. Two sources (say `production`
- * and `dev`) each POST their own batch, so their rows land in contiguous id
- * runs and the merged stream steps backwards in time every time it crosses
- * from one batch into the next. Sorting on `time_unix_nano` renders what the
- * timestamps actually say; `id` breaks ties inside one timestamp, and the pair
- * is the keyset that "Load older" and the seed query page on, so the rendered
- * order and the pagination order are the same total order.
- */
+/** Event time first, ingest id as tiebreak. `id` alone is ingest order, not event order. */
 export function compareLogRecords(a: LogRecord, b: LogRecord): number {
   const at = Number.isFinite(a.timeUnixNano) ? a.timeUnixNano : 0;
   const bt = Number.isFinite(b.timeUnixNano) ? b.timeUnixNano : 0;
   return at === bt ? a.id - b.id : at - bt;
 }
 
-/**
- * Merge incoming records into an existing tail: dedupe by `id`, keep ascending
- * chronological order, and bound the result to the newest `cap` records.
- *
- * This is the single reconnect-safe merge used for backfill pages AND live
- * frames. Because backfill can replay ids the client already holds (the server
- * installs the live subscription before draining backfill), dedupe-by-id is
- * what prevents duplicate rows after a reconnect.
- */
+/** Dedupe by id, keep chronological order, bound to newest `cap`. Backfill can replay ids. */
 export function mergeTailRecords(
   existing: readonly LogRecord[],
   incoming: readonly LogRecord[],
@@ -128,24 +84,8 @@ export interface LogCursor {
 }
 
 /**
- * Resolve the durable resubscribe cursor after a live-tail frame.
- *
- * The two frame types the server sends do NOT carry the same cursor semantics
- * (server `websocket.ts`):
- *   - `logs_tail_backfill` carries BOTH `cursor` (the last id of this page, or
- *     the requested cursor when the page is empty) AND `nextCursor` — the
- *     durable continue-token to query from next, `null` on the final page.
- *   - `logs_tail` (live) carries only `cursor` (the last id in the frame).
- *
- * On reconnect the hook must resubscribe from a cursor that reflects the newest
- * record it has durably accepted. Preferring `nextCursor` when present makes
- * backfill paging follow the server's own continue-token instead of assuming
- * `cursor` is that token; the fallback to `cursor` covers the final backfill
- * page (`nextCursor === null` but records remain) and every live frame. When
- * neither is a number (a bare keepalive) the current cursor is retained.
- *
- * The caller still applies a monotonic guard, so a stale/empty frame can never
- * rewind the cursor below `current`.
+ * Durable resubscribe cursor. Prefer `nextCursor` on backfill; fall back to
+ * `cursor` (final page / live frames). Keep `current` on keepalive.
  */
 export function resolveTailCursor(
   frame: { cursor?: unknown; nextCursor?: unknown },

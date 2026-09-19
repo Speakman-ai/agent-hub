@@ -1,5 +1,5 @@
 /**
- * release-range.ts — resolve which work a production deployment actually shipped.
+ * Resolve which work a production deployment actually shipped.
  *
  * A production deploy of `main` records `deployment.ref` = the post-merge main
  * HEAD SHA. But `finalize_runs` are keyed by the PRE-merge feature-branch

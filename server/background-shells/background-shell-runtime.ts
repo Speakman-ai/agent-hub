@@ -107,7 +107,7 @@ function defaultProbeGroupAlive(pid: number): boolean {
   }
 }
 
-// ─── Types & contracts ──────────────────────────────────────────────────
+// Types & contracts
 
 /**
  * Terminal + live statuses:
@@ -274,13 +274,13 @@ export interface BackgroundShellRuntimeDeps {
   schedule?: (fn: () => void, delayMs: number) => () => void;
 }
 
-// ─── Constants ──────────────────────────────────────────────────────────
+// Constants
 
 const DEFAULT_LOG_TAIL_LINES = 500;
 const DEFAULT_KILL_GRACE_MS = 3_000;
 const NATURAL_EXIT_POLL_MS = 100;
 
-// ─── Implementation ─────────────────────────────────────────────────────
+// Implementation
 
 /**
  * In-memory record for a live shell. Wraps the DB row's identity with the
@@ -383,7 +383,7 @@ export class BackgroundShellRuntime {
     this.bootReconcile = this.reconcileOrphansOnBoot();
   }
 
-  // ─── Public API ───────────────────────────────────────────────────────
+  // Public API
 
   /**
    * Register a terminal-status listener. Returns an unsubscribe function.
@@ -802,7 +802,7 @@ export class BackgroundShellRuntime {
     return stopped;
   }
 
-  // ─── Internals ────────────────────────────────────────────────────────
+  // Internals
 
   /**
    * Write a terminal status + exit code, prune the in-memory handle, and

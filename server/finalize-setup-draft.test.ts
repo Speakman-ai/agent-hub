@@ -1,5 +1,5 @@
 /**
- * finalize-setup-draft.test.ts — fixture-driven scans for the Finalize
+ * Fixture-driven scans for the Finalize
  * ci.yaml setup wizard.
  *
  * The proposed YAML always validates against the v1 parser — that

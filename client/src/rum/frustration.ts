@@ -1,5 +1,5 @@
 /**
- * frustration.ts: client-side frustration-signal detection for RUM.
+ * Client-side frustration-signal detection for RUM.
  *
  * Datadog-parity signals, all detected in the browser from the rrweb event
  * stream plus JS-error notifications:
@@ -9,12 +9,11 @@
  *   - dead click : a click with NO DOM change within DEAD_CLICK_WINDOW_MS.
  *   - error click: a click followed by a JS error within ERROR_CLICK_WINDOW_MS.
  *
- * The detector is a pure, DOM-free state machine. It is fed target ids +
+ * The detector is a DOM-free state machine. It is fed target ids +
  * timestamps for clicks, DOM-mutation timestamps, and JS-error timestamps, and
  * hands back per-action frustration types plus rolled-up counts. Every clock
  * value comes from the caller (the rrweb event `timestamp`, or an injected
- * `now`), so each threshold is deterministically testable without a real DOM or
- * real time.
+ * `now`), so each threshold is deterministic.
  *
  * Counting model (documented so the segment/session rollup is unambiguous):
  *   - actionCount     = number of clicks observed (each click is one action).
@@ -147,7 +146,7 @@ interface PendingClick {
 }
 
 /**
- * Pure frustration-signal state machine. See file header for the model.
+ * Frustration-signal state machine. See file header for the model.
  */
 export class FrustrationDetector {
   readonly rageThreshold: number;

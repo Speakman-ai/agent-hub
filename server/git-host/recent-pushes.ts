@@ -1,5 +1,5 @@
 /**
- * recent-pushes.ts — the "you just pushed a branch" memory behind the
+ * The "you just pushed a branch" memory behind the
  * GitHub-style Compare & pull request banner on the Pulls page.
  *
  * Recorded from the post-receive notify endpoint (both smart-HTTP and

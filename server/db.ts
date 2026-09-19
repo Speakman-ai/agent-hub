@@ -3801,7 +3801,6 @@ function initDb(dataDir: string): void {
     }
   }
 
-  // ---------------------------------------------------------------------
   // Additive schema reconciliation — MUST stay between the last DDL above and
   // the statement preparation below.
   //
@@ -3817,7 +3816,6 @@ function initDb(dataDir: string): void {
   // body but missing from the live table is added here. See
   // server/schema-reconcile.ts for the additive-only contract and for why
   // un-addable drift warns instead of throwing.
-  // ---------------------------------------------------------------------
   Reflect.deleteProperty(db, 'exec');
   {
     const { alters, blocked } = reconcileSchema(db, recordedDdl);
@@ -6452,7 +6450,7 @@ function initDb(dataDir: string): void {
            ended_at = COALESCE(ended_at, unixepoch() * 1000)
        WHERE state IN ('queued','running')`,
     ),
-    // ── Runtime stuck-run reaper (stuck-run-reaper.ts) ──────────────────────
+    // Runtime stuck-run reaper (stuck-run-reaper.ts)
     // Steady-state analog to the boot sweep above. boot-recovery only fires on
     // Hub boot; an `agent_block` run whose orchestrator dies/hangs mid-process
     // (e.g. a transient runner-lease-expiry blip, with NO restart) otherwise
@@ -6739,7 +6737,7 @@ function initDb(dataDir: string): void {
     updateFinalizeRunWorktreePath: db.prepare(
       `UPDATE finalize_runs SET worktree_path = ? WHERE id = ?`,
     ),
-    // ── Push lock (project, base branch) ───────────────────────────────
+    // Push lock (project, base branch)
     // `INSERT OR IGNORE` is the whole mutual exclusion: better-sqlite3
     // serializes writers, so exactly one caller sees `changes === 1` for a
     // given (project_id, base_branch) key.

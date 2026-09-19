@@ -1,5 +1,5 @@
 /**
- * repo-read.ts — read-only repository browsing for Agent Hub-hosted
+ * Read-only repository browsing for Agent Hub-hosted
  * repos: branch list (with ahead/behind vs the default branch), commit
  * log, and single-commit detail (stat + patch). Backs the Repository
  * page (`GET /api/projects/:id/git-host/{branches,commits}`).

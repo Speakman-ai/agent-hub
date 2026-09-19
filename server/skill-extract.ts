@@ -1,14 +1,7 @@
 /**
- * Skill Builder — Phase 4: "turn this session into a skill".
- *
- * Pure helpers for the `POST /api/sessions/:sessionId/extract-skill` route.
- * The route hands a finished session's transcript to the project's Skill
- * Builder coach agent, which mines the repeated context/procedures out of the
- * real work and drafts a `SKILL.md` via the Phase 1 write API — "extract,
- * don't invent."
- *
- * Everything here is side-effect free (string in, string out) so it can be
- * unit-tested without spawning a CLI or touching the DB.
+ * Skill Builder Phase 4: `POST /api/sessions/:sessionId/extract-skill`.
+ * Hands a finished transcript to the Skill Builder coach, which drafts a
+ * `SKILL.md` via the Phase 1 write API. Extract, don't invent.
  */
 
 /** Default ceiling for the transcript we embed in the kickoff prompt. */

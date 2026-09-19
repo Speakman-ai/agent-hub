@@ -317,7 +317,7 @@ describe.each([
   });
 });
 
-// ── Encryption-at-rest ───────────────────────────────────────────────
+// Encryption-at-rest
 //
 // Asserts that secret columns are encrypted on disk and that the read
 // path transparently decrypts them. We poke directly at the SQLite row
@@ -474,7 +474,7 @@ describe('users-store — encryption at rest', () => {
   });
 });
 
-// ── Audit logging ────────────────────────────────────────────────────
+// Audit logging
 //
 // Every secret-field write to a per-user engine credential must emit
 // exactly one `user_engine_auth_audit` row, tagged with the engine,
@@ -579,7 +579,7 @@ describe('users-store — audit logging on credential writes', () => {
   });
 });
 
-// ── Audit-table CHECK migration (grok) ───────────────────────────────
+// Audit-table CHECK migration (grok)
 //
 // DBs created before Grok per-user auth carry a narrower
 // `engine IN ('claude','cursor','gemini','codex')` CHECK. Because the

@@ -19,9 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.join(__dirname, '..', 'default-skills', 'aws-cli');
 const SCRIPTS_DIR = path.join(SKILL_DIR, 'scripts');
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 function isExecutable(file: string): boolean {
   const mode = statSync(file).mode;
@@ -71,9 +69,7 @@ exit 255
   return dir;
 }
 
-// ---------------------------------------------------------------------------
 // 1. SKILL.md shape
-// ---------------------------------------------------------------------------
 
 describe('aws-cli SKILL.md', () => {
   const skillMd = path.join(SKILL_DIR, 'SKILL.md');
@@ -123,9 +119,7 @@ describe('aws-cli SKILL.md', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // 2. Scripts present and executable
-// ---------------------------------------------------------------------------
 
 describe('aws-cli scripts', () => {
   const REQUIRED_SCRIPTS = ['_common.sh', 'aws-whoami.sh', 'aws-q.sh'];
@@ -141,9 +135,7 @@ describe('aws-cli scripts', () => {
   }
 });
 
-// ---------------------------------------------------------------------------
 // 3. mask_secrets() redaction (bash subprocess)
-// ---------------------------------------------------------------------------
 
 describe('mask_secrets() — redaction helper', () => {
   const commonSh = path.join(SCRIPTS_DIR, '_common.sh');
@@ -187,9 +179,7 @@ describe('mask_secrets() — redaction helper', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // 4. aws-q.sh — bad invocation exits 2 with usage
-// ---------------------------------------------------------------------------
 
 describe('aws-q.sh invocation guard', () => {
   const awsQ = path.join(SCRIPTS_DIR, 'aws-q.sh');
@@ -214,9 +204,7 @@ describe('aws-q.sh invocation guard', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // 5. aws-whoami.sh — missing credentials surfaces a helpful error
-// ---------------------------------------------------------------------------
 
 describe('aws-whoami.sh credential error handling', () => {
   const awsWhoami = path.join(SCRIPTS_DIR, 'aws-whoami.sh');
@@ -279,9 +267,7 @@ describe('aws-whoami.sh credential error handling', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // 6. References present
-// ---------------------------------------------------------------------------
 
 describe('aws-cli references', () => {
   const REQUIRED_REFS = [

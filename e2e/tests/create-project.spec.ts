@@ -28,7 +28,7 @@ test.describe('Create project — happy path', () => {
   test('wizard → provisioning → landing', async ({ page }) => {
     test.setTimeout(30_000);
 
-    // ── Fail-loud on unexpected 404s for any /api/* endpoint ──────────
+    // Fail-loud on unexpected 404s for any /api/* endpoint
     // This is the "catches the missing-route regression class" guard
     // from the acceptance criteria.
     const unexpected404s: string[] = [];
@@ -38,16 +38,16 @@ test.describe('Create project — happy path', () => {
       }
     });
 
-    // ── Boot ──────────────────────────────────────────────────────────
+    // Boot
     await page.goto('/');
     await page.waitForLoadState('networkidle');
 
-    // ── Act I: open the adaptive wizard ───────────────────────────────
+    // Act I: open the adaptive wizard
     await page.getByTestId('sidebar-new-project-cta').click();
     await expect(page.getByTestId('new-project-adaptive-mount')).toBeVisible();
     await expect(page.getByTestId('adaptive-questionnaire')).toBeVisible();
 
-    // ── Step 1 (description): required — Continue is disabled empty ───
+    // Step 1 (description): required — Continue is disabled empty
     const continueBtn = page.getByTestId('aq-continue');
     await expect(continueBtn).toBeVisible();
     await expect(continueBtn).toBeDisabled();
@@ -62,23 +62,23 @@ test.describe('Create project — happy path', () => {
     await expect(continueBtn).toBeEnabled();
     await continueBtn.click();
 
-    // ── Step 2 (hosting): idk present; Agent Hub is pre-selected ──────
+    // Step 2 (hosting): idk present; Agent Hub is pre-selected
     await expect(page.getByTestId('aq-idk')).toBeVisible();
     await page.getByTestId('aq-continue').click();
 
-    // ── Step 3 (identity): idk present for both name and visibility ──
+    // Step 3 (identity): idk present for both name and visibility
     await expect(page.getByTestId('aq-name-idk')).toBeVisible();
     await expect(page.getByTestId('aq-visibility-idk')).toBeVisible();
     await page.getByTestId('aq-name-idk').click();
     await page.getByTestId('aq-visibility-idk').click();
     await page.getByTestId('aq-continue').click();
 
-    // ── Step 4 (review): submit ───────────────────────────────────────
+    // Step 4 (review): submit
     const submitBtn = page.getByTestId('aq-submit');
     await expect(submitBtn).toBeVisible();
     await submitBtn.click();
 
-    // ── Provisioning stream ──────────────────────────────────────────
+    // Provisioning stream
     await expect(page.getByTestId('provisioning-status')).toBeVisible();
 
     // Header chip lands on "Project ready" once the terminal done event
@@ -105,7 +105,7 @@ test.describe('Create project — happy path', () => {
     await expect(page.getByTestId('post-scaffold-audit')).toHaveCount(0);
     await expect(page.getByTestId('pl-roster')).toHaveCount(0);
 
-    // ── Network regression guard ──────────────────────────────────────
+    // Network regression guard
     expect(unexpected404s, `Unexpected 404s: ${unexpected404s.join(', ')}`).toEqual([]);
   });
 });

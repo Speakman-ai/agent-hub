@@ -10,8 +10,7 @@
  * separate tickets that build on this store.
  *
  * All public helpers are thin, synchronous wrappers over `better-sqlite3`
- * against a single process-wide handle, so they can be unit-tested against a
- * scratch data dir without booting the server.
+ * against a single process-wide handle.
  */
 
 import Database from 'better-sqlite3';

@@ -1,5 +1,5 @@
 /**
- * pulls-native.ts — create a native pull request on an Agent Hub-hosted
+ * Create a native pull request on an Agent Hub-hosted
  * project. The write counterpart of the read surface in pr-list.ts
  * (which branches to native data for hosted projects).
  *
@@ -1028,7 +1028,7 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── PR-scoped previews ────────────────────────────────────────────
+  // PR-scoped previews
   // A native PR has no preview runtime of its own — previews are
   // session/worktree-scoped. A PR's head branch encodes the session that owns
   // it, so a PR preview IS that session's worktree preview. These routes

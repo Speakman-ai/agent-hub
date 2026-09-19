@@ -1,5 +1,5 @@
 /**
- * auto-merge-armed.ts — complete a native PR whose `auto_merge` flag is armed.
+ * Complete a native PR whose `auto_merge` flag is armed.
  *
  * Two callers share this one gate:
  *   1. the arm route / push-option, for an immediate attempt when the PR is

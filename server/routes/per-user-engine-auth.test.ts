@@ -137,7 +137,7 @@ describe('per-user engine auth routes', () => {
     }
   });
 
-  // ── Auth gate ──────────────────────────────────────────────────────
+  // Auth gate
   it('returns 401 when caller is unauthenticated', async () => {
     const app = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId: null });
     const responses = await Promise.all([
@@ -298,7 +298,7 @@ describe('per-user engine auth routes', () => {
     );
   });
 
-  // ── Cursor: status ─────────────────────────────────────────────────
+  // Cursor: status
   it('GET /api/auth/me/cursor-auth/browser parses status JSON under per-user HOME', async () => {
     const userId = 'user-alpha';
     const app = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId });
@@ -348,7 +348,7 @@ describe('per-user engine auth routes', () => {
     expect(st.mode & 0o777).toBe(0o700);
   });
 
-  // ── Cursor: login emits URL ────────────────────────────────────────
+  // Cursor: login emits URL
   it('POST /api/auth/me/cursor-auth/browser/login returns loginUrl from CLI output', async () => {
     const userId = 'user-login';
     const app = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId });
@@ -376,7 +376,7 @@ describe('per-user engine auth routes', () => {
     expect(res.body.error).toContain('Cursor Agent binary not found');
   });
 
-  // ── Cursor: cancel + DELETE ────────────────────────────────────────
+  // Cursor: cancel + DELETE
   it('POST /api/auth/me/cursor-auth/browser/cancel-login is idempotent', async () => {
     const app = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId: 'idempotent-user' });
     const res = await request(app)
@@ -403,7 +403,7 @@ describe('per-user engine auth routes', () => {
     expect(existsSync(join(home, '.cursor'))).toBe(false);
   });
 
-  // ── Codex: device-login emits URL + code ───────────────────────────
+  // Codex: device-login emits URL + code
   it('POST /api/auth/me/codex-auth/browser/device-login returns deviceAuthUrl + userCode', async () => {
     const userId = 'user-codex';
     const app = buildApp({ cursorBin, codexBin, dataDir: tmpDir, userId });
@@ -430,7 +430,7 @@ describe('per-user engine auth routes', () => {
     expect(res.body.error).toContain('Codex binary not found');
   });
 
-  // ── Codex: status & DELETE ─────────────────────────────────────────
+  // Codex: status & DELETE
   it('GET /api/auth/me/codex-auth/browser reports OAuth when per-user .codex/auth.json holds chatgpt tokens', async () => {
     const userId = 'user-codex-status';
     const home = join(tmpDir, 'per-user-creds', userId, 'home');
@@ -464,7 +464,7 @@ describe('per-user engine auth routes', () => {
     expect(existsSync(join(home, '.codex'))).toBe(false);
   });
 
-  // ── P4: per-user Codex device-login (engine-isolated CODEX_HOME) ──
+  // P4: per-user Codex device-login (engine-isolated CODEX_HOME)
   describe('POST /api/auth/me/codex-auth/login', () => {
     it('spawns codex login --device-auth with CODEX_HOME pinned at <dataDir>/per-user-cli-home/codex/<uid>', async () => {
       const userId = 'codex-p4-user';
@@ -620,7 +620,7 @@ describe('per-user engine auth routes', () => {
     });
   });
 
-  // ── Grok (xAI Grok Build CLI) device-auth ──────────────────────────
+  // Grok (xAI Grok Build CLI) device-auth
   describe('Grok device-auth', () => {
     it('returns 401 across all grok routes when unauthenticated', async () => {
       const app = buildApp({ cursorBin, codexBin, grokBin, dataDir: tmpDir, userId: null });
@@ -756,7 +756,7 @@ describe('per-user engine auth routes', () => {
     });
   });
 
-  // ── Per-user isolation ─────────────────────────────────────────────
+  // Per-user isolation
   it('two users share no HOME — login spawns land in distinct per-user trees', async () => {
     const spawnHomes: string[] = [];
     spawnMock.mockImplementation((_cmd, _args, opts) => {

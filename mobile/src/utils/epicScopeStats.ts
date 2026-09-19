@@ -1,4 +1,4 @@
-// Pure stats/helpers for the mobile epic detail (workbench) screen.
+// Mobile epic detail stats.
 // Mirrors the pure functions in client/src/utils/epicScopeStats.ts so web and
 // mobile agree on ticket/spec/phase progress. The web file also carries
 // Tailwind-class helpers (columnStatusStyle, priorityStyle, …) that are

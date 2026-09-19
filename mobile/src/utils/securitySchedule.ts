@@ -1,5 +1,4 @@
-// Pure helpers for the mobile Security screen's automatic-scan schedule control.
-// Mirrors client/src/utils/securitySchedule.ts (web parity).
+// Mobile Security automatic-scan schedule. Mirrors client/src/utils/securitySchedule.ts.
 //
 // The server persists a per-project `securityScan` config
 // (`{ onPush?: boolean; schedule?: 'off' | 'daily' | 'weekly' }`) that the

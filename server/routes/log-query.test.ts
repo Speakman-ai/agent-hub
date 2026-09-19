@@ -132,7 +132,7 @@ describe('DELETE /api/projects/:projectId/logs (clear logs)', () => {
   });
 });
 
-// ─── DELETE authorization, isolated from the shared app's break-glass Owner ──
+// DELETE authorization, isolated from the shared app's break-glass Owner
 // The shared supertest app authenticates as the local Owner (localBypass), so
 // the Admin gate + visibility both pass there. To prove the destructive route
 // is genuinely Admin-gated AND ACL-scoped — not merely reachable in the bypass

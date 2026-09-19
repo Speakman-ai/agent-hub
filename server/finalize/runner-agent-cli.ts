@@ -1,5 +1,5 @@
 /**
- * runner-agent-cli.ts — entrypoint for the bundled runner-agent binary.
+ * Entrypoint for the bundled runner-agent binary.
  *
  * Bundled (esbuild) into a single self-contained .mjs and run in the fleet task
  * image via the entrypoint's `agent` mode (`node /usr/local/bin/runner-agent.mjs`).

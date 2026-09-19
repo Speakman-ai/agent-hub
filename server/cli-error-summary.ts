@@ -12,11 +12,10 @@
 //   the operator can't act on a stack frame, and a transient free-tier quota
 //   429 isn't an "error" worth alarming on.
 //
-//   This module turns that raw text into a small `{ kind, message }` record
+//   Turns that raw text into a small `{ kind, message }` record
 //   so callers can (a) log a single concise line and (b) pick a log level
-//   (rate-limit/quota → warn; everything else → error). It is intentionally
-//   pure and dependency-free so it's trivially testable and reusable across
-//   memory.ts / heartbeat.ts / cron paths.
+//   (rate-limit/quota → warn; everything else → error). Pure and reusable
+//   across memory.ts / heartbeat.ts / cron paths.
 
 export type CliErrorKind = 'rate_limit' | 'auth' | 'timeout' | 'not_found' | 'generic';
 

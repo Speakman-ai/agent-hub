@@ -20,7 +20,7 @@ import {
 } from './wiki-embeddings.js';
 import { getStmts } from './db.js';
 
-// ─── Deterministic mock embedder ────────────────────────────────────
+// Deterministic mock embedder
 // Maps text → a small bag-of-words vector over a fixed vocabulary so cosine
 // similarity is meaningful and reproducible without hitting the network.
 const VOCAB = ['alpha', 'beta', 'gamma', 'delta', 'widget', 'parser', 'render', 'token'];

@@ -1,12 +1,12 @@
 /**
- * headline-metrics.ts — the two or three series per service that belong on a
+ * The two or three series per service that belong on a
  * dashboard, as opposed to the ~110 a service pack catalogs.
  *
  * A pack answers "what can be charted for this service". That is the right
  * question for a metric picker and the wrong one for an overview: an operator
  * opening Infrastructure wants to know whether the fleet is healthy, and
- * eleven EC2 series per instance is not an answer to that. This module is the
- * curated subset the fleet dashboard renders unprompted, so the common case
+ * eleven EC2 series per instance is not an answer to that. The curated
+ * subset the fleet dashboard renders unprompted, so the common case
  * costs zero clicks.
  *
  * Refs declare only the *identity* of a series — namespace, metric name and the
@@ -77,7 +77,7 @@ const RDS_INSTANCE = Object.freeze(['DBInstanceIdentifier']);
  * renders a service's series.
  */
 export const INFRA_HEADLINE_METRIC_REFS: readonly InfraHeadlineMetricRef[] = Object.freeze([
-  // ── EC2 ───────────────────────────────────────────────────────────────────
+  // EC2
   {
     service: 'ec2',
     namespace: 'AWS/EC2',
@@ -103,7 +103,7 @@ export const INFRA_HEADLINE_METRIC_REFS: readonly InfraHeadlineMetricRef[] = Obj
     unit: 'bytes',
   },
 
-  // ── ECS cluster ───────────────────────────────────────────────────────────
+  // ECS cluster
   {
     service: 'ecs',
     namespace: 'AWS/ECS',
@@ -121,7 +121,7 @@ export const INFRA_HEADLINE_METRIC_REFS: readonly InfraHeadlineMetricRef[] = Obj
     unit: 'percent',
   },
 
-  // ── ECS service ───────────────────────────────────────────────────────────
+  // ECS service
   {
     service: 'ecs',
     namespace: 'AWS/ECS',
@@ -150,7 +150,7 @@ export const INFRA_HEADLINE_METRIC_REFS: readonly InfraHeadlineMetricRef[] = Obj
     unit: 'count',
   },
 
-  // ── RDS ───────────────────────────────────────────────────────────────────
+  // RDS
   {
     service: 'rds',
     namespace: 'AWS/RDS',

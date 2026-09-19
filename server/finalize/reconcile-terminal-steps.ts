@@ -1,5 +1,5 @@
 /**
- * reconcile-terminal-steps.ts — make a Finalize run's per-step rows consistent
+ * Make a Finalize run's per-step rows consistent
  * with the run reaching a terminal status.
  *
  * Two persisted-state gaps make a terminally-FAILED run look like it is still

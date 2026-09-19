@@ -1,5 +1,5 @@
 /**
- * runner-fleet-scaler.ts — queue-depth autoscaler for the remote runner fleet.
+ * Queue-depth autoscaler for the remote runner fleet.
  *
  * The fleet runs one job per agent task (one task per instance, by memory
  * reservation). To run Finalize jobs CONCURRENTLY we need as many agents as
@@ -77,15 +77,15 @@ function readConfig(): FleetScalerConfig | null {
   };
 }
 
-/** Target agent count for a given queue depth (pure; unit-tested). */
+/** Target agent count for a given queue depth. */
 export function desiredAgents(depth: number, min: number, max: number): number {
   if (depth <= 0) return min;
   return Math.min(max, Math.max(min, depth));
 }
 
 /**
- * Dynamic target that separates queued backlog from in-flight work (pure;
- * unit-tested). `depth` = queued+claimed+running drives scale-UP so a claimable
+ * Dynamic target that separates queued backlog from in-flight work.
+ * `depth` = queued+claimed+running drives scale-UP so a claimable
  * backlog isn't starved; `inflight` = claimed+running plus `headroom` is the
  * warm FLOOR we never shrink below. The two are combined with `max` (not summed)
  * so headroom never stacks on top of a full backlog:
@@ -137,8 +137,7 @@ export const SCALE_DOWN_COOLDOWN_MS = 90_000;
  */
 export const REAP_SCALE_DOWN_GRACE_MS = 120_000;
 
-/** Carried hysteresis state between reconcile ticks (kept explicit so the
- *  decision is a pure, unit-testable function). */
+/** Carried hysteresis state between reconcile ticks. */
 export interface ScalerHysteresis {
   /** When the queue was first observed fully drained (cooldown anchor); 0 = not empty. */
   emptySinceMs: number;
@@ -164,7 +163,7 @@ export function queueDepthForScale(liveDepth: number, reapedThisTick: number): n
 }
 
 /**
- * Pure scale decision (unit-tested). Given the observed queue depth, the current
+ * Scale decision. Given the observed queue depth, the current
  * desiredCount, the fleet bounds, how many leases were reaped THIS tick, and the
  * carried hysteresis state, decide the next desiredCount. Scale-up is immediate;
  * scale-down requires a stable observation AND no recent reap.

@@ -4,7 +4,7 @@
  * Builds a disk-backed log sink under `<dataDir>/background-shells/` and
  * constructs the runtime with the real `child_process.spawn`. Mirrors
  * `preview-runtime-setup.ts`; kept separate from the runtime class so the
- * class stays IO-free and unit-testable with injected fakes.
+ * class stays IO-free with injected fakes.
  */
 import type { Database } from 'better-sqlite3';
 import { spawn as childSpawn } from 'child_process';

@@ -1,5 +1,5 @@
 /**
- * infra-cost-store.ts — the persistence half of decision INFRA-COST.
+ * The persistence half of decision INFRA-COST.
  *
  * `infra-cost.ts` holds the arithmetic and touches nothing; this module reads
  * what a project has actually spent out of the `infra_collect_runs` audit trail
@@ -218,7 +218,7 @@ export function recordCostDegradation(
   return run();
 }
 
-// ─── Spend to date ──────────────────────────────────────────────────────────
+// Spend to date
 
 export interface InfraSpendToDate {
   /** First epoch ms of the UTC month the figures cover. */
@@ -374,7 +374,7 @@ export function resolveProjectDegradation(
   };
 }
 
-// ─── Run history ────────────────────────────────────────────────────────────
+// Run history
 
 export interface InfraCollectRunRow {
   id: string;

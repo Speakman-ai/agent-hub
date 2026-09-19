@@ -1,6 +1,4 @@
-// Pure helpers for the per-environment deploy-triggers surface. Framework-free
-// so they can be unit-tested and mirrored by the mobile screen. Backend contract
-// lives in server/deploy/deployment-trigger-store.ts (glob semantics + limits).
+// Per-environment deploy-triggers. Mirror of client/src/utils/deployTriggers.ts.
 
 export type DeployTriggerEvent = 'push' | 'merge';
 

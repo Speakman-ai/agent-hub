@@ -1,5 +1,5 @@
 /**
- * Tests for the instance-backup migration export.
+ * Migration export.
  *
  * We mount the router on a stub express app with an injectable `authRole`
  * so we can exercise the requireRole gate, then assert the manifest shape

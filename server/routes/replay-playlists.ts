@@ -55,7 +55,7 @@ export default function createReplayPlaylistRoutes(deps: RouteDeps): Router {
     return playlist;
   }
 
-  // ── List playlists ────────────────────────────────────────────────
+  // List playlists
   router.get('/api/projects/:projectId/replay-playlists', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -63,7 +63,7 @@ export default function createReplayPlaylistRoutes(deps: RouteDeps): Router {
     return res.json({ playlists: rows.map((r) => toPlaylistView(r)) });
   });
 
-  // ── Create a playlist ─────────────────────────────────────────────
+  // Create a playlist
   router.post('/api/projects/:projectId/replay-playlists', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -88,7 +88,7 @@ export default function createReplayPlaylistRoutes(deps: RouteDeps): Router {
     return res.status(201).json(toPlaylistView(row, 0));
   });
 
-  // ── Get one playlist with its items ───────────────────────────────
+  // Get one playlist with its items
   router.get(
     '/api/projects/:projectId/replay-playlists/:playlistId',
     (req: Request, res: Response) => {
@@ -102,7 +102,7 @@ export default function createReplayPlaylistRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Rename / update a playlist ────────────────────────────────────
+  // Rename / update a playlist
   router.patch(
     '/api/projects/:projectId/replay-playlists/:playlistId',
     (req: Request, res: Response) => {
@@ -129,7 +129,7 @@ export default function createReplayPlaylistRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Delete a playlist ─────────────────────────────────────────────
+  // Delete a playlist
   // Items cascade (FK ON DELETE CASCADE). Member captures are NOT deleted or
   // un-flagged — a capture may be pinned independently or live in another
   // playlist; dropping a grouping never reaps captures.
@@ -143,7 +143,7 @@ export default function createReplayPlaylistRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Add a capture to a playlist ───────────────────────────────────
+  // Add a capture to a playlist
   router.post(
     '/api/projects/:projectId/replay-playlists/:playlistId/items',
     (req: Request, res: Response) => {
@@ -171,7 +171,7 @@ export default function createReplayPlaylistRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Remove a capture from a playlist ──────────────────────────────
+  // Remove a capture from a playlist
   router.delete(
     '/api/projects/:projectId/replay-playlists/:playlistId/items/:replayId',
     (req: Request, res: Response) => {
@@ -183,7 +183,7 @@ export default function createReplayPlaylistRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Flag / unflag a playlist for extended retention ───────────────
+  // Flag / unflag a playlist for extended retention
   // `{ extend: true }` stamps an absolute `retained_until` (enable-time + the
   // tenant's extension window) on the playlist AND every member capture's
   // session_replays row, so the sweeper keeps the whole playlist until the

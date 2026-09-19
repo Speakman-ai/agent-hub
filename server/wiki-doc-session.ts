@@ -455,7 +455,7 @@ export function maybeArchiveWikiDocSession(
   }
 }
 
-// ─── Late-bound merge hook (avoids a chat.ts import cycle) ────────
+// Late-bound merge hook (avoids a chat.ts import cycle)
 
 let mergeHook: WikiDocDispatchDeps | null = null;
 

@@ -1,7 +1,6 @@
 /**
- * Unit tests for the pure helpers in design-chat.ts. The chat handler itself
- * spawns a real CLI and is exercised through integration tests; here we just
- * cover the state-inspection surface that the `/status` endpoint relies on.
+ * State-inspection surface that `/status` relies on. The chat handler
+ * itself spawns a real CLI and is exercised through integration tests.
  */
 import { vi } from 'vitest';
 import {

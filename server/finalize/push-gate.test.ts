@@ -1,5 +1,5 @@
 /**
- * push-gate.test.ts — unit coverage for the §9 push gate.
+ * Unit coverage for the §9 push gate.
  *
  * The gate is a pure function over `(stepStatus, reviewerVerdict,
  * headBeforePhases, headAtPushGate)`. The truth table is:

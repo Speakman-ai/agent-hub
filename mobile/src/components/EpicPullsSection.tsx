@@ -61,8 +61,7 @@ export default function EpicPullsSection({ projectId, epicId, onOpenPull }: any)
 }
 
 /**
- * Pure presentational body — no data fetching. Renders nothing when there are
- * no PRs. Split out so it can be unit-rendered without a native runtime.
+ * Epic PR list body. Renders nothing when empty.
  */
 export function EpicPullsSectionContent({ pulls, onOpenPull }: any) {
   const list: any[] = Array.isArray(pulls) ? pulls : [];

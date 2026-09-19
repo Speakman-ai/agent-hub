@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest';
 import { getRequest, createProject } from './helpers.js';
 
 describe('iOS Build Routes', () => {
-  // ─── Status ─────────────────────────────────────────────────────
+  // Status
 
   it('GET /api/ios-builds/status returns infrastructure status', async () => {
     const request = await getRequest();
@@ -26,7 +26,7 @@ describe('iOS Build Routes', () => {
     expect(typeof res.body.maxConcurrent).toBe('number');
   });
 
-  // ─── Create ─────────────────────────────────────────────────────
+  // Create
 
   it('POST /api/projects/:projectId/ios-builds validates required fields', async () => {
     const request = await getRequest();
@@ -63,7 +63,7 @@ describe('iOS Build Routes', () => {
       .expect(404);
   });
 
-  // ─── List ───────────────────────────────────────────────────────
+  // List
 
   it('GET /api/projects/:projectId/ios-builds returns array', async () => {
     const request = await getRequest();
@@ -74,7 +74,7 @@ describe('iOS Build Routes', () => {
     expect(Array.isArray(res.body)).toBe(true);
   });
 
-  // ─── Authorization: cross-project access ────────────────────────
+  // Authorization: cross-project access
 
   it('GET /:id returns 404 for build belonging to a different project', async () => {
     const request = await getRequest();

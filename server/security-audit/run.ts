@@ -1,5 +1,5 @@
 /**
- * run.ts — top-level "scan this project now" orchestration.
+ * Top-level "scan this project now" orchestration.
  *
  * Wires the pieces together for a single hosted repo: resolve the bare
  * repo + ref → read lockfiles → query the advisory source → persist with
@@ -7,8 +7,7 @@
  * one function the REST trigger calls today, and the seam a scheduled
  * cron / on-push hook will call next (see follow-up cards).
  *
- * All collaborators (store, advisory source, card generator, clock) are
- * injected so the orchestration is unit-testable without git or network.
+ * All collaborators (store, advisory source, card generator, clock) are injected.
  */
 
 import type { BroadcastFn, Project, Stmts } from '../types.js';

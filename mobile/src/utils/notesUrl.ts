@@ -1,9 +1,4 @@
-/**
- * Pure URL-building helpers for the Notes API.
- *
- * Separated from `api.js` so the URL construction logic can be unit-tested
- * without pulling in the `fetch` / React Native network layer.
- */
+/** Notes API URL builders. */
 /**
  * Build a GET URL for the Notes list endpoint, optionally with a search
  * query and/or a result limit.

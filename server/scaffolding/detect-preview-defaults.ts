@@ -1,11 +1,9 @@
 /**
- * detect-preview-defaults
- *
- * Pure helper that inspects a workspace directory on disk and, when the
- * project's stack is one we recognise (Vite, Next.js, Create React App,
- * Astro, Nuxt, Expo web, Docker Compose, FastAPI, Go, Rust), returns sensible `prEnv.devServer` defaults so
- * the new-project / clone-from-GitHub flows can pre-populate the wizard
- * with zero manual configuration.
+ * Inspects a workspace directory on disk and, when the project's stack is
+ * one we recognise (Vite, Next.js, Create React App, Astro, Nuxt, Expo web,
+ * Docker Compose, FastAPI, Go, Rust), returns sensible `prEnv.devServer`
+ * defaults so the new-project / clone-from-GitHub flows can pre-populate
+ * the wizard with zero manual configuration.
  *
  * Detection contract:
  *   - Reads `<workspaceDir>/package.json` first; if it has a recognisable
@@ -27,8 +25,7 @@
  * `devServer.portMap` entry, and decide for themselves whether to persist
  * the block at all.
  *
- * This file is dependency-free beyond the Node `fs`/`path` builtins so
- * it can be unit-tested without spinning up the rest of the server.
+ * Dependency-free beyond the Node `fs`/`path` builtins.
  */
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
@@ -218,7 +215,7 @@ function classifyMonorepo(workspaceDir: string): KnownStack | null {
  * Inspect a workspace directory and return dev-server defaults for the
  * stack we detected, or `null` if the stack is unknown.
  *
- * Pure with respect to the filesystem (no caching, no mutation) so the
+ * No caching, no mutation, so the
  * caller can re-invoke after a clone re-runs / a setup step rewrites
  * package.json without worrying about staleness.
  *

@@ -1,5 +1,5 @@
 /**
- * actor-user.ts — resolve the Hub user that UNATTENDED security automation
+ * Resolve the Hub user that UNATTENDED security automation
  * acts as.
  *
  * A manual "Autofix" click attributes the bump PR to the clicking user

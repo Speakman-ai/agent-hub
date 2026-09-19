@@ -266,7 +266,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
     }, 15_000);
   });
 
-  // ─── Source-level assertions ──────────────────────────────────────────
+  // Source-level assertions
   // POST /board/cards does NOT accept epic_id — epic linking is a separate
   // endpoint. The create-card wrapper must chain a second call when
   // --epic-id is provided. Pinning the contract at the source level protects
@@ -412,7 +412,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
     }
   });
 
-  // ─── End-to-end check against a mock HTTP server ──────────────────────
+  // End-to-end check against a mock HTTP server
   // Spins up a tiny Node HTTP listener that captures the request sequence
   // kanban-create-card.sh makes, so we can assert the epic-link chain
   // actually fires. Skipped if `python3` isn't on PATH — the script needs it
@@ -523,7 +523,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
     );
   });
 
-  // ─── Wiki-upsert slug safety ──────────────────────────────────────────
+  // Wiki-upsert slug safety
   // server/wiki.ts::createPage derives the slug from slugify(title) and
   // ignores any body slug field. The wrapper must validate slug/title
   // agreement up-front so callers don't silently land on the wrong slug.
@@ -648,7 +648,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
     );
   });
 
-  // ─── log-tool-error.sh daily-note append (mock server) ───────────────
+  // log-tool-error.sh daily-note append (mock server)
   // The script resolves the workspace via GET /api/projects/:id (.ahw) and
   // appends a TOOL_ERROR line to <workspace>/memory/<YYYY-MM-DD>.md. We spin
   // up a mock server that hands back a temp dir as `ahw`, invoke the script,
@@ -795,7 +795,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
     );
   });
 
-  // ─── ah-api.sh spawn-creds file fallback (mid-flight auth recovery) ──────
+  // ah-api.sh spawn-creds file fallback (mid-flight auth recovery)
   // When AGENT_HUB_API_KEY is empty (the state every pre-auth-setup session
   // is in), ah_resolve_key must consult the per-session spawn-creds file at
   // $AGENT_HUB_DATA_DIR/spawn-creds/$AGENT_HUB_SESSION_ID.token. This is the
@@ -964,7 +964,7 @@ describe('agent-hub deterministic script wrappers — shape', () => {
     });
   });
 
-  // ─── ah-api.sh surfaces HTTP 401 with auth hint (kanban card creation) ───
+  // ah-api.sh surfaces HTTP 401 with auth hint (kanban card creation)
   describe('ah-api.sh HTTP error surfacing', () => {
     it('prints response body and auth hint on 401 without a key', async () => {
       const handle = await new Promise<{ url: string; close: () => Promise<void> }>((resolve) => {

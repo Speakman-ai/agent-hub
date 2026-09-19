@@ -1,5 +1,5 @@
 /**
- * routes/github-oauth.ts — "Sign in with GitHub" user-identity endpoints.
+ * "Sign in with GitHub" user-identity endpoints.
  *
  *   GET    /api/auth/github/start     — returns { authorizeUrl }; client redirects the browser
  *   GET    /api/auth/github/callback  — public; validates state, exchanges code, stores tokens, redirects back to the UI
@@ -44,7 +44,7 @@ import {
   formatZodError,
 } from '../openapi/schemas/auth.js';
 
-// ── OpenAPI registrations (GitHub OAuth / PAT sign-in) ─────────────────
+// OpenAPI registrations (GitHub OAuth / PAT sign-in)
 registerPath({
   method: 'get',
   path: '/api/auth/github/start',
@@ -278,7 +278,7 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
   const { config } = deps;
   const router = Router();
 
-  // ── Start: mint state token + authorize URL ────────────────────
+  // Start: mint state token + authorize URL
   router.get('/api/auth/github/start', (req: Request, res: Response) => {
     const uid = resolveOAuthUserId(req);
     if (!uid) {
@@ -312,7 +312,7 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
     return res.json({ authorizeUrl });
   });
 
-  // ── Callback: exchange code, persist tokens ────────────────────
+  // Callback: exchange code, persist tokens
   // Public path — GitHub redirects the user here with no auth header.
   // Identity is carried by the signed `state` JWT.
   router.get('/api/auth/github/callback', async (req: Request, res: Response) => {
@@ -473,7 +473,7 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ── Status: for the Settings UI to render "Connected as @foo" ─
+  // Status: for the Settings UI to render "Connected as @foo"
   router.get('/api/auth/github/status', (req: Request, res: Response) => {
     const uid = resolveOAuthUserId(req);
     if (!uid) {
@@ -491,7 +491,7 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
     });
   });
 
-  // ── Disconnect ──────────────────────────────────────────────────
+  // Disconnect
   router.delete('/api/auth/github', (req: Request, res: Response) => {
     const uid = resolveOAuthUserId(req);
     if (!uid) {
@@ -509,7 +509,7 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
     return res.json({ ok: true });
   });
 
-  // ── PAT (Personal Access Token) sign-in ─────────────────────────
+  // PAT (Personal Access Token) sign-in
   // Alternative to OAuth when personalOAuth is not configured.
   // configured (no public URL, local-only Electron, fresh setup wizard
   // before any GitHub App exists). The user generates a fine-grained or

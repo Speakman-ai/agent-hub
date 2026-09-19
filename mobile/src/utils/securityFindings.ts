@@ -1,8 +1,4 @@
-/**
- * Pure helpers for the Security screen, kept out of the RN-importing screen
- * module so vitest (node env) can unit-test them. Mirrors the web client's
- * SecurityPage helpers.
- */
+/** Security screen helpers. Mirror of the web SecurityPage helpers. */
 // Severity → sort rank (most urgent first). Matches the server's ORDER BY.
 export const SEVERITY_RANK: Record<string, any> = {
   critical: 0,

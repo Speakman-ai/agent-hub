@@ -1,8 +1,8 @@
 /**
- * github-workflow-step.ts — declarative `github_workflow` deploy.yaml step.
+ * Declarative `github_workflow` deploy.yaml step.
  *
- * A deploy step normally runs a verbatim shell command (`run:`). This module
- * adds an alternative step shape that DISPATCHES a GitHub Actions workflow and
+ * A deploy step normally runs a verbatim shell command (`run:`). Adds an
+ * alternative step shape that DISPATCHES a GitHub Actions workflow and
  * then POLLS the resulting run to completion, so a deploy that "kicks off a
  * GitHub Action" actually waits for that action to succeed or fail (instead of
  * returning the moment `gh workflow run` queues it) and surfaces the run's URL +
@@ -40,9 +40,8 @@
  *      conclusion as compact JSON, which the orchestrator parses out of the
  *      step output tail and persists on the `deployment_steps` row.
  *
- * Everything here is PURE (config in → validated spec / bash string out, and
- * tail lines in → parsed result out) so it is trivially unit-testable without a
- * runner, a container, or the real `gh` CLI.
+ * Everything here is config in → validated spec / bash string out, and
+ * tail lines in → parsed result out. No runner, container, or real `gh`.
  */
 import { DeployConfigError } from './deploy-config-error.js';
 

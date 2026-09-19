@@ -2,8 +2,7 @@
  * Helpers for the "Changes ready → Create PR" flow.
  *
  * Ported behaviour from the web client (`ChangesReadyBox.jsx` + `App.jsx`).
- * These are pure functions so they can be unit-tested without rendering any
- * React Native components.
+ * No React Native rendering.
  */
 /**
  * Resolve the default auto-merge toggle value from the project settings.

@@ -1,10 +1,5 @@
-// Pure helpers for the mobile kanban board's per-column keyset pagination.
-//
-// The mobile board renders one column at a time (the "active" column) and
-// paginates only that column via a FlatList `onEndReached`. These functions
-// hold the cursor / append / seeding logic so it can be unit-tested without a
-// React tree or network. They mirror the web client's KanbanBoard pagination
-// (client/src/components/KanbanBoard.jsx) but for a single visible column.
+// Mobile kanban per-column keyset pagination. One visible column via FlatList
+// onEndReached; mirrors KanbanBoard.jsx but for a single column.
 // Default keyset page size. The server clamps `limit` to [1, 200]; 50 matches
 // the web client (PAGE_SIZE) and the server default.
 export const KANBAN_PAGE_SIZE = 50;

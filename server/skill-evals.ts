@@ -2,12 +2,10 @@
  * Skill Builder, Phase 3 — eval-driven test loop (pure core).
  *
  * A skill can carry an eval suite at `<skill>/evals/evals.json`: 2-3 realistic
- * test prompts that prove the skill actually changes behavior. This module is
- * the framework-free core that parses/validates that file and grades a model
- * output against a prompt's assertions. Spawning the with-skill vs baseline
+ * test prompts that prove the skill actually changes behavior. Parses and
+ * validates that file and grades a model output against a prompt's assertions. Spawning the with-skill vs baseline
  * runs lives in `skill-eval-runner.ts`; the REST surface in
- * `routes/skill-evals.ts`. Kept side-effect free (no fs, no express, no CLI)
- * so the rules are unit-testable in isolation.
+ * `routes/skill-evals.ts`. No fs, no express, no CLI.
  *
  * Two grading modes, mirroring how real skill-builders work:
  *   - **objective** — the eval lists `assertions` (substring / regex checks).

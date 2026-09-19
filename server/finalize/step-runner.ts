@@ -1,5 +1,5 @@
 /**
- * step-runner.ts — Finalize Code Changes, Phase 4 (tasks phase).
+ * Finalize Code Changes, Phase 4 (tasks phase).
  *
  * Numbering follows the design doc (`finalize-code-changes-architecture-v0`):
  *
@@ -926,7 +926,7 @@ export async function runStepsSequence(
   });
 }
 
-// ─── internals ──────────────────────────────────────────────────────
+// internals
 
 function stepRunnerTimelineDeps(deps: StepRunnerDeps): TimelineMessageDeps {
   return { stmts: deps.stmts, broadcast: deps.broadcast };

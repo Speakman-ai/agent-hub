@@ -1,5 +1,5 @@
 /**
- * repo-aware-token.ts — Pick the org Owner whose GitHub token can
+ * Pick the org Owner whose GitHub token can
  * actually reach a given `<owner>/<repo>` on github.com.
  *
  * Why this exists:
@@ -22,7 +22,7 @@
  * then dies at clone time, gets cleaned up by `ReviewerCleanup`, and
  * the PR is silently never reviewed.
  *
- * This module solves it by treating "org owner" as a capability, not a
+ * Solves it by treating "org owner" as a capability, not a
  * row index. For a given `<owner>/<repo>`, walk all Owner-role users in
  * `created_at` order, resolve each user's GitHub access token via the
  * existing OAuth/PAT chain, and probe

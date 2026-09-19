@@ -2,9 +2,8 @@
  * Support ticket → kanban card field mapping.
  *
  * "Convert to card" promotes a support ticket into a To Do kanban card. This
- * module owns the pure mapping of a ticket row to the card fields (title,
- * description, priority, labels) so the transformation is unit-testable in
- * isolation from the route / DB plumbing.
+ * module owns mapping a ticket row to the card fields (title, description,
+ * priority, labels), separate from the route / DB plumbing.
  */
 import type { SupportTicketRow, SupportTicketSeverity } from './types.js';
 

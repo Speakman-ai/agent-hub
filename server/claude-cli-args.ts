@@ -1,8 +1,7 @@
 /**
  * Shared CLI-arg helpers for spawning Claude Code (`claude --print …`).
  *
- * ─────────────────────────────────────────────────────────────────────────
- * Why disable native tools that Agent Hub shadows?
+ * Why disable native tools that Agent Hub shadows.
  *
  * Agent Hub injects its own protocol blocks into the enriched system prompt
  * (`<agenthub:skill>` for skill loading, `agenthub:ask` fenced blocks for
@@ -35,7 +34,6 @@
  * Apply this to every Claude Code spawn that runs an Agent-Hub-enriched
  * system prompt (chat, room chat, heartbeats/crons via
  * `runClaude`, workflow runner, slack, memory, design).
- * ─────────────────────────────────────────────────────────────────────────
  */
 
 /**
@@ -63,7 +61,6 @@ export const CODE_MUTATION_NATIVE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'Notebo
  * callers can safely mutate it.
  *
  * ⚠ Argv ordering caveat
- * ─────────────────────────
  * `--disallowed-tools` is documented as `--disallowed-tools <tools...>` —
  * the trailing `<tools...>` makes it **variadic** in Commander.js (Claude
  * CLI 2.x). A variadic option keeps consuming bare positionals until it

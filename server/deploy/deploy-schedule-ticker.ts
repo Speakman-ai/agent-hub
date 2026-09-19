@@ -1,5 +1,5 @@
 /**
- * deploy-schedule-ticker.ts — node-cron registration + firing for operator
+ * Node-cron registration + firing for operator
  * configured DEPLOY SCHEDULES (multi-environment management — the scheduling
  * phase). The store + CRUD live in `deployment-schedule-store.ts`; this module
  * owns the running side: it turns each enabled schedule row into a node-cron
@@ -85,7 +85,7 @@ export interface DeployScheduleTickerDeps {
   log?: (msg: string) => void;
 }
 
-// ─── Module-level state ────────────────────────────────────────────────────
+// Module-level state
 /** scheduleId → running node-cron task. Registered at boot + on CRUD change. */
 const scheduleTasks = new Map<string, ScheduledTask>();
 

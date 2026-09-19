@@ -1,4 +1,4 @@
-// Pure helpers for the Security page's automatic-scan schedule control.
+// Security page automatic-scan schedule.
 //
 // The server persists a per-project `securityScan` config
 // (`{ onPush?: boolean; schedule?: 'off' | 'daily' | 'weekly' }`) and the

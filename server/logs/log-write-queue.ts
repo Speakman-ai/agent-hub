@@ -1,5 +1,5 @@
 /**
- * log-write-queue.ts — the single bounded batch-writer queue in front of
+ * The single bounded batch-writer queue in front of
  * logs.db (decision LOG-STORE: "one bounded in-process batch-writer queue").
  *
  * Ingest requests do not write SQLite inline. They normalize + validate
@@ -181,7 +181,7 @@ export class LogWriteQueue {
   }
 }
 
-// ─── Process-wide singleton ─────────────────────────────────────────────────
+// Process-wide singleton
 
 let singleton: LogWriteQueue | null = null;
 

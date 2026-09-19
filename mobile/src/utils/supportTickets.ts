@@ -1,5 +1,4 @@
-// Pure helpers for the Customer Support queue, factored out of the screen so
-// they're unit-testable without pulling in react-native.
+// Customer Support queue helpers.
 import { getServerBaseUrl } from './config';
 // Severity → sort rank (most urgent first). Mirrors the server ORDER BY so
 // WebSocket-inserted rows land in the right place without a refetch.
@@ -81,8 +80,7 @@ export async function performTicketDelete({
   }
 }
 // Link-flow state machine for a support-ticket card, factored out of the RN
-// component (same rationale as performTicketDelete) so the success-path local
-// state update is unit-testable without mounting the tree.
+// component (same rationale as performTicketDelete).
 //
 //   - On a successful link: clear the `linking` flag and update local state via
 //     `onConverted(<converted ticket>)` immediately, WITHOUT waiting for the

@@ -18,7 +18,7 @@
  * — so the client applies it through the exact same reducer path as a
  * live event, with no new event kind to handle.
  *
- * Pure: takes the narrowed runtime surface so tests pass a stub with no
+ * Takes the narrowed runtime surface so tests pass a stub with no
  * real runtime.
  */
 import {

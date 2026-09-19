@@ -1,5 +1,5 @@
 /**
- * collapse-review-column.ts — one-shot, idempotent data migration that
+ * One-shot, idempotent data migration that
  * retires the legacy default **Review** kanban column.
  *
  * Why: the Review lane no longer carries product meaning — code is finalized

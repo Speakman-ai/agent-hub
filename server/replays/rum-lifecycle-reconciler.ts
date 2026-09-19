@@ -1,5 +1,5 @@
 /**
- * rum-lifecycle-reconciler.ts — keeps the S3-native RUM lifecycle rules in sync
+ * Keeps the S3-native RUM lifecycle rules in sync
  * with the CURRENT per-tenant BASE-retention override set, and publishes the
  * confirmation state the retention sweepers gate S3 byte delegation on.
  *

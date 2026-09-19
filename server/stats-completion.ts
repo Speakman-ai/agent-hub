@@ -43,7 +43,7 @@ export const SUPPORT_TICKET_RESOLVED_STATUSES = [
 
 const RESOLVED_STATUS_SQL_LIST = SUPPORT_TICKET_RESOLVED_STATUSES.map((s) => `'${s}'`).join(', ');
 
-// ─── kanban_cards.completed_at ───────────────────────────────────────────────
+// kanban_cards.completed_at
 
 export const KANBAN_CARD_COMPLETED_AT_UPDATE_TRIGGER_SQL = `
   CREATE TRIGGER IF NOT EXISTS kanban_cards_set_completed_at_on_move
@@ -75,7 +75,7 @@ export const KANBAN_CARD_COMPLETED_AT_INSERT_TRIGGER_SQL = `
   END;
 `;
 
-// ─── kanban_epics.completed_at ───────────────────────────────────────────────
+// kanban_epics.completed_at
 
 export const KANBAN_EPIC_COMPLETED_AT_UPDATE_TRIGGER_SQL = `
   CREATE TRIGGER IF NOT EXISTS kanban_epics_set_completed_at_on_state
@@ -100,7 +100,7 @@ export const KANBAN_EPIC_COMPLETED_AT_INSERT_TRIGGER_SQL = `
   END;
 `;
 
-// ─── support_tickets.resolved_at ─────────────────────────────────────────────
+// support_tickets.resolved_at
 
 export const SUPPORT_TICKET_RESOLVED_AT_UPDATE_TRIGGER_SQL = `
   CREATE TRIGGER IF NOT EXISTS support_tickets_set_resolved_at_on_status
@@ -126,7 +126,7 @@ export const SUPPORT_TICKET_RESOLVED_AT_INSERT_TRIGGER_SQL = `
   END;
 `;
 
-// ─── One-time backfill (approximate: uses updated_at for existing rows) ───────
+// One-time backfill (approximate: uses updated_at for existing rows)
 
 /**
  * Marker recorded in `stats_completion_migrations` once the legacy backfill has

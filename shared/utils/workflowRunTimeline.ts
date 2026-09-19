@@ -28,13 +28,7 @@ export function isStepTerminalStatus(status: any): boolean {
   return s === 'success' || s === 'error' || s === 'cancelled' || s === 'skipped';
 }
 
-/**
- * Merge workflow definition steps with run detail `step_runs` for timeline UI.
- *
- * @param workflow — workflow row with `steps` (from list or GET one)
- * @param stepRuns — `detail.step_runs`
- * @param run — `detail.run`
- */
+/** Merge definition steps with run `step_runs` for the timeline UI. */
 export function buildWorkflowRunTimeline(
   workflow: any,
   stepRuns: any,

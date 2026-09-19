@@ -1,4 +1,4 @@
-// Pure user-filter helpers for kanban cards/epics (mobile).
+// Kanban user-filter helpers (mobile).
 // Mirrors client/src/utils/kanbanUserFilter.ts so web and mobile agree on the
 // per-user filter semantics and the assignable-user shape.
 

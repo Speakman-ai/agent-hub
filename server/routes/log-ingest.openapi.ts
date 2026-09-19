@@ -19,7 +19,7 @@ registerSecurityScheme('logIngestToken', {
     'Write-only `ahlog_` log ingest token (also accepted via `X-AgentHub-Log-Token`). Identifies exactly one (project, source); grants no read/query/management access.',
 });
 
-// ─── Agent Hub JSON batch request ───────────────────────────────────
+// Agent Hub JSON batch request
 
 const AhLogRecordSchema = z
   .object({

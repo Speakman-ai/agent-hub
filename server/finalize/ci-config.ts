@@ -1,5 +1,5 @@
 /**
- * ci-config.ts — Finalize Code Changes, `.agent-hub/ci.yaml` parser entry point.
+ * Finalize Code Changes, `.agent-hub/ci.yaml` parser entry point.
  *
  * Defines the schema for the project's Finalize pipeline config and the
  * validator the orchestrator consumes before running jobs. The full design
@@ -139,7 +139,7 @@ export type CiConfigParseResult =
 /**
  * Parse a `.agent-hub/ci.yaml` document from raw text.
  *
- * Pure with respect to filesystem and process state — callers that want
+ * No filesystem or process state. Callers that want
  * to read a file from disk should use {@link loadCiConfigFromFile}. The
  * split exists so unit tests can drive the validator with fixture
  * strings without touching the filesystem and so the file loader can
@@ -153,7 +153,7 @@ export type CiConfigParseResult =
  * message.
  */
 export function parseCiConfig(text: string): CiConfigParseResult {
-  // ─── Stage 1: YAML parse ────────────────────────────────────────────
+  // Stage 1: YAML parse
   let parsed: unknown;
   try {
     parsed = parseYaml(text);
@@ -162,7 +162,7 @@ export function parseCiConfig(text: string): CiConfigParseResult {
     return err_('yaml_parse_error', `Could not parse ci.yaml as YAML: ${detail}`);
   }
 
-  // ─── Stage 2: root shape ────────────────────────────────────────────
+  // Stage 2: root shape
   if (parsed === null || parsed === undefined) {
     return err_('not_an_object', 'ci.yaml is empty; expected a top-level mapping.');
   }
@@ -174,7 +174,7 @@ export function parseCiConfig(text: string): CiConfigParseResult {
   }
   const root = parsed as Record<string, unknown>;
 
-  // ─── Stage 3: version ───────────────────────────────────────────────
+  // Stage 3: version
   if (!('version' in root)) {
     return err_('missing_version', "ci.yaml is missing the required 'version' field.", 'version');
   }
@@ -196,7 +196,7 @@ export function parseCiConfig(text: string): CiConfigParseResult {
     );
   }
 
-  // ─── Stage 4: on: triggers ──────────────────────────────────────────
+  // Stage 4: on: triggers
   if (!('on' in root)) {
     return err_('missing_on', "ci.yaml is missing the required 'on' field.", 'on');
   }
@@ -237,7 +237,7 @@ export function parseCiConfig(text: string): CiConfigParseResult {
     on.push(entry);
   }
 
-  // ─── Stage 5: timeout_minutes ───────────────────────────────────────
+  // Stage 5: timeout_minutes
   let timeoutMinutes: number = FINALIZE_TIMEOUT_DEFAULT_MINUTES;
   if ('timeout_minutes' in root) {
     const raw = root.timeout_minutes;
@@ -300,8 +300,6 @@ export async function loadCiConfigFromFile(absPath: string): Promise<CiConfigPar
   }
   return parseCiConfig(text);
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────
 
 function err_(
   code: CiConfigErrorCode,

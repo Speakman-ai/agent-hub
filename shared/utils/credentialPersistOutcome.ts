@@ -1,33 +1,11 @@
 /**
- * credentialPersistOutcome.ts — the single source of truth for how a credential
- * box reports what happened to a `persist` target after submit.
- *
- * Background: a `agenthub:credential-request` block may declare a `persist`
- * target (a skill id + a map of request field → the skill's declared credential
- * key name). On submit the server tries to write those values into the session
- * owner's per-user skill credential store and returns a `persisted` result:
- *   { skillId, stored: string[], skipped: [{keyName, reason}], error? }
- *
- * The web and mobile cards previously each built the post-submit confirmation
- * message inline, and each looked only at whether `stored` was non-empty. That
- * produced two classes of wrong message:
- *   - a *total* failure (`stored: []`, `error` set) read as the normal
- *     ephemeral-discard copy, silently swallowing the failure; and
- *   - a *partial* success (username stored, password skipped) read as full
- *     "saved, will be reused", even though the next spawn will fail to auth.
- *
- * Both are the same underlying defect: the message ignored most of the server's
- * result. This helper classifies the whole result once — accounting for the
- * requested keys, what was actually stored, what was skipped, and any error —
- * so both clients render an honest message from one tested code path.
- *
- * Only non-secret data is used here: credential *key names* (env-var names the
- * skill declares) and the server's reason string. Never the submitted values.
+ * Classify a credential-request `persist` result for the post-submit line.
+ * Uses only key names and skip reasons, never the submitted values.
  */
 
 export interface CredentialPersistTarget {
   skillId: string;
-  /** request field key → the skill's declared credential key name. */
+  /** request field key → declared credential key name. */
   map: Record<string, string>;
 }
 
@@ -38,31 +16,14 @@ export interface CredentialPersistResult {
   error?: string;
 }
 
-/** Skill id shape shared by every persist-target normalizer. */
 export const PERSIST_SKILL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
-/** Declared-credential (env-var) key-name shape. */
 export const PERSIST_KEY_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
-/** Upper bound on how many field→key mappings one request may persist. */
 export const PERSIST_MAX_MAP_ENTRIES = 6;
 
 /**
- * The single authoritative validator/normalizer for a credential-request
- * `persist` target, shared 1:1 by the server route, the web client, and the
- * mobile client so the same rules can't drift between them.
- *
- * Returns `null` (persistence off) when the target is absent or malformed —
- * callers treat "no persist" and "bad persist" identically: skip persistence,
- * keep the ephemeral submit. Enforced invariants:
- *   - `skillId` matches PERSIST_SKILL_ID_RE.
- *   - `map` is a non-empty object with at most PERSIST_MAX_MAP_ENTRIES entries.
- *   - every mapped destination key name matches PERSIST_KEY_NAME_RE.
- *   - **destination key names are unique** — two fields mapping to the same
- *     declared credential key would upsert sequentially, the later value
- *     silently overwriting the earlier while both report as stored, leaving the
- *     wrong secret persisted (e.g. `{ password: "LOGIN", username: "LOGIN" }`).
- *     Such a map is rejected outright, never partially applied.
- *   - when `fieldKeys` is supplied (clients), every map key must be a real
- *     request field key.
+ * Normalize a persist target. Returns null (treat as ephemeral) when absent or
+ * malformed. Duplicate destination key names are rejected: two fields mapping
+ * to the same credential would overwrite silently while both report as stored.
  */
 export function normalizeCredentialPersistTarget(
   raw: unknown,
@@ -93,11 +54,9 @@ export type CredentialPersistOutcomeKind = 'off' | 'saved' | 'partial' | 'failed
 
 export interface CredentialPersistOutcome {
   kind: CredentialPersistOutcomeKind;
-  /** The user-facing sentence describing what happened to the values. */
+  /** User-facing sentence. */
   line: string;
-  /** Requested credential key names confirmed written to the store. */
   savedKeys: string[];
-  /** Requested credential key names that were NOT written (skipped/omitted/failed). */
   unsavedKeys: string[];
 }
 
@@ -109,13 +68,8 @@ function uniqueTruthy(values: readonly (string | undefined | null)[]): string[] 
 }
 
 /**
- * Classify the server's `persisted` result against the request's `persist`
- * target into an outcome + honest user-facing line.
- *
- * - `off`     — no persist target was requested (ephemeral-only submit).
- * - `saved`   — every requested key was stored, nothing skipped, no error.
- * - `partial` — at least one requested key stored, but others were not.
- * - `failed`  — nothing was stored.
+ * Classify `persisted` against the request's persist target.
+ * `off` / `saved` / `partial` / `failed`. Unsaved = any requested key not in `stored`.
  */
 export function describeCredentialPersistOutcome(opts: {
   service: string;
@@ -128,17 +82,12 @@ export function describeCredentialPersistOutcome(opts: {
     return { kind: 'off', line: EPHEMERAL_DISCARD_LINE, savedKeys: [], unsavedKeys: [] };
   }
 
-  // The keys the request asked to persist. These are the denominator for
-  // "did we save everything?" — a stored key we didn't ask for cannot make an
-  // incomplete set complete.
+  // Denominator is requested keys only; extra stored keys cannot complete a miss.
   const requestedKeys = uniqueTruthy(Object.values(opts.persist.map ?? {}));
   const storedSet = new Set(uniqueTruthy(opts.persisted?.stored ?? []));
   const error = opts.persisted?.error?.trim() || '';
 
   const savedKeys = requestedKeys.filter((k) => storedSet.has(k));
-  // Any requested key not confirmed stored is unsaved: this folds together
-  // server-side `skipped` entries, keys the server omitted entirely, and the
-  // nothing-stored case — we never need to trust `skipped` to be exhaustive.
   const unsavedKeys = requestedKeys.filter((k) => !storedSet.has(k));
 
   if (savedKeys.length > 0 && unsavedKeys.length === 0 && !error) {

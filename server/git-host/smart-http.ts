@@ -1,5 +1,5 @@
 /**
- * smart-http.ts — git smart-HTTP transport for Agent Hub-hosted repos.
+ * Git smart-HTTP transport for Agent Hub-hosted repos.
  *
  * Serves `git clone` / `fetch` / `push` for `gitHost: 'agenthub'`
  * projects at `/git/<projectId>.git` by spawning the real pack
@@ -167,7 +167,7 @@ export function parsePushOptionsHeader(header: string | string[] | undefined): s
 export function createGitSmartHttpRoutes(deps: GitSmartHttpDeps): Router {
   const router = Router();
 
-  // ── ref advertisement ─────────────────────────────────────────────
+  // ref advertisement
   router.get('/git/:repo/info/refs', async (req, res) => {
     const service = req.query.service;
     if (typeof service !== 'string' || !SERVICES.has(service)) {
@@ -209,7 +209,7 @@ export function createGitSmartHttpRoutes(deps: GitSmartHttpDeps): Router {
     wireChildToResponse(child, req, res, `${service} advertise-refs`);
   });
 
-  // ── pack RPC ──────────────────────────────────────────────────────
+  // pack RPC
   for (const service of ['git-upload-pack', 'git-receive-pack'] as const) {
     router.post(`/git/:repo/${service}`, async (req, res) => {
       if (req.headers['content-type'] !== `application/x-${service}-request`) {
@@ -271,7 +271,7 @@ export function createGitSmartHttpRoutes(deps: GitSmartHttpDeps): Router {
     });
   }
 
-  // ── post-receive notify (from the bare repo's hook) ───────────────
+  // post-receive notify (from the bare repo's hook)
   // The hook authenticates with the per-repo shared secret written to
   // `<bare>/agent-hub-notify.json` at repo creation / boot refresh — not
   // Basic auth, because the hook has no user identity. Body is the raw

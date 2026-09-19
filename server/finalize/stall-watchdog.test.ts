@@ -36,7 +36,7 @@ import {
   type StallWatchdogOptions,
 } from './stall-watchdog.js';
 
-// ─── fake scheduler ───────────────────────────────────────────────────
+// fake scheduler
 
 interface Pending {
   fn: () => void;
@@ -58,7 +58,7 @@ function makeFakeScheduler(): { schedule: ScheduleTimer; pending: Pending[] } {
   return { schedule, pending };
 }
 
-// ─── fake stmts ───────────────────────────────────────────────────────
+// fake stmts
 
 interface FakeStmts {
   failFinalizeRun: { run: ReturnType<typeof vi.fn> };
@@ -119,7 +119,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// ─── tests ────────────────────────────────────────────────────────────
+// tests
 
 describe('armStallWatchdog — autonomous mode is a no-op', () => {
   it('does not arm timers when triggerSource is agent_block', () => {

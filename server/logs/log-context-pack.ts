@@ -4,7 +4,7 @@
  * When the Analyze / Fix actions seed an agent with a log issue's error
  * context, the log records are UNTRUSTED: they can carry secrets, terminal
  * escapes, or prompt-injection payloads, and there can be far more of them than
- * an agent context window can hold. This module builds the bounded, redacted,
+ * an agent context window can hold. Builds the bounded, redacted,
  * fenced context block those actions embed:
  *
  *  - At most {@link MAX_CONTEXT_RECORDS} representative records and
@@ -22,7 +22,7 @@
  *    a safe charset so an attacker-set facet can't leak a secret or break out of
  *    the trusted section.
  *
- * Pure and IO-free: it takes already-fetched records and returns the block plus
+ * IO-free: it takes already-fetched records and returns the block plus
  * the exact record ids included. The pure builder is deliberately NOT exported:
  * the only public way to obtain a pack is {@link buildAuditedLogContextPack},
  * which builds it AND persists the required `log_action_audit` row in one call,

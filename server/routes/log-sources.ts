@@ -75,7 +75,7 @@ export default function createLogSourceRoutes({ findProject }: RouteDeps): Route
     return (req as AuthenticatedRequest).authUserId ?? null;
   }
 
-  // ─── List ─────────────────────────────────────────────────────────
+  // List
   router.get(
     '/api/projects/:projectId/log-sources',
     requireRole('Admin'),
@@ -85,7 +85,7 @@ export default function createLogSourceRoutes({ findProject }: RouteDeps): Route
     },
   );
 
-  // ─── Create ───────────────────────────────────────────────────────
+  // Create
   router.post(
     '/api/projects/:projectId/log-sources',
     requireRole('Admin'),
@@ -114,7 +114,7 @@ export default function createLogSourceRoutes({ findProject }: RouteDeps): Route
     },
   );
 
-  // ─── Get one ──────────────────────────────────────────────────────
+  // Get one
   router.get(
     '/api/projects/:projectId/log-sources/:sourceId',
     requireRole('Admin'),
@@ -126,7 +126,7 @@ export default function createLogSourceRoutes({ findProject }: RouteDeps): Route
     },
   );
 
-  // ─── Update metadata ──────────────────────────────────────────────
+  // Update metadata
   router.patch(
     '/api/projects/:projectId/log-sources/:sourceId',
     requireRole('Admin'),
@@ -153,7 +153,7 @@ export default function createLogSourceRoutes({ findProject }: RouteDeps): Route
     },
   );
 
-  // ─── Delete ───────────────────────────────────────────────────────
+  // Delete
   router.delete(
     '/api/projects/:projectId/log-sources/:sourceId',
     requireRole('Admin'),
@@ -170,7 +170,7 @@ export default function createLogSourceRoutes({ findProject }: RouteDeps): Route
     },
   );
 
-  // ─── Rotate token ─────────────────────────────────────────────────
+  // Rotate token
   router.post(
     '/api/projects/:projectId/log-sources/:sourceId/rotate',
     requireRole('Admin'),
@@ -187,7 +187,7 @@ export default function createLogSourceRoutes({ findProject }: RouteDeps): Route
     },
   );
 
-  // ─── Revoke token ─────────────────────────────────────────────────
+  // Revoke token
   router.post(
     '/api/projects/:projectId/log-sources/:sourceId/revoke',
     requireRole('Admin'),
@@ -204,7 +204,7 @@ export default function createLogSourceRoutes({ findProject }: RouteDeps): Route
     },
   );
 
-  // ─── Lifecycle audit ──────────────────────────────────────────────
+  // Lifecycle audit
   router.get(
     '/api/projects/:projectId/log-sources/:sourceId/audit',
     requireRole('Admin'),

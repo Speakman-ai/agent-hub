@@ -1,9 +1,8 @@
 /**
- * ci-config-store.ts — server-side persistence for a project's Finalize CI
+ * Server-side persistence for a project's Finalize CI
  * config (`ci.yaml` content) when it is NOT committed to the repo.
  *
- * Why this exists
- * ----------------
+ * Why this exists.
  * A committed `.agent-hub/ci.yaml` forces one shared gate on everyone who
  * touches the repo — ideal when Agent Hub IS the team's CI. But for repos where
  * Agent Hub is only a build/pre-approve/send-to-GitHub tool for a single
@@ -12,8 +11,7 @@
  * Hub instead of in git. The resolver (`ci-config-source.ts`) always prefers a
  * committed file; this store is the fallback.
  *
- * Scoping
- * -------
+ * Scoping.
  * Two scopes share one table, disambiguated by `owner_user_id`:
  *   - `project` — one shared config per project (`owner_user_id IS NULL`).
  *   - `personal` — a per-user override (`owner_user_id = <uid>`) that only
@@ -21,7 +19,7 @@
  * The unique index keys on `(project_id, IFNULL(owner_user_id, ''))` so each
  * (project, scope/user) pair has at most one row; writes upsert in place.
  *
- * This module is the ONLY coupling to the `finalize_server_ci` table. The YAML
+ * ONLY coupling to the `finalize_server_ci` table. The YAML
  * text is stored verbatim (validated against the ci.yaml schema at the write
  * boundary — the route + wizard call `parseCiConfig` before persisting); this
  * store does not re-validate on read so a schema that a newer Hub build wrote
@@ -30,7 +28,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { Stmts } from '../types.js';
 
-// ─── DDL ──────────────────────────────────────────────────────────────
+// DDL
 
 /**
  * One row per (project, scope). `owner_user_id IS NULL` is the project-scoped
@@ -52,7 +50,7 @@ export const FINALIZE_SERVER_CI_SCHEMA = `
     ON finalize_server_ci(project_id, IFNULL(owner_user_id, ''));
 `;
 
-// ─── Types ────────────────────────────────────────────────────────────
+// Types
 
 /** Raw `finalize_server_ci` row as stored. */
 export interface ServerCiConfigRow {
@@ -93,7 +91,7 @@ const hasStmt = (
 ): boolean =>
   typeof (stmts as Record<string, { [m: string]: unknown }>)[key]?.[method] === 'function';
 
-// ─── Reads ────────────────────────────────────────────────────────────
+// Reads
 
 /**
  * Fetch the stored config for one scope. `ownerUserId = null` reads the
@@ -122,7 +120,7 @@ export function listServerCiConfigs(
   return stmts.listFinalizeServerCiForProject!.all(projectId) as ServerCiConfigRow[];
 }
 
-// ─── Writes ───────────────────────────────────────────────────────────
+// Writes
 
 export interface UpsertServerCiInput {
   projectId: string;

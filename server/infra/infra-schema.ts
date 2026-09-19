@@ -11,7 +11,7 @@
  * (`infra-db.ts`) and its Vitest coverage share one source of truth (same
  * pattern as `logs-schema.ts` / `deployment-env-config-schema.ts`).
  *
- * This module owns the two tables the rest of the epic reads from:
+ * Two tables the rest of the epic reads from:
  *
  *   - `infra_scopes` — the per-project collection allowlist (decision
  *     INFRA-SCOPE). Nothing is polled until a scope row exists.
@@ -82,7 +82,7 @@ export const DEFAULT_INFRA_WRITE_QUEUE_MAX_POINTS = 200_000;
 export const DEFAULT_INFRA_WRITE_QUEUE_FLUSH_POINTS = 2_000;
 export const DEFAULT_INFRA_WRITE_QUEUE_FLUSH_INTERVAL_MS = 250;
 
-// ── Retention bounds (decision INFRA-STORE) ────────────────────────────────
+// Retention bounds (decision INFRA-STORE)
 /**
  * Default age window before the reaper deletes a metric point, in days.
  *
@@ -171,7 +171,7 @@ export const INFRA_METRIC_POINT_BYTES_SQL = `(
   + length(CAST(COALESCE(dimensions_json, '') AS BLOB))
 )`;
 
-// ── Alert lifecycle bounds (decision INFRA-ALERT) ──────────────────────────
+// Alert lifecycle bounds (decision INFRA-ALERT)
 /**
  * Severity levels a rule can fire at, ordered most to least urgent.
  *
@@ -239,7 +239,7 @@ export const INFRA_ALERT_EVALUATOR_ACTOR = 'system:evaluator';
 export const MAX_INFRA_ALERT_LIST_LIMIT = 200;
 export const DEFAULT_INFRA_ALERT_LIST_LIMIT = 50;
 
-// ── AWS Health events (EventBridge ingest) ───────────────────────────────
+// AWS Health events (EventBridge ingest)
 //
 // Health events reach the Hub by an EventBridge rule the OPERATOR creates in
 // their own account, targeting our ingest endpoint through an API destination.
@@ -708,7 +708,7 @@ export const INFRA_TABLES_SCHEMA = `
     name                TEXT NOT NULL,
     description         TEXT,
 
-    -- ── Scope selector ──
+    -- Scope selector
     service             TEXT NOT NULL,
     account_id          TEXT,
     region              TEXT,
@@ -719,13 +719,13 @@ export const INFRA_TABLES_SCHEMA = `
     -- same parser as infra_scopes.tag_filter_json. NULL = no filter.
     tag_filter_json     TEXT,
 
-    -- ── Series ──
+    -- Series
     namespace           TEXT NOT NULL,
     metric_name         TEXT NOT NULL,
     stat                TEXT NOT NULL,
     period_s            INTEGER NOT NULL,
 
-    -- ── Threshold (PutMetricAlarm parameter names) ──
+    -- Threshold (PutMetricAlarm parameter names)
     threshold           REAL NOT NULL,
     -- No anomaly-detection operators: we fit no model, so there is no threshold
     -- *pair* for them to compare against. See INFRA_COMPARISON_OPERATORS.

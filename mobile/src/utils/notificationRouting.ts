@@ -1,5 +1,5 @@
 /**
- * Pure routing decisions for notification-tap handling.
+ * Notification-tap routing.
  *
  * @typedef {'awaiting_feedback'|'ready_to_push'|'pushed'|'support_ticket_created'|'thread_message'|'review_assigned_to_you'|'pr_merged'|'infra_alert'} EventKey
  *
@@ -120,9 +120,8 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
  * Map a routed notification tap to a React Navigation `(screen, params)`
  * pair for the navigator-driven kinds (kanban, threads, support, pulls).
  *
- * Pure so the param plumbing is unit-testable — `applyNotificationRoute` in
- * AppContext used to build these params inline, where a dropped field (e.g.
- * the `pulls` PR number) was invisible to tests. The `chat` kind is handled
+ * `applyNotificationRoute` used to build these params inline, where a dropped
+ * field (e.g. the `pulls` PR number) was invisible. The `chat` kind is handled
  * via active-agent/session state rather than navigation, so it returns null.
  *
  * @param {Route | null | undefined} route

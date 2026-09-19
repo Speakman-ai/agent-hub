@@ -1,5 +1,5 @@
 /**
- * boot-retrigger.ts — re-trigger interrupted Finalize runs after a Hub restart.
+ * Re-trigger interrupted Finalize runs after a Hub restart.
  *
  * When the Hub restarts (deploy/crash) mid-Finalize, the orchestrator state is
  * gone and `boot-recovery.ts` marks the run `infra_error`. But the work product
@@ -68,11 +68,10 @@ export interface BootRetriggerPlan {
 export const DEFAULT_BOOT_RETRIGGER_MAX_GENERATIONS = 3;
 
 /**
- * Pure planner: decide which interrupted runs to re-trigger. Applies per-session
+ * Planner: decide which interrupted runs to re-trigger. Applies per-session
  * dedup and the crash-loop generation cap — but NO load cap: every eligible
  * session is re-triggered (see file header for why dropping overflow is worse
- * than queueing). No I/O — the caller injects `priorInterruptedCount` so this is
- * unit-testable without a DB.
+ * than queueing). No I/O; the caller injects `priorInterruptedCount`.
  */
 export function planBootRetriggers(args: {
   interrupted: InterruptedFinalizeRun[];

@@ -1,5 +1,5 @@
 /**
- * github-remote-owner.ts — derive the GitHub `{owner, repo}` for a
+ * Derive the GitHub `{owner, repo}` for a
  * project workspace by reading its `origin` remote.
  *
  * Why this exists:

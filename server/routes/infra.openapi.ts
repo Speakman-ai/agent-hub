@@ -114,7 +114,7 @@ registerPath({
   },
 });
 
-// ─── Service metric packs ───────────────────────────────────────────────────
+// Service metric packs
 
 const PackMetric = z.object({
   namespace: z.string().openapi({ example: 'AWS/EC2' }),
@@ -280,7 +280,7 @@ registerPath({
   },
 });
 
-// ─── Cost (decision INFRA-COST) ─────────────────────────────────────────────
+// Cost (decision INFRA-COST)
 
 const DegradationLevel = z.enum(['normal', 'widened', 'paused']).openapi({
   description:
@@ -547,7 +547,7 @@ registerPath({
   },
 });
 
-// ─── Cost Explorer spend trends (decision INFRA-COST mechanism 5) ───────────
+// Cost Explorer spend trends (decision INFRA-COST mechanism 5)
 
 const SpendResponse = registerComponent(
   'InfraSpendTrend',
@@ -626,7 +626,7 @@ const SpendResponse = registerComponent(
     }),
 );
 
-// ─── Service quota headroom ─────────────────────────────────────────────────
+// Service quota headroom
 
 const QuotaHeadroom = registerComponent(
   'InfraQuotaHeadroom',
@@ -969,7 +969,7 @@ registerPath({
   },
 });
 
-// ─── Scopes (decision INFRA-SCOPE) ──────────────────────────────────────────
+// Scopes (decision INFRA-SCOPE)
 
 const TagFilter = z.record(z.string().min(1), z.array(z.string()).min(1)).openapi({
   description:
@@ -1112,7 +1112,7 @@ registerPath({
   },
 });
 
-// ── Resource browser and metric charts (decision INFRA-UI) ─────────────────
+// Resource browser and metric charts (decision INFRA-UI)
 
 const InfraResource = registerComponent(
   'InfraResource',

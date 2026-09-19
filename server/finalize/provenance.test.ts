@@ -26,7 +26,7 @@ import {
   writeFinalizeRunPrUrl,
 } from './provenance.js';
 
-// ─── Unit tests: body-marker helpers ───────────────────────────────────────
+// Unit tests: body-marker helpers
 
 describe('hasPrBodyMarker', () => {
   it('returns true when the marker appears anywhere in the body', () => {
@@ -83,7 +83,7 @@ describe('ensurePrBodyMarker', () => {
   });
 });
 
-// ─── Unit tests: writeFinalizeRunPrUrl ─────────────────────────────────────
+// Unit tests: writeFinalizeRunPrUrl
 
 describe('writeFinalizeRunPrUrl', () => {
   it('runs the prepared statement with (prUrl, runId) in that order', () => {
@@ -100,7 +100,7 @@ describe('writeFinalizeRunPrUrl', () => {
   });
 });
 
-// ─── Unit tests: classifyPr / isInternalPr ─────────────────────────────────
+// Unit tests: classifyPr / isInternalPr
 
 interface FakeRegistryDeps {
   stmts: { getFinalizeRunByPrUrl: { get: ReturnType<typeof vi.fn> } };
@@ -222,7 +222,7 @@ describe('isInternalPr', () => {
   });
 });
 
-// ─── Integration: real sqlite finalize_runs round-trip ─────────────────────
+// Integration: real sqlite finalize_runs round-trip
 
 /**
  * Spin up an in-memory sqlite with the actual finalize_runs schema so we

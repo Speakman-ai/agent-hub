@@ -1,5 +1,5 @@
 /**
- * origin-guard.ts — Finalize §8 push-target lock for GitHub-hosted projects.
+ * Finalize §8 push-target lock for GitHub-hosted projects.
  *
  * Why this exists:
  *   The GitHub push path (push-and-create-pr.ts) runs
@@ -11,7 +11,7 @@
  *
  *   The Agent Hub-hosted path already refuses to push when the worktree
  *   origin is not the Hub's bare repo (push-and-create-pr-agenthub.ts).
- *   This module is the symmetric guard for the GitHub path: the push must
+ *   Symmetric guard for the GitHub path: the push must
  *   land on the project's own configured GitHub repository.
  *
  * Contract — there is NO fail-open path. Every GitHub-path push is locked
@@ -106,7 +106,7 @@ export type OriginGuardDecision =
     };
 
 /**
- * Pure decision: given a trusted `expected` repo (or `null` when none could
+ * Decision: given a trusted `expected` repo (or `null` when none could
  * be resolved), does `originUrl` (the worktree's `origin` remote) point at
  * it? No I/O — exported for tests.
  *

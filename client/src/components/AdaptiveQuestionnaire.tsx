@@ -197,9 +197,7 @@ export default function AdaptiveQuestionnaire({ onSubmit, onClose, initial }: an
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/* Progress strip                                                          */
-/* ---------------------------------------------------------------------- */
+/* Progress strip */
 
 function StepStrip({ visible, currentIdx }: any) {
   return (
@@ -247,9 +245,7 @@ function StepStrip({ visible, currentIdx }: any) {
   );
 }
 
-/* ---------------------------------------------------------------------- */
-/* Step panels                                                             */
-/* ---------------------------------------------------------------------- */
+/* Step panels */
 
 function StepTitle({ title, subtitle }: any) {
   return (

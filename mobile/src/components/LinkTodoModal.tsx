@@ -30,10 +30,9 @@ import {
  * epic, or session (nothing is created — that is the promote op). A card / epic
  * target is project-scoped; a session is browsed project → agent → session.
  *
- * The container owns fetching + state; `LinkTodoModalContent` is a pure,
- * props-driven view so every state (loading / error / selection) is unit-testable
- * via static render. Option normalization, the write payload, and the submit gate
- * come from the shared `linkTodo` helpers so web + mobile agree.
+ * The container owns fetching + state; `LinkTodoModalContent` is props-driven.
+ * Option normalization, the write payload, and the submit gate come from the
+ * shared `linkTodo` helpers so web + mobile agree.
  */
 
 export interface LinkTodoModalContentProps {

@@ -1,7 +1,7 @@
 /**
  * Helpers for the Claude Code "Session ID … is already in use" error path.
  *
- * ─── Background ────────────────────────────────────────────────────────────
+ * Background
  * When chat.ts spawns Claude Code for a brand-new Agent Hub session, it
  * passes `--session-id <agentHubSessionId>` so Claude's on-disk JSONL
  * (`~/.claude/projects/<encoded-cwd>/<id>.jsonl`) gets named with our id.
@@ -28,7 +28,6 @@
  *      system-event hook), parse the offending id, persist it as the
  *      `engine_session_id`, and rewrite the user-facing error to point
  *      at retrying with `--resume` instead of leaking the raw CLI error.
- * ──────────────────────────────────────────────────────────────────────────
  */
 
 /**

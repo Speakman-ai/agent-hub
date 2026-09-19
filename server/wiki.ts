@@ -308,9 +308,9 @@ export const WIKI_CONTEXT_PAGE_CAP = 10;
 type WikiContextPage = Pick<WikiPageRow, 'title' | 'category' | 'updated_at'>;
 
 /**
- * Pure formatter for the wiki context block. Split out from
- * `getWikiContext` so it can be unit-tested without booting the SQLite
- * statements registry.
+ * Formatter for the wiki context block. Split out from
+ * `getWikiContext` so formatting does not boot the SQLite statements
+ * registry.
  *
  * Pages are expected to arrive sorted most-recent-first (matches
  * `getWikiPages`). When the list exceeds `cap`, only the top `cap`

@@ -7,7 +7,7 @@
  * substrings anywhere in a string). Both run BEFORE persistence, so the store
  * never holds a plaintext credential.
  *
- * Pure and IO-free so it unit-tests without a DB or server. The route resolves
+ * IO-free. The route resolves
  * a project's operator-configured extra keys / regexes and folds them into the
  * built-ins via {@link buildRedactionConfig}.
  */

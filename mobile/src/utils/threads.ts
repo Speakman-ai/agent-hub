@@ -1,8 +1,4 @@
-/**
- * Pure helpers for the mobile Threads screen. Kept in `src/utils/` so they
- * live under the vitest include pattern and can be unit tested without a
- * React / React Native runtime.
- */
+/** Mobile Threads screen helpers. */
 import { isRetiredHeartbeatThread } from '@shared/utils/retiredHeartbeatThread';
 export {
   excludeRetiredHeartbeatThreads,

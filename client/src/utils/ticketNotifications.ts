@@ -1,48 +1,25 @@
 /**
- * Notification message formatters.
- *
- * Pure functions that build notification titles and body text
- * for card-moved, PR-merged, and session-complete WebSocket events.
+ * Notification titles and bodies for card-moved, PR-merged, and session-complete events.
  */
 
-/**
- * Build notification content for a card moved to "In Progress".
- * @param {{ cardTitle: string, assignee?: string }} data
- * @returns {{ title: string, body: string }}
- */
 export function cardStartedNotification({ cardTitle, assignee }: any) {
   const body = `"${cardTitle}" started${assignee ? ` by ${assignee}` : ''}`;
   return { title: 'Ticket Started', body };
 }
 
-/**
- * Build notification content for a card moved to "Review".
- * @param {{ cardTitle: string, assignee?: string }} data
- * @returns {{ title: string, body: string }}
- */
 export function cardReviewNotification({ cardTitle, assignee }: any) {
   const body = `"${cardTitle}" moved to Review${assignee ? ` (${assignee})` : ''}`;
   return { title: 'PR Ready for Review', body };
 }
 
-/**
- * Build notification content for a merged PR.
- * @param {{ cardTitle: string, prNumber: number, mergedBy?: string }} data
- * @returns {{ title: string, body: string }}
- */
 export function prMergedNotification({ cardTitle, prNumber, mergedBy }: any) {
   const body = `PR #${prNumber} merged${mergedBy ? ` by ${mergedBy}` : ''}: "${cardTitle}"`;
   return { title: 'PR Merged', body };
 }
 
 /**
- * Build notification content for a session whose agent is prompting to create a PR.
- * Fires when the server broadcasts `changes_ready` — the agent completed work in
- * a worktree with uncommitted/unpushed changes and the user needs to decide
+ * `changes_ready`: worktree has uncommitted/unpushed changes; user decides
  * whether to create a ticket + PR.
- *
- * @param {{ agentName?: string, sessionName?: string, branch?: string }} data
- * @returns {{ title: string, body: string }}
  */
 export function prReadyNotification({ agentName, sessionName, branch }: any) {
   const title = 'Changes Ready — Create PR?';
@@ -57,27 +34,12 @@ export function prReadyNotification({ agentName, sessionName, branch }: any) {
   return { title, body };
 }
 
-/**
- * Build notification content for a completed agent session.
- * @param {{ agentName: string, sessionName?: string, preview?: string }} data
- * @returns {{ title: string, body: string }}
- */
-/**
- * Build notification content for a new thread being created.
- * @param {{ threadName: string, threadType: string }} data
- * @returns {{ title: string, body: string }}
- */
 export function threadCreatedNotification({ threadName, threadType }: any) {
   const label = threadType === 'heartbeat' ? 'Heartbeat' : 'Cron';
   const body = `New ${label} thread: "${threadName}"`;
   return { title: 'Thread Created', body };
 }
 
-/**
- * Build notification content for a new thread entry.
- * @param {{ threadName: string, threadType: string, preview?: string, isError?: boolean }} data
- * @returns {{ title: string, body: string }}
- */
 export function threadEntryNotification({ threadName, threadType, preview, isError }: any) {
   const label = threadType === 'heartbeat' ? 'Heartbeat' : 'Cron';
   const title = isError ? `${label} Error` : `${label} Update`;
@@ -87,14 +49,7 @@ export function threadEntryNotification({ threadName, threadType, preview, isErr
 }
 
 /**
- * Build notification content for a session that has just stopped to ask the
- * user a multi-choice question (`agenthub:ask` picker) or is otherwise blocked
- * on user input. Fires when the server broadcasts `awaiting_input` with
- * `waiting: true` and the affected session is not the one the user is
- * currently viewing.
- *
- * @param {{ agentName?: string, sessionName?: string, askCount?: number }} data
- * @returns {{ title: string, body: string }}
+ * `awaiting_input` with `waiting: true` while the user is not viewing that session.
  */
 export function awaitingInputNotification({ agentName, sessionName, askCount }: any) {
   const title = 'Agent Waiting for You';

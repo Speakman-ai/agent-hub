@@ -1,5 +1,5 @@
 /**
- * runner-job-channel.ts — in-process bridge between the remote RunnerBackend and
+ * In-process bridge between the remote RunnerBackend and
  * the agent's HTTP transport, one per leased job.
  *
  * The backend pushes outbound directives (run_step / cancel / finish) and reads
@@ -89,7 +89,7 @@ export class RunnerJobChannel implements RemoteStepSink {
     return this.attached;
   }
 
-  // ── Backend → agent ────────────────────────────────────────────────────
+  // Backend → agent
 
   /** Queue a step for the agent and return its SpawnedStep handle. */
   runStep(
@@ -167,7 +167,7 @@ export class RunnerJobChannel implements RemoteStepSink {
     });
   }
 
-  // ── Agent → backend ────────────────────────────────────────────────────
+  // Agent → backend
 
   onLog(stepIndex: number, stream: 'stdout' | 'stderr', data: string): void {
     this.steps.get(stepIndex)?.feed(stream, data);
@@ -210,7 +210,7 @@ export class RunnerJobChannel implements RemoteStepSink {
   }
 }
 
-// ── Process-wide registry (the bridge both backend and routes look up) ──────
+// Process-wide registry (the bridge both backend and routes look up)
 const channels = new Map<string, RunnerJobChannel>();
 
 export function createJobChannel(jobId: string): RunnerJobChannel {

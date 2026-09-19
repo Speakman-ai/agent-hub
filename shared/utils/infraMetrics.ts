@@ -1,22 +1,6 @@
 /**
- * Framework-free metric helpers shared by the web Infrastructure module and the
- * mobile Infrastructure screen.
- *
- * The two surfaces draw the same series with different primitives — web hands
- * the geometry to an SVG viewbox, mobile stacks plain `View`s — but the parts
- * that decide *what* the operator reads are identical, and duplicating them is
- * how the two drift: a window the web offers and mobile does not, or an axis
- * label that rounds differently on a phone. Those live here.
- *
- * What is deliberately NOT here is the pixel mapping. Web's `buildChartGeometry`
- * emits viewbox coordinates and mobile's `buildMetricBars` emits 0..1 fractions,
- * because a phone's plot is a different shape than a desktop's and one of them
- * would have to lie about its own dimensions to share the other's output. They
- * share the scale arithmetic (`normalizeValueRange`) instead, which is where the
- * only genuinely subtle case lives.
- *
- * Note on the period: the server owns it. The client picks a *window*; the
- * display period comes back on the response. Nothing here computes one.
+ * Metric helpers. Pixel mapping stays per surface; scale arithmetic
+ * (`normalizeValueRange`) is shared. The client picks a window; the server owns the period.
  */
 
 export interface InfraMetricPoint {
@@ -89,16 +73,8 @@ export function formatPeriod(periodSeconds: number): string {
 }
 
 /**
- * Series identity as one string, for the picker's option values.
- *
- * Joined on a separator that cannot occur in any field, so two different series
- * can never collide into one key: AWS metric names and namespaces may contain
- * spaces, and a printable separator would make (`namespace: 'A B'`,
- * `metric: 'C'`) and (`namespace: 'A'`, `metric: 'B C'`) the same series.
- *
- * Written as an escape rather than a literal control character. The original
- * carried a raw NUL byte in the source, which made git classify the whole file
- * as binary and refuse to diff it.
+ * Series identity. Separator cannot occur in any field (AWS names may contain
+ * spaces). Written as an escape: a raw NUL made git treat the file as binary.
  */
 const SERIES_KEY_SEP = '\u0000';
 
@@ -120,24 +96,14 @@ export interface InfraValueRange {
 }
 
 /**
- * The vertical scale for a set of values.
- *
- * A constant series is the case that breaks a naive implementation: `max ===
- * min` makes the scale a division by zero, and the plot either vanishes or
- * renders at NaN. The range is padded so a flat series draws through the middle
- * of the plot, which is what a constant metric looks like.
- *
- * Shared rather than reimplemented per surface because it is the one piece of
- * this arithmetic where the obvious version is wrong, and a phone hitting the
- * divide-by-zero that the desktop already fixed is exactly the parity bug this
- * module exists to prevent.
+ * Vertical scale. A constant series (`max === min`) is padded so the plot
+ * draws through the middle instead of dividing by zero.
  */
 export function normalizeValueRange(values: readonly number[]): InfraValueRange {
   const finite = values.filter((v) => Number.isFinite(v));
   const rawMin = finite.length > 0 ? Math.min(...finite) : 0;
   const rawMax = finite.length > 0 ? Math.max(...finite) : 1;
-  // Padded by 1, or by a tenth of the magnitude for large constants, so the
-  // divide stays finite and a flat series sits mid-plot rather than on an edge.
+  // Pad so a flat series sits mid-plot and the divisor stays finite.
   const pad = rawMax === rawMin ? Math.max(1, Math.abs(rawMax) * 0.1) : 0;
   const minValue = rawMin - pad;
   const maxValue = rawMax + pad;
@@ -164,18 +130,8 @@ export interface InfraMetricBars {
 }
 
 /**
- * Bucket a series into a fixed number of columns for a bar-style plot.
- *
- * Fixed-column rather than one-bar-per-point because the point count is set by
- * the server's period and the window width, not by the display: a 90-day window
- * at a 5-minute period is ~26,000 points, and a phone plot is ~40 columns wide.
- * Rendering a `View` per point would allocate thousands of native views to draw
- * something narrower than a hairline. Bucketing bounds the cost at `barCount`
- * regardless of window.
- *
- * Empty buckets are kept as zero-height entries rather than dropped, so a gap in
- * collection reads as a gap instead of silently closing up and implying the
- * metric was continuous.
+ * Bucket into a fixed column count (a 90d window is ~26k points). Keep empty
+ * buckets as zero-height so collection gaps stay visible.
  */
 export function buildMetricBars(
   points: readonly InfraMetricPoint[],
@@ -194,8 +150,7 @@ export function buildMetricBars(
   for (const point of points) {
     if (!Number.isFinite(point?.value)) continue;
     if (point.tsMs < fromMs || point.tsMs > toMs) continue;
-    // The right edge lands one past the last bucket; clamp it back in rather
-    // than dropping the newest datapoint, which is the one being watched.
+    // Clamp the right edge so the newest datapoint is not dropped.
     const index = Math.min(columns - 1, Math.floor((point.tsMs - fromMs) / bucketMs));
     sums[index] += point.value;
     counts[index] += 1;
@@ -220,14 +175,7 @@ export function buildMetricBars(
   return { bars, minValue, maxValue, hasData: present.length > 0 };
 }
 
-/**
- * The most severe alarm state overlapping a bucket.
- *
- * "Most severe" rather than "first match" because a bucket wide enough to span
- * a recovery would otherwise report whichever segment happened to be listed
- * first. A breach inside the window has to survive the bucketing — that is the
- * whole reason the overlay is drawn.
- */
+/** Worst overlapping alarm state, not first match. */
 function worstStateAt(
   segments: readonly InfraAlarmSegment[],
   startMs: number,

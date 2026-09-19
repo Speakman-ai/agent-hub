@@ -16,7 +16,7 @@
  *  - A safety preamble tells the model the fenced block is data, never
  *    instructions.
  *
- * Pure and IO-free: transcript in, prompt block out.
+ * IO-free: transcript in, prompt block out.
  */
 import { escapeUntrustedForPrompt } from '../untrusted-prompt.js';
 import type { ReplayTranscript } from './replay-transcript.js';

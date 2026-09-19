@@ -53,7 +53,7 @@ import MembersSection from '../components/settings/MembersSection';
 import MfaSettingsSection from '../components/settings/MfaSettingsSection';
 import SmtpSettingsSection from '../components/settings/SmtpSettingsSection';
 import GoogleConnectionSection from '../components/settings/GoogleConnectionSection';
-// ─── Organizations (Server Connections) Tab ──────────────────
+// Organizations (Server Connections) Tab
 function OrganizationsSection() {
   const { handleSwitchOrg } = useApp();
   const [orgsState, setOrgsState] = useState(() => getOrgs());
@@ -506,7 +506,7 @@ function AccountSection() {
     </View>
   );
 }
-// ─── Usage Analytics Tab ─────────────────────────────────────
+// Usage Analytics Tab
 function UsageSection() {
   const [usage, setUsage] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -627,7 +627,7 @@ function UsageSection() {
     </View>
   );
 }
-// ─── Config Backup Tab ───────────────────────────────────────
+// Config Backup Tab
 function ConfigBackupSection() {
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -767,7 +767,7 @@ function ConfigBackupSection() {
     </View>
   );
 }
-// ─── Cron Jobs Tab ──────────────────────────────────────────
+// Cron Jobs Tab
 // Convert the form's minutes field into the API's `timeout_ms` contract:
 //   - blank → null (use server default)
 //   - positive integer → minutes * 60_000
@@ -1472,7 +1472,7 @@ export function CronSection() {
     </View>
   );
 }
-// ─── Slack Tab ──────────────────────────────────────────────
+// Slack Tab
 export function SlackSection() {
   const [status, setStatus] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
@@ -1619,7 +1619,7 @@ export function SlackSection() {
     </View>
   );
 }
-// ─── Agent Config Tab ───────────────────────────────────────
+// Agent Config Tab
 function AgentConfigSection() {
   const { agents: contextAgents, refreshAgents } = useApp();
   const [agents, setAgents] = useState(contextAgents);
@@ -2083,7 +2083,7 @@ function AgentConfigSection() {
     </View>
   );
 }
-// ─── Projects Tab ────────────────────────────────────────────
+// Projects Tab
 function ProjectsSection() {
   const { projects, refreshProjects } = useApp();
   const [saving, setSaving] = useState<any>({});
@@ -2156,7 +2156,7 @@ function ProjectsSection() {
     </View>
   );
 }
-// ─── Main Settings Screen ───────────────────────────────────
+// Main Settings Screen
 // Tab list mirrors the web Settings page (`SettingsPage.jsx` SETTINGS_TABS).
 // Per-project items (agents, crons, runners, secrets) live under
 // each project's Settings submenu in the drawer — not here.
@@ -2927,7 +2927,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 12,
   },
-  // ─── Organizations styles ─────────────────
+  // Organizations styles
   sectionDesc: {
     fontSize: 13,
     color: colors.gray500,
@@ -3103,7 +3103,7 @@ const styles = StyleSheet.create({
     color: colors.gray500,
     fontWeight: '500',
   },
-  // ─── Usage styles ─────────────────────────
+  // Usage styles
   subsectionTitle: {
     fontSize: 14,
     fontWeight: '600',
@@ -3208,7 +3208,7 @@ const styles = StyleSheet.create({
     color: colors.gray500,
     marginTop: 1,
   },
-  // ─── Config Backup styles ─────────────────
+  // Config Backup styles
   backupCard: {
     backgroundColor: colors.gray800,
     borderRadius: 12,

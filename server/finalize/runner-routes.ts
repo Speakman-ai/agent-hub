@@ -1,5 +1,5 @@
 /**
- * runner-routes.ts — control-plane HTTP API for the pull-based runner fleet.
+ * Control-plane HTTP API for the pull-based runner fleet.
  *
  *   POST /api/runners/register                 fleet token -> {agentId, token}
  *   POST /api/runners/claim                     long-poll for a job (agent token)

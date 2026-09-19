@@ -1,5 +1,5 @@
 /**
- * alert-store.ts — persistence and lifecycle for infra alert rules and the
+ * Persistence and lifecycle for infra alert rules and the
  * alerts they fire (decision INFRA-ALERT).
  *
  * Three modules split the alerting problem along one seam: `alert-evaluator.ts`
@@ -7,9 +7,8 @@
  * put this rule in"; this module owns every row and every state transition; the
  * collector tick (its own ticket) is the only thing that holds both a clock and
  * a CloudWatch client. Keeping the evaluator ignorant of storage is what lets
- * the CloudWatch-parity semantics be unit-tested exhaustively without a
- * database, and keeping the transitions here is what lets them be tested
- * without a metric.
+ * the CloudWatch-parity semantics run without a database, and keeping the
+ * transitions here is what lets them run without a metric.
  *
  * The lifecycle is `log-issues-store.ts`'s, deliberately: decision INFRA-ALERT
  * says an alert "should look the same to the user as a log issue does", so
@@ -49,7 +48,7 @@ import {
   type InfraAlertRule as InfraThresholdRule,
 } from './alert-evaluator.js';
 
-// ── Row shapes ─────────────────────────────────────────────────────────────
+// Row shapes
 
 /** `infra_alert_rules` as stored. */
 export interface InfraAlertRuleRow {
@@ -113,7 +112,7 @@ export interface InfraAlertTransitionRow {
   notification_delivered_at_ms: number | null;
 }
 
-// ── Rule validation ────────────────────────────────────────────────────────
+// Rule validation
 
 /**
  * A rule the store refuses to persist.
@@ -262,7 +261,7 @@ function serializeTagFilter(filter: Record<string, string[]> | null | undefined)
   return JSON.stringify(filter);
 }
 
-// ── Rule CRUD ──────────────────────────────────────────────────────────────
+// Rule CRUD
 
 /** Insert a rule. Throws {@link InfraAlertRuleValidationError} on a rule that cannot fire. */
 export function createInfraAlertRule(
@@ -448,7 +447,7 @@ export function toThresholdRule(row: InfraAlertRuleRow): InfraThresholdRule {
   };
 }
 
-// ── Lifecycle ──────────────────────────────────────────────────────────────
+// Lifecycle
 
 /** What one recorded evaluation did to the stored alert. */
 export interface InfraAlertRecordResult {
@@ -902,7 +901,7 @@ export function setInfraAlertStatus(
     .immediate();
 }
 
-// ── Alert reads ────────────────────────────────────────────────────────────
+// Alert reads
 
 export interface InfraAlertListQuery {
   projectId: string;
@@ -1128,7 +1127,7 @@ export function markInfraAlertTransitionNotificationDelivered(
   );
 }
 
-// ── Serialization ──────────────────────────────────────────────────────────
+// Serialization
 
 /**
  * Rule row → API body.

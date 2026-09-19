@@ -7,7 +7,7 @@
 // reports these engines as unavailable. This mirrors `buildSpawnEnv`, which
 // injects only the acting user's own credentials.
 //
-// This module is async because the cursor probe shells out to
+// Async because the cursor probe shells out to
 // `cursor-agent status`. The result is memoized by `cursor-auth-cache` so
 // repeated calls inside a single client poll don't multiply CLI invocations.
 // When a per-user Cursor key is present we short-circuit the probe entirely

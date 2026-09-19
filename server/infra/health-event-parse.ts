@@ -1,8 +1,7 @@
 /**
- * Pure normalizer for AWS Health events delivered over Amazon EventBridge.
+ * Normalizer for AWS Health events delivered over Amazon EventBridge.
  *
  * WHY EVENTBRIDGE AND NOT `DescribeEvents`
- * ----------------------------------------
  * The AWS Health API is gated on a Business Support+ / Enterprise / Unified
  * Operations plan and returns `SubscriptionRequiredException` to any account
  * without one. EventBridge delivery of the same events is documented as
@@ -22,7 +21,6 @@
  * monitored account, which keeps INFRA-CRED's read-only posture intact.
  *
  * DEFENSIVE PARSING IS NOT OPTIONAL HERE
- * --------------------------------------
  * The AWS docs disagree with themselves in ways this module has to absorb:
  *   - `lastUpdatedTime` is marked "Required: Yes" but is absent from several of
  *     AWS's own published examples.

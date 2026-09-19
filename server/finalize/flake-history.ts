@@ -1,12 +1,12 @@
 /**
- * flake-history.ts — per-instance flake history + flake-rate computation.
+ * Per-instance flake history + flake-rate computation.
  *
  * The Finalize pipeline records pass/fail at job/matrix-instance granularity
  * (a `job_id` + `matrix_key`), not per individual test case, so the "test" we
  * track flakiness for is the job instance — the same unit the flake-recovery
  * gate already reasons about (`flake-recovery.ts`).
  *
- * Two halves, both pure so the math is unit-testable without a DB:
+ * Two halves:
  *
  *   1. {@link deriveRunInstanceOutcomes} — collapse one run's per-round
  *      attempt history (the `finalize_run_job_attempts` rows) into one outcome
@@ -115,7 +115,7 @@ export function deriveRunInstanceOutcomes(attempts: JobRoundAttempt[]): Instance
   return outcomes;
 }
 
-// ─── Cross-run aggregation ──────────────────────────────────────────────────
+// Cross-run aggregation
 
 /** One recorded per-run outcome for an instance (a `finalize_test_history` row). */
 export interface FlakeHistoryRecord {

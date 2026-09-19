@@ -110,7 +110,7 @@ delete process.env.AGENT_HUB_CONTAINER_MAC_PROJECTS_DIR;
 delete process.env.AGENT_HUB_ARTIFACTS_BUCKET;
 delete process.env.AGENT_HUB_ARTIFACTS_BUCKET_REGION;
 
-// ─── Hard guard: tests must never spawn the real CLI binaries ────────────────
+// Hard guard: tests must never spawn the real CLI binaries
 // History: tests that didn't mock `child_process` were spawning real `claude`
 // children that never got reaped — they reparented to init, accumulated to
 // ~20 instances holding ~250MB RSS each, and put the prod box into a swap
@@ -176,7 +176,7 @@ cp.spawnSync = makeGuard('spawnSync', cp.spawnSync);
 cp.execFile = makeGuard('execFile', cp.execFile);
 cp.execFileSync = makeGuard('execFileSync', cp.execFileSync);
 
-// ─── Hard guard: tests must never hit a live deployment over the network ─────
+// Hard guard: tests must never hit a live deployment over the network
 // Sibling rail to the CLI-spawn guard above and the DB-safety rail in
 // server/db-safety.ts. Wraps global fetch so any call to a non-loopback host
 // throws with a loud pointer to mock it. Loopback (supertest, preview health

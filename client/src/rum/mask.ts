@@ -1,5 +1,5 @@
 /**
- * mask.js: Capture-time privacy masking decisions for RUM.
+ * Capture-time privacy masking decisions for RUM.
  *
  * Compliance rule: masking happens at *capture*, in the browser, so that
  * unmasked text / input values never get serialized into a capture payload
@@ -160,7 +160,7 @@ export function isAlwaysMaskedField(el: any) {
 
 /**
  * Classify a single element into one of: 'block' | 'mask' | 'unmask'.
- * Pure function of the element + options; no DOM mutation.
+ * Function of the element + options; no DOM mutation.
  */
 export function classifyElement(el: any, options: any = {}) {
   const opts = { ...DEFAULT_MASK_OPTIONS, ...options };

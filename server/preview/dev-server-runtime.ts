@@ -84,7 +84,7 @@ import {
 import type { SysboxRunFn } from '../session-env/sysbox-session-env.js';
 import type { PreviewPortEntry } from './preview-runtime-lookup.js';
 
-// ─── Types & contracts ──────────────────────────────────────────────────
+// Types & contracts
 
 /** `worktree_preview_groups.runtime` value for rows this runtime owns. */
 export { DEV_SERVER_RUNTIME_KIND };
@@ -282,7 +282,7 @@ export interface DevServerRuntimeDeps {
   logger?: { log: (m: string) => void; warn: (m: string) => void; error: (m: string) => void };
 }
 
-// ─── Defaults ───────────────────────────────────────────────────────────
+// Defaults
 
 /** Dev servers boot fast (no image build) — 2 min is generous. */
 export const DEFAULT_DEV_SERVER_READY_TIMEOUT_MS = 120_000;
@@ -335,8 +335,6 @@ export class DevServerCapReachedError extends Error {
     this.name = 'DevServerCapReachedError';
   }
 }
-
-// ─── Pure helpers (exported for tests) ──────────────────────────────────
 
 /**
  * Coerce a configured `maxLiveStacks` to a sane integer. Non-finite or negative
@@ -484,7 +482,7 @@ export function buildDevServerSpawnEnv(opts: {
   return { env, missingSecretKeys };
 }
 
-// ─── Internal state ─────────────────────────────────────────────────────
+// Internal state
 
 interface ActiveDevServer {
   groupId: string;
@@ -518,7 +516,7 @@ interface ReservedEntry {
   primary: boolean;
 }
 
-// ─── Runtime ────────────────────────────────────────────────────────────
+// Runtime
 
 export class DevServerRuntime {
   private readonly db: Database;
@@ -613,7 +611,7 @@ export class DevServerRuntime {
     ensureHostScopedPreviewPortUniqueness(this.db);
   }
 
-  // ─── Public API ─────────────────────────────────────────────────────
+  // Public API
 
   /**
    * Boot the dev server for `sessionId`. An existing group for the
@@ -1296,7 +1294,7 @@ export class DevServerRuntime {
     return true;
   }
 
-  // ─── Internals ──────────────────────────────────────────────────────
+  // Internals
 
   private async _start(
     sessionId: string,

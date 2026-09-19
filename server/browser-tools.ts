@@ -1,5 +1,5 @@
 /**
- * browser-tools.ts — High-level browser operations for agent chat sessions.
+ * High-level browser operations for agent chat sessions.
  *
  * Playwright drives navigate, screenshot, selector click/type, scroll, wait,
  * and read_page. Natural-language click/type prefers Playwright getByText, then
@@ -42,7 +42,7 @@ import {
   screenshotObservationLines,
 } from './browser-screenshot-store.js';
 
-// ─── Types ───────────────────────────────────────────────────────
+// Types
 
 /** Single source of truth for ReAct `tool: browser` operations (keep in sync with parseReActBlock). */
 export const BROWSER_REACT_OPS = [

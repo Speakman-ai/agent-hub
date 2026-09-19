@@ -1,5 +1,5 @@
 /**
- * artifact-store-s3.ts — S3-backed ArtifactStore. The only artifacts module
+ * S3-backed ArtifactStore. The only artifacts module
  * that imports the AWS SDK (hub-side; see artifact-store.ts header).
  *
  * The Hub's instance/task role needs s3:PutObject + s3:GetObject + s3:DeleteObject

@@ -1,5 +1,5 @@
 /**
- * fix-session.ts — dispatch an agent SESSION to resolve vulnerable
+ * Dispatch an agent SESSION to resolve vulnerable
  * dependencies, instead of opening a hand-edited lockfile bump PR.
  *
  * Why a session and not a PR: the old auto-PR path hand-edited
@@ -73,8 +73,7 @@ export function resolveSecurityFixAgentId(project: Project): string | null {
 }
 
 /**
- * Build the session prompt from a batch of open findings. Pure — no I/O — so
- * it is unit-testable. Lists each advisory (severity, package@version, fixed
+ * Build the session prompt from a batch of open findings (no I/O). Lists each advisory (severity, package@version, fixed
  * version, manifest) and the guardrails the agent must follow: re-resolve
  * lockfiles with the real package manager (never hand-edit), run tests, and
  * dismiss findings that don't apply.

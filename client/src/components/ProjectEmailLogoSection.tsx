@@ -48,7 +48,7 @@ export default function ProjectEmailLogoSection({
   const requestRef = useRef(0);
   const canEdit = hasRole('Admin') || isLocalBundledDeployment();
 
-  // ── One root cause: this component instance is reused across projects (only
+  // One root cause: this component instance is reused across projects (only
   // the `projectId` prop changes), so it must (1) never render a previous
   // project's state and (2) never let a previous project's async op write into
   // the current one. Both are handled synchronously against the rendered prop.

@@ -1,5 +1,5 @@
 /**
- * release-gate-ticker.ts — evaluation + firing for operator-configured RELEASE
+ * Evaluation + firing for operator-configured RELEASE
  * GATES (multi-environment management — the release-gate phase). The store +
  * CRUD live in `deployment-release-gate-store.ts`; this module owns the running
  * side: a periodic sweep re-evaluates every armed gate and, when a gate's
@@ -97,7 +97,7 @@ export interface ReleaseGateTickerDeps {
   log?: (msg: string) => void;
 }
 
-// ─── Module-level state ────────────────────────────────────────────────────
+// Module-level state
 /** The single sweep task (registered by {@link initReleaseGates}). */
 let sweepTask: ScheduledTask | null = null;
 /** Injected deps (set via {@link initReleaseGates}). */

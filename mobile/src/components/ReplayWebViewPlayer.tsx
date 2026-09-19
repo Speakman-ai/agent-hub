@@ -33,7 +33,7 @@ import { RRWEB_PLAYER_JS, RRWEB_PLAYER_CSS } from '../utils/rrwebPlayerBundle.ge
 
 export type PlayerStatus = 'connecting' | 'streaming' | 'playing' | 'error';
 
-/** Status line copy — pure so it's unit-testable without a WebView. */
+/** Status line copy for the replay WebView player. */
 export function statusLabel(status: PlayerStatus, progress: ReplayStreamProgress): string {
   if (status === 'connecting') return 'Loading player…';
   if (status === 'streaming') {

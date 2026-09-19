@@ -1,5 +1,5 @@
 /**
- * step-workspace-permission.ts — recognise a permission-denied failure rooted at
+ * Recognise a permission-denied failure rooted at
  * the CI workspace mount so it is not mistaken for a genuine test/build failure.
  *
  * ## The problem
@@ -24,7 +24,7 @@
  * eventually reports a misleading `fix_no_progress` (the failure is identical
  * every round because the cause is the runner host, not the code).
  *
- * This module recognises that signature so the step-runner can tag the outcome
+ * Recognises that signature so the step-runner can tag the outcome
  * infra-class (`runner_workspace_unwritable`) and let the §10 auto-retry re-run
  * the job on a fresh runner — which clears the rollout-window race once the fleet
  * finishes pulling the uid-aligned image — instead of presenting an unfixable
@@ -56,8 +56,7 @@
  * An `EACCES` whose path is `/usr/local/…` never matches either rule even when a
  * `/github/workspace` cwd line is also present. The step-runner additionally gates
  * this detector behind the shared `hasTestFailureSummary` guardrail, so a genuine
- * red that merely mentions these tokens is never masked. Pure / synchronous / no
- * I/O — safe to call from the step-runner hot path and trivially unit-testable.
+ * red that merely mentions these tokens is never masked. Safe to call from the step-runner hot path (synchronous, no I/O).
  */
 import { FINALIZE_RUNNER_WORKSPACE } from './runner-images.js';
 

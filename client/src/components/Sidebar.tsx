@@ -908,7 +908,7 @@ export default function Sidebar({
                           className="mt-1 mb-1"
                           data-testid={`sidebar-project-menu-${project.id}`}
                         >
-                          {/* ── Git ── */}
+                          {/* Git */}
                           {hasGit && (
                             <>
                               <NavGroupHeader groupKey="git" label="Git" />
@@ -963,7 +963,7 @@ export default function Sidebar({
                             </>
                           )}
 
-                          {/* ── Planning ── */}
+                          {/* Planning */}
                           <NavGroupHeader groupKey="planning" label="Planning" />
                           {!isNavGroupCollapsed(project.id, 'planning') && (
                             <div className="ml-3 pl-2 border-l border-gray-800/60">
@@ -1016,7 +1016,7 @@ export default function Sidebar({
                             </div>
                           )}
 
-                          {/* ── Support ── */}
+                          {/* Support */}
                           <NavGroupHeader groupKey="support" label="Support" />
                           {!isNavGroupCollapsed(project.id, 'support') && (
                             <div className="ml-3 pl-2 border-l border-gray-800/60">
@@ -1145,7 +1145,7 @@ export default function Sidebar({
                             </div>
                           )}
 
-                          {/* ── AI ── */}
+                          {/* AI */}
                           <NavGroupHeader groupKey="ai" label="AI" />
                           {!isNavGroupCollapsed(project.id, 'ai') && (
                             <div className="ml-3 pl-2 border-l border-gray-800/60">
@@ -1221,7 +1221,7 @@ export default function Sidebar({
                             </div>
                           )}
 
-                          {/* ── Settings ── */}
+                          {/* Settings */}
                           <NavGroupHeader groupKey="settings" label="Settings" />
                           {!isNavGroupCollapsed(project.id, 'settings') && (
                             <div className="ml-3 pl-2 border-l border-gray-800/60">

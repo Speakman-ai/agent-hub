@@ -165,7 +165,7 @@ export function sessionControlLabel(value: any) {
 /**
  * Plan the ordered mutations to move the session control to `target`. Mirror of
  * the web copy — centralizes the mutual-exclusivity contract so both surfaces
- * apply it identically and it stays unit-testable.
+ * apply it identically.
  *
  * Steps: { type: 'mode'|'ask'|'automation', value }. Applied in order:
  *   - 'mode' → setSessionMode, 'ask' → setSessionAskMode,

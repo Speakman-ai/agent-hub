@@ -1248,14 +1248,12 @@ describe('getMemoryContext — reduced truncation limits', () => {
   });
 });
 
-// ──────────────────────────────────────────────────────────────────
 // Enriched prompt size observability
 //
 // Pairs with the May 14 2026 audit. The argv soft cap at 100 KB was the
 // only existing signal for prompt bloat; anything smaller was invisible.
 // `logEnrichedPromptSize` now emits the final byte size once per build,
 // suppressed under vitest so test runs stay clean.
-// ──────────────────────────────────────────────────────────────────
 
 import { logEnrichedPromptSize } from './chat.js';
 

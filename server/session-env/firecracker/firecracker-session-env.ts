@@ -517,7 +517,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
     return () => this.disposeHooks.delete(cb);
   }
 
-  // ── VM lifecycle ───────────────────────────────────────────────
+  // VM lifecycle
 
   ensureStarted(): Promise<void> {
     this.#assertLive('ensureStarted');
@@ -1007,7 +1007,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
     });
   }
 
-  // ── SessionEnv ops ─────────────────────────────────────────────
+  // SessionEnv ops
 
   spawn(command: string, opts: SessionEnvSpawnOpts = {}): SessionEnvProcess {
     this.#assertLive('spawn');
@@ -1201,7 +1201,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
     }
   }
 
-  // ── Teardown ───────────────────────────────────────────────────
+  // Teardown
 
   dispose(opts: SessionEnvDisposeOpts = {}): Promise<void> {
     if (this.#disposePromise) return this.#disposePromise;

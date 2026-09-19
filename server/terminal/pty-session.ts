@@ -147,7 +147,7 @@ export interface InjectIdleGate {
  *  4. the shell has been output-quiet for `quietWindowMs` (approximating an
  *     idle prompt, since a shell prompt can't be parsed reliably).
  *
- * Pure and synchronous, so {@link PtySession.injectAtIdle} can evaluate it and
+ * Synchronous, so {@link PtySession.injectAtIdle} can evaluate it and
  * enqueue in one un-interruptible step (no event-loop turn boundary between the
  * check and the write).
  */

@@ -103,8 +103,6 @@ export const FINALIZE_LIVE_FRESH_MS = 15000;
  *   - the last event is stale — older than `freshMs` (covers a reconnect that
  *     missed the terminal frame, or a server that went silent).
  *
- * Pure / synchronous; `now` and `freshMs` are injected so it's unit-testable.
- *
  * @param {{
  *   connected: boolean,
  *   lastEvent: { sessionId?: string, bump?: number } | null | undefined,

@@ -49,7 +49,7 @@ import type {
 
 export { resolveDesignStudioModel } from './design-multi-engine.js';
 
-// ─── Dependency injection ────────────────────────────────────────────
+// Dependency injection
 
 interface DesignChatDeps {
   stmts: Stmts;
@@ -81,7 +81,7 @@ interface DesignChatMsg {
   content: string;
 }
 
-// ─── Module state ────────────────────────────────────────────────────
+// Module state
 
 let deps: DesignChatDeps | null = null;
 
@@ -108,7 +108,7 @@ function createDesignCursorChat(cwd: string, env: NodeJS.ProcessEnv): Promise<st
   return createCursorChatBounded(getDeps().getCursorBin(), { cwd, env });
 }
 
-// ─── Cancel ────────────────────────────────────────────────────────────
+// Cancel
 
 export interface DesignStatus {
   inFlight: boolean;
@@ -133,7 +133,7 @@ export function handleDesignCancel(designId: string): void {
   if (state.proc) killProcessGroup(state.proc, 'SIGTERM');
 }
 
-// ─── System prompt assembly ────────────────────────────────────────────
+// System prompt assembly
 
 export function buildDesignSystemPrompt(
   design: DesignWithProjects,
@@ -191,7 +191,7 @@ function readProjectDesignDocs(project: Project): string | null {
   return null;
 }
 
-// ─── Main handler ──────────────────────────────────────────────────────
+// Main handler
 
 export async function handleDesignChat(
   ws: WebSocketLike | null,

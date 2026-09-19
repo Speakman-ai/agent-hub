@@ -1,5 +1,5 @@
 /**
- * branch-facts.ts — read-only git facts about a session branch.
+ * Read-only git facts about a session branch.
  *
  * A leaf module on purpose: `execGit` and the commit/diff-stat readers are
  * wanted by callers that have no business importing the push path's auth,

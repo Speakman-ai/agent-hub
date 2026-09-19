@@ -1,5 +1,5 @@
 /**
- * pr-auto-merge.ts — arm/disarm GitHub's native auto-merge on a PR using the
+ * Arm/disarm GitHub's native auto-merge on a PR using the
  * acting user's OAuth token (GraphQL), for the toggle on the PR pages.
  *
  * This is the user-facing counterpart to `github-auto-merge.ts` (which drives
@@ -51,7 +51,7 @@ export const DISABLE_AUTO_MERGE_MUTATION = `mutation DisableAutoMerge($pullReque
   }
 }`;
 
-/** Injected side-effect callables so the core logic stays unit-testable. */
+/** Injected side-effect callables for the auto-merge toggle. */
 export interface AutoMergeToggleDeps {
   /**
    * REST getter that returns the raw PR object (needs `node_id`). The route

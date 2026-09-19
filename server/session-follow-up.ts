@@ -1,5 +1,5 @@
 /**
- * session-follow-up.ts — seed content for a follow-up session.
+ * Seed content for a follow-up session.
  *
  * A session that has pushed through Finalize is locked into ask mode
  * (`finalize/post-push-session-lock.ts`), and its worktree branch is already
@@ -12,8 +12,8 @@
  * default, and the context that matters is the end-of-run briefing (what
  * shipped, what still has to be done by hand), not 200 messages of tool calls.
  *
- * This module is pure — the route does the DB reads and passes values in — so
- * the shape of the briefing is testable without a session.
+ * The route does the DB reads and passes values in, so the briefing shape
+ * can be tested without a session.
  */
 
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';

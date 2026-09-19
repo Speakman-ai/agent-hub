@@ -30,7 +30,7 @@ const SkillCredentialSpecSchema = z
   })
   .openapi({ description: 'A single declarative credential the skill needs at spawn time.' });
 
-// ─── Field fragments shared by every request variant ────────────────────
+// Field fragments shared by every request variant
 //
 // The runtime contract (`validateAndComposeSkill`) accepts the skill identity
 // (`name`) + `description` either as explicit structured fields OR parsed out
@@ -235,7 +235,7 @@ registerPath({
   },
 });
 
-// ─── Global (shared) skills ───────────────────────────────────────────────
+// Global (shared) skills
 // Same write contract as project skills, but the skill lands in the writable
 // global tier (`<dataDir>/skills/<slug>`) and is visible to every agent in
 // every project. Precedence on a same-id conflict: project > global > bundled
@@ -432,7 +432,7 @@ registerPath({
   },
 });
 
-// ─── Skill improvement review (Learned Lessons promotion) ─────────────────
+// Skill improvement review (Learned Lessons promotion)
 // Agents suggest lessons via <agenthub:skill-improvement>; suggestions queue
 // per skill in `.agenthub/pending-skill-improvements.jsonl` without touching
 // SKILL.md. These routes are the review half: list, approve (promote into the
@@ -563,7 +563,7 @@ registerPath({
   },
 });
 
-// ── Per-project default-on skills ──
+// Per-project default-on skills
 const DefaultSkillsResponse = z.object({
   skillIds: z
     .array(z.string())

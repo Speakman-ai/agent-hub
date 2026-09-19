@@ -348,9 +348,7 @@ export default function createRumWizardRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/rum/setup-apply
-  // ───────────────────────────────────────────────────────────────
   //
   // Commit the instrumentation edits the wizard made (recorder target,
   // any new client component, each CSP file) into the session's own

@@ -530,7 +530,7 @@ registerPath({
   },
 });
 
-// ── Segmented-capture playback API ────────────────────────────────
+// Segmented-capture playback API
 // A `segmented` capture stores its bytes as append-only per-segment objects
 // (rum_segments) keyed by the client-minted session id, not a session_replays
 // row. Playback lists the ordered manifest, then fetches each segment's events.

@@ -6,7 +6,7 @@ import {
   OtlpProtobufError,
 } from './otlp-protobuf.js';
 
-// ── Independent minimal protobuf ENCODER (test-only) ────────────────
+// Independent minimal protobuf ENCODER (test-only)
 // Deliberately separate from the module's decoder so the round-trip test
 // verifies the decoder against bytes it did not produce.
 

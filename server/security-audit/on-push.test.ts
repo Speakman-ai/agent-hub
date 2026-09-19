@@ -161,7 +161,7 @@ describe('maybeRunPushSecurityScan', () => {
   });
 });
 
-// ── autofix dispatch ──────────────────────────────────────────────────────
+// autofix dispatch
 // Before the shared autofix module, `securityAutoPr.enabled` only fired on the
 // REST scan route, so a project that opted in never got an automatic fix from
 // the scan that actually runs unattended. These pin the wiring.

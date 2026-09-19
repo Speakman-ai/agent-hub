@@ -29,7 +29,7 @@ import type Database from 'better-sqlite3';
 import type { Stmts, WikiPageRow } from './types.js';
 import config from './config.js';
 
-// ─── Types ──────────────────────────────────────────────────────────
+// Types
 
 export interface EmbeddingVector {
   values: number[];
@@ -81,7 +81,7 @@ export interface SearchResultRow {
 
 export type SearchMode = 'hybrid' | 'semantic' | 'fts';
 
-// ─── Chunker ────────────────────────────────────────────────────────
+// Chunker
 
 const DEFAULT_CHUNK_CHARS = 3000; // ~750 tokens
 const DEFAULT_OVERLAP_CHARS = 400; // ~100 tokens
@@ -136,7 +136,7 @@ export function chunkMarkdown(
   return chunks;
 }
 
-// ─── BLOB encoding ──────────────────────────────────────────────────
+// BLOB encoding
 
 export function encodeEmbedding(values: number[]): Buffer {
   const arr = new Float32Array(values);
@@ -149,7 +149,7 @@ export function decodeEmbedding(blob: Buffer): Float32Array {
   return new Float32Array(ab);
 }
 
-// ─── Cosine similarity ─────────────────────────────────────────────
+// Cosine similarity
 
 export function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): number {
   if (a.length !== b.length || a.length === 0) return 0;
@@ -167,7 +167,7 @@ export function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): nu
   return denom === 0 ? 0 : dot / denom;
 }
 
-// ─── Gemini REST client ────────────────────────────────────────────
+// Gemini REST client
 
 // Gemini's `text-embedding-004` was deprecated and shut down on 2026-01-14
 // (https://ai.google.dev/gemini-api/docs/deprecations). Default to its
@@ -257,7 +257,7 @@ export function isGeminiConfigured(): boolean {
   }
 }
 
-// ─── Embed pipeline ─────────────────────────────────────────────────
+// Embed pipeline
 
 export interface EmbedPageResult {
   pageId: string;
@@ -348,7 +348,7 @@ export function deletePageEmbeddings(pageId: string): void {
   (stmts as Stmts).deleteWikiEmbeddingsByPage.run(pageId);
 }
 
-// ─── Hybrid ranker ──────────────────────────────────────────────────
+// Hybrid ranker
 
 /**
  * Normalize a list of scores to [0, 1] using min-max. Returns an identity map
@@ -452,7 +452,7 @@ export function rankHybrid(
   return results.slice(0, limit);
 }
 
-// ─── Search drivers ─────────────────────────────────────────────────
+// Search drivers
 
 function runFts(projectId: string, query: string, limit: number): FtsHit[] {
   try {
@@ -646,7 +646,7 @@ export async function searchWiki(
   }));
 }
 
-// ─── Backfill ───────────────────────────────────────────────────────
+// Backfill
 
 export interface BackfillResult {
   projectId: string;

@@ -1,5 +1,5 @@
 /**
- * release-gate-evaluator.ts — pure evaluation of a RELEASE GATE's completion
+ * Evaluation of a RELEASE GATE's completion
  * condition. Given a gate row and a way to resolve session/epic completion,
  * decides whether the gate is satisfied (ready to fire), pending, or blocked.
  *

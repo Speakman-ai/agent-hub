@@ -1,5 +1,5 @@
 /**
- * run-abort-registry.ts — in-process cancellation for live Finalize runs.
+ * In-process cancellation for live Finalize runs.
  *
  * The orchestrator honors a {@link CancelSignal} at every awaitable boundary
  * (see `orchestrator.ts` §12), but the HTTP cancel route runs in a different

@@ -250,7 +250,7 @@ describe('startScheduledSecurityScanner', () => {
   });
 });
 
-// ── autofix dispatch ──────────────────────────────────────────────────────
+// autofix dispatch
 // The scheduled sweep is the trigger that actually runs unattended, so it is
 // the one that most needs to honour `securityAutoPr.enabled`. It previously
 // only reported findings.

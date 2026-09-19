@@ -1,5 +1,5 @@
 /**
- * stuck-run-reaper.ts — runtime safety-net for orphaned / hung Finalize runs.
+ * Runtime safety-net for orphaned / hung Finalize runs.
  *
  * WHY THIS EXISTS. A Finalize run's orchestrator loop lives entirely in the Hub
  * process. Three mechanisms recover a run whose loop dies, but each has a hole:
@@ -106,9 +106,8 @@ export function resolveRuntimeStuckRunConfig(): RuntimeStuckRunConfig {
 }
 
 /**
- * Pure decision: is this candidate a reapable stall, and why? Returns the
- * reason or `null` to leave it alone. No I/O — `isLive` and `nowMs` are
- * injected so this is exhaustively unit-testable.
+ * Decision: is this candidate a reapable stall, and why? Returns the
+ * reason or `null` to leave it alone. No I/O — `isLive` and `nowMs` are injected.
  */
 export function classifyRuntimeStuckRun(
   c: RuntimeStuckRunCandidate,

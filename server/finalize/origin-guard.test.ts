@@ -1,5 +1,5 @@
 /**
- * Tests for the Finalize §8 push-target lock (origin-guard.ts).
+ * Finalize §8 push-target lock.
  *
  * Regression intent: before this guard, the GitHub push path ran
  * `git push -u origin` + `gh pr create` against WHATEVER the worktree's

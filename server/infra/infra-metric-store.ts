@@ -1,5 +1,5 @@
 /**
- * infra-metric-store.ts — reads and writes for `infra_metric_points` and the
+ * Reads and writes for `infra_metric_points` and the
  * `infra_collect_runs` audit trail.
  *
  * The write path is deliberately the only thing that touches SQLite on the
@@ -272,7 +272,7 @@ export function insertInfraMetricPoints(points: InfraMetricPointInput[]): InfraM
   return { inserted: committed.length, rejected, points: committed };
 }
 
-// ─── Reads ──────────────────────────────────────────────────────────────────
+// Reads
 
 export interface InfraMetricQuery {
   projectId: string;
@@ -688,7 +688,7 @@ export function countInfraMetricPoints(projectId: string): number {
   return row.n;
 }
 
-// ─── Collect-run audit (decision INFRA-COST) ────────────────────────────────
+// Collect-run audit (decision INFRA-COST)
 
 /**
  * Which billed AWS API a run row accounts for.

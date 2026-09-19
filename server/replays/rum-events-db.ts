@@ -1,5 +1,5 @@
 /**
- * rum-events-db.ts — dedicated SQLite store for the RUM segment-ingest event
+ * Dedicated SQLite store for the RUM segment-ingest event
  * tables (`rum_segments` + `rum_sessions`).
  *
  * The segmented RUM path is the app's other hot-write flood (sibling to the
@@ -23,7 +23,7 @@
  * ingest event tables here are only ever queried single-table (or self-JOINed
  * `rum_segments`↔`rum_sessions`), never across the file boundary.
  *
- * Pure leaf-ish module: imports only better-sqlite3 + node stdlib so `db.ts`
+ * Leaf-ish module: imports only better-sqlite3 + node stdlib so `db.ts`
  * can wire it in without an import cycle. Prepared statements for these tables
  * are still built inside `db.ts` (against the handle this module returns) so
  * they land in the shared `Stmts` object and the store code is unchanged.

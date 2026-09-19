@@ -693,7 +693,7 @@ export const api = {
     }),
   getInfraMetricPacks: (projectId: string) =>
     fetchJSON<{ packs: InfraServicePackWire[] }>(`/projects/${projectId}/infra/metric-packs`),
-  // ── AI infrastructure setup wizard ───────────────────────────────
+  // AI infrastructure setup wizard
   // Hub-side readiness only: configured AWS profiles and their types, the
   // monitoring designation, the stored allowlist, and the `blockers[]` still
   // standing between this project and unattended collection. Issues no AWS
@@ -1183,7 +1183,7 @@ export const api = {
     }),
   getFinalizeEnvironmentDraft: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/finalize/environment-draft`),
-  // ── AI-assisted Dev Server (prEnv.devServer) setup wizard ────────
+  // AI-assisted Dev Server (prEnv.devServer) setup wizard
   // Read-only repo scan: start-command candidates, package manager,
   // monorepo layout, framework/port guesses, existing config. `{ projectId, draft }`.
   getDevServerSetupDraft: (projectId: any) =>
@@ -1228,7 +1228,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-  // ── AI RUM (real user monitoring) setup wizard ──────────────────
+  // AI RUM (real user monitoring) setup wizard
   // Read-only repo scan: framework, injection target, CSP hits,
   // already-instrumented status. Returns `{ projectId, draft }`.
   getRumSetupDraft: (projectId: any) => fetchJSON(`/projects/${projectId}/rum/setup-draft`),
@@ -1253,7 +1253,7 @@ export const api = {
   // Revoke (soft-delete) an ingest client.
   revokeRumClient: (projectId: any, clientId: any) =>
     fetchJSON(`/projects/${projectId}/rum/clients/${clientId}`, { method: 'DELETE' }),
-  // ── AI logs setup wizard ─────────────────────────────────────────
+  // AI logs setup wizard
   // Read-only repo scan: stack, logging libs, existing OTel setup, exporter
   // target candidates, recommended approach, existing sources. `{ projectId, draft }`.
   getLogsSetupDraft: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/setup-draft`),
@@ -1264,7 +1264,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-  // ── Application log sources (write-only `ahlog_` ingest credentials) ──
+  // Application log sources (write-only `ahlog_` ingest credentials)
   // List a project's log sources — metadata only, never token material.
   getLogSources: (projectId: any) => fetchJSON(`/projects/${projectId}/log-sources`),
   // Create a source + mint its ingest token. Plaintext `token` returned ONCE.
@@ -1284,7 +1284,7 @@ export const api = {
     fetchJSON(`/projects/${projectId}/log-sources/${sourceId}`, { method: 'DELETE' }),
   // Per-project log-store health metrics (quota, retention, db bytes, …).
   getLogsMetrics: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/metrics`),
-  // ── Application log reads (LOG-QUERY) ──────────────────────────────────
+  // Application log reads (LOG-QUERY)
   // Bounded, newest-first, cursor-paginated historical query. `params` is a
   // plain object of the query filters (severity, source, service, text, …).
   queryLogs: (projectId: any, params: Record<string, any> = {}) => {
@@ -1299,7 +1299,7 @@ export const api = {
   // Destructive "Clear logs" — purge every ingested record for the project.
   // Admin-gated server-side; resolves to `{ purged: <count> }`.
   clearLogs: (projectId: any) => fetchJSON(`/projects/${projectId}/logs`, { method: 'DELETE' }),
-  // ── Grouped error issues (LOG-GROUP) ───────────────────────────────────
+  // Grouped error issues (LOG-GROUP)
   listLogIssues: (projectId: any, params: Record<string, any> = {}) => {
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
@@ -1834,7 +1834,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ requested, kind }),
     }),
-  // ── PR-scoped previews (native Agent Hub-hosted PRs) ────────────────
+  // PR-scoped previews (native Agent Hub-hosted PRs)
   // Launch a live preview for the session that owns the PR's head branch.
   // Returns immediately; poll getNativePrPreviewState (or the agenthub_preview
   // WS channel) for loading → ready/failed transitions.
@@ -3130,7 +3130,7 @@ export const api = {
   unlinkReplay: (projectId: any, replayId: any) =>
     fetchJSON(`/projects/${projectId}/replays/${replayId}/link`, { method: 'DELETE' }),
 
-  // ── Replay playlists (Datadog "playlist") ───────────────────────────
+  // Replay playlists (Datadog "playlist")
   // Named, project-scoped groups of saved captures + playlist-level extended
   // retention. Backend: server/routes/replay-playlists.ts.
   // Returns { playlists: PlaylistView[] } (each carries itemCount).

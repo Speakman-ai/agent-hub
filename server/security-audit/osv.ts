@@ -1,5 +1,5 @@
 /**
- * osv.ts — {@link AdvisorySource} backed by OSV.dev (https://osv.dev).
+ * {@link AdvisorySource} backed by OSV.dev (https://osv.dev).
  *
  * OSV aggregates the GitHub Advisory DB (GHSA-*), the npm advisory feed,
  * CVEs, and others, so a single source covers the "GitHub Advisory DB /

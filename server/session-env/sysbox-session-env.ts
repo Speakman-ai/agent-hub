@@ -367,7 +367,7 @@ export class SysboxSessionEnv implements SessionEnv {
     return () => this.disposeHooks.delete(cb);
   }
 
-  // ── Container lifecycle ────────────────────────────────────────
+  // Container lifecycle
 
   /**
    * Start the session container (idempotent). `mountWorktree()` is the
@@ -576,7 +576,7 @@ export class SysboxSessionEnv implements SessionEnv {
     }
   }
 
-  // ── SessionEnv ops ─────────────────────────────────────────────
+  // SessionEnv ops
 
   spawn(command: string, opts: SessionEnvSpawnOpts = {}): SessionEnvProcess {
     this.#assertLive('spawn');

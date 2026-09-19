@@ -1,5 +1,5 @@
 /**
- * runner-image-versions.ts — recorded target software versions for the Finalize
+ * Recorded target software versions for the Finalize
  * CI runner image (server/finalize/runner/Dockerfile).
  *
  * Why this exists: the Finalize gate stands in for a GitHub-hosted runner, so the
@@ -9,11 +9,11 @@
  * passes on one version and fails on another would make Finalize green where
  * GitHub is red (or vice-versa).
  *
- * This module is the SINGLE SOURCE OF TRUTH for the *targeted* versions. The
+ * SINGLE SOURCE OF TRUTH for the *targeted* versions. The
  * Dockerfile mirrors them as ARG defaults; `runner-image-versions.test.ts`
  * fails the build if the two ever diverge, so they can't silently drift apart.
  *
- * ── Pinning philosophy (read before bumping) ─────────────────────────────────
+ * Pinning philosophy (read before bumping).
  * We deliberately do NOT hard-pin every apt package to an exact version with no
  * escape hatch. NodeSource / download.docker.com age old patch versions out of
  * their repos, so a frozen `apt-get install foo=1.2.3` Dockerfile eventually
@@ -28,7 +28,7 @@
  * reproducible prod builds. That keeps the build robust while still recording,
  * and best-effort reproducing, the GitHub-parity target.
  *
- * ── Bump cadence ─────────────────────────────────────────────────────────────
+ * Bump cadence
  * When GitHub's `actions/runner-images` updates the ubuntu-24.04 image (watch
  * the Ubuntu2404-Readme.md manifest), update BOTH this file and the matching ARG
  * defaults in server/finalize/runner/Dockerfile to the new manifest values, then

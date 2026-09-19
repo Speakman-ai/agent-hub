@@ -1,5 +1,5 @@
 /**
- * spot-interruption.ts — detect a pending EC2 Spot interruption from inside a
+ * Detect a pending EC2 Spot interruption from inside a
  * Finalize runner agent, and the cross-module contract for marking a reaped job
  * as a known Spot reclaim.
  *
@@ -75,7 +75,7 @@ export function spotReclaimDetail(humanMessage: string): string {
 
 /**
  * Does a spawn-error / lost-job `detail` string indicate a known Spot reclaim?
- * Pure; safe to call from the step-runner classification hot path.
+ * Safe to call from the step-runner classification hot path.
  */
 export function detailIsSpotReclaim(detail: string | null | undefined): boolean {
   if (!detail) return false;

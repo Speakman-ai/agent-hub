@@ -53,7 +53,7 @@ import { loadCardReplayContext } from './replays/replay-context-loader.js';
 
 const execFileAsync = promisify(execFile);
 
-// ─── Umbrella feature-branch management (opt-in) ───────────────────────────
+// Umbrella feature-branch management (opt-in)
 //
 // Per-run umbrella branching is OPT-IN via the epic's `pr_base_branch` field.
 //
@@ -134,7 +134,7 @@ export async function createUmbrellaBranch(
   }
 }
 
-// ─── Operator-set base branch — auto-create if missing ────────────────────
+// Operator-set base branch — auto-create if missing
 //
 // When the operator types a value into `epic.pr_base_branch` (e.g.
 // `feature/auth`), they want every card dispatched under that epic to open a
@@ -377,7 +377,7 @@ export async function ensureOperatorBaseBranch(
   }
 }
 
-// ─── Dependency Types ───────────────────────────────────────────────────────
+// Dependency Types
 
 interface AutonomousDeps {
   stmts: Stmts;
@@ -410,7 +410,7 @@ interface AutonomousDeps {
   drainIdleSessionQueues?: () => number;
 }
 
-// ─── Module-level state ────────────────────────────────────────────────────
+// Module-level state
 const autonomousCrons = new Map<string, cron.ScheduledTask>();
 const autonomousProjects = new Set<string>();
 
@@ -436,7 +436,7 @@ const autonomousEpicsByProject = new Map<string, Set<string>>();
  */
 const lastBlockerSkipSignature = new Map<string, string>();
 
-// ─── Injected dependencies (set via init()) ────────────────────────────────
+// Injected dependencies (set via init())
 let deps: AutonomousDeps | null = null;
 
 function getDeps(): AutonomousDeps {
@@ -511,7 +511,7 @@ export function initAutonomous(d: AutonomousDeps): void {
   deps = d;
 }
 
-// ─── Getters for shared state (used by index.ts) ───────────────────────────
+// Getters for shared state (used by index.ts)
 
 export {
   autonomousCrons,
@@ -547,7 +547,7 @@ function findColumnByName(
   return cols.find((c) => c.name.trim().toLowerCase() === normalized);
 }
 
-// ─── Core Dispatch ─────────────────────────────────────────────────────────
+// Core Dispatch
 
 /**
  * Per-epic single-flight gate. The autonomous loop is fan-in from FIVE
@@ -968,7 +968,7 @@ async function runAutonomousLoopInner(
     return;
   }
 
-  // ── Umbrella / integration branch (opt-in via operator-set value) ──────
+  // Umbrella / integration branch (opt-in via operator-set value)
   // We do NOT auto-create a branch when `epic.pr_base_branch` is blank.
   // Blank → every card's auto-PR targets the repo's default branch (handled
   // by `auto-git.ts` falling back when `effectivePrBaseBranch()` returns
@@ -979,7 +979,6 @@ async function runAutonomousLoopInner(
   // origin, subsequent ticks short-circuit at the ls-remote check. Failure
   // is non-fatal; `auto-git.ts` will fall back to default and comment on
   // the card so the operator sees what happened.
-  // ───────────────────────────────────────────────────────────────────────
   if (epic.pr_base_branch && epic.pr_base_branch.trim()) {
     await ensureOperatorBaseBranch(project, epic.pr_base_branch, { config: d.getConfig() });
   }
@@ -995,7 +994,7 @@ async function runAutonomousLoopInner(
   // only assignable agent at 0 slots forever and the dispatch loop would
   // silently break with no log line.
   //
-  // ── DO NOT "fix" this by filtering on `session.ask_mode` ────────────────
+  // DO NOT "fix" this by filtering on `session.ask_mode`
   // It looks tempting — `ask_mode` is on the SessionRow and easy to read
   // here — but `ask_mode` is the read-only / plan-mode flag (see
   // `chat.ts:~2319` where it gates `--yolo`), not a dispatch-origin marker.
@@ -1017,7 +1016,7 @@ async function runAutonomousLoopInner(
     if (!session) continue;
     const linkedCard = d.stmts.getKanbanCardBySession.get(sid) as KanbanCardRow | undefined;
     if (!linkedCard || !linkedCard.dispatched_by_autonomous) continue;
-    // ── Per-agent slot accounting is scoped to the CURRENT dispatch scope ───
+    // Per-agent slot accounting is scoped to the CURRENT dispatch scope
     // A session that belongs to a *different* epic (or, when dispatching a
     // phase, a different phase) is unrelated to THIS scope's concurrency
     // budget: epics and phases run independently and must never starve one
@@ -1051,7 +1050,7 @@ async function runAutonomousLoopInner(
   // `undefined` stays eligible so pre-flag rosters don't silently stop.
   assignableAgents = assignableAgents.filter((a) => agentAcceptsAutonomousTickets(a));
 
-  // ── Integration-branch serialization override ──────────────────────────
+  // Integration-branch serialization override
   // When an epic targets an operator-set integration branch
   // (`epic.pr_base_branch`), parallel dispatch defeats the whole point of
   // the integration: cards N and N+1 would both branch off `umbrella@SHA1`,
@@ -1242,7 +1241,7 @@ async function runAutonomousLoopInner(
     };
 
     try {
-      // ── Transactional slot claim (defense-in-depth) ────────────────────
+      // Transactional slot claim (defense-in-depth)
       // The per-epic mutex above already prevents two `runAutonomousLoop`
       // invocations from interleaving, but the move-to-In-Progress can
       // still race with manual user moves, the webhook handler, or future
@@ -1787,7 +1786,7 @@ export function stopAutonomousPhase(projectId: string, phaseId: string): KanbanP
   return updated;
 }
 
-// ─── Startup Restoration ───────────────────────────────────────────────────
+// Startup Restoration
 
 export function restoreAutonomousCrons(): void {
   const d = getDeps();

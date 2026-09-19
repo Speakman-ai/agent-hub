@@ -109,8 +109,7 @@ function awsSpawnEnv(
 }
 
 // Active-login slot state lives in `../aws-sso-active-login.js` so the
-// identity-guard semantics can be unit-tested without standing up the
-// route stack.
+// identity-guard semantics do not require the route stack.
 
 export default function createProjectAwsRoutes(deps: RouteDeps): Router {
   const { findProject, saveProjects, stmts, findAgent } = deps;

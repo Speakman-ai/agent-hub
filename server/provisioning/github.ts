@@ -392,9 +392,7 @@ export async function createGithubRepo(
   return { repoUrl };
 }
 
-// ------------------------------------------------------------------
 // Executor wiring
-// ------------------------------------------------------------------
 
 export interface GithubExecutorOptions {
   /** Resolve the workspace for a given projectId (same contract as the template executor). */

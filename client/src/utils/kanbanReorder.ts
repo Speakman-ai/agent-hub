@@ -1,10 +1,5 @@
-// Pure reorder / drop-target math for the kanban board's drag-and-drop.
-//
-// Kept dependency-free (no React, no @dnd-kit) so it's trivially unit-testable
-// and so the board component stays a thin wiring layer over it. The board feeds
-// in its loaded `cards` slice (pagination means we only ever hold part of a
-// long column in memory — same limitation the pre-dnd-kit code had: positions
-// are renumbered over the loaded slice only).
+// Kanban drag-and-drop reorder math. Positions are renumbered over the loaded
+// slice only (pagination means we never hold a full long column in memory).
 
 const COLUMN_DROPPABLE_PREFIX = 'column:';
 

@@ -1,5 +1,5 @@
 /**
- * Unit tests for the shared org-todos store (`org-todos-store.ts`).
+ * Shared org-todos store.
  *
  * Locks the two invariants the shared list depends on:
  *   1. Every read/write is scoped to `orgId` — org B can never see, mutate, or

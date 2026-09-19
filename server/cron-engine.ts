@@ -23,7 +23,7 @@ export function isSupportedEngine(value: unknown): value is SupportedEngine {
  *      engine without extra config.
  *   3. `DEFAULT_CRON_ENGINE` (`claude-code`) — historical default.
  *
- * Pure function — accepts the cron row and the resolved project (which may
+ * Function — accepts the cron row and the resolved project (which may
  * be null when the cron has no project mapping). Any callers that need to
  * compute the project should do so first via `findProjectForCron` /
  * `getProjects().find(...)`.

@@ -121,7 +121,7 @@ describe('log-source CRUD + token lifecycle (integration)', () => {
   });
 });
 
-// ─── Role gate, isolated from the shared app's break-glass Owner ────────────
+// Role gate, isolated from the shared app's break-glass Owner
 function buildStubbedApp(stub: { role?: string; userId?: string }) {
   const app = express();
   app.use(express.json());

@@ -10,9 +10,6 @@
  *   3. any other legacy/removed tab id collapses to `general`;
  *   4. anything unknown (or empty) falls back to `general`.
  *
- * Pure / synchronous so it can back both the `useState` initializer and the
- * `route.params.tab` effect from one source of truth.
- *
  * @param {string | null | undefined} rawTab
  * @param {readonly string[] | Set<string>} validIds  current tab ids
  * @param {Set<string>} legacyIds                      retired tab ids

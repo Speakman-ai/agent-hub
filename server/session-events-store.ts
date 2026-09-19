@@ -1,7 +1,7 @@
 /**
  * session_events helpers — payload size cap and orphan sweep.
  *
- * Why this module exists:
+ * Why this exists:
  *
  *   `session_events` is a high-volume telemetry table (one row per
  *   stream-json event from Claude Code / Cursor Agent: tool_use,
@@ -25,9 +25,7 @@
  *      below reclaims that space and runs from the existing daily
  *      `runWorkspacePurge` tick.
  *
- * Both helpers are pure functions over a `better-sqlite3` Database
- * handle so they can be unit-tested against an in-memory DB without
- * spinning up the full server.
+ * Both helpers are functions over a `better-sqlite3` Database handle.
  */
 
 import type Database from 'better-sqlite3';

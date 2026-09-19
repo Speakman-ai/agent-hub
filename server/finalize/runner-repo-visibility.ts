@@ -1,5 +1,5 @@
 /**
- * runner-repo-visibility.ts — detect the gated repo's GitHub visibility so the
+ * Detect the gated repo's GitHub visibility so the
  * Finalize runner can pick the GitHub-parity resource tier automatically.
  *
  * Why this exists: the gate runner defaults to the stricter `ubuntu-private`

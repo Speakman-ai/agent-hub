@@ -1,7 +1,4 @@
-// Pure helpers for the per-environment notification-routing surface.
-// Framework-free so they can be unit-tested and mirrored by the mobile screen.
-// Backend contract lives in server/deploy/deployment-notification-routing-store.ts
-// (env-name default resolution + type toggles).
+// Per-environment notification-routing. Backend: server/deploy/deployment-notification-routing-store.ts.
 
 export interface NotificationRouting {
   environmentName: string;

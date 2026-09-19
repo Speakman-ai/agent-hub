@@ -245,7 +245,7 @@ export default function ThreadsScreen({ route, navigation }: any) {
     const atBottom = contentSize.height - layoutMeasurement.height - contentOffset.y < 40;
     wasAtBottomRef.current = atBottom;
   };
-  // ── Detail view ──
+  // Detail view
   if (selectedThread) {
     const typeColor = colors.blue400;
     return (
@@ -440,7 +440,7 @@ export default function ThreadsScreen({ route, navigation }: any) {
       </SafeAreaView>
     );
   }
-  // ── List view ──
+  // List view
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={styles.topBar}>

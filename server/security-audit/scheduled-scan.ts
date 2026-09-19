@@ -1,5 +1,5 @@
 /**
- * scheduled-scan.ts — periodic dependency security re-scan for Hub-hosted
+ * Periodic dependency security re-scan for Hub-hosted
  * projects, modelled on stale-pr-check.ts.
  *
  * Enrollment per project via `Project.securityScan.schedule` (`daily` |

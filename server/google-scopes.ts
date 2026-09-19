@@ -27,7 +27,7 @@ export const GMAIL_FULL_SCOPE = 'https://mail.google.com/';
 export const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 export const SHEETS_READONLY_SCOPE = 'https://www.googleapis.com/auth/spreadsheets.readonly';
 
-// ── Read gates (the only ones the ReAct read action needs) ───────────────
+// Read gates (the only ones the ReAct read action needs)
 
 export function hasCalendarReadScope(scopes: string[]): boolean {
   return scopes.includes(CALENDAR_EVENTS_SCOPE) || scopes.includes(CALENDAR_FULL_SCOPE);
@@ -47,7 +47,7 @@ export function hasSheetsReadScope(scopes: string[]): boolean {
   return scopes.includes(SHEETS_SCOPE) || scopes.includes(SHEETS_READONLY_SCOPE);
 }
 
-// ── Write gates (used by the proxy mutation routes) ──────────────────────
+// Write gates (used by the proxy mutation routes)
 
 export function hasGmailModifyScope(scopes: string[]): boolean {
   // Mutating labels needs modify (or the legacy full scope); readonly can't.

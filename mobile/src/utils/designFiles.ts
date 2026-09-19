@@ -1,7 +1,4 @@
-/**
- * Pure helpers for the mobile design-mode files panel (SessionDesignFilesPanel).
- * Kept under utils/ so they unit-test without importing React Native.
- */
+/** Mobile design-mode files panel helpers. */
 /**
  * Build the open-in-browser URL for a design artifact at relative path `p`.
  *

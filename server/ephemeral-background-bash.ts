@@ -14,7 +14,7 @@
  *
  * The first-message prompt section that states this up-front, and points at
  * `bg.sh`, lives in `buildEnrichedPrompt` ("Long-Running Commands — Start Them
- * as Hub-Owned Background Shells"). This module is the *after the fact* half:
+ * as Hub-Owned Background Shells"). After-the-fact half:
  * {@link buildEphemeralBackgroundBashNotice} names the shells that are gone at
  * the top of the next turn, for the agent that already made the mistake. Same
  * shape as `restart-resume-notice.ts`, which solves the identical problem for

@@ -8,7 +8,7 @@
  * consumed (`status` flips `armed` → `fired`; an enqueue failure flips it to
  * `failed`). A gate remains until it is deleted or released.
  *
- * This module owns the STORE + CRUD only. The evaluation + firing sweep is the
+ * STORE + CRUD only. The evaluation + firing sweep is the
  * sibling `release-gate-ticker.ts`, which reads {@link listActiveReleaseGates}
  * and calls the `markReleaseGate*` helpers.
  */

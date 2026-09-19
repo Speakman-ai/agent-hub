@@ -8,7 +8,7 @@
  * sessions (finalize_automation review/push/merge) kicked off Finalize on a
  * half-finished worktree and could merge incomplete code.
  *
- * This module is the pure-logic seam for the fix:
+ * The seam for the fix:
  *   1. `resolveTurnEndError`   — did this turn actually end in an error?
  *   2. `isTransientTurnError`  — is it worth auto-retrying?
  *   3. `planTransientErrorRetry` — bounded retry schedule with backoff.

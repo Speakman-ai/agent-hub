@@ -1,4 +1,4 @@
-// Pure helpers for the Settings → Slack Bots tab (mobile). See
+// Settings → Slack Bots (mobile). See
 // server/routes/slack.ts for the REST contract these mirror.
 /**
  * The server masks stored tokens as e.g. "xoxb-****…-ab12cd" in GET

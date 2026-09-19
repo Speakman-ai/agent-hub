@@ -5,7 +5,7 @@
  * runs `start`. The slot clears once the promise settles, so a later call for
  * the same key starts fresh work.
  *
- * Pure: no React import. `mapRef` is typed structurally so a `useRef` from
+ * No React import. `mapRef` is typed structurally so a `useRef` from
  * either platform's React satisfies it.
  */
 

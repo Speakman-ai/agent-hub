@@ -7,7 +7,7 @@
  * it inherited at spawn time. The gate flips immediately though, so the
  * agents' next tool call returns 401.
  *
- * This module is the runtime-recovery side: after the Owner is created,
+ * Runtime recovery: after the Owner is created,
  * we mint one `ahub_*` token per in-flight session and write it into the
  * session's spawn-creds file. The agent-side shell helpers
  * (`ah-api.sh:ah_resolve_key`) consult that file on every invocation, so

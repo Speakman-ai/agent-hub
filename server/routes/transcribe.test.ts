@@ -12,8 +12,6 @@ import createTranscribeRoutes, {
 } from './transcribe.js';
 import type { RouteDeps, AppConfig } from '../types.js';
 
-// ─── Helpers ──────────────────────────────────────────────────────
-
 function makeApp(openaiApiKey: string | null, overrides: Partial<AppConfig> = {}): Express {
   const config = { openaiApiKey, ...overrides } as AppConfig;
   const deps = { config } as unknown as RouteDeps;
@@ -28,8 +26,6 @@ function jsonResponse(body: unknown, init: { status?: number } = {}): Response {
     headers: { 'content-type': 'application/json' },
   });
 }
-
-// ─── Pure helpers ─────────────────────────────────────────────────
 
 describe('normalizeAudioContentType', () => {
   it('accepts common audio MIME types', () => {
@@ -61,7 +57,7 @@ describe('extensionForAudioType', () => {
   });
 });
 
-// ─── Whisper client ───────────────────────────────────────────────
+// Whisper client
 
 describe('transcribeWithWhisper', () => {
   it('sends a multipart POST with Bearer auth and returns text', async () => {
@@ -114,7 +110,7 @@ describe('transcribeWithWhisper', () => {
   });
 });
 
-// ─── xAI Grok speech-to-text client ───────────────────────────────
+// xAI Grok speech-to-text client
 
 describe('transcribeWithXai', () => {
   it('sends a multipart POST to /v1/stt with Bearer auth and returns text', async () => {
@@ -203,7 +199,7 @@ describe('transcribeWithXai', () => {
   });
 });
 
-// ─── Provider resolution ──────────────────────────────────────────
+// Provider resolution
 
 describe('resolveTranscriptionProvider', () => {
   it('resolves the configured value (xai/openai stay themselves)', () => {
@@ -248,7 +244,7 @@ describe('isXaiSupportedAudioType', () => {
   });
 });
 
-// ─── Route integration ────────────────────────────────────────────
+// Route integration
 
 describe('POST /api/transcribe', () => {
   it('returns 501 when no API key is configured (client should fall back)', async () => {

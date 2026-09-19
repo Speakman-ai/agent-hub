@@ -1,5 +1,5 @@
 /**
- * fix-dispatch.ts — Finalize Code Changes, dispatch-fix step.
+ * Finalize Code Changes, dispatch-fix step.
  *
  * Per wiki `finalize-code-changes-architecture-v0` §6–§7: when a step
  * fails OR the reviewer requests changes, the orchestrator injects a
@@ -14,7 +14,7 @@
  * session agent's normal identity — no author/committer split, no
  * synthetic bot trailer.
  *
- * This module owns three responsibilities:
+ * Three responsibilities:
  *
  *   1. **Compose** the §7 message body from the trigger context (failed
  *      step + reviewer threads) using the canonical format locked in
@@ -584,7 +584,7 @@ export async function dispatchFixMessage(
   });
 }
 
-// ─── §7 message composer ────────────────────────────────────────────
+// §7 message composer
 
 /**
  * Build the §7 fix-dispatch body. Locked to the wiki shape; render is

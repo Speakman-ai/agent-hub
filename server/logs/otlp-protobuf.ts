@@ -11,7 +11,7 @@
  * projects it into the SAME object shape as OTLP/JSON — `{ resourceLogs: [...] }`
  * with `AnyValue` objects (`{ stringValue }`, `{ intValue }`, …) and hex-encoded
  * `traceId` / `spanId` — so a single normalizer downstream handles both wire
- * formats. Pure and IO-free; fully unit-tested against fixtures.
+ * formats. IO-free.
  *
  * OTLP logs proto field numbers (stable):
  *   ExportLogsServiceRequest { resource_logs = 1 }
@@ -142,7 +142,7 @@ function u64ToNumber(f: WireField | undefined): number | undefined {
   return Number(f.fixed64.readBigUInt64LE(0));
 }
 
-// ─── AnyValue (JSON-equivalent projection) ──────────────────────────
+// AnyValue (JSON-equivalent projection)
 
 /** OTLP/JSON-shaped AnyValue. Only the populated `*Value` key is present. */
 export type JsonAnyValue =
@@ -216,7 +216,7 @@ function decodeAttributes(
   return all(fields, fieldNum).map((e) => decodeKeyValue(e.bytes ?? Buffer.alloc(0)));
 }
 
-// ─── LogRecord / ResourceLogs projection ────────────────────────────
+// LogRecord / ResourceLogs projection
 
 export interface JsonLogRecord {
   timeUnixNano?: number;
@@ -310,7 +310,7 @@ export function decodeExportLogsServiceRequest(buf: Buffer): JsonLogsData {
   return { resourceLogs };
 }
 
-// ─── Response encoder ───────────────────────────────────────────────
+// Response encoder
 
 function writeVarint(value: number): Buffer {
   const bytes: number[] = [];

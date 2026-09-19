@@ -4,11 +4,11 @@
  * The web Design-mode pane renders the session worktree's `design/index.html`
  * live in an iframe (SessionDesignModePane → DesignCanvas). Mobile/Electron have
  * no in-app iframe canvas, so instead of rendering the artifact they show a flat
- * "files produced" list plus an open-in-browser affordance. This module computes
+ * "files produced" list plus an open-in-browser affordance. Computes
  * that list from the same worktree `design/` dir the static `/session-files`
  * mount serves, so the two surfaces never disagree about what exists.
  *
- * Pure (no DB, no Express) so it unit-tests against a temp worktree dir.
+ * No DB, no Express.
  */
 import path from 'path';
 import { DESIGN_MODE_SUBDIR } from './design-mode-prompt.js';

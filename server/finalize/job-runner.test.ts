@@ -1300,7 +1300,7 @@ jobs:
   });
 });
 
-// ─── Stop Finalize — no retry after cancel ──────────────────────────
+// Stop Finalize — no retry after cancel
 //
 // A cancelled instance's killed step exits non-zero. Without the abort guard,
 // runInstanceWithRetries would re-run it (a same-commit `retries:` failure retry

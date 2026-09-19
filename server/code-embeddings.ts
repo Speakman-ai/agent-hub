@@ -40,7 +40,7 @@ import {
 
 export { isGeminiConfigured };
 
-// ─── Types ──────────────────────────────────────────────────────────
+// Types
 
 export interface CodeChunk {
   idx: number;
@@ -74,7 +74,7 @@ export interface CodeSearchResult {
   snippet?: string;
 }
 
-// ─── File-walk policy ───────────────────────────────────────────────
+// File-walk policy
 
 /** Directories never worth indexing — dependencies, build output, VCS, caches. */
 export const DEFAULT_IGNORE_DIRS = new Set([
@@ -226,7 +226,7 @@ export function collectCodeFiles(root: string, maxFiles = 5000): string[] {
   return collectCodeFilesWithMeta(root, maxFiles).files;
 }
 
-// ─── Chunker ────────────────────────────────────────────────────────
+// Chunker
 
 const DEFAULT_CHUNK_CHARS = 1600; // ~400 tokens — code is denser than prose
 const DEFAULT_OVERLAP_LINES = 8;
@@ -298,7 +298,7 @@ export function chunkCode(
   return chunks.map((c, idx) => ({ ...c, idx }));
 }
 
-// ─── FTS query sanitization ─────────────────────────────────────────
+// FTS query sanitization
 
 /**
  * Build a safe FTS5 MATCH expression from free-form text. Code queries contain
@@ -312,7 +312,7 @@ export function toFtsMatchQuery(raw: string): string {
   return [...new Set(tokens)].map((t) => `"${t}"`).join(' OR ');
 }
 
-// ─── Indexer ────────────────────────────────────────────────────────
+// Indexer
 
 export interface IndexResult {
   projectId: string;
@@ -502,7 +502,7 @@ export function countProjectCodeChunks(projectId: string): number {
   return row?.n ?? 0;
 }
 
-// ─── Search ─────────────────────────────────────────────────────────
+// Search
 
 interface FtsCodeHit {
   rowid: number;

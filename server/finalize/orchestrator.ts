@@ -1,5 +1,5 @@
 /**
- * orchestrator.ts — Finalize Code Changes, top-level state machine.
+ * Finalize Code Changes, top-level state machine.
  *
  * Owns the lifecycle of a single finalize run from trigger to push-or-abort.
  * Sequences the four phase modules (`rebase`, `ci-config`, `reviewer-dispatch`,
@@ -167,7 +167,7 @@ function notifyReadyToPushAutomationHook(
   }
 }
 
-// ─── Public constants ─────────────────────────────────────────────────
+// Public constants
 
 /**
  * Cap on outer fix-dispatch loops. Per §13 the only ceiling is the
@@ -277,7 +277,7 @@ export function resolveMaxNoProgressNudges(): number {
   return DEFAULT_MAX_NO_PROGRESS_NUDGES;
 }
 
-// ─── Types ────────────────────────────────────────────────────────────
+// Types
 
 /**
  * Push-step seam. Sibling card `5c34b2de` will land the real
@@ -574,7 +574,7 @@ export type OrchestratorOutcome =
   | { kind: 'stalled'; runId: string }
   | { kind: 'reused'; runId: string; status: FinalizeRunStatus };
 
-// ─── Public API ───────────────────────────────────────────────────────
+// Public API
 
 /**
  * Drive a finalize run end-to-end. The function returns when the run
@@ -663,7 +663,7 @@ export async function runFinalize(
   const checksRequestedByMode = mode !== 'review';
   let checksRequired = checksRequestedByMode;
 
-  // ─── Idempotency: dedup at the (project, branch, head_sha, mode) level ─
+  // Idempotency: dedup at the (project, branch, head_sha, mode) level
   const idempotencyKey = computeIdempotencyKey({
     projectId: opts.project.id,
     branch: opts.branch,
@@ -678,7 +678,7 @@ export async function runFinalize(
     return { kind: 'reused', runId: existing.id, status: existing.status };
   }
 
-  // ─── Open the row + broadcast `finalize_run_created` ────────────────
+  // Open the row + broadcast `finalize_run_created`
   const runId = newId();
   const startedAt = now();
   try {
@@ -825,7 +825,7 @@ export async function runFinalize(
     }
   };
 
-  // ─── Attempt driver ─────────────────────────────────────────────────
+  // Attempt driver
   // The body of a single Finalize attempt — phase loop, session
   // resolution, push gate, terminal writes — lives inside this nested
   // closure so the §10 one-auto-retry path can re-invoke it with a
@@ -865,7 +865,7 @@ export async function runFinalize(
       return cancelTerminal(deps, runId, log);
     }
 
-    // ─── Resolve the session if needed ────────────────────────────────
+    // Resolve the session if needed
     // The fix-dispatch loop requires a real session to inject messages
     // into; we resolve up-front so a "session was archived" surface
     // produces a clear failure before we burn rebase time. On the retry
@@ -978,7 +978,7 @@ export async function runFinalize(
 
     const ciConfigPath = opts.ciConfigPath ?? `${worktreePath}/${DEFAULT_CI_CONFIG_RELATIVE_PATH}`;
 
-    // ─── Main loop: rebase → parse → review → tasks → combined gate ─────
+    // Main loop: rebase → parse → review → tasks → combined gate
     // Every fix dispatch re-enters at the top of this loop (§3 loop
     // invariant). We pin `lastReviewerVerdict` and `lastStepStatus` PER
     // ITERATION so a stale signal from a prior pass can never escape into
@@ -1144,7 +1144,7 @@ export async function runFinalize(
         }
       }
 
-      // ── Phase 1: rebase ─────────────────────────────────────────────
+      // Phase 1: rebase
       let rebaseOutcome: RebasePhaseOutcome;
       try {
         rebaseOutcome = await runRebase(
@@ -1333,7 +1333,7 @@ export async function runFinalize(
       // round is not mislabeled as a push-gate re-loop.
       pendingReloopReason = null;
 
-      // ── No-progress guard (§6) ──────────────────────────────────────
+      // No-progress guard (§6)
       // If we re-entered the loop after a fix dispatch but the post-rebase
       // HEAD did not advance, the fixer landed no new commit on the
       // feature branch. Re-running review + checks would reproduce the
@@ -1478,7 +1478,7 @@ export async function runFinalize(
         return cancelTerminal(deps, runId, log);
       }
 
-      // ── Phase 2: parse ci.yaml ──────────────────────────────────────
+      // Phase 2: parse ci.yaml
       // Always re-parse — the session may have edited ci.yaml during the
       // fix dispatch and the loop invariant demands we re-validate it.
       // Resolve the effective config source: a committed `.agent-hub/ci.yaml`
@@ -1579,7 +1579,7 @@ export async function runFinalize(
         return cancelTerminal(deps, runId, log);
       }
 
-      // ── Phase 3: reviewer ──────────────────────────────────────────
+      // Phase 3: reviewer
       // Skipped entirely in `checks` mode ("Run Tests" button): we
       // synthesize an `approved` verdict so the combined gate is driven
       // by the checks phase alone. `reviewRequired` is false only for
@@ -1766,7 +1766,7 @@ export async function runFinalize(
         // the client shows "running checks" immediately after review completes.
         setPhase(deps, runId, sessionId, 'tasks', 'running', log);
 
-        // ── Phase 4: tasks ──────────────────────────────────────────────
+        // Phase 4: tasks
         try {
           // Tenant identity for the remote runner queue (local backend ignores
           // it). getActiveOrgId throws before an org is selected — default to
@@ -1941,7 +1941,7 @@ export async function runFinalize(
         return cancelTerminal(deps, runId, log);
       }
 
-      // ── Phase 5 + 7: combined gate (§3) + push gate (§9) ─────────────
+      // Phase 5 + 7: combined gate (§3) + push gate (§9)
       // The combined gate and the push gate fold together: we only
       // re-resolve HEAD when steps + reviewer agree, because the head-sha
       // check is the most expensive of the three (one extra git call) and
@@ -1959,7 +1959,7 @@ export async function runFinalize(
       });
       if (stepsGreen && reviewerApproved) {
         const stepOutcome = lastStepOutcome!;
-        // ── Phase 7: push gate (§9) ─────────────────────────────────
+        // Phase 7: push gate (§9)
         // Refusal here is a TOCTOU outcome: HEAD moved BETWEEN the
         // post-rebase snapshot (`headValidatedAgainst`) and right now —
         // i.e. a commit landed on the feature branch while the reviewer +
@@ -2021,7 +2021,7 @@ export async function runFinalize(
           validatedHead: gateOutcome.validatedHeadSha,
         });
 
-        // ── Base-drift gate ─────────────────────────────────────────
+        // Base-drift gate
         // HEAD held still, but the base may have moved while review +
         // steps ran. Unrelated base movement is normal and passes; only
         // movement onto ground this branch also changes invalidates the
@@ -2053,7 +2053,7 @@ export async function runFinalize(
           continue;
         }
 
-        // ── Flake-recovery gate (§ retry-until-green) ───────────────
+        // Flake-recovery gate (§ retry-until-green)
         // Classify the run's per-job retry history: a job that failed an
         // earlier round and passed a later one with no fixer commit touching
         // its code paths laundered a flake into green. Reruns should DETECT
@@ -2143,7 +2143,7 @@ export async function runFinalize(
             );
           }
         }
-        // ── Quarantine lane (§ replace silent retry) ────────────────
+        // Quarantine lane (§ replace silent retry)
         // Excuse flake_recovered instances that are under an active quarantine:
         // they still ran (their result was recorded for monitoring above), but a
         // quarantined flake no longer blocks the gate. If every flagged instance
@@ -2205,7 +2205,7 @@ export async function runFinalize(
           });
         }
 
-        // ── Phase 8: park for human push ────────────────────────────
+        // Phase 8: park for human push
         // Review + checks passed. Stop before git push / gh pr create —
         // the operator confirms via POST .../finalize/:runId/push. The flake
         // gate verdict is already durably persisted above, so the moment this
@@ -2357,7 +2357,7 @@ export async function runFinalize(
         return { kind: 'ready_to_push', runId };
       }
 
-      // ── Phase 6: fix dispatch ───────────────────────────────────────
+      // Phase 6: fix dispatch
       // Either steps failed, reviewer requested changes, or both. Build
       // the §7 trigger and inject the message; await turn-end and re-enter
       // the loop. The watchdog is armed inside `dispatchFixMessage` for
@@ -2493,7 +2493,7 @@ export async function runFinalize(
     );
   }; // end driveAttempt
 
-  // ─── §10: drive original attempt + generation-aware infra-retry chain ─
+  // §10: drive original attempt + generation-aware infra-retry chain
   // The first attempt receives the trigger-time session/worktree (which
   // may be null when the card has no live session — in that case the
   // attempt's session-resolution block spawns one and persists the
@@ -2634,8 +2634,6 @@ export async function runFinalize(
   // Unreachable: the `for (;;)` loop only exits via the `return attempt` in the
   // terminal (`!retry`) branch, which the backstop guarantees is always taken.
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────
 
 /**
  * §3 decision-trace gate. Defaults ON so the implementation→test→review→push

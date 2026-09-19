@@ -1,11 +1,10 @@
 /**
- * metrics.ts — Finalize Code Changes adoption metrics emitter + reader.
+ * Finalize Code Changes adoption metrics emitter + reader.
  *
  * See wiki: `finalize-code-changes-architecture-v0` §14
  * (Metrics & Observability).
  *
- * Why this exists
- * ───────────────
+ * Why this exists.
  * During the dogfood window we need to answer questions like:
  *   - How many Finalize runs are humans clicking vs. agents auto-firing?
  *   - What fraction of runs complete successfully?
@@ -19,7 +18,6 @@
  * There is no UI at v0 — the endpoint + ad-hoc SQL is the dogfood surface.
  *
  * Design notes
- * ────────────
  * - **Counters vs. histograms.** Both are stored as flat rows. A counter
  *   row has `value = 1`; a histogram row has `value = <sample>`. The
  *   reader differentiates by the metric's `MetricKind`.
@@ -34,7 +32,7 @@
 import type { Stmts } from '../types.js';
 import type { JobResourceSummary } from './job-resource-sampler.js';
 
-// ─── Metric vocabulary ────────────────────────────────────────────────
+// Metric vocabulary
 
 /**
  * Every metric the Finalize feature emits. Keeping this as a string
@@ -145,7 +143,7 @@ export function isMetricName(value: unknown): value is MetricName {
   return typeof value === 'string' && (METRIC_NAMES as readonly string[]).includes(value);
 }
 
-// ─── Emitter surface ──────────────────────────────────────────────────
+// Emitter surface
 
 export interface MetricsDeps {
   stmts: Pick<Stmts, 'insertFinalizeMetric'>;
@@ -207,7 +205,7 @@ function canonicalLabels(
   return JSON.stringify(canonical);
 }
 
-// ─── Typed helpers — one per metric ───────────────────────────────────
+// Typed helpers — one per metric
 //
 // The orchestrator and phase modules call these by name rather than
 // invoking `recordMetric` directly, so the label contract is enforced at
@@ -428,7 +426,7 @@ export function recordGithubParity(
   });
 }
 
-// ─── Aggregation ──────────────────────────────────────────────────────
+// Aggregation
 
 export interface MetricLabelGroup {
   /** Stringified label map (canonical key order). */
@@ -629,7 +627,7 @@ function quantile(sortedAsc: ReadonlyArray<number>, q: number): number {
   return sortedAsc[lo] * (1 - frac) + sortedAsc[hi] * frac;
 }
 
-// ─── Range parsing ────────────────────────────────────────────────────
+// Range parsing
 
 /**
  * Hard cap on any range window — 1 year. Applies to both the relative

@@ -1,5 +1,5 @@
 /**
- * hub-unavailable.ts — the cross-module contract for marking a reaped Finalize
+ * The cross-module contract for marking a reaped Finalize
  * job as collateral of a Hub-side blip (the Hub process restarted or was
  * briefly unreachable) rather than a per-agent crash.
  *

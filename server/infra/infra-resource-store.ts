@@ -1,5 +1,5 @@
 /**
- * infra-resource-store.ts — reads over `infra_resources` and the series catalog
+ * Reads over `infra_resources` and the series catalog
  * behind the Resources and Metrics tabs (decision INFRA-UI).
  *
  * Read-only by design. Inventory rows are written by the hourly describe sweep

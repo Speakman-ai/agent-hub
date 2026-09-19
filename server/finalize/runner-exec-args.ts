@@ -1,5 +1,5 @@
 /**
- * runner-exec-args.ts — pure argv/env builders for the Finalize DinD runner.
+ * Argv/env builders for the Finalize DinD runner.
  *
  * Extracted from job-container.ts so BOTH the Hub-local runner path and the
  * remote runner-agent (which runs the same `docker run --privileged` + `docker

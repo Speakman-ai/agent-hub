@@ -357,7 +357,7 @@ export default function LogSourcesSettingsSection({
         </div>
       )}
 
-      {/* ── Write-only credential warning ───────────────────────── */}
+      {/* Write-only credential warning */}
       <div
         className="flex items-start gap-2 text-xs text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3"
         data-testid="logs-writeonly-warning"
@@ -375,7 +375,7 @@ export default function LogSourcesSettingsSection({
         </div>
       </div>
 
-      {/* ── Storage limits (from log-store metrics) ─────────────── */}
+      {/* Storage limits (from log-store metrics) */}
       <div
         className="bg-gray-800/40 border border-gray-700 rounded-xl p-4"
         data-testid="logs-limits"
@@ -413,7 +413,7 @@ export default function LogSourcesSettingsSection({
         )}
       </div>
 
-      {/* ── Create source ───────────────────────────────────────── */}
+      {/* Create source */}
       <div className="bg-gray-800/30 border border-gray-700 rounded-xl p-4 space-y-3">
         <h4 className="text-sm font-semibold text-gray-300 flex items-center gap-2">
           <Plus size={14} className="text-sky-400" />
@@ -465,7 +465,7 @@ export default function LogSourcesSettingsSection({
         </div>
       </div>
 
-      {/* ── One-time token reveal ───────────────────────────────── */}
+      {/* One-time token reveal */}
       {freshToken && (
         <div
           className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-3 text-xs text-amber-100"
@@ -512,7 +512,7 @@ export default function LogSourcesSettingsSection({
         </div>
       )}
 
-      {/* ── Source list ─────────────────────────────────────────── */}
+      {/* Source list */}
       <div className="bg-gray-800/30 border border-gray-700 rounded-xl p-4 space-y-3">
         <div className="flex items-center justify-between gap-2">
           <h4 className="text-sm font-semibold text-gray-300 flex items-center gap-2">
@@ -635,7 +635,7 @@ export default function LogSourcesSettingsSection({
         )}
       </div>
 
-      {/* ── Endpoint reference ──────────────────────────────────── */}
+      {/* Endpoint reference */}
       <div className="bg-gray-800/30 border border-gray-700 rounded-xl p-4 space-y-2">
         <h4 className="text-sm font-semibold text-gray-300">Ingest endpoints</h4>
         <p className="text-xs text-gray-500 max-w-2xl">

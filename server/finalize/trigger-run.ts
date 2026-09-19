@@ -1,5 +1,5 @@
 /**
- * trigger-run.ts — shared Finalize run kickoff for card and session routes.
+ * Shared Finalize run kickoff for card and session routes.
  */
 import { createHash } from 'crypto';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -87,7 +87,7 @@ export type ResolveFinalizeAttemptResult =
  *     advances to the NEXT attempt so the re-run gets its own row/bubble;
  *     an automated trigger (`agent_block`) dedups onto the finished run.
  *
- * Pure over the injected `lookup` so it can be unit-tested without the DB.
+ * Uses the injected `lookup`; no DB of its own.
  */
 export function resolveFinalizeAttempt(args: {
   projectId: string;

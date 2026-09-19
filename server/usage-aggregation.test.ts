@@ -1,5 +1,5 @@
-// Unit tests for usage-aggregation.ts — specifically the dedupe-per-parent
-// behavior added to fix the cumulative `total_cost_usd` double-count bug.
+// Dedupe-per-parent behavior added to fix the cumulative
+// `total_cost_usd` double-count bug.
 // (See module header in usage-aggregation.ts for background.)
 
 import { describe, it, expect, beforeEach } from 'vitest';

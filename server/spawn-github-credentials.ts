@@ -1,5 +1,5 @@
 /**
- * spawn-github-credentials.ts — propagate the session-owner's GitHub
+ * Propagate the session-owner's GitHub
  * identity into a spawned agent process so `gh` and `git push` against
  * GitHub HTTPS remotes work without per-session credential setup.
  *
@@ -273,7 +273,7 @@ export function applyReviewerSpawnIsolation(
  *   documented in acme/webapp PR #622 where
  *   `agent-hub-reviewer-main[bot]` opened a PR with bot-authored commits.
  *
- * Pure env mutation; no filesystem effect. Call AFTER
+ * Env mutation; no filesystem effect. Call AFTER
  * `applyReviewerSpawnIsolation` (which sets the universal lock).
  */
 export function applyReviewerRoleLock(env: NodeJS.ProcessEnv, role: string | undefined): void {

@@ -42,7 +42,7 @@ import {
   type ReadableStatement,
 } from './read-facade.js';
 
-// ─── Fixtures ────────────────────────────────────────────────────────────────
+// Fixtures
 
 const ACCOUNTS = 20;
 const START_BALANCE = 1_000;
@@ -153,7 +153,7 @@ beforeEach(() => {
   reset();
 });
 
-// ─── 1. Interleaving safety: balance-sum invariant ───────────────────────────
+// 1. Interleaving safety: balance-sum invariant
 
 /**
  * The correct pattern: a transfer is a WHOLE synchronous transaction on the main
@@ -211,7 +211,7 @@ describe('interleaving safety (balance-sum invariant)', () => {
   });
 });
 
-// ─── 2. No cross-talk between concurrent reads ───────────────────────────────
+// 2. No cross-talk between concurrent reads
 
 describe('concurrent reads do not contaminate each other', () => {
   it('each parametrized read resolves to exactly its own rows', async () => {
@@ -237,7 +237,7 @@ describe('concurrent reads do not contaminate each other', () => {
   });
 });
 
-// ─── 3. Event-loop lag budget ────────────────────────────────────────────────
+// 3. Event-loop lag budget
 
 /**
  * How much less the main thread may be blocked while submitting the async path
@@ -294,7 +294,7 @@ describe('event-loop lag budget', () => {
   }, 20_000);
 });
 
-// ─── 4. Why transactions must never span an await ────────────────────────────
+// 4. Why transactions must never span an await
 
 /**
  * Documents-as-code the failure mode the "a transaction must never span an

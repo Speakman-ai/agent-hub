@@ -3,8 +3,6 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
 /**
- * HandoffCard (mobile)
- * --------------------
  * Compact visual treatment for `<handoff>` blocks in chat. Mirrors the web
  * client's `HandoffCard.jsx` so the agent-coordination story looks the same
  * across platforms. Without this the raw `<handoff>{...}</handoff>` JSON

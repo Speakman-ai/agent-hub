@@ -316,7 +316,7 @@ describe('user-preferences-store', () => {
     );
   });
 
-  // ── Clearing semantics, asserted against the RAW column ─────────────────
+  // Clearing semantics, asserted against the RAW column
   //
   // Every other test here reads back through `getUserPreferencesRow`, which
   // normalizes — so it cannot distinguish "the key was deleted" from "the key

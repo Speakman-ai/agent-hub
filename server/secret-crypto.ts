@@ -85,7 +85,7 @@ export function decryptSecret(blob: string): string {
   return dec.toString('utf-8');
 }
 
-// ─── Test hooks ────────────────────────────────────────────────────────────
+// Test hooks
 
 /** Reset cached key / key path — for tests that use tmp dirs. */
 export function __resetSecretCryptoForTests(): void {

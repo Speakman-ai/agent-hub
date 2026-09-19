@@ -39,7 +39,7 @@ const BUG_MESSAGE =
   'Command failed: git clone --quiet /data/git/surveytracker.git /home/node/.agent-hub/workspaces/surveytracker/session-9b1990ab\n' +
   'BUG: refs/files-backend.c:3040: initial ref transaction called with existing refs\n';
 
-// ─── withKeyedLock ───────────────────────────────────────────────────────────
+// withKeyedLock
 
 describe('withKeyedLock', () => {
   it('serialises overlapping calls that share a key', async () => {
@@ -98,7 +98,7 @@ describe('withKeyedLock', () => {
   });
 });
 
-// ─── cloneLooksComplete / removeZombieCloneDir ───────────────────────────────
+// cloneLooksComplete / removeZombieCloneDir
 
 describe('cloneLooksComplete', () => {
   let root: string;
@@ -852,7 +852,7 @@ describe('removeZombieCloneDir', () => {
   });
 });
 
-// ─── retry classification ────────────────────────────────────────────────────
+// retry classification
 
 describe('clone retry classification for the initial-ref-transaction BUG', () => {
   it('classifies the git BUG abort as transient', () => {
@@ -886,7 +886,7 @@ describe('classifyWorktreeFailure', () => {
   });
 });
 
-// ─── end-to-end ──────────────────────────────────────────────────────────────
+// end-to-end
 
 describe('ensureSessionWorkspace — concurrency and poisoned-dir recovery', () => {
   let tmpRoot: string;

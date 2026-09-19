@@ -1,5 +1,5 @@
 /**
- * release-gate-candidates.ts — server-side source of truth for what the
+ * Server-side source of truth for what the
  * release-gate editor may offer as a "session to gate on".
  *
  * The picker used to be built from board cards alone: any non-done card with a

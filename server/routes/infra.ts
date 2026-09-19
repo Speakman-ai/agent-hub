@@ -744,7 +744,7 @@ export default function createInfraRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Read surface: resource browser and metric charts (INFRA-UI) ──────────
+  // Read surface: resource browser and metric charts (INFRA-UI)
 
   router.get(
     '/api/projects/:projectId/infra/resources',

@@ -27,8 +27,7 @@ import {
 
 /**
  * Minimal API surface `performDevServerSave` needs — mirrors the three
- * `api.*` calls the web `DevServerSection` uses. Kept narrow so the save
- * orchestration is unit-testable with a fake.
+ * `api.*` calls the web `DevServerSection` uses.
  */
 export interface DevServerSaveApi {
   putProjectSecrets: (projectId: string, secrets: unknown) => Promise<any>;
@@ -114,9 +113,8 @@ export interface DevServerLoadHandlers {
 
 /**
  * Fetch the (masked) project-secrets snapshot for `projectId`, applying the
- * result ONLY when it is still the current request. Extracted from the
- * component so the stale-response race is unit-testable without rendering RN:
- * every branch first consults `isCurrent()` and no-ops when superseded.
+ * result ONLY when it is still the current request. Every branch first
+ * consults `isCurrent()` and no-ops when superseded.
  */
 export async function loadDevServerSecrets(
   projectId: string,

@@ -1,7 +1,7 @@
 /**
  * Identity-guarded slot for the single in-flight `aws sso login --no-browser`
- * spawn. Extracted from `routes/project-aws.ts` so the race-guard semantics
- * can be unit-tested without standing up the whole route stack.
+ * spawn. Extracted from `routes/project-aws.ts` so race-guard semantics
+ * do not require the whole route stack.
  *
  * Background: an `aws sso login --no-browser` spawn returns the device URL
  * via stdout, then keeps running while the user finishes the device flow in

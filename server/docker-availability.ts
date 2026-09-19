@@ -14,7 +14,7 @@
  * and must not run docker-dependent reapers. The same is true for any docker-less
  * deployment.
  *
- * This module decides whether those reapers should run:
+ * Decides whether those reapers should run:
  *   1. Explicit override `AGENT_HUB_DISABLE_DOCKER_FEATURES` always wins
  *      (truthy => disabled, falsy => forced-enabled, ignoring the probe).
  *   2. Otherwise probe the resolved docker socket path: if it exists and is a

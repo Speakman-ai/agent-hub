@@ -1,29 +1,7 @@
 /**
- * Pure helpers for the sidebar's collapsed-project state.
- *
- * The authoritative store is per **user**, on the server
- * (`GET/PUT /api/auth/me/sidebar-collapsed-projects`), so the same account sees
- * the same collapsed projects on web, mobile, and Electron. Each surface keeps
- * a local cache (localStorage / AsyncStorage) purely so the first paint after a
- * reload matches what the user last saw instead of flashing every project open
- * while the fetch is in flight.
- *
- * That split creates two races worth naming, both handled here:
- *
- *  1. The user can toggle a project *before* the hydration fetch resolves.
- *     {@link mergeHydratedCollapsedProjects} lets local pre-hydration toggles
- *     win over the server list, mirroring `mergeHydratedNavGroups`.
- *  2. Rapid collapse/expand clicks can produce overlapping PUTs that arrive
- *     out of order, leaving the account state inverted relative to the UI.
- *     {@link createCollapsedProjectSaver} serializes and coalesces saves per
- *     project so only the newest desired value is ever in flight.
- *
- * The cache is also keyed per account ({@link collapsedProjectsCacheKey}) —
- * two people sharing a browser must never see each other's collapsed projects,
- * least of all when the hydration fetch fails and the cache is all we have.
- *
- * Everything here is storage- and network-free so it can be unit tested and
- * shared by both clients.
+ * Sidebar collapsed-project state. Server is per-user; local cache is first-paint
+ * only. Cache is account-keyed. Pre-hydration toggles win; PUTs are serialized
+ * per project so overlapping clicks cannot invert account state.
  */
 
 /** Storage key prefix used by the web and mobile local caches. */
@@ -37,17 +15,8 @@ export interface CollapsedProjectsAccount {
 }
 
 /**
- * Storage key for one account's cache.
- *
- * The cache MUST be account-scoped. It is the only state rendered before the
- * hydration fetch resolves, and it survives a failed fetch — so a global key
- * would show user A's collapsed projects to user B after an account switch on
- * a shared browser, indefinitely if B is offline.
- *
- * Falls back through `id → username → email` because `user.id` is optional on
- * the wire, and finally to `anonymous` for local-bundled deployments
- * (Electron / `AGENT_HUB_MODE=local`) where no token is ever issued and there
- * is exactly one user.
+ * Account-scoped cache key. Falls back id → username → email → `anonymous`
+ * (local/Electron, no token).
  */
 export function collapsedProjectsCacheKey(
   account: CollapsedProjectsAccount | null | undefined,
@@ -68,11 +37,7 @@ export function isCollapsedProjectsCacheKey(key: string): boolean {
   );
 }
 
-/**
- * Parse a raw cached payload into a validated, de-duplicated id list. Anything
- * malformed (missing, bad JSON, non-array, non-string entries) degrades to an
- * empty list — a broken cache should mean "nothing collapsed", never a crash.
- */
+/** Malformed cache → empty list, never a throw. */
 export function parseCollapsedProjects(raw: string | null | undefined): string[] {
   if (!raw) return [];
   try {
@@ -123,16 +88,7 @@ export function applyCollapsedToggle(
   return ids.filter((existing) => existing !== id);
 }
 
-/**
- * Fold the server's list into local state, preserving toggles the user made
- * while the hydration fetch was still in flight.
- *
- * `pendingEdits` maps projectId → the collapsed value the user chose locally.
- * Those win; every other project takes the server's value. Without this, a
- * click landing a few hundred ms before the fetch resolves would visibly snap
- * back — and, worse, the surviving server value would then be what the next
- * cache write persists.
- */
+/** Local pending toggles win over the server list. */
 export function mergeHydratedCollapsedProjects(
   serverIds: readonly string[],
   pendingEdits: Record<string, boolean> | null | undefined,
@@ -149,74 +105,35 @@ export function mergeHydratedCollapsedProjects(
 export type CollapsedProjectPut = (projectId: string, collapsed: boolean) => Promise<unknown>;
 
 export interface CollapsedProjectSaver {
-  /** Record the desired value for `projectId` and ensure it reaches the server. */
   save(projectId: string, collapsed: boolean): Promise<void>;
-  /** True while a PUT for `projectId` is in flight (or queued). Test/debug aid. */
   isSaving(projectId: string): boolean;
   /**
-   * Permanently retire this saver: drop everything still queued and refuse
-   * further `save()` calls. Requests already dispatched are left to settle —
-   * they were sent with the credentials of the account that queued them, so
-   * they land on the right account.
-   *
-   * **Call this whenever the signed-in account changes.** A queued value is
-   * only bound to a request at dispatch time, and the API layer reads the auth
-   * token at dispatch time too — so a value queued by user A but sent after
-   * user B signs in would be written to B's preferences. Retiring the saver
-   * and building a fresh one per account is what keeps A's pending toggles out
-   * of B's account.
+   * Drop the queue and refuse further saves. In-flight PUTs still settle
+   * (they carry the account that queued them). Call on account switch.
    */
   cancel(): void;
 }
 
 /**
- * Serialize and coalesce collapsed-project saves **per project**.
- *
- * Toggling is a click target, so a user can easily produce three PUTs in under
- * a second. Fired independently, those requests race: the browser is free to
- * deliver `collapsed=true` after `collapsed=false`, and the account is then
- * left holding the opposite of what the UI and cache show — a divergence that
- * only surfaces on the *next* reload, which makes it miserable to diagnose.
- *
- * The fix is a per-project chain with a single-slot queue. At most one request
- * per project is ever in flight; while it is, further toggles only overwrite
- * the *desired* value. When the request settles, the newest desired value (if
- * it still differs from what was just sent) goes out next. Intermediate values
- * are intentionally dropped — nobody needs the middle of a double-click — and
- * the last write always wins because it is literally sent last.
- *
- * Failures are swallowed: this is best-effort UI state, the optimistic local
- * value is already correct, and the next hydration reconciles.
- *
- * A saver belongs to exactly ONE signed-in account. The queue holds values,
- * not requests, so anything still queued when the account changes would be
- * dispatched with the *new* account's credentials. Retire it with
- * {@link CollapsedProjectSaver.cancel} and build a fresh one per account.
+ * Per-project serialize + coalesce. One in-flight PUT; later toggles overwrite
+ * the desired value. Last write wins. Failures swallowed (optimistic UI stands).
+ * One saver per signed-in account; retire on switch.
  */
 export function createCollapsedProjectSaver(put: CollapsedProjectPut): CollapsedProjectSaver {
-  /** projectId → the value the user most recently asked for but we haven't sent. */
   const desired = new Map<string, boolean>();
-  /** projectId → the chain currently draining `desired` for that project. */
   const inFlight = new Map<string, Promise<void>>();
-  /** Set by `cancel()`; makes the saver permanently inert. */
   let retired = false;
 
   const drain = async (projectId: string): Promise<void> => {
-    // No `await` between the loop guard and the delete below, so a toggle that
-    // lands after the guard can't be stranded: it either re-enters this loop or
-    // finds `inFlight` already cleared and starts a fresh chain.
-    //
-    // `retired` is re-checked every iteration, so a `cancel()` that lands while
-    // a request is in flight stops the NEXT dispatch — which is the one that
-    // would otherwise carry the old account's value under the new account's
-    // token.
+    // No await between the loop guard and delete, so a toggle cannot be stranded.
+    // Re-check retired each iteration so cancel() stops the next dispatch.
     while (!retired && desired.has(projectId)) {
       const collapsed = desired.get(projectId) as boolean;
       desired.delete(projectId);
       try {
         await put(projectId, collapsed);
       } catch {
-        // Best-effort — the optimistic local state stands.
+        // Optimistic local state stands.
       }
     }
     inFlight.delete(projectId);

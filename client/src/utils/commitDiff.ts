@@ -1,8 +1,4 @@
-/**
- * commitDiff.js — split a unified diff (git show / git diff output) into
- * per-file sections so the commit page can render one collapsible block
- * per file, GitHub-style. Pure string processing — trivial to unit test.
- */
+/** Split a unified diff into per-file sections. */
 
 /**
  * Extract the post-image path from a `diff --git a/<old> b/<new>` header.

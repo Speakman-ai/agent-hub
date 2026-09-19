@@ -1,5 +1,5 @@
 /**
- * Pure logic for kanban card templates, shared by the web
+ * Logic for kanban card templates, shared by the web
  * (`client/src/utils/kanbanCardTemplates.ts` re-exports these) and mobile
  * (`mobile/src/screens/KanbanCardTemplatesScreen.tsx`) clients so the two
  * surfaces can't drift. Reusable defaults for new kanban cards on a project

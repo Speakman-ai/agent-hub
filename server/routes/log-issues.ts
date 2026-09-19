@@ -177,7 +177,7 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
     res.json(serializeLogIssue(updated));
   }
 
-  // ─── List ─────────────────────────────────────────────────────────
+  // List
   router.get(
     '/api/projects/:projectId/logs/issues',
     requireRole('User'),
@@ -201,7 +201,7 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ─── Detail ───────────────────────────────────────────────────────
+  // Detail
   router.get(
     '/api/projects/:projectId/logs/issues/:issueId',
     requireRole('User'),
@@ -226,7 +226,7 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ─── Bulk lifecycle transition ────────────────────────────────────
+  // Bulk lifecycle transition
   //
   // One transaction for the whole selection so a batch never lands half
   // applied. Ids that do not belong to this project come back in `notFound`
@@ -253,7 +253,7 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ─── Lifecycle transitions ────────────────────────────────────────
+  // Lifecycle transitions
   router.post(
     '/api/projects/:projectId/logs/issues/:issueId/resolve',
     requireRole('User'),
@@ -272,7 +272,7 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
     (req: Request, res: Response) => updateStatus(req, res, 'open'),
   );
 
-  // ─── Analyze — one-click read-only root-cause investigation (LOG-ANALYZE) ──
+  // Analyze — one-click read-only root-cause investigation (LOG-ANALYZE)
   //
   // Starts (or reopens) a NORMAL chat session on the project's default eligible
   // dev/lead agent, seeded with a bounded, redacted, fenced context pack and a
@@ -550,7 +550,7 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ─── Fix — tracked worktree implementation (LOG-FIX) ────────────────
+  // Fix — tracked worktree implementation (LOG-FIX)
   //
   // This intentionally creates the session/card directly. The board assign
   // route is an orchestration entry point with its own push/merge defaults;

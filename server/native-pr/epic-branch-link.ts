@@ -1,10 +1,10 @@
 /**
- * epic-branch-link.ts — pure branch-matching between epics and pull requests.
+ * Branch-matching between epics and pull requests.
  *
  * An epic's "feature branch" is its `pr_base_branch`: the integration branch
- * that ticket PRs merge into before the epic ships. This module maps that
- * branch to the PRs around it, both directions, with no I/O so it unit-tests
- * cleanly and is reused by the native-PR service (enrich PRs with `linked_epic`)
+ * that ticket PRs merge into before the epic ships. Maps that
+ * branch to the PRs around it, both directions, with no I/O. Reused by
+ * the native-PR service (enrich PRs with `linked_epic`)
  * and the epic route (list an epic's PRs).
  *
  * Two relations, from the PR's point of view:

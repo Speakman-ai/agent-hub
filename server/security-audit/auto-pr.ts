@@ -1,5 +1,5 @@
 /**
- * auto-pr.ts — open ONE native Hub PR carrying every fixable advisory bump.
+ * Open ONE native Hub PR carrying every fixable advisory bump.
  *
  * Dependabot-style grouped update: take the {@link SecurityBumpPlan}s produced
  * from a scan's findings, accumulate every lockfile (+ sibling package.json
@@ -10,8 +10,7 @@
  * fixable set each run, so the PR rolls forward as advisories appear/resolve
  * instead of spawning a separate PR per package.
  *
- * All side-effecting collaborators (file read, branch commit, PR open) are
- * injected so the orchestration is unit-testable without git or the DB.
+ * All side-effecting collaborators (file read, branch commit, PR open) are injected.
  */
 
 import path from 'path';

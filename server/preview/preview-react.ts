@@ -1,5 +1,5 @@
 /**
- * preview-react.ts — host-mediated `tool: preview` ReAct actions.
+ * Host-mediated `tool: preview` ReAct actions.
  *
  * Lets an agent OBSERVE (state / logs / screenshot), START (`start`), and
  * DRIVE (navigate by route, click, type, scroll, wait, read_page, extract)
@@ -63,7 +63,7 @@ import {
 } from '../browser-screenshot-store.js';
 import { clipUtf8StringToMaxBytes } from '../utf8-clip.js';
 
-// ─── Ops ─────────────────────────────────────────────────────────
+// Ops
 
 /** Single source of truth for ReAct `tool: preview` operations (keep in sync with parseReActBlock). */
 export const PREVIEW_REACT_OPS = [
@@ -113,7 +113,7 @@ export const PREVIEW_LOGS_MAX_TAIL = 1000;
 /** Byte cap for the log fence injected into continuation markdown. */
 export const PREVIEW_LOGS_MARKDOWN_MAX_BYTES = 48_000;
 
-// ─── Inputs / deps ───────────────────────────────────────────────
+// Inputs / deps
 
 /** Fields parsed from `<agenthub:react>` preview actions (see chat.ts). */
 export interface PreviewReActActionInput {
@@ -203,7 +203,7 @@ export function previewBrowserSessionId(chatSessionId: string): string {
   return `preview:${chatSessionId}`;
 }
 
-// ─── Request-time origin pin (persistent CDP document guard) ─────
+// Request-time origin pin (persistent CDP document guard)
 
 interface PreviewDocumentGuardEntry {
   /** Identity of the live BrowserSession the guard was installed on. */
@@ -263,8 +263,6 @@ async function releasePreviewDocumentGuard(browserSessionId: string): Promise<vo
 export function __resetPreviewDocumentGuardsForTests(): void {
   previewDocumentGuards.clear();
 }
-
-// ─── Helpers ─────────────────────────────────────────────────────
 
 function outcome(
   markdown: string,
@@ -351,7 +349,7 @@ export function formatPreviewLaunchFailedMarkdown(msg: string): string {
   ].join('\n');
 }
 
-// ─── Main entry ──────────────────────────────────────────────────
+// Main entry
 
 /**
  * Run one `tool: preview` action for `chatSessionId`. Mirrors the
@@ -497,7 +495,7 @@ async function runPreviewReActStepInner(
     return outcome(NO_PREVIEW_MARKDOWN, 2, 'no_preview', 'No preview running');
   }
 
-  // Reads that work regardless of status ────────────────────────
+  // Reads that work regardless of status
   if (op === 'state') {
     const state = {
       status: row.status,
@@ -541,7 +539,7 @@ async function runPreviewReActStepInner(
     );
   }
 
-  // Drive ops need a ready preview ───────────────────────────────
+  // Drive ops need a ready preview
   if (row.status !== 'ready') {
     const hint =
       row.status === 'starting'

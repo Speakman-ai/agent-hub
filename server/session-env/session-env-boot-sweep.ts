@@ -2,8 +2,8 @@ import type { SessionEnvKind } from './session-env.js';
 import type { ReconcileFirecrackerHostResult } from './firecracker/firecracker-slots.js';
 
 /**
- * Boot-time GC sweep for session-env backends, extracted from `index.ts` so it
- * can be unit-tested without booting the whole server.
+ * Boot-time GC sweep for session-env backends, extracted from `index.ts` so
+ * it does not require booting the whole server.
  *
  * Two independent sweeps run in parallel:
  *

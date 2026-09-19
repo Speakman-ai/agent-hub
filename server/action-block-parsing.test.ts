@@ -14,7 +14,7 @@ import { detectSkillBlock, parseSkillBlock } from './skill-invoke.js';
 import { detectReActBlock, parseReActBlock } from './chat.js';
 import { detectWikiRequestBlock } from './wiki-rag.js';
 
-// ─── extractJsonFromTagBody ─────────────────────────────────────────────
+// extractJsonFromTagBody
 
 describe('extractJsonFromTagBody', () => {
   it('returns null for non-string input', () => {
@@ -133,7 +133,7 @@ done.`;
   });
 });
 
-// ─── stripOuterMarkdownFence ────────────────────────────────────────────
+// stripOuterMarkdownFence
 
 describe('stripOuterMarkdownFence', () => {
   it('strips ```json ... ``` wrapper', () => {
@@ -160,7 +160,7 @@ describe('stripOuterMarkdownFence', () => {
   });
 });
 
-// ─── sliceFirstBalancedJson ─────────────────────────────────────────────
+// sliceFirstBalancedJson
 
 describe('sliceFirstBalancedJson', () => {
   it('returns the object slice when prose precedes it', () => {
@@ -189,7 +189,7 @@ describe('sliceFirstBalancedJson', () => {
   });
 });
 
-// ─── normalizeControlCharsInsideStrings ─────────────────────────────────
+// normalizeControlCharsInsideStrings
 
 describe('normalizeControlCharsInsideStrings', () => {
   it('escapes raw newlines inside string literals', () => {
@@ -221,7 +221,7 @@ describe('normalizeControlCharsInsideStrings', () => {
   });
 });
 
-// ─── parseTagBodyAsJson ─────────────────────────────────────────────────
+// parseTagBodyAsJson
 
 describe('parseTagBodyAsJson', () => {
   it('returns ok=true with parsed value for clean JSON', () => {
@@ -245,7 +245,7 @@ describe('parseTagBodyAsJson', () => {
   });
 });
 
-// ─── stripBlockquotePrefix ──────────────────────────────────────────────
+// stripBlockquotePrefix
 
 describe('stripBlockquotePrefix', () => {
   it('strips a `> ` prefix from every non-blank line', () => {
@@ -296,7 +296,7 @@ describe('extractJsonFromTagBody — blockquote tolerance', () => {
   });
 });
 
-// ─── End-to-end coverage across every action-block detector ────────────────
+// End-to-end coverage across every action-block detector
 //
 // Each detector funnels its raw body through `extractJsonFromTagBody`, so a
 // regression in any of the layered tolerances above can silently break a
@@ -484,7 +484,7 @@ describe('parseReActBlock — design tool', () => {
   });
 });
 
-// ─── stripFencedCodeBlockBodies ─────────────────────────────────────────
+// stripFencedCodeBlockBodies
 
 describe('stripFencedCodeBlockBodies', () => {
   it('returns non-string input unchanged', () => {
@@ -572,7 +572,7 @@ describe('stripFencedCodeBlockBodies', () => {
   });
 });
 
-// ─── detector code-fence suppression ────────────────────────────────────
+// detector code-fence suppression
 
 describe('detectSkillBlock — fenced examples are NOT detected', () => {
   it('returns null for a skill block that lives only inside a ``` fence', () => {
@@ -663,7 +663,7 @@ describe('detectWikiRequestBlock — fenced examples are NOT detected', () => {
   });
 });
 
-// ─── detectTagBlockInLastFence ──────────────────────────────────────────────
+// detectTagBlockInLastFence
 //
 // Regression suite for the "skill block wrapped in backtick fences" bug:
 // agents sometimes follow the documentation example too literally and wrap
@@ -735,7 +735,7 @@ describe('detectTagBlockInLastFence', () => {
   });
 });
 
-// ─── detectSkillBlock — in-fence fallback ───────────────────────────────────
+// detectSkillBlock — in-fence fallback
 
 describe('detectSkillBlock — in-fence fallback (regression)', () => {
   it('detects a skill block that is wrapped in backtick fences at end of message', () => {
@@ -793,7 +793,7 @@ describe('detectSkillBlock — in-fence fallback (regression)', () => {
   });
 });
 
-// ─── detectReActBlock — in-fence fallback ───────────────────────────────────
+// detectReActBlock — in-fence fallback
 
 describe('detectReActBlock — in-fence fallback (regression)', () => {
   it('detects a react block wrapped in backtick fences at end of message', () => {

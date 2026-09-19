@@ -172,7 +172,7 @@ describe('Global (shared) skills — write/read API', () => {
     expect(existsSync(path.join(globalDir, flatId))).toBe(false);
   });
 
-  // ── Flat-form global skills (<globalDir>/<slug>.md) must be fully editable ──
+  // Flat-form global skills (<globalDir>/<slug>.md) must be fully editable
   // loadSkillBody / the duplicate guard treat a flat <slug>.md as a real global
   // skill, so GET/PUT/DELETE must handle it too (not just the directory form).
 

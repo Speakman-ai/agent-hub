@@ -334,9 +334,7 @@ export function inferWithGithub(payload: any) {
   return true;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Project type picker — Step 0 of the New Project flow.                      */
-/* -------------------------------------------------------------------------- */
+/* Project type picker — Step 0 of the New Project flow. */
 
 /**
  * Top-level picker: new code repo (scaffold), import existing repo (host
@@ -436,9 +434,7 @@ export function ProjectTypePicker({ onPick, onClose }: any) {
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Workflow project form — minimal name/description/color collector.          */
-/* -------------------------------------------------------------------------- */
+/* Workflow project form — name/description/color. */
 
 /** Color swatches offered to workflow projects. Mirrors the palette used by
  *  the existing project list so colors stay consistent across surfaces. */

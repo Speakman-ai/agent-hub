@@ -1,5 +1,5 @@
 /**
- * replay-store.ts — durable storage for record-on-error rrweb session replays.
+ * Durable storage for record-on-error rrweb session replays.
  *
  * The rrweb event array (the trailing rolling-buffer window the web client
  * flushes on a bug-report submit or an uncaught error) is JSON-encoded, gzipped
@@ -13,9 +13,9 @@
  * read + gunzipped once server-side, then the events array is sliced by
  * `offset`/`limit`; the page carries `total`/`hasMore` so callers can walk it.
  *
- * The pure helpers (encode/decode/duration/pagination) carry no IO so they can
- * be unit-tested directly; `storeReplay` / `readReplayEventsPage` do the
- * gzip + artifact-store + SQLite orchestration.
+ * The encode/decode/duration/pagination helpers carry no IO;
+ * `storeReplay` / `readReplayEventsPage` do the gzip + artifact-store +
+ * SQLite orchestration.
  */
 import { gzip, gunzip } from 'zlib';
 import { promisify } from 'util';
@@ -355,7 +355,7 @@ export function isReplayFinalized(
   return Boolean(row.support_ticket_id || row.card_id);
 }
 
-// ── Per-replay critical section ──────────────────────────────────
+// Per-replay critical section
 //
 // A chunked append is a read-modify-write on a single blob slot: read the
 // current blob, concatenate this batch, overwrite the key. Two overlapping
@@ -634,7 +634,7 @@ export async function deleteReplay(deps: ReplayStoreDeps, row: SessionReplayRow)
   deps.stmts.deleteReplayPlaylistItemsByReplay.run(row.id);
 }
 
-// ─── Linking ─────────────────────────────────────────────────────
+// Linking
 //
 // Ingest (`POST /api/replays`) is public and anonymous — it has no trusted
 // project context, so a fresh replay row starts unattributed (`project_id`

@@ -14,8 +14,7 @@
 //   2. streamErrorMessage (real upstream error captured from stdout)
 //   3. generic "<engine> exited with code <code>"
 //
-// Keeping this as a pure helper makes it unit-testable without spinning up a
-// real child process or the full chat pipeline.
+// No child process or full chat pipeline needed to exercise the precedence.
 
 export interface ProcessErrorInputs {
   stderr: string;

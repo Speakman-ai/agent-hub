@@ -1,7 +1,7 @@
 /**
- * Tests for the `useFinalizeRun` hook — covers initial-load, status/phase
- * mirroring, step-state accumulation, paused/terminal classification, and
- * the helper exports (isFinalizeBlocked, describeRunPhase, formatDuration).
+ * Covers initial-load, status/phase mirroring, step-state accumulation,
+ * paused/terminal classification, and the helper exports
+ * (isFinalizeBlocked, describeRunPhase, formatDuration).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';

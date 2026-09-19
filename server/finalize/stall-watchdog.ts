@@ -1,5 +1,5 @@
 /**
- * stall-watchdog.ts — Live-mode "human walked away" guard for the
+ * Live-mode "human walked away" guard for the
  * Finalize fix-dispatch loop.
  *
  * See wiki: `finalize-code-changes-architecture-v0` §7 ("Human-walked-away
@@ -274,7 +274,7 @@ export function armStallWatchdog(
   };
 }
 
-// ─── internals ──────────────────────────────────────────────────────
+// internals
 
 /**
  * Clamp the configured windows so an operator typo can't break the

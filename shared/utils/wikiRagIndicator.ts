@@ -1,29 +1,20 @@
-/**
- * Shared parsing for the automatic wiki-RAG indicator persisted on assistant
- * messages (`metadata.wikiRag`). Web and mobile both render a "Consulted wiki"
- * chip from this; keeping the parse pure and shared means the two clients can't
- * drift. Mirrors `WikiRagIndicator` in `server/wiki-rag.ts` (the server is the
- * producer) — keep the shapes in sync.
- */
+/** Parse `metadata.wikiRag`. Keep in sync with `WikiRagIndicator` in `server/wiki-rag.ts`. */
 
 export interface WikiRagIndicatorPage {
   title: string;
   slug: string;
   category: string;
-  /** Min-max normalized blended score (as shown in the injected block). */
+  /** Min-max blended score shown in the injected block. */
   score: number;
-  /** Raw cosine similarity of the best chunk, when available. */
+  /** Cosine similarity of the best chunk, when available. */
   rawScore?: number;
 }
 
 export interface WikiRagIndicator {
-  /** `consulted` = pages cleared the relevance floor and were injected; `no_match` = retrieval ran but nothing cleared it. */
+  /** `consulted`: pages injected. `no_match`: retrieval ran, nothing cleared the floor. */
   status: 'consulted' | 'no_match';
-  /** Number of pages injected into the prompt (0 when `no_match`). */
   retrieved: number;
-  /** Pages injected, best-first (empty when `no_match`). */
   pages: WikiRagIndicatorPage[];
-  /** Query used for retrieval (the user's message, normalized). */
   query: string;
 }
 
@@ -42,11 +33,7 @@ function coercePage(raw: unknown): WikiRagIndicatorPage | null {
   };
 }
 
-/**
- * Extract the wiki-RAG indicator from a message's `metadata`, which may arrive
- * as a raw JSON string (REST / DB) or an already-parsed object (defensive).
- * Returns null when absent or malformed — callers render no chip in that case.
- */
+/** Parse wiki-RAG metadata (JSON string or object). Null when absent or malformed. */
 export function parseWikiRagIndicator(metadata: unknown): WikiRagIndicator | null {
   if (metadata == null) return null;
   let obj: unknown = metadata;

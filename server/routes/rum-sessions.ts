@@ -25,7 +25,7 @@ export default function createRumSessionsRoutes(deps: RouteDeps): Router {
   const { findProject } = deps;
   const router = Router();
 
-  // ── List: paginated, filterable session table ────────────────────
+  // List: paginated, filterable session table
   router.get('/api/projects/:projectId/rum/sessions', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });

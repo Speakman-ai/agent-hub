@@ -1,5 +1,5 @@
 /**
- * trivial-conflict-resolver.ts — programmatic resolution for mechanical
+ * Programmatic resolution for mechanical
  * git-rebase conflicts that don't need a human (or an LLM) to mediate.
  *
  * Scope at Phase 1 (intentionally narrow — see wiki:
@@ -35,7 +35,7 @@
  * literals. The resolver is intentionally conservative; ambiguous cases
  * fall through to the agent dispatch path in `rebase.ts`.
  *
- * Pure functions live in this module. The rebase orchestrator owns the
+ * The rebase orchestrator owns the
  * `git add` / `git rebase --continue` plumbing; we only return what to
  * write back to the working tree.
  *

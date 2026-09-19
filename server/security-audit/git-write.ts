@@ -1,5 +1,5 @@
 /**
- * git-write.ts — worktree-free creation of a branch carrying a small set of
+ * Worktree-free creation of a branch carrying a small set of
  * modified files, directly in a hosted bare repo. Used by the security
  * auto-PR flow to land a lockfile/package.json bump on a deterministic
  * branch without ever checking anything out.

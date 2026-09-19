@@ -279,7 +279,7 @@ describe('POST /security-audit/scan — Autofix gate', () => {
   });
 });
 
-// ── PR vs. auto-merge ─────────────────────────────────────────────────────
+// PR vs. auto-merge
 // `securityAutoPr.autoMerge` used to be dead config: the dispatcher pinned
 // `push` unconditionally, so a project that asked for unattended merging still
 // parked the fix at an open PR.

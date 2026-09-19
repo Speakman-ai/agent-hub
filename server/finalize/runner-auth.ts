@@ -1,5 +1,5 @@
 /**
- * runner-auth.ts — authentication for the runner fleet control plane.
+ * Authentication for the runner fleet control plane.
  *
  * Two credentials:
  *  - Fleet token: a shared secret the agent presents at /register (from the ECS

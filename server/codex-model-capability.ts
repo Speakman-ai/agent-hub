@@ -20,7 +20,7 @@
 // slug. This makes exposure self-healing — gpt-5.6-sol appears automatically
 // once the host crosses 0.144.0 and its cache refreshes, and never before.
 //
-// This module is read-only with respect to Codex and never spawns the CLI.
+// Read-only with respect to Codex; never spawns the CLI.
 // All reads are wrapped so a missing / malformed cache collapses to "no extra
 // capability" (baseline models only) — the safe direction.
 

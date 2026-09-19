@@ -1,5 +1,5 @@
 /**
- * artifact-store.ts — storage backend for session artifacts (agent-generated
+ * Storage backend for session artifacts (agent-generated
  * documents: PDFs, scripts, reports, …).
  *
  * Two backends, selected by config (see `getArtifactStore`):

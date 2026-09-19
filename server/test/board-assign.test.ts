@@ -425,7 +425,7 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/unassign', () => {
   });
 });
 
-// ─── Spawn env — AGENT_HUB_URL / resolveAgentHubApiBaseForSpawn + PROJECT_ID injection ────────────────────
+// Spawn env — AGENT_HUB_URL / resolveAgentHubApiBaseForSpawn + PROJECT_ID injection
 // Verified via config.test.ts plus source: chat.ts sets base.AGENT_HUB_URL from
 // resolveAgentHubApiBaseForSpawn(config) and base.PROJECT_ID before `return base`
 // in the spawn env builder.

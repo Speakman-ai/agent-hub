@@ -42,7 +42,7 @@ const ErrorEnvelope = z.object({
   error: z.string().openapi({ description: 'Human-readable failure reason.' }),
 });
 
-// ── Rules ──────────────────────────────────────────────────────────────────
+// Rules
 
 /**
  * The tag predicate, shaped like `infra_scopes.tag_filter_json`: tag key to the
@@ -161,7 +161,7 @@ export const AlertRuleListParamsSchema = z.object({
   enabled: z.enum(['true', 'false']).optional(),
 });
 
-// ── Alerts ─────────────────────────────────────────────────────────────────
+// Alerts
 
 const AlertTransition = registerComponent(
   'InfraAlertTransition',
@@ -258,7 +258,7 @@ export const AlertStatusRequestSchema = z.object({
 });
 registerComponent('InfraAlertStatusRequest', AlertStatusRequestSchema);
 
-// ── Registrations ──────────────────────────────────────────────────────────
+// Registrations
 
 const storeUnavailable = {
   description: 'The infrastructure store is not open on this Hub.',

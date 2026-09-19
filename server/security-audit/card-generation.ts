@@ -1,5 +1,5 @@
 /**
- * card-generation.ts — turn newly-discovered vulnerable dependencies into a
+ * Turn newly-discovered vulnerable dependencies into a
  * single kanban card so the operator (or autonomous dispatch) can action
  * the bumps.
  *

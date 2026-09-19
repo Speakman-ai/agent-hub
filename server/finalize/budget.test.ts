@@ -1,6 +1,5 @@
 /**
- * Tests for `server/finalize/budget.ts` — the §13 active-time budget
- * accounting module.
+ * The §13 active-time budget accounting module.
  *
  * Coverage:
  *   - `resolveBudgetSeconds`: converts a minute-valued cap to seconds;

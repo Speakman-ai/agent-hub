@@ -1,5 +1,5 @@
 /**
- * Tests for the always-on `tool: design` ReAct step (design-react.ts).
+ * Always-on `tool: design` ReAct step.
  *
  * The Chromium render is injected as a stub, so nothing here launches a real
  * browser. Artifact writes go to a real tmp dir.

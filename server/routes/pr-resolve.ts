@@ -1,5 +1,5 @@
 /**
- * routes/pr-resolve.ts — Manual on-demand autofix trigger for a PR.
+ * Manual on-demand autofix trigger for a PR.
  *
  * POST /api/projects/:projectId/pulls/:number/resolve  body: { agentId }
  *

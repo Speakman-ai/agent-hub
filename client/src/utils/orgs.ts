@@ -21,7 +21,7 @@ import {
 
 const REMOTE_ORGS_KEY = 'agent-hub-remote-orgs';
 
-// ─── In-memory cache ──────────────────────────────────────────────
+// In-memory cache
 let _localOrgs: any[] = []; // from server
 let _remoteOrgs: any[] = []; // from localStorage (browser) or file-backed (Electron)
 let _activeOrgId = _loadActiveOrgId();
@@ -47,7 +47,7 @@ function allOrgs() {
   return [..._localOrgs, ..._remoteOrgs];
 }
 
-// ─── Remote orgs (localStorage) ──────────────────────────────────
+// Remote orgs (localStorage)
 
 function loadRemoteOrgs() {
   // In Electron, use file-backed storage (survives origin changes when
@@ -76,7 +76,7 @@ function saveRemoteOrgs() {
   }
 }
 
-// ─── Public API ───────────────────────────────────────────────────
+// Public API
 
 /** Fetch local orgs from server + load remote orgs from localStorage. */
 export async function fetchOrgs() {

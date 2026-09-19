@@ -11,7 +11,7 @@
  *
  * In all three the SIGTERM path is a no-op, so without this flag the chain runs
  * remaining host actions to completion and spawns a fresh follow-up turn after
- * the user asked it to stop. This module is the persistent per-session
+ * the user asked it to stop. Persistent per-session
  * "cancel requested" signal the auto-continue gate re-checks between iterations.
  *
  * Lifecycle: `handleCancel`/`cancelSessionChatRun` set it; the close handler

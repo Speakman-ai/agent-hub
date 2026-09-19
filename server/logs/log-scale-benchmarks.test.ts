@@ -1,5 +1,5 @@
 /**
- * log-scale-benchmarks.test.ts — single-node capacity tripwires for the customer
+ * Single-node capacity tripwires for the customer
  * log store (card "Harden log operations and scale limits", decision LOG-SCOPE:
  * "Optimize the dedicated SQLite store for a single Hub instance and moderate
  * project volumes").

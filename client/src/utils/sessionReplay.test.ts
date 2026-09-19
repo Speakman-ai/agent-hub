@@ -589,7 +589,7 @@ describe('selectFlushWindow', () => {
       snap(5), // pre-mount, empty #root
       incr(2522), // app mounts
       incr(40000),
-      // ── 180s idle, no checkout ──
+      // 180s idle, no checkout
       meta(224350),
       snap(224355), // checkout when activity resumes (populated)
       incr(230000),
@@ -1780,7 +1780,7 @@ describe('ContinuousReplayFlusher', () => {
     expect(f._pending.length).toBe(0);
   });
 
-  // ── Rotation on terminal capture rejection (413 cap / 409 finalized) ──
+  // Rotation on terminal capture rejection (413 cap / 409 finalized)
   // The server bounds a monolithic capture (uncompressed-byte + event caps) so
   // its per-append cost can't grow unbounded; when a capture is capped (413) or
   // frozen by triage (409), retrying the same id can never succeed. The flusher
@@ -1892,7 +1892,7 @@ describe('ContinuousReplayFlusher', () => {
     expect(f._pending.length).toBe(1); // re-queued for the next interval
   });
 
-  // ── 30-min chunk rotation (age-based) ──────────────────────────────
+  // 30-min chunk rotation (age-based)
   // A capture that runs past the chunk bound rotates to a fresh replay id so no
   // stored blob spans more than ~30 min — a 4-hour session → ~8 chunks.
 

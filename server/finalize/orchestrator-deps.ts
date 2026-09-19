@@ -1,5 +1,5 @@
 /**
- * orchestrator-deps.ts — build a production {@link OrchestratorDeps}
+ * Build a production {@link OrchestratorDeps}
  * bundle from the route-layer {@link RouteDeps} singleton.
  */
 import { getDb } from '../db.js';
@@ -17,7 +17,7 @@ import type { OrchestratorDeps } from './orchestrator.js';
 import type { EnrichedAgent, KanbanCardRow, RouteDeps } from '../types.js';
 import { waitForPreFinalizeBackgroundShells } from './pre-finalize-background-shells.js';
 
-// ─── Stub seams (tests only) ─────────────────────────────────────────
+// Stub seams (tests only)
 
 const stubRunReviewer: RunReviewerOnLocalDiff = async () => {
   throw new Error(
@@ -37,7 +37,7 @@ async function stubDispatchAndWaitForTurnEnd(_args: {
   );
 }
 
-// ─── Public API ────────────────────────────────────────────────────────
+// Public API
 
 export function buildOrchestratorDeps(
   routeDeps: RouteDeps,

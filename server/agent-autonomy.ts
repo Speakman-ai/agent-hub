@@ -1,6 +1,6 @@
 import type { Agent } from './types.js';
 
-// ─── Autonomous-ticket eligibility ───────────────────────────────────────────
+// Autonomous-ticket eligibility
 //
 // A single source of truth for "may this agent receive an autonomously-
 // dispatched kanban ticket?". Pure — no DB / no broadcast — so the autonomous

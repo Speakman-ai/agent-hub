@@ -454,7 +454,7 @@ describe('runRumSegmentRetentionSweep', () => {
     expect(result.sessionsDeleted).toBe(4);
   });
 
-  // ── Per-tenant S3 byte-ownership gate (regression: reviewer finding 2) ──────
+  // Per-tenant S3 byte-ownership gate (regression: reviewer finding 2)
   it('per-tenant pass DELETES S3 segment bytes itself when the tenant prefix rule is unconfirmed (global off)', async () => {
     config = { dataDir, replayRetentionDays: 0 } as unknown as AppConfig;
     seedS3Session('s3-off'); // project 'proj', updated_at 60 days old

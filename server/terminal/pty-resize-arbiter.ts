@@ -9,7 +9,7 @@
  * every attached viewer (min cols, min rows, computed independently), so the
  * rendered region always fits inside every client.
  *
- * Pure and synchronous — the PtySession owns the side effect of pushing the
+ * Synchronous — the PtySession owns the side effect of pushing the
  * computed size onto the real PTY.
  */
 

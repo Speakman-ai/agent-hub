@@ -640,7 +640,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     res.status(204).end();
   });
 
-  // ─── Hooks configuration ────────────────────────────────────────────
+  // Hooks configuration
 
   router.get('/api/agents/:agentId/hooks', (req: Request, res: Response) => {
     const found = findAgentVisible(req, res, req.params.agentId as string);
@@ -707,7 +707,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     res.json({ hooks: {}, supportedEvents: HOOK_EVENTS });
   });
 
-  // ─── Context endpoints ─────────────────────────────────────────────
+  // Context endpoints
 
   router.get('/api/agents/:agentId/context', (req: Request, res: Response) => {
     const found = findAgentVisible(req, res, req.params.agentId as string);
@@ -783,7 +783,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Memory API ────────────────────────────────────────────────────
+  // Memory API
 
   router.get('/api/agents/:agentId/memory', (req: Request, res: Response) => {
     const found = findAgentVisible(req, res, req.params.agentId as string);

@@ -1,5 +1,5 @@
 /**
- * reconcile.ts — keep a hosted repo's default branch in sync with GitHub,
+ * Keep a hosted repo's default branch in sync with GitHub,
  * in BOTH directions, and surface the case where it can't.
  *
  * The outbound mirror (`mirror.ts`) is one-way and non-force: it pushes
@@ -9,7 +9,7 @@
  * and the outbound mirror gets stuck (`! [rejected] (fetch first)`), with
  * no surfacing.
  *
- * This module closes the loop:
+ * Closes the loop:
  *   - `behind`  (GitHub ahead only): fast-forward the Hub to GitHub —
  *     "pull the release chore into Agent Hub's git".
  *   - `ahead`   (Hub ahead only): push to GitHub (the normal mirror).

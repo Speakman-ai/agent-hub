@@ -2,8 +2,8 @@
  * PR Environments — kill switch.
  *
  * First PR in the "Strip PR Environments" epic. The PR-env subsystem is on
- * the way out (epic 88367984-c56e-4d31-945c-3408ad151243). This module is
- * the single boot-time gate that no-ops every PR-env code path so the
+ * the way out (epic 88367984-c56e-4d31-945c-3408ad151243). Single boot-time
+ * gate that no-ops every PR-env code path so the
  * subsequent cards (#2–#7) can delete code, backing tables, crons,
  * UI, and Terraform calmly — without ever leaving the system in a state
  * where new PR-env activity could be kicked off.

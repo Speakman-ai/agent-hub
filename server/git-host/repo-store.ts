@@ -1,5 +1,5 @@
 /**
- * repo-store.ts — bare repo storage & lifecycle for Agent Hub-hosted git.
+ * Bare repo storage & lifecycle for Agent Hub-hosted git.
  *
  * Projects opted into `gitHost: 'agenthub'` get a canonical bare repo at
  * `<dataDir>/git/<projectId>.git`. Everything in this module shells out to
@@ -152,7 +152,7 @@ export async function getHostedRepoInfo(
   return { projectId, repoPath, defaultBranch, branchCount };
 }
 
-// ── notify hook ─────────────────────────────────────────────────────
+// notify hook
 
 export interface NotifyConfig {
   projectId: string;
@@ -338,7 +338,7 @@ export function readNotifyConfig(
   }
 }
 
-// ── creation / import ───────────────────────────────────────────────
+// creation / import
 
 export interface CreateHostedRepoOptions {
   /**

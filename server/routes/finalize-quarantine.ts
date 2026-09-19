@@ -1,5 +1,5 @@
 /**
- * finalize-quarantine.ts — REST surface for the Finalize flaky-test quarantine
+ * REST surface for the Finalize flaky-test quarantine
  * lane + cross-run flake history.
  *
  *   - `GET    /api/projects/:projectId/finalize/quarantine`
@@ -57,7 +57,7 @@ export default function createFinalizeQuarantineRoutes(deps: RouteDeps): Router 
   const router = Router();
   const now = (): number => Date.now();
 
-  // ── GET quarantine list ─────────────────────────────────────────────
+  // GET quarantine list
   router.get('/api/projects/:projectId/finalize/quarantine', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -86,7 +86,7 @@ export default function createFinalizeQuarantineRoutes(deps: RouteDeps): Router 
     });
   });
 
-  // ── POST quarantine a job instance ──────────────────────────────────
+  // POST quarantine a job instance
   router.post('/api/projects/:projectId/finalize/quarantine', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -157,7 +157,7 @@ export default function createFinalizeQuarantineRoutes(deps: RouteDeps): Router 
     return res.status(201).json({ project_id: project.id, entry: serializeEntry(entry, now()) });
   });
 
-  // ── DELETE release a quarantine entry ───────────────────────────────
+  // DELETE release a quarantine entry
   router.delete(
     '/api/projects/:projectId/finalize/quarantine/:id',
     (req: Request, res: Response) => {
@@ -179,7 +179,7 @@ export default function createFinalizeQuarantineRoutes(deps: RouteDeps): Router 
     },
   );
 
-  // ── GET flake statistics ────────────────────────────────────────────
+  // GET flake statistics
   router.get('/api/projects/:projectId/finalize/flakes', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });

@@ -1292,7 +1292,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ── Session code-diff pane ────────────────────────────────────────
+  // Session code-diff pane
   // Total session delta (committed + uncommitted + untracked) vs the
   // merge-base with the base branch. Powers the web "Changes" pane.
 
@@ -2885,7 +2885,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Preview iframe ticket mint ────────────────────────────────────
+  // Preview iframe ticket mint
   // The SPA calls this with its JWT (or per-user API key, or the global
   // x-api-key in dev) before pointing the iframe at the preview proxy.
   // The minted ticket is single-use and bound to (sessionId, caller).
@@ -2915,7 +2915,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Preview state hydration ───────────────────────────────────────
+  // Preview state hydration
   // `SessionPreviewPane` derives its status purely from live
   // `agenthub_preview` WS events. The WS connect-snapshot covers
   // (re)connects, but a `ready` frame dropped while the socket stays
@@ -3008,9 +3008,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ───────────────────────────────────────────────────────────────
   // POST /api/sessions/:sessionId/extract-skill  (Skill Builder Phase 4)
-  // ───────────────────────────────────────────────────────────────
   //
   // "Turn this session into a skill." Hands the source session's transcript
   // to the project's Skill Builder coach agent, which mines the repeated
@@ -3304,7 +3302,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Forward to agent ──────────────────────────────────────────
+  // Forward to agent
 
   const MAX_PROMPT_LENGTH = 50_000;
   const MAX_FORWARD_MESSAGES = 200;

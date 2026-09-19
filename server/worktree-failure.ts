@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { BroadcastFn, MessageRow, Stmts } from './types.js';
 import { classifyWorktreeFailure } from './worktree-failure-cause.js';
 
-// ─── Worktree-creation failure handler ───────────────────────────────────────
+// Worktree-creation failure handler
 //
 // When `ensureSessionWorkspace` fails to create a session worktree we used to
 // just flip `sessions.use_worktree → 0` and broadcast a `worktree_failed`
@@ -12,7 +12,7 @@ import { classifyWorktreeFailure } from './worktree-failure-cause.js';
 // agent worked around the missing worktree with a manual `git worktree add`,
 // committed locally, and stopped. Auto-PR silently never fired.
 //
-// This module makes that failure loud:
+// Makes that failure loud:
 //  1. `[worktree-failed]` server log line at the moment of failure (distinct
 //     from the per-turn `[auto-commit] skipping (not a worktree)` lines so it
 //     can be grepped at the moment of failure rather than retroactively).

@@ -1,5 +1,5 @@
 /**
- * routes/google-oauth.ts — "Connect Google" user-identity endpoints.
+ * "Connect Google" user-identity endpoints.
  *
  *   GET    /api/auth/google/start    — returns { authorizeUrl }; client redirects the browser.
  *   GET    /api/auth/google/callback — public; verifies state, exchanges code, stores the
@@ -307,7 +307,7 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
     return res.json({ authorizeUrl });
   });
 
-  // ── Callback: verify state, exchange code, persist encrypted tokens ──
+  // Callback: verify state, exchange code, persist encrypted tokens
   // Public path — Google redirects the user here with no auth header.
   // Identity is carried by the signed `state` JWT minted at /start.
   router.get('/api/auth/google/callback', async (req: Request, res: Response) => {
@@ -455,7 +455,7 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ── Status: for the Account settings UI. Never returns tokens. ──
+  // Status: for the Account settings UI. Never returns tokens.
   router.get('/api/auth/google/status', (req: Request, res: Response) => {
     const uid = resolveOAuthConnectionUserId(req);
     if (!uid) {
@@ -469,7 +469,7 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
     });
   });
 
-  // ── Disconnect: best-effort revoke at Google, then clear the row ──
+  // Disconnect: best-effort revoke at Google, then clear the row
   router.delete('/api/auth/google/connect', async (req: Request, res: Response) => {
     const uid = resolveOAuthConnectionUserId(req);
     if (!uid) {

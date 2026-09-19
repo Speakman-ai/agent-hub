@@ -1,5 +1,5 @@
 /**
- * ios-build-engine.ts — macOS VM orchestration for iOS PR preview builds.
+ * MacOS VM orchestration for iOS PR preview builds.
  *
  * Manages the lifecycle of iOS builds on EC2 Mac instances:
  *   queue build -> provision VM -> clone + build via Xcode -> archive .ipa
@@ -167,7 +167,7 @@ export function getIosBuildLogs(buildId: string): string {
   return build?.build_log ?? 'No logs available';
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────
+// Internal helpers
 
 function updateBuildStatus(buildId: string, status: IosBuildStatus, errorMessage?: string): void {
   if (!_deps) return;

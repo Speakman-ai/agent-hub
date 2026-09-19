@@ -1,8 +1,7 @@
 /**
- * job-resource-sampler.ts — per-CI-job host resource sampler.
+ * Per-CI-job host resource sampler.
  *
- * Why host-level, not the job container's cgroup
- * ──────────────────────────────────────────────
+ * Why host-level, not the job container's cgroup.
  * A Finalize CI job runs as a privileged DinD container; the real workload
  * (compose stacks, Cypress, the inner dockerd) runs in *nested* containers
  * that escape the job container's own cgroup accounting — which is exactly why
@@ -11,10 +10,9 @@
  * memory**. We therefore sample the host (`/proc/meminfo` + `/proc/stat`) and
  * report a high-water-mark summary when the job ends.
  *
- * The sampler is split into a pure accumulator (`JobResourceSampler`) that is
- * fed `ResourceSample`s — trivially unit-testable — and a real reader
- * (`readHostSample`) that does the `/proc` I/O. `startHostSampler()` wires them
- * together on a timer for the agent.
+ * The sampler is split into a pure accumulator (`JobResourceSampler`) fed
+ * `ResourceSample`s, and a real reader (`readHostSample`) that does the
+ * `/proc` I/O. `startHostSampler()` wires them together on a timer for the agent.
  */
 import { readFileSync } from 'fs';
 
@@ -51,7 +49,7 @@ export interface JobResourceSummary {
 }
 
 /**
- * Pure high-water-mark accumulator. Feed it samples via {@link add}; read the
+ * High-water-mark accumulator. Feed it samples via {@link add}; read the
  * summary via {@link summary}. No timers, no I/O — the unit of test.
  *
  * CPU utilization is derived from the *delta* between consecutive samples'
@@ -117,7 +115,7 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
-// ─── Real host reader ─────────────────────────────────────────────────
+// Real host reader
 
 /**
  * Read one host sample from `/proc`. Returns null if `/proc/meminfo` is
@@ -168,7 +166,7 @@ function readCpuTotals(): { busy: number; total: number } | null {
   return { busy, total };
 }
 
-// ─── Timer wiring (for the agent) ─────────────────────────────────────
+// Timer wiring (for the agent)
 
 export interface RunningSampler {
   /** Stop the timer and return the summary. */

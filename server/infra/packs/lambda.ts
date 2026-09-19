@@ -142,7 +142,7 @@ const ASYNC_INVOKED: InfraMetricApplicability = Object.freeze({
 });
 
 const LAMBDA_METRICS: readonly InfraPackMetric[] = Object.freeze([
-  // ── Invocation metrics: binary per invocation, Sum and only Sum ───────────
+  // Invocation metrics: binary per invocation, Sum and only Sum
   {
     namespace: NS,
     metricName: 'Invocations',
@@ -186,7 +186,7 @@ const LAMBDA_METRICS: readonly InfraPackMetric[] = Object.freeze([
       'Invocation requests Lambda rejected because no concurrency was available — the account’s regional quota or the function’s own reserved concurrency was already fully used. These are counted here and nowhere else: AWS is explicit that "throttled requests and other invocation errors don’t count as either Invocations or Errors", so a function can be dropping traffic with a flat error chart.',
   },
 
-  // ── Performance metrics: one invocation each, Average / Max / percentiles ──
+  // Performance metrics: one invocation each, Average / Max / percentiles
   {
     namespace: NS,
     metricName: 'Duration',
@@ -246,7 +246,7 @@ const LAMBDA_METRICS: readonly InfraPackMetric[] = Object.freeze([
       'Milliseconds between a stream receiving the last record in a batch and the event source mapping handing it to your function. This is stream backlog: a value that climbs steadily means the function is consuming slower than producers are writing, and the record at the head of the stream will eventually age past the stream’s retention and be lost unread. Collected on Maximum because one lagging shard is enough to lose data.',
   },
 
-  // ── Concurrency: aggregate counts, Max ───────────────────────────────────
+  // Concurrency: aggregate counts, Max
   {
     namespace: NS,
     metricName: 'ConcurrentExecutions',
@@ -280,7 +280,7 @@ const LAMBDA_METRICS: readonly InfraPackMetric[] = Object.freeze([
       'How much of the provisioned concurrency you are paying for is in use, as a fraction from 0 to 1. AWS defines it as "the value of ProvisionedConcurrentExecutions divided by the total amount of provisioned concurrency configured". Saturation is the thing to watch: once this reaches 1 the next invocation spills onto standard on-demand concurrency and pays a cold start, which is the exact latency you bought provisioned concurrency to avoid.',
   },
 
-  // ── Asynchronous invocation queue ────────────────────────────────────────
+  // Asynchronous invocation queue
   {
     namespace: NS,
     metricName: 'AsyncEventsReceived',

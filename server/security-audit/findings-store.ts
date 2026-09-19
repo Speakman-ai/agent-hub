@@ -1,5 +1,5 @@
 /**
- * findings-store.ts — persistence, de-dupe, and suppression for the
+ * Persistence, de-dupe, and suppression for the
  * dependency security audit.
  *
  * Two tables, both self-contained (own DDL exported for db.ts to exec at

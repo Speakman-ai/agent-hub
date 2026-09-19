@@ -1,8 +1,4 @@
-// Pure helpers for the per-environment release-gate surface. Framework-free so
-// they can be unit-tested and mirror the web client (client/src/utils/
-// deployReleaseGates.ts). Backend contract
-// lives in server/deploy/deployment-release-gate-store.ts (selection limits) and
-// the CRUD API in server/routes/deployments.ts.
+// Per-environment release-gate helpers. Mirror of client/src/utils/deployReleaseGates.ts.
 
 export type ReleaseGateSelectionState = 'complete' | 'pending' | 'missing';
 export type ReleaseGateStatus = 'armed' | 'fired' | 'failed';

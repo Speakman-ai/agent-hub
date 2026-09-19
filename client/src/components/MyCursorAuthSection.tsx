@@ -280,7 +280,7 @@ export default function MyCursorAuthSection({ bare = false }: { bare?: boolean }
         </p>
       </div>
 
-      {/* ── Browser sign-in ─────────────────────────────────────────────── */}
+      {/* Browser sign-in */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h5 className="text-xs font-medium text-gray-300 flex items-center gap-2">
@@ -398,7 +398,7 @@ export default function MyCursorAuthSection({ bare = false }: { bare?: boolean }
 
       <div className="h-px bg-gray-700/50" />
 
-      {/* ── Paste API key fallback ──────────────────────────────────────── */}
+      {/* Paste API key fallback */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h5 className="text-xs font-medium text-gray-300 flex items-center gap-2">

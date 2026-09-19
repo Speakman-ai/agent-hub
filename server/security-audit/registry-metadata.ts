@@ -1,5 +1,5 @@
 /**
- * registry-metadata.ts — fetch the npm registry's `dist` metadata
+ * Fetch the npm registry's `dist` metadata
  * (`tarball` URL + Subresource-Integrity `integrity` hash) for a single
  * package@version.
  *

@@ -1,5 +1,5 @@
 /**
- * runner-queue.ts — control-plane queue ops for the multi-tenant runner fleet.
+ * Control-plane queue ops for the multi-tenant runner fleet.
  *
  * Backed by the shared `orgs.db` (see runner-queue-schema.ts). The remote
  * RunnerBackend enqueues a job here; a pull-based agent claims it, streams steps
@@ -458,7 +458,7 @@ export interface RunnerJobLossProbe {
 /**
  * Read the loss evidence for one queue job. Returns null when the row is gone
  * (nothing to conclude — callers fall back to their default classification).
- * Pure read; safe on the step-settlement hot path.
+ * Read; safe on the step-settlement hot path.
  */
 export function probeRunnerJobLoss(jobId: string, now: number): RunnerJobLossProbe | null {
   const row = getOrgsDb()

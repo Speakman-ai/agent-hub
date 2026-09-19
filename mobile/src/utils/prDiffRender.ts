@@ -1,14 +1,6 @@
 /**
- * prDiffRender.js — pure helpers for the mobile PR "Files changed" view.
- *
- * Normalizes `/api/pr/files` payloads (GitHub read-proxy and native Hub
- * PRs share the field names: filename/status/additions/deletions/patch)
- * and annotates per-file unified patches with line numbers + kinds so the
- * component layer can color lines and anchor inline review comments.
- *
- * Mobile counterpart of the hunk-walking in
- * `client/src/utils/commitDiff.js` (`annotateDiffLines`). No react-native
- * imports — unit-testable in plain node.
+ * Mobile PR "Files changed" helpers. Counterpart of `annotateDiffLines` in
+ * `client/src/utils/commitDiff.js`.
  */
 /**
  * Normalize a `/api/pr/files` response into render-ready file entries.

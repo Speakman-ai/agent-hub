@@ -1,5 +1,5 @@
 /**
- * url.ts — native PR URL scheme.
+ * Native PR URL scheme.
  *
  * Native PRs live at `/projects/<projectId>/pulls/<number>` (a client
  * route, not github.com). Everything that stores or parses `pr_url`

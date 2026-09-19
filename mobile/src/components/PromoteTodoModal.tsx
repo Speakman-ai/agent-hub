@@ -28,10 +28,8 @@ import {
  * a link. Collects the destination (project + column + optional epic) and the
  * card priority (defaulting to the todo's own priority so a promote maps 1:1).
  *
- * The container owns fetching + state; `PromoteTodoModalContent` is a pure,
- * props-driven view so its every state (loading / error / chip selection) is
- * unit-testable via static render, and the selection defaults + write payload
- * come from the shared `promoteTodo` helpers.
+ * The container owns fetching + state; `PromoteTodoModalContent` is props-driven.
+ * Selection defaults + write payload come from the shared `promoteTodo` helpers.
  */
 
 export interface PromoteTodoModalContentProps {

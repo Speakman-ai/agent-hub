@@ -1,5 +1,5 @@
 /**
- * ecs-task-protection.ts — keep a runner-agent's ECS task alive while it owns a job.
+ * Keep a runner-agent's ECS task alive while it owns a job.
  *
  * The fleet runs one job per ECS task. A rolling deployment of the agent service
  * (a new task-def revision) or a capacity scale-in would otherwise SIGKILL a task

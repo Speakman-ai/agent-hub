@@ -1,6 +1,6 @@
 /**
- * Tests for `server/finalize/infra-retry.ts` — the §10 failure-class
- * classifier and one-auto-retry orchestration helpers.
+ * The §10 failure-class classifier and one-auto-retry orchestration
+ * helpers.
  *
  * Coverage:
  *   - `classifyFailureReason` and `isInfraFailureReason`: every code in
@@ -38,8 +38,6 @@ import {
   resolveRetryGenerationCap,
 } from './infra-retry.js';
 import { computeIdempotencyKey } from './orchestrator.js';
-
-// ─── Helpers ─────────────────────────────────────────────────────────
 
 type RetryStmts = Pick<
   Stmts,
@@ -205,7 +203,7 @@ function fakeParentRow(overrides: Partial<FinalizeRunRow> = {}): Partial<Finaliz
   };
 }
 
-// ─── classifyFailureReason ──────────────────────────────────────────
+// classifyFailureReason
 
 describe('classifyFailureReason', () => {
   it('returns "infra" for every reason in INFRA_FAILURE_REASONS', () => {
@@ -366,7 +364,7 @@ describe('isInfraFailureReason', () => {
   });
 });
 
-// ─── computeRetryIdempotencyKey ──────────────────────────────────────
+// computeRetryIdempotencyKey
 
 describe('computeRetryIdempotencyKey', () => {
   it('produces a stable 64-char hex digest', () => {
@@ -414,7 +412,7 @@ describe('computeRetryIdempotencyKey', () => {
   });
 });
 
-// ─── openInfraRetryRun ──────────────────────────────────────────────
+// openInfraRetryRun
 
 describe('openInfraRetryRun', () => {
   // The generation caps are read LIVE from the environment
@@ -553,7 +551,7 @@ describe('openInfraRetryRun', () => {
     expect(log).toHaveBeenCalled();
   });
 
-  // ── Generation-aware retry cap (double-reclaim hardening) ──────────
+  // Generation-aware retry cap (double-reclaim hardening)
   // Build a retry chain g0 → g1 → g2 → … so we can assert that
   // openInfraRetryRun keeps opening generations up to the per-class cap
   // and refuses beyond it. Each link carries a distinct idempotency key.
@@ -759,7 +757,7 @@ describe('openInfraRetryRun', () => {
   });
 });
 
-// ─── composeInfraTerminalMessageBody ─────────────────────────────────
+// composeInfraTerminalMessageBody
 
 describe('composeInfraTerminalMessageBody', () => {
   it('includes header, machine code, detail, and escalation hint', () => {
@@ -791,7 +789,7 @@ describe('composeInfraTerminalMessageBody', () => {
   });
 });
 
-// ─── postInfraTerminalMessage ────────────────────────────────────────
+// postInfraTerminalMessage
 
 describe('postInfraTerminalMessage', () => {
   it('inserts a system message + touches the session + broadcasts a message event', () => {

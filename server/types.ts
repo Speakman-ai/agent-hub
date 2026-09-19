@@ -6,7 +6,7 @@ import type { SessionWorktreeIo } from './session-env/worktree-io.js';
 
 export type { DevServerConfig, DevServerPortMapEntry } from './dev-server-config.js';
 
-// ─── Database Row Types ──────────────────────────────────────────
+// Database Row Types
 
 export interface SessionRow {
   id: string;
@@ -1536,7 +1536,7 @@ export interface NoteRow {
   updated_at: string;
 }
 
-// ─── Support Tickets ────────────────────────────────────────────
+// Support Tickets
 // Customer support requests persisted in their OWN queue, separate from the
 // kanban board. The status lifecycle is distinct from kanban columns:
 // new → investigating → converted / closed / duplicate / wont_do. Severity
@@ -1648,7 +1648,7 @@ export interface SupportTicketCommentRow {
   created_at: string;
 }
 
-// ─── iOS Build Types ────────────────────────────────────────────
+// iOS Build Types
 
 export type IosBuildStatus =
   | 'queued'
@@ -1981,7 +1981,7 @@ export interface FinalizeMetricRow {
   observed_at: number;
 }
 
-// ─── Prepared Statements ─────────────────────────────────────────
+// Prepared Statements
 
 type Stmt<TParams extends unknown[] = unknown[], TRow = unknown> = Database.Statement<
   TParams,
@@ -2974,7 +2974,7 @@ export interface Stmts {
    */
   listFinalizeParityInRange: Stmt;
 
-  // ── finalize_server_ci — server-stored ci.yaml fallback ───────────
+  // finalize_server_ci — server-stored ci.yaml fallback
   /**
    * Fetch one server-stored CI config by `(project_id, owner_user_id)`. A NULL
    * `owner_user_id` bind reads the project-scoped (shared) row; a uid reads
@@ -2992,7 +2992,7 @@ export interface Stmts {
   /** Delete one scope's server-stored CI config by `(project_id, owner_user_id)`. */
   deleteFinalizeServerCi: Stmt;
 
-  // ── pull_requests — native PRs for Agent Hub-hosted projects ──────
+  // pull_requests — native PRs for Agent Hub-hosted projects
   /** Insert an open PR row. Number allocation must be transactional — see `server/native-pr/store.ts`. */
   insertPullRequest: Stmt;
   /** `SELECT COALESCE(MAX(number), 0)` for per-project number allocation. */
@@ -3069,7 +3069,7 @@ export interface Stmts {
   listFinalizeRunsForProject: Stmt;
 }
 
-// ─── Project / Agent Types ───────────────────────────────────────
+// Project / Agent Types
 
 export interface HeartbeatConfig {
   enabled: boolean;
@@ -3727,7 +3727,7 @@ export interface AgentLookup {
   agent: Agent;
 }
 
-// ─── Config Type ─────────────────────────────────────────────────
+// Config Type
 
 /**
  * Standalone GitHub OAuth App credentials — optional server-wide OAuth for
@@ -4092,7 +4092,7 @@ export interface SmtpConfig {
   from: string;
 }
 
-// ─── Stream Parser Types ─────────────────────────────────────────
+// Stream Parser Types
 
 export type StreamEventType =
   | 'system'
@@ -4304,7 +4304,7 @@ export interface StreamParser {
   flush(): StreamEvent[];
 }
 
-// ─── WebSocket Types ─────────────────────────────────────────────
+// WebSocket Types
 
 export interface ChatMessage {
   type: 'chat';
@@ -4407,7 +4407,7 @@ export interface BroadcastFn {
   (data: Record<string, unknown>): void;
 }
 
-// ─── WebSocket Deps ──────────────────────────────────────────────
+// WebSocket Deps
 
 export interface WebSocketDeps {
   getProjects: () => Project[];
@@ -4443,7 +4443,7 @@ export interface WebSocketDeps {
   ) => () => void;
 }
 
-// ─── Route Dependencies ──────────────────────────────────────────
+// Route Dependencies
 
 export interface RouteDeps {
   stmts: Stmts;
@@ -4604,13 +4604,13 @@ export interface RouteDeps {
   drainSessionQueue?: (sessionId: string) => void;
 }
 
-// ─── Design with linked projects ─────────────────────────────────
+// Design with linked projects
 
 export interface DesignWithProjects extends DesignRow {
   linkedProjects: Project[];
 }
 
-// ─── Project Paths ───────────────────────────────────────────────
+// Project Paths
 
 export interface ProjectPaths {
   cwd: string;
@@ -4626,7 +4626,7 @@ export interface ProjectPaths {
   identityMd: string;
 }
 
-// ─── Express Helpers ─────────────────────────────────────────────
+// Express Helpers
 
 export type { Request, Response, NextFunction, Router };
 
@@ -4641,7 +4641,7 @@ export interface TypedRequest<
   rawBody?: Buffer;
 }
 
-// ─── Org Types ───────────────────────────────────────────────────
+// Org Types
 
 export interface OrgRow {
   id: string;

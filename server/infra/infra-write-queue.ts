@@ -1,5 +1,5 @@
 /**
- * infra-write-queue.ts — the single bounded batch-writer queue in front of
+ * The single bounded batch-writer queue in front of
  * `infra_metric_points` (decision INFRA-STORE: "Writes go through a batch queue
  * modeled on server/logs/log-write-queue.ts so a collector tick never blocks on
  * synchronous SQLite writes").
@@ -252,7 +252,7 @@ export class InfraWriteQueue {
   }
 }
 
-// ─── Process-wide singleton ─────────────────────────────────────────────────
+// Process-wide singleton
 
 let singleton: InfraWriteQueue | null = null;
 

@@ -2,14 +2,13 @@
  * Write-side helpers for authoring project skills (Skill Builder, Phase 1).
  *
  * The read side (GET/DELETE) lives in `routes/skills.ts`; the discovery merge
- * lives in `agent-skills-list.ts`. This module is the pure, framework-free
- * core that validates an author-supplied skill payload and composes the
- * canonical `SKILL.md` (YAML frontmatter + Markdown body) that gets written to
+ * lives in `agent-skills-list.ts`. Validates an author-supplied skill payload
+ * and composes the canonical `SKILL.md` (YAML frontmatter + Markdown body)
+ * that gets written to
  * `<dataDir>/project-skills/<projectId>/<id>/SKILL.md`.
  *
- * Kept side-effect free (no fs, no express) so the route handlers stay thin
- * and the validation rules are unit-testable in isolation. Credential
- * frontmatter is validated through the same `parseCredentialsDeclaration`
+ * Kept side-effect free (no fs, no express) so the route handlers stay thin.
+ * Credential frontmatter is validated through the same `parseCredentialsDeclaration`
  * used at read/spawn time, so a skill that round-trips through this writer can
  * never declare credentials the rest of the system would reject.
  */

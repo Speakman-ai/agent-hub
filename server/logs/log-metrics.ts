@@ -1,5 +1,5 @@
 /**
- * log-metrics.ts — in-process health counters for the customer log store
+ * In-process health counters for the customer log store
  * (decision LOG-SCOPE: "Publish health metrics for accepted/dropped records,
  * queue depth, write latency, database bytes, retention lag, redaction
  * counts").

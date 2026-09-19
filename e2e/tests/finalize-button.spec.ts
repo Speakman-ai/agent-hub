@@ -39,7 +39,7 @@ test.describe('Finalize Code Changes button', () => {
   test('idle → click Run Tests → disabled "Running" state', async ({ page, seed, request }) => {
     test.setTimeout(30_000);
 
-    // ── Seed: project, agent, card-linked session ──────────────────────
+    // Seed: project, agent, card-linked session
     const project = await seed.project({ name: 'Finalize E2E Project' });
     const agent = await seed.agent({ projectId: project.id, name: 'Finalize E2E Agent' });
     const card = await seed.card(project.id, { title: 'Finalize E2E Card' });
@@ -54,7 +54,7 @@ test.describe('Finalize Code Changes button', () => {
     );
     expect(linkRes.ok()).toBeTruthy();
 
-    // ── Network mocks ─────────────────────────────────────────────────
+    // Network mocks
     // 1) Session list: stamp card_id + worktree_branch on the seeded
     //    session so the UI's `activeSession?.card_id` gate is satisfied
     //    and the FinalizeButton receives a non-empty branchLabel. This
@@ -146,7 +146,7 @@ test.describe('Finalize Code Changes button', () => {
       });
     });
 
-    // ── Boot the app and navigate to the seeded session ───────────────
+    // Boot the app and navigate to the seeded session
     await page.goto('/');
     await page.waitForLoadState('networkidle');
 
@@ -158,7 +158,7 @@ test.describe('Finalize Code Changes button', () => {
     await expect(sessionLink).toBeVisible({ timeout: 5000 });
     await sessionLink.click();
 
-    // ── Assertion 1: the split trigger buttons mount in the idle state ─
+    // Assertion 1: the split trigger buttons mount in the idle state
     const runTestsBtn = page.getByTestId('finalize-run-tests-button');
     const reviewerBtn = page.getByTestId('finalize-reviewer-button');
     await expect(runTestsBtn).toBeVisible({ timeout: 5000 });
@@ -167,11 +167,11 @@ test.describe('Finalize Code Changes button', () => {
     await expect(reviewerBtn).toBeVisible();
     await expect(reviewerBtn).toContainText('Reviewer');
 
-    // ── Assertion 2: clicking "Run Tests" POSTs to the start endpoint ──
+    // Assertion 2: clicking "Run Tests" POSTs to the start endpoint
     await runTestsBtn.click();
     await expect.poll(() => finalizeStartCalls.length, { timeout: 5000 }).toBeGreaterThan(0);
 
-    // ── Assertion 3: button transitions into a "Stop Tests" control ────
+    // Assertion 3: button transitions into a "Stop Tests" control
     //
     // While the checks phase runs its trigger flips into a Stop affordance.
     // The contract allows the component to either (a) flip optimistically

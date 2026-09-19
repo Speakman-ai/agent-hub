@@ -1,5 +1,5 @@
 /**
- * projects-clone.test.ts — Integration tests for POST /api/projects/clone.
+ * Integration tests for POST /api/projects/clone.
  *
  * Covers the auth-aware behavior added to fix the "private repo clone
  * silently fails" gap (kanban: Wire OAuth/PAT token into clone route):
@@ -230,7 +230,7 @@ describe('POST /api/projects/clone', () => {
   });
 });
 
-// ─── Shell-metachar safety regression for the post-clone scrub ─────
+// Shell-metachar safety regression for the post-clone scrub
 // Standalone (no app boot) so the "do not invoke /bin/sh with $(...)"
 // guarantee is asserted directly against the same call shape the route
 // uses on the success path: `execFileSync('git', ['-C', clonePath,

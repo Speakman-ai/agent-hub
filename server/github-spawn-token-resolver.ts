@@ -1,5 +1,5 @@
 /**
- * github-spawn-token-resolver.ts — GitHub credential resolution for
+ * GitHub credential resolution for
  * spawned agent processes.
  *
  * The reviewer GitHub App (and its org-aware installation-token chain) has

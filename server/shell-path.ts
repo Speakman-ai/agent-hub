@@ -12,7 +12,7 @@ import path from 'path';
  * AWS CLI, or adding `~/.local/bin` to `~/.bashrc` — are invisible to spawned
  * agents until the server itself restarts.
  *
- * This module captures the *login shell's* PATH at startup by running
+ * Captures the *login shell's* PATH at startup by running
  * `$SHELL -lic 'printf %s "$PATH"'`, caches the result, and merges it (deduped)
  * with the current `process.env.PATH` whenever `buildSpawnEnv` is called. It
  * also exposes `refreshShellPath()` so a running server can pick up new CLIs

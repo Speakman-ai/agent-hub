@@ -1,5 +1,5 @@
-// Tests for the memory reconciliation flows. These intentionally don't
-// exercise engine selection — that's covered in `engine-resolver.test.ts`
+// Reconciliation flows. These intentionally do not exercise engine
+// selection — that's covered in `engine-resolver.test.ts`
 // and `engine-availability.test.ts`. Here we mock both the resolver and
 // the one-shot spawn so the tests can focus on prompt assembly, the
 // NO_CHANGES_NEEDED short-circuit, the size-guard, the .bak backup, and

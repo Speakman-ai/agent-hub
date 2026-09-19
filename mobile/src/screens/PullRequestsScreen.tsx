@@ -309,7 +309,7 @@ function PrDetail({
   const [expandedDismissedId, setExpandedDismissedId] = useState<any>(null);
   const prNumber = pr?.number;
 
-  // ── PR-scoped preview (web parity) ──────────────────────────────────
+  // PR-scoped preview (web parity)
   const [previewStateResp, setPreviewStateResp] = useState<any>(null);
   const [previewPending, setPreviewPending] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);

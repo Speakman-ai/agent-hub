@@ -2,7 +2,7 @@
  * Hub Daily Summary — auto-refresh schedule.
  *
  * The on-demand path (`POST /api/me/daily-summary`) regenerates the report only
- * when the user asks. This module lets a user pin one or more times of day at
+ * when the user asks. Lets a user pin one or more times of day at
  * which the Hub regenerates the summary for them automatically, reusing the same
  * per-user engine credentials the on-demand path uses.
  *
@@ -12,8 +12,8 @@
  * variant of the crons pattern — there are no per-user node-cron rows to
  * register/re-register, and adding a schedule takes effect on the next tick.
  *
- * Pure selection (`selectDueDailySummaries`) is separated from the side-effecting
- * ticker so the due-time logic is unit-testable without spawning anything.
+ * Selection (`selectDueDailySummaries`) is separated from the side-effecting
+ * ticker so due-time logic does not spawn anything.
  */
 import cron from 'node-cron';
 import { wrapCronTick, defaultTickOptions } from './cron-tick.js';
@@ -114,7 +114,7 @@ export interface DueDailySummary {
 }
 
 /**
- * Pure: given "now" and every user's schedule, return the (userId, time) pairs
+ * Given "now" and every user's schedule, return the (userId, time) pairs
  * whose configured local `HH:MM` matches the current minute in the user's zone.
  * Disabled schedules and unparseable zones are skipped.
  */

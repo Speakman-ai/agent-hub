@@ -1,8 +1,4 @@
-// Pure helpers for the deployment notification-recipients audit surface.
-// Framework-free so they can be unit-tested and mirrored by the mobile screen.
-// Backend contract lives in the Admin-gated read endpoint
-// GET /api/projects/:projectId/deployments/:deploymentId/notification-recipients
-// (server/release-notification-outbox.ts → releaseNotificationRecipientItem).
+// Deployment notification-recipients audit. Backend: GET .../notification-recipients.
 
 export interface ReleaseNotificationRecipient {
   id: string;

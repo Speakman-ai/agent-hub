@@ -1,5 +1,5 @@
 /**
- * rum-setup-draft.ts — server-side scan for the AI RUM (real user
+ * Server-side scan for the AI RUM (real user
  * monitoring) instrumentation wizard. Mirrors the shape of
  * `finalize-setup-draft.ts` / `logs-setup-draft.ts`: a pure,
  * DB-free, spawn-free function that reads files under `workspaceDir` and
@@ -17,16 +17,15 @@
  *   - is there an existing Content-Security-Policy that an ingest
  *     `connect-src` would have to be added to?
  *
- * This module deliberately does NOT mutate the repo, mint tokens, or
+ * Does NOT mutate the repo, mint tokens, or
  * spawn anything. Those are follow-up slices (the worktree-backed
- * injection session + per-project client token). Keeping detection pure
- * makes it exhaustively unit-testable.
+ * injection session + per-project client token).
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { scanReadme, type ReadmeScanResult } from './preview-readme-scan.js';
 
-// ─── Public types ─────────────────────────────────────────────────────
+// Public types
 
 export type RumFramework =
   | 'next'
@@ -126,7 +125,7 @@ export interface CollectRumSetupDraftOptions {
   ingestOrigin?: string;
 }
 
-// ─── Internals ────────────────────────────────────────────────────────
+// Internals
 
 const MAX_SCAN_FILE_BYTES = 256 * 1024;
 const DEFAULT_INGEST_ORIGIN = '${AGENT_HUB_URL}';
@@ -610,7 +609,7 @@ function buildPlan(args: {
   };
 }
 
-// ─── Public entry point ───────────────────────────────────────────────
+// Public entry point
 
 export function collectRumSetupDraft(
   workspaceDir: string,

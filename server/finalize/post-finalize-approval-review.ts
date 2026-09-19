@@ -1,5 +1,5 @@
 /**
- * post-finalize-approval-review.ts — mirror a passing Finalize review onto
+ * Mirror a passing Finalize review onto
  * the native PR as an `approved` review.
  *
  * The bug this fixes: a session (typically a `[Resolve PR #N]` session) takes

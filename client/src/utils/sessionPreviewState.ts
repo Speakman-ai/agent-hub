@@ -1,14 +1,7 @@
 /**
- * sessionPreviewState — pure helpers for the SessionPreviewPane.
- *
- * The pane is fed by `agenthub_preview` WS events whose shape is defined
- * in `server/preview/preview-block.ts` (`PreviewBroadcastEvent`).  We
- * derive a small, render-friendly state object from the latest event
- * for the active session, and we throttle iframe-activity touches so we
- * never call the runtime more often than once per `intervalMs`.
- *
- * Everything in this file is intentionally framework-free so it can be
- * unit-tested without React.
+ * SessionPreviewPane state from `agenthub_preview` WS events
+ * (`server/preview/preview-block.ts`). Throttle iframe-activity touches to
+ * once per `intervalMs`.
  */
 
 import { getServerBase } from './connection';
@@ -50,9 +43,6 @@ export function previewIframeSrc(url: any, bustToken: any) {
  *
  * Returns the sessionId encoded in the URL on a hit, or `null` for any
  * non-proxy URL (including local-dev URLs and malformed inputs).
- *
- * Pure helper so the React component can decide whether to mint a
- * ticket without re-implementing the regex.
  */
 export function previewProxySessionIdFromUrl(url: any) {
   if (!url || typeof url !== 'string') return null;
@@ -641,9 +631,6 @@ export function hasDevServerBuildCommand(project: any) {
  * Start preview button below the chat, which seeds a synthetic
  * `preview_starting` event into `activePreviewEvent`.
  *
- * Inputs are intentionally primitive so this helper stays unit-testable
- * without touching React:
- *
  *   - `activeSessionId`     — current session id (falsy → hidden).
  *   - `project`             — `activeChatProject` row; we look at
  *                             `project.prEnv.devServer.startCommand`
@@ -741,9 +728,8 @@ export const SYNTHETIC_PREVIEW_STARTING_SEED = {
 
 /**
  * Full decision for a `GET /preview/state` hydration response. Folds the
- * start-generation staleness guard together with `reconcilePreviewEvent`
- * so the entire self-heal contract is unit-testable in one pure place —
- * the reconcile effect in App.jsx is then a thin wiring layer.
+ * start-generation staleness guard together with `reconcilePreviewEvent`.
+ * The reconcile effect in App.jsx is then a thin wiring layer.
  *
  * The start-generation (`seqAtRequest` captured before the request,
  * `currentSeq` read at apply time) is the identity signal for the no-id

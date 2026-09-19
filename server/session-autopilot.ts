@@ -1,8 +1,8 @@
 /**
  * Session-mode Autopilot — server helpers.
  *
- * Config parse/validate lives in shared/utils/sessionAutopilot.ts. This module
- * owns the spawn preamble, post-push continue, and named-branch checkout.
+ * Config parse/validate lives in shared/utils/sessionAutopilot.ts. Owns
+ * the spawn preamble, post-push continue, and named-branch checkout.
  */
 import { v4 as uuidv4 } from 'uuid';
 import type { MessageRow, RouteDeps, SessionRow } from './types.js';

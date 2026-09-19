@@ -1,5 +1,5 @@
 /**
- * Unit tests for `preview-snapshot.ts` — the WS connect-handshake replay.
+ * The WS connect-handshake replay.
  *
  * No DB, no runtime — we hand the builder a tiny stub that satisfies
  * `PreviewSnapshotRuntime`. The contract being tested is the row →

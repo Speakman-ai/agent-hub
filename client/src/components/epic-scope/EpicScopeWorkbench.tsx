@@ -111,7 +111,7 @@ export default function EpicScopeWorkbench({
     />
   );
 
-  // ── Epic page: spec-first layout ──────────────────────────────────
+  // Epic page: spec-first layout
   if (variant === 'page' && epic) {
     return (
       <div className="space-y-8" data-testid="epic-scope-workbench">
@@ -224,7 +224,7 @@ export default function EpicScopeWorkbench({
     );
   }
 
-  // ── Epic list (no epic selected) ────────────────────────────────────
+  // Epic list (no epic selected)
   if (variant === 'page' && !epic) {
     return (
       <div className="space-y-6" data-testid="epic-scope-workbench">
@@ -242,7 +242,7 @@ export default function EpicScopeWorkbench({
     );
   }
 
-  // ── Compact: scoping side panel (tabbed) ──────────────────────────
+  // Compact: scoping side panel (tabbed)
   return (
     <div className="space-y-4" data-testid="epic-scope-workbench">
       {epic && (

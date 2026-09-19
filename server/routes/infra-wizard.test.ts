@@ -313,7 +313,7 @@ describe('GET /api/projects/:projectId/infra/setup-draft', () => {
   });
 });
 
-// ─── Kickoff prompt ─────────────────────────────────────────────
+// Kickoff prompt
 
 const FENCE_BEGIN = '-----BEGIN UNTRUSTED AWS PROBE-----';
 const FENCE_END = '-----END UNTRUSTED AWS PROBE-----';

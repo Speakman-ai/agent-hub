@@ -1,8 +1,8 @@
 /**
- * Tests for the shared `useLogTail` hook (`shared/hooks/useLogTail.ts`), which
- * web and mobile both consume. They live in the client package because that is
- * where the jsdom + @testing-library/react harness is configured; `shared/` runs
- * vitest in the `node` env with no React renderer.
+ * Shared `useLogTail` hook, which web and mobile both consume. They live
+ * in the client package because that is where the jsdom +
+ * @testing-library/react harness is configured; `shared/` runs vitest in
+ * the `node` env with no React renderer.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';

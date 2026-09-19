@@ -1,10 +1,10 @@
 /**
- * post-push-detach.ts — Finalize Code Changes, §15 post-push detach.
+ * Finalize Code Changes, §15 post-push detach.
  *
  * Runs at the `pushed` terminal of a finalize run. Once the orchestrator
  * has pushed the branch and opened the PR on GitHub, Agent Hub's job on
  * the change is done: the developer (or downstream reviewer) owns it from
- * here. This module is the explicit hand-off point onto the kanban card:
+ * here. Explicit hand-off onto the kanban card:
  *
  *   1. Posts a comment that reads as "finalized, here is the PR, you own
  *      it now". For runs triggered by the autonomous dispatcher (the
@@ -71,7 +71,7 @@ import { randomUUID } from 'crypto';
 import type { BroadcastFn, KanbanCardRow, KanbanColumnRow, Stmts } from '../types.js';
 import { pickDoneColumn } from '../card-auto-close.js';
 
-// ─── Public types ────────────────────────────────────────────────────
+// Public types
 
 /**
  * Trigger source of the finalize run. Mirrors
@@ -132,12 +132,10 @@ export interface PostPushDetachOpts {
   moveToDone?: boolean;
 }
 
-// ─── Pure helpers ────────────────────────────────────────────────────
-
 /**
  * Format the post-push handoff comment.
  *
- * Pure / synchronous / no side effects — exported so tests can pin the
+ * Synchronous / no side effects — exported so tests can pin the
  * wording without standing up the surrounding deps. Body shape:
  *
  *   line 1: handoff statement (always)
@@ -167,7 +165,7 @@ export function formatPostPushComment(args: {
   return lines.join('\n');
 }
 
-// ─── Public API ──────────────────────────────────────────────────────
+// Public API
 
 /**
  * Outcome of the card move, resolved BEFORE the comment is written so the
@@ -277,12 +275,12 @@ export function runPostPushDetach(deps: PostPushDetachDeps, opts: PostPushDetach
   const author = opts.author ?? 'finalize';
   const moveToDone = opts.moveToDone === true;
 
-  // ── 1) Resolve + execute the move FIRST (no broadcast) so the headline
-  //       can assert only a confirmed transition. ──
+  // 1) Resolve + execute the move FIRST (no broadcast) so the headline
+  //       can assert only a confirmed transition.
   const move = resolveAndExecuteMove(deps, opts, log);
   const reachedTarget = move.kind === 'moved' || move.kind === 'already';
 
-  // ── 2) Post the handoff comment with an honest headline, then broadcast. ─
+  // 2) Post the handoff comment with an honest headline, then broadcast.
   const content = formatPostPushComment({
     prUrl: opts.prUrl,
     runId: opts.runId,
@@ -301,7 +299,7 @@ export function runPostPushDetach(deps: PostPushDetachDeps, opts: PostPushDetach
     );
   }
 
-  // ── 3) Broadcast the move only when a column change actually occurred. ──
+  // 3) Broadcast the move only when a column change actually occurred.
   //       Guarded: a throwing broadcast must not escape this fire-and-forget
   //       function — the move write and `pushed` status are already
   //       persisted, so a dropped notification is cosmetic.

@@ -1,7 +1,7 @@
 /**
  * Zod schemas + OpenAPI registrations for the wiki route group.
  *
- * This module is imported for two reasons:
+ * Imported for:
  *
  *   1. `server/routes/wiki.ts` imports the exported request schemas and
  *      uses `safeParse(...)` to validate incoming bodies / query params.
@@ -34,7 +34,7 @@
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 
-// ─── Domain component schemas (response shapes) ──────────────────
+// Domain component schemas (response shapes)
 
 const WIKI_CATEGORIES = [
   'general',
@@ -183,7 +183,7 @@ export const WikiErrorResponseComponent = registerComponent(
     }),
 );
 
-// ─── Request schemas ──────────────────────────────────────────────
+// Request schemas
 
 /**
  * POST /wiki body. `title` is the only required field; `category` is a
@@ -236,7 +236,7 @@ export const DocumentBackfillRequestSchema = z.object({
   }),
 });
 
-// ─── OpenAPI path registrations ───────────────────────────────────
+// OpenAPI path registrations
 
 const projectIdParams = z.object({
   projectId: z.string().openapi({ description: 'Project ID (slug).' }),

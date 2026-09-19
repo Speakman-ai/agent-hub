@@ -1,5 +1,4 @@
-// Pure helpers for the mobile Security screen's "fix findings automatically"
-// control. Mirrors client/src/utils/securityAutofix.ts (web parity).
+// Mobile Security "fix findings automatically". Mirrors client/src/utils/securityAutofix.ts.
 //
 // The server persists a per-project `securityAutoPr` block
 // (`{ enabled?: boolean; autoMerge?: boolean; actorUserId?: string }`). When

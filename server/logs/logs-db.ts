@@ -4,14 +4,13 @@
  * Decision LOG-STORE: customer application logs are high-volume and must not
  * contend with Agent Hub operational state. They live in their own SQLite
  * database (WAL) under the data directory, never in `agent-hub.db` or
- * `orgs.db`. This module owns that handle: init/recovery, schema/migrations,
+ * `orgs.db`. Owns that handle: init/recovery, schema/migrations,
  * bounded batch insert, cursor-paginated query, and the retention/quota
  * cleanup hooks. Ingest endpoints, source-token auth, issue grouping, and the
  * Logs UI are separate epic tickets that build on this store.
  *
  * All public helpers are thin, synchronous wrappers over `better-sqlite3`
- * against a single process-wide handle, so they can be unit-tested against a
- * scratch data dir without booting the server.
+ * against a single process-wide handle. Scratch data dir; no full server boot.
  */
 
 import Database from 'better-sqlite3';
@@ -193,7 +192,7 @@ export function closeLogsDb(): void {
   }
 }
 
-// ── Retention / quota resolution ──────────────────────────────────────────
+// Retention / quota resolution
 
 export function clampRetentionDays(days: number): number {
   if (!Number.isFinite(days)) return DEFAULT_RETENTION_DAYS;
@@ -257,7 +256,7 @@ export function setRetentionConfig(
   return next;
 }
 
-// ── Sources ───────────────────────────────────────────────────────────────
+// Sources
 
 export interface LogSourceInput {
   id: string;
@@ -289,7 +288,7 @@ export function insertLogSource(src: LogSourceInput, nowMs: number): void {
     );
 }
 
-// ── Records ───────────────────────────────────────────────────────────────
+// Records
 
 export interface LogRecordInput {
   projectId: string;
@@ -475,7 +474,7 @@ export function insertLogRecords(records: LogRecordInput[], nowMs: number): Inse
   return run(records);
 }
 
-// ── Bounded query ─────────────────────────────────────────────────────────
+// Bounded query
 
 export interface LogQuery {
   projectId: string;
@@ -826,7 +825,7 @@ export function countExpiredLogRecords(projectId: string, nowMs: number): number
   return row.n;
 }
 
-// ── Cleanup hooks ─────────────────────────────────────────────────────────
+// Cleanup hooks
 
 /** Delete a set of record ids and their FTS rows in one transaction. */
 function deleteRecordIds(db: Database.Database, ids: number[]): void {

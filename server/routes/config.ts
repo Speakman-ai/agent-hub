@@ -682,7 +682,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     res.json(response);
   });
 
-  // ─── DB statement instrumentation stats (Phase 1 async-DB epic) ─────────
+  // DB statement instrumentation stats (Phase 1 async-DB epic)
   // Aggregated per-statement wall-time timings, sorted by total time. Admin-only
   // — it exposes which internal statements dominate DB time (tags only, never
   // SQL text or bound params). Empty `statements` when instrumentation is
@@ -701,7 +701,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ─── Spawn-env PATH refresh ─────────────────────────────────────────────
+  // Spawn-env PATH refresh
   // Returns the current cached login-shell PATH used when spawning agents.
   router.get('/api/config/spawn-path', (_req: Request, res: Response) => {
     const cached = getCachedShellPath();
@@ -732,7 +732,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Personal GitHub OAuth App ─────────────────────────────────────────────
+  // Personal GitHub OAuth App
   // Decoupled from the GitHub App (which is reviewer-bot-only). This is the
   // OAuth App registration users sign in with for personal-identity actions
   // (push, open PRs, query repos as themselves). Never installed; just an
@@ -801,7 +801,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     res.json({ ok: true });
   });
 
-  // ─── Google OAuth App (server-global) ──────────────────────────────────────
+  // Google OAuth App (server-global)
   // The OAuth *app* (web client) registered in Google Cloud Console that the
   // per-user "Connect Google" flow signs in against. Server-global and
   // Admin/Owner-gated, distinct from each user's per-user Google *connection*
@@ -885,7 +885,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ─── GitHub App (server-global, Admin/Owner-gated) ─────────────────────────
+  // GitHub App (server-global, Admin/Owner-gated)
   // The GitHub App whose *installation token* the Hub → GitHub mirror push uses
   // as the branch-protection / ruleset **bypass identity** (an operator adds
   // this App to the repo ruleset's bypass list so the mirror can push a
@@ -1099,7 +1099,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     res.json({ ok: true });
   });
 
-  // ─── GitHub CLI Status & Repo Detection ────────────────────────────────────
+  // GitHub CLI Status & Repo Detection
 
   router.get('/api/github/status', async (_req: Request, res: Response) => {
     const execFileAsync = promisify(execFile);

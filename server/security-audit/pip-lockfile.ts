@@ -1,5 +1,5 @@
 /**
- * pip-lockfile.ts — parse Python dependency lockfiles into a flat list of
+ * Parse Python dependency lockfiles into a flat list of
  * resolved PyPI dependencies. Mirrors how Dependabot treats the Python
  * ecosystem: pip / pip-tools / poetry / pipenv all map to a single `pip`
  * ecosystem that queries OSV's `PyPI` database.

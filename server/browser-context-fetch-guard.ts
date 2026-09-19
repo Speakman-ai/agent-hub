@@ -1,5 +1,5 @@
 /**
- * browser-context-fetch-guard.ts — the SINGLE CDP Fetch owner per browser context.
+ * The SINGLE CDP Fetch owner per browser context.
  *
  * There must be exactly one Fetch interceptor per Chromium context. Playwright's
  * own `context.route('**\/*')` is a Fetch client, and a second raw CDP

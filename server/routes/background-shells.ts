@@ -66,7 +66,7 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
     return session;
   };
 
-  // ─── List ──────────────────────────────────────────────────────────────
+  // List
   router.get('/api/sessions/:sessionId/background-shells', (req: Request, res: Response) => {
     const session = requireOwnedSession(req, res);
     if (!session) return;
@@ -75,7 +75,7 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
     res.json({ shells: runtime.list(session.id) });
   });
 
-  // ─── Start ─────────────────────────────────────────────────────────────
+  // Start
   router.post('/api/sessions/:sessionId/background-shells', (req: Request, res: Response) => {
     const session = requireOwnedSession(req, res);
     if (!session) return;
@@ -128,7 +128,7 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
     res.status(201).json({ shell });
   });
 
-  // ─── Cancel the session's watch loop ───────────────────────────────────
+  // Cancel the session's watch loop
   // Disarms every watched shell and stops the ones still running, so the
   // human's "stop watching" is a full teardown rather than a silenced timer
   // leaving orphan processes behind.
@@ -145,7 +145,7 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
     },
   );
 
-  // ─── Get one ───────────────────────────────────────────────────────────
+  // Get one
   router.get(
     '/api/sessions/:sessionId/background-shells/:shellId',
     (req: Request, res: Response) => {
@@ -161,7 +161,7 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
     },
   );
 
-  // ─── Logs ──────────────────────────────────────────────────────────────
+  // Logs
   router.get(
     '/api/sessions/:sessionId/background-shells/:shellId/logs',
     (req: Request, res: Response) => {
@@ -183,7 +183,7 @@ export default function createBackgroundShellRoutes(deps: BackgroundShellRouteDe
     },
   );
 
-  // ─── Stop ──────────────────────────────────────────────────────────────
+  // Stop
   router.post(
     '/api/sessions/:sessionId/background-shells/:shellId/stop',
     async (req: Request, res: Response) => {

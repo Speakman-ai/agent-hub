@@ -127,7 +127,7 @@ function formatEmailDate(value: string): string {
   return date.toISOString();
 }
 
-// ─── Non-throwing send + password-reset helpers ─────────────────────────────
+// Non-throwing send + password-reset helpers
 // The invite path uses the throwing `sendEmail` (it inspects errors via
 // `safeEmailError`). Password reset and the release-notification outbox instead
 // want a non-throwing result they can branch on, so they go through

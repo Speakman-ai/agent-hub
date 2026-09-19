@@ -1,32 +1,11 @@
 /**
- * timezones.ts — the canonical IANA timezone list for UI dropdowns, shared by
- * the web client and mobile. The deploy-schedule / cron surfaces accept any
- * valid IANA zone (validated server-side with `new Intl.DateTimeFormat(...,
- * { timeZone })`), so the picker is populated from the runtime's own zone
- * database via `Intl.supportedValuesOf('timeZone')` — no hand-maintained list
- * to drift from the ICU data.
- *
- * `Intl.supportedValuesOf` is available in every browser we target (Chrome 99+,
- * Firefox 96+, Safari 15.4+) and in the Hermes/JSC runtimes Expo ships. When it
- * is missing (very old engine, restricted polyfill) we fall back to
- * {@link FALLBACK_TIMEZONES} — a full snapshot of the IANA zone database so the
- * dropdown still offers complete coverage (the field it replaced was free text,
- * so users could previously enter any zone; the fallback must not regress that).
- *
- * Root-cause note: an exclusive dropdown must offer EVERY zone class the backend
- * accepts. `supportedValuesOf` (and any canonical-city snapshot) enumerate only
- * canonical zones and omit the fixed-offset `Etc/GMT±N` family that
- * `Intl.DateTimeFormat` — and therefore the server — still accepts. Rather than
- * patch that gap into each list literal, {@link listTimezones} merges
- * {@link FIXED_OFFSET_TIMEZONES} into whichever base list it used, so both the
- * runtime and fallback paths stay a safe superset of the old free-text field.
+ * IANA timezone list for UI dropdowns. Prefer `Intl.supportedValuesOf('timeZone')`.
+ * Merge in `Etc/GMT±N` (and UTC aliases): `supportedValuesOf` omits them but
+ * `Intl.DateTimeFormat` (and the server) still accept them.
  */
 
 /**
- * Full IANA zone snapshot used only when `Intl.supportedValuesOf('timeZone')` is
- * unavailable or throws. Kept complete on purpose: a short "common zones" list
- * would silently drop valid zones (e.g. Pacific/Honolulu, Australia/Perth) that
- * the previous free-text field accepted. Regenerate with:
+ * Full IANA snapshot when `supportedValuesOf` is missing. Regenerate with:
  *   node -e "console.log(Intl.supportedValuesOf('timeZone').join('\n'))"
  */
 export const FALLBACK_TIMEZONES: readonly string[] = [
@@ -452,18 +431,8 @@ export const FALLBACK_TIMEZONES: readonly string[] = [
 ];
 
 /**
- * Zones the backend accepts (`new Intl.DateTimeFormat(..., { timeZone })`) but
- * that neither `Intl.supportedValuesOf('timeZone')` nor the canonical-city
- * {@link FALLBACK_TIMEZONES} enumerate: the fixed-offset `Etc/GMT±N` family plus
- * the `UTC`/`Etc/UTC` aliases.
- *
- * This is the crux of the free-text→dropdown migration. The old field accepted
- * ANY zone `Intl.DateTimeFormat` accepts; an *exclusive* dropdown built only
- * from `supportedValuesOf` silently removes every zone that API omits. The
- * fixed-offset zones are the one class with no canonical-city substitute — a
- * user who wants a DST-free `Etc/GMT+5` (UTC−5, POSIX sign convention) can only
- * express it here — so they must be offered explicitly. `Etc/GMT-N` runs 1..14,
- * `Etc/GMT+N` runs 1..12, matching the tz database's fixed-offset range.
+ * `Etc/GMT±N` plus UTC aliases. `supportedValuesOf` omits them; POSIX sign
+ * (`Etc/GMT+5` is UTC−5). Range: GMT- 1..14, GMT+ 1..12.
  */
 export const FIXED_OFFSET_TIMEZONES: readonly string[] = (() => {
   const zones = ['UTC', 'Etc/UTC', 'Etc/GMT'];
@@ -473,16 +442,8 @@ export const FIXED_OFFSET_TIMEZONES: readonly string[] = (() => {
 })();
 
 /**
- * All selectable IANA timezone names, sorted, de-duplicated. Prefers the
- * runtime's `Intl.supportedValuesOf('timeZone')`; falls back to
- * {@link FALLBACK_TIMEZONES} when that API is absent or returns nothing.
- *
- * Whichever path supplies the base list, {@link FIXED_OFFSET_TIMEZONES} is then
- * merged in (each entry re-validated against the runtime's own `Intl`, so we
- * never offer a zone the backend would reject). Doing the merge here — after the
- * path selection — is the single point that keeps the exclusive dropdown a
- * superset-safe stand-in for the free-text field on BOTH the runtime and the
- * fallback path, instead of patching each list literal separately.
+ * Runtime `supportedValuesOf`, else {@link FALLBACK_TIMEZONES}, then merge
+ * {@link FIXED_OFFSET_TIMEZONES} (re-validated against Intl).
  */
 export function listTimezones(): string[] {
   let zones: string[] = [];
@@ -497,7 +458,7 @@ export function listTimezones(): string[] {
       if (Array.isArray(supported)) zones = supported.filter((z) => typeof z === 'string');
     }
   } catch {
-    // Fall through to the curated fallback below.
+    // Fall through to FALLBACK_TIMEZONES.
   }
   if (zones.length === 0) zones = [...FALLBACK_TIMEZONES];
   for (const zone of FIXED_OFFSET_TIMEZONES) {
@@ -506,7 +467,7 @@ export function listTimezones(): string[] {
   return Array.from(new Set(zones)).sort((a, b) => a.localeCompare(b));
 }
 
-/** True when `value` is a valid IANA zone the runtime's Intl accepts. */
+/** True when Intl accepts `value` as a timeZone. */
 export function isValidTimezone(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return false;

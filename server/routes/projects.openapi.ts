@@ -14,7 +14,7 @@
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 
-// ─── Component schemas ────────────────────────────────────────────
+// Component schemas
 
 export const ProjectOrderRequestSchema = z
   .object({
@@ -248,7 +248,7 @@ export const ProjectOnboardErrorComponent = registerComponent(
     }),
 );
 
-// ─── Path registrations ───────────────────────────────────────────
+// Path registrations
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
@@ -368,7 +368,7 @@ registerPath({
   },
 });
 
-// ─── Per-user project settings ──────────────────────────────────────
+// Per-user project settings
 
 const FinalizeAutomationLevelSchema = z.enum(['manual', 'review', 'push', 'merge']).openapi({
   description:
@@ -461,7 +461,7 @@ registerPath({
   },
 });
 
-// ─── Setup status ─────────────────────────────────────────────────
+// Setup status
 
 const EngineSetupStatusSchema = z
   .object({
@@ -570,7 +570,7 @@ registerPath({
   },
 });
 
-// ─── Per-project member assignment (Owner-managed visibility ACL) ───
+// Per-project member assignment (Owner-managed visibility ACL)
 
 const jsonContentMembers = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },

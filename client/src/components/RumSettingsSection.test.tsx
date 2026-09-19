@@ -484,7 +484,7 @@ describe('RumSettingsSection', () => {
     expect(toggle!).toHaveAttribute('aria-checked', 'false');
   });
 
-  // ── Per-project retention (extended tier) ───────────────────────────
+  // Per-project retention (extended tier)
   it('initializes the retention form from project.replay (defaults to 15 months)', async () => {
     render(<RumSettingsSection projects={[{ id: 'demo', name: 'Demo', replay: {} }]} />);
     const months = (await screen.findByTestId(
@@ -520,7 +520,7 @@ describe('RumSettingsSection', () => {
     );
   });
 
-  // ── Per-project base-retention override ─────────────────────────────
+  // Per-project base-retention override
   it('initializes the base-retention control (defaults to platform default = 0)', async () => {
     render(<RumSettingsSection projects={[{ id: 'demo', name: 'Demo', replay: {} }]} />);
     const days = (await screen.findByTestId('rum-base-retention-days')) as HTMLSelectElement;
@@ -565,7 +565,7 @@ describe('RumSettingsSection', () => {
     );
   });
 
-  // ── Per-project server-delivered replay policy ──────────────────────
+  // Per-project server-delivered replay policy
   it('initializes the sample-rate form from the project.replay', async () => {
     render(
       <RumSettingsSection projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5 } }]} />,

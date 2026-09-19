@@ -7,7 +7,7 @@
  * "MagickWand shared library not found" unless `imagemagick` /
  * `libmagickwand-dev` are installed at the OS level.
  *
- * `devServer.aptPackages` names those packages. This module turns them into an
+ * `devServer.aptPackages` names those packages. Turns them into an
  * `apt-get install` command and runs it **inside the session's SessionEnv,
  * before `startCommand`** — but only when the env is a per-session container
  * (`sysbox` or `container`), where root is confined to that container and the

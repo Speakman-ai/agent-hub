@@ -1,5 +1,5 @@
 /**
- * worktree-bundle.ts — ship the code under test to a remote runner WITHOUT
+ * Ship the code under test to a remote runner WITHOUT
  * pushing to GitHub (Agent Hub's whole point is pre-merge validation).
  *
  * The Hub `git bundle`s the session worktree's committed HEAD (a single

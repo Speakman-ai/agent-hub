@@ -1,5 +1,5 @@
 /**
- * turn-change-summary.ts — post-turn "what changed / test this by hand" briefing.
+ * Post-turn "what changed / test this by hand" briefing.
  *
  * The Finalize end-of-run summary answers "what did I just build and what should
  * I poke at before merging" once, at push time. Operators wanted the same two
@@ -52,7 +52,7 @@ export interface ChangedFilesStat {
 /**
  * Build a compact, `git diff --stat`-style summary of the session's changed
  * files for the LLM context, plus the numeric totals kept in the payload.
- * Pure — no git, no I/O — so the shaping rules stay unit-testable.
+ * No git, no I/O.
  */
 export function buildChangedFilesStat(files: readonly SessionChangeFile[]): ChangedFilesStat {
   const list = files ?? [];

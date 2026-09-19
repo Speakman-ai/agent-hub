@@ -1,17 +1,6 @@
 /**
- * The infra alert vocabulary — states, statuses, and the lifecycle actions an
- * operator can take on one (decision INFRA-ALERT).
- *
- * Shared rather than screen-local because the alert state machine is a server
- * contract, not a presentation detail: `resolved` closes an alert out, `ignored`
- * mutes it *through recurrence*, and `open` reopens it. A surface that offers
- * "Ignore" on an already-ignored alert, or that omits "Reopen" on a resolved
- * one, is not a styling difference — it is a client that disagrees with the
- * store about what state the alert is in. Deriving the offered actions from the
- * current status in one place keeps every surface honest.
- *
- * `PUT /api/projects/:projectId/infra/alerts/:alertId/status` is the only write.
- * There is no separate reopen verb; reopening is `status: 'open'`.
+ * Infra alert vocabulary. `resolved` closes; `ignored` mutes through recurrence;
+ * reopen is `status: 'open'`. Derive offered actions here.
  */
 
 export type InfraAlarmState = 'OK' | 'ALARM' | 'INSUFFICIENT_DATA';
@@ -47,20 +36,13 @@ const RESOLVE: InfraAlertAction = { status: 'resolved', label: 'Resolve', termin
 const IGNORE: InfraAlertAction = { status: 'ignored', label: 'Ignore', terminal: true };
 const REOPEN: InfraAlertAction = { status: 'open', label: 'Reopen', terminal: false };
 
-/**
- * The status transitions worth offering from a given status.
- *
- * The current status is never offered as an action: a "Resolve" button on an
- * already-resolved alert would issue a write that changes nothing, and the
- * resulting no-op success reads to the operator as though something happened.
- */
+/** Transitions from a given status. Never offer the current status as an action. */
 export function infraAlertActions(status: InfraAlertStatus): InfraAlertAction[] {
   switch (status) {
     case 'open':
       return [RESOLVE, IGNORE];
     case 'resolved':
-      // Ignore stays available: an alert that keeps recurring after being
-      // resolved is exactly the one an operator wants muted through recurrence.
+      // Ignore stays available after resolve so recurrence can still be muted.
       return [REOPEN, IGNORE];
     case 'ignored':
       return [REOPEN, RESOLVE];
@@ -106,14 +88,7 @@ export function formatAlertStatus(status: string | null | undefined): string {
 }
 
 /**
- * Join alerts to the rules that produced them.
- *
- * The alert row carries no severity or rule name — those live on the rule, and
- * `GET .../infra/alerts` returns alerts only. Every surface therefore has to
- * read both and join, so the join lives here rather than being re-derived (and
- * re-broken on a missing rule) per screen. A rule that has since been deleted
- * yields nulls rather than dropping the alert: the alert is the record that
- * something happened, and hiding it because its rule is gone loses history.
+ * Join alerts to rules. A deleted rule yields nulls rather than dropping the alert.
  */
 export interface InfraAlertRuleSummary {
   id: string;

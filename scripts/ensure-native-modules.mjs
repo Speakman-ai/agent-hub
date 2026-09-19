@@ -124,8 +124,8 @@ export function nodePtyLoads(dir, run = defaultRun) {
 }
 
 /**
- * Pick the first donor whose node-pty loads cleanly under this Node. Pure — the
- * caller injects `probe(dir) -> boolean` so this is unit-testable without a
+ * Pick the first donor whose node-pty loads cleanly under this Node. The
+ * caller injects `probe(dir) -> boolean` so this does not touch the
  * filesystem.
  */
 export function selectNodePtyDonor(candidateDirs, probe) {
@@ -157,7 +157,7 @@ export function copyNodePtyModule(donor, target) {
  * prebuilt from a donor when the local install is missing or unbuildable.
  * Returns true if a heal copy was performed.
  *
- * All I/O seams are injectable so the workflow is unit-testable against a
+ * All I/O seams are injectable so the workflow can run against a
  * temporary filesystem without a real native module:
  *   - `target`     — the node-pty dir to heal (default: server install).
  *   - `candidates` — donor dirs to consider (default: host donors).

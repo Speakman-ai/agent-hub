@@ -10,9 +10,7 @@ import {
 } from '../../utils/deployNotificationRouting';
 
 /**
- * Presentational body for the per-environment notification-routing editor. Pure
- * and props-driven so it can be render-tested (react-dom/server) without effects
- * or a live API — mirrors the EnvironmentTriggersPanelContent split.
+ * Per-environment notification-routing editor body.
  */
 export function EnvironmentNotificationRoutingPanelContent({
   environmentName,

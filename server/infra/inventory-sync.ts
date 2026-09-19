@@ -480,7 +480,7 @@ async function describeEc2Scope(
   return { resources, skipped };
 }
 
-// ─── ECS ────────────────────────────────────────────────────────────────────
+// ECS
 
 /**
  * The account id out of an ECS ARN.
@@ -816,7 +816,7 @@ async function describeEcsScope(
   return { resources, skipped };
 }
 
-// ─── Elastic Load Balancing v2 (ALB + NLB) ──────────────────────────────────
+// Elastic Load Balancing v2 (ALB + NLB)
 
 /**
  * The CloudWatch `LoadBalancer` dimension value out of a load balancer ARN.
@@ -1202,7 +1202,7 @@ async function describeElbScope(
   return { resources, skipped };
 }
 
-// ─── NAT Gateway ────────────────────────────────────────────────────────────
+// NAT Gateway
 
 /**
  * AWS's two `availabilityMode` values, and the one this pack can collect.
@@ -1353,7 +1353,7 @@ async function describeNatGatewayScope(
   return { resources, skipped };
 }
 
-// ─── Per-resource metadata reads (S3 buckets, Lambda functions) ─────────────
+// Per-resource metadata reads (S3 buckets, Lambda functions)
 
 /**
  * Running tally for one kind of per-resource metadata read across a scope.
@@ -1448,7 +1448,7 @@ function assertMetadataReadNotSystemicallyDenied(
   );
 }
 
-// ─── RDS ────────────────────────────────────────────────────────────────────
+// RDS
 
 /**
  * One DB instance row, keyed on the CloudWatch `DBInstanceIdentifier` dimension.
@@ -1551,7 +1551,7 @@ async function describeRdsScope(
   return { resources, skipped };
 }
 
-// ─── Lambda ─────────────────────────────────────────────────────────────────
+// Lambda
 
 /**
  * Every function in the region, following `ListFunctions`' `NextMarker`.
@@ -1682,7 +1682,7 @@ async function describeLambdaScope(
   return { resources, skipped };
 }
 
-// ─── S3 ─────────────────────────────────────────────────────────────────────
+// S3
 
 /**
  * `GetBucketLocation`'s answer for the region that has no location constraint.

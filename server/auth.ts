@@ -42,7 +42,7 @@ const PUBLIC_PATHS: readonly string[] = [
   // opt-in) a recorder fetches at boot — same cross-origin posture as ingest.
   // Exact-match keeps the gated `:id` reads protected.
   '/api/replays/config',
-  // ── Auth bootstrap endpoints ─────────────────────────────────
+  // Auth bootstrap endpoints
   '/api/auth/status',
   '/api/auth/login',
   '/api/auth/login/mfa',
@@ -280,7 +280,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     return;
   }
 
-  // ── Preview proxy iframe auth (ticket + path-scoped cookie) ────
+  // Preview proxy iframe auth (ticket + path-scoped cookie)
   // Browsers cannot attach Authorization headers to an iframe top-level
   // navigation, so the preview proxy at
   // `/api/sessions/:sid/preview/proxy/*` accepts either a single-use
@@ -423,7 +423,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
 
   const authedReq = req as AuthenticatedRequest;
 
-  // ── Try JWT first (takes precedence over apiKey) ───────────────
+  // Try JWT first (takes precedence over apiKey)
   if (authRecord) {
     const token = extractBearerToken(req);
     if (token) {
@@ -480,7 +480,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     }
   }
 
-  // ── Then try per-user API keys (`ahub_*`) ──────────────────────
+  // Then try per-user API keys (`ahub_*`)
   // Distinct from the legacy global apiKey: each `ahub_*` token is owned
   // by a single user and grants that user's membership-derived role,
   // not Owner. Accept the token from either Authorization: Bearer or
@@ -536,7 +536,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     }
   }
 
-  // ── Then fall back to the legacy X-API-Key ─────────────────────
+  // Then fall back to the legacy X-API-Key
   if (apiKey) {
     const provided = extractApiKey(req);
     if (provided && provided === apiKey) {

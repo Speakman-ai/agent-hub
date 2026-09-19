@@ -26,8 +26,6 @@ import { getStmts } from '../db.js';
 import { getSupportTicket, listSupportTickets } from '../support-tickets-store.js';
 import type { RouteDeps } from '../types.js';
 
-// ─── Helpers ──────────────────────────────────────────────────────
-
 const INTAKE_PROJECT = { id: 'agent-hub', name: 'Agent Hub', cwd: '/tmp', color: '#000' };
 
 function makeApp(opts: { projectExists?: boolean } = {}): {
@@ -50,7 +48,7 @@ function makeApp(opts: { projectExists?: boolean } = {}): {
   return { app, broadcast };
 }
 
-// ─── Unit: buildBugReportTicketBody ───────────────────────────────
+// Unit: buildBugReportTicketBody
 
 describe('buildBugReportTicketBody', () => {
   it('uses the description as the lead paragraph', () => {
@@ -236,7 +234,7 @@ describe('isDiscardableTestReport', () => {
   });
 });
 
-// ─── Integration: POST /api/bug-reports ───────────────────────────
+// Integration: POST /api/bug-reports
 
 describe('POST /api/bug-reports', () => {
   let app: Express;

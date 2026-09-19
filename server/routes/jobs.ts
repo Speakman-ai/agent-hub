@@ -1,5 +1,5 @@
 /**
- * jobs.ts — admin/observability surface for the in-house SQLite job queue.
+ * Admin/observability surface for the in-house SQLite job queue.
  *
  * The queue (`server/jobs/`) is a single host-wide table that heartbeats,
  * crons, and future autonomous background tasks drain. This router exposes a
@@ -8,8 +8,7 @@
  * Admin/Owner-gated — this is operator tooling, not per-project data.
  *
  * Read/mutate logic lives in `server/jobs/admin.ts` (pure functions over a db
- * handle) so it can be unit-tested without a running queue; this file is the
- * thin HTTP + Zod layer.
+ * handle, no running queue). This file is the thin HTTP + Zod layer.
  */
 import { Router, type Request, type Response } from 'express';
 import type { RouteDeps } from '../types.js';

@@ -1,5 +1,5 @@
 /**
- * base-drift.ts — did the base branch move under a validated Finalize run,
+ * Did the base branch move under a validated Finalize run,
  * in a way that invalidates the checks we already ran?
  *
  * Finalize rebases onto `origin/<base>` once at the top of its loop, then
@@ -107,8 +107,7 @@ function occupiedGround(paths: string[]): Set<string> {
  * Decide whether the reviewer + step signals this run collected are still
  * trustworthy given where the base branch is now.
  *
- * Pure: all git I/O happens in {@link collectBaseDriftFacts}, so the whole
- * truth table is unit-testable without a repository.
+ * All git I/O happens in {@link collectBaseDriftFacts}.
  */
 export function evaluateBaseDrift(facts: BaseDriftFacts): BaseDriftOutcome {
   if (!facts.validatedBaseSha) {

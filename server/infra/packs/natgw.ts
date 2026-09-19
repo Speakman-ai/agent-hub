@@ -86,7 +86,7 @@ function natCounter(metricName: string, description: string): InfraPackMetric {
 }
 
 const NATGW_METRICS: readonly InfraPackMetric[] = Object.freeze([
-  // ── Failures ─────────────────────────────────────────────────────────────
+  // Failures
   natCounter(
     'ErrorPortAllocation',
     'Times the NAT gateway could not allocate a source port. AWS: "A value greater than zero indicates that too many concurrent connections are open through the NAT gateway." A single NAT gateway supports about 55,000 simultaneous connections to each unique destination address and port, so this is usually many clients talking to one popular endpoint rather than overall volume.',
@@ -100,7 +100,7 @@ const NATGW_METRICS: readonly InfraPackMetric[] = Object.freeze([
     'Connections that went from active to idle, which happens when a connection was not closed gracefully and saw no activity for 350 seconds. A rising count usually means clients behind the gateway are re-using stale connections rather than that the gateway is failing.',
   ),
 
-  // ── Traffic, and the drop-ratio denominators ─────────────────────────────
+  // Traffic, and the drop-ratio denominators
   natCounter(
     'PacketsInFromSource',
     'Packets the gateway received from clients in your VPC. Collected as the first half of the PacketsDropCount ratio denominator, and readable on its own as outbound request volume.',
@@ -131,7 +131,7 @@ const NATGW_METRICS: readonly InfraPackMetric[] = Object.freeze([
       'Concurrent active TCP connections through the gateway. AWS notes that "a value of zero indicates that there are no active connections", so unlike the ELB metrics a zero here is a real datapoint rather than a gap. Chart it beside ErrorPortAllocation: the errors start when this approaches the per-destination connection limit.',
   },
 
-  // ── Bytes, which are what AWS bills ──────────────────────────────────────
+  // Bytes, which are what AWS bills
   natCounter(
     'BytesOutToDestination',
     'Bytes sent out through the gateway to the internet — the egress path, and usually the largest share of the per-GB data processing charge. It is not the whole billed figure: AWS bills every gigabyte processed "regardless of the traffic’s source or destination", so this counter alone understates the bill and the other three byte series are collected for that reason.',

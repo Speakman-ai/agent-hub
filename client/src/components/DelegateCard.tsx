@@ -3,8 +3,6 @@ import { GitFork, AlertTriangle, Loader2, AlertCircle, Slash } from 'lucide-reac
 import { DELEGATE_REQUIRED_FIELDS } from '../utils/coordinationBlocks';
 
 /**
- * DelegateCard
- * ------------
  * Renders a `<delegate>` block parsed out of an assistant message as a
  * persistent, compact summary of the delegated tasks.
  *

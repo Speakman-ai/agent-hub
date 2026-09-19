@@ -49,7 +49,7 @@ describe('hasSysboxDetachedWorkloadFromProbeOutput', () => {
   });
 });
 
-// ── Fakes ─────────────────────────────────────────────────────────
+// Fakes
 
 class FakeChild extends EventEmitter implements HostChildLike {
   pid: number;
@@ -186,7 +186,7 @@ const isKillArgv = (argv: string[]) =>
 const isDockerInfoProbe = (argv: string[]) =>
   argv[1] === 'exec' && argv[argv.length - 1] === 'info';
 
-// ── Interface contract (adapter-agnostic suite) ───────────────────
+// Interface contract (adapter-agnostic suite)
 
 const contractFixtures: Fixture[] = [];
 afterEach(() => {
@@ -213,7 +213,7 @@ describeSessionEnvContract('sysbox adapter', {
   },
 });
 
-// ── Container lifecycle ───────────────────────────────────────────
+// Container lifecycle
 
 describe('SysboxSessionEnv container start', () => {
   it('defers docker run under published-ports until ports are declared', async () => {
@@ -412,7 +412,7 @@ describe('SysboxSessionEnv container start', () => {
   });
 });
 
-// ── Spawn / kill via docker exec ──────────────────────────────────
+// Spawn / kill via docker exec
 
 describe('SysboxSessionEnv.spawn', () => {
   it('execs into the session container with resolved cwd and merged env', async () => {
@@ -459,7 +459,7 @@ describe('SysboxSessionEnv.spawn', () => {
   });
 });
 
-// ── PTY ───────────────────────────────────────────────────────────
+// PTY
 
 describe('SysboxSessionEnv.openPty', () => {
   it('starts the container if needed and opens an interactive docker exec', async () => {
@@ -503,7 +503,7 @@ describe('SysboxSessionEnv.openPty', () => {
   });
 });
 
-// ── Dispose / teardown ────────────────────────────────────────────
+// Dispose / teardown
 
 describe('SysboxSessionEnv.dispose', () => {
   it('TERMs live work, then removes the container and graph volume, releasing ports', async () => {
@@ -554,7 +554,7 @@ describe('SysboxSessionEnv.dispose', () => {
   });
 });
 
-// ── Container-IP routing ──────────────────────────────────────────
+// Container-IP routing
 
 const isInspectArgv = (argv: string[]) => argv[1] === 'inspect';
 

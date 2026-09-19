@@ -1,26 +1,6 @@
 /**
- * Slice a markdown document into heading-scoped sections.
- *
- * A "section" is everything from a heading down to — but not including — the
- * next heading of the **same or higher level** (i.e. a `#` in ATX terms with a
- * level number less-than-or-equal to the section heading's level). This means a
- * top-level `#` heading's section includes any nested `##`/`###` sub-headings
- * and their content, while a `##` heading's section stops at the next `#` or
- * `##`.
- *
- * Worked example (matches the product spec):
- *
- *   # Title 1            ← level 1 → section runs to just before "# Title 3"
- *     - under title 1        (includes the "## Title 2" sub-section)
- *   ## Title 2           ← level 2 → section runs to just before "# Title 3"
- *     - under title 2
- *   # Title 3            ← level 1 → section runs to end-of-document
- *     - under title 3
- *
- * `#` characters inside fenced code blocks (``` or ~~~) are ignored so code
- * comments never register as headings.
- *
- * All functions are pure: same input → same output, no side effects.
+ * Slice markdown into heading-scoped sections. A section runs until the next
+ * heading of the same or higher level. `#` inside fenced code is ignored.
  */
 
 export interface MarkdownHeading {
@@ -51,10 +31,8 @@ const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*#*[ \t]*$/;
 const FENCE = /^(\s{0,3})(`{3,}|~{3,})/;
 
 /**
- * Iterate the lines of `source` that are NOT inside a fenced code block
- * (``` or ~~~), invoking `visit(line, lineNumber)` with a 1-indexed line
- * number. Centralises the fence-tracking state machine so heading and
- * list-item parsing stay in sync.
+ * Visit non-fenced lines (``` / ~~~). Centralises fence tracking for heading
+ * and list parsing.
  */
 function eachNonFencedLine(
   source: string,

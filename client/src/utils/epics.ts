@@ -1,14 +1,5 @@
-// Pure helpers for kanban epic management (web).
-// Mirrors mobile/src/utils/epics.js so that web and mobile send the same
-// request shape to the server's /board/epics endpoints.
-//
-// Why this exists: the form state uses snake_case keys for parity with the
-// database columns (autonomous_max_concurrent, autonomous_interval), but the
-// server's PUT route destructures camelCase keys (autonomousMaxConcurrent,
-// autonomousInterval). Without this translation the values arrive as
-// `undefined` on the server and the `?? epic.autonomous_max_concurrent`
-// fallback silently preserves the old value — i.e. changes made in the UI
-// have no effect.
+// Kanban epic helpers (web). Form state is snake_case; the PUT route wants camelCase.
+// Without this translation, UI changes arrive as undefined and the old value sticks.
 
 import { parseCardLabels } from './kanbanLabels';
 

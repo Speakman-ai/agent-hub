@@ -2515,7 +2515,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
 
 /* WebhookSection removed — GitHub webhooks are no longer used */
 
-// ─── Slack Setup Wizard ───────────────────────────────────────────────────────
+// Slack Setup Wizard
 
 const WIZARD_STEPS = [
   { id: 'intro', label: 'Create App' },
@@ -2907,7 +2907,7 @@ function SlackSetupWizard({ agents, onSaved, onCancel, existingBot }: any) {
   );
 }
 
-// ─── Per-bot channel map editor ───────────────────────────────────────────────
+// Per-bot channel map editor
 
 function ChannelMapEditor({ bot, agents, onSaved }: any) {
   const [channelMap, setChannelMap] = useState(
@@ -3030,7 +3030,7 @@ function ChannelMapEditor({ bot, agents, onSaved }: any) {
   );
 }
 
-// ─── Main SlackSection ─────────────────────────────────────────────────────────
+// Main SlackSection
 
 export function SlackSection() {
   const [bots, setBots] = useState<any[]>([]);

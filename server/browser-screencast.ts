@@ -1,5 +1,5 @@
 /**
- * browser-screencast.ts — Live mirror of a session's agent-driven Chromium.
+ * Live mirror of a session's agent-driven Chromium.
  *
  * The agent's `browser` / `preview` tools drive headless Playwright Chromiums
  * that humans could previously only observe through per-action stills. This
@@ -49,7 +49,7 @@ import {
   type BrowserScreencastSurface,
 } from './browser-screencast-target.js';
 
-// ─── Types ───────────────────────────────────────────────────────
+// Types
 
 export const SCREENCAST_DEFAULT_MAX_WIDTH = 1280;
 export const SCREENCAST_DEFAULT_MAX_HEIGHT = 800;
@@ -125,7 +125,7 @@ export type BrowserViewerNavigateResult =
   | { ok: true; url: string }
   | { ok: false; code: 'no_browser' | 'agent_busy' | 'refused'; message: string };
 
-// ─── Page shims ──────────────────────────────────────────────────
+// Page shims
 
 type ScreencastPage = HubPage & {
   viewportSize?: () => { width: number; height: number } | null;
@@ -226,7 +226,7 @@ export function playwrightKeyFromDomKey(
   return mods.length ? `${mods.join('+')}+${named}` : named;
 }
 
-// ─── Feed ────────────────────────────────────────────────────────
+// Feed
 
 type ScreencastFrameParams = {
   data: string;
@@ -706,7 +706,7 @@ function resolveViewerRegistryId(chatSessionId: string): string | null {
   return resolveTarget(chatSessionId, router?.lastDriven ?? null)?.targetId ?? null;
 }
 
-// ─── Human input ─────────────────────────────────────────────────
+// Human input
 
 const AGENT_BUSY_MESSAGE =
   'The agent is driving the browser right now — wait for its step to finish.';

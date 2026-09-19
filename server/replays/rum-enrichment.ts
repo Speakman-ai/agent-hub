@@ -1,13 +1,13 @@
 /**
- * rum-enrichment.ts — derive the low-cardinality request facets the RUM dashboard
+ * Derive the low-cardinality request facets the RUM dashboard
  * filters on from the ingest HTTP request: device_type / browser / os (parsed
  * from the `User-Agent` header) and geo_country (resolved from the client IP).
  *
  * These are Datadog's "common facets" (see the facets spec decision): all
  * low-cardinality, index well as first-class columns on the `rum_sessions`
  * rollup row, and are computed once per session (first-non-null-wins, since a
- * browser session's UA/IP is stable). Everything here is PURE — no IO, no
- * network — so it unit-tests without mocks. The one external dependency, IP→
+ * browser session's UA/IP is stable). No IO, no network. The one external
+ * dependency, IP→
  * country, is injected as a `GeoResolver` function so the caller owns the geo
  * database (or lack of one) and tests can mock it.
  */

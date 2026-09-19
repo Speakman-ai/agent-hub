@@ -1,5 +1,5 @@
 /**
- * push-lock.ts — one landing at a time per (project, base branch).
+ * One landing at a time per (project, base branch).
  *
  * The base-drift check (`base-drift.ts`) tells a run whether the base moved
  * onto ground it touches. On its own that is still check-then-act: two
@@ -7,7 +7,7 @@
  * push and merge, which is the concurrent-landing failure the check exists
  * to prevent. Narrowing the window is not closing it.
  *
- * This module closes it by serializing the whole check-through-landing
+ * Closes it by serializing the whole check-through-landing
  * sequence on the thing being contended: the base branch of a project. While
  * one run holds the lock, another run's drift check does not run at all — it
  * waits, and when it gets the lock the base already carries whatever the

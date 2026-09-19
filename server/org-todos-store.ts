@@ -1,5 +1,5 @@
 /**
- * org-todos-store.ts — Shared, organization-wide todos, keyed by org_id.
+ * Shared, organization-wide todos, keyed by org_id.
  *
  * The team-visible counterpart to `user-todos-store.ts`. Every member of an
  * org sees and mutates the same list (there is NO per-user ownership check —

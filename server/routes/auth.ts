@@ -195,7 +195,7 @@ import {
   verifyTotpCode,
 } from '../mfa.js';
 
-// ── OpenAPI registrations (Auth & user management) ─────────────────────
+// OpenAPI registrations (Auth & user management)
 //
 // Registered at module-load so `server/openapi/generate.ts` picks them up
 // before the router factory runs.
@@ -1878,7 +1878,7 @@ function credentialFromBody(data: { email?: string | null; username?: string | n
   return data.email ?? data.username;
 }
 
-// ── Rate-limit defaults ────────────────────────────────────────────
+// Rate-limit defaults
 // Public launch blocker (see kanban "Auth hardening: rate-limit login
 // & invite-accept endpoints"). Without these, two-account brute-force
 // works over the internet. Thresholds were chosen to be permissive
@@ -2379,7 +2379,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   const forgotPasswordLimiter = buildForgotPasswordLimiter(options);
   const resetPasswordLimiter = buildResetPasswordLimiter(options);
 
-  // ── Self-serve password reset (public) ─────────────────────────
+  // Self-serve password reset (public)
   // POST /api/auth/forgot-password: public, enumeration-safe.
   router.post(
     '/api/auth/forgot-password',
@@ -2474,7 +2474,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     },
   );
 
-  // ── Status (public) ────────────────────────────────────────────
+  // Status (public)
   router.get('/api/auth/status', (_req: Request, res: Response) => {
     const record = getAuthRecord();
     const jwtConfigured = !!record;
@@ -2514,7 +2514,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     });
   });
 
-  // ── First-run setup (public, but idempotent / locked) ──────────
+  // First-run setup (public, but idempotent / locked)
   router.post('/api/auth/setup', async (req: Request, res: Response) => {
     if (isAuthConfigured()) {
       res.status(409).json({ error: 'Auth already configured' });
@@ -2623,7 +2623,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     });
   });
 
-  // ── Login (public, rate-limited per IP) ────────────────────────
+  // Login (public, rate-limited per IP)
   router.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) => {
     const authRecord = getAuthRecord();
     if (!authRecord) {
@@ -2816,7 +2816,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     });
   });
 
-  // ── Current user (protected by auth middleware) ────────────────
+  // Current user (protected by auth middleware)
   router.get('/api/auth/me', (req: Request, res: Response) => {
     const record = getAuthRecord();
     const authedReq = req as AuthenticatedRequest;
@@ -3083,8 +3083,8 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     res.json({ ok: true, mfaEnabled: false });
   });
 
-  // ── Per-user engine credentials — the "authenticated, but no user row"
-  // 401 ───────────────────────────────────────────────────────────────
+  // Per-user engine credentials — the "authenticated, but no user row"
+  // 401
   //
   // These handlers are only reached AFTER `authMiddleware` accepted the
   // request, so a missing `authUserId` never means "your token expired".
@@ -3105,7 +3105,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     code: 'no_user_identity',
   } as const;
 
-  // ── Per-user Claude credentials ────────────────────────────────
+  // Per-user Claude credentials
   //
   // Each authenticated user may attach their own ANTHROPIC_API_KEY and
   // CLAUDE_CODE_OAUTH_TOKEN. When set, `buildSpawnEnv` injects the
@@ -3198,7 +3198,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     });
   });
 
-  // ── Per-user single-key engine credentials (Cursor / Gemini / Codex / Grok) ──
+  // Per-user single-key engine credentials (Cursor / Gemini / Codex / Grok)
   //
   // Each engine carries one API key today. The shape is intentionally
   // identical across them so the UI can render them with one component.
@@ -3444,7 +3444,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     res.json({ agentModelOverrides: checked.agentModelOverrides });
   });
 
-  // ── Per-AGENT merge endpoints (preferred over the whole-map PUTs) ───────
+  // Per-AGENT merge endpoints (preferred over the whole-map PUTs)
   // These read-modify-write a single agent's entry server-side in one
   // synchronous handler (better-sqlite3 is sync, so concurrent requests can't
   // interleave). The client never sends the whole map, so a save can't clobber
@@ -3585,7 +3585,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     });
   });
 
-  // ── Sidebar collapsed projects (per-user UI state) ──────────────────────
+  // Sidebar collapsed projects (per-user UI state)
   // Stored on the account rather than in localStorage so the sidebar looks the
   // same on web, mobile, and Electron. The toggle endpoint merges server-side
   // for the same reason the per-agent override endpoints do: two tabs toggling
@@ -3660,7 +3660,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     },
   );
 
-  // ── Per-user skill credentials (encrypted; keys merged into spawn env) ──
+  // Per-user skill credentials (encrypted; keys merged into spawn env)
   router.get('/api/auth/me/skill-credentials', (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
     if (!authedReq.authUserId) {
@@ -3838,7 +3838,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     res.json({ ok: true });
   });
 
-  // ── Per-user skill options (non-secret enums; merged into spawn env) ──
+  // Per-user skill options (non-secret enums; merged into spawn env)
   // Resolve the option-schema source dir for an optional agent_id, applying the
   // same org-membership RBAC gate as the credential PUT flow. Returns either a
   // list of project skills dirs or an HTTP error to emit.
@@ -3968,9 +3968,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     },
   );
 
-  // ──────────────────────────────────────────────────────────────
   //  Per-user API keys
-  // ──────────────────────────────────────────────────────────────
   //
   // Long-lived programmatic credentials owned by an individual user.
   // Distinct from JWTs (7-day session tokens) and from the global
@@ -4086,9 +4084,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   // referenced for tree-shaking awareness.
   void countApiKeysForUser;
 
-  // ──────────────────────────────────────────────────────────────
   //  Users — multi-user roster (Phase 3)
-  // ──────────────────────────────────────────────────────────────
 
   // GET /api/auth/users — Admin+ — members of the active org
   router.get('/api/auth/users', requireRole('Admin'), (_req: Request, res: Response) => {
@@ -4447,9 +4443,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     });
   });
 
-  // ──────────────────────────────────────────────────────────────
   //  Invites
-  // ──────────────────────────────────────────────────────────────
 
   // POST /api/auth/invites — Admin+
   router.post('/api/auth/invites', requireRole('Admin'), async (req: Request, res: Response) => {
@@ -4773,7 +4767,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     },
   );
 
-  // ── Logout (protected) ─────────────────────────────────────────
+  // Logout (protected)
   // Stateless JWTs — logout is a client-side drop. The endpoint exists so
   // the UI has a symmetric call and so we have a hook for future
   // revocation lists (Phase 4).

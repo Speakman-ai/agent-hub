@@ -1,8 +1,7 @@
 /**
  * Iframe-safe auth for the session preview proxy.
  *
- * Why this exists
- * ───────────────
+ * Why this exists.
  * The session preview lives at
  *
  *   /api/sessions/:sessionId/preview/proxy/...
@@ -22,7 +21,6 @@
  * proxy entirely. The 401 is a pure-browser-on-remote bug.
  *
  * Mechanism
- * ─────────
  *  1. SPA calls `POST /api/sessions/:id/preview/ticket` with its JWT.
  *     The server mints a single-use ticket bound to `(sessionId,
  *     userId, role, orgId)` with ~60 s TTL.
@@ -39,7 +37,6 @@
  *     alternative to Bearer / X-API-Key for `/preview/proxy/*` only.
  *
  * Safety properties
- * ─────────────────
  *  - **Tickets are single-use and short-lived.** A replay or stolen URL
  *    is at worst a single proxy hop within the 60 s window.
  *  - **Cookies are path-scoped to `/api/sessions/<sid>/preview/proxy/`.**
@@ -221,7 +218,7 @@ export function previewAuthStoreSizesForTest(): { tickets: number; cookies: numb
   return { tickets: ticketStore.size, cookies: cookieStore.size };
 }
 
-// ─── Path / header helpers (pure, exported for the auth middleware) ──
+// Path / header helpers (pure, exported for the auth middleware)
 
 /**
  * Match a request path against the preview proxy mount. Returns the
@@ -302,7 +299,6 @@ export function parseCookieHeader(header: string | undefined | null): Record<str
  * dev so the browser actually stores the cookie.
  *
  * Path-prefix vs subdomain mode
- * ─────────────────────────────
  * In the default path-prefix deployment, the cookie is scoped to
  * `/api/sessions/<sid>/preview/proxy/` on the main Hub origin — the
  * cookie is invisible to every other Hub route, so a compromised JS

@@ -1,5 +1,5 @@
 /**
- * boot-recovery.ts — close out in-flight Finalize runs on Hub boot.
+ * Close out in-flight Finalize runs on Hub boot.
  *
  * A Finalize run's orchestrator loop and its remote-fleet streaming (the
  * per-job WebSocket handles + the in-process CancelSignal) live entirely in the

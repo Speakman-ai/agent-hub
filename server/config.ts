@@ -34,7 +34,7 @@ export { refreshShellPath, getCachedShellPath };
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOME = os.homedir();
 
-// ─── Bundled agent-hub skill location ────────────────────────────
+// Bundled agent-hub skill location
 // The agent-hub skill ships its shell wrappers (`board.sh`, `wiki-search.sh`,
 // `server.sh`, …) under `server/default-skills/agent-hub/scripts`. Spawned
 // sessions document those wrappers but historically had no reliable way to
@@ -93,7 +93,7 @@ export function resolveSkillScriptsDirs(): string[] {
   return dirs;
 }
 
-// ─── Data directory ─────────────────────────────────────────────
+// Data directory
 const DEFAULT_DATA_DIR = path.join(HOME, '.agent-hub', 'data');
 const DATA_DIR = process.env.AGENT_HUB_DATA_DIR || DEFAULT_DATA_DIR;
 
@@ -116,7 +116,7 @@ assertSafeTestDataDir(DATA_DIR);
 
 mkdirSync(DATA_DIR, { recursive: true });
 
-// ─── Load optional config.json ───────────────────────────────────
+// Load optional config.json
 export const CONFIG_PATH: string = path.join(DATA_DIR, 'config.json');
 const LEGACY_CONFIG_PATH: string = path.join(__dirname, 'config.json');
 
@@ -202,7 +202,7 @@ export function coerceConfigBooleanLoose(raw: unknown, defaultValue: boolean): b
   return defaultValue;
 }
 
-// ─── Auto-migrate legacy projects directory ─────────────────────
+// Auto-migrate legacy projects directory
 const DEFAULT_PROJECTS_DIR = path.join(HOME, '.agent-hub', 'projects');
 const LEGACY_PROJECTS_DIR = path.join(HOME, '.openclaw', 'projects');
 
@@ -216,7 +216,7 @@ if (!existsSync(DEFAULT_PROJECTS_DIR) && existsSync(LEGACY_PROJECTS_DIR)) {
   }
 }
 
-// ─── Exported config object ──────────────────────────────────────
+// Exported config object
 
 const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // claude-opus-5: Anthropic's flagship Opus model (API id `claude-opus-5`).
@@ -394,11 +394,11 @@ if (!cursorAllowed.includes(mergedEngineDefaultModels['cursor-agent'])) {
 }
 
 const config: AppConfig = {
-  // ── Server ─────────────────────────────────────────────────────
+  // Server
   port: resolveInt('AGENT_HUB_PORT', 'port', 3051),
   host: resolve('AGENT_HUB_HOST', 'host', '0.0.0.0') as string,
 
-  // ── CLI binary paths ───────────────────────────────────────────
+  // CLI binary paths
   // All four engines auto-detect via `pickBin`: env override → config.json →
   // PATH walk → common install dirs → static fallback. The static fallbacks
   // below match the historical defaults so existing config.json files keep
@@ -420,7 +420,7 @@ const config: AppConfig = {
   codexBin: pickBin('codex', 'CODEX_BIN', 'codexBin', '/usr/local/bin/codex'),
   grokBin: pickBin('grok', 'GROK_BIN', 'grokBin', path.join(HOME, '.local', 'bin', 'grok')),
 
-  // ── Directories ────────────────────────────────────────────────
+  // Directories
   defaultCwd: resolve('AGENT_HUB_DEFAULT_CWD', 'defaultCwd', HOME) as string,
   dataDir: resolve('AGENT_HUB_DATA_DIR', 'dataDir', DEFAULT_DATA_DIR) as string,
   uploadsDir: resolve(
@@ -442,7 +442,7 @@ const config: AppConfig = {
     isTestContext() ? path.join(DATA_DIR, 'projects') : path.join(HOME, '.agent-hub', 'projects'),
   ) as string,
 
-  // ── Models ─────────────────────────────────────────────────────
+  // Models
   defaultModel: resolve(null, 'defaultModel', 'claude-opus-5') as string,
 
   engineDefaultModels: mergedEngineDefaultModels,
@@ -450,7 +450,7 @@ const config: AppConfig = {
 
   engineValidModels: mergedEngineValidModels,
 
-  // ── Timeouts ───────────────────────────────────────────────────
+  // Timeouts
   defaultTimeoutMs: resolveInt(null, 'defaultTimeoutMs', 15 * 60 * 1000),
   docsTimeoutMs: resolveInt(null, 'docsTimeoutMs', 10 * 60 * 1000),
   slackTimeoutMs: resolveInt(null, 'slackTimeoutMs', 5 * 60 * 1000),
@@ -503,7 +503,7 @@ const config: AppConfig = {
     );
   })(),
 
-  // ── GitHub ─────────────────────────────────────────────────────
+  // GitHub
   publicUrl: resolve('AGENT_HUB_PUBLIC_URL', 'publicUrl', null),
   defaultReviewer: resolve('AGENT_HUB_DEFAULT_REVIEWER', 'defaultReviewer', null),
   // Read-time migration: prefer `personalOAuth`, fall back to the legacy
@@ -522,7 +522,7 @@ const config: AppConfig = {
   // Google" flow. Null when unset. See server/google-oauth-config.ts.
   googleOAuth: resolveGoogleOAuthConfig(fileConfig),
 
-  // ── Auth ───────────────────────────────────────────────────────
+  // Auth
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
   smtp: normalizeSmtpConfig(fileConfig.smtp),
   // Brand deployment/release notification emails with the Agent Hub logo.
@@ -571,7 +571,7 @@ const config: AppConfig = {
     return trimmed.length > 0 ? trimmed : null;
   })(),
 
-  // ── Slack ──────────────────────────────────────────────────────
+  // Slack
   slackWebhookUrl:
     (process.env.SLACK_WEBHOOK_URL as string) || (fileConfig.slackWebhookUrl as string) || null,
 
@@ -626,7 +626,7 @@ const config: AppConfig = {
     return coerceConfigBooleanLoose(fileConfig.cardDoneOnPush, false);
   })(),
 
-  // ── Host browser sessions (Stagehand / Playwright Chromium) ──
+  // Host browser sessions (Stagehand / Playwright Chromium)
   browserMaxConcurrentContexts: clampFiniteInt(
     resolveInt('AGENT_HUB_BROWSER_MAX_CONTEXTS', 'browserMaxConcurrentContexts', 3),
     3,
@@ -646,7 +646,7 @@ const config: AppConfig = {
     ? false
     : fileConfig.browserBlockAdsTrackers !== false,
 
-  // ── Durable blobs (artifacts, replays, and uploads) ─────────────
+  // Durable blobs (artifacts, replays, and uploads)
   // When `artifactsBucket` is set, these blobs upload to S3 and downloads
   // stream from it; otherwise the Hub stores them in their local directories.
   artifactsBucket: resolve('AGENT_HUB_ARTIFACTS_BUCKET', 'artifactsBucket', null),
@@ -678,7 +678,7 @@ const config: AppConfig = {
     return coerceConfigBooleanLoose(fileConfig.replayMaskAllEnforced, true);
   })(),
 
-  // ── DB statement instrumentation (Phase 1 async-DB epic) ────────
+  // DB statement instrumentation (Phase 1 async-DB epic)
   // Off by default: when disabled, prepared statements are never wrapped, so
   // there is zero per-call overhead. Enable to time every statement and surface
   // slow ones at GET /api/config/db-stats. Threshold defaults to 10ms.
@@ -697,7 +697,7 @@ const config: AppConfig = {
     return { enabled, slowThresholdMs, logSlow };
   })(),
 
-  // ── Async-DB reader pool (Phase 2 async-DB epic) ────────────────
+  // Async-DB reader pool (Phase 2 async-DB epic)
   // Sizes the worker_threads pool backing server/db-async. Infrastructure
   // only: no call site routes through it yet. Env overrides win over the
   // config.json `dbReaderPool` block.
@@ -731,7 +731,7 @@ const config: AppConfig = {
     return { size, queryTimeoutMs, maxQueueDepth, busyTimeoutMs };
   })(),
 
-  // ── Derived / helpers ──────────────────────────────────────────
+  // Derived / helpers
   get allValidModels(): string[] {
     return Object.values(this.engineValidModels).flat();
   },

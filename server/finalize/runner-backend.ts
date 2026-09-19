@@ -1,5 +1,5 @@
 /**
- * runner-backend.ts — pluggable execution backend for a single Finalize job.
+ * Pluggable execution backend for a single Finalize job.
  *
  * `runJobPhase` schedules job instances (honoring `needs`/`warmup` + concurrency)
  * and, for each, asks a `RunnerBackend` to `acquire()` a runner. The returned

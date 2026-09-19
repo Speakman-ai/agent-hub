@@ -1,9 +1,9 @@
 /**
- * mirror-link.ts — attach a GitHub mirror target to a Hub-hosted project.
+ * Attach a GitHub mirror target to a Hub-hosted project.
  *
  * A project born on the Hub's own forge (`gitHost: 'agenthub'` with no
  * `repoUrl`) has nowhere to mirror to: `mirrorPolicy` is off until
- * `project.repoUrl` points at a GitHub repo. This module supplies the two
+ * `project.repoUrl` points at a GitHub repo. Supplies the two
  * ways to get one — link a repo that already exists, or create a fresh one
  * on the caller's GitHub account / one of their orgs — plus the owner list
  * that drives the picker.

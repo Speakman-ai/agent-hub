@@ -33,9 +33,7 @@ function statusLabel(gate: DeployReleaseGate): { text: string; color: string } {
 }
 
 /**
- * Presentational body for the per-environment release-gates editor. Pure and
- * props-driven so it can be render-tested (react-dom/server) without effects or
- * a live API — mirrors the EnvironmentSchedulesPanelContent split.
+ * Per-environment release-gates editor body.
  */
 export function EnvironmentReleaseGatesPanelContent({
   environmentName,

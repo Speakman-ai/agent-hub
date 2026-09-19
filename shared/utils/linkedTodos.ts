@@ -1,20 +1,12 @@
 /**
- * linkedTodos.ts — the pure logic behind the reverse (bidirectional) display of
- * a card / epic's linked-from todos (spec TODO-TO-TICKET, "target shows
- * from-todo" half). Shared 1:1 between the web and mobile `LinkedTodosPanel` so
- * both clients build the same fetch target and shape the same display list.
- * Kept free of React / network so it is unit-testable in isolation.
- *
- * The panel reads `GET /api/me/todos/linked?targetType&targetId&projectId`,
- * which returns only the CALLER's own todos pointing at that target (the server
- * scopes per-user). A card or epic target is project-scoped and always carries
- * a `projectId`; sessions are handled elsewhere and are not a panel target.
+ * Reverse linked-from todos for a card/epic (`GET /api/me/todos/linked`).
+ * Server scopes to the caller's own todos.
  */
 
-/** Panel target type — only card / epic get a reverse panel (a session link is a lightweight association, not bidirectional). */
+/** Card/epic only; session links are not bidirectional. */
 export type LinkedTodoTargetType = 'card' | 'epic';
 
-/** The exact query `GET /api/me/todos/linked` needs for a card / epic. */
+/** Query for `GET /api/me/todos/linked`. */
 export interface LinkedTodoTarget {
   targetType: LinkedTodoTargetType;
   targetId: string;
@@ -24,7 +16,7 @@ export interface LinkedTodoTarget {
 /** Minimal shape of a card / epic entity the panel is rendered against. */
 export interface LinkedTodoEntity {
   id?: string | null;
-  /** Draft (unsaved) cards carry this flag and have no persisted id yet. */
+  /** Draft cards have `__draft` and no persisted id yet. */
   __draft?: boolean;
 }
 
@@ -47,18 +39,13 @@ export interface LinkedTodoSummary {
   title: string;
   done: boolean;
   priority: LinkedTodoPriority;
-  /** The scheduling "do" date, falling back to the deprecated `dueAt`. */
+  /** Scheduling "do" date, falling back to `dueAt`. */
   doDate: string | null;
 }
 
 const VALID_PRIORITIES: readonly LinkedTodoPriority[] = ['urgent', 'high', 'medium', 'low'];
 
-/**
- * Build the fetch target for a card / epic, or `null` when the panel must not
- * fetch — an unsaved draft, a missing entity id, or a missing project id (a
- * card / epic link is always project-scoped). Returning `null` lets the caller
- * skip the request and render nothing.
- */
+/** Null for drafts or missing ids (skip the fetch). */
 export function buildLinkedTodoTarget(
   targetType: LinkedTodoTargetType,
   entity: LinkedTodoEntity | null | undefined,
@@ -88,12 +75,7 @@ export function summarizeLinkedTodo(todo: LinkedTodoInput): LinkedTodoSummary {
   };
 }
 
-/**
- * Shape a list of linked todos for display: open todos first (preserving the
- * server's position order), completed ones after. The server already orders by
- * position; this only floats done rows to the bottom so the actionable ones
- * lead.
- */
+/** Open first (server order), done after. */
 export function summarizeLinkedTodos(todos: LinkedTodoInput[]): LinkedTodoSummary[] {
   const summaries = todos.map(summarizeLinkedTodo);
   const open = summaries.filter((t) => !t.done);

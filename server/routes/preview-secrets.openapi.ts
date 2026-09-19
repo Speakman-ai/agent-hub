@@ -19,7 +19,7 @@
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 
-// ─── Reusable building blocks ─────────────────────────────────────
+// Reusable building blocks
 
 const ProjectIdParam = z.object({
   projectId: z.string().openapi({ description: 'Project slug (e.g. `agent-hub`).' }),
@@ -144,7 +144,7 @@ const ErrorEnvelope = registerComponent(
     .openapi({ description: 'Error envelope for preview-secrets routes.' }),
 );
 
-// ─── Path registrations ───────────────────────────────────────────
+// Path registrations
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },

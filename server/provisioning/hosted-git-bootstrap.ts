@@ -1,5 +1,5 @@
 /**
- * hosted-git-bootstrap.ts — make Agent Hub-originating projects Hub-native
+ * Make Agent Hub-originating projects Hub-native
  * end to end, out of the box.
  *
  * Runs once when a provisioning job finishes (phase stream emits `done`

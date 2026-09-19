@@ -2,8 +2,7 @@
  * Subdomain → session-id parsing for the optional "subdomain preview"
  * deployment mode.
  *
- * Background
- * ──────────
+ * Background.
  * The default deployment serves session previews at a path prefix
  * (`/api/sessions/<sid>/preview/proxy/`). That works, but the upstream
  * dev server only renders correctly if the app explicitly maps the
@@ -22,7 +21,6 @@
  * + Route 53 alias + an ALB listener cert attachment.
  *
  * Mode selection
- * ──────────────
  * Subdomain mode is **opt-in** via the `AGENT_HUB_PREVIEW_SUBDOMAIN_BASE`
  * env var (e.g. `preview.agenthub.dev.example.com`). Unset = mode
  * off, every code path falls back to the existing path-prefix proxy.
@@ -30,7 +28,6 @@
  * without the wildcard cert keep working with no changes.
  *
  * Subdomain shape
- * ───────────────
  * `<sessionId>.<base>`                — the session's primary port.
  * `<internalPort>--<sessionId>.<base>` — one extra `portMap` entry.
  *
@@ -52,7 +49,6 @@
  * at `/`.
  *
  * Strictness
- * ──────────
  * The parser only matches when EVERY condition is met:
  *   - Subdomain mode is configured (`base` non-empty after trim).
  *   - The Host header is exactly `<label>.<base>` with a single label.

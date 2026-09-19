@@ -180,7 +180,7 @@ describe('classifyRunFlakeRecovery', () => {
     expect(gate.jobs).toEqual([]);
   });
 
-  // ── Fail-closed paths (reviewer feedback) ─────────────────────────────────
+  // Fail-closed paths (reviewer feedback)
 
   it('blocks when the attempts query throws (cannot read evidence)', async () => {
     const stmts = {

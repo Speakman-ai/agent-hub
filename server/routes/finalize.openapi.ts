@@ -230,7 +230,7 @@ registerPath({
   },
 });
 
-// ─── POST /api/projects/:projectId/cards/:cardId/finalize ─────────────
+// POST /api/projects/:projectId/cards/:cardId/finalize
 
 const StartFinalizeRunRequest = registerComponent(
   'StartFinalizeRunRequest',
@@ -401,7 +401,7 @@ registerPath({
   },
 });
 
-// ─── POST /api/projects/:projectId/finalize/:runId/cancel ──────────────
+// POST /api/projects/:projectId/finalize/:runId/cancel
 
 const CancelFinalizeRunRequest = registerComponent(
   'CancelFinalizeRunRequest',
@@ -465,7 +465,7 @@ const CancelFinalizeRunTerminal = registerComponent(
     }),
 );
 
-// ─── GET /api/projects/:projectId/finalize/metrics ──────────────────
+// GET /api/projects/:projectId/finalize/metrics
 
 // Single source of truth — imported directly from the metrics module so
 // adding a new metric to the union can't silently drift the OpenAPI

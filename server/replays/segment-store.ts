@@ -1,5 +1,5 @@
 /**
- * segment-store.ts — append-only per-segment storage for `segmented` replays.
+ * Append-only per-segment storage for `segmented` replays.
  *
  * The monolithic backend (`replay-store.ts`) appends by gunzip-concat-regzip of
  * the whole growing blob — O(n²) in session length, which caps flush cadence and
@@ -305,8 +305,8 @@ export interface SessionSegmentManifest {
 }
 
 /**
- * Build the session playback manifest from its ordered segment rows. Pure (no
- * IO) so it can be unit-tested. Segments arrive in playback order (the
+ * Build the session playback manifest from its ordered segment rows. No IO.
+ * Segments arrive in playback order (the
  * `listRumSegmentsBySession` order: chronological by `start_ts`, then
  * `index_in_view` within a view) and each carries a per-segment events URL the
  * player concatenates. `durationMs` spans the earliest start to the latest end

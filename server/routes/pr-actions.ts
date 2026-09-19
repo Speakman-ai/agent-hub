@@ -1,5 +1,5 @@
 /**
- * routes/pr-actions.ts — API endpoints for human PR actions.
+ * API endpoints for human PR actions.
  *
  * POST /api/pr/merge   — Merge a PR by URL (user OAuth)
  * POST /api/pr/close   — Close a PR by URL (user OAuth)
@@ -150,7 +150,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
   const { config } = deps;
   const router = Router();
 
-  // ─── Merge a PR ─────────────────────────────────────────────────
+  // Merge a PR
 
   router.post('/api/pr/merge', async (req: Request, res: Response) => {
     const { prUrl, mergeMethod = 'squash' } = req.body as PrActionBody;
@@ -243,7 +243,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Arm / disarm GitHub native auto-merge ──────────────────────
+  // Arm / disarm GitHub native auto-merge
   //
   // Enables GitHub's native auto-merge so the PR merges itself once required
   // checks pass and required reviews approve — the toggle on the PR pages.
@@ -308,7 +308,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Close a PR ─────────────────────────────────────────────────
+  // Close a PR
 
   router.post('/api/pr/close', async (req: Request, res: Response) => {
     const { prUrl } = req.body as PrActionBody;
@@ -349,7 +349,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Get PR status ──────────────────────────────────────────────
+  // Get PR status
 
   router.get('/api/pr/status', async (req: Request, res: Response) => {
     const prUrl = req.query.prUrl as string;
@@ -419,7 +419,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Read-side proxies (user OAuth) ─────────────────────────────
+  // Read-side proxies (user OAuth)
   //
   // Let the PR UI (and reviewer-role spawns, which have no local GitHub
   // credentials) fetch PR contents using the acting user's server-side

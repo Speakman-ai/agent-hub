@@ -1,5 +1,5 @@
 /**
- * backfill-phase-autonomous-defaults.ts — one-shot backfill that arms existing
+ * One-shot backfill that arms existing
  * kanban phases for auto-dispatch and Auto Merge.
  *
  * Why: phases shipped with `autonomous` and `autonomous_send_it` defaulting to

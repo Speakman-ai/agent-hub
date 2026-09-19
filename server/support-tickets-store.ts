@@ -7,7 +7,7 @@
  * columns, and the list API orders by severity (most severe first) so the most
  * urgent requests surface at the top of the queue.
  *
- * This module owns all reads/writes against the table; routes and any
+ * All reads/writes against the table; routes and any
  * background investigators call into these helpers rather than touching
  * prepared statements directly.
  */

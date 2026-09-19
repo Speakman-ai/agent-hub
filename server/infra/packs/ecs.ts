@@ -156,7 +156,7 @@ function insights(
 }
 
 const ECS_PACK_METRICS: readonly InfraPackMetric[] = Object.freeze([
-  // ── Free, cluster-keyed (AWS/ECS) ────────────────────────────────────────
+  // Free, cluster-keyed (AWS/ECS)
   ecsGauge(
     'CPUUtilization',
     CLUSTER,
@@ -186,7 +186,7 @@ const ECS_PACK_METRICS: readonly InfraPackMetric[] = Object.freeze([
     'Percentage of the cluster’s registered memory that tasks have reserved. This is what runs out first on most EC2 clusters, and what blocks a deployment from placing new tasks.',
   ),
 
-  // ── Free, service-keyed (AWS/ECS) ────────────────────────────────────────
+  // Free, service-keyed (AWS/ECS)
   ecsGauge(
     'CPUUtilization',
     SERVICE,
@@ -212,7 +212,7 @@ const ECS_PACK_METRICS: readonly InfraPackMetric[] = Object.freeze([
     'Tasks in the ACTIVATING, RUNNING or DEACTIVATING state for the service. The only task count AWS publishes for free — the rest are Container Insights metrics.',
   ),
 
-  // ── Container Insights, service-keyed ────────────────────────────────────
+  // Container Insights, service-keyed
   insights(
     'RunningTaskCount',
     SERVICE,
@@ -339,7 +339,7 @@ const ECS_PACK_METRICS: readonly InfraPackMetric[] = Object.freeze([
     }),
   ),
 
-  // ── Container Insights, cluster-keyed ────────────────────────────────────
+  // Container Insights, cluster-keyed
   insights(
     'TaskCount',
     CLUSTER,

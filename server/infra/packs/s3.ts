@@ -181,7 +181,7 @@ function requestMetric(
 }
 
 const S3_METRICS: readonly InfraPackMetric[] = Object.freeze([
-  // ── Free daily storage ───────────────────────────────────────────────────
+  // Free daily storage
   {
     namespace: NS,
     metricName: 'BucketSizeBytes',
@@ -221,7 +221,7 @@ const S3_METRICS: readonly InfraPackMetric[] = Object.freeze([
       'Objects in the bucket across every storage class, counting current and noncurrent objects, delete markers, and the parts of every incomplete multipart upload. A count that climbs while BucketSizeBytes does not is usually abandoned multipart uploads or delete markers rather than data.',
   },
 
-  // ── Paid request metrics: volume ─────────────────────────────────────────
+  // Paid request metrics: volume
   requestMetric(
     'AllRequests',
     'counter',
@@ -246,7 +246,7 @@ const S3_METRICS: readonly InfraPackMetric[] = Object.freeze([
     OPERATION_SPECIFIC,
   ),
 
-  // ── Paid request metrics: errors, both ways ──────────────────────────────
+  // Paid request metrics: errors, both ways
   requestMetric(
     '4xxErrors',
     // A rate in 0..1 at this statistic, which is a level rather than a total.
@@ -277,7 +277,7 @@ const S3_METRICS: readonly InfraPackMetric[] = Object.freeze([
     'Server-error **count**: how many 5xx responses S3 returned in the period. Charted beside the rate so a burst on a quiet bucket is distinguishable from a steady leak on a busy one.',
   ),
 
-  // ── Paid request metrics: latency and bytes ──────────────────────────────
+  // Paid request metrics: latency and bytes
   requestMetric(
     'FirstByteLatency',
     'latency',

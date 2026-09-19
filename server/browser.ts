@@ -1,7 +1,7 @@
 /**
- * browser.ts — Shared Playwright browser plumbing.
+ * Shared Playwright browser plumbing.
  *
- * This module centralizes Chromium lifecycle for agent chat sessions. Higher-level
+ * Centralizes Chromium lifecycle for agent chat sessions. Higher-level
  * tools live in `browser-tools.ts` and drive a session through the
  * `BrowserSession` handle returned from `launchBrowserSession()`.
  *
@@ -34,7 +34,7 @@ import {
 import { installBrowserSessionHardening } from './browser-session-hardening.js';
 import { installContextFetchGuard, type CdpSessionLike } from './browser-context-fetch-guard.js';
 
-// ─── Public defaults ────────────────────────────────────────────
+// Public defaults
 
 /** Sensible default viewport for AI-agent browsing — roughly a laptop. */
 export const DEFAULT_VIEWPORT = { width: 1280, height: 720 } as const;
@@ -56,7 +56,7 @@ export const DEFAULT_CHROMIUM_ARGS: readonly string[] = Object.freeze([
   '--disable-gpu',
 ]);
 
-// ─── Types ──────────────────────────────────────────────────────
+// Types
 
 export interface BrowserSessionOptions {
   /** Run without a visible window. Defaults to `true`. */
@@ -108,7 +108,7 @@ export interface BrowserSession {
   close: () => Promise<void>;
 }
 
-// ─── Shared defaults object ─────────────────────────────────────
+// Shared defaults object
 
 /**
  * The canonical default options passed to `new Stagehand(...)`. Exported so
@@ -131,7 +131,7 @@ export const DEFAULT_STAGEHAND_OPTIONS = Object.freeze({
   domSettleTimeout: DEFAULT_TIMEOUT_MS,
 });
 
-// ─── Options builder (pure / test-friendly) ─────────────────────
+// Options builder (pure / test-friendly)
 
 type StagehandOptions = {
   env: 'LOCAL';
@@ -176,8 +176,8 @@ export async function resolveDefaultChromiumPath(): Promise<string | undefined> 
  * actually exists on disk, and the value of `PLAYWRIGHT_BROWSERS_PATH` (the env
  * that pins the browser location across image build vs. runtime).
  *
- * Pure and side-effect-free apart from a single `existsSync` stat, so it is
- * cheap to call on the error path and trivial to unit-test.
+ * Side-effect-free apart from a single `existsSync` stat, so it is
+ * cheap to call on the error path.
  */
 export function describeChromiumLaunchEnv(executablePath: string | undefined): string {
   const browsersPath =
@@ -220,7 +220,7 @@ export function buildStagehandOptions(opts: BrowserSessionOptions = {}): Stageha
   return result;
 }
 
-// ─── Session registry ───────────────────────────────────────────
+// Session registry
 
 const sessions = new Map<string, BrowserSession>();
 /** In-flight {@link launchBrowserSession} for pinned ids — prevents duplicate Chromium for concurrent callers. */
@@ -232,7 +232,7 @@ const idleCloseTimerBySessionId = new Map<string, NodeJS.Timeout>();
 /** In-flight host browser (`runBrowserReActStep`) nesting — idle close defers until zero. */
 const activeBrowserToolOpsBySessionId = new Map<string, number>();
 
-// ─── Lifecycle listeners ────────────────────────────────────────
+// Lifecycle listeners
 
 export type BrowserSessionLifecycleEvent =
   | { type: 'registered'; id: string; session: BrowserSession }
@@ -611,7 +611,7 @@ export async function closeAllBrowserSessions(): Promise<void> {
   );
 }
 
-// ─── Test-only reset hook ───────────────────────────────────────
+// Test-only reset hook
 
 /**
  * Clear the internal session registry without closing sessions. Exposed

@@ -23,15 +23,14 @@ import { formatReplayDuration, formatBytes, formatCaptureDate } from '../utils/r
 
 /** Notification copy after adding a capture to a playlist. `createdName` is set
  *  when a new playlist was created inline (always a fresh add); otherwise the
- *  server's `added` flag distinguishes a fresh add from an already-member. Pure
- *  + exported so the add path is unit-testable without RN touch events. Mirrors
- *  the web AddToPlaylistModal message. */
+ *  server's `added` flag distinguishes a fresh add from an already-member.
+ *  Mirrors the web AddToPlaylistModal message. */
 export function addToPlaylistMessage(res: any, createdName?: string): string {
   const label = createdName || res?.name || 'playlist';
   return res?.added === false ? `Already in ${label}` : `Added to ${label}`;
 }
 
-// ── List + create ───────────────────────────────────────────────────
+// List + create
 export function ReplayPlaylistsView({ projectId, onWatch, onNotify }: any) {
   const [playlists, setPlaylists] = useState<any[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -191,7 +190,7 @@ export function ReplayPlaylistsView({ projectId, onWatch, onNotify }: any) {
   );
 }
 
-// ── Detail (items + rename/keep) ────────────────────────────────────
+// Detail (items + rename/keep)
 function PlaylistDetail({ projectId, playlistId, onBack, onWatch, onNotify }: any) {
   const [playlist, setPlaylist] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -343,7 +342,7 @@ function PlaylistDetail({ projectId, playlistId, onBack, onWatch, onNotify }: an
   );
 }
 
-// ── Add-to-playlist modal (invoked from a capture row) ──────────────
+// Add-to-playlist modal (invoked from a capture row)
 export function AddToPlaylistModal({ projectId, replay, onClose, onAdded, onError }: any) {
   const [playlists, setPlaylists] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -464,7 +463,7 @@ export function AddToPlaylistModal({ projectId, replay, onClose, onAdded, onErro
   );
 }
 
-// ── Create / rename modal ───────────────────────────────────────────
+// Create / rename modal
 function PlaylistFormModal({
   title,
   submitLabel,

@@ -1,8 +1,5 @@
 /**
- * Pure decision for what a WebSocket ping-interval tick should do, given the
- * socket's open-ness and whether the previous ping is still unanswered.
- * Extracted from `useWebSocket` so the half-open-detection state machine is
- * unit-testable without a live socket.
+ * WebSocket ping-interval tick: open-ness vs unanswered prior ping.
  *
  *  - not open          → 'noop'  (socket is closing/closed; nothing to do)
  *  - open, awaiting     → 'close' (prior ping never answered → link is dead;

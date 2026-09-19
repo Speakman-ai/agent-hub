@@ -1,5 +1,5 @@
 /**
- * runner-backend-remote.ts — RunnerBackend that runs a job on the remote fleet.
+ * RunnerBackend that runs a job on the remote fleet.
  *
  * acquire() enqueues the job on the control-plane queue and creates a per-job
  * channel, then waits for a pull-based agent to claim + attach (its first poll).

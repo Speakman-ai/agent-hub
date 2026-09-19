@@ -10,7 +10,7 @@
  *   temporary pause. Fires `trigger=schedule`, honoring the per-env concurrency
  *   lock.
  *
- * This module owns the STORE + CRUD only. The node-cron registration / firing
+ * STORE + CRUD only. The node-cron registration / firing
  * path is a sibling card that calls {@link listEnabledSchedules} to resolve which
  * schedules to register at boot and enqueue deployments on tick.
  */

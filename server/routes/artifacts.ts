@@ -151,7 +151,7 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
     return row?.n ?? 0;
   };
 
-  // ── List ──────────────────────────────────────────────────────────
+  // List
   router.get('/api/sessions/:sessionId/artifacts', (req: Request, res: Response) => {
     const sessionId = req.params.sessionId as string;
     if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
@@ -164,7 +164,7 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
     res.json({ artifacts: rows.map(toArtifactView) });
   });
 
-  // ── Upload ────────────────────────────────────────────────────────
+  // Upload
   router.post(
     '/api/sessions/:sessionId/artifacts',
     express.raw({ type: '*/*', limit: '100mb' }),
@@ -255,7 +255,7 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Download / view content ────────────────────────────────────────
+  // Download / view content
   router.get(
     '/api/sessions/:sessionId/artifacts/:artifactId/content',
     async (req: Request, res: Response) => {
@@ -329,7 +329,7 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Delete ─────────────────────────────────────────────────────────
+  // Delete
   router.delete(
     '/api/sessions/:sessionId/artifacts/:artifactId',
     async (req: Request, res: Response) => {

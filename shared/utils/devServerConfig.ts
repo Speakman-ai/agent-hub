@@ -1,18 +1,6 @@
 /**
- * Form helpers for the dev-server config (`Project.prEnv.devServer`), shared by
- * the web (`client/src/components/DevServerSection.tsx`) and mobile
- * (`mobile/src/components/settings/DevServerSection.tsx`) settings forms so the
- * two surfaces validate identically.
- *
- * Pure: no DOM, no React, no RN primitives. The bounds and rules below mirror
- * the server Zod schema in `server/dev-server-config.ts` so the settings form
- * surfaces the same validation errors at edit time that the PATCH would reject
- * at save time.
- *
- * Secrets are **key references only**: `secretKeys[]` names entries in the
- * project-secrets store. The form never round-trips a stored secret value:
- * secret rows load masked (empty input, `hadSecret` flag) and only a
- * freshly-typed value is written back to the store (write-only).
+ * Dev-server form helpers. Bounds match `server/dev-server-config.ts`.
+ * Secrets are key references only: masked on load, write-only on save.
  */
 
 export const DEV_SERVER_DEFAULT_START_COMMAND = 'npm run dev';
@@ -266,11 +254,7 @@ export function validateDevServerForm(form: DevServerForm): DevServerValidationE
         error: `"${key}" appears in both env and secret keys — a key resolves from exactly one place.`,
       };
     }
-    // A brand-new secret reference (no stored value yet) must ship a value.
-    // Otherwise the config would list a `secretKeys` entry the store has no
-    // row for, and the dev server would reference a missing secret at spawn.
-    // Existing stored secrets (`hadSecret`) may keep a blank value — blank
-    // means "leave the stored value unchanged".
+    // New secret refs need a value. Blank on `hadSecret` means leave stored ciphertext.
     if (!form.secretRows[i].hadSecret && !(form.secretRows[i].value ?? '').trim()) {
       return {
         field: 'secretKeys',
@@ -407,9 +391,7 @@ export function validateDevServerForm(form: DevServerForm): DevServerValidationE
 }
 
 /**
- * Build the `devServer` object for the project PATCH. Only non-empty
- * optionals are included so the payload stays minimal and round-trips
- * cleanly through `parseDevServerConfig`.
+ * PATCH `devServer` object. Omit empty optionals.
  */
 export function buildDevServerConfig(form: DevServerForm): Record<string, unknown> {
   const env: Record<string, string> = {};
@@ -463,24 +445,14 @@ export function buildDevServerConfig(form: DevServerForm): Record<string, unknow
 }
 
 /**
- * Build the full secrets PUT payload, preserving every existing secret
- * (MASK sentinel for unchanged `secret`-kind rows) and upserting only the
- * dev-server secret rows the user typed a fresh value into. Returns null
- * when there is nothing to write (no stored secrets and no typed values),
- * so the caller can skip the request entirely.
- *
- * Plaintext for an unchanged secret is never sent back — the MASK sentinel
- * tells the store to keep the ciphertext it already holds.
+ * Secrets PUT: MASK for unchanged secret rows, upsert only freshly typed values.
+ * Null when there is nothing to write. Never send plaintext for an unchanged secret.
  */
 export type SecretsPutPayload = Array<{ key: string; value: string; kind: 'plain' | 'secret' }>;
 
 /**
- * Build the PUT payload that reproduces the current stored-secret set
- * verbatim (MASK sentinel for `secret`-kind rows so their ciphertext is
- * kept, plaintext for `plain` rows). Because a secrets PUT is a full
- * replace, PUTting this snapshot removes any key not present in it — which
- * is exactly what a rollback needs: restore the pre-save set and drop a
- * just-written key. Returns null when there is nothing to restore.
+ * Snapshot PUT that restores the pre-save secret set (MASK keeps ciphertext).
+ * Null when there is nothing to restore.
  */
 export function buildSecretsSnapshotPayload(
   secrets: StoredSecret[] = [],

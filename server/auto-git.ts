@@ -878,7 +878,7 @@ async function runGhStreamed(
   return { stdout: r.stdout, stderr: r.stderr };
 }
 
-// ─── Dependency Types ────────────────────────────────────────────────
+// Dependency Types
 
 export type TriggerAutoSessionShipFn = (args: {
   sessionId: string;
@@ -931,7 +931,7 @@ interface SlashSkillError {
   error: string;
 }
 
-// ─── Module-level state ──────────────────────────────────────────────
+// Module-level state
 let deps: AutoGitDeps | null = null;
 
 function getDeps(): AutoGitDeps {
@@ -939,7 +939,7 @@ function getDeps(): AutoGitDeps {
   return deps;
 }
 
-// ─── Initialisation ──────────────────────────────────────────────────
+// Initialisation
 
 export function initAutoGit(d: AutoGitDeps): void {
   deps = d;
@@ -957,7 +957,7 @@ export function setTriggerUncommittedCommitNudge(fn: TriggerUncommittedCommitNud
   triggerUncommittedCommitNudgeImpl = fn;
 }
 
-// ─── Slash-command skill resolution ─────────────────────────────────
+// Slash-command skill resolution
 
 export function resolveSlashSkill(
   agent: Agent,
@@ -1008,7 +1008,7 @@ export function resolveSlashSkill(
   return { error: `Skill "/${skillName}" not found` };
 }
 
-// ─── PR title / body formatting ─────────────────────────────────────
+// PR title / body formatting
 
 /**
  * Reject commit subjects that don't describe meaningful work — fixup/squash
@@ -1338,7 +1338,7 @@ export function buildPrBody(input: PrBodyInput): string {
   return sections.join('\n');
 }
 
-// ─── Auto-commit & PR on agent completion ───────────────────────────
+// Auto-commit & PR on agent completion
 
 /**
  * Move a card to the Review column and persist the PR URL on it.
@@ -1371,7 +1371,7 @@ function moveCardToReview(card: KanbanCardRow, project: Project, prUrl: string |
   }
 }
 
-// ─── Build card description from session context ───────────────────
+// Build card description from session context
 
 export function buildCardDescription(messages: MessageRow[], diffStat: string): string {
   const lines: string[] = [];
@@ -1405,7 +1405,7 @@ export function buildCardDescription(messages: MessageRow[], diffStat: string): 
   return lines.join('\n');
 }
 
-// ─── Worktree change detection ──────────────────────────────────────
+// Worktree change detection
 
 export interface WorktreeChanges {
   hasUncommitted: boolean;
@@ -1470,7 +1470,7 @@ export async function checkWorktreeChanges(io: SessionWorktreeIo): Promise<Workt
   };
 }
 
-// ─── Core commit + PR + review pipeline ─────────────────────────────
+// Core commit + PR + review pipeline
 
 /**
  * Fire-and-forget enable of GitHub's native auto-merge on a PR.
@@ -1833,7 +1833,7 @@ async function publishFromCheckout(
   // file-path remotes need no credential.
   const githubToken = hosted ? null : await resolveAutoGitGithubToken(sessionId, d.getConfig());
 
-  // ── PR base-branch override (hoisted) ─────────────────────────────
+  // PR base-branch override (hoisted)
   //
   // Cards may override the PR base via `card.pr_base_branch` (e.g. for
   // stacked PRs) or inherit one from their linked epic (`epic.pr_base_branch`,
@@ -2072,7 +2072,7 @@ async function publishFromCheckout(
       console.log(`[auto-commit] Agent already committed — skipping commit, will push + PR`);
     }
 
-    // ── Pre-push rebase ────────────────────────────────────────────────
+    // Pre-push rebase
     // Fold any commits that have landed on the base branch since this
     // session forked. Catches conflicts now instead of after the PR opens,
     // back when the agent / user can still do something about it (the
@@ -2341,7 +2341,7 @@ async function publishFromCheckout(
       }
     };
 
-    // ── Agent Hub-hosted: create/reuse the native PR and stop ─────────
+    // Agent Hub-hosted: create/reuse the native PR and stop
     // The push above already landed on the Hub's bare repo (origin was
     // healed at the top). PR creation is an in-process call — idempotent
     // on the open PR for this head branch, mirroring the `gh pr view`
@@ -2402,7 +2402,7 @@ async function publishFromCheckout(
       }
     }
 
-    // ── Pre-check: existing open PR for this branch ───────────────────
+    // Pre-check: existing open PR for this branch
     //
     // Resolve-comment / review-feedback flows push additional commits to
     // a PR branch that already has an open PR. Calling `gh pr create`
@@ -2460,7 +2460,7 @@ async function publishFromCheckout(
       return { ok: true, prUrl: existingPrForBranch };
     }
 
-    // ── Empty-diff guard ───────────────────────────────────────────────
+    // Empty-diff guard
     //
     // `checkWorktreeChanges` (line ~1545) only measures commits against the
     // branch's upstream or repo default branch. That misses the case where
@@ -2621,7 +2621,7 @@ async function publishFromCheckout(
   }
 }
 
-// ─── Auto-PR failure surfacing ─────────────────────────────────────
+// Auto-PR failure surfacing
 //
 // `commitPushAndCreatePR` historically only logged failures to
 // `console.error`. For the **autonomous** and **ad-hoc-with-existing-PR**
@@ -2709,7 +2709,7 @@ async function persistAndBroadcastPrFailure(args: {
   }
 }
 
-// ─── Auto-commit & PR on agent completion ───────────────────────────
+// Auto-commit & PR on agent completion
 
 export async function autoCommitAndPR(
   sessionId: string,
@@ -2987,7 +2987,7 @@ export async function autoCommitAndPR(
   }
 }
 
-// ─── Title sanitization ─────────────────────────────────────────────
+// Title sanitization
 
 /**
  * Check if a string looks like raw cron/heartbeat output rather than a clean title.

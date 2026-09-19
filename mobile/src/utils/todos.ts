@@ -1,11 +1,5 @@
 /**
- * Pure helpers for the cross-project personal Todos pane (spec NAV-PLACEMENT).
- *
- * Mirrors `client/src/utils/todos.ts` 1:1 so web and mobile share the same
- * ordering + due-date rules. Kept free of React / React Native / network so the
- * reorder + due-date logic is unit-testable in isolation. The screen
- * (`TodosScreen`) owns fetching and rendering; these functions own the ordering
- * business rules and display formatting.
+ * Personal Todos pane helpers. Mirror of `client/src/utils/todos.ts`.
  */
 
 /** Todo priority — mirrors the kanban-card enum so a promote maps 1:1. */

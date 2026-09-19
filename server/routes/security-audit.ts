@@ -1,5 +1,5 @@
 /**
- * security-audit.ts — REST surface for the Dependabot-style dependency
+ * REST surface for the Dependabot-style dependency
  * security audit of Hub-hosted repos.
  *
  *   GET  /api/projects/:id/security-audit/findings        list + severity counts

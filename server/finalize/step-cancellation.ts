@@ -1,5 +1,5 @@
 /**
- * step-cancellation.ts — recognise runner-cancellation collateral in a failed
+ * Recognise runner-cancellation collateral in a failed
  * CI step's output so it is not mistaken for a genuine test failure.
  *
  * ## The problem
@@ -17,7 +17,7 @@
  * `context canceled` shards "recording a misleading non-zero exit code" so the
  * agent can't tell the genuine red from the cascade noise.)
  *
- * This module recognises that signature so the step-runner can tag the outcome
+ * Recognises that signature so the step-runner can tag the outcome
  * `runner_cancelled` (infra-class) and let the §10 auto-retry re-run it on a
  * fresh runner instead of presenting collateral as a real failure.
  *
@@ -54,8 +54,8 @@
  * merely ENDS on the words (`AssertionError: expected ok, got context
  * canceled`) — the cancellation must be the line's tail AND be preceded by
  * start-of-line or a `:` error-wrap separator (the Go `fmt.Errorf("...: %w")`
- * convention), never bare whitespace or a quote. Pure / synchronous / no I/O —
- * safe to call from the step-runner hot path and trivially unit-testable.
+ * convention), never bare whitespace or a quote. Safe to call from the
+ * step-runner hot path (synchronous, no I/O).
  */
 
 /** Go's `context.Canceled` / `context.DeadlineExceeded` error strings. */

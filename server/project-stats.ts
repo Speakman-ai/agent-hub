@@ -14,7 +14,7 @@
  * The three completion metrics rely on the timestamps maintained by the
  * triggers in stats-completion.ts. Counts are grouped per UTC day in SQL and
  * folded into day/week/month buckets in JS, so we never depend on SQLite's
- * fiddly weekday arithmetic and the bucketing stays unit-testable in isolation.
+ * fiddly weekday arithmetic.
  */
 
 import type BetterSqlite3 from 'better-sqlite3';
@@ -63,7 +63,7 @@ export interface ProjectStatsResponse {
   top_model: string | null;
 }
 
-// ─── UTC date helpers ────────────────────────────────────────────────────────
+// UTC date helpers
 
 function fmtDay(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -110,7 +110,7 @@ export function normalizeBucketCount(
 
 /**
  * Build the ordered (oldest → newest) list of buckets ending at the period
- * containing `now`. Pure + deterministic given `now`, so it's unit-testable.
+ * containing `now`. Deterministic given `now`.
  */
 export function buildStatBuckets(
   granularity: StatGranularity,
@@ -170,7 +170,7 @@ function foldIntoBuckets(
   return { series, total };
 }
 
-// ─── Main aggregation ────────────────────────────────────────────────────────
+// Main aggregation
 
 export interface ComputeProjectStatsOptions {
   projectId: string;

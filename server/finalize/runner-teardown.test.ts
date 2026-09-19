@@ -1,6 +1,5 @@
 /**
- * Unit tests for the runner-teardown detector — the single source of truth
- * that distinguishes a Finalize runner torn down mid `docker exec` (Go
+ * Distinguishes a Finalize runner torn down mid `docker exec` (Go
  * `context canceled`, every test green) from a genuine test/build failure.
  *
  * The detector gates an auto-retry (Layer A) and a fix-dispatch hint (Layer

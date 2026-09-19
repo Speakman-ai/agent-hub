@@ -1,5 +1,5 @@
 /**
- * initial-build.ts — the wizard's description is the BASELINE, not just a
+ * The wizard's description is the BASELINE, not just a
  * scaffold hint. After provisioning completes (and the hosted-git
  * bootstrap settles), this kicks off the first real build:
  *

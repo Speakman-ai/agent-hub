@@ -1,10 +1,4 @@
-/**
- * Pure helpers for Hub workflow list — map definition steps + latest run step_runs
- * to a stable ordered list for progress-dot rendering.
- *
- * Consumed by both web (`ProjectWorkflowsPage`, `WorkflowRunsSection`) and mobile
- * (`WorkflowsScreen`) so the timeline logic never drifts between surfaces.
- */
+/** Map workflow steps + latest `step_runs` into a stable list for progress dots. */
 
 export type WorkflowDotKind =
   | 'inactive'

@@ -1,5 +1,5 @@
 /**
- * remote-spawned-step.ts — a SpawnedStep backed by frames arriving from a remote
+ * A SpawnedStep backed by frames arriving from a remote
  * runner-agent instead of a local child process.
  *
  * step-runner.ts treats a step as: read `stdout`/`stderr` data, observe

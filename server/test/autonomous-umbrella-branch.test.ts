@@ -20,7 +20,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
 
-// ── mock child_process BEFORE importing the module under test ──────────────
+// mock child_process BEFORE importing the module under test
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>();
   return {

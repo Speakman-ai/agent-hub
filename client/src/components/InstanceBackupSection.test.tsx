@@ -1,6 +1,6 @@
 /**
- * Tests for the InstanceBackupSection — manifest rendering, mutually
- * exclusive DB selection, download invocation, and error display.
+ * Manifest rendering, mutually exclusive DB selection, download
+ * invocation, and error display.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';

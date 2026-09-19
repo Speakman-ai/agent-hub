@@ -9,9 +9,9 @@
 // labels are available, so the override hatch only applies when a caller passes
 // `PR_LABELS` explicitly.
 //
-// Exports a pure `evaluateCoupling({ changedFiles, labels, config })` that
-// returns `{ ok, reason, matchedCoupled, matchedDoc, overrideUsed }` so the
-// rule can be unit-tested without spawning a subprocess.
+// Exports `evaluateCoupling({ changedFiles, labels, config })` that
+// returns `{ ok, reason, matchedCoupled, matchedDoc, overrideUsed }`.
+// No subprocess.
 //
 // When invoked directly (`node skill-coupling.mjs`) it reads:
 //   - `CHANGED_FILES_PATH`  newline-separated list of paths, or

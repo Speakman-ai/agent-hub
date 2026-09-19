@@ -4,7 +4,6 @@
  * consumed by `DelegateCard` / `DelegationPanel`.
  *
  * Why this exists
- * ---------------
  * `App.jsx` builds `delegations[sessionId] = { parentMessageId, tasks: [...] }`
  * purely from WebSocket events (`delegation_start`, `delegation_thinking`,
  * `delegation_agent_done`, …). After a page refresh, session switch, or any

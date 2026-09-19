@@ -1,17 +1,5 @@
 /**
- * sessionSeed.ts — pure builders that turn a Gmail message/thread or a personal
- * todo into the opening user message of a new session ("Start session with this
- * as context").
- *
- * The email / todo panes live in the cross-project User Module and are not bound
- * to an agent, so the clients pick a target agent and then seed the new session
- * with the context block these builders produce. The server stores the returned
- * string as the session's first `role='user'` message; the first-turn history
- * bootstrap (server/chat.ts) then feeds it to the CLI when the user sends their
- * follow-up instruction.
- *
- * Kept free of React / network so the mapping is unit-testable in isolation and
- * shared 1:1 between the web and mobile clients.
+ * Opening user-message seed from a Gmail message/thread or personal todo.
  */
 
 /** Long email bodies are clamped so a single message can't blow the seed cap. */

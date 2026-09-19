@@ -1,5 +1,5 @@
 /**
- * git-read.ts — read-only git queries against a hosted bare repo for
+ * Read-only git queries against a hosted bare repo for
  * native PRs: diff, changed files, commits, shortstat, mergeability.
  *
  * Everything here shells out to real `git` with `-C <bareRepo>`; no

@@ -1,8 +1,7 @@
 /**
- * parity-classifier.ts — Finalize↔GitHub parity classifier.
+ * Finalize↔GitHub parity classifier.
  *
  * Why this exists
- * ───────────────
  * Finalize Code Changes runs a pre-PR CI pipeline locally (DinD runners, the
  * same `ci.yaml`) and reaches its own verdict on whether a branch is green. We
  * want to retire GitHub Actions as the source of truth, but we can only do that
@@ -12,12 +11,9 @@
  * PR webapp#1001 (commit 6ad87ec) was exactly that failure: Finalize
  * green / GitHub red (0 failing jobs vs 3). A single such "false green" is
  * dangerous because it would let a broken commit reach `main` if GitHub were
- * retired. This module is the pure classifier the parity harness uses to label
- * every observed (Finalize verdict, GitHub verdict) pair so the dataset can be
- * mined for false-greens.
- *
- * Everything here is a pure function — no DB, no I/O. The store
- * (`parity-store.ts`) calls these to derive the `divergence_class` it persists.
+ * retired. Labels every observed (Finalize verdict, GitHub verdict) pair so
+ * the dataset can be mined for false-greens. No DB, no I/O; `parity-store.ts`
+ * calls these to derive the `divergence_class` it persists.
  */
 import type { FinalizeRunStatus } from '../types.js';
 
@@ -111,7 +107,7 @@ export function isDangerousDivergence(cls: DivergenceClass): boolean {
   return cls === 'false_green';
 }
 
-// ─── Verdict normalizers ──────────────────────────────────────────────
+// Verdict normalizers
 
 const FINALIZE_GREEN_STATUSES: ReadonlySet<FinalizeRunStatus> = new Set([
   'ready_to_push',

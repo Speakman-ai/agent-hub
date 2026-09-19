@@ -3,14 +3,13 @@
 //
 // Historically the replay sample rate (and on/off) lived in per-browser
 // localStorage, so the policy only applied to whoever flipped their own toggle.
-// This module moves it to per-project server config: an operator sets it once
+// Moves it to per-project server config: an operator sets it once
 // and it applies to every user on the project. The resolved policy is delivered
 // to recorders via `GET /api/replays/config` and to the admin UI via the
 // project list.
 //
-// Pure (no DB, no Express) so the clamp / validation / resolution rules are
-// unit-testable in isolation and shared by the PATCH validator and the config
-// endpoint.
+// Clamp / validation / resolution rules are shared by the PATCH validator
+// and the config endpoint. No DB, no Express.
 
 import {
   MAX_EXTENDED_RETENTION_MONTHS,
@@ -245,7 +244,7 @@ export const DEFAULT_REPLAY_POLICY: ResolvedReplayPolicy = Object.freeze({
  * that a session records a replay is the PRODUCT of the session sample rate and
  * the replay sample rate — the replay rate is a percentage OF the already-sampled
  * sessions, not an independent draw. Both inputs are clamped to [0, 1], so the
- * result is always a valid probability. Pure — unit-testable in isolation.
+ * result is always a valid probability.
  */
 export function resolveEffectiveReplayRate(
   sessionSampleRate: number,
@@ -257,7 +256,7 @@ export function resolveEffectiveReplayRate(
 /**
  * Resolve the per-tenant hourly ingest quota. A configured positive value wins
  * (floored to an integer); anything unset / non-finite / non-positive falls back
- * to the global default budget. Pure — unit-testable in isolation.
+ * to the global default budget.
  */
 export function resolveIngestQuota(
   configured: number | undefined | null,
@@ -280,7 +279,7 @@ export function resolveIngestQuota(
  *     row past the point its bytes are reaped.
  *   - Override + global default OFF → the override (turns retention ON for just
  *     this tenant).
- * Returns a whole number of days (`0` means "no expiry"). Pure — unit-testable.
+ * Returns a whole number of days (`0` means "no expiry").
  */
 export function resolveBaseRetentionDays(
   override: number | undefined | null,

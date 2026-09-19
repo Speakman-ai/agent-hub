@@ -1,5 +1,5 @@
 /**
- * hub-task-protection.ts — Hub-driven ECS task scale-in protection for the
+ * Hub-driven ECS task scale-in protection for the
  * runner fleet.
  *
  * WHY (vs. agent self-protection): the runner-agent self-protects by PUTting to

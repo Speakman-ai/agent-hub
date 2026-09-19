@@ -1,5 +1,5 @@
 /**
- * replay-lifecycle.ts — S3-native lifecycle policy for segmented RUM replays.
+ * S3-native lifecycle policy for segmented RUM replays.
  *
  * The segment store (`segment-store.ts`) writes append-only objects under the
  * `rum/<project>/<yyyy>/<mm>/<dd>/…` prefix. At multi-tenant volume the app can't
@@ -8,10 +8,9 @@
  * expiry + storage-class tiering are pushed to **S3-native lifecycle rules** keyed
  * on the `rum/` prefix; the app sweeper is left owning only the SQLite index rows.
  *
- * This module is PURE (no AWS SDK, no IO): it builds the lifecycle configuration
- * and merges it into a bucket's existing rules. The SDK-backed port that actually
- * GETs/PUTs the bucket policy lives in `replay-lifecycle-s3.ts`, so the config
- * math here is unit-testable without touching S3.
+ * Builds the lifecycle configuration and merges it into a bucket's existing
+ * rules (no AWS SDK, no IO). The SDK-backed port that actually
+ * GETs/PUTs the bucket policy lives in `replay-lifecycle-s3.ts`.
  *
  * S3 constraints the builder must respect (verified against the S3 lifecycle docs,
  * 2026-07) so we never emit a config the API rejects:
@@ -65,7 +64,7 @@ export interface RumLifecycleProjectOverride {
   ruleId?: string;
 }
 
-// ── S3 hard constraints ────────────────────────────────────────────
+// S3 hard constraints
 /** STANDARD_IA can't be entered before 30 days. */
 const MIN_IA_TRANSITION_DAYS = 30;
 /** An object must sit in IA >= 30 days before it can move to GLACIER. */
@@ -187,7 +186,7 @@ function buildRumLifecycleRule(opts: {
 /**
  * Build the lifecycle configuration for segmented RUM objects: the global `rum/`
  * rule at `retentionDays` plus one per-tenant rule per {@link RumLifecycleOptions.projectOverrides}.
- * Pure. Returns an empty rule set when BOTH the global retention is disabled
+ * Returns an empty rule set when BOTH the global retention is disabled
  * (`retentionDays <= 0`) and there are no overrides, so provisioning touches
  * nothing until an operator opts in. Per-tenant tiering is left at the defaults
  * (short windows simply emit expiration-only, since a transition can't fit before

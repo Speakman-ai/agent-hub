@@ -1,5 +1,5 @@
 /**
- * oauthSignIn.ts — native browser/OAuth sign-in for React Native.
+ * Native browser/OAuth sign-in for React Native.
  *
  * Per the `oauth-rn` epic decision: use expo-auth-session's native
  * ASWebAuthenticationSession / Android Custom Tabs (via expo-web-browser)

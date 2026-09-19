@@ -1,5 +1,5 @@
 /**
- * ship-gate.ts — gate direct `gh pr create` when Finalize is configured.
+ * Gate direct `gh pr create` when Finalize is configured.
  *
  * Card-linked sessions whose worktree contains `.agent-hub/ci.yaml` must
  * ship through **Finalize Code Changes** instead of the direct

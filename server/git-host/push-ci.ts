@@ -1,5 +1,5 @@
 /**
- * push-ci.ts — GitHub-Actions-style CI for Agent Hub-hosted repos, two
+ * GitHub-Actions-style CI for Agent Hub-hosted repos, two
  * triggers sharing one engine:
  *
  *   1. **CI on push** (`trigger_source: 'git_push'`, opt-in via

@@ -1,5 +1,5 @@
 /**
- * Pure paging state for the mobile PR list (mirrors `kanbanPagination.ts`).
+ * Mobile PR list paging (mirrors `kanbanPagination.ts`).
  *
  * The list pages by appending, so three facts travel together: which page we
  * are on, whether the server said another exists, and whether the last attempt

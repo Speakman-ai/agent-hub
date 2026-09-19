@@ -6,7 +6,7 @@
  *   - `ask_mode` (read-only / plan) vs. normal build, and
  *   - the Finalize automation level (manual / review / push / merge).
  *
- * This module introduces a first-class **session mode** so "Design" can fold
+ * Introduces a first-class **session mode** so "Design" can fold
  * into the same picker as the other modes instead of living in the standalone
  * Design Studio subsystem (separate `designs` table + `design:<id>` pseudo
  * sessions). A session in `design` mode runs in its own worktree, loads the

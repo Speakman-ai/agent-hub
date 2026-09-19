@@ -1,6 +1,4 @@
 /**
- * auto-git-repo-aware-token.test.ts
- *
  * Regression test for the "first user wins even when their token can't
  * see the repo" bug: `resolveOrgOwnerGithubToken(config, githubRepo)`
  * should pick an Owner whose probe to `repos/<repo>` returns 2xx

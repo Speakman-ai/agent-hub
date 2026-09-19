@@ -1,5 +1,5 @@
 /**
- * project-stats.ts — per-project Stats page read surface.
+ * Per-project Stats page read surface.
  *
  * Serves daily / weekly / monthly time series for six product metrics
  * (PRs merged, support tickets resolved, tickets made, tickets completed,

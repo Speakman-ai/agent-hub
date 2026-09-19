@@ -2,8 +2,8 @@
  * Support-ticket screenshot attachment helper.
  *
  * The project-scoped support-ticket intake (and PATCH) accepts an optional
- * screenshot as a base64 `data:` URL in the JSON body. This module is the one
- * place that validates that payload (mime + decoded size) and persists it
+ * screenshot as a base64 `data:` URL in the JSON body. Validates that payload
+ * (mime + decoded size) and persists it
  * through the upload-store adapter, returning the server-relative ref stored on
  * the ticket's `screenshot_ref` column.
  *

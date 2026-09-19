@@ -136,8 +136,7 @@ export function runnerClassForRunsOn(runsOn: string): string {
  * the caller fails the job fast; it returns `null` when the job may proceed
  * (`'darwin'` is available) or the label is not a macOS label at all.
  *
- * Pure: the backend kind + platforms are injected, so the decision is fully
- * unit-testable without a real Hub host or backend.
+ * The backend kind + platforms are injected; no real Hub host or backend.
  */
 export function macosRunnerMismatch(
   runsOn: string,

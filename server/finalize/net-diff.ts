@@ -9,7 +9,7 @@
  * off for an empty diff" report: the run rebases, drops everything, and ships
  * nothing.
  *
- * This module adds a cheap three-dot diff probe (`git diff --quiet
+ * Adds a cheap three-dot diff probe (`git diff --quiet
  * <base>...HEAD`) so the committable/Finalize gate reflects what would actually
  * land on the base branch, matching the merge-base basis the "N files changed"
  * Changes badge already uses (`computeSessionChanges`). The probe is injectable

@@ -96,7 +96,7 @@ const DISCARDABLE_TEST_DESCRIPTIONS = new Set([
   'this is only a test',
 ]);
 
-// ─── Rate limit ──────────────────────────────────────────────────
+// Rate limit
 // Module-scoped so tests / the live server share the same window.
 // Exported for test reset.
 export const _rateBuckets = new Map<string, { count: number; resetAt: number }>();
@@ -127,7 +127,7 @@ function rateLimitCheck(ip: string): { ok: boolean; retryAfterMs: number } {
   return { ok: true, retryAfterMs: 0 };
 }
 
-// ─── Multipart parser ────────────────────────────────────────────
+// Multipart parser
 // A minimal RFC 7578 parser — just enough for a small form with a single
 // binary field (`screenshot`) plus short text fields. No dependency on
 // multer since the rest of the app avoids it.
@@ -223,7 +223,7 @@ export function isDiscardableTestReport(input: { title: string; description?: st
   return DISCARDABLE_TEST_DESCRIPTIONS.has(description);
 }
 
-// ─── Prompt builder ──────────────────────────────────────────────
+// Prompt builder
 
 interface BugReportInput {
   title: string;
@@ -318,7 +318,7 @@ export function buildBugReportTicketBody(input: BugReportInput): string {
   return lines.join('\n');
 }
 
-// ─── Route factory ───────────────────────────────────────────────
+// Route factory
 
 export default function createBugReportRoutes(deps: RouteDeps): Router {
   const { stmts, broadcast, findProject, config, serverDir } = deps;
@@ -349,7 +349,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
       // Hoisted so the catch below can roll back an orphaned screenshot file.
       let screenshotRef: string | null = null;
       try {
-        // ── Rate limit ─────────────────────────────────────
+        // Rate limit
         const ip = ipFromReq(req);
         const rl = rateLimitCheck(ip);
         if (!rl.ok) {
@@ -357,7 +357,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
           return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
         }
 
-        // ── Content-type ───────────────────────────────────
+        // Content-type
         const contentType = req.headers['content-type'] || '';
         if (!/^multipart\/form-data/i.test(contentType)) {
           return res.status(400).json({ error: 'Content-Type must be multipart/form-data' });
@@ -374,7 +374,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
 
         const { fields, files } = parseMultipart(rawBody, boundary);
 
-        // ── Validate fields ────────────────────────────────
+        // Validate fields
         const title = (fields.title || '').trim();
         if (!title) {
           return res.status(400).json({ error: 'title is required' });
@@ -444,7 +444,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         }
         screenshotMissReason = sanitizeScreenshotMissReason(screenshotMissReason, !!screenshotRef);
 
-        // ── Resolve the intake (agent-hub) project ─────────
+        // Resolve the intake (agent-hub) project
         const project = findProject(INTAKE_PROJECT_ID);
         if (!project) {
           console.error(
@@ -455,7 +455,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
           });
         }
 
-        // ── Land a bug support ticket in the queue ─────────
+        // Land a bug support ticket in the queue
         // Build the body WITHOUT the replay line first. The raw `replayRef`
         // is still untrusted here — `intakeSupportTicket` runs the project
         // attribution guard and clears `replay_ref` for a foreign/nonexistent

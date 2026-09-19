@@ -196,7 +196,7 @@ describe('planFleetChange', () => {
     expect(drained.target).toBe(0); // genuinely empty long enough → shrink
   });
 
-  // ── Regression: the 2026-06-08 incident ──────────────────────────────────
+  // Regression: the 2026-06-08 incident
   // A reaper tick marks all in-flight jobs `lost`, so depth reads 0 while the
   // orchestrator is about to retry them. The scaler MUST NOT scale to 0 (that
   // SIGKILLed all 8 live agents mid-build). It must hold until retries re-queue.
@@ -273,7 +273,7 @@ describe('planFleetChange', () => {
   });
 });
 
-// ── Dynamic scale-down (FINALIZE_FLEET_DYNAMIC_SCALE_DOWN) ──────────────────
+// Dynamic scale-down (FINALIZE_FLEET_DYNAMIC_SCALE_DOWN)
 // The default scaler holds the whole warm fleet until depth==0, so a long tail
 // of a few jobs pins dozens of idle runners. Dynamic mode trims the idle ones
 // mid-run down to in-flight (+ headroom), leaning on ECS task scale-in

@@ -1,5 +1,5 @@
 /**
- * backfill-epic-states.ts — one-shot recompute of every kanban epic's persisted
+ * One-shot recompute of every kanban epic's persisted
  * `state` from its cards and columns.
  *
  * Why: the board read paths (paginated GET /board and GET /board/epics) now trust

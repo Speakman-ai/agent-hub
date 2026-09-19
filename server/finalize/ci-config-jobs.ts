@@ -1,5 +1,5 @@
 /**
- * ci-config-jobs.ts — `.agent-hub/ci.yaml` `jobs:` body parser (GHA-style
+ * `.agent-hub/ci.yaml` `jobs:` body parser (GHA-style
  * jobs + matrix).
  *
  * The document root (`version`, `on`, `timeout_minutes`) is parsed by

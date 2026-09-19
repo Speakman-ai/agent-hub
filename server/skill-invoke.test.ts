@@ -111,7 +111,7 @@ describe('skill-invoke', () => {
       });
     });
 
-    // ─── Robustness: action-block parser shape variants ────────────────
+    // Robustness: action-block parser shape variants
     // Regression coverage for the "action blocks sometimes only print"
     // bug. Each of these used to return malformed/invalid-JSON and the
     // skill never loaded.

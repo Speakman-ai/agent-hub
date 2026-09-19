@@ -1,6 +1,4 @@
-/**
- * Pure helpers for kanban board multi-select (web).
- */
+/** Kanban board multi-select (web). */
 
 export type KanbanSelectionToggleOpts = {
   shiftKey?: boolean;

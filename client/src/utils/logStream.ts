@@ -7,12 +7,10 @@
  * reconnect-safe merge, keyset cursor) lives in `@shared/utils/logTailWire` and
  * is re-exported below so existing web callers keep one import site.
  *
- * These are transport-free so the merge/filter/parse logic is unit-testable
- * without a WebSocket or the DOM. The React hook (`useLogTail`) and the views
- * layer their lifecycle on top of these functions.
+ * The React hook (`useLogTail`) and the views layer their lifecycle on top.
  *
  * Every value that originates from an ingested log record is UNTRUSTED
- * (decision LOG-TRUST). This module never builds HTML from log text: callers
+ * (decision LOG-TRUST). Never builds HTML from log text: callers
  * render the returned strings as text nodes. `parseAttributes` tolerates
  * malformed JSON and never throws.
  */

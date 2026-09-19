@@ -814,7 +814,7 @@ export default function EpicDetailScreen({ route, navigation }: any) {
             </TouchableOpacity>
           </View>
 
-          {/* ── Spec decisions ───────────────────────────────── */}
+          {/* Spec decisions */}
           <View style={styles.sectionHead}>
             <Text style={styles.sectionTitle}>1 · Spec decisions</Text>
             {specItems.length > 0 ? (
@@ -863,7 +863,7 @@ export default function EpicDetailScreen({ route, navigation }: any) {
             />
           ))}
 
-          {/* ── Phases & tickets ─────────────────────────────── */}
+          {/* Phases & tickets */}
           <View style={styles.sectionHead}>
             <Text style={styles.sectionTitle}>2 · Phases & tickets</Text>
             <TouchableOpacity onPress={() => setShowPhaseForm((v) => !v)}>

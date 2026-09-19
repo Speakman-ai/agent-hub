@@ -34,12 +34,12 @@
 
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
-// ─── Configuration ────────────────────────────────────────────────────────────
+// Configuration
 
 const SECRET_NAME = 'agent-hub/dev-hub/api-key';
 const CACHE_TTL_MS = 5 * 60 * 1_000; // 5 minutes
 
-// ─── In-process cache ─────────────────────────────────────────────────────────
+// In-process cache
 
 interface CacheEntry {
   /** `null` when negatively cached (AWS error / empty secret). */
@@ -49,7 +49,7 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
-// ─── Client singleton ─────────────────────────────────────────────────────────
+// Client singleton
 
 let clientSingleton: SecretsManagerClient | null = null;
 
@@ -67,7 +67,7 @@ function getClient(): SecretsManagerClient {
   return clientSingleton;
 }
 
-// ─── Test-only escape hatches ─────────────────────────────────────────────────
+// Test-only escape hatches
 
 /**
  * Inject a fake `SecretsManagerClient` for unit tests.
@@ -83,7 +83,7 @@ export function __clearSecretsCacheForTests(): void {
   cache.clear();
 }
 
-// ─── Label gate ───────────────────────────────────────────────────────────────
+// Label gate
 
 /**
  * Labels (comma-separated card `labels` string) that opt a session into
@@ -104,7 +104,7 @@ export function cardNeedsDevHubKey(labels: string | null | undefined): boolean {
     .some((l) => CROSS_HUB_LABELS.has(l));
 }
 
-// ─── Secret fetch ─────────────────────────────────────────────────────────────
+// Secret fetch
 
 /** TTL for negative-cache entries (AWS errors / empty secret). Shorter than
  *  the success TTL so recovery after IAM fixes surfaces quickly, but still

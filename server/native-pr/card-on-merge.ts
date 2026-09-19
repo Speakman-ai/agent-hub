@@ -1,5 +1,5 @@
 /**
- * card-on-merge.ts — kanban + event side effects after a native PR merge.
+ * Kanban + event side effects after a native PR merge.
  *
  * This replaces the GitHub `pull_request.merged` webhook signal (removed)
  * for Agent Hub-hosted projects: card discovery reuses the exact helpers

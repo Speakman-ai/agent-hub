@@ -371,7 +371,7 @@ describe('runReplayRetentionSweep', () => {
     expect(stmts.getSessionReplay.get('default-old')).toBeTruthy();
   });
 
-  // ── Per-tenant S3 byte-ownership gate (regression: reviewer finding 2) ──────
+  // Per-tenant S3 byte-ownership gate (regression: reviewer finding 2)
   it('per-tenant pass DELETES S3 bytes itself when the tenant prefix rule is unconfirmed (global off)', async () => {
     // Global window OFF + a tenant override. If the sweeper delegated to a
     // per-prefix lifecycle rule that was never installed, the bytes would live

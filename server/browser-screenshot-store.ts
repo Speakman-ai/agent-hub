@@ -1,5 +1,5 @@
 /**
- * browser-screenshot-store.ts — on-disk sink for `browser` / `preview`
+ * On-disk sink for `browser` / `preview`
  * screenshot captures.
  *
  * A screenshot is image bytes, and the ReAct continuation channel is text.

@@ -29,7 +29,7 @@ import { getMembershipRole } from './memberships-store.js';
 import type { Role } from './roles.js';
 import { shouldNotifyUserForProject } from '../shared/utils/notificationProjectScope.js';
 
-// ── Event types that can trigger a push ────────────────────────────────
+// Event types that can trigger a push
 export const PUSH_EVENT_TYPES = [
   'awaiting_feedback',
   'ready_to_push',
@@ -43,7 +43,7 @@ export const PUSH_EVENT_TYPES = [
 
 export type PushEventType = (typeof PUSH_EVENT_TYPES)[number];
 
-// ── Payload shape sent to Expo ─────────────────────────────────────────
+// Payload shape sent to Expo
 export interface ExpoPushMessage {
   to: string;
   sound: 'default' | null;
@@ -61,10 +61,10 @@ interface ExpoPushResponse {
   data?: ExpoPushReceipt[];
 }
 
-// ── Row with optional prefs column (added via ALTER TABLE migration) ──
+// Row with optional prefs column (added via ALTER TABLE migration)
 export type DeviceTokenRowWithPrefs = DeviceTokenRow;
 
-// ── Pure formatters (title + body) ─────────────────────────────────────
+// Formatters (title + body)
 // Keep these aligned with mobile/src/utils/ticketNotifications.js so
 // foreground banners and Expo push use the same wording.
 
@@ -210,7 +210,7 @@ export function infraHealthEventPush(args: {
   };
 }
 
-// ── Preference filtering ────────────────────────────────────────────────
+// Preference filtering
 
 /**
  * Back-compat map from retired `enabled_events` preference keys to their
@@ -274,7 +274,7 @@ export function tokenAcceptsEvent(row: DeviceTokenRowWithPrefs, eventType: PushE
   return enabled.has(eventType);
 }
 
-// ── Expo HTTP client (overridable for tests) ───────────────────────────
+// Expo HTTP client (overridable for tests)
 export const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 
 export interface PushDispatchDeps {
@@ -500,7 +500,7 @@ export async function dispatchPushEvent(
   return sendExpoPush(msgs, deps);
 }
 
-// ── Broadcast → push bridge ────────────────────────────────────────────
+// Broadcast → push bridge
 
 interface BroadcastData {
   type?: string;
@@ -551,7 +551,7 @@ export async function handleBroadcastForPush(
 }
 
 /**
- * Pure mapping from broadcast payload → push event + formatted payload.
+ * Mapping from broadcast payload → push event + formatted payload.
  * Exported for tests.
  */
 export function mapBroadcastToPush(data: BroadcastData): {

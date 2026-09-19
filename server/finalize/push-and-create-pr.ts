@@ -1,5 +1,5 @@
 /**
- * push-and-create-pr.ts — Finalize Code Changes, §8 push step.
+ * Finalize Code Changes, §8 push step.
  *
  * Wires the orchestrator's injected {@link PushAndCreatePrFn} seam to a real
  * `git push --force-with-lease -u origin <branch>` + `gh pr create` pair.

@@ -18,7 +18,7 @@
 
 import { z, registerComponent } from '../registry.js';
 
-// ── Common building blocks ─────────────────────────────────────────────
+// Common building blocks
 
 export const ErrorResponse = registerComponent(
   'ErrorResponse',
@@ -101,7 +101,7 @@ export const MfaRequiredResponse = registerComponent(
   }),
 );
 
-// ── Bodies (request shapes) ────────────────────────────────────────────
+// Bodies (request shapes)
 
 function credentialBody<T extends z.ZodRawShape>(extra: T, description: string) {
   return z
@@ -375,7 +375,7 @@ export const PutSidebarCollapsedProjectBody = registerComponent(
     }),
 );
 
-// ── CLI auth route bodies ──────────────────────────────────────────────
+// CLI auth route bodies
 
 export const ClaudeLoginBody = registerComponent(
   'ClaudeLoginBody',
@@ -414,7 +414,7 @@ export const OauthTokenBody = registerComponent(
   }),
 );
 
-// ── GitHub OAuth ───────────────────────────────────────────────────────
+// GitHub OAuth
 
 export const GithubConnectTokenBody = registerComponent(
   'GithubConnectTokenBody',
@@ -423,7 +423,7 @@ export const GithubConnectTokenBody = registerComponent(
   }),
 );
 
-// ── Helpers ────────────────────────────────────────────────────────────
+// Helpers
 
 /**
  * Convert a ZodError into the response shape the auth routes return on

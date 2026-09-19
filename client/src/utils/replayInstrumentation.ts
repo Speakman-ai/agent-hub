@@ -8,7 +8,7 @@
  * to fix a customer's bug: the best timeline you can derive from DOM mutations
  * alone is a mouse-movement diary.
  *
- * This module closes it by emitting rrweb **Custom** events (`type: 5`)
+ * Closes it by emitting rrweb **Custom** events (`type: 5`)
  * alongside the DOM stream, so console errors/warnings, uncaught exceptions,
  * unhandled rejections, and fetch/XHR outcomes are interleaved into the same
  * timestamp-ordered event list the rest of the replay already flows through.
@@ -88,7 +88,7 @@ export type ReplayCustomEventEmitter = (event: {
   data: { tag: string; payload: unknown };
 }) => void;
 
-// ─── Redaction ────────────────────────────────────────────────────
+// Redaction
 
 /**
  * Query-string keys whose value is always masked, matched case-insensitively as
@@ -340,7 +340,7 @@ function truncate(text: string, max: number): string {
   return `${text.slice(0, Math.max(0, max - 1))}…`;
 }
 
-// ─── Console formatting ───────────────────────────────────────────
+// Console formatting
 
 /** Render one console argument. Errors keep their name/message; objects are
  *  JSON-stringified (cycles and getters degrade to a placeholder). */
@@ -393,7 +393,7 @@ export function formatStack(stack: unknown, maxFrames: number = MAX_STACK_FRAMES
   return truncate(redactSensitiveText(frames.join(' | ')), MAX_CONSOLE_MESSAGE_CHARS);
 }
 
-// ─── Rate limiting ────────────────────────────────────────────────
+// Rate limiting
 
 /**
  * Token bucket bounding telemetry volume. A page stuck in an error loop can
@@ -432,7 +432,7 @@ export class TelemetryRateLimiter {
   }
 }
 
-// ─── Installation ─────────────────────────────────────────────────
+// Installation
 
 export interface ReplayInstrumentationOptions {
   /** Receives each ready-made rrweb custom event. */
@@ -453,7 +453,7 @@ export interface ReplayInstrumentationOptions {
   limiter?: TelemetryRateLimiter;
 }
 
-// ─── Shared surface installations ─────────────────────────────────
+// Shared surface installations
 //
 // Each patched surface (a console object, a window's error listeners, a
 // window's fetch/XHR) is installed AT MOST ONCE and fans out to every

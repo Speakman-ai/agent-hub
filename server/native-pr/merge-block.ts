@@ -1,5 +1,5 @@
 /**
- * merge-block.ts — classify native-PR merge block reasons.
+ * Classify native-PR merge block reasons.
  *
  * `mergeBlockedReason` (service.ts) returns human-readable strings. Some are
  * **transient**: a required check that is still running (or hasn't started)

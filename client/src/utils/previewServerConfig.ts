@@ -114,8 +114,7 @@ export function buildPreviewHmrConfig(env: any) {
 
 /**
  * Build the Vite `server` config for preview/HMR mode, or null when not in a
- * session preview. Kept a pure function of `env` so it is unit-testable
- * without running the full vite.config.js (which shells out to git, etc.).
+ * session preview. Isolated from vite.config.js so tests skip its git spawn.
  */
 export function buildPreviewServerConfig(env: any) {
   if (!isPreviewMode(env)) return null;

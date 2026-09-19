@@ -1,18 +1,6 @@
 /**
- * prReviewActions.js — pure payload builders + capability gating for the
- * mobile PR detail actions (review / comment / edit / reopen).
- *
- * The server contracts live in `server/routes/pulls-native.ts`:
- *   - POST  .../pulls/:n/reviews   { state: approved|changes_requested|commented, body? }
- *     ('commented' requires a non-empty body)
- *   - POST  .../pulls/:n/comments  { filePath, line, side?: old|new, body }
- *   - PATCH .../pulls/:n           { title?, body?, baseBranch? } (open PRs only)
- *   - POST  .../pulls/:n/reopen    (closed, non-merged PRs only)
- *
- * The UI speaks GitHub verbs (APPROVE / REQUEST_CHANGES / COMMENT); these
- * builders translate to the server's `state` values. All builders return
- * `{ ok: true, payload }` or `{ ok: false, error }` — no throwing, so the
- * sheets can render validation errors inline.
+ * PR detail action payloads. UI verbs (APPROVE / REQUEST_CHANGES / COMMENT)
+ * map to server `state`. Builders return `{ ok, payload }` or `{ ok, error }`.
  */
 export const REVIEW_EVENTS = [
   { event: 'APPROVE', state: 'approved', label: 'Approve' },

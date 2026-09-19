@@ -1,5 +1,5 @@
 /**
- * auto-merge-ready-pr.ts — dispatch the "Merge Automatically" auto-merge
+ * Dispatch the "Merge Automatically" auto-merge
  * step to the right host.
  *
  * Finalize's push step creates one of two PR kinds depending on the

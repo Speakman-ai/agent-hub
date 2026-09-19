@@ -1,5 +1,5 @@
 /**
- * log-retention-reaper.ts — periodic retention + quota prune for `logs.db`.
+ * Periodic retention + quota prune for `logs.db`.
  *
  * Customer application logs are high-volume (decision LOG-STORE). Two bounds
  * keep the dedicated store from growing without limit:

@@ -1,5 +1,5 @@
 /**
- * pr-summary-llm.ts — LLM-backed PR title + summary generation.
+ * LLM-backed PR title + summary generation.
  *
  * The deterministic builder in `buildPrDetails` names a multi-commit PR after
  * the kanban card title and uses the card description (or, failing that, the
@@ -10,7 +10,7 @@
  * a single-commit branch: the PR is named after the last commit, capturing
  * only the final turn instead of the whole session.
  *
- * This module feeds the FULL set of commits (subjects + bodies) and the diff
+ * Feeds the FULL set of commits (subjects + bodies) and the diff
  * stat to a fast LLM and asks for a coherent title + summary that captures the
  * entire change. It mirrors `generateLlmTitle` in session-title.ts: fetch-based
  * (no SDK), key-gated, time-boxed, and it NEVER throws — it returns `null` on

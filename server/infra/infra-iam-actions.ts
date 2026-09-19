@@ -99,7 +99,7 @@ export const INFRA_IAM_ACTIONS: readonly InfraIamAction[] = [
     why: 'Resolve the account id behind a monitoring profile, and prove the role is assumable before any billed call runs. AWS allows this for every identity and ignores an explicit Deny, so the statement is documentation of what we call rather than a grant that changes anything.',
   },
 
-  // ── Inventory (INFRA-SCOPE hourly sync) ──────────────────────────
+  // Inventory (INFRA-SCOPE hourly sync)
   // Describe-first, because ListMetrics omits anything with no datapoint in
   // the past two weeks: it lists *reporting* resources, never existing ones.
   {
@@ -223,7 +223,7 @@ export const INFRA_IAM_ACTIONS: readonly InfraIamAction[] = [
     why: 'The IAM action behind ListBucketMetricsConfigurations: whether a bucket has a CloudWatch metrics configuration, and under which filter ids. S3 request metrics do not exist without one, so this is what makes the paid metrics detected rather than assumed — without it every bucket reads as having none and the request-metric panels go permanently, silently empty.',
   },
 
-  // ── Metrics (INFRA-COLLECT) ──────────────────────────────────────
+  // Metrics (INFRA-COLLECT)
   {
     action: 'cloudwatch:GetMetricData',
     capability: 'metrics',
@@ -240,21 +240,21 @@ export const INFRA_IAM_ACTIONS: readonly InfraIamAction[] = [
     why: 'Prune query lists to resources currently reporting, via RecentlyActive=PT3H. Never used as an inventory source.',
   },
 
-  // ── Alarm parity (INFRA-ALERT) ───────────────────────────────────
+  // Alarm parity (INFRA-ALERT)
   {
     action: 'cloudwatch:DescribeAlarms',
     capability: 'alarms',
     why: "Show the customer's own CloudWatch alarm state beside ours. Operators diff the two, and this is the action ViewOnlyAccess omits.",
   },
 
-  // ── Tags (INFRA-SCOPE tag filters) ───────────────────────────────
+  // Tags (INFRA-SCOPE tag filters)
   {
     action: 'tag:GetResources',
     capability: 'tags',
     why: 'Resolve a scope tag filter to resource ARNs in one call instead of per-service tag reads.',
   },
 
-  // ── Service quotas ───────────────────────────────────────────────
+  // Service quotas
   {
     action: 'servicequotas:ListServiceQuotas',
     capability: 'quotas',
@@ -266,7 +266,7 @@ export const INFRA_IAM_ACTIONS: readonly InfraIamAction[] = [
     why: 'Single-quota reads for the applied (customer-adjusted) value, which differs from the default.',
   },
 
-  // ── Cost Explorer (opt-in, INFRA-COST) ───────────────────────────
+  // Cost Explorer (opt-in, INFRA-COST)
   {
     action: 'ce:GetCostAndUsage',
     capability: 'cost',
@@ -274,7 +274,7 @@ export const INFRA_IAM_ACTIONS: readonly InfraIamAction[] = [
     why: 'Spend trends. $0.01 per request with every pagination page counted and no free tier, so it is polled at most 3x/day behind a cache.',
   },
 
-  // ── Health (opt-in, needs Business or Enterprise Support) ─────────
+  // Health (opt-in, needs Business or Enterprise Support)
   {
     action: 'health:DescribeEvents',
     capability: 'health',

@@ -1,6 +1,5 @@
 /**
- * Pure view-model helpers for the SessionChanges screen — the mobile
- * counterpart of the web client's SessionChangesPane.
+ * SessionChanges view-model. Mobile counterpart of SessionChangesPane.
  *
  * Server contracts (see `server/session-changes.ts` + `server/routes/sessions.ts`):
  *
@@ -14,10 +13,8 @@
  *
  *   GET /api/sessions/:id/worktree-changes →
  *     { branch, hasUncommitted, hasUnpushed, committable, headSha }
- *
- * Everything here is dependency-free (no react-native imports) so it can be
- * unit-tested with plain Vitest in a node environment.
  */
+
 /** Visual metadata per change status. `tone` is a semantic color slot the
  * screen resolves against the theme (add=green, del=red, info=blue, warn=amber). */
 const STATUS_META: Record<string, any> = {

@@ -1,7 +1,7 @@
 /**
- * worktree-bundle-s3.ts — S3-backed BundleStore for the cross-host runner fleet.
+ * S3-backed BundleStore for the cross-host runner fleet.
  *
- * IMPORTANT: This module imports the AWS SDK and is intended for the HUB side
+ * IMPORTANT: Imports the AWS SDK and is intended for the HUB side
  * only. The runner agent must NOT import it — the agent downloads the bundle via
  * the presigned `getUrl` carried on the WorktreeRef using a plain `fetch`, so its
  * esbuild bundle stays SDK-free and lean. Keep all `@aws-sdk/*` imports confined

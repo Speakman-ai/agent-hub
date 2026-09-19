@@ -1,5 +1,5 @@
 /**
- * infra-fleet.ts — the read behind the fleet dashboard.
+ * The read behind the fleet dashboard.
  *
  * The Metrics tab answers "show me this one series on this one resource", which
  * is the right shape for investigating something and the wrong shape for

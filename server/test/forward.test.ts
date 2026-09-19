@@ -157,7 +157,7 @@ describe('POST /api/sessions/:sessionId/forward', () => {
     expect(promptIdx).toBeLessThan(forwardIdx);
   });
 
-  // ─── autoStart ─────────────────────────────────────────────────
+  // autoStart
 
   it('does not pre-store message when autoStart is true', async () => {
     const { session: srcSession } = await createSessionWithMessages(agentA.id as string, [
@@ -197,7 +197,7 @@ describe('POST /api/sessions/:sessionId/forward', () => {
     expect(msgRes.body[0].id).toBe(res.body.forwardedMessageId);
   });
 
-  // ─── Model override ────────────────────────────────────────────
+  // Model override
 
   it('applies a valid model override to the new session', async () => {
     const { session: srcSession } = await createSessionWithMessages(agentA.id as string, [
@@ -269,7 +269,7 @@ describe('POST /api/sessions/:sessionId/forward', () => {
     expect(res.body.error).toMatch(/not valid for engine codex-cli/i);
   });
 
-  // ─── Validation ────────────────────────────────────────────────
+  // Validation
 
   it('returns 400 when targetAgentId is missing', async () => {
     const session = await createSession({ agentId: agentA.id as string });
@@ -312,7 +312,7 @@ describe('POST /api/sessions/:sessionId/forward', () => {
       .expect(400);
   });
 
-  // ─── Size / count guards ────────────────────────────────────────
+  // Size / count guards
 
   it('returns 400 when forwarded content exceeds size limit', async () => {
     // Create a session with a single very large message (~600 KB > 500 KB limit)
@@ -340,7 +340,7 @@ describe('POST /api/sessions/:sessionId/forward', () => {
       .expect(400);
   });
 
-  // ─── Edge cases ────────────────────────────────────────────────
+  // Edge cases
 
   it('can forward to the same agent (self-forward)', async () => {
     const { session: srcSession } = await createSessionWithMessages(agentA.id as string, [

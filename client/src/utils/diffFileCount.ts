@@ -1,13 +1,6 @@
 /**
- * Helpers for the per-session "Changes" toolbar badge count.
- *
- * The count is derived from `GET /api/sessions/:id/changes` (the same
- * summary the diff pane renders) and stored in App.jsx as a
- * `{ [sessionId]: number }` map. These pure helpers keep the
- * derive-and-merge logic in one place so the diff pane's `onSummary`
- * callback and the live WS-driven refresh stay in lockstep, and so the
- * tricky React bail-out (return the same object reference when nothing
- * changed) is unit-testable without rendering the app.
+ * Per-session "Changes" toolbar badge. Count comes from GET /api/sessions/:id/changes.
+ * Merge must return the same object reference when nothing changed so React bails out.
  */
 
 /**
@@ -68,8 +61,6 @@ export function isWorktreeSession(session: any) {
  * null/undefined does not advance the guard, so an older-but-valid result is
  * still applied instead of stranding the badge stale on a transient failure.
  *
- * I/O is injected (no React, no fetch) so the ordering guard is unit-testable.
- *
  * @param {object} io
  * @param {(sessionId: string) => Promise<number|null|undefined>} io.fetchCount
  *        resolves to the changed-file count, or null/undefined to skip applying.
@@ -104,8 +95,7 @@ export function createDiffFileCountRefresher({ fetchCount, applyCount }: any) {
 
 /**
  * Apply the Changes-badge side effects for a WebSocket event. This is the
- * core "live badge" contract, extracted from App.jsx's WS handler so it can
- * be unit-tested without rendering the app:
+ * core "live badge" contract, extracted from App.jsx's WS handler:
  *
  *  - `code_changed` (first dirty transition; the session must exist): refresh
  *    the closed-pane badge count and bump the open-pane reload token.

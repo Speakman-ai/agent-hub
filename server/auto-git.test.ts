@@ -2821,7 +2821,7 @@ describe('buildPrTitle', () => {
     expect(prTitle).not.toMatch(/ — /);
   });
 
-  // ─── Commit-subject preference (regression for PR #718) ──────────────
+  // Commit-subject preference (regression for PR #718)
   // PR #718 had excellent commit subjects ("feat: per-user GitHub login via
   // PAT + setup-wizard step") but the PR title was the truncated user
   // request used as the kanban card title ("Need a way to login to github.
@@ -3036,8 +3036,8 @@ describe('buildPrBody', () => {
     expect(body).not.toContain('kanban card');
   });
 
-  // ─── Commit-body support (acceptance criteria for "meaningful PRs from
-  // commits") ─────────────────────────────────────────────────────────────
+  // Commit-body support (acceptance criteria for "meaningful PRs from
+  // commits")
   // The legacy form passed `string[]` (subjects only). The new
   // `CommitInfo[]` form lets us surface the agent's commit *bodies* — which
   // is where the rationale usually lives — in the PR Summary and the

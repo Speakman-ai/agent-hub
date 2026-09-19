@@ -218,7 +218,7 @@ describe('infra alerts', () => {
   });
 });
 
-// ── Auth gating ────────────────────────────────────────────────────────────
+// Auth gating
 
 /**
  * Claims the auth middleware would normally stamp. The integration suite above

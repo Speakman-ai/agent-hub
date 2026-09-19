@@ -6,8 +6,7 @@
  * transcribed text. Used by mobile (no Web Speech API) and by web/Electron
  * clients that prefer Whisper-grade accuracy over on-device recognition.
  *
- * Design notes
- * ─────────────
+ * Design notes.
  * • Providers: selectable on the settings page via `config.transcriptionProvider`.
  *   The host config setting is authoritative — there is no per-request override.
  *     - `xai` (default) — xAI Grok speech-to-text (`POST https://api.x.ai/v1/stt`,

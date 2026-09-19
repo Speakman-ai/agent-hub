@@ -139,13 +139,13 @@ describe('flake-recovery DB round-trip', () => {
       stmts.upsertFinalizeRunJob.run('r1', jobId, '', state, exit, 1, 2, attempt);
     };
 
-    // ── Round 1 on head h1: both jobs fail. ───────────────────────────
+    // Round 1 on head h1: both jobs fail.
     round = 1;
     upsertJob('e2e', 'failed', 1);
     upsertJob('backend', 'failed', 1);
     recordJobAttemptsForRound({ stmts, now: () => 1000 }, { runId: 'r1', round, headSha: 'h1' });
 
-    // ── Fixer commit lands (head → h2) touching only server/**. ───────
+    // Fixer commit lands (head → h2) touching only server/**.
     // Round 2: the backend fix worked; e2e ALSO flips green even though
     // nothing in e2e's paths changed — the laundered flake.
     round = 2;

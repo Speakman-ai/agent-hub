@@ -899,7 +899,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const { url, targetDir } = req.body as { url?: string; targetDir?: string };
     if (!url) return res.status(400).json({ error: 'url is required' });
 
-    // ── Classify the URL up front so we can fail fast on SSH ───────
+    // Classify the URL up front so we can fail fast on SSH
     // SSH cloning needs a known_hosts entry + a registered key, neither
     // of which we can guarantee in Docker-deployed Hubs. Surface a
     // pointed message instead of letting git error with the cryptic
@@ -930,7 +930,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       });
     }
 
-    // ── Resolve a user OAuth/PAT token for github-https URLs ───────
+    // Resolve a user OAuth/PAT token for github-https URLs
     // The connect-token endpoint stores both OAuth and PAT credentials
     // in the same `users.github_user_token` column, so this single
     // lookup covers both flows. For non-github or already-authenticated
@@ -1254,7 +1254,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     res.json(rows);
   });
 
-  // ─── Per-project member assignment (Owner-managed visibility ACL) ───
+  // Per-project member assignment (Owner-managed visibility ACL)
   //
   // A user sees a project only if assigned to it (see project-visibility.ts).
   // These routes let an Owner manage that assignment set. They sit behind
@@ -1552,7 +1552,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     res.json(project);
   });
 
-  // ─── Per-user, project-scoped settings ───────────────────────────
+  // Per-user, project-scoped settings
   //
   // Each user picks their own default Finalize automation level for a
   // project; new ad-hoc sessions they create inherit it (see the manual
@@ -1616,7 +1616,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     });
   });
 
-  // ─── Branch listing for the PR base-branch picker ─────────────────
+  // Branch listing for the PR base-branch picker
   //
   // Cards can override the PR base branch (via `pr_base_branch`). The card
   // configuration UI needs to list every branch the project's git remote
@@ -2756,7 +2756,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
         delete (project as Record<string, unknown>).infraEnabled;
       }
     }
-    // ─── Visibility (shared ↔ private) ──────────────────────────────
+    // Visibility (shared ↔ private)
     // Mirrors the create-time validation but additionally enforces the
     // role-gated transition policy (see `canChangeVisibility`). Two
     // transitions are real:
@@ -2927,7 +2927,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
     res.status(204).end();
   });
 
-  // ─── Project analysis (Open Project wizard) ──────────────────────
+  // Project analysis (Open Project wizard)
   router.post('/api/projects/analyze', async (req: Request, res: Response) => {
     const { cwd } = req.body as { cwd?: string };
     if (!cwd) return res.status(400).json({ error: 'cwd is required' });

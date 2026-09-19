@@ -1,5 +1,5 @@
 /**
- * replay-retention-sweeper.ts — periodic TTL garbage collection for the session
+ * Periodic TTL garbage collection for the session
  * replay INDEX ROWS.
  *
  * Session replays are gzipped blobs in the artifact store plus a `session_replays`

@@ -1,11 +1,7 @@
 /**
- * Pure mapping from the git-host mirror state (GET
- * /projects/:id/git-host/mirror → { enabled, refs, state }) to a banner
- * descriptor. Returns null when nothing needs surfacing (synced, or a
- * transient "ahead" the outbound mirror handles on its own).
- *
- * Kept pure + separate from the React component so it can be unit-tested
- * without rendering.
+ * Map git-host mirror state (GET /projects/:id/git-host/mirror) to a banner.
+ * Returns null when nothing needs surfacing (synced, or a transient "ahead"
+ * the outbound mirror handles on its own).
  */
 
 function firstLine(s: any) {

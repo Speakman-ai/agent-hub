@@ -1,12 +1,12 @@
 /**
- * finalize-log-store.ts — durable, lazy-loaded storage for Finalize CI step
+ * Durable, lazy-loaded storage for Finalize CI step
  * output.
  *
  * Background: Finalize step output used to be streamed line-by-line into the
  * session as `messages` rows + `message` WebSocket broadcasts (one per line,
  * capped). That flooded the live session window and bloated message history
  * during a run, and reading one step's logs scanned the ENTIRE session message
- * table. This module replaces that: each step's output is written ONCE, as a
+ * table. Replaces that: each step's output is written ONCE, as a
  * single gzipped blob, to a dedicated store keyed by (runId, stepIndex). The
  * step-log viewer fetches that blob on click — nothing lands in the chat
  * stream.

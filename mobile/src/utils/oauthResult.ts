@@ -1,9 +1,5 @@
 /**
- * oauthResult.ts — pure helpers for the native OAuth sign-in flow.
- *
- * Kept free of native imports (expo-web-browser / expo-auth-session) so it
- * unit-tests under plain Vitest. The native orchestration lives in
- * `oauthSignIn.ts` and consumes these.
+ * Native OAuth sign-in helpers. No expo imports so tests run under plain Vitest.
  */
 
 /**

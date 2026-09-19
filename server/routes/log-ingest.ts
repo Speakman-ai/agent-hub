@@ -50,7 +50,7 @@ import {
   OtlpProtobufError,
 } from '../logs/otlp-protobuf.js';
 
-// ─── Rate limiting ──────────────────────────────────────────────────
+// Rate limiting
 const RATE_WINDOW_MS = 60_000;
 // Read at call time (not module load) so a low cap can be set via env in tests
 // without re-importing the module.
@@ -140,7 +140,7 @@ function ipFromReq(req: Request): string {
   return req.ip || req.socket.remoteAddress || 'unknown';
 }
 
-// ─── Token / body helpers ───────────────────────────────────────────
+// Token / body helpers
 
 /** Pull the ingest token from `Authorization: Bearer` or the custom header. */
 export function extractIngestToken(req: Request): string | null {
@@ -207,7 +207,7 @@ function otlpFormat(req: Request, buf: Buffer): 'json' | 'protobuf' {
   return firstNonWs === 0x7b || firstNonWs === 0x5b ? 'json' : 'protobuf';
 }
 
-// ─── Route factory ──────────────────────────────────────────────────
+// Route factory
 
 export default function createLogIngestRoutes({ findProject }: RouteDeps): Router {
   const router = Router();
@@ -305,7 +305,7 @@ export default function createLogIngestRoutes({ findProject }: RouteDeps): Route
     return { accepted: enqueued, rejected: normalized.rejected };
   }
 
-  // ─── OTLP/HTTP logs ───────────────────────────────────────────────
+  // OTLP/HTTP logs
   router.post('/api/otel/v1/logs', rawBody, (req: Request, res: Response) => {
     const admitted = admit(req, res);
     if (!admitted) return;
@@ -364,7 +364,7 @@ export default function createLogIngestRoutes({ findProject }: RouteDeps): Route
     });
   });
 
-  // ─── Agent Hub JSON batch ─────────────────────────────────────────
+  // Agent Hub JSON batch
   router.post('/api/logs/ingest', rawBody, (req: Request, res: Response) => {
     const admitted = admit(req, res);
     if (!admitted) return;
@@ -528,5 +528,5 @@ function sendOtlp(
   res.status(status).json(partial);
 }
 
-// ─── OpenAPI registration (side-effect import) ──────────────────────
+// OpenAPI registration (side-effect import)
 import './log-ingest.openapi.js';

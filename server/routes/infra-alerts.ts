@@ -104,7 +104,7 @@ export default function createInfraAlertRoutes(deps: RouteDeps): Router {
     return true;
   }
 
-  // ── Rules ────────────────────────────────────────────────────────────────
+  // Rules
 
   router.get(
     '/api/projects/:projectId/infra/alert-rules',
@@ -196,7 +196,7 @@ export default function createInfraAlertRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // ── Alerts ───────────────────────────────────────────────────────────────
+  // Alerts
 
   router.get(
     '/api/projects/:projectId/infra/alerts',

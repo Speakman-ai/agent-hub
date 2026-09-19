@@ -53,7 +53,7 @@ import {
   getSessionWorktreeLockOwner,
 } from '../session-worktree-lock.js';
 
-// ─── Fixtures ────────────────────────────────────────────────────────
+// Fixtures
 
 const fakeCard: KanbanCardRow = {
   id: 'card-1',
@@ -96,7 +96,7 @@ const baseOpts = (overrides: Partial<OrchestratorOptions> = {}): OrchestratorOpt
   ...overrides,
 });
 
-// ─── Fake DB ─────────────────────────────────────────────────────────
+// Fake DB
 
 interface FakeRow extends Partial<FinalizeRunRow> {
   id: string;
@@ -388,7 +388,7 @@ function makeStmts(): {
   return { stmts, rows, byKey, threads, phaseCalls, failCalls };
 }
 
-// ─── Fake phase runners ──────────────────────────────────────────────
+// Fake phase runners
 
 function fakeRunRebase(
   outcome: RebasePhaseOutcome,
@@ -420,7 +420,7 @@ function fakeDispatchFix(
   return vi.fn().mockResolvedValue(outcome) as never;
 }
 
-// ─── Default success outcomes for "everything green" ─────────────────
+// Default success outcomes for "everything green"
 
 const REBASE_OK: RebasePhaseOutcome = {
   kind: 'success',
@@ -469,7 +469,7 @@ const FIX_TURN_ENDED: FixDispatchResult = {
   activeSecondsBilled: 1,
 };
 
-// ─── Deps factory ────────────────────────────────────────────────────
+// Deps factory
 
 function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
   deps: OrchestratorDeps;
@@ -550,7 +550,7 @@ afterEach(() => {
   delete process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS;
 });
 
-// ─── Tests ────────────────────────────────────────────────────────────
+// Tests
 
 describe('computeIdempotencyKey', () => {
   it('produces a stable 64-char hex digest', () => {
@@ -2248,7 +2248,7 @@ describe('runFinalize — error containment', () => {
   });
 });
 
-// ─── Broadcast-contract tests for outcomeFromFailed paths ────────────
+// Broadcast-contract tests for outcomeFromFailed paths
 //
 // The orchestrator promises every terminal path emits a
 // `finalize_run_completed` event so subscribers can rely on one signal
@@ -2316,7 +2316,7 @@ describe('runFinalize — terminal broadcasts on outcomeFromFailed paths', () =>
   });
 });
 
-// ─── MAX_FIX_DISPATCH_LOOPS backstop ─────────────────────────────────
+// MAX_FIX_DISPATCH_LOOPS backstop
 
 describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
   // These tests isolate the same-SHA rerun / backstop mechanics. Disable the §6
@@ -2449,7 +2449,7 @@ describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
   });
 });
 
-// ─── §6 no-progress: commit / wrong-branch nudge ─────────────────────
+// §6 no-progress: commit / wrong-branch nudge
 // The reported failure (support ticket cb07c782): a run dead-ended at
 // `fix_no_progress` because the session left its work in the worktree without
 // committing it — HEAD never advanced, so the guard gave up. Instead of that
@@ -2687,7 +2687,7 @@ describe('buildNoProgressNudgeBody', () => {
   });
 });
 
-// ─── card-lifecycle integration ──────────────────────────────────────
+// card-lifecycle integration
 
 function makeSpyLifecycle(): CardLifecycle & {
   calls: Array<{ method: string; args: Record<string, unknown> }>;
@@ -2951,7 +2951,7 @@ describe('runFinalize — card lifecycle integration', () => {
   });
 });
 
-// ─── §13 active-time budget enforcement ──────────────────────────────
+// §13 active-time budget enforcement
 
 describe('runFinalize — §13 budget integration', () => {
   it('posts a session timeout message with the last attempt output tail on budget exhaustion', async () => {
@@ -3102,7 +3102,7 @@ describe('runFinalize — §13 budget integration', () => {
   });
 });
 
-// ─── §10 infra-failure classifier + one-auto-retry semantics ─────────
+// §10 infra-failure classifier + one-auto-retry semantics
 //
 // The orchestrator's §10 contract:
 //   - infra-class failures (worktree_create_failed, container_unavailable,
@@ -3710,7 +3710,7 @@ describe('runFinalize — §10 double-reclaim survival (generation cap > 1)', ()
   });
 });
 
-// ─── §14 metric emission contract ─────────────────────────────────────
+// §14 metric emission contract
 
 /**
  * Pull every `insertFinalizeMetric.run` call as a structured row so
@@ -3822,7 +3822,7 @@ describe('runFinalize — §14 metric emission', () => {
   });
 });
 
-// ─── §3 decision trace ───────────────────────────────────────────────
+// §3 decision trace
 // Regression for the "Finalize is acting funny and there's no way to see
 // which branch the state machine took" report (session fcc171ca). The
 // orchestrator emits one structured `[finalize-trace]` line per phase

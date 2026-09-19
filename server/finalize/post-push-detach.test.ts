@@ -27,7 +27,7 @@ import {
 import { classifyPr, writeFinalizeRunPrUrl } from './provenance.js';
 import type { KanbanCardRow, KanbanColumnRow, Stmts } from '../types.js';
 
-// ─── Unit: formatPostPushComment ─────────────────────────────────────
+// Unit: formatPostPushComment
 
 describe('formatPostPushComment', () => {
   it('renders the ui_button handoff with PR URL and run trailer', () => {
@@ -100,7 +100,7 @@ describe('formatPostPushComment', () => {
   });
 });
 
-// ─── Unit fixtures ───────────────────────────────────────────────────
+// Unit fixtures
 
 function fakeCard(overrides: Partial<KanbanCardRow> = {}): KanbanCardRow {
   return {
@@ -204,7 +204,7 @@ function makeDeps(cardOverride: Partial<KanbanCardRow> = {}): {
   return { deps, card, comments, moves, broadcast, log };
 }
 
-// ─── Unit: runPostPushDetach ─────────────────────────────────────────
+// Unit: runPostPushDetach
 
 describe('runPostPushDetach — happy path (card in In Progress)', () => {
   it('posts the handoff comment then moves the card to Review', () => {
@@ -355,11 +355,11 @@ describe('runPostPushDetach — moveToDone (cardDoneOnPush)', () => {
     expect(moves).toHaveLength(0);
   });
 
-  // ── Reviewer-flagged regression: the Done headline must NOT assert a
+  // Reviewer-flagged regression: the Done headline must NOT assert a
   //    transition that did not happen. Each case below leaves the card in a
   //    non-Done column, so the comment must fall back to the non-assertive
   //    handoff line. (Pre-fix, the assertive headline was posted up front,
-  //    unconditionally — the card thread lied.) ──
+  //    unconditionally — the card thread lied.)
   describe('honest headline — move cannot be confirmed', () => {
     const NON_ASSERTIVE = 'Finalized. PR is on GitHub, owned by the developer from here.';
 
@@ -570,7 +570,7 @@ describe('runPostPushDetach — non-throwing contract', () => {
   });
 });
 
-// ─── Integration: §15 end-to-end loop ────────────────────────────────
+// Integration: §15 end-to-end loop
 
 /**
  * Spin up an in-memory sqlite with the kanban + finalize_runs schemas so
@@ -800,13 +800,13 @@ describe('§15 integration — pushed run → provenance hit → merge moves car
     const harness = buildIntegrationHarness();
     seed(harness, { startingColumn: 'col-progress' });
 
-    // ── 1) Simulate the push step's atomic pair (pr_url write + status). ──
+    // 1) Simulate the push step's atomic pair (pr_url write + status).
     // The orchestrator does this BEFORE calling detach. We reproduce the
     // pr_url write here; the status flip to 'pushed' is not consulted by
     // any §15 read path so we leave it as 'pushing' for the smaller seed.
     writeFinalizeRunPrUrl({ stmts: harness.stmts }, { runId: 'run-int', prUrl: PR_URL });
 
-    // ── 2) Run the §15 detach. ──
+    // 2) Run the §15 detach.
     runPostPushDetach(
       { stmts: harness.stmts, broadcast: () => undefined },
       {
@@ -835,18 +835,18 @@ describe('§15 integration — pushed run → provenance hit → merge moves car
         '(run run-int)',
     );
 
-    // ── 3) Provenance check: the webhook handler will see this PR and
+    // 3) Provenance check: the webhook handler will see this PR and
     //       classify it as internal via the registry, so the v0 reviewer
     //       auto-dispatch path takes the "skip — internal" branch. The
     //       webhook handler does NOT need the body fetcher to fire — the
-    //       registry hit is authoritative. ──
+    //       registry hit is authoritative.
     const fetchPrBody = vi.fn(async () => '(should not be read)');
     const classification = await classifyPr({ stmts: harness.stmts, fetchPrBody }, PR_URL);
     expect(classification.provenance).toBe('internal');
     expect(classification.via).toBe('registry');
     expect(fetchPrBody).not.toHaveBeenCalled();
 
-    // ── 4) Merge-close webhook moves the card → Done (unchanged path). ──
+    // 4) Merge-close webhook moves the card → Done (unchanged path).
     harness.simulateMergeClosed(CARD_ID);
     const doneRow = harness.db
       .prepare(`SELECT column_id FROM kanban_cards WHERE id = ?`)

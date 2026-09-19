@@ -251,8 +251,8 @@ function collectSkillsFromDir(dir: string): SkillInfo[] {
 /**
  * True when `dir` contains a skill named `slug` in EITHER form that
  * `loadSkillBody` resolves: the directory form (`<dir>/<slug>/SKILL.md`) or the
- * flat form (`<dir>/<slug>.md`). Pure (dir is a parameter) so collision guards
- * stay in lockstep with discovery and can be unit-tested against a temp dir.
+ * flat form (`<dir>/<slug>.md`). `dir` is a parameter so collision guards
+ * stay in lockstep with discovery.
  */
 export function skillDirHasSkill(dir: string, slug: string): boolean {
   return resolveSkillInDir(dir, slug) !== null;
@@ -665,7 +665,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Global (shared) skills ─────────────────────────────────────────────
+  // Global (shared) skills
   // A writable shared tier under <dataDir>/skills, read by listMergedSkills +
   // loadSkillBody BETWEEN the project tier and the bundled defaults. A skill
   // authored here is visible to EVERY agent in EVERY project (precedence:
@@ -860,7 +860,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // ─── Skill improvement review (Learned Lessons promotion) ───────────────
+  // Skill improvement review (Learned Lessons promotion)
   // Agents suggest lessons via <agenthub:skill-improvement>; suggestions land
   // in a per-skill `.agenthub/pending-skill-improvements.jsonl` queue and DO
   // NOT change SKILL.md. These routes are the human review half: list the
@@ -952,7 +952,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     reviewImprovementHandler('reject'),
   );
 
-  // ── Per-project default-on skills (auto-loaded into every session) ──
+  // Per-project default-on skills (auto-loaded into every session)
   router.get('/api/projects/:projectId/default-skills', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
