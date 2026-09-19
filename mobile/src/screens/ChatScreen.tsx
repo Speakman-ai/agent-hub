@@ -368,6 +368,7 @@ export default function ChatScreen({
     configuringAutopilot && activeSessionId ? (
       <View style={[styles.emptyContainer, styles.autopilotEmptyContainer]}>
         <AutopilotSetupPrompt
+          key={activeSessionId}
           sessionId={activeSessionId}
           onStarted={() => {
             void reloadMessages();
@@ -590,6 +591,7 @@ export default function ChatScreen({
         {listData.length > 0 && configuringAutopilot && activeSessionId ? (
           <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
             <AutopilotSetupPrompt
+              key={activeSessionId}
               sessionId={activeSessionId}
               onStarted={() => {
                 void reloadMessages();

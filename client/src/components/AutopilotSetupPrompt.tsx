@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
-import { Rocket } from 'lucide-react';
+import { partitionAttachmentFiles } from '../utils/attachmentValidation';
+import { useMemo, useRef, useState } from 'react';
+import { Paperclip, Rocket, X } from 'lucide-react';
 import { api } from '../utils/api';
 import {
   validateAutopilotSetupInput,
@@ -29,6 +30,8 @@ export default function AutopilotSetupPrompt({
   const [branch, setBranch] = useState('autopilot/');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [files, setFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const parsedDuration = Number(durationHours);
   const preview = useMemo(
@@ -43,12 +46,23 @@ export default function AutopilotSetupPrompt({
     [parsedDuration, brief, goal, escalation, branch],
   );
 
+  function addFiles(incoming: File[]) {
+    if (saving) return;
+    const { accepted, rejected } = partitionAttachmentFiles(incoming);
+    setFiles((current) => [...current, ...accepted]);
+    setError(rejected.map((item) => item.reason).join('\n'));
+  }
+
   async function handleSubmit() {
     if (!preview.ok || saving) return;
     setSaving(true);
     setError('');
     try {
-      const updated = await api.startSessionAutopilot(sessionId, preview.value);
+      const images = await Promise.all(files.map((file) => api.uploadFile(file)));
+      const updated = await api.startSessionAutopilot(sessionId, {
+        ...preview.value,
+        ...(images.length ? { images } : {}),
+      });
       onStarted?.(updated);
     } catch (err: any) {
       const message = err?.message || 'Could not start Autopilot.';
@@ -62,6 +76,11 @@ export default function AutopilotSetupPrompt({
   return (
     <div
       data-testid="autopilot-setup-prompt"
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        addFiles(Array.from(event.dataTransfer.files));
+      }}
       className="border border-emerald-700/50 bg-emerald-950/20 rounded-lg overflow-hidden text-left"
     >
       <div className="flex items-center gap-2 px-3 py-2 bg-emerald-900/30 border-b border-emerald-700/40">
@@ -94,6 +113,11 @@ export default function AutopilotSetupPrompt({
           <span className="block text-xs text-emerald-100/80 mb-1">What you want it to do</span>
           <textarea
             data-testid="autopilot-setup-brief"
+            onPaste={(event) => {
+              if (!event.clipboardData.files.length) return;
+              event.preventDefault();
+              addFiles(Array.from(event.clipboardData.files));
+            }}
             value={brief}
             onChange={(e) => setBrief(e.target.value)}
             disabled={saving}
@@ -101,6 +125,46 @@ export default function AutopilotSetupPrompt({
             className="w-full rounded-md border border-emerald-800/70 bg-gray-950/80 px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
           />
         </label>
+
+        <div className="space-y-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            aria-label="Attach files"
+            className="hidden"
+            disabled={saving}
+            onChange={(event) => {
+              addFiles(Array.from(event.target.files || []));
+              event.target.value = '';
+            }}
+          />
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-1.5 text-xs text-emerald-200 disabled:opacity-50"
+          >
+            <Paperclip size={14} /> Attach files
+          </button>
+          <p className="text-xs text-emerald-100/60">
+            Add reference images or files. You can also paste or drop them here.
+          </p>
+          {files.map((file, index) => (
+            <div key={index} className="flex items-center gap-2 text-xs text-emerald-100">
+              <span className="truncate">{file.name}</span>
+              <button
+                type="button"
+                aria-label={`Remove ${file.name}`}
+                disabled={saving}
+                onClick={() => setFiles((current) => current.filter((_, i) => i !== index))}
+                className="shrink-0 p-1 disabled:opacity-50"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
 
         <label className="block">
           <span className="block text-xs text-emerald-100/80 mb-1">Goal to check for</span>

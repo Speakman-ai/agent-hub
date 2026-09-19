@@ -7355,6 +7355,7 @@ export default function App({ initialView }: any = {}) {
                                       needsAutopilotSetup(activeSession) ? (
                                         <div className="w-full max-w-lg text-left">
                                           <AutopilotSetupPrompt
+                                            key={activeSessionId}
                                             sessionId={activeSessionId}
                                             onStarted={(updated: any) => {
                                               setSessions((prev: any) =>
@@ -7929,6 +7930,7 @@ export default function App({ initialView }: any = {}) {
                         activeSessionId ? (
                           <div className="mx-3 mb-2">
                             <AutopilotSetupPrompt
+                              key={activeSessionId}
                               sessionId={activeSessionId}
                               onStarted={(updated: any) => {
                                 setSessions((prev: any) =>

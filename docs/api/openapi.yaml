@@ -23308,6 +23308,33 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 255
+                images:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        minLength: 1
+                      filename:
+                        type: string
+                        pattern: ^[A-Za-z0-9_-]+\.[A-Za-z0-9]+$
+                      originalName:
+                        type: string
+                        minLength: 1
+                      contentType:
+                        type: string
+                        minLength: 1
+                      url:
+                        type: string
+                        pattern: ^\/uploads\/[A-Za-z0-9_-]+\.[A-Za-z0-9]+$
+                    required:
+                      - id
+                      - filename
+                      - originalName
+                      - contentType
+                      - url
+                  description: Uploaded brief attachments returned by the upload endpoints. Included in the opening chat turn.
               required:
                 - durationHours
                 - brief

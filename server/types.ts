@@ -1,3 +1,4 @@
+import type { UploadedAttachment } from '../shared/types/uploads.js';
 import type { Request, Response, NextFunction, Router } from 'express';
 import type Database from 'better-sqlite3';
 import type { DevServerConfig } from './dev-server-config.js';
@@ -4312,7 +4313,7 @@ export interface ChatMessage {
   content: string;
   /** Interrupt the active turn and prioritize this message in the queue. */
   interrupt?: boolean;
-  images?: string[];
+  images?: string[] | UploadedAttachment[];
   _fromQueue?: boolean;
   _existingMsgId?: string;
   /**

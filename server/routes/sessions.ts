@@ -2471,6 +2471,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         agentId: existing.agent_id,
         sessionId,
         content: buildAutopilotStartUserMessage(cfg),
+        images: parsed.images,
       });
     } catch (err) {
       return res.status(409).json({

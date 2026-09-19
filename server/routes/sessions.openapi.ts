@@ -442,6 +442,21 @@ export const StartSessionAutopilotRequestSchema = z.object({
   goal: z.string().trim().min(1).max(4000),
   escalation: z.enum(['none', 'low', 'medium', 'high']),
   branch: z.string().trim().min(1).max(255),
+  images: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        filename: z.string().regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/),
+        originalName: z.string().min(1),
+        contentType: z.string().min(1),
+        url: z.string().regex(/^\/uploads\/[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/),
+      }),
+    )
+    .optional()
+    .openapi({
+      description:
+        'Uploaded brief attachments returned by the upload endpoints. Included in the opening chat turn.',
+    }),
 });
 
 /**

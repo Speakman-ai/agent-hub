@@ -38,6 +38,32 @@ describe('kickoffSeededTurn', () => {
     resume();
   });
 
+  it('forwards uploaded attachments to the persisted chat turn', async () => {
+    const images = [
+      {
+        id: 'upload-1',
+        filename: 'upload-1.png',
+        originalName: 'reference.png',
+        contentType: 'image/png',
+        url: '/uploads/upload-1.png',
+      },
+    ];
+    const handleChat = vi.fn(async (_ws: unknown, msg: ChatMessage) => {
+      msg._onUserMessagePersisted?.(true);
+    });
+    await kickoffSeededTurn({
+      handleChat,
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      content: 'Use the reference',
+      images,
+    });
+    expect(handleChat).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({ images, content: 'Use the reference' }),
+    );
+  });
+
   it('rejects and does not leave the caller hanging when the turn is dropped', async () => {
     const handleChat = vi.fn(
       (_ws: unknown, msg: ChatMessage) =>

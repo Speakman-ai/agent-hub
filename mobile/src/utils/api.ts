@@ -1,3 +1,4 @@
+import type { UploadedAttachment } from '@shared/types/uploads';
 import { getApiBaseUrl, getAuthHeaders } from './config';
 import { buildNotesListUrl, buildNoteUrl } from './notesUrl';
 import { uploadFile as uploadFileImpl } from './uploadFile';
@@ -177,6 +178,7 @@ export const api = {
       goal: string;
       escalation: string;
       branch: string;
+      images?: UploadedAttachment[];
     },
   ) =>
     fetchJSON(`/sessions/${sessionId}/autopilot`, {

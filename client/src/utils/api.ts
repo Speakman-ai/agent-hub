@@ -1,3 +1,4 @@
+import type { UploadedAttachment } from '@shared/types/uploads';
 import { getApiBase, getAuthHeaders } from './connection';
 import { getToken as getJwt, clearToken, isLocalBundledDeployment } from './auth';
 import { normalizeSessionMessagesResponse } from '@shared/utils/sessionMessagesResponse';
@@ -2044,6 +2045,7 @@ export const api = {
       goal: string;
       escalation: string;
       branch: string;
+      images?: UploadedAttachment[];
     },
   ) =>
     fetchJSON(`/sessions/${sessionId}/autopilot`, {

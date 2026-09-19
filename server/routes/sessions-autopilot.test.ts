@@ -224,6 +224,45 @@ describe('session Autopilot routes', () => {
     expect(kickoff?.content).toContain(VALID_BODY.goal);
   });
 
+  it('passes uploaded brief attachments to the opening turn', async () => {
+    const { app } = makeApp();
+    const images = [
+      {
+        id: 'upload-1',
+        filename: 'upload-1.png',
+        originalName: 'reference.png',
+        contentType: 'image/png',
+        url: '/uploads/upload-1.png',
+      },
+    ];
+    await request(app)
+      .post('/api/sessions/sess-1/autopilot')
+      .send({ ...VALID_BODY, images })
+      .expect(200);
+    expect(mocks.kickoffSeededTurn).toHaveBeenCalledWith(expect.objectContaining({ images }));
+  });
+
+  it('rejects attachment paths before changing the session', async () => {
+    const { app, stmts } = makeApp();
+    await request(app)
+      .post('/api/sessions/sess-1/autopilot')
+      .send({
+        ...VALID_BODY,
+        images: [
+          {
+            id: 'bad',
+            filename: '../secret',
+            originalName: 'secret',
+            contentType: 'text/plain',
+            url: '/uploads/secret',
+          },
+        ],
+      })
+      .expect(400);
+    expect(stmts.updateSessionMode.run).not.toHaveBeenCalled();
+    expect(mocks.kickoffSeededTurn).not.toHaveBeenCalled();
+  });
+
   it('POST /autopilot rejects reserved branches', async () => {
     const { app } = makeApp();
     const res = await request(app)

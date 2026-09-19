@@ -1,3 +1,5 @@
+import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
 import { useMemo, useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
 import { api } from '../utils/api';
@@ -6,6 +8,8 @@ import {
   type AutopilotEscalation,
 } from '@shared/utils/sessionAutopilot';
 import { colors } from '../theme/colors';
+
+type PendingFile = { uri: string; name: string; type: string; size?: number };
 
 const ESCALATION: AutopilotEscalation[] = ['none', 'low', 'medium', 'high'];
 
@@ -25,6 +29,8 @@ export default function AutopilotSetupPrompt({
   const [branch, setBranch] = useState('autopilot/');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [files, setFiles] = useState<PendingFile[]>([]);
+  const [picking, setPicking] = useState(false);
 
   const preview = useMemo(
     () =>
@@ -38,12 +44,62 @@ export default function AutopilotSetupPrompt({
     [durationHours, brief, goal, escalation, branch],
   );
 
+  async function pickAttachments(photos: boolean) {
+    if (saving || picking) return;
+    setPicking(true);
+    setError('');
+    try {
+      if (photos) {
+        const result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images', 'videos'],
+          allowsMultipleSelection: true,
+        });
+        if (!result.canceled) {
+          setFiles((current) => [
+            ...current,
+            ...result.assets.map((asset) => ({
+              uri: asset.uri,
+              name: asset.fileName || asset.uri.split('/').pop() || 'photo.jpg',
+              type: asset.mimeType || (asset.type === 'video' ? 'video/mp4' : 'image/jpeg'),
+              size: asset.fileSize,
+            })),
+          ]);
+        }
+      } else {
+        const result = await DocumentPicker.getDocumentAsync({
+          type: '*/*',
+          multiple: true,
+          copyToCacheDirectory: true,
+        });
+        if (!result.canceled) {
+          setFiles((current) => [
+            ...current,
+            ...result.assets.map((asset) => ({
+              uri: asset.uri,
+              name: asset.name,
+              type: asset.mimeType || 'application/octet-stream',
+              size: asset.size,
+            })),
+          ]);
+        }
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Could not select attachments.');
+    } finally {
+      setPicking(false);
+    }
+  }
+
   async function handleSubmit() {
-    if (!preview.ok || saving) return;
+    if (!preview.ok || saving || picking) return;
     setSaving(true);
     setError('');
     try {
-      const updated = await api.startSessionAutopilot(sessionId, preview.value);
+      const images = await Promise.all(files.map((file) => api.uploadFile(file)));
+      const updated = await api.startSessionAutopilot(sessionId, {
+        ...preview.value,
+        ...(images.length ? { images } : {}),
+      });
       onStarted?.(updated);
     } catch (err: any) {
       const message = err?.message || 'Could not start Autopilot.';
@@ -78,6 +134,39 @@ export default function AutopilotSetupPrompt({
         multiline
         style={[styles.input, styles.multiline]}
       />
+      <View style={styles.row}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Attach photos or videos"
+          disabled={saving || picking}
+          onPress={() => pickAttachments(true)}
+          style={styles.chip}
+        >
+          <Text style={styles.chipText}>Photos / videos</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Attach files"
+          disabled={saving || picking}
+          onPress={() => pickAttachments(false)}
+          style={styles.chip}
+        >
+          <Text style={styles.chipText}>Attach files</Text>
+        </Pressable>
+      </View>
+      {files.map((file, index) => (
+        <View key={index} style={styles.row}>
+          <Text style={styles.chipText}>{file.name}</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${file.name}`}
+            disabled={saving}
+            onPress={() => setFiles((current) => current.filter((_, i) => i !== index))}
+          >
+            <Text style={styles.chipText}>Remove</Text>
+          </Pressable>
+        </View>
+      ))}
       <Text style={styles.label}>Goal to check for</Text>
       <TextInput
         testID="autopilot-setup-goal"
@@ -112,8 +201,8 @@ export default function AutopilotSetupPrompt({
       <Pressable
         testID="autopilot-setup-start"
         onPress={handleSubmit}
-        disabled={!preview.ok || saving}
-        style={[styles.button, (!preview.ok || saving) && styles.buttonOff]}
+        disabled={!preview.ok || saving || picking}
+        style={[styles.button, (!preview.ok || saving || picking) && styles.buttonOff]}
       >
         <Text style={styles.buttonText}>{saving ? 'Starting…' : 'Start Autopilot'}</Text>
       </Pressable>
