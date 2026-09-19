@@ -16161,6 +16161,7 @@ paths:
                     nullable: true
                   needsEmailUpdate:
                     type: boolean
+                    description: Whether email setup is required. False for previews running in local mode.
                   role:
                     type: string
                     nullable: true

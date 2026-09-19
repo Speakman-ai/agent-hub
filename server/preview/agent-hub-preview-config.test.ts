@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { tmpdir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { parseDevServerConfig } from '../dev-server-config.js';
@@ -25,6 +27,38 @@ function parseSnapshotDevServer() {
 }
 
 describe('Agent Hub preview config', () => {
+  it.each(['', 'remote'])(
+    'starts the isolated preview without login when the parent mode is %j',
+    (inheritedMode) => {
+      const workspace = mkdtempSync(path.join(tmpdir(), 'hub-preview-start-'));
+      try {
+        mkdirSync(path.join(workspace, 'server/node_modules'), { recursive: true });
+        const binDir = path.join(workspace, 'bin');
+        mkdirSync(binDir);
+        // Capture the startup environment without booting a server or installing dependencies.
+        writeFileSync(
+          path.join(binDir, 'npm'),
+          '#!/bin/sh\nprintf "%s\\n" "$*" "$AGENT_HUB_MODE" "$AGENT_HUB_DATA_DIR" "$AGENT_HUB_DEFAULT_USERNAME" "$AGENT_HUB_DEFAULT_PASSWORD"\n',
+          { mode: 0o755 },
+        );
+        const output = execFileSync('/bin/sh', ['-c', parseSnapshotDevServer().startCommand], {
+          cwd: workspace,
+          env: { PATH: binDir, AGENT_HUB_MODE: inheritedMode },
+          encoding: 'utf8',
+        });
+        expect(output.trim().split('\n')).toEqual([
+          'run dev',
+          'local',
+          path.join(workspace, '.agent-hub-preview/data'),
+          'admin',
+          'password',
+        ]);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('is a devServer config that passes the shared validator', () => {
     const parsed = parseDevServerConfig(readSnapshot().prEnv?.devServer ?? {});
     expect(parsed.ok ? null : parsed.error).toBeNull();

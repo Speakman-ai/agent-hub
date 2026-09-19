@@ -499,6 +499,7 @@ describe('GET /api/auth/status', () => {
 // AGENT_HUB_MODE exactly: `'local'` → true, anything else → false.
 describe('GET /api/auth/status — activeOrgIsLocal field', () => {
   const originalMode = process.env.AGENT_HUB_MODE;
+  const originalPreview = process.env.AGENT_HUB_PREVIEW;
   beforeEach(() => {
     TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
     setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
@@ -509,6 +510,34 @@ describe('GET /api/auth/status — activeOrgIsLocal field', () => {
   afterEach(() => {
     if (originalMode === undefined) delete process.env.AGENT_HUB_MODE;
     else process.env.AGENT_HUB_MODE = originalMode;
+    if (originalPreview === undefined) delete process.env.AGENT_HUB_PREVIEW;
+    else process.env.AGENT_HUB_PREVIEW = originalPreview;
+  });
+
+  it.each([
+    { mode: 'local', preview: '1', needsEmailUpdate: false },
+    { mode: 'remote', preview: '1', needsEmailUpdate: true },
+    { mode: 'local', preview: '', needsEmailUpdate: true },
+  ])('reports email setup for mode=$mode preview=$preview', async (scenario) => {
+    process.env.AGENT_HUB_MODE = scenario.mode;
+    process.env.AGENT_HUB_PREVIEW = scenario.preview;
+    saveAuthRecord({
+      username: 'admin',
+      passwordHash: await hashPassword('a-strong-password'),
+      jwtSecret: 'preview-test-secret',
+      role: 'Owner',
+    });
+    reloadAuthRecord();
+
+    const res = await supertest(buildApp()).get('/api/auth/status');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      authConfigured: true,
+      activeOrgIsLocal: scenario.mode === 'local',
+      needsEmailUpdate: scenario.needsEmailUpdate,
+    });
+    expect(getAuthRecord()?.username).toBe('admin');
   });
 
   it('reports true when AGENT_HUB_MODE=local (Electron / dev)', async () => {

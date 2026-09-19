@@ -241,7 +241,11 @@ registerPath({
           schema: z.object({
             authConfigured: z.boolean(),
             email: z.string().nullable(),
-            needsEmailUpdate: z.boolean(),
+            needsEmailUpdate: z
+              .boolean()
+              .describe(
+                'Whether email setup is required. False for previews running in local mode.',
+              ),
             role: z.enum(['Owner', 'Admin', 'User']).nullable(),
             jwtConfigured: z.boolean(),
             apiKeyConfigured: z.boolean(),
@@ -2491,9 +2495,14 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     // Field name `activeOrgIsLocal` is preserved for client/back-compat;
     // the AuthGate consumes it to suppress the login screen on local.
     const activeOrgIsLocal = isLocalBundledServer();
+    const emailStatus = publicStatusEmailPayload(record?.username);
+    // Throwaway preview Owners do not need an email to inspect the workspace.
+    if (activeOrgIsLocal && process.env.AGENT_HUB_PREVIEW === '1') {
+      emailStatus.needsEmailUpdate = false;
+    }
     res.json({
       authConfigured: jwtConfigured,
-      ...publicStatusEmailPayload(record?.username),
+      ...emailStatus,
       // Role is safe to leak publicly — it's the owner's role at install
       // time, not a per-caller claim. The UI uses it to decide whether
       // to show the "first Owner" vs "sign in" copy.
