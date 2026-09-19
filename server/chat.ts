@@ -2596,7 +2596,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
 
       if (session && !msg._multiAgentInternal && sessionHasAdvisors(stmts!, sessionId)) {
-        await handleMultiAgentChat(ws, msg);
+        try {
+          await handleMultiAgentChat(ws, msg);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[multi-agent] handleMultiAgentChat rejected: ${message}`);
+          broadcast({ type: 'error', sessionId, error: message });
+        }
         return;
       }
 

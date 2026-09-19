@@ -6,11 +6,11 @@ import { spawn, type ChildProcess } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { endChildStdin } from './child-stdin.js';
 import { v4 as uuidv4 } from 'uuid';
-import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
+import { EngineAuthRequiredError, resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
-import { getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
+import { getSessionOwner, getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { createStreamParser } from './stream-parser.js';
 import {
   buildSessionMultiSpawnArgs,
@@ -402,6 +402,13 @@ export async function handleMultiAgentChat(
       // Advisor turn (read-only)
       await runAdvisorTurn(ws, session, primary, turn.agent, roundState);
     }
+  } catch (err: unknown) {
+    // Advisor spawn used to throw EngineAuthRequiredError out of this round
+    // and crash the Hub process (unhandledRejection). Keep cleanup in
+    // `finally` and surface the failure on the session instead.
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[multi-agent] round failed session=${sessionId}: ${errMsg}`);
+    d.broadcast({ type: 'error', sessionId, error: errMsg });
   } finally {
     if (worktreeRoundLockHeld) {
       releaseSessionWorktreeLock(sessionId, 'multi-agent-round');
@@ -413,6 +420,78 @@ export async function handleMultiAgentChat(
       drainQueue(sessionId, agentId);
     }
   }
+}
+
+function persistAdvisorResult(
+  d: MultiAgentDeps,
+  S: Stmts,
+  opts: {
+    sessionId: string;
+    advisor: PlannedAgent;
+    assistantMsgId: string;
+    engine: string;
+    model: string;
+    result: string;
+  },
+): void {
+  const { sessionId, advisor, assistantMsgId, engine, model, result } = opts;
+  S.addMessage.run(
+    assistantMsgId,
+    sessionId,
+    'assistant',
+    result,
+    engine,
+    model,
+    null,
+    null,
+    advisor.id,
+    advisor.name,
+    advisor.color ?? null,
+  );
+  S.touchSession.run(sessionId);
+  d.broadcast({
+    type: 'message',
+    message: {
+      id: assistantMsgId,
+      session_id: sessionId,
+      role: 'assistant',
+      agent_id: advisor.id,
+      agent_name: advisor.name,
+      agent_color: advisor.color,
+      content: result,
+      engine,
+      model,
+      created_at: new Date().toISOString(),
+    },
+  });
+  d.broadcast({ type: 'done', sessionId, agentId: advisor.id, agentName: advisor.name });
+}
+
+function persistAdvisorFailure(
+  d: MultiAgentDeps,
+  S: Stmts,
+  opts: {
+    sessionId: string;
+    advisor: PlannedAgent;
+    assistantMsgId: string;
+    engine: string;
+    model: string;
+    errMsg: string;
+    cancelled: boolean;
+  },
+): void {
+  const result = opts.cancelled ? '(cancelled)' : `Error: ${opts.errMsg}`;
+  if (!opts.cancelled) {
+    d.broadcast({
+      type: 'error',
+      sessionId: opts.sessionId,
+      agentId: opts.advisor.id,
+      agentName: opts.advisor.name,
+      messageId: opts.assistantMsgId,
+      error: opts.errMsg,
+    });
+  }
+  persistAdvisorResult(d, S, { ...opts, result });
 }
 
 async function runAdvisorTurn(
@@ -455,8 +534,10 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
     ? `${transcript}\n\nRespond to the conversation above. You are ${advisor.name} (advisor — read-only).`
     : 'Review the session context.';
 
-  // No org-owner fallback — only the authenticated WS user.
-  const roomOwnerId = getWsAuthUserId(ws as unknown as AuthStampedWs | null) ?? null;
+  // Same identity the executor uses: the session owner. WS auth is a fallback
+  // for unowned rows. No org-owner fallback.
+  const actingUserId =
+    getSessionOwner(sessionId) ?? getWsAuthUserId(ws as unknown as AuthStampedWs | null) ?? null;
   // Same resolver drives the reported roster engine (see listSessionAgents), so
   // the UI's model picker never diverges from the CLI that actually runs.
   const { engine, model } = resolveAdvisorEngineAndModel(config, {
@@ -465,7 +546,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
     agentModel: advisor.model as string | undefined,
     sessionEngine: advisor.sessionEngine,
     sessionModel: advisor.sessionModel,
-    ownerUserId: roomOwnerId,
+    ownerUserId: actingUserId,
   });
 
   d.broadcast({
@@ -481,18 +562,40 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
 
   // Advisors may belong to another project; always run against the session workspace.
   const cwd = session.worktree_path || primary.cwd || process.env.HOME || '/';
-  const spawnEnv = {
-    ...resolveSessionCliSpawnEnv({
-      cfg: config,
-      ownerId: roomOwnerId,
-      credsOwnerId: roomOwnerId,
+  let spawnEnv: NodeJS.ProcessEnv;
+  try {
+    spawnEnv = {
+      ...resolveSessionCliSpawnEnv({
+        cfg: config,
+        ownerId: actingUserId,
+        credsOwnerId: actingUserId,
+        sessionId,
+        engine,
+      }),
+    };
+  } catch (err: unknown) {
+    // This throw is synchronous — above the spawn Promise `.catch` — and
+    // previously escaped as an unhandledRejection that exited Node.
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[multi-agent] advisor spawn refused session=${sessionId}${
+        err instanceof EngineAuthRequiredError ? ` engine=${err.engine}` : ''
+      }: ${errMsg}`,
+    );
+    persistAdvisorFailure(d, S, {
       sessionId,
+      advisor,
+      assistantMsgId,
       engine,
-    }),
-  };
-  if (sessionProject && roomOwnerId) {
+      model,
+      errMsg,
+      cancelled: roundState.cancelled,
+    });
+    return;
+  }
+  if (sessionProject && actingUserId) {
     mergeSkillCredentialSpawnEnv(spawnEnv, {
-      ownerId: roomOwnerId,
+      ownerId: actingUserId,
       agentId: advisor.id,
       project: sessionProject,
     });
@@ -512,7 +615,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
         // round. Mirrors `chat.ts` and `design-chat.ts`.
         await warmCursorAuthForSpawn({
           cursorBin: d.getCursorBin(),
-          userId: roomOwnerId,
+          userId: actingUserId,
           dataDir: config.dataDir,
         });
         try {
@@ -675,35 +778,12 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
     return `Error: ${errMsg}`;
   });
 
-  S.addMessage.run(
-    assistantMsgId,
+  persistAdvisorResult(d, S, {
     sessionId,
-    'assistant',
-    result,
+    advisor,
+    assistantMsgId,
     engine,
     model,
-    null,
-    null,
-    advisor.id,
-    advisor.name,
-    advisor.color ?? null,
-  );
-  S.touchSession.run(sessionId);
-
-  d.broadcast({
-    type: 'message',
-    message: {
-      id: assistantMsgId,
-      session_id: sessionId,
-      role: 'assistant',
-      agent_id: advisor.id,
-      agent_name: advisor.name,
-      agent_color: advisor.color,
-      content: result,
-      engine,
-      model,
-      created_at: new Date().toISOString(),
-    },
+    result,
   });
-  d.broadcast({ type: 'done', sessionId, agentId: advisor.id, agentName: advisor.name });
 }

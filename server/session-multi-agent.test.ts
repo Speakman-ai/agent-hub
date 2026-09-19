@@ -5,18 +5,31 @@ import {
   isSessionMultiEngine,
 } from './session-multi-engine.js';
 import {
+  activeMultiAgentRounds,
   buildMultiAgentTurnPlan,
   handleMultiAgentChat,
   initSessionMultiAgent,
   materializeSessionAdvisors,
   parseMentions,
 } from './session-multi-agent.js';
+import { EngineAuthRequiredError, resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import {
   getSessionWorktreeLockOwner,
   releaseSessionWorktreeLock,
   tryAcquireSessionWorktreeLock,
 } from './session-worktree-lock.js';
 import type { AppConfig, EnrichedAgent, SessionRow, Stmts } from './types.js';
+
+vi.mock('./per-user-cli-spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./per-user-cli-spawn.js')>();
+  return {
+    ...actual,
+    resolveSessionCliSpawnEnv: vi.fn(
+      (opts: Parameters<typeof actual.resolveSessionCliSpawnEnv>[0]) =>
+        actual.resolveSessionCliSpawnEnv(opts),
+    ),
+  };
+});
 
 describe('normalizeSessionMultiEngine / isSessionMultiEngine', () => {
   it('defaults unknown engines to claude-code', () => {
@@ -217,5 +230,94 @@ describe('multi-agent worktree lock', () => {
     await execution;
     expect(getSessionWorktreeLockOwner(sessionId)).toBeNull();
     expect(runExecutorTurn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('advisor EngineAuthRequiredError does not crash the round', () => {
+  it('resolves handleMultiAgentChat when advisor spawn has no acting user', async () => {
+    const sessionId = 'sess-advisor-auth';
+    const primary = {
+      id: 'primary',
+      name: 'Lead',
+      color: '#f00',
+      engine: 'claude-code',
+      projectId: 'p1',
+      cwd: '/tmp',
+    } as EnrichedAgent;
+    const advisor = {
+      id: 'advisor',
+      name: 'Reviewer',
+      color: '#0f0',
+      engine: 'claude-code',
+      projectId: 'p1',
+      cwd: '/tmp',
+    } as EnrichedAgent;
+    const session = {
+      id: sessionId,
+      agent_id: 'primary',
+      use_worktree: 0,
+      max_turns: 10,
+    } as SessionRow;
+
+    const broadcast = vi.fn();
+    const addMessage = vi.fn();
+    const runExecutorTurn = vi.fn(async () => undefined);
+    vi.mocked(resolveSessionCliSpawnEnv).mockImplementationOnce(() => {
+      throw new EngineAuthRequiredError('claude-code', null);
+    });
+
+    initSessionMultiAgent({
+      stmts: {
+        getSession: { get: vi.fn(() => session) },
+        getSessionAgents: {
+          all: vi.fn(() => [
+            { id: 'participant-1', agent_id: 'advisor', model: null, engine: null },
+          ]),
+        },
+        getMessages: { all: vi.fn(() => []) },
+        addMessage: { run: addMessage },
+        touchSession: { run: vi.fn() },
+        getQueuedMessages: { all: vi.fn(() => []) },
+        getNextQueuedMessage: { get: vi.fn(() => undefined) },
+        dequeueMessage: { run: vi.fn() },
+      } as unknown as Stmts,
+      broadcast,
+      getEnrichedAgent: vi.fn((id: string) => (id === 'advisor' ? advisor : primary)),
+      buildEnrichedPrompt: vi.fn(() => 'sys'),
+      getClaudeBin: vi.fn(() => '/bin/claude'),
+      getCursorBin: vi.fn(() => '/bin/cursor'),
+      getGeminiBin: vi.fn(() => '/bin/gemini'),
+      getCodexBin: vi.fn(() => '/bin/codex'),
+      getGrokBin: vi.fn(() => '/bin/grok'),
+      getConfig: vi.fn(
+        () =>
+          ({
+            dataDir: '/tmp',
+            conferenceTimeoutMs: 1000,
+          }) as AppConfig,
+      ),
+      getMaxQueueSize: vi.fn(() => 10),
+      runExecutorTurn,
+    });
+
+    await expect(
+      handleMultiAgentChat(null, {
+        type: 'chat',
+        agentId: 'primary',
+        sessionId,
+        content: 'please review',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(activeMultiAgentRounds.has(sessionId)).toBe(false);
+    expect(runExecutorTurn).toHaveBeenCalled();
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'error',
+        sessionId,
+        error: expect.stringMatching(/no acting user/i),
+      }),
+    );
+    expect(addMessage).toHaveBeenCalled();
   });
 });

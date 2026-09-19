@@ -1024,11 +1024,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
     stmts.insertBackgroundTask.run(taskId, sessionId, agentId, prompt);
 
-    handleChat(null, {
+    void handleChat(null, {
       type: 'chat',
       agentId,
       sessionId,
       content: prompt,
+    }).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[tasks] handleChat rejected for session ${sessionId}: ${message}`);
     });
 
     const session = stmts.getSession.get(sessionId) as SessionRow;
@@ -2224,13 +2227,18 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (modelChanged && isSessionChatBusy(session.id, activeProcesses, task)) {
       // The interrupt queue preserves pending messages and starts Continue only
       // after the current turn exits, reading the newly persisted model.
-      await handleChat(null, {
-        type: 'chat',
-        sessionId: session.id,
-        agentId: session.agent_id,
-        content: 'Continue',
-        interrupt: true,
-      });
+      try {
+        await handleChat(null, {
+          type: 'chat',
+          sessionId: session.id,
+          agentId: session.agent_id,
+          content: 'Continue',
+          interrupt: true,
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[sessions] model-change handleChat rejected for ${session.id}: ${message}`);
+      }
     }
     res.json(enriched);
   });
@@ -3542,11 +3550,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       // Optionally auto-start the target agent (fire-and-forget like background tasks).
       // handleChat stores the user message and spawns the CLI process.
       if (autoStart && handleChat) {
-        handleChat(null, {
+        void handleChat(null, {
           type: 'chat',
           agentId: targetAgentId,
           sessionId: newSessionId,
           content: forwardedContent,
+        }).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[forward] handleChat rejected for session ${newSessionId}: ${message}`);
         });
       }
 
@@ -3732,11 +3743,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       });
 
       if (autoStart && handleChat) {
-        handleChat(null, {
+        void handleChat(null, {
           type: 'chat',
           agentId: resolvedTargetAgentId,
           sessionId: newSessionId,
           content: seedContent,
+        }).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[follow-up] handleChat rejected for session ${newSessionId}: ${message}`);
         });
       }
 
