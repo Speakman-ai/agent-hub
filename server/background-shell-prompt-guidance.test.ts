@@ -132,7 +132,8 @@ describe('buildEnrichedPrompt — background-shell guidance', () => {
     expect(prompt).toContain('`failed`');
     expect(prompt).toContain('`stopped`');
     expect(prompt).toContain('`timed_out`');
-    expect(prompt).toContain('30-minute');
+    expect(prompt).toContain('10 minutes');
+    expect(prompt).toContain('no automatic runtime cutoff');
     expect(prompt).toContain('archived or deleted');
   });
 

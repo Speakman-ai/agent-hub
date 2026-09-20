@@ -41,7 +41,7 @@ import { existsSync, readFileSync } from 'fs';
 import { BACKGROUND_SHELLS_SCHEMA } from './background-shell-schema.js';
 import {
   BACKGROUND_SHELL_DEFAULT_TIMEOUT_MS,
-  clampBackgroundShellTimeoutMs,
+  normalizeBackgroundShellTimeoutMs,
   formatBackgroundShellTimeoutCap,
 } from './background-shell-timeout.js';
 import { sanitizeSpawnPythonEnv } from '../spawn-python-env.js';
@@ -119,6 +119,12 @@ function defaultProbeGroupAlive(pid: number): boolean {
  */
 export type BackgroundShellStatus = 'running' | 'exited' | 'failed' | 'stopped' | 'timed_out';
 
+export interface BackgroundShellProgress {
+  outputBytes: number;
+  lastOutputAt: string | null;
+  processGroupAlive: boolean | null;
+}
+
 /** Persisted row shape, surfaced by the REST + wrapper surfaces. */
 export interface BackgroundShellRow {
   id: string;
@@ -133,14 +139,13 @@ export interface BackgroundShellRow {
   exit_code: number | null;
   log_path: string | null;
   /**
-   * 1 while the watch loop should wake the session when this shell finishes.
-   * Cleared once the wake has been planned (or the watch cancelled), so a
-   * shell is never the reason for two wakes.
+   * 1 while the watch loop should check progress and report completion.
+   * Cleared when completion is reported or the watch is cancelled.
    */
   watch: number;
   /** When the watch was consumed or cancelled. Null while still armed. */
   watch_resolved_at: string | null;
-  /** Wall-clock cap in ms. The Hub SIGTERMs the process group when it fires. */
+  /** Optional wall-clock deadline in ms; zero disables it. */
   timeout_ms: number;
   created_at: string;
   updated_at: string;
@@ -156,13 +161,11 @@ export interface StartBackgroundShellInput {
   /** Optional human label surfaced in the UI / wrapper output. */
   label?: string | null;
   /**
-   * Arm the watch loop: when this shell reaches a terminal status the Hub
-   * wakes its session with the result instead of leaving it idle forever.
+   * Arm periodic progress assessments and wake the session on completion.
    */
   watch?: boolean;
   /**
-   * Wall-clock cap in ms. Clamped to the 30-minute maximum; omitted/invalid
-   * values use {@link BACKGROUND_SHELL_DEFAULT_TIMEOUT_MS}.
+   * Optional deadline in ms. Zero or omitted means no automatic deadline.
    */
   timeoutMs?: number;
 }
@@ -292,6 +295,8 @@ interface ShellHandle {
   sessionId: string;
   child: ChildProcess | null;
   tail: string[];
+  outputBytes: number;
+  lastOutputAt: string | null;
   sinkClose?: () => void;
   /** Guards double-finalization (exit racing stop). */
   finalized: boolean;
@@ -407,7 +412,7 @@ export class BackgroundShellRuntime {
     const id = randomUUID();
     const now = this.clock.nowIso();
     const label = input.label?.trim() ? input.label.trim() : null;
-    const timeoutMs = clampBackgroundShellTimeoutMs(input.timeoutMs);
+    const timeoutMs = normalizeBackgroundShellTimeoutMs(input.timeoutMs);
     const sink = this.logSink.open(id);
     this.db
       .prepare(
@@ -434,6 +439,8 @@ export class BackgroundShellRuntime {
       sessionId: input.sessionId,
       child: null,
       tail: [],
+      outputBytes: 0,
+      lastOutputAt: null,
       sinkClose: sink.close,
       finalized: false,
       stopping: false,
@@ -441,6 +448,10 @@ export class BackgroundShellRuntime {
     this.handles.set(id, handle);
 
     const append = (chunk: string): void => {
+      if (chunk.length > 0) {
+        handle.outputBytes += Buffer.byteLength(chunk);
+        handle.lastOutputAt = this.clock.nowIso();
+      }
       for (const line of chunk.split('\n')) {
         if (line.length === 0) continue;
         handle.tail.push(line);
@@ -500,9 +511,18 @@ export class BackgroundShellRuntime {
       }
     });
 
-    handle.cancelTimeout = this.schedule(() => {
-      void this.timeout(id, append);
-    }, timeoutMs);
+    if (timeoutMs > 0) {
+      // Node timers overflow above a signed 32-bit delay. Chain long deadlines.
+      const armDeadline = (remainingMs: number): void => {
+        const delayMs = Math.min(remainingMs, 2_147_483_647);
+        handle.cancelTimeout = this.schedule(() => {
+          if (handle.finalized || handle.stopping) return;
+          if (remainingMs > delayMs) armDeadline(remainingMs - delayMs);
+          else void this.timeout(id, append);
+        }, delayMs);
+      };
+      armDeadline(timeoutMs);
+    }
 
     const row = this.getById(id)!;
     this.emit(row);
@@ -544,6 +564,25 @@ export class BackgroundShellRuntime {
           ORDER BY created_at ASC, rowid ASC`,
       )
       .all(sessionId) as BackgroundShellRow[];
+  }
+
+  /** Activity since launch; liveness alone does not establish useful progress. */
+  getProgress(shellId: string): BackgroundShellProgress {
+    const handle = this.handles.get(shellId);
+    const pid = handle?.child?.pid;
+    let processGroupAlive: boolean | null = null;
+    if (typeof pid === 'number') {
+      try {
+        processGroupAlive = this.probeGroupAlive(pid);
+      } catch {
+        // A failed probe is unknown, not evidence that the command died.
+      }
+    }
+    return {
+      outputBytes: handle?.outputBytes ?? 0,
+      lastOutputAt: handle?.lastOutputAt ?? null,
+      processGroupAlive,
+    };
   }
 
   /**

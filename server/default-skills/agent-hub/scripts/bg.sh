@@ -25,9 +25,8 @@
 # command. Use `--` to end wrapper options when your command itself begins
 # with a flag, e.g. `bg.sh start -- ./x --label`.
 #
-# Every shell is capped at 30 minutes (the Hub stops it and wakes this session
-# with status `timed_out`). `--timeout-sec` may request a *shorter* cap; longer
-# values are clamped to 30 minutes. There is no way to disable the cap.
+# Watched shells trigger an agent progress check-in every 10 minutes and on
+# completion. No automatic deadline applies unless --timeout-sec is supplied.
 #
 # Everything is scoped to $AGENT_HUB_SESSION_ID (injected by the server at
 # spawn). The command runs in the session worktree. Auth is resolved through
@@ -72,30 +71,18 @@ json_escape() {
   node -e 'process.stdout.write(JSON.stringify(process.argv[1] ?? ""))' -- "$1"
 }
 
-# Wall-clock cap, in seconds, that the Hub enforces on every background shell
-# (mirrors BACKGROUND_SHELL_MAX_TIMEOUT_MS = 30 minutes server-side).
-TIMEOUT_CAP_SEC=1800
+# Largest whole-second value representable as safe integer milliseconds.
+MAX_TIMEOUT_SEC=9007199254740
 
-# Validate a --timeout-sec value and set `timeout_ms` (the caller's local, via
-# bash dynamic scope) to the requested seconds × 1000, clamped to the cap.
-#
-# We clamp the SECONDS before multiplying so a huge request can't overflow
-# bash's signed 64-bit arithmetic: `--timeout-sec 18446744073709552 * 1000`
-# wraps to a small positive ms, which the server clamp would then accept — so
-# an above-cap value would time out almost immediately instead of being clamped
-# to 30 minutes. Length-comparing first keeps an over-long value out of the
-# arithmetic entirely (where the ×1 conversion itself could overflow).
+# Reject overflow before multiplying in bash or serializing to JavaScript.
 parse_timeout_ms() {
   local sec="$1"
   [[ "$sec" =~ ^[0-9]+$ ]] || die "--timeout-sec must be a positive integer"
   # Drop leading zeros so the length comparison reflects magnitude, not padding.
   while [[ ${#sec} -gt 1 && $sec == 0* ]]; do sec="${sec#0}"; done
-  # Reject zero explicitly: it passes the digit-only regex but the server would
-  # silently treat timeoutMs 0 as "no request" and fall back to the 30-minute
-  # default, running the command far longer than the caller asked for.
   [[ "$sec" == 0 ]] && die "--timeout-sec must be a positive integer"
-  if ((${#sec} > ${#TIMEOUT_CAP_SEC})) || ((10#$sec > TIMEOUT_CAP_SEC)); then
-    sec=$TIMEOUT_CAP_SEC
+  if ((${#sec} > ${#MAX_TIMEOUT_SEC})) || ((10#$sec > MAX_TIMEOUT_SEC)); then
+    die "--timeout-sec is too large"
   fi
   timeout_ms=$((10#$sec * 1000))
 }

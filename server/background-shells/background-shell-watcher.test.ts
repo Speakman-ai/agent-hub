@@ -63,6 +63,12 @@ function fakeRuntime(initial: BackgroundShellRow[] = []) {
       [...rows.values()].filter(
         (r) => r.session_id === sessionId && r.watch === 1 && r.status === 'running',
       ),
+    listRunning: () => [...rows.values()].filter((r) => r.status === 'running'),
+    getProgress: () => ({
+      outputBytes: 12,
+      lastOutputAt: '1970-01-01T00:26:00.000Z',
+      processGroupAlive: true,
+    }),
     getById: (id) => rows.get(id) ?? null,
     getLogTail: () => ['out'],
     clearWatch: (id) => {
@@ -121,6 +127,138 @@ describe('BackgroundShellWatcher', () => {
 
   beforeEach(() => {
     runtime = fakeRuntime();
+  });
+
+  it('checks a running shell every 10 minutes without consuming its completion watch', async () => {
+    runtime.put(
+      row({ status: 'running', exit_code: null, created_at: new Date(1_000_000).toISOString() }),
+    );
+    const { watcher, advance, dispatchChat } = build(runtime);
+    watcher.tickAll();
+    await settle();
+    expect(dispatchChat).not.toHaveBeenCalled();
+    advance(600_000);
+    watcher.tickAll();
+    await settle();
+    expect(dispatchChat).toHaveBeenCalledTimes(1);
+    expect(dispatchChat.mock.calls[0][0].content).toContain('progress check-in');
+    expect(dispatchChat.mock.calls[0][0].content).toContain('Process group alive: yes');
+    expect(runtime.rows.get('shell-1')?.watch).toBe(1);
+    for (let i = 0; i < 25; i += 1) {
+      advance(600_000);
+      watcher.tickAll();
+      await settle();
+    }
+    expect(dispatchChat).toHaveBeenCalledTimes(26);
+    advance(MIN_WAKE_INTERVAL_MS);
+    runtime.emitFinalize(row());
+    await settle();
+    expect(dispatchChat).toHaveBeenCalledTimes(27);
+    expect(dispatchChat.mock.calls[26][0].content).toContain('finished successfully');
+  });
+
+  it('defers while busy, coalesces due shells, and measures output since the last check-in', async () => {
+    let busy = true;
+    const { watcher, dispatchChat, advance } = build(runtime, { isSessionBusy: () => busy });
+    for (const id of ['a', 'b'])
+      runtime.put(row({ id, status: 'running', created_at: new Date(1_000_000).toISOString() }));
+    advance(600_000);
+    watcher.tickAll();
+    await settle();
+    expect(dispatchChat).not.toHaveBeenCalled();
+    busy = false;
+    watcher.tickAll();
+    await settle();
+    expect(dispatchChat).toHaveBeenCalledTimes(1);
+    expect(dispatchChat.mock.calls[0][0].content).toContain('shell id: a');
+    expect(dispatchChat.mock.calls[0][0].content).toContain('shell id: b');
+    expect(dispatchChat.mock.calls[0][0].content).toContain('12 bytes');
+    watcher.tickAll();
+    await settle();
+    expect(dispatchChat).toHaveBeenCalledTimes(1);
+    advance(600_000);
+    watcher.tickAll();
+    await settle();
+    expect(dispatchChat.mock.calls[1][0].content).toContain('0 bytes');
+  });
+
+  it.each(['unwatched', 'cancelled', 'deleted', 'finalizing', 'probe-failed'])(
+    'does not check in when %s',
+    async (reason) => {
+      runtime.put(
+        row({
+          status: 'running',
+          created_at: new Date(0).toISOString(),
+          watch: reason === 'unwatched' ? 0 : 1,
+        }),
+      );
+      const { watcher, dispatchChat } = build(runtime, {
+        getSession: () =>
+          reason === 'deleted' ? undefined : { id: 'sess-1', agent_id: 'agent-1' },
+        isSessionFinalizing: () => {
+          if (reason === 'probe-failed') throw new Error('unavailable');
+          return reason === 'finalizing';
+        },
+      });
+      if (reason === 'cancelled') runtime.clearWatch('shell-1');
+      watcher.tickAll();
+      await settle();
+      expect(dispatchChat).not.toHaveBeenCalled();
+    },
+  );
+
+  it('queues completion during a check-in and avoids overlapping agent turns', async () => {
+    let finish!: () => void;
+    const dispatch = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue(undefined);
+    const { watcher, advance } = build(runtime, { dispatchChat: dispatch });
+    runtime.put(row({ status: 'running', created_at: new Date(0).toISOString() }));
+    watcher.tickAll();
+    await settle();
+    advance(600_000);
+    watcher.tickAll();
+    runtime.emitFinalize(row());
+    await settle();
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    finish();
+    await settle();
+    await settle();
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch.mock.calls[1][0].content).toContain('finished successfully');
+  });
+
+  it('retries check-ins after dispatch failures without a tight retry loop', async () => {
+    const dispatch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue(undefined);
+    const { watcher, advance } = build(runtime, { dispatchChat: dispatch });
+    runtime.put(row({ status: 'running', created_at: new Date(0).toISOString() }));
+    watcher.tickAll();
+    await settle();
+    watcher.tickAll();
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    advance(600_000);
+    watcher.tickAll();
+    await settle();
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(runtime.rows.get('shell-1')?.watch).toBe(1);
+  });
+
+  it('does not check running commands after the watcher closes', async () => {
+    runtime.put(row({ status: 'running', created_at: new Date(0).toISOString() }));
+    const { watcher, dispatchChat } = build(runtime);
+    watcher.close();
+    watcher.tickAll();
+    await settle();
+    expect(dispatchChat).not.toHaveBeenCalled();
   });
 
   it('wakes the session when a watched shell finishes', async () => {

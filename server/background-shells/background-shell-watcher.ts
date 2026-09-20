@@ -25,12 +25,14 @@ import {
   WAKE_BUDGET_IDLE_RESET_MS,
   WAKE_LOG_TAIL_LINES,
   buildBackgroundShellWakePrompt,
+  buildBackgroundShellCheckinPrompt,
   buildWakeCapNotice,
   planBackgroundShellWake,
   type WakePromptShell,
   type WatchedShellSummary,
 } from './background-shell-watch.js';
-import type { BackgroundShellRow } from './background-shell-runtime.js';
+import type { BackgroundShellRow, BackgroundShellProgress } from './background-shell-runtime.js';
+import { BACKGROUND_SHELL_CHECKIN_INTERVAL_MS } from './background-shell-timeout.js';
 
 /**
  * The runtime surface the watcher needs. Narrowed to keep tests free of a real
@@ -39,6 +41,8 @@ import type { BackgroundShellRow } from './background-shell-runtime.js';
 export interface WatchRuntimeLike {
   subscribeFinalize(listener: (row: BackgroundShellRow) => void): () => void;
   listWatched(sessionId: string): BackgroundShellRow[];
+  listRunning(): BackgroundShellRow[];
+  getProgress(shellId: string): BackgroundShellProgress;
   getById(shellId: string): BackgroundShellRow | null;
   getLogTail(shellId: string, limit?: number): string[];
   clearWatch(shellId: string): void;
@@ -120,6 +124,8 @@ export class BackgroundShellWatcher {
   private readonly now: () => number;
   private readonly logger: NonNullable<BackgroundShellWatcherDeps['logger']>;
   private readonly states = new Map<string, SessionWatchState>();
+  private readonly checkins = new Map<string, { atMs: number; outputBytes: number }>();
+  private closed = false;
   private unsubscribe: (() => void) | null = null;
 
   constructor(deps: BackgroundShellWatcherDeps) {
@@ -134,6 +140,8 @@ export class BackgroundShellWatcher {
 
   /** Detach from the runtime. Tests and shutdown paths use this. */
   close(): void {
+    this.closed = true;
+    this.checkins.clear();
     this.unsubscribe?.();
     this.unsubscribe = null;
   }
@@ -165,10 +173,92 @@ export class BackgroundShellWatcher {
    * sweep that does the same job for the message queue.
    */
   tickAll(): void {
+    if (this.closed) return;
     for (const sessionId of [...this.states.keys()]) {
       this.tick(sessionId);
     }
+    this.checkRunningShells();
     this.pruneIdleStates();
+  }
+
+  private checkRunningShells(): void {
+    const running = this.deps.runtime.listRunning().filter((row) => row.watch === 1);
+    const ids = new Set(running.map((row) => row.id));
+    for (const id of this.checkins.keys()) {
+      if (!ids.has(id)) this.checkins.delete(id);
+    }
+    const due = new Map<string, BackgroundShellRow[]>();
+    for (const row of running) {
+      const last = this.checkins.get(row.id);
+      const startedAt = Date.parse(row.created_at);
+      const atMs = last?.atMs ?? (Number.isFinite(startedAt) ? startedAt : this.now());
+      if (!last) this.checkins.set(row.id, { atMs, outputBytes: 0 });
+      if (this.now() - atMs < BACKGROUND_SHELL_CHECKIN_INTERVAL_MS) continue;
+      const rows = due.get(row.session_id) ?? [];
+      rows.push(row);
+      due.set(row.session_id, rows);
+    }
+    for (const [sessionId, rows] of due) {
+      const session = this.deps.getSession(sessionId);
+      if (!session || session.deleted_at || this.sessionIsFinalizing(sessionId)) {
+        for (const row of rows) this.deps.runtime.clearWatch(row.id);
+        continue;
+      }
+      const state = this.stateFor(sessionId);
+      if (state.dispatching || state.pending.size > 0 || this.deps.isSessionBusy(sessionId))
+        continue;
+      if (state.lastWakeAtMs !== null && this.now() - state.lastWakeAtMs < MIN_WAKE_INTERVAL_MS)
+        continue;
+      const snapshots = rows.map((row) => {
+        const progress = this.deps.runtime.getProgress(row.id);
+        const prior = this.checkins.get(row.id)!;
+        return {
+          ...toSummary(row),
+          ...progress,
+          pid: row.pid,
+          cwd: row.cwd,
+          elapsedMs: Math.max(0, this.now() - Date.parse(row.created_at)),
+          outputBytesSinceCheckin: Math.max(0, progress.outputBytes - prior.outputBytes),
+          logTail: this.safeLogTail(row.id),
+        };
+      });
+      const content = buildBackgroundShellCheckinPrompt(snapshots);
+      for (const shell of snapshots) {
+        this.checkins.set(shell.id, { atMs: this.now(), outputBytes: shell.outputBytes });
+      }
+      // Share the dispatch lock with completions, but not their runaway-loop budget.
+      if (
+        state.lastWakeAtMs !== null &&
+        this.now() - state.lastWakeAtMs >= WAKE_BUDGET_IDLE_RESET_MS
+      ) {
+        state.wakes = 0;
+        state.cappedNotified = false;
+      }
+      state.dispatching = true;
+      state.lastWakeAtMs = this.now();
+      const settle = (): void => {
+        state.dispatching = false;
+        this.tick(sessionId);
+      };
+      try {
+        Promise.resolve(
+          this.deps.dispatchChat({
+            type: 'chat',
+            agentId: session.agent_id,
+            sessionId,
+            content,
+            _backgroundShellWake: true,
+          }),
+        )
+          .catch((err: unknown) => {
+            this.logger.warn(`[bg-watch] check-in failed session=${sessionId}: ${String(err)}`);
+          })
+          .finally(settle);
+      } catch (err) {
+        this.logger.warn(`[bg-watch] check-in threw session=${sessionId}: ${String(err)}`);
+        settle();
+      }
+    }
   }
 
   /**
@@ -208,8 +298,8 @@ export class BackgroundShellWatcher {
     this.tick(row.session_id);
   }
 
-  private enqueue(row: BackgroundShellRow): void {
-    let state = this.states.get(row.session_id);
+  private stateFor(sessionId: string): SessionWatchState {
+    let state = this.states.get(sessionId);
     if (!state) {
       state = {
         pending: new Map(),
@@ -218,9 +308,13 @@ export class BackgroundShellWatcher {
         dispatching: false,
         cappedNotified: false,
       };
-      this.states.set(row.session_id, state);
+      this.states.set(sessionId, state);
     }
-    state.pending.set(row.id, row);
+    return state;
+  }
+
+  private enqueue(row: BackgroundShellRow): void {
+    this.stateFor(row.session_id).pending.set(row.id, row);
   }
 
   private tick(sessionId: string): void {

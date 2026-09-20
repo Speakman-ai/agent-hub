@@ -65,6 +65,7 @@ interface Harness {
 function makeHarness(
   opts: {
     failSpawn?: boolean;
+    probeGroupAlive?: (pid: number) => boolean;
     broadcast?: BackgroundShellBroadcast;
     buildEnv?: BackgroundShellRuntimeDeps['buildEnv'];
   } = {},
@@ -110,6 +111,7 @@ function makeHarness(
     logSink,
     broadcast: opts.broadcast,
     buildEnv: opts.buildEnv,
+    probeGroupAlive: opts.probeGroupAlive,
     // Simulate the OS: signalling a process group (`-pid`) makes the
     // matching child exit-with-signal, so `waitForExit` resolves.
     kill: (target, signal) => {
@@ -148,6 +150,33 @@ const START = {
 };
 
 describe('BackgroundShellRuntime.start', () => {
+  it('reports process liveness and output activity for progress assessments', () => {
+    const h = makeHarness({ probeGroupAlive: () => true });
+    const row = h.runtime.start(START);
+    expect(h.runtime.getProgress(row.id)).toEqual({
+      outputBytes: 0,
+      lastOutputAt: null,
+      processGroupAlive: true,
+    });
+    h.children[0].emitData('stdout', 'hello');
+    h.children[0].emitData('stderr', 'é');
+    expect(h.runtime.getProgress(row.id)).toEqual({
+      outputBytes: 7,
+      lastOutputAt: expect.any(String),
+      processGroupAlive: true,
+    });
+  });
+
+  it('reports unknown liveness when a process probe fails', () => {
+    const h = makeHarness({
+      probeGroupAlive: () => {
+        throw new Error('unavailable');
+      },
+    });
+    const row = h.runtime.start(START);
+    expect(h.runtime.getProgress(row.id).processGroupAlive).toBeNull();
+  });
+
   it('inserts a running row, records pid, and spawns detached in its own group', () => {
     const h = makeHarness();
     const row = h.runtime.start(START);
@@ -156,9 +185,8 @@ describe('BackgroundShellRuntime.start', () => {
     expect(row.command).toBe('npm run build');
     expect(row.label).toBe('build');
     expect(row.pid).toBe(1000);
-    expect(row.timeout_ms).toBe(30 * 60 * 1000);
-    expect(h.scheduled).toHaveLength(1);
-    expect(h.scheduled[0].delayMs).toBe(30 * 60 * 1000);
+    expect(row.timeout_ms).toBe(0);
+    expect(h.scheduled).toHaveLength(0);
     expect(row.log_path).toBe(`/fake/${row.id}.log`);
     expect(h.lastSpawnOpts()).toMatchObject({ cwd: '/wt/sess-1', detached: true });
   });
@@ -971,20 +999,28 @@ describe('BackgroundShellRuntime.stopSessionSnapshot', () => {
 });
 
 describe('BackgroundShellRuntime timeout cap', () => {
-  it('defaults to 30 minutes and arms a timer for that delay', () => {
+  it('leaves an ordinary command running without a deadline timer', () => {
     const h = makeHarness();
-    const row = h.runtime.start(START);
-    expect(row.timeout_ms).toBe(1_800_000);
-    expect(h.scheduled).toEqual([
-      expect.objectContaining({ delayMs: 1_800_000, cancelled: false }),
-    ]);
+    const shell = h.runtime.start({ ...START, watch: true });
+    expect(shell.timeout_ms).toBe(0);
+    expect(h.scheduled).toHaveLength(0);
+    expect(h.runtime.getById(shell.id)?.status).toBe('running');
   });
 
-  it('clamps a requested cap above 30 minutes', () => {
+  it('honors a requested deadline above 30 minutes', () => {
     const h = makeHarness();
-    const row = h.runtime.start({ ...START, timeoutMs: 24 * 60 * 60 * 1000 });
-    expect(row.timeout_ms).toBe(1_800_000);
-    expect(h.scheduled[0].delayMs).toBe(1_800_000);
+    const row = h.runtime.start({ ...START, timeoutMs: 86_400_000 });
+    expect(row.timeout_ms).toBe(86_400_000);
+    expect(h.scheduled[0].delayMs).toBe(86_400_000);
+  });
+
+  it('chains long deadline timers without overflowing Node timers', () => {
+    const h = makeHarness();
+    const row = h.runtime.start({ ...START, timeoutMs: 2_147_483_647 + 5_000 });
+    expect(h.scheduled[0].delayMs).toBe(2_147_483_647);
+    h.scheduled[0].run();
+    expect(h.runtime.getById(row.id)?.status).toBe('running');
+    expect(h.scheduled[1].delayMs).toBe(5_000);
   });
 
   it('honours a shorter requested cap', () => {
@@ -995,12 +1031,10 @@ describe('BackgroundShellRuntime timeout cap', () => {
   });
 
   it('defaults a fractional cap instead of arming a near-instant timer', () => {
-    // Regression: a fractional timeoutMs (1.5) reaching the store used to floor
-    // to a 1 ms cap and kill the shell immediately. It must default to 30 min.
     const h = makeHarness();
     const row = h.runtime.start({ ...START, timeoutMs: 1.5 });
-    expect(row.timeout_ms).toBe(1_800_000);
-    expect(h.scheduled[0].delayMs).toBe(1_800_000);
+    expect(row.timeout_ms).toBe(0);
+    expect(h.scheduled).toHaveLength(0);
   });
 
   it('SIGTERMs the process group and marks the row timed_out when the cap fires', async () => {
@@ -1016,7 +1050,7 @@ describe('BackgroundShellRuntime timeout cap', () => {
 
   it('does not time out a shell that already exited', async () => {
     const h = makeHarness();
-    const row = h.runtime.start(START);
+    const row = h.runtime.start({ ...START, timeoutMs: 5_000 });
     h.children[0].emitExit(0);
     expect(h.runtime.getById(row.id)?.status).toBe('exited');
     expect(h.scheduled[0].cancelled).toBe(true);

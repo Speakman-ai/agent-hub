@@ -25,12 +25,12 @@ const BackgroundShell = registerComponent(
       log_path: z.string().nullable(),
       watch: z.number().int().openapi({
         description:
-          '1 while the watch loop should wake this shell\u2019s session when it finishes.',
+          '1 while the watch loop checks progress every 10 minutes and reports completion.',
       }),
       watch_resolved_at: z.string().nullable(),
       timeout_ms: z.number().int().openapi({
         description:
-          'Wall-clock cap in milliseconds. The Hub stops the process group when it fires (default and max 30 minutes).',
+          'Optional deadline in milliseconds. Zero (the default) means no automatic deadline.',
       }),
       created_at: z.string(),
       updated_at: z.string(),
@@ -79,11 +79,11 @@ registerPath({
               .openapi({ description: 'Optional human label surfaced in the UI.' }),
             watch: z.boolean().optional().openapi({
               description:
-                'Wake the session automatically when this shell finishes. Defaults to true; pass false to start an unwatched shell.',
+                'Wake the session for progress assessment every 10 minutes (deferred while busy) and on completion. Defaults to true; false disables both.',
             }),
             timeoutMs: z.number().int().optional().openapi({
               description:
-                'Wall-clock cap in milliseconds. Defaults to 1800000 (30 minutes). Values above 30 minutes are clamped; omitted/invalid values use the default. There is no way to disable the cap.',
+                'Optional deadline in milliseconds, honored for positive safe integers, including values above 30 minutes. Omitted, zero, or invalid values disable the deadline.',
             }),
           }),
         },

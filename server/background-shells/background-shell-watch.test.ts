@@ -154,13 +154,13 @@ describe('buildBackgroundShellWakePrompt', () => {
     expect(text).toContain('killed by a signal');
   });
 
-  it('tells the agent a timed-out shell hit the cap and to start the next slice', () => {
+  it('explains an explicit deadline and asks for progress inspection before retrying', () => {
     const text = buildBackgroundShellWakePrompt([
       withLogs({ status: 'timed_out', timeout_ms: 1_800_000 }),
     ]);
     expect(text).toContain('hit the 30-minute cap');
-    expect(text).toContain('next slice');
-    expect(text).toContain('nohup');
+    expect(text).toContain('explicitly requested deadline');
+    expect(text).toContain('Inspect durable progress');
   });
 
   it('tells the agent it is a new process so it does not poll a dead handle', () => {
@@ -202,23 +202,23 @@ describe('buildWatchTurnEndNotice', () => {
 
   it('promises the session will resume on its own', () => {
     const text = buildWatchTurnEndNotice([shell({ status: 'running' })]);
-    expect(text).toContain('resume automatically');
-    expect(text).toContain('30-minute cap');
+    expect(text).toContain('resume for a progress check-in every 10 minutes');
+    expect(text).toContain('no automatic runtime cutoff');
     expect(text).toContain('prod build');
   });
 
-  it('reflects a shorter --timeout-sec cap instead of always saying 30 minutes', () => {
+  it('notes explicit deadlines alongside periodic check-ins', () => {
     const text = buildWatchTurnEndNotice([shell({ status: 'running', timeout_ms: 5_000 })]);
-    expect(text).toContain('5-second cap');
+    expect(text).toContain('Explicitly requested deadlines still apply');
     expect(text).not.toContain('30-minute cap');
   });
 
-  it('names a shared cap when several watched shells agree', () => {
+  it('notes explicit deadlines for several watched shells', () => {
     const text = buildWatchTurnEndNotice([
       shell({ id: 'a', status: 'running', timeout_ms: 60_000 }),
       shell({ id: 'b', status: 'running', timeout_ms: 60_000 }),
     ]);
-    expect(text).toContain('they finish or hit the 1-minute cap');
+    expect(text).toContain('Explicitly requested deadlines still apply');
   });
 
   it('does not pick a misleading single cap when watched shells differ', () => {
@@ -226,7 +226,7 @@ describe('buildWatchTurnEndNotice', () => {
       shell({ id: 'a', status: 'running', timeout_ms: 5_000 }),
       shell({ id: 'b', status: 'running', timeout_ms: 1_800_000 }),
     ]);
-    expect(text).toContain('they finish or hit their timeout caps');
+    expect(text).toContain('Explicitly requested deadlines still apply');
     expect(text).not.toContain('30-minute cap');
     expect(text).not.toContain('5-second cap');
   });
