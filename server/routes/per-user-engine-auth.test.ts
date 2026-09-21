@@ -262,6 +262,40 @@ describe('per-user engine auth routes', () => {
     expect(spawnMock.mock.results[0]?.value.stdin.write).not.toHaveBeenCalled();
   });
 
+  it.each([
+    'https://claude.com/cai/oauth/authorize',
+    'https://platform.claude.com/oauth/authorize',
+  ])('returns a streamed terminal hyperlink from %s before the URL timeout', async (base) => {
+    const app = buildApp({ claudeBin, cursorBin, codexBin, dataDir: tmpDir, userId: 'url-user' });
+    const url = `${base}?state=complete-state&code_challenge=challenge`;
+    const proc = Object.assign(new EventEmitter(), {
+      stdin: new EventEmitter(),
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: vi.fn(),
+    });
+    spawnMock.mockImplementation(() => {
+      queueMicrotask(() => {
+        proc.stdout.emit(
+          'data',
+          Buffer.from(`Opening browser to sign in\n\u001b]8;;${base}?state=`),
+        );
+        proc.stdout.emit('data', Buffer.from('complete-state&code_challenge=challenge\u001b'));
+        proc.stdout.emit(
+          'data',
+          Buffer.from(`\\${url}\u001b]8;;\u001b\\\nPaste code here if prompted > `),
+        );
+        // End a parser miss immediately instead of waiting for the real timeout.
+        setImmediate(() => proc.emit('close', 1));
+      });
+      return proc;
+    });
+    const res = await request(app).post('/api/auth/me/claude-auth/browser/login').expect(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.loginUrl).toBe(url);
+    expect(res.body.loginId).toEqual(expect.any(String));
+  });
+
   it('submits a remote authorization code only to the matching user and login attempt', async () => {
     const app = buildApp({ claudeBin, cursorBin, codexBin, dataDir: tmpDir, userId: 'code-user' });
     const other = buildApp({

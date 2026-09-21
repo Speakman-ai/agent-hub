@@ -19,6 +19,30 @@ describe('Claude browser auth parsing', () => {
   });
 
   it.each([
+    'https://claude.com/cai/oauth/authorize',
+    'https://platform.claude.com/oauth/authorize',
+    'https://claude.ai/oauth/authorize',
+    'https://console.anthropic.com/oauth/authorize',
+    'https://auth.anthropic.com/oauth/authorize',
+  ])('extracts the complete authorization URL from %s', (base) => {
+    const url = `${base}?code_challenge=challenge&state=state&redirect_uri=https%3A%2F%2Fexample.com`;
+    expect(extractClaudeLoginUrl(`If the browser didn't open, visit: ${url}\n`)).toBe(url);
+  });
+
+  it.each(['\u0007', '\u001b\\'])('extracts OSC 8 hyperlinks terminated by %j', (end) => {
+    const url = 'https://claude.com/cai/oauth/authorize?state=complete-state';
+    expect(extractClaudeLoginUrl(`\u001b]8;;${url}${end}Open sign-in\u001b]8;;${end}\n`)).toBe(url);
+  });
+
+  it.each([
+    'https://claude.com.example.com/cai/oauth/authorize?state=abc',
+    'https://platform.claude.com@example.com/oauth/authorize?state=abc',
+    'https://example.com/oauth/authorize?state=abc',
+  ])('rejects untrusted sign-in destinations: %s', (url) => {
+    expect(extractClaudeLoginUrl(url)).toBeNull();
+  });
+
+  it.each([
     ['', 'empty'],
     ['not json', 'malformed'],
     ['{"claudeAiOauth":{}}', 'missing token and expiry'],

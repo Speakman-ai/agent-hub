@@ -46,14 +46,16 @@ export function hasClaudeLoginCache(home: string, readFile: (path: string) => st
 }
 
 /**
- * Extract only Anthropic/Claude authorization URLs from `claude login` output.
+ * Extract only Anthropic/Claude authorization URLs from `claude auth login` output.
  * The allowlist prevents an incidental documentation link from being exposed
  * as a credential-login action.
  */
 export function extractClaudeLoginUrl(text: string): string | null {
   const plain = stripAnsi(text);
+  // OSC 8 hyperlinks end the target with a control character (BEL or ESC).
+  // Keep the target, but never include the terminator or link label in the URL.
   const match = plain.match(
-    /https:\/\/(?:claude\.ai|console\.anthropic\.com|auth\.anthropic\.com)\/[^\s)\]]+/i,
+    /https:\/\/(?:claude\.ai|claude\.com|platform\.claude\.com|console\.anthropic\.com|auth\.anthropic\.com)\/[^\s\p{Cc})\]]+/iu,
   );
   return match?.[0] ?? null;
 }
