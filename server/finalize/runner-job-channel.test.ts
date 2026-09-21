@@ -53,6 +53,31 @@ describe('RemoteSpawnedStep', () => {
 });
 
 describe('RunnerJobChannel', () => {
+  it.each([false, true])('tracks command delivery with a waiting poll: %s', async (waiting) => {
+    const ch = createJobChannel(`delivery-${waiting}`);
+    const pending = waiting ? ch.nextDirective(1000) : null;
+    const step = ch.runStep(0, 'ship', {});
+    if (!waiting) expect(step.wasDispatched?.()).toBe(false);
+    expect(await (pending ?? ch.nextDirective(1000))).toMatchObject({ type: 'run_step' });
+    expect(step.wasDispatched?.()).toBe(true);
+    removeJobChannel(ch.jobId);
+  });
+
+  it('revokes undelivered commands before reporting runner loss', async () => {
+    const ch = createJobChannel('undelivered');
+    ch.attach();
+    const step = ch.runStep(0, 'ship', {});
+    let dispatched: boolean | undefined;
+    step.on('error', () => {
+      dispatched = step.wasDispatched?.();
+    });
+    ch.fail(new Error('runner lease expired'));
+    expect(dispatched).toBe(false);
+    expect(await ch.nextDirective(1)).toBeNull();
+    expect(step.wasDispatched?.()).toBe(false);
+    removeJobChannel(ch.jobId);
+  });
+
   it('runStep queues a directive; agent logs/result drive the SpawnedStep', async () => {
     const ch = createJobChannel('job1');
     let ready = false;

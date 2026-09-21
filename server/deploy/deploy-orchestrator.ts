@@ -789,6 +789,7 @@ function stepConfigForRecovery(
 
 interface StepRunOutcome {
   exitCode: number;
+  stepDispatched?: boolean;
   /** Bounded trailing tail of combined stdout+stderr, for the failure message. */
   tail: string[];
   /** True if the step was killed because the deployment budget expired. */
@@ -889,7 +890,7 @@ function runStep(
           // message-based classification.
         }
       }
-      resolve({ ...outcome, tail, lossProbe });
+      resolve({ ...outcome, tail, lossProbe, stepDispatched: child.wasDispatched?.() });
     };
 
     child.on('error', (err) => {
@@ -1183,6 +1184,8 @@ export async function runDeployment(
       let stepLossRetries = 0;
       let budgetExpiredBeforeStep = false;
       let reacquireError: string | null = null;
+      let resuming = ctx.recovering === true && stepRow.status === 'running';
+      let lastRunnerLoss: ReturnType<typeof classifyDeployRunnerLoss> = null;
 
       // Attempt loop for ONE step. It iterates only when the runner-agent dies
       // under the step (crash / OOM / lost Hub contact / Spot reclaim) — infra,
@@ -1205,8 +1208,6 @@ export async function runDeployment(
         // after a Hub restart, or after the runner died under it. A
         // `github_workflow` step then re-attaches to the run it already
         // dispatched instead of dispatching a second deploy of the same ref.
-        const resuming =
-          stepLossRetries > 0 || (ctx.recovering === true && stepRow.status === 'running');
         const runnableStep = resuming
           ? stepConfigForRecovery(stepCfg, runningRow, deploymentAtRunStart)
           : stepCfg;
@@ -1242,10 +1243,15 @@ export async function runDeployment(
 
         runnerLossRetriesUsed += 1;
         stepLossRetries += 1;
+        lastRunnerLoss = loss;
+        // A command still queued on the Hub cannot have dispatched a release.
+        // Once delivery is possible, every later attempt must stay in recovery.
+        resuming ||= outcome.stepDispatched !== false;
         console.warn(
           `[deploy-orchestrator] runner lost during step "${stepCfg.name}" for ` +
             `${projectId}/${environment} (deployment ${deploymentId}) — ${loss.kind}: ${loss.detail}; ` +
-            `resuming on a fresh runner (${runnerLossRetriesUsed}/${runnerLossRetryBudget})`,
+            `${resuming ? 'recovering' : 'retrying undelivered step'} on a fresh runner ` +
+            `(${runnerLossRetriesUsed}/${runnerLossRetryBudget})`,
         );
         try {
           await lease.release();
@@ -1340,7 +1346,9 @@ export async function runDeployment(
         : `exited ${outcome.exitCode}${outcome.tail.length ? `\n${outcome.tail.join('\n')}` : ''}`;
       updateDeploymentStepStatus(stepRow.id, 'error', {
         exitCode: outcome.exitCode,
-        error: detail,
+        error: lastRunnerLoss
+          ? `${describeDeployRunnerLoss(lastRunnerLoss, stepLossRetries)}\nRecovery attempt failed: ${detail}`
+          : detail,
       });
       emitDeploymentUpdate(deps, projectId, deploymentId);
       failure = { error: `step "${stepCfg.name}" failed (exit ${outcome.exitCode})` };

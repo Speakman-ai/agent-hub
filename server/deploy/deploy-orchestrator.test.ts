@@ -149,6 +149,7 @@ interface StepScript {
   error?: string;
   /** Queue-row loss evidence, exposed the way the remote backend wires it. */
   probe?: Partial<RunnerJobLossProbe>;
+  dispatched?: boolean;
 }
 
 interface FakeBackend {
@@ -194,6 +195,9 @@ function makeFakeBackend(
           return true;
         },
       };
+      if (script.dispatched !== undefined) {
+        child.wasDispatched = () => script.dispatched!;
+      }
       if (script.probe) {
         const evidence = script.probe;
         child.probeRunnerLoss = () => ({
@@ -937,6 +941,81 @@ describe('triggerDeployment — mid-run runner loss (agent crashes under a step)
     );
     // Env lock released despite the second failure.
     expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
+  });
+
+  it('retries the approved workflow when lost runners never received the command', async () => {
+    const fb = makeFakeBackend([
+      { exitCode: -1, error: LOSS_MESSAGE, dispatched: false },
+      { exitCode: -1, error: LOSS_MESSAGE, dispatched: false },
+      { exitCode: 0 },
+    ]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'sha-loss',
+        worktreePath: WORKTREE,
+        config: GITHUB_WORKFLOW_CONFIG,
+      },
+      makeGithubWorkflowDeps(fb.backend),
+    );
+    expect(dep.status).toBe('success');
+    expect(fb.acquireCalls).toHaveLength(3);
+    expect(fb.spawnArgs.map((step) => step.run)).toEqual([
+      fb.spawnArgs[0].run,
+      fb.spawnArgs[0].run,
+      fb.spawnArgs[0].run,
+    ]);
+    expect(fb.spawnArgs[2].run).toContain("-f 'bump=patch'");
+  });
+
+  it('keeps recovering when a replacement dies before receiving its recovery command', async () => {
+    const fb = makeFakeBackend([
+      {
+        exitCode: -1,
+        error: LOSS_MESSAGE,
+        dispatched: true,
+        stdout: `${GITHUB_RUN_MARKER}{"runId":"991"}\n`,
+      },
+      { exitCode: -1, error: LOSS_MESSAGE, dispatched: false },
+      { exitCode: 0 },
+    ]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'sha-loss',
+        worktreePath: WORKTREE,
+        config: GITHUB_WORKFLOW_CONFIG,
+      },
+      makeGithubWorkflowDeps(fb.backend),
+    );
+    expect(dep.status).toBe('success');
+    for (const step of fb.spawnArgs.slice(1)) {
+      expect(step.run).not.toContain('gh workflow run');
+      expect(step.run).toContain("RUN_ID='991'");
+    }
+  });
+
+  it('retains the runner-loss cause when recovery fails', async () => {
+    const fb = makeFakeBackend([
+      { exitCode: -1, error: LOSS_MESSAGE },
+      { exitCode: 1, stdout: 'github_workflow recovery: no matching run\n' },
+    ]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'sha-loss',
+        worktreePath: WORKTREE,
+        config: GITHUB_WORKFLOW_CONFIG,
+      },
+      makeGithubWorkflowDeps(fb.backend),
+    );
+    expect(dep.status).toBe('error');
+    const step = listDeploymentSteps(dep.id)[0];
+    expect(step.error).toContain('lease expired');
+    expect(step.error).toContain('no matching run');
   });
 
   it('re-attaches a github_workflow step instead of dispatching it twice', async () => {

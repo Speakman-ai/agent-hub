@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
@@ -297,6 +297,84 @@ exit 2
 });
 
 describe('compileGithubWorkflowResumeRun', () => {
+  it.each([
+    { mode: 'delayed', runId: undefined, lookups: 3, status: 0 },
+    { mode: 'empty', runId: undefined, lookups: 30, status: 1 },
+    { mode: 'unavailable', runId: undefined, lookups: 30, status: 1 },
+    { mode: 'known', runId: '77', lookups: 0, status: 0 },
+  ])(
+    'recovers with $mode lookup results without redispatching',
+    ({ mode, runId, lookups, status }) => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'github-recovery-'));
+      try {
+        writeFileSync(path.join(dir, 'calls'), '');
+        writeFileSync(path.join(dir, 'count'), '0');
+        writeFileSync(
+          path.join(dir, 'gh'),
+          `#!/usr/bin/env bash
+set -euo pipefail
+echo "$1 $2" >> calls
+if [ "$1 $2" = "run list" ]; then
+  count=$(cat count)
+  count=$((count + 1))
+  echo "$count" > count
+  if [ "${mode}" = unavailable ]; then exit 1; fi
+  if [ "${mode}" = empty ]; then exit 0; fi
+  if [ "$count" -eq 1 ]; then exit 1; fi
+  if [ "$count" -eq 2 ]; then exit 0; fi
+  echo 77
+  exit 0
+fi
+if [ "$1 $2" = "run watch" ]; then exit 0; fi
+if [ "$1 $2" = "run view" ]; then
+  if [[ "$*" == *"--json status"* ]]; then echo completed;
+  elif [[ "$*" == *"--json conclusion"* ]]; then echo success;
+  else echo '{"runId":"77","status":"completed","conclusion":"success"}'; fi
+  exit 0
+fi
+exit 2
+`,
+        );
+        writeFileSync(path.join(dir, 'sleep'), '#!/usr/bin/env bash\nexit 0\n');
+        chmodSync(path.join(dir, 'gh'), 0o755);
+        chmodSync(path.join(dir, 'sleep'), 0o755);
+        const result = spawnSync(
+          'bash',
+          [
+            '-c',
+            compileGithubWorkflowResumeRun({
+              runId,
+              workflow: 'release.yml',
+              ref: 'main',
+              createdAfter: '2026-09-21T21:02:13Z',
+            }),
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` },
+            encoding: 'utf8',
+            timeout: 5000,
+          },
+        );
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(status);
+        expect(Number(readFileSync(path.join(dir, 'count'), 'utf8'))).toBe(lookups);
+        expect(readFileSync(path.join(dir, 'calls'), 'utf8')).not.toContain('workflow run');
+        if (status === 0) {
+          expect(result.stdout).toContain('Watching workflow run 77');
+          expect(result.stdout).toContain(GITHUB_RUN_MARKER);
+        } else {
+          expect(result.stderr).toContain(
+            mode === 'empty' ? 'no workflow_dispatch run' : 'gh run list failed',
+          );
+          expect(result.stdout).not.toContain('Watching workflow run');
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('watches a persisted run id without dispatching a new workflow', () => {
     const script = compileGithubWorkflowResumeRun({ runId: '4242', pollIntervalSeconds: 20 });
     expect(script).toContain(`RUN_ID='4242'`);

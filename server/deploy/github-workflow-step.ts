@@ -380,15 +380,21 @@ export function compileGithubWorkflowResumeRun(spec: GithubWorkflowResumeSpec): 
       // `LOOKUP_OK=0` iff the CLI itself failed.
       `RUN_ID=""`,
       `LOOKUP_OK=1`,
-      `RUN_ID="$(gh run list --workflow "\${WORKFLOW}" --branch "\${REF}" --event workflow_dispatch \\`,
-      `  --limit 100 --json databaseId,createdAt \\`,
-      `  --jq '[.[] | select(.createdAt >= env.CREATED_AFTER)] | sort_by(.createdAt) | last | .databaseId // empty' 2>/dev/null)" || LOOKUP_OK=0`,
+      `for ATTEMPT in $(seq 1 30); do`,
+      `  LOOKUP_OK=1`,
+      `  RUN_ID="$(gh run list --workflow "\${WORKFLOW}" --branch "\${REF}" --event workflow_dispatch \\`,
+      `    --limit 100 --json databaseId,createdAt \\`,
+      `    --jq '[.[] | select(.createdAt >= env.CREATED_AFTER)] | sort_by(.createdAt) | last | .databaseId // empty' 2>/dev/null)" || LOOKUP_OK=0`,
+      `  if [ "\${LOOKUP_OK}" -eq 1 ] && [ -n "\${RUN_ID}" ]; then break; fi`,
+      `  RUN_ID=""`,
+      `  if [ "\${ATTEMPT}" -lt 30 ]; then`,
+      `    echo "github_workflow recovery: waiting for workflow run (lookup \${ATTEMPT}/30) ..."`,
+      `    sleep 2`,
+      `  fi`,
+      `done`,
       `if [ -z "\${RUN_ID}" ]; then`,
-      // We deliberately do NOT auto-re-dispatch from recovery: a gated environment
-      // requires a fresh human approval, and a re-dispatch could double-release if
-      // a run was in fact created. An empty RUN_ID does NOT prove no run exists, so
-      // neither branch claims categorically that nothing ran — both send the
-      // operator to the Actions tab to establish dispatch state before re-running.
+      // After possible delivery, an empty lookup cannot prove dispatch failed.
+      // Keep recovery read-only to avoid publishing the release twice.
       `  if [ "\${LOOKUP_OK}" -eq 1 ]; then`,
       // gh succeeded but listed no run at/after CREATED_AFTER. Most likely the Hub
       // was interrupted (self-deploy) before `gh workflow run` created a run — but a

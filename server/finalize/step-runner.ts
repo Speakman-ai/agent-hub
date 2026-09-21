@@ -420,6 +420,8 @@ export interface SpawnedStep {
    * Local child processes leave it unset; their behavior is unchanged.
    */
   probeRunnerLoss?: () => RunnerJobLossProbe | null;
+  /** False only when the remote command has never left the Hub's queue. */
+  wasDispatched?: () => boolean;
 }
 
 export interface SpawnStepArgs {

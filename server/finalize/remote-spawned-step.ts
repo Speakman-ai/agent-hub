@@ -29,6 +29,7 @@ export class RemoteSpawnedStep implements SpawnedStep {
    * infra loss (retried) instead of a CI-class timeout (parked).
    */
   probeRunnerLoss?: () => RunnerJobLossProbe | null;
+  wasDispatched?: () => boolean;
   private exitListener?: (code: number | null) => void;
   private closeListener?: (code: number | null) => void;
   private errorListener?: (err: Error) => void;

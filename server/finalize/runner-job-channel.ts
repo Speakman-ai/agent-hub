@@ -59,6 +59,7 @@ export class RunnerJobChannel implements RemoteStepSink {
   /** True once `ready` has settled (resolved via attach OR rejected via fail). */
   private settled = false;
   private disposed = false;
+  private failed = false;
 
   private readonly outbound: RunnerDirective[] = [];
   private directiveWaiter: ((d: RunnerDirective | null) => void) | null = null;
@@ -99,7 +100,16 @@ export class RunnerJobChannel implements RemoteStepSink {
     deadlineMs?: number,
   ): RemoteSpawnedStep {
     const step = new RemoteSpawnedStep(stepIndex, this);
+    let dispatched = false;
+    step.wasDispatched = () => dispatched;
+    this.deliveryCallbacks.set(stepIndex, () => {
+      dispatched = true;
+    });
     this.steps.set(stepIndex, step);
+    if (this.failed || this.disposed) {
+      step.fail(new Error('runner channel is closed'));
+      return step;
+    }
     this.pushDirective({
       type: 'run_step',
       stepIndex,
@@ -136,13 +146,21 @@ export class RunnerJobChannel implements RemoteStepSink {
   }
 
   private pushDirective(d: RunnerDirective): void {
+    if (d.type === 'run_step' && (this.failed || this.disposed)) return;
     if (this.directiveWaiter) {
       const w = this.directiveWaiter;
       this.directiveWaiter = null;
+      this.markDispatched(d);
       w(d);
     } else {
       this.outbound.push(d);
     }
+  }
+
+  private readonly deliveryCallbacks = new Map<number, () => void>();
+
+  private markDispatched(d: RunnerDirective): void {
+    if (d.type === 'run_step') this.deliveryCallbacks.get(d.stepIndex)?.();
   }
 
   /**
@@ -153,7 +171,11 @@ export class RunnerJobChannel implements RemoteStepSink {
   nextDirective(timeoutMs: number): Promise<RunnerDirective | null> {
     this.attach();
     const queued = this.outbound.shift();
-    if (queued) return Promise.resolve(queued);
+    if (queued) {
+      this.markDispatched(queued);
+      return Promise.resolve(queued);
+    }
+    if (this.failed || this.disposed) return Promise.resolve(null);
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         if (this.directiveWaiter === settle) this.directiveWaiter = null;
@@ -184,6 +206,11 @@ export class RunnerJobChannel implements RemoteStepSink {
 
   /** Transport dropped / agent lost: fail any unsettled steps so step-runner unblocks. */
   fail(err: Error): void {
+    this.failed = true;
+    // Revoke commands before consumers observe loss and retry elsewhere.
+    for (let i = this.outbound.length - 1; i >= 0; i--) {
+      if (this.outbound[i].type === 'run_step') this.outbound.splice(i, 1);
+    }
     for (const step of this.steps.values()) step.fail(err);
     if (this.directiveWaiter) {
       const w = this.directiveWaiter;
@@ -202,6 +229,8 @@ export class RunnerJobChannel implements RemoteStepSink {
 
   dispose(): void {
     this.disposed = true;
+    this.outbound.length = 0;
+    this.deliveryCallbacks.clear();
     this.steps.clear();
   }
 
