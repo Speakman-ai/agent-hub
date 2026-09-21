@@ -269,11 +269,15 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // ID is still persisted on a session (so resumes from old DBs do not spin
   // forever).
   'codex-cli': ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'],
-  // Grok Build CLI model slugs from `grok models` / docs.x.ai/docs/models.
-  // grok-4.6 shipped 2026-08-07 and is xAI's recommended model (successor to
-  // grok-4.5, same 1.5T foundation), so it leads the list and is the default.
-  // Keep in sync with client TopBar.tsx and mobile engineOptions.ts.
-  'grok-cli': ['grok-4.6', 'grok-4.5', 'grok-build', 'grok-composer-2.5-fast'],
+  // Keep CLI model IDs aligned with the web and mobile pickers.
+  'grok-cli': [
+    'grok-4.7',
+    'grok-4.7-build-fast',
+    'grok-4.6',
+    'grok-4.5',
+    'grok-build',
+    'grok-composer-2.5-fast',
+  ],
 };
 
 const mergedEngineValidModelsRaw =
@@ -282,15 +286,14 @@ const mergedEngineValidModels = normalizeCursorAgentEngineModels(mergedEngineVal
 
 const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   'claude-code': 'claude-opus-5',
-  'cursor-agent': 'cursor-grok-4.6-high',
+  'cursor-agent': 'grok-4.7-high',
   // No `gemini-cli` default — Gemini is RAG-only, not a selectable engine.
   // Codex: GPT-6 Astra is the preferred model when the installed CLI advertises
   // the capability-gated family (Astra, then the gpt-5.6 tiers). Older CLIs keep
   // the baseline list and runtime forwarding drops the default when its metadata
   // is unavailable.
   'codex-cli': CODEX_DEFAULT_MODEL,
-  // grok-4.6 is the current Grok Build / xAI recommended model — Hub default.
-  'grok-cli': 'grok-4.6',
+  'grok-cli': 'grok-4.7',
 };
 
 const mergedEngineDefaultModelsRaw =

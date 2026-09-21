@@ -11,13 +11,12 @@ describe('mobile engine picker constants', () => {
     const ids = ENGINE_OPTIONS.map((e: any) => e.id);
     expect(ids).toEqual(['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli']);
   });
-  it('defaults grok-cli to grok-4.6 and lists it first', () => {
-    // grok-4.6 (2026-08-07) is the current Grok Build model — it must be the
-    // default and appear in the picker. Keep aligned with server/config.ts
-    // engineValidModels['grok-cli'] and client TopBar.tsx.
-    expect(ENGINE_DEFAULT_MODELS['grok-cli']).toBe('grok-4.6');
+  it('defaults grok-cli to grok-4.7 and lists it first', () => {
+    expect(ENGINE_DEFAULT_MODELS['grok-cli']).toBe('grok-4.7');
     const allowed = ENGINE_MODELS['grok-cli'].map((m: any) => m.id);
-    expect(allowed[0]).toBe('grok-4.6');
+    expect(allowed[0]).toBe('grok-4.7');
+    expect(allowed).toContain('grok-4.7-build-fast');
+    expect(allowed).toContain('grok-4.6');
     expect(allowed).toContain('grok-4.5');
     expect(allowed).toContain('grok-build');
     expect(allowed).toContain('grok-composer-2.5-fast');
@@ -105,9 +104,19 @@ describe('mobile engine picker constants', () => {
     expect(d.label).toBe('Sonnet 4.6');
     expect(d.short).toBe('Sonnet 4.6');
   });
-  it('exposes Cursor Grok 4.6, Composer 2.5 and Cursor Grok 4.5 for cursor-agent', () => {
+  it('exposes Grok 4.7 and Fast alongside existing Cursor models', () => {
     const models = ENGINE_MODELS['cursor-agent'].map((m: any) => m.id);
-    expect(models).toEqual(['cursor-grok-4.6-high', 'composer-2.5', 'cursor-grok-4.5-high']);
+    expect(models).toEqual([
+      'grok-4.7-high',
+      'grok-4.7-high-fast',
+      'cursor-grok-4.6-high',
+      'composer-2.5',
+      'cursor-grok-4.5-high',
+    ]);
+    expect(modelDisplay('grok-4.7-high').label).toBe('Grok 4.7');
+    expect(modelDisplay('grok-4.7-high-fast').label).toBe('Grok 4.7 Fast');
+    expect(modelDisplay('grok-4.7').label).toBe('Grok 4.7');
+    expect(modelDisplay('grok-4.7-build-fast').label).toBe('Grok 4.7 Fast');
     const grok = ENGINE_MODELS['cursor-agent'].find((m: any) => m.id === 'cursor-grok-4.5-high');
     expect(grok.label).toBe('Cursor Grok 4.5');
     expect(grok.short).toBe('Grok 4.5');
@@ -115,12 +124,12 @@ describe('mobile engine picker constants', () => {
     expect(grok46.label).toBe('Cursor Grok 4.6');
     expect(grok46.short).toBe('Grok 4.6');
   });
-  it('defaults cursor-agent to cursor-grok-4.6-high (matches the TopBar list)', () => {
+  it('defaults cursor-agent to grok-4.7-high (matches the TopBar list)', () => {
     // Regression: mobile's ENGINE_DEFAULT_MODELS previously set
     // cursor-agent → gpt-5.3-codex-high while TopBar only exposed composer-2.5,
     // causing the stored model to diverge from the displayed label on the
     // first engine switch. Keep the default aligned with the model list.
-    expect(ENGINE_DEFAULT_MODELS['cursor-agent']).toBe('cursor-grok-4.6-high');
+    expect(ENGINE_DEFAULT_MODELS['cursor-agent']).toBe('grok-4.7-high');
     const allowed = ENGINE_MODELS['cursor-agent'].map((m: any) => m.id);
     expect(allowed).toContain(ENGINE_DEFAULT_MODELS['cursor-agent']);
   });

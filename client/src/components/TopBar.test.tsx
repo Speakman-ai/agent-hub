@@ -177,6 +177,21 @@ describe('<TopBar /> engine picker', () => {
     expect(screen.queryByText(/GPT-5 Mini/)).toBeNull();
   });
 
+  it.each([
+    ['cursor-agent', 'grok-4.7-high', 'grok-4.7-high-fast'],
+    ['grok-cli', 'grok-4.7', 'grok-4.7-build-fast'],
+  ])(
+    'offers Grok 4.7 and Fast for %s and forwards the selected CLI ID',
+    (engine, model, fastModel) => {
+      const onModelChange = vi.fn();
+      renderTopBar({ sessionEngine: engine, sessionModel: model, onModelChange });
+      fireEvent.click(screen.getByTitle(/^Model: /));
+      expect(screen.getAllByText('Grok 4.7').length).toBeGreaterThan(0);
+      fireEvent.click(screen.getByText('Grok 4.7 Fast'));
+      expect(onModelChange).toHaveBeenCalledWith(fastModel);
+    },
+  );
+
   it('shows Cursor Grok 4.6, Composer 2.5 and Cursor Grok 4.5 for cursor-agent', () => {
     renderTopBar({ sessionEngine: 'cursor-agent', sessionModel: 'cursor-grok-4.6-high' });
     // The model trigger surfaces by its title attribute

@@ -3,6 +3,15 @@ import { describe, it, expect } from 'vitest';
 import { formatSystemBannerModelLine, modelPrimaryLabel } from './systemBannerModel.js';
 
 describe('systemBannerModel', () => {
+  it.each([
+    ['grok-4.7', 'Grok 4.7'],
+    ['grok-4.7-high', 'Grok 4.7'],
+    ['grok-4.7-build-fast', 'Grok 4.7 Fast'],
+    ['grok-4.7-high-fast', 'Grok 4.7 Fast'],
+  ])('labels %s consistently with the picker', (id, label) => {
+    expect(modelPrimaryLabel(id)).toBe(label);
+  });
+
   it('maps gpt-5.5 to GPT-5.5', () => {
     expect(modelPrimaryLabel('gpt-5.5')).toBe('GPT-5.5');
   });

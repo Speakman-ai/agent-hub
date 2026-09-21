@@ -4987,9 +4987,9 @@ export default function App({ initialView }: any = {}) {
       if (fromConfig) return fromConfig;
       const available = modelConfig?.engineValidModels?.[engine];
       if (Array.isArray(available) && available.length > 0) return available[0];
-      if (engine === 'cursor-agent') return 'cursor-grok-4.6-high';
+      if (engine === 'cursor-agent') return 'grok-4.7-high';
       if (engine === 'codex-cli') return 'gpt-5.6-sol';
-      if (engine === 'grok-cli') return 'grok-4.6';
+      if (engine === 'grok-cli') return 'grok-4.7';
       return 'claude-opus-5';
     },
     [modelConfig],
