@@ -37,6 +37,7 @@
  * keeps Admin A from clobbering Admin B's cache.
  */
 import { Router, type Request, type Response } from 'express';
+import { randomUUID } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
@@ -95,6 +96,9 @@ const PerUserClaudeStatus = z.object({
   binary: z.object({ present: z.boolean(), path: z.string() }),
   oauth: z.object({ loggedIn: z.boolean().nullable() }),
   loginInProgress: z.boolean(),
+  loginId: z.string().optional(),
+  loginUrl: z.string().optional(),
+  codeSubmitted: z.boolean().optional(),
   activeMethod: z.enum(['oauth', 'none']),
   statusError: z.string().nullable(),
 });
@@ -105,6 +109,48 @@ const PerUserClaudeLoginResponse = z.object({
   loginUrl: z.string().optional(),
   completed: z.boolean().optional(),
   output: z.string().optional(),
+});
+
+const ClaudeLoginCode = z.object({
+  loginId: z.string().min(1).max(128),
+  code: z
+    .string()
+    .trim()
+    .min(1)
+    .max(4096)
+    .regex(/^[!-~]+$/),
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/me/claude-auth/browser/code',
+  tags: ['Auth'],
+  summary: 'Send an authorization code to the caller’s active Claude Code login.',
+  request: {
+    body: { required: true, content: { 'application/json': { schema: ClaudeLoginCode } } },
+  },
+  responses: {
+    200: {
+      description: 'Code delivered; poll browser status for completion.',
+      content: { 'application/json': { schema: z.object({ ok: z.boolean() }) } },
+    },
+    400: {
+      description: 'Invalid login ID or code.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    409: {
+      description: 'Login ended, was replaced, or already received a code.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    500: {
+      description: 'Could not deliver the code.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
 });
 
 const PerUserCursorLoginResponse = z.object({
@@ -168,6 +214,10 @@ registerPath({
     },
     400: {
       description: 'Claude Code binary missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    500: {
+      description: 'Could not prepare or start Claude Code sign-in.',
       content: { 'application/json': { schema: ErrorResponse } },
     },
     401: {
@@ -559,7 +609,13 @@ function requireAuthUserId(req: Request, res: Response): string | null {
 // two users can be in the middle of a login simultaneously without
 // stomping each other (unlike the host-wide singletons in cursor-auth.ts
 // / codex-auth.ts where there's one shared operator).
-type LoginRecord = { proc: ChildProcess; loginId: string };
+type LoginRecord = {
+  proc: ChildProcess;
+  loginId: string;
+  loginUrl?: string;
+  codeSubmitted?: boolean;
+  cancel?: () => void;
+};
 const activeLogins = new Map<string, LoginRecord>();
 const loginKey = (engine: 'claude' | 'cursor' | 'codex' | 'grok', userId: string): string =>
   `${engine}:${userId}`;
@@ -568,6 +624,10 @@ function cancelLogin(engine: 'claude' | 'cursor' | 'codex' | 'grok', userId: str
   const key = loginKey(engine, userId);
   const rec = activeLogins.get(key);
   if (!rec) return false;
+  if (rec.cancel) {
+    rec.cancel();
+    return true;
+  }
   try {
     killProcessGroup(rec.proc, 'SIGTERM');
   } catch {
@@ -600,6 +660,8 @@ function cancelP4CodexLogin(userId: string): boolean {
 export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
   const { config, broadcast, getCursorBin, getCodexBin, getGrokBin } = deps;
   const router = Router();
+  const claudeLoginErrors = new Map<string, string>();
+  const claudeLoginIds = new Map<string, string>();
 
   const cursorBinPath = (): string => getCursorBin?.() ?? config.cursorBin;
   const codexBinPath = (): string => getCodexBin?.() ?? config.codexBin;
@@ -612,12 +674,14 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
   // same per-user tree used by buildSpawnEnv so a mobile login is immediately
   // usable by sessions owned by that Hub user.
   router.get('/api/auth/me/claude-auth/browser', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
     const userId = requireAuthUserId(req, res);
     if (!userId) return;
 
     const bin = claudeBinPath();
     const binaryPresent = existsSync(bin);
-    const loginInProgress = activeLogins.has(loginKey('claude', userId));
+    const login = activeLogins.get(loginKey('claude', userId));
+    const loginInProgress = !!login;
     let home: string;
     try {
       home = ensurePerUserHome(userId, config.dataDir);
@@ -636,19 +700,38 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
       readFileSync(credentialPath, 'utf8'),
     );
     res.json({
-      uiStatus: computeClaudeUiStatus({ binaryPresent, loginInProgress, authenticated }),
+      uiStatus: claudeLoginErrors.has(userId)
+        ? 'error'
+        : computeClaudeUiStatus({ binaryPresent, loginInProgress, authenticated }),
       binary: { present: binaryPresent, path: bin },
-      oauth: { loggedIn: binaryPresent ? authenticated : null },
+      oauth: {
+        loggedIn: binaryPresent
+          ? authenticated && !loginInProgress && !claudeLoginErrors.has(userId)
+          : null,
+      },
       loginInProgress,
-      activeMethod: binaryPresent && authenticated ? ('oauth' as const) : ('none' as const),
-      statusError: binaryPresent ? null : `Claude Code binary not found at ${bin}`,
+      loginId: claudeLoginIds.get(userId),
+      ...(login && {
+        loginId: login.loginId,
+        loginUrl: login.loginUrl,
+        codeSubmitted: !!login.codeSubmitted,
+      }),
+      activeMethod:
+        binaryPresent && authenticated && !loginInProgress && !claudeLoginErrors.has(userId)
+          ? ('oauth' as const)
+          : ('none' as const),
+      statusError: binaryPresent
+        ? (claudeLoginErrors.get(userId) ?? null)
+        : `Claude Code binary not found at ${bin}`,
     });
   });
 
   router.post('/api/auth/me/claude-auth/browser/login', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
     const userId = requireAuthUserId(req, res);
     if (!userId) return;
     cancelLogin('claude', userId);
+    claudeLoginErrors.delete(userId);
 
     const bin = claudeBinPath();
     if (!existsSync(bin)) {
@@ -658,112 +741,161 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     let home: string;
     try {
       home = ensurePerUserHome(userId, config.dataDir);
-    } catch (err) {
-      return res.status(500).json({ ok: false, error: (err as Error).message });
+    } catch {
+      return res.status(500).json({ ok: false, error: 'Could not prepare your Claude sign-in.' });
     }
 
-    const loginId = Date.now().toString(36);
-    const proc = spawn(bin, [], {
-      cwd: home,
-      env: { ...process.env, HOME: home, NO_OPEN_BROWSER: '1' },
-      stdio: ['pipe', 'pipe', 'pipe'],
-      detached: true,
-    });
-    guardChildStdin(proc, `claude-code /login user=${userId}`);
-    proc.stdin?.write('/login\n');
-    trackChild(proc);
-    activeLogins.set(loginKey('claude', userId), { proc, loginId });
-
-    let allOutput = '';
-    let responded = false;
-    let urlSent = false;
-    let timeoutHandle: NodeJS.Timeout | null = null;
-    const clearLoginTimeout = (): void => {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-        timeoutHandle = null;
+    const env = {
+      ...process.env,
+      HOME: home,
+      NO_OPEN_BROWSER: '1',
+    };
+    // Inherited credentials and provider switches must not redirect a personal login.
+    for (const key of Object.keys(env)) {
+      if (
+        key.startsWith('ANTHROPIC_') ||
+        key.startsWith('CLAUDE_CODE_USE_') ||
+        [
+          'CLAUDE_CONFIG_DIR',
+          'CLAUDE_CODE_OAUTH_TOKEN',
+          'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+          'CLAUDECODE',
+        ].includes(key)
+      ) {
+        delete (env as NodeJS.ProcessEnv)[key];
       }
-    };
-    const sendUrl = (url: string): void => {
-      if (responded) return;
-      responded = true;
-      urlSent = true;
-      clearLoginTimeout();
-      res.json({ ok: true, loginId, loginUrl: url });
-    };
-    const onData = (chunk: Buffer): void => {
-      allOutput += chunk.toString();
-      const url = extractClaudeLoginUrl(allOutput);
-      if (url) sendUrl(url);
-    };
-    proc.stdout?.on('data', onData);
-    proc.stderr?.on('data', onData);
-    proc.on('close', (code) => {
-      clearLoginTimeout();
-      const key = loginKey('claude', userId);
-      const current = activeLogins.get(key);
-      if (current?.loginId === loginId) activeLogins.delete(key);
-      const authenticated = hasClaudeLoginCache(home, (credentialPath) =>
-        readFileSync(credentialPath, 'utf8'),
-      );
+    }
+    const loginId = randomUUID();
+    claudeLoginIds.set(userId, loginId);
+    let proc: ChildProcess;
+    try {
+      proc = spawn(bin, ['auth', 'login'], {
+        cwd: home,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: true,
+      });
+    } catch {
+      return res.status(500).json({ ok: false, error: 'Could not start Claude Code sign-in.' });
+    }
+    guardChildStdin(proc, 'Claude Code sign-in');
+    trackChild(proc);
+    const key = loginKey('claude', userId);
+    const record: LoginRecord = { proc, loginId };
+    activeLogins.set(key, record);
+    let output = '';
+    let responded = false;
+    let finished = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (error?: string) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      if (activeLogins.get(key) !== record) return;
+      activeLogins.delete(key);
+      if (error) claudeLoginErrors.set(userId, error);
       if (!responded) {
         responded = true;
-        res.json(
-          code === 0 && authenticated
-            ? { ok: true, loginId, completed: true, output: allOutput.trim() || 'Login completed' }
-            : {
-                ok: false,
-                loginId,
-                output:
-                  allOutput.trim() ||
-                  (code === 0
-                    ? 'Login process exited without valid Claude credentials'
-                    : 'Login process exited unexpectedly'),
-              },
-        );
-      } else if (urlSent && broadcast) {
-        broadcast({
+        res.json({
+          ok: !error,
+          loginId,
+          ...(!error && { completed: true }),
+          output: error || 'Login completed',
+        });
+      } else {
+        broadcast?.({
           type: 'per-user-claude-auth-update',
           userId,
           loginId,
-          status: authenticated ? 'success' : 'failed',
-          ...(!authenticated && {
-            error:
-              allOutput.trim().slice(0, 500) ||
-              (code === 0
-                ? 'Login process exited without valid Claude credentials'
-                : 'Login failed'),
-          }),
+          status: error ? 'failed' : 'success',
+          ...(error && { error }),
         });
       }
-    });
-    proc.on('error', (err) => {
-      clearLoginTimeout();
-      const key = loginKey('claude', userId);
-      const current = activeLogins.get(key);
-      if (current?.loginId === loginId) activeLogins.delete(key);
-      if (!responded) {
-        responded = true;
-        res.status(500).json({ ok: false, error: err.message });
-      }
-    });
-    timeoutHandle = setTimeout(() => {
-      if (responded) return;
-      responded = true;
-      activeLogins.delete(loginKey('claude', userId));
-      res.json({ ok: false, output: allOutput.trim() || 'Timed out waiting for Claude login URL' });
+    };
+    const stop = (message: string) => {
+      finish(message);
       try {
         killProcessGroup(proc, 'SIGTERM');
       } catch {
-        /* ignore */
+        /* Already exited. */
       }
-    }, 20_000);
+    };
+    record.cancel = () => stop('Sign-in cancelled.');
+    timer = setTimeout(() => stop('Timed out waiting for Claude login URL. Try again.'), 20_000);
+    timer.unref();
+    const onData = (chunk: Buffer) => {
+      if (finished || responded) return;
+      output = (output + chunk.toString()).slice(-32768);
+      // Wait for the line ending: URLs can span multiple stdout chunks.
+      const end = output.lastIndexOf('\n');
+      const url = end < 0 ? null : extractClaudeLoginUrl(output.slice(0, end));
+      if (!url) return;
+      record.loginUrl = url;
+      responded = true;
+      clearTimeout(timer);
+      timer = setTimeout(() => stop('Claude sign-in expired. Start again.'), 15 * 60_000);
+      timer.unref();
+      output = '';
+      res.json({ ok: true, loginId, loginUrl: url });
+    };
+    proc.stdout?.on('data', onData);
+    proc.stderr?.on('data', onData);
+    proc.stdin?.on?.('error', () =>
+      stop('Could not deliver the authorization code. Start sign-in again.'),
+    );
+    proc.on('close', (code) => {
+      if (finished) return;
+      const authenticated = code === 0 && hasClaudeLoginCache(home, (p) => readFileSync(p, 'utf8'));
+      finish(authenticated ? undefined : 'Claude sign-in did not complete. Start again.');
+    });
+    proc.on('error', () => finish('Could not start Claude Code sign-in.'));
+  });
+
+  router.post('/api/auth/me/claude-auth/browser/code', (req: Request, res: Response) => {
+    const userId = requireAuthUserId(req, res);
+    if (!userId) return;
+    res.setHeader('Cache-Control', 'no-store');
+    const parsed = ClaudeLoginCode.safeParse(req.body);
+    if (!parsed.success)
+      return res.status(400).json({ error: 'Enter the complete authorization code and login ID.' });
+    const record = activeLogins.get(loginKey('claude', userId));
+    if (
+      !record ||
+      record.loginId !== parsed.data.loginId ||
+      !record.loginUrl ||
+      record.codeSubmitted ||
+      !record.proc.stdin ||
+      record.proc.stdin.destroyed ||
+      record.proc.stdin.writableEnded
+    ) {
+      return res
+        .status(409)
+        .json({ error: 'This sign-in is no longer accepting a code. Start again.' });
+    }
+    record.codeSubmitted = true;
+    try {
+      record.proc.stdin.write(parsed.data.code + '\n', (error) => {
+        if (error) {
+          record.cancel?.();
+          return res
+            .status(500)
+            .json({ error: 'Could not deliver the authorization code. Start sign-in again.' });
+        }
+        res.json({ ok: true });
+      });
+    } catch {
+      record.cancel?.();
+      return res
+        .status(500)
+        .json({ error: 'Could not deliver the authorization code. Start sign-in again.' });
+    }
   });
 
   router.post('/api/auth/me/claude-auth/browser/cancel-login', (req: Request, res: Response) => {
     const userId = requireAuthUserId(req, res);
     if (!userId) return;
     const cancelled = cancelLogin('claude', userId);
+    claudeLoginErrors.delete(userId);
     res.json({ ok: true, output: cancelled ? 'Login cancelled' : 'No login in progress' });
   });
 
@@ -771,6 +903,7 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     const userId = requireAuthUserId(req, res);
     if (!userId) return;
     cancelLogin('claude', userId);
+    claudeLoginErrors.delete(userId);
     try {
       clearPerUserCliCache(userId, config.dataDir, '.claude');
     } catch (err) {

@@ -2507,6 +2507,21 @@ export const api = {
   // Per-user "Sign in with browser" — same UX as the host-wide endpoints
   // above but pinned at a per-user HOME so each Hub user can sign in
   // under their own account (`server/routes/per-user-engine-auth.ts`).
+  getMyClaudeBrowserAuth: () => fetchJSON('/auth/me/claude-auth/browser'),
+  startMyClaudeBrowserLogin: () =>
+    fetchJSON('/auth/me/claude-auth/browser/login', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: 25000,
+    }),
+  submitMyClaudeBrowserCode: (loginId: string, code: string) =>
+    fetchJSON('/auth/me/claude-auth/browser/code', {
+      method: 'POST',
+      body: JSON.stringify({ loginId, code }),
+    }),
+  cancelMyClaudeBrowserLogin: () =>
+    fetchJSON('/auth/me/claude-auth/browser/cancel-login', { method: 'POST' }),
+  logoutMyClaudeBrowser: () => fetchJSON('/auth/me/claude-auth/browser', { method: 'DELETE' }),
   getMyCursorBrowserAuth: () => fetchJSON('/auth/me/cursor-auth/browser'),
   startMyCursorBrowserLogin: () =>
     fetchJSON('/auth/me/cursor-auth/browser/login', {

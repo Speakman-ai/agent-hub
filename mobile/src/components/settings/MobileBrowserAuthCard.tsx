@@ -1,5 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Text, TouchableOpacity, View, StyleSheet } from 'react-native';
+import {
+  ActivityIndicator,
+  Text,
+  TouchableOpacity,
+  View,
+  StyleSheet,
+  TextInput,
+} from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import { colors } from '../../theme/colors';
 import { copyToClipboard } from '../../utils/clipboard';
@@ -9,6 +16,9 @@ type BrowserAuthStatus = {
   binary?: { present?: boolean; path?: string };
   oauth?: { loggedIn?: boolean | null; email?: string | null };
   loginInProgress?: boolean;
+  loginId?: string;
+  loginUrl?: string;
+  codeSubmitted?: boolean;
   statusError?: string | null;
 };
 
@@ -19,6 +29,7 @@ type BrowserAuthCardProps = {
   getStatus: () => Promise<BrowserAuthStatus>;
   startLogin: () => Promise<Record<string, any>>;
   cancelLogin: () => Promise<unknown>;
+  submitCode?: (loginId: string, code: string) => Promise<unknown>;
   logout: () => Promise<{ output?: string }>;
 };
 
@@ -32,6 +43,7 @@ export default function MobileBrowserAuthCard({
   getStatus,
   startLogin,
   cancelLogin,
+  submitCode,
   logout,
 }: BrowserAuthCardProps) {
   const [status, setStatus] = useState<BrowserAuthStatus | null>(null);
@@ -41,6 +53,10 @@ export default function MobileBrowserAuthCard({
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [loginUrl, setLoginUrl] = useState<string | null>(null);
   const [userCode, setUserCode] = useState<string | null>(null);
+  const [loginId, setLoginId] = useState<string | null>(null);
+  const [authorizationCode, setAuthorizationCode] = useState('');
+  const [codeSubmitted, setCodeSubmitted] = useState(false);
+  const [submissionGeneration, setSubmissionGeneration] = useState<number | null>(null);
   const timers = useRef<{
     interval: ReturnType<typeof setInterval> | null;
     timeout: ReturnType<typeof setTimeout> | null;
@@ -49,6 +65,8 @@ export default function MobileBrowserAuthCard({
     timeout: null,
   });
   const statusGeneration = useRef(0);
+  // Invalidation ends the request's ownership of the disabled code controls.
+  const submitting = submissionGeneration === statusGeneration.current;
   const pollInFlightGeneration = useRef<number | null>(null);
 
   const clearTimers = useCallback(() => {
@@ -56,6 +74,7 @@ export default function MobileBrowserAuthCard({
     if (timers.current.timeout) clearTimeout(timers.current.timeout);
     timers.current = { interval: null, timeout: null };
     statusGeneration.current += 1;
+    setSubmissionGeneration(null);
   }, []);
 
   const refresh = useCallback(
@@ -78,52 +97,109 @@ export default function MobileBrowserAuthCard({
     [getStatus, label],
   );
 
-  useEffect(() => {
-    void refresh();
-    return clearTimers;
-  }, [clearTimers, refresh]);
+  const startPolling = useCallback(
+    (expectedLoginId?: string, checkImmediately = false) => {
+      clearTimers();
+      const generation = statusGeneration.current;
+      const poll = async () => {
+        if (
+          statusGeneration.current !== generation ||
+          pollInFlightGeneration.current === generation
+        ) {
+          return;
+        }
+        pollInFlightGeneration.current = generation;
+        try {
+          const next = await refresh(generation);
+          if (!next || statusGeneration.current !== generation) return;
+          if (expectedLoginId && next.loginId && next.loginId !== expectedLoginId) {
+            clearTimers();
+            setBusy(false);
+            setLoginUrl(null);
+            setAuthorizationCode('');
+            setActionMessage('This sign-in was replaced in another window. Start again.');
+            return;
+          }
+          if (next.loginInProgress && next.loginId && next.loginUrl) {
+            setLoginId(next.loginId);
+            setLoginUrl(next.loginUrl);
+          }
+          if (next.codeSubmitted) setCodeSubmitted(true);
+          const loginFinished = next.loginInProgress === false;
+          if (
+            loginFinished &&
+            (next.oauth?.loggedIn === true || next.uiStatus === 'authenticated')
+          ) {
+            clearTimers();
+            setBusy(false);
+            setLoginUrl(null);
+            setUserCode(null);
+            setAuthorizationCode('');
+            setActionMessage(`${label} sign-in complete.`);
+          } else if (next.loginInProgress === false) {
+            clearTimers();
+            setBusy(false);
+            setLoginUrl(null);
+            setUserCode(null);
+            setAuthorizationCode('');
+            setActionMessage(next.statusError || `${label} sign-in did not finish. Try again.`);
+          }
+        } finally {
+          if (pollInFlightGeneration.current === generation) {
+            pollInFlightGeneration.current = null;
+          }
+        }
+      };
+      if (checkImmediately) void poll();
+      timers.current.interval = setInterval(() => void poll(), POLL_INTERVAL_MS);
+      timers.current.timeout = setTimeout(() => {
+        clearTimers();
+        setBusy(false);
+        setLoginUrl(null);
+        setAuthorizationCode('');
+        setActionMessage(`${label} sign-in timed out. Try again.`);
+      }, LOGIN_TIMEOUT_MS);
+    },
+    [clearTimers, label, refresh],
+  );
 
-  const startPolling = useCallback(() => {
-    clearTimers();
+  useEffect(() => {
     const generation = statusGeneration.current;
-    const poll = async () => {
+    void refresh(generation).then((next) => {
       if (
         statusGeneration.current !== generation ||
-        pollInFlightGeneration.current === generation
-      ) {
+        !next?.loginInProgress ||
+        !next.loginId ||
+        !next.loginUrl
+      )
         return;
-      }
-      pollInFlightGeneration.current = generation;
-      try {
-        const next = await refresh(generation);
-        if (!next || statusGeneration.current !== generation) return;
-        const loginFinished = next.loginInProgress === false;
-        if (loginFinished && (next.oauth?.loggedIn === true || next.uiStatus === 'authenticated')) {
-          clearTimers();
-          setBusy(false);
-          setLoginUrl(null);
-          setUserCode(null);
-          setActionMessage(`${label} sign-in complete.`);
-        } else if (next.loginInProgress === false) {
-          clearTimers();
-          setBusy(false);
-          setLoginUrl(null);
-          setUserCode(null);
-          setActionMessage(next.statusError || `${label} sign-in did not finish. Try again.`);
-        }
-      } finally {
-        if (pollInFlightGeneration.current === generation) {
-          pollInFlightGeneration.current = null;
-        }
-      }
-    };
-    timers.current.interval = setInterval(() => void poll(), POLL_INTERVAL_MS);
-    timers.current.timeout = setTimeout(() => {
-      clearTimers();
-      setBusy(false);
-      setActionMessage(`${label} sign-in timed out. Try again.`);
-    }, LOGIN_TIMEOUT_MS);
-  }, [clearTimers, label, refresh]);
+      setLoginId(next.loginId);
+      setLoginUrl(next.loginUrl);
+      setCodeSubmitted(!!next.codeSubmitted);
+      setBusy(true);
+      startPolling(next.loginId);
+    });
+    return clearTimers;
+  }, [clearTimers, refresh, startPolling]);
+
+  const handleSubmitCode = async () => {
+    if (!submitCode || !loginId || !authorizationCode.trim() || submitting || codeSubmitted) return;
+    const generation = statusGeneration.current;
+    const code = authorizationCode.trim();
+    setAuthorizationCode('');
+    setSubmissionGeneration(generation);
+    try {
+      await submitCode(loginId, code);
+      if (statusGeneration.current !== generation) return;
+      setCodeSubmitted(true);
+      setActionMessage('Code sent. Waiting for sign-in to finish.');
+    } catch (err: any) {
+      if (statusGeneration.current === generation)
+        setActionMessage(err?.message || 'Could not submit the code.');
+    } finally {
+      if (statusGeneration.current === generation) setSubmissionGeneration(null);
+    }
+  };
 
   const handleLogin = async () => {
     clearTimers();
@@ -133,14 +209,18 @@ export default function MobileBrowserAuthCard({
     setActionMessage(null);
     setLoginUrl(null);
     setUserCode(null);
+    setLoginId(null);
+    setAuthorizationCode('');
+    setCodeSubmitted(false);
     try {
       const result = await startLogin();
       if (statusGeneration.current !== generation) return;
       const url = loginMode === 'device' ? result.deviceAuthUrl : result.loginUrl;
       if (url) {
         setLoginUrl(url);
+        setLoginId(result.loginId ?? null);
         if (loginMode === 'device' && result.userCode) setUserCode(result.userCode);
-        startPolling();
+        startPolling(result.loginId);
         try {
           await WebBrowser.openBrowserAsync(url);
         } catch {
@@ -165,31 +245,40 @@ export default function MobileBrowserAuthCard({
 
   const handleCancel = async () => {
     clearTimers();
+    const generation = statusGeneration.current;
+    setAuthorizationCode('');
     try {
       await cancelLogin();
-    } catch {
-      // The process may already have exited; status refresh is authoritative.
+      if (statusGeneration.current !== generation) return;
+      setBusy(false);
+      setLoginUrl(null);
+      setUserCode(null);
+      setActionMessage('Sign-in cancelled.');
+      await refresh(generation);
+    } catch (err: any) {
+      if (statusGeneration.current !== generation) return;
+      setBusy(true);
+      setActionMessage(err?.message || 'Could not cancel sign-in.');
+      startPolling(loginId ?? undefined, true);
     }
-    setBusy(false);
-    setLoginUrl(null);
-    setUserCode(null);
-    setActionMessage('Sign-in cancelled.');
-    await refresh();
   };
 
   const handleLogout = async () => {
     clearTimers();
+    const generation = statusGeneration.current;
     setBusy(true);
     try {
       const result = await logout();
+      if (statusGeneration.current !== generation) return;
       setLoginUrl(null);
       setUserCode(null);
       setActionMessage(result?.output || `Signed out of ${label}.`);
-      await refresh();
+      await refresh(generation);
     } catch (err: any) {
-      setActionMessage(err?.message || `${label} sign-out failed.`);
+      if (statusGeneration.current === generation)
+        setActionMessage(err?.message || `${label} sign-out failed.`);
     } finally {
-      setBusy(false);
+      if (statusGeneration.current === generation) setBusy(false);
     }
   };
 
@@ -226,6 +315,33 @@ export default function MobileBrowserAuthCard({
               ? 'Complete sign-in in the browser, then return here.'
               : 'Complete sign-in in the browser; this screen checks for completion.'}
           </Text>
+          {submitCode && loginId && !codeSubmitted && (
+            <View>
+              <Text style={styles.loginHint}>
+                If Claude shows an authorization code, paste the complete code here.
+              </Text>
+              <TextInput
+                accessibilityLabel="Claude authorization code"
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                value={authorizationCode}
+                onChangeText={setAuthorizationCode}
+                editable={!submitting}
+                style={styles.codeInput}
+              />
+              <TouchableOpacity
+                style={styles.primaryButton}
+                disabled={submitting || !authorizationCode.trim()}
+                onPress={() => void handleSubmitCode()}
+              >
+                <Text style={styles.primaryText}>{submitting ? 'Submitting…' : 'Submit code'}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          {submitCode && codeSubmitted && (
+            <Text style={styles.loginHint}>Waiting for sign-in to finish…</Text>
+          )}
           {userCode && <Text style={styles.code}>{userCode}</Text>}
           <View style={styles.actionRow}>
             <TouchableOpacity
@@ -288,6 +404,14 @@ const styles = StyleSheet.create({
   message: { color: colors.gray400, fontSize: 11, marginTop: 8 },
   loginBox: { backgroundColor: colors.gray900, borderRadius: 8, padding: 10, marginTop: 10 },
   loginHint: { color: colors.gray400, fontSize: 11, lineHeight: 16 },
+  codeInput: {
+    color: colors.white,
+    borderColor: colors.gray700,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+    marginVertical: 8,
+  },
   code: {
     color: colors.white,
     fontFamily: 'monospace',

@@ -6,6 +6,9 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 (vi as any).mock('../utils/api.js', () => ({
   api: {
     getMyClaudeAuth: vi.fn(),
+    getMyClaudeBrowserAuth: vi
+      .fn()
+      .mockResolvedValue({ oauth: { loggedIn: false }, loginInProgress: false }),
     putMyClaudeAuth: vi.fn(),
   },
 }));
@@ -57,6 +60,7 @@ describe('MyClaudeAuthSection — load + render', () => {
 
     render(<MyClaudeAuthSection />);
 
+    expect(await screen.findByRole('button', { name: 'Sign in with browser' })).toBeInTheDocument();
     expect(await screen.findByText('****api-key-tail')).toBeInTheDocument();
     expect(screen.getByText('****oauth-tail')).toBeInTheDocument();
     // Both slots have a user-set value → both should show "Using yours".

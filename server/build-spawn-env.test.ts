@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, statSync, writeFileSync, existsSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, statSync, writeFileSync, existsSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import config, {
@@ -78,6 +78,22 @@ describe('buildSpawnEnv — PATH propagation', () => {
 });
 
 describe('buildSpawnEnv — per-user Claude credentials (per-account only, no host fallback)', () => {
+  it('uses the same Claude config directory as per-user browser sign-in', () => {
+    const dataDir = mkdtempSync(path.join(os.tmpdir(), 'claude-browser-env-'));
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/host/claude-config');
+    try {
+      const env = buildSpawnEnv(
+        { ...config, dataDir },
+        { userId: 'browser-user', engine: 'claude-code' },
+      );
+      expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+      expect(env.HOME).toBe(perUserHomePath('browser-user', dataDir));
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('per-user override sets ANTHROPIC_API_KEY', () => {
     const env = buildSpawnEnv(config, {
       userOverride: { anthropicApiKey: 'sk-ant-api03-user', claudeCodeOAuthToken: null },

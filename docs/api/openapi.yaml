@@ -37539,6 +37539,66 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgTodosErrorResponse"
+  /api/auth/me/claude-auth/browser/code:
+    post:
+      tags:
+        - Auth
+      summary: Send an authorization code to the caller’s active Claude Code login.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                loginId:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                code:
+                  type: string
+                  minLength: 1
+                  maxLength: 4096
+                  pattern: ^[!-~]+$
+              required:
+                - loginId
+                - code
+      responses:
+        "200":
+          description: Code delivered; poll browser status for completion.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: Invalid login ID or code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Login ended, was replaced, or already received a code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Could not deliver the code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/auth/me/claude-auth/browser:
     get:
       tags:
@@ -37573,6 +37633,12 @@ paths:
                     required:
                       - loggedIn
                   loginInProgress:
+                    type: boolean
+                  loginId:
+                    type: string
+                  loginUrl:
+                    type: string
+                  codeSubmitted:
                     type: boolean
                   activeMethod:
                     type: string
@@ -37655,6 +37721,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Could not prepare or start Claude Code sign-in.
           content:
             application/json:
               schema:

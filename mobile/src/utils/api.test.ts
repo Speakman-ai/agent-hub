@@ -90,6 +90,13 @@ describe('api threads helpers — URL + method parity with web client', () => {
 });
 
 describe('mobile CLI browser auth helpers', () => {
+  it('sends the Claude code in a POST body bound to the login attempt', async () => {
+    await api.submitMyClaudeBrowserCode('attempt-id', 'code#state');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/auth/me/claude-auth/browser/code');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ loginId: 'attempt-id', code: 'code#state' });
+  });
   it('starts Claude browser login with an authenticated JSON POST', async () => {
     await api.startMyClaudeBrowserLogin();
     const [url, init] = lastCall();

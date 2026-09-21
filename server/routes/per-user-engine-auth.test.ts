@@ -15,6 +15,11 @@ vi.mock('child_process', () => ({
     spawnMock(...args) as ReturnType<typeof import('child_process').spawn>,
 }));
 
+vi.mock('../process-groups.js', () => ({
+  trackChild: vi.fn(),
+  killProcessGroup: vi.fn((proc) => proc.kill()),
+}));
+
 import createPerUserEngineAuthRoutes from './per-user-engine-auth.js';
 import { resetActiveCodexDeviceLoginsForTest } from '../per-user-codex-device-login.js';
 
@@ -145,6 +150,7 @@ describe('per-user engine auth routes', () => {
       request(app).get('/api/auth/me/claude-auth/browser'),
       request(app).post('/api/auth/me/cursor-auth/browser/login'),
       request(app).post('/api/auth/me/claude-auth/browser/login'),
+      request(app).post('/api/auth/me/claude-auth/browser/code'),
       request(app).post('/api/auth/me/cursor-auth/browser/cancel-login'),
       request(app).delete('/api/auth/me/cursor-auth/browser'),
       request(app).post('/api/auth/me/claude-auth/browser/cancel-login'),
@@ -235,13 +241,13 @@ describe('per-user engine auth routes', () => {
     const app = buildApp({ claudeBin, cursorBin, codexBin, dataDir: tmpDir, userId });
     spawnMock.mockImplementation((cmd, args, opts) => {
       expect(cmd).toBe(claudeBin);
-      expect(args).toEqual([]);
+      expect(args).toEqual(['auth', 'login']);
       expect((opts as { stdio: unknown[] }).stdio).toEqual(['pipe', 'pipe', 'pipe']);
       expect((opts as { env: Record<string, string> }).env.HOME).toBe(
         join(tmpDir, 'per-user-creds', userId, 'home'),
       );
       const proc = fakeSpawnProc({
-        stdoutChunks: ['Open https://claude.ai/oauth/authorize?state=abc to continue'],
+        stdoutChunks: ['Open https://claude.ai/oauth/authorize?state=abc to continue\n'],
         closeCode: 0,
       });
       expect(
@@ -253,7 +259,186 @@ describe('per-user engine auth routes', () => {
     const res = await request(app).post('/api/auth/me/claude-auth/browser/login').expect(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.loginUrl).toBe('https://claude.ai/oauth/authorize?state=abc');
-    expect(spawnMock.mock.results[0]?.value.stdin.write).toHaveBeenCalledWith('/login\n');
+    expect(spawnMock.mock.results[0]?.value.stdin.write).not.toHaveBeenCalled();
+  });
+
+  it('submits a remote authorization code only to the matching user and login attempt', async () => {
+    const app = buildApp({ claudeBin, cursorBin, codexBin, dataDir: tmpDir, userId: 'code-user' });
+    const other = buildApp({
+      claudeBin,
+      cursorBin,
+      codexBin,
+      dataDir: tmpDir,
+      userId: 'other-user',
+    });
+    const proc = Object.assign(new EventEmitter(), {
+      stdin: Object.assign(new EventEmitter(), { write: vi.fn((_code, cb) => cb?.()) }),
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: vi.fn(),
+    });
+    spawnMock.mockImplementation(() => {
+      queueMicrotask(() =>
+        proc.stdout.emit('data', Buffer.from('https://claude.ai/oauth/authorize?state=abc\n')),
+      );
+      return proc;
+    });
+    const start = await request(app).post('/api/auth/me/claude-auth/browser/login').expect(200);
+    const body = { loginId: start.body.loginId, code: 'authorization-code#state' };
+    await request(other).post('/api/auth/me/claude-auth/browser/code').send(body).expect(409);
+    await request(app)
+      .post('/api/auth/me/claude-auth/browser/code')
+      .send({ ...body, loginId: 'stale' })
+      .expect(409);
+    await request(app)
+      .post('/api/auth/me/claude-auth/browser/code')
+      .send({ ...body, code: 'code\n/logout' })
+      .expect(400);
+    expect(proc.stdin.write).not.toHaveBeenCalled();
+    await request(app).post('/api/auth/me/claude-auth/browser/code').send(body).expect(200);
+    expect(proc.stdin.write).toHaveBeenCalledWith(
+      'authorization-code#state\n',
+      expect.any(Function),
+    );
+    await request(app).post('/api/auth/me/claude-auth/browser/code').send(body).expect(409);
+    await request(app).post('/api/auth/me/claude-auth/browser/cancel-login').expect(200);
+    proc.emit('close', null);
+    await request(app).post('/api/auth/me/claude-auth/browser/code').send(body).expect(409);
+  });
+
+  it('isolates login environment, assembles split URLs, and confirms saved credentials', async () => {
+    const userId = 'claude-env-user';
+    const { app, broadcast } = buildAppWithDeps({
+      claudeBin,
+      cursorBin,
+      codexBin,
+      dataDir: tmpDir,
+      userId,
+    });
+    const home = join(tmpDir, 'per-user-creds', userId, 'home');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'host-key');
+    vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'host-token');
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'host-oauth');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/host/config');
+    vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '1');
+    const proc = Object.assign(new EventEmitter(), {
+      stdin: new EventEmitter(),
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: vi.fn(),
+    });
+    spawnMock.mockImplementation((_cmd, _args, opts) => {
+      expect(opts.env.HOME).toBe(home);
+      expect(opts.env.CLAUDE_CONFIG_DIR).toBeUndefined();
+      for (const key of [
+        'ANTHROPIC_API_KEY',
+        'ANTHROPIC_AUTH_TOKEN',
+        'CLAUDE_CODE_OAUTH_TOKEN',
+        'CLAUDE_CODE_USE_BEDROCK',
+      ])
+        expect(opts.env[key]).toBeUndefined();
+      queueMicrotask(() => {
+        proc.stdout.emit('data', Buffer.from('https://claude.ai/oauth/authorize?state='));
+        proc.stdout.emit('data', Buffer.from('complete-state\nPaste code here:'));
+      });
+      return proc;
+    });
+    try {
+      const start = await request(app).post('/api/auth/me/claude-auth/browser/login').expect(200);
+      expect(start.body.loginUrl).toBe('https://claude.ai/oauth/authorize?state=complete-state');
+      const status = await request(app).get('/api/auth/me/claude-auth/browser').expect(200);
+      expect(status.body.loginId).toBe(start.body.loginId);
+      expect(status.body.loginUrl).toBe(start.body.loginUrl);
+      expect(status.body.oauth.loggedIn).toBe(false);
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      writeFileSync(
+        join(home, '.claude', '.credentials.json'),
+        JSON.stringify({
+          claudeAiOauth: { accessToken: 'private-access-token', expiresAt: Date.now() + 60000 },
+        }),
+      );
+      proc.emit('close', 0);
+      const done = await request(app).get('/api/auth/me/claude-auth/browser').expect(200);
+      expect(done.body.loginInProgress).toBe(false);
+      expect(done.body.oauth.loggedIn).toBe(true);
+      expect(JSON.stringify(done.body)).not.toContain('private-access-token');
+      expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ status: 'success' }));
+    } finally {
+      vi.unstubAllEnvs();
+      proc.emit('close', null);
+    }
+  });
+
+  it('expires abandoned login processes after sending a URL and rejects late codes', async () => {
+    const app = buildApp({
+      claudeBin,
+      cursorBin,
+      codexBin,
+      dataDir: tmpDir,
+      userId: 'claude-expire',
+    });
+    const proc = Object.assign(new EventEmitter(), {
+      stdin: new EventEmitter(),
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      kill: vi.fn(),
+    });
+    spawnMock.mockImplementation(() => {
+      queueMicrotask(() =>
+        proc.stdout.emit('data', Buffer.from('https://claude.ai/oauth/authorize?state=expires\n')),
+      );
+      return proc;
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const start = await request(app).post('/api/auth/me/claude-auth/browser/login').expect(200);
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      expect(proc.kill).toHaveBeenCalled();
+      const done = await request(app).get('/api/auth/me/claude-auth/browser').expect(200);
+      expect(done.body.loginInProgress).toBe(false);
+      expect(done.body.statusError).toContain('expired');
+      await request(app)
+        .post('/api/auth/me/claude-auth/browser/code')
+        .send({ loginId: start.body.loginId, code: 'late' })
+        .expect(409);
+    } finally {
+      vi.useRealTimers();
+      proc.emit('close', null);
+    }
+  });
+
+  it('keeps a replacement login active when the cancelled process closes late', async () => {
+    const app = buildApp({
+      claudeBin,
+      cursorBin,
+      codexBin,
+      dataDir: tmpDir,
+      userId: 'claude-replace',
+    });
+    const processes: any[] = [];
+    spawnMock.mockImplementation(() => {
+      const proc = Object.assign(new EventEmitter(), {
+        stdin: new EventEmitter(),
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        kill: vi.fn(),
+      });
+      processes.push(proc);
+      queueMicrotask(() =>
+        proc.stdout.emit('data', Buffer.from('https://claude.ai/oauth/authorize?state=replaced\n')),
+      );
+      return proc;
+    });
+    const first = await request(app).post('/api/auth/me/claude-auth/browser/login').expect(200);
+    const second = await request(app).post('/api/auth/me/claude-auth/browser/login').expect(200);
+    expect(first.body.loginId).not.toBe(second.body.loginId);
+    processes[0].emit('close', 1);
+    const status = await request(app).get('/api/auth/me/claude-auth/browser').expect(200);
+    expect(status.body.loginId).toBe(second.body.loginId);
+    expect(status.body.loginInProgress).toBe(true);
+    expect(status.body.statusError).toBeNull();
+    await request(app).post('/api/auth/me/claude-auth/browser/cancel-login').expect(200);
+    processes[1].emit('close', null);
   });
 
   it('does not report completion when Claude exits 0 without valid credentials', async () => {
@@ -266,7 +451,7 @@ describe('per-user engine auth routes', () => {
     const res = await request(app).post('/api/auth/me/claude-auth/browser/login').expect(200);
     expect(res.body.ok).toBe(false);
     expect(res.body.completed).toBeUndefined();
-    expect(res.body.output).toBe('Login cancelled');
+    expect(res.body.output).toBe('Claude sign-in did not complete. Start again.');
   });
 
   it('broadcasts Claude login failure when the CLI exits 0 without valid credentials', async () => {
@@ -279,7 +464,7 @@ describe('per-user engine auth routes', () => {
     });
     spawnMock.mockImplementation(() =>
       fakeSpawnProc({
-        stdoutChunks: ['Open https://claude.ai/oauth/authorize?state=abc to continue'],
+        stdoutChunks: ['Open https://claude.ai/oauth/authorize?state=abc to continue\n'],
         closeCode: 0,
       }),
     );

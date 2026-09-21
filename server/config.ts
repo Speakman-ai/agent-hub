@@ -982,6 +982,8 @@ export function buildSpawnEnv(
   if (ownerUserId) {
     try {
       env.HOME = ensurePerUserHome(ownerUserId, cfg.dataDir);
+      // Resolve Claude's cache under the effective HOME, including inside remote workers.
+      delete env.CLAUDE_CONFIG_DIR;
     } catch {
       // Best-effort: a transient FS error must never block a spawn.
       // Fall through to the host HOME inherited via process.env.

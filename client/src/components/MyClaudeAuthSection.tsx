@@ -11,6 +11,7 @@ import {
   UserCircle2,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import MyClaudeBrowserAuthSection from './MyClaudeBrowserAuthSection';
 
 /**
  * Per-user Claude credentials panel — surfaces `GET/PUT /api/auth/me/claude-auth`
@@ -216,11 +217,17 @@ export default function MyClaudeAuthSection({ bare = false }: { bare?: boolean }
           <UserCircle2 size={14} /> Personal Claude credentials
         </h4>
         <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
-          When set, sessions you own spawn with your credentials instead of the host-wide
-          configuration. Leave empty to fall back to the host (managed in{' '}
-          <span className="text-gray-400">Settings → Claude Auth</span>).
+          Choose browser sign-in or save your own API key or setup-token below.
         </p>
       </div>
+
+      <MyClaudeBrowserAuthSection />
+      {(apiKeyMasked || oauthMasked) && (
+        <p className="text-xs text-amber-300">
+          Your saved API key or setup-token takes precedence over browser sign-in. Clear the saved
+          credentials below to use your browser sign-in.
+        </p>
+      )}
 
       {/* Anthropic API key */}
       <div className="space-y-3">

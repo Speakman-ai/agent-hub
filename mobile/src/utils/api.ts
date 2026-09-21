@@ -1082,6 +1082,11 @@ export const api = {
   getMyClaudeBrowserAuth: () => fetchJSON('/auth/me/claude-auth/browser'),
   startMyClaudeBrowserLogin: () =>
     fetchJSON('/auth/me/claude-auth/browser/login', { method: 'POST', body: JSON.stringify({}) }),
+  submitMyClaudeBrowserCode: (loginId: string, code: string) =>
+    fetchJSON('/auth/me/claude-auth/browser/code', {
+      method: 'POST',
+      body: JSON.stringify({ loginId, code }),
+    }),
   cancelMyClaudeBrowserLogin: () =>
     fetchJSON('/auth/me/claude-auth/browser/cancel-login', { method: 'POST' }),
   logoutMyClaudeBrowser: () => fetchJSON('/auth/me/claude-auth/browser', { method: 'DELETE' }),

@@ -28,6 +28,7 @@ const BROWSER_AUTH_PROVIDERS: Record<string, any> = {
     loginMode: 'url',
     getStatus: api.getMyClaudeBrowserAuth,
     startLogin: api.startMyClaudeBrowserLogin,
+    submitCode: api.submitMyClaudeBrowserCode,
     cancelLogin: api.cancelMyClaudeBrowserLogin,
     logout: api.logoutMyClaudeBrowser,
   },
@@ -79,6 +80,18 @@ function ProviderCard({ provider }: any) {
       setKeyInput('');
     } catch (err: any) {
       Alert.alert('Save failed', err?.message || 'Could not save the key.');
+    } finally {
+      setSaving(false);
+    }
+  };
+  const clearSetupToken = async () => {
+    setSaving(true);
+    try {
+      setBody(
+        await api.putMyAuth('claude', { claudeCodeOAuthToken: '', claudeCodeOAuthExpiresAt: null }),
+      );
+    } catch (err: any) {
+      Alert.alert('Remove failed', err?.message || 'Could not remove the setup-token.');
     } finally {
       setSaving(false);
     }
@@ -158,6 +171,30 @@ function ProviderCard({ provider }: any) {
               </TouchableOpacity>
             )}
           </View>
+          {provider.id === 'claude' && configured && (
+            <Text style={styles.cardDesc}>
+              Your saved API key or setup-token takes precedence over browser sign-in. Clear saved
+              credentials to use browser sign-in.
+            </Text>
+          )}
+          {provider.id === 'claude' && body?.claudeCodeOAuthToken && (
+            <TouchableOpacity
+              style={styles.dangerBtn}
+              disabled={saving}
+              onPress={() =>
+                Alert.alert(
+                  'Remove setup-token',
+                  'Remove your saved Claude setup-token so browser sign-in can be used?',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Remove', style: 'destructive', onPress: () => void clearSetupToken() },
+                  ],
+                )
+              }
+            >
+              <Text style={styles.dangerBtnText}>Remove setup-token</Text>
+            </TouchableOpacity>
+          )}
           {browserAuth && (
             <MobileBrowserAuthCard
               label={browserAuth.label}
@@ -165,6 +202,7 @@ function ProviderCard({ provider }: any) {
               loginMode={browserAuth.loginMode}
               getStatus={browserAuth.getStatus}
               startLogin={browserAuth.startLogin}
+              submitCode={browserAuth.submitCode}
               cancelLogin={browserAuth.cancelLogin}
               logout={browserAuth.logout}
             />

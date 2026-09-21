@@ -14,6 +14,15 @@ vi.mock('react-native', () => ({
     </button>
   ),
   View: ({ children }: any) => <div>{children}</div>,
+  TextInput: ({ accessibilityLabel, value, onChangeText, editable, secureTextEntry }: any) => (
+    <input
+      aria-label={accessibilityLabel}
+      type={secureTextEntry ? 'password' : 'text'}
+      value={value}
+      disabled={editable === false}
+      onInput={(event) => onChangeText((event.target as HTMLInputElement).value)}
+    />
+  ),
 }));
 
 vi.mock('expo-web-browser', () => ({ openBrowserAsync: vi.fn() }));
@@ -116,6 +125,163 @@ afterEach(() => {
 });
 
 describe('MobileBrowserAuthCard', () => {
+  it('submits the remote code to the active login without treating submission as success', async () => {
+    const submitCode = vi.fn().mockResolvedValue({ ok: true });
+    mount({
+      submitCode,
+      startLogin: vi.fn().mockResolvedValue({
+        loginId: 'login-one',
+        loginUrl: 'https://claude.ai/oauth/authorize?state=one',
+      }),
+    });
+    await settle();
+    await press('Sign in with browser');
+    const input = container!.querySelector('input')!;
+    expect(input.type).toBe('password');
+    input.value = 'code#state';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    await press('Submit code');
+    expect(submitCode).toHaveBeenCalledWith('login-one', 'code#state');
+    expect(container!.querySelector('input')).toBeNull();
+    expect(text()).toContain('Waiting for sign-in to finish');
+    expect(text()).not.toContain('sign-in complete');
+    await press('Cancel sign-in');
+    expect(text()).toContain('Sign-in cancelled');
+  });
+
+  it('discards a late code submission response after cancellation', async () => {
+    const submitted = deferred<unknown>();
+    mount({
+      submitCode: vi.fn().mockReturnValue(submitted.promise),
+      startLogin: vi.fn().mockResolvedValue({
+        loginId: 'login-one',
+        loginUrl: 'https://claude.ai/oauth/authorize?state=one',
+      }),
+    });
+    await settle();
+    await press('Sign in with browser');
+    const input = container!.querySelector('input')!;
+    input.value = 'code#state';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    await press('Submit code');
+    await press('Cancel sign-in');
+    submitted.resolve({ ok: true });
+    await settle();
+    expect(text()).toContain('Sign-in cancelled');
+    expect(text()).not.toContain('Code sent');
+  });
+
+  it.each([false, true])(
+    'recovers a pending submission after failed cancellation (status failure: %s)',
+    async (statusFails) => {
+      vi.useFakeTimers();
+      const oldSubmission = deferred<unknown>();
+      const retrySubmission = deferred<unknown>();
+      const submitCode = vi
+        .fn()
+        .mockResolvedValue({ ok: true })
+        .mockReturnValueOnce(oldSubmission.promise)
+        .mockReturnValueOnce(retrySubmission.promise);
+      const pending = {
+        ...idleStatus,
+        loginInProgress: true,
+        loginId: 'login-one',
+        loginUrl: 'https://claude.ai/oauth/authorize?state=one',
+        codeSubmitted: false,
+      };
+      const getStatus = vi.fn().mockResolvedValue(pending);
+      mount({
+        getStatus,
+        submitCode,
+        cancelLogin: vi.fn().mockRejectedValue(new Error('Cancel unavailable')),
+      });
+      await settle();
+      const enterCode = async () => {
+        const input = container!.querySelector('input')!;
+        input.value = 'code#state';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        await settle();
+        await press('Submit code');
+      };
+      await enterCode();
+      expect(container!.querySelector('input')!.disabled).toBe(true);
+      if (statusFails) getStatus.mockRejectedValueOnce(new Error('Status unavailable'));
+      await press('Cancel sign-in');
+      expect(container!.querySelector('input')).not.toBeNull();
+      expect(container!.querySelector('input')!.disabled).toBe(false);
+      await enterCode();
+      expect(submitCode).toHaveBeenCalledTimes(2);
+      oldSubmission.reject(new Error('Obsolete submission failed'));
+      await settle();
+      expect(text()).not.toContain('Obsolete submission failed');
+      expect(container!.querySelector('input')!.disabled).toBe(true);
+      retrySubmission.reject(new Error('Retry failed'));
+      await settle();
+      expect(container!.querySelector('input')!.disabled).toBe(false);
+      await enterCode();
+      expect(text()).toContain('Waiting for sign-in to finish');
+      getStatus.mockResolvedValue(signedInStatus);
+      await vi.advanceTimersByTimeAsync(3000);
+      await settle();
+      expect(text()).toContain('Claude sign-in complete.');
+      const calls = getStatus.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(getStatus).toHaveBeenCalledTimes(calls);
+    },
+  );
+
+  it('recovers the code form when cancellation fails before the start response arrives', async () => {
+    const start = deferred<Record<string, any>>();
+    const getStatus = vi
+      .fn()
+      .mockResolvedValueOnce(idleStatus)
+      .mockResolvedValue({
+        ...idleStatus,
+        loginInProgress: true,
+        loginId: 'login-one',
+        loginUrl: 'https://claude.ai/oauth/authorize?state=one',
+      });
+    mount({
+      getStatus,
+      startLogin: vi.fn().mockReturnValue(start.promise),
+      submitCode: vi.fn(),
+      cancelLogin: vi.fn().mockRejectedValue(new Error('Cancel unavailable')),
+    });
+    await settle();
+    await press('Sign in with browser');
+    await press('Cancel sign-in');
+    expect(container!.querySelector('input')).not.toBeNull();
+    expect(container!.querySelector('input')!.disabled).toBe(false);
+    start.resolve({ loginId: 'obsolete', loginUrl: 'https://claude.ai/obsolete' });
+    await settle();
+    expect(text()).toContain('Cancel unavailable');
+  });
+
+  it.each(['cancel', 'logout'])('ignores a late %s failure after unmount', async (action) => {
+    const request = deferred<any>();
+    const getStatus = vi.fn().mockResolvedValue(
+      action === 'logout'
+        ? signedInStatus
+        : {
+            ...idleStatus,
+            loginInProgress: true,
+            loginId: 'login-one',
+            loginUrl: 'https://claude.ai/login',
+          },
+    );
+    mount({ getStatus, cancelLogin: () => request.promise, logout: () => request.promise });
+    await settle();
+    await press(action === 'logout' ? 'Sign out' : 'Cancel sign-in');
+    flushSync(() => root!.unmount());
+    root = null;
+    const calls = getStatus.mock.calls.length;
+    request.reject(new Error('Late failure'));
+    await settle();
+    expect(getStatus).toHaveBeenCalledTimes(calls);
+  });
+
   it('shows loading first, then renders the idle sign-in action', async () => {
     const status = deferred<Status>();
     const getStatus = vi.fn().mockReturnValue(status.promise);
