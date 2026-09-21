@@ -1,3 +1,5 @@
+import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, {
   createContext,
   useState,
@@ -12,7 +14,7 @@ import { api } from '../utils/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { extractSubmittedAskIds } from '../utils/askAnswers';
 import { loadOrgs, migrateFromLegacy, getOrgs } from '../utils/orgs';
-import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
+import { loadConnectionConfig, getApiBaseUrl, getAuthHeaders } from '../utils/config';
 import {
   loadAuthToken,
   isAuthenticated,
@@ -62,6 +64,17 @@ import {
 import { shouldAutoPresentArtifact } from '@shared/utils/artifactView';
 import { appendImportEvent } from '@shared/utils/projectImportWizard';
 import { addKanbanRefreshProject, createRefreshScheduler } from '@shared/utils/kanbanRefresh';
+const useAiSignInGuide = createUseAiSignInGuide({ useCallback, useEffect, useRef, useState });
+
+async function loadAiSignInStatus(server: string, signal: AbortSignal) {
+  const response = await fetch(`${server}/setup/status`, {
+    headers: getAuthHeaders() as Record<string, string>,
+    signal,
+  });
+  if (!response.ok) return null;
+  return response.json();
+}
+
 const AppContext = createContext<any>(null);
 export function AppProvider({ children }: any) {
   const [agents, setAgents] = useState<any[]>([]);
@@ -267,6 +280,13 @@ export function AppProvider({ children }: any) {
   // is missing/expired. Flipped to false by `completeAuth()` after a
   // successful login/setup via the LoginScreen.
   const [needsAuth, setNeedsAuth] = useState(false);
+  const { showAiSignInGuide, dismissAiSignInGuide } = useAiSignInGuide({
+    enabled: configReady && !needsAuth && !needsSetup,
+    server: getApiBaseUrl(),
+    user: getAuthRecord()?.user,
+    storage: AsyncStorage,
+    loadStatus: loadAiSignInStatus,
+  });
   // Mobile push state: Expo token + permission status (used by Settings).
   const [pushToken, setPushToken] = useState<any>(null);
   const [pushPermissionStatus, setPushPermissionStatus] = useState('unknown');
@@ -2494,6 +2514,8 @@ export function AppProvider({ children }: any) {
   const isProcessing = thinking || !!streamingContent || sessionRoundProcessing;
   const value = {
     configReady,
+    showAiSignInGuide,
+    dismissAiSignInGuide,
     needsSetup,
     completeSetup,
     needsAuth,

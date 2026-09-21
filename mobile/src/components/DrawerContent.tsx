@@ -1,3 +1,4 @@
+import AiSignInHint from './AiSignInHint';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -53,6 +54,8 @@ const putCollapsedProject = (projectId: string, collapsed: boolean) =>
 
 export default function DrawerContent({ navigation }: any) {
   const {
+    showAiSignInGuide,
+    dismissAiSignInGuide,
     agents,
     projects,
     activeAgentId,
@@ -825,6 +828,7 @@ export default function DrawerContent({ navigation }: any) {
           <HubIcon name="FolderOpen" size={17} style={styles.navButtonIcon} />
           <Text style={styles.navButtonText}>Import Project</Text>
         </TouchableOpacity>
+        {showAiSignInGuide && <AiSignInHint target="Settings" onDismiss={dismissAiSignInGuide} />}
         <TouchableOpacity
           style={styles.navButton}
           onPress={() => {

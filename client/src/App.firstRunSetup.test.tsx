@@ -33,8 +33,8 @@ import { render, waitFor, cleanup, screen } from '@testing-library/react';
 }));
 
 (vi as any).mock('./components/Sidebar.jsx', () => ({
-  default: function MockSidebar() {
-    return <div data-testid="sidebar-mock" />;
+  default: function MockSidebar(props: any) {
+    return <div data-testid="sidebar-mock" data-guide={String(props.showAiSignInGuide)} />;
   },
 }));
 
@@ -109,6 +109,7 @@ import { render, waitFor, cleanup, screen } from '@testing-library/react';
     ...mod,
     api: {
       ...mod.api,
+      completeSetup: vi.fn().mockResolvedValue({ ok: true }),
       getModelConfig: vi.fn().mockResolvedValue(empty),
       getProjects: vi.fn().mockResolvedValue([]),
       getSessions: vi.fn().mockResolvedValue([]),
@@ -125,15 +126,16 @@ import { render, waitFor, cleanup, screen } from '@testing-library/react';
 });
 
 import App from './App';
+import { api } from './utils/api';
 import { setActiveOrgIsLocal, setToken } from './utils/auth';
 
 function mockFetchWithSetupStatus(status: any) {
   return vi.fn((url: any) => {
     const u = String(url);
     if (u.includes('/setup/status')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(status) });
+      return Promise.resolve(Response.json(status));
     }
-    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    return Promise.resolve(Response.json({}));
   });
 }
 
@@ -175,7 +177,6 @@ describe('App — first-run SetupWizard gating', () => {
     await waitFor(() => {
       expect(screen.getByTestId('setup-wizard-mock')).toBeInTheDocument();
     });
-    expect(screen.getByTestId('setup-wizard-mock').dataset.initialStep).toBe('1');
     expect(screen.queryByTestId('adaptive-flow-mock')).not.toBeInTheDocument();
   });
 
@@ -198,64 +199,35 @@ describe('App — first-run SetupWizard gating', () => {
     expect(screen.queryByTestId('setup-wizard-mock')).not.toBeInTheDocument();
   });
 
-  it('resumes the SetupWizard when Owner exists but onboarding was interrupted', async () => {
-    // Bitwarden / reload after /api/auth/setup: auth.json exists but the
-    // wizard never reached "Open Project". Must not dump into main chrome.
-    (globalThis as any).fetch = mockFetchWithSetupStatus({
+  it('opens project creation for an authenticated owner whose onboarding was interrupted', async () => {
+    globalThis.fetch = mockFetchWithSetupStatus({
       firstRun: true,
       authConfigured: true,
       onboardingComplete: false,
       hasAnyAiCredentials: true,
     });
-
     render(<App />);
+    await screen.findByTestId('adaptive-flow-mock');
+    expect(screen.queryByTestId('setup-wizard-mock')).not.toBeInTheDocument();
+  });
 
-    await waitFor(() => {
-      expect(screen.getByTestId('setup-wizard-mock')).toBeInTheDocument();
-    });
-    // Owner already exists → land on Welcome (step 1 of the no-account plan).
-    expect(screen.getByTestId('setup-wizard-mock').dataset.initialStep).toBe('1');
-    // Adaptive project flow must not replace the interrupted SetupWizard.
-    await waitFor(() => {
+  it.each([true, false, undefined])(
+    'guides credential-free users without blocking entry (onboarding=%s)',
+    async (onboardingComplete) => {
+      globalThis.fetch = mockFetchWithSetupStatus({
+        firstRun: true,
+        authConfigured: true,
+        onboardingComplete,
+        hasAnyAiCredentials: false,
+      });
+      render(<App />);
+      await waitFor(() =>
+        expect(screen.getByTestId('sidebar-mock')).toHaveAttribute('data-guide', 'true'),
+      );
+      expect(screen.queryByTestId('setup-wizard-mock')).not.toBeInTheDocument();
       expect(screen.queryByTestId('adaptive-flow-mock')).not.toBeInTheDocument();
-    });
-  });
-
-  it('shows the wizard at the AI-credentials step when Owner exists but engines are wiped', async () => {
-    // Sandbox-reset path: Owner record + default org survive but
-    // claude/cursor/codex CLIs are no longer authed. We want to land at
-    // the credentials step (step 2), not step 1.
-    (globalThis as any).fetch = mockFetchWithSetupStatus({
-      firstRun: false,
-      authConfigured: true,
-      onboardingComplete: true,
-      hasAnyAiCredentials: false,
-      engineAuth: { 'claude-code': false, 'cursor-agent': false, 'codex-cli': false },
-    });
-
-    render(<App />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('setup-wizard-mock')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('setup-wizard-mock').dataset.initialStep).toBe('2');
-  });
-
-  it('still routes to the wizard when the server omits authConfigured (legacy server, no orgs)', async () => {
-    // Older servers that don't return `authConfigured` should still hit
-    // the legacy fallback. With no AI credentials we always show the
-    // wizard regardless of the new field.
-    (globalThis as any).fetch = mockFetchWithSetupStatus({
-      firstRun: true,
-      hasAnyAiCredentials: false,
-    });
-
-    render(<App />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('setup-wizard-mock')).toBeInTheDocument();
-    });
-  });
+    },
+  );
 
   function seedRole(role: 'Owner' | 'Admin' | 'User') {
     setToken({
@@ -282,21 +254,20 @@ describe('App — first-run SetupWizard gating', () => {
     expect(screen.queryByTestId('setup-wizard-mock')).not.toBeInTheDocument();
   });
 
-  it('shows a credentials walkthrough without First Project for a User with no AI engines', async () => {
+  it('guides invited users to their Account without calling owner-only completion', async () => {
     seedRole('User');
-    (globalThis as any).fetch = mockFetchWithSetupStatus({
+    globalThis.fetch = mockFetchWithSetupStatus({
       firstRun: false,
       authConfigured: true,
-      onboardingComplete: true,
+      onboardingComplete: false,
+      canCompleteOnboarding: false,
       hasAnyAiCredentials: false,
     });
-
     render(<App />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('setup-wizard-mock')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('setup-wizard-mock').dataset.includeFirstProject).toBe('false');
-    expect(screen.getByTestId('setup-wizard-mock').dataset.initialStep).toBe('2');
+    await waitFor(() =>
+      expect(screen.getByTestId('sidebar-mock')).toHaveAttribute('data-guide', 'true'),
+    );
+    expect(screen.queryByTestId('setup-wizard-mock')).not.toBeInTheDocument();
+    expect(api.completeSetup).not.toHaveBeenCalled();
   });
 });

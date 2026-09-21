@@ -96,6 +96,7 @@ function AppContent() {
   const [inviteToken, setInviteToken] = useState<any>(null);
   const {
     setActiveSessionId,
+    showAiSignInGuide,
     configReady,
     needsSetup,
     completeSetup,
@@ -119,6 +120,11 @@ function AppContent() {
       }),
     ]).start();
   }, [slideAnim, overlayAnim]);
+  useEffect(() => {
+    if (showAiSignInGuide && navigationRef.current?.getCurrentRoute()?.name !== 'Settings') {
+      openSidebar();
+    }
+  }, [showAiSignInGuide, openSidebar]);
   const closeSidebar = useCallback(() => {
     sidebarOpenRef.current = false;
     Animated.parallel([

@@ -1,3 +1,5 @@
+import { useIsFocused } from '@react-navigation/native';
+import AiSignInHint from '../components/AiSignInHint';
 import React, { useState, useEffect, useMemo, useContext } from 'react';
 import {
   View,
@@ -2190,12 +2192,19 @@ const LEGACY_TAB_IDS = new Set([
 ]);
 const SETTINGS_TAB_IDS = SETTINGS_TABS.map((t: any) => t.id);
 export default function SettingsScreen({ route }: any) {
+  const { showAiSignInGuide, dismissAiSignInGuide } = useApp();
+  const isFocused = useIsFocused();
   const { openSidebar } = useContext(SidebarContext);
   const routeTab = route?.params?.tab;
   const [tab, setTab] = useState(() =>
     normalizeSettingsTab(routeTab, SETTINGS_TAB_IDS, LEGACY_TAB_IDS),
   );
   const [tabMenuOpen, setTabMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!isFocused) return;
+    if (showAiSignInGuide && tab === 'account') dismissAiSignInGuide();
+    else if (showAiSignInGuide) setTabMenuOpen(true);
+  }, [showAiSignInGuide, tab, dismissAiSignInGuide, isFocused]);
   // React Navigation keeps SettingsScreen mounted, so the `useState`
   // initializer above only runs once. When the screen is re-navigated with a
   // new `tab` param while already open (e.g. the dashboard "Account"
@@ -2254,7 +2263,7 @@ export default function SettingsScreen({ route }: any) {
       </View>
 
       <Modal
-        visible={tabMenuOpen}
+        visible={tabMenuOpen && isFocused}
         transparent
         animationType="fade"
         onRequestClose={() => setTabMenuOpen(false)}
@@ -2265,17 +2274,23 @@ export default function SettingsScreen({ route }: any) {
               {visibleSettingsTabs.map((t: any) => {
                 const active = tab === t.id;
                 return (
-                  <TouchableOpacity
-                    key={t.id}
-                    style={[styles.tabMenuItem, active && styles.tabMenuItemActive]}
-                    onPress={() => selectTab(t.id)}
-                    testID={`settings-tab-${t.id}`}
-                  >
-                    <Text style={[styles.tabMenuItemText, active && styles.tabMenuItemTextActive]}>
-                      {t.label}
-                    </Text>
-                    {active ? <Text style={styles.tabMenuCheck}>{'\u2713'}</Text> : null}
-                  </TouchableOpacity>
+                  <View key={t.id}>
+                    {t.id === 'account' && showAiSignInGuide && (
+                      <AiSignInHint target="Account" onDismiss={dismissAiSignInGuide} />
+                    )}
+                    <TouchableOpacity
+                      style={[styles.tabMenuItem, active && styles.tabMenuItemActive]}
+                      onPress={() => selectTab(t.id)}
+                      testID={`settings-tab-${t.id}`}
+                    >
+                      <Text
+                        style={[styles.tabMenuItemText, active && styles.tabMenuItemTextActive]}
+                      >
+                        {t.label}
+                      </Text>
+                      {active ? <Text style={styles.tabMenuCheck}>{'\u2713'}</Text> : null}
+                    </TouchableOpacity>
+                  </View>
                 );
               })}
             </ScrollView>

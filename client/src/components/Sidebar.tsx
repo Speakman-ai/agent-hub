@@ -1,3 +1,4 @@
+import AiSignInHint from './AiSignInHint';
 import { useState, useEffect, useRef } from 'react';
 import {
   BookOpen,
@@ -200,6 +201,8 @@ export default function Sidebar({
    * renders in the header. Mobile uses the slide-out drawer and never shows it.
    */
   onCollapseSidebar,
+  showAiSignInGuide = false,
+  onDismissAiSignInGuide,
   /** Kanban board: project id when `currentView` is `kanban:<id>`. */
   kanbanProjectId = null,
   kanbanProjectName = null,
@@ -1930,6 +1933,7 @@ export default function Sidebar({
 
       {/* Bottom nav */}
       <div className="border-t border-gray-800 p-3 space-y-1">
+        {showAiSignInGuide && <AiSignInHint target="Settings" onDismiss={onDismissAiSignInGuide} />}
         <button
           onClick={() => onNavigate('settings')}
           className={`w-full text-left px-3 py-3 md:py-2 rounded-lg flex items-center gap-2 text-sm transition-colors min-h-[44px] ${

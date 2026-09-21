@@ -74,10 +74,8 @@ import ReactLoopObservabilityPanel from './components/ReactLoopObservabilityPane
 import OrchestrationTimelinePanel from './components/OrchestrationTimelinePanel';
 import OpenProjectWizard from './components/OpenProjectWizard';
 import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow';
-import SetupWizard, {
-  resolveSetupWizardPresentation,
-  stepIndexForKey,
-} from './components/SetupWizard';
+import SetupWizard from './components/SetupWizard';
+import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
 import KanbanBoard from './components/KanbanBoard';
 import EpicView from './components/EpicView';
 import KanbanCardTemplatesView from './components/KanbanCardTemplatesView';
@@ -140,7 +138,7 @@ import {
 } from '@shared/utils/pendingLessonCounts';
 import { api } from './utils/api';
 import { shouldSuppressToast } from './utils/toastPolicy';
-import { canCompleteInstanceOnboarding } from './utils/auth';
+import { canCompleteInstanceOnboarding, getAuthRecord } from './utils/auth';
 import { createRefreshScheduler, kanbanEventTargetsProject } from '@shared/utils/kanbanRefresh';
 import { readCollapsedColumnIds, writeCollapsedColumnIds } from './utils/kanbanColumnCollapse';
 import { isWorkflowProject } from './utils/projectMode';
@@ -265,6 +263,12 @@ import { deriveSessionState } from './utils/deriveSessionState';
 import { resolveDeepLinkTarget, upsertSessionRow } from './utils/sessionDeepLinkTarget';
 import { deriveSessionTimelineMarkers } from '@shared/utils/sessionTimeline';
 import { shouldAutoPresentArtifact } from '@shared/utils/artifactView';
+
+const useAiSignInGuide = createUseAiSignInGuide({ useCallback, useEffect, useRef, useState });
+const aiSignInGuideStorage = {
+  getItem: (key: string) => localStorage.getItem(key),
+  setItem: (key: string, value: string) => localStorage.setItem(key, value),
+};
 
 /**
  * @param {object} [props]
@@ -663,15 +667,21 @@ export default function App({ initialView }: any = {}) {
   // First-run setup
   const [setupStatus, setSetupStatus] = useState<any>(null);
   const [showSetup, setShowSetup] = useState(false);
-  // When the wizard is triggered specifically because the user has no AI
-  // credentials (rather than because this is a true first-run install), we
-  // jump straight to the AI-credentials step and hide Back below it. Org +
-  // Welcome are skipped because the org already exists. See App init below.
-  const [setupInitialStep, setSetupInitialStep] = useState(1);
-  // Owner-only ending: persist `onboardingComplete` and open the first-project
-  // picker. Invited User/Admin walkthroughs omit this so they never hit the
-  // 403 from POST /api/setup/complete.
-  const [setupIncludeFirstProject, setSetupIncludeFirstProject] = useState(true);
+  const { showAiSignInGuide, dismissAiSignInGuide } = useAiSignInGuide({
+    server: getApiBase(),
+    user: getAuthRecord()?.user,
+    status: setupStatus,
+    storage: aiSignInGuideStorage,
+  });
+  const guideRevealedRef = useRef(false);
+  useEffect(() => {
+    if (!showAiSignInGuide) guideRevealedRef.current = false;
+    if (showAiSignInGuide && !showSetup && !guideRevealedRef.current) {
+      guideRevealedRef.current = true;
+      setSidebarCollapsed(false);
+      if (!currentView.startsWith('settings')) setSidebarOpen(true);
+    }
+  }, [showAiSignInGuide, showSetup, currentView]);
   // Full-screen "Connecting…" only until org migration + org list + setup probe.
   // Project/session data loads in the main layout (sidebar shows its own spinner).
   const [initializing, setInitializing] = useState(true);
@@ -3785,53 +3795,30 @@ export default function App({ initialView }: any = {}) {
         } catch {} // server may not support it yet
       }
 
-      // Step 2: Check setup status
-      //
-      // SetupWizard triggers, in priority order:
-      //
-      //   1. **Onboarding incomplete** (Owner / local-bundled / first Owner
-      //      only). `onboardingComplete: false` (or `authConfigured: false`
-      //      on legacy servers that omit the new field). Owner creation
-      //      alone is not enough — password managers can interrupt after
-      //      `/api/auth/setup` and leave the user in the main chrome stuck
-      //      on WebSocket "Reconnecting…". Resume the wizard from the
-      //      Hub-account step (or Welcome if Owner exists). Invited
-      //      Admin/User members skip this — POST /api/setup/complete is
-      //      Owner-only and 403s for them.
-      //   2. **No AI credentials.** Anyone with zero usable AI engines —
-      //      land on the credentials step. Non-Owners omit First Project.
-      //   3. **First run.** Brand-new install with no projects yet after
-      //      onboarding — open the adaptive project wizard.
+      // Only creating the first Hub owner blocks entry into the app.
       try {
         const statusRes = await fetch(`${getApiBase()}/setup/status`, {
           headers: getAuthHeaders(),
           signal: AbortSignal.timeout(10000),
         });
+        if (!statusRes.ok) throw new Error('Unable to load setup status');
         const status = await statusRes.json();
         setSetupStatus(status);
-        const presentation = resolveSetupWizardPresentation(status, {
-          canCompleteOnboarding: canCompleteInstanceOnboarding(),
-          hasOrgs: !!getOrgs(),
-        });
-        if (presentation.show) {
-          setSetupInitialStep(
-            presentation.initialStepKey ? stepIndexForKey(status, presentation.initialStepKey) : 1,
-          );
-          setSetupIncludeFirstProject(presentation.includeFirstProject);
+        if (status.authConfigured === false) {
           setShowSetup(true);
-          // A leftover `#/new-project-adaptive` hash (common after an
-          // interrupted first-run that briefly opened the project picker)
-          // must not render on top of the SetupWizard.
           setCurrentView('chat');
-        } else if (status.firstRun) {
-          if (!getOrgs()) {
-            setSetupInitialStep(1);
-            setShowSetup(true);
-          } else {
+        } else {
+          if (
+            status.onboardingComplete === false &&
+            (status.canCompleteOnboarding ?? canCompleteInstanceOnboarding())
+          ) {
+            void api.completeSetup().catch(() => {});
+          }
+          if (status.firstRun && status.hasAnyAiCredentials !== false) {
             openAdaptiveProjectWizard();
           }
         }
-      } catch {} // server may not have endpoint yet
+      } catch {} // Leave navigation available when the setup probe is unavailable.
 
       // Main chrome (chat + sidebar frame) can render; sidebar shows loading until
       // projects and sessions are ready.
@@ -6429,6 +6416,8 @@ export default function App({ initialView }: any = {}) {
           } ${sidebarCollapsed ? 'md:hidden' : ''}`}
         >
           <Sidebar
+            showAiSignInGuide={showAiSignInGuide && !currentView.startsWith('settings')}
+            onDismissAiSignInGuide={dismissAiSignInGuide}
             onCollapseSidebar={() => setSidebarCollapsed(true)}
             isLoading={sidebarDataLoading}
             projects={projects}
@@ -6893,6 +6882,8 @@ export default function App({ initialView }: any = {}) {
                 </div>
               ) : currentView.startsWith('settings') ? (
                 <SettingsPage
+                  showAiSignInGuide={showAiSignInGuide}
+                  onDismissAiSignInGuide={dismissAiSignInGuide}
                   projects={projects}
                   agents={agents}
                   onAgentsChange={refreshAgents}
@@ -8218,21 +8209,22 @@ export default function App({ initialView }: any = {}) {
         {/* First-run setup wizard */}
         {showSetup && setupStatus && (
           <SetupWizard
-            setupStatus={setupStatus}
-            initialStep={setupInitialStep}
-            includeFirstProject={setupIncludeFirstProject}
             onComplete={async () => {
-              // Owner instance onboarding: persist the flag before tearing
-              // the wizard down. If the write fails, leave the step mounted
-              // so the button becomes Retry. Invited User/Admin walkthroughs
-              // skip this call — they cannot mark instance onboarding done.
-              if (setupIncludeFirstProject) {
-                await api.completeSetup();
-              }
+              await api.completeSetup();
+              setSetupStatus((status: any) => ({
+                ...status,
+                authConfigured: true,
+                onboardingComplete: true,
+              }));
               setShowSetup(false);
-              setSetupInitialStep(1);
-              if (setupIncludeFirstProject) {
-                openAdaptiveProjectWizard();
+              try {
+                const response = await fetch(`${getApiBase()}/setup/status`, {
+                  headers: getAuthHeaders(),
+                  signal: AbortSignal.timeout(10000),
+                });
+                if (response.ok) setSetupStatus(await response.json());
+              } catch {
+                /* The app remains usable if the credential probe is unavailable. */
               }
             }}
           />

@@ -136,6 +136,30 @@ describe('SettingsPage — tab labels', () => {
     window.history.replaceState(null, '', '/');
   });
 
+  it('points to Account and completes guidance when Account opens', async () => {
+    const dismiss = vi.fn();
+    const view = render(
+      <SettingsPage projects={[]} agents={[]} showAiSignInGuide onDismissAiSignInGuide={dismiss} />,
+    );
+    const hints = await view.findAllByText('Choose Account to sign in with your AI credentials.');
+    expect(hints.length).toBeGreaterThan(0);
+    fireEvent.click(view.getAllByRole('button', { name: 'Account' })[0]);
+    await waitFor(() => expect(dismiss).toHaveBeenCalled());
+  });
+
+  it('allows dismissal without navigating away from General', async () => {
+    const dismiss = vi.fn();
+    const view = render(
+      <SettingsPage projects={[]} agents={[]} showAiSignInGuide onDismissAiSignInGuide={dismiss} />,
+    );
+    fireEvent.click((await view.findAllByRole('button', { name: 'Dismiss AI sign-in guide' }))[0]);
+    expect(dismiss).toHaveBeenCalledOnce();
+    expect(view.getAllByRole('button', { name: 'General' })[0]).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
+
   it('does not expose a Workspace sidebar link named Integrations', async () => {
     const { queryByRole, findByRole } = render(
       <SettingsPage projects={[]} agents={[]} onAgentsChange={() => {}} />,

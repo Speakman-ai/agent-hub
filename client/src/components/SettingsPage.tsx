@@ -1,3 +1,4 @@
+import AiSignInHint from './AiSignInHint';
 import { useState, useEffect, useRef, useMemo, Component } from 'react';
 import { api } from '../utils/api';
 import {
@@ -5526,6 +5527,8 @@ function SettingsNavItem({ tab, active, onSelect }: any) {
 }
 
 export default function SettingsPage({
+  showAiSignInGuide = false,
+  onDismissAiSignInGuide,
   projects = [],
   agents,
   onAgentsChange,
@@ -5542,7 +5545,11 @@ export default function SettingsPage({
       ? 'general'
       : initialTab || 'general',
   );
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(showAiSignInGuide);
+  useEffect(() => {
+    if (showAiSignInGuide && tab === 'account') onDismissAiSignInGuide?.();
+    else if (showAiSignInGuide) setMobileNavOpen(true);
+  }, [showAiSignInGuide, tab, onDismissAiSignInGuide]);
 
   // Legacy `?tab=integrations` / `?tab=tool-errors` / `?tab=slack` deep-links
   // fall back to the General tab (handled by the `tab` initializer above).
@@ -5653,7 +5660,12 @@ export default function SettingsPage({
   const sidebar = (
     <nav aria-label="Settings sections" className="space-y-0.5">
       {visibleSettingsTabs.map((t: any) => (
-        <SettingsNavItem key={t.id} tab={t} active={tab === t.id} onSelect={handleSelectTab} />
+        <div key={t.id}>
+          {t.id === 'account' && showAiSignInGuide && tab !== 'account' && (
+            <AiSignInHint target="Account" onDismiss={onDismissAiSignInGuide} />
+          )}
+          <SettingsNavItem tab={t} active={tab === t.id} onSelect={handleSelectTab} />
+        </div>
       ))}
     </nav>
   );
