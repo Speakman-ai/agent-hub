@@ -316,6 +316,14 @@ resolves in priority order: **env vars** > **`~/.agent-hub/data/config.json`** >
 > but on a shared host where only the local UI should reach the API, set
 > `AGENT_HUB_HOST=127.0.0.1`.
 
+The agent browser trusts the exact origin of `publicUrl` (or
+`AGENT_HUB_PUBLIC_URL`), including a private LAN address. For example, a Hub
+configured as `http://192.168.50.45` can be opened by agents and through the
+Agent browser address bar. Trust covers that scheme, host, and port across all
+paths; it does not grant access to other private addresses or ports. Authentication
+still applies. Session previews remain pinned to their own origin. An unset or
+invalid public URL grants no private-network exception.
+
 ---
 
 ## How it fits together

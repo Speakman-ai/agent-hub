@@ -4,6 +4,20 @@
  */
 
 import config from './config.js';
+import type { BrowserNavigationPolicyOpts } from './browser-navigation-url.js';
+
+/** Trust only the operator-configured Hub origin, never request headers or tool input. */
+export function browserNavigationPolicyFromConfig(): BrowserNavigationPolicyOpts {
+  try {
+    const url = new URL(config.publicUrl ?? '');
+    if ((url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password) {
+      return { allowOrigins: [url.origin] };
+    }
+  } catch {
+    // An unset or invalid public URL grants no private-network access.
+  }
+  return {};
+}
 
 /** Substrings / suffixes aligned with known third-party ad and tracker CDN hosts. */
 export const DEFAULT_BLOCKED_AD_TRACKER_HOST_SUFFIXES: readonly string[] = Object.freeze([

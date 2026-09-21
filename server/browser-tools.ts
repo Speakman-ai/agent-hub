@@ -15,6 +15,7 @@ import {
   type BrowserNavigationPolicyOpts,
 } from './browser-navigation-url.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
+import { browserNavigationPolicyFromConfig } from './browser-host-policy.js';
 import {
   getBrowserSession,
   launchBrowserSession,
@@ -423,7 +424,7 @@ export function surfaceObservationLines(
 ): string[] {
   const label =
     surface === 'web'
-      ? 'Surface: web (agent browser — public internet; humans see it live in the Agent browser pane)'
+      ? 'Surface: web (agent browser: public internet and configured Hub origin; humans see it live in the Agent browser pane)'
       : `Surface: preview (this session's dev preview${extra ? `, pinned to ${extra}` : ''}; humans see it live in the Agent browser pane)`;
   return ['', `${label} · URL: ${url ?? '(no page yet)'}`];
 }
@@ -673,7 +674,7 @@ export async function browserNavigate(
   host: unknown,
   url: string,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
-  policyOpts?: BrowserNavigationPolicyOpts,
+  policyOpts: BrowserNavigationPolicyOpts = browserNavigationPolicyFromConfig(),
 ): Promise<BrowserToolResult> {
   const u = url.trim();
   if (!u) return result('navigate', false, undefined, 'url is required');
@@ -887,7 +888,7 @@ export async function browserScroll(host: unknown, direction: string): Promise<B
 export async function browserBack(
   host: unknown,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
-  policyOpts?: BrowserNavigationPolicyOpts,
+  policyOpts: BrowserNavigationPolicyOpts = browserNavigationPolicyFromConfig(),
 ): Promise<BrowserToolResult> {
   try {
     const page = getActivePage(host);
@@ -918,7 +919,7 @@ export async function browserBack(
 export async function browserForward(
   host: unknown,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
-  policyOpts?: BrowserNavigationPolicyOpts,
+  policyOpts: BrowserNavigationPolicyOpts = browserNavigationPolicyFromConfig(),
 ): Promise<BrowserToolResult> {
   try {
     const page = getActivePage(host);
