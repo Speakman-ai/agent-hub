@@ -345,6 +345,217 @@ describe('git-host repository browsing routes', () => {
     await request.get(`/api/projects/${id}/git-host/readme`).expect(404);
   });
 
+  it('lists the root tree with last-commit metadata and commit count', async () => {
+    const { id, shas } = await hostedProjectWithHistory();
+    const res = await request.get(`/api/projects/${id}/git-host/tree`).expect(200);
+    expect(res.body.branch).toBe('main');
+    expect(res.body.path).toBe('');
+    expect(res.body.commitCount).toBe(2);
+    expect(res.body.latestCommit.sha).toBe(shas[1]);
+    expect(res.body.latestCommit.subject).toBe('commit two');
+    const names = (res.body.entries as Array<{ name: string; type: string }>).map((e) => e.name);
+    expect(names).toEqual(['one.txt', 'two.txt']);
+    const two = res.body.entries.find((e: { name: string }) => e.name === 'two.txt');
+    expect(two.lastCommit.subject).toBe('commit two');
+    const one = res.body.entries.find((e: { name: string }) => e.name === 'one.txt');
+    expect(one.lastCommit.subject).toBe('commit one');
+  });
+
+  it('lists a subdirectory, reads a file blob, and indexes paths', async () => {
+    const id = await freshProject();
+    await request
+      .post(`/api/projects/${id}/git-host/enable`)
+      .send({ importFrom: 'empty' })
+      .expect(202);
+    await waitForReady(id);
+
+    const bare = gitHostRepoPath(id);
+    const work = path.join(os.tmpdir(), `git-host-tree-${uuidv4().slice(0, 8)}`);
+    mkdirSync(work, { recursive: true });
+    mkdirSync(path.join(work, 'src'), { recursive: true });
+    execSync('git init --initial-branch=main', { cwd: work, stdio: 'pipe' });
+    git(work, 'config user.email "t@example.com"');
+    git(work, 'config user.name "Tester"');
+    writeFileSync(path.join(work, 'README.md'), '# Hello\n');
+    writeFileSync(path.join(work, 'src', 'app.ts'), 'export const n = 1;\n');
+    git(work, 'add -A');
+    git(work, 'commit -m "add src"');
+    git(work, `remote add origin "${bare}"`);
+    git(work, 'push -u origin main');
+
+    const root = await request.get(`/api/projects/${id}/git-host/tree`).expect(200);
+    expect(root.body.entries.map((e: { name: string }) => e.name)).toEqual(['src', 'README.md']);
+    expect(root.body.entries[0].type).toBe('tree');
+
+    const nested = await request
+      .get(`/api/projects/${id}/git-host/tree`)
+      .query({ path: 'src' })
+      .expect(200);
+    expect(nested.body.path).toBe('src');
+    expect(nested.body.entries).toHaveLength(1);
+    expect(nested.body.entries[0]).toMatchObject({
+      name: 'app.ts',
+      type: 'blob',
+      path: 'src/app.ts',
+    });
+
+    const file = await request
+      .get(`/api/projects/${id}/git-host/file`)
+      .query({ path: 'src/app.ts' })
+      .expect(200);
+    expect(file.body).toMatchObject({
+      path: 'src/app.ts',
+      binary: false,
+      truncated: false,
+      content: 'export const n = 1;\n',
+    });
+    expect(file.body.size).toBeGreaterThan(0);
+    // Markdown blobs resolve repo-relative images through the media mount, so
+    // the blob payload must carry the same authorization the README does.
+    expect(typeof file.body.mediaToken).toBe('string');
+    expect(validateGitHostMediaToken(id, 'main', file.body.mediaToken)).toBe(true);
+    // Scoped to this project+branch, not a bearer for anything else.
+    expect(validateGitHostMediaToken(id, 'other-branch', file.body.mediaToken)).toBe(false);
+    expect(validateGitHostMediaToken('other-project', 'main', file.body.mediaToken)).toBe(false);
+
+    const paths = await request.get(`/api/projects/${id}/git-host/paths`).expect(200);
+    expect(paths.body.paths).toEqual(['README.md', 'src/app.ts']);
+
+    await request.get(`/api/projects/${id}/git-host/file`).expect(400);
+    await request
+      .get(`/api/projects/${id}/git-host/file`)
+      .query({ path: '../etc/passwd' })
+      .expect(400);
+    await request
+      .get(`/api/projects/${id}/git-host/file`)
+      .query({ path: 'missing.ts' })
+      .expect(404);
+    await request.get(`/api/projects/${id}/git-host/tree`).query({ path: 'nope' }).expect(404);
+  });
+
+  it('404s tree/file/paths for non-hosted projects', async () => {
+    const id = await freshProject();
+    await request.get(`/api/projects/${id}/git-host/tree`).expect(404);
+    await request.get(`/api/projects/${id}/git-host/file`).query({ path: 'a.ts' }).expect(404);
+    await request.get(`/api/projects/${id}/git-host/paths`).expect(404);
+  });
+
+  it('returns unicode and space-padded filenames byte-exactly through tree, paths, and file', async () => {
+    const id = await freshProject();
+    await request
+      .post(`/api/projects/${id}/git-host/enable`)
+      .send({ importFrom: 'empty' })
+      .expect(202);
+    await waitForReady(id);
+
+    const bare = gitHostRepoPath(id);
+    const work = path.join(os.tmpdir(), `git-host-unicode-${uuidv4().slice(0, 8)}`);
+    mkdirSync(path.join(work, 'dossier'), { recursive: true });
+    execSync('git init --initial-branch=main', { cwd: work, stdio: 'pipe' });
+    git(work, 'config user.email "t@example.com"');
+    git(work, 'config user.name "Tester"');
+    // git quotes these by default (`"caf\303\251.txt"`), which is exactly the
+    // shape that used to escape into the API and then 404 when opened.
+    const unicodeName = 'café.txt';
+    const spacedName = ' plain.txt';
+    const nestedName = 'dossier/naïve.md';
+    writeFileSync(path.join(work, unicodeName), 'unicode body\n');
+    writeFileSync(path.join(work, spacedName), 'spaced body\n');
+    writeFileSync(path.join(work, nestedName), 'nested body\n');
+    git(work, 'add -A');
+    git(work, 'commit -m "unicode fixtures"');
+    git(work, `remote add origin "${bare}"`);
+    git(work, 'push -u origin main');
+
+    const root = await request.get(`/api/projects/${id}/git-host/tree`).expect(200);
+    const names = root.body.entries.map((e: { name: string }) => e.name);
+    expect(names).toContain(unicodeName);
+    expect(names).toContain(spacedName);
+    expect(names.some((n: string) => n.includes('\\303'))).toBe(false);
+    expect(names.some((n: string) => n.startsWith('"'))).toBe(false);
+    // Every entry carries the commit that introduced it — the last-commit
+    // matcher has to see the same unquoted name the tree does.
+    for (const entry of root.body.entries) {
+      expect(entry.lastCommit?.subject).toBe('unicode fixtures');
+    }
+
+    const paths = await request.get(`/api/projects/${id}/git-host/paths`).expect(200);
+    expect(paths.body.paths).toEqual(expect.arrayContaining([unicodeName, spacedName, nestedName]));
+
+    // The names the tree/paths APIs hand out must round-trip back as blobs.
+    for (const [name, body] of [
+      [unicodeName, 'unicode body\n'],
+      [spacedName, 'spaced body\n'],
+      [nestedName, 'nested body\n'],
+    ] as const) {
+      const file = await request
+        .get(`/api/projects/${id}/git-host/file`)
+        .query({ path: name })
+        .expect(200);
+      expect(file.body).toMatchObject({ path: name, binary: false, content: body });
+    }
+  });
+
+  it('lists submodules as gitlink entries and keeps them out of Go to file', async () => {
+    const id = await freshProject();
+    await request
+      .post(`/api/projects/${id}/git-host/enable`)
+      .send({ importFrom: 'empty' })
+      .expect(202);
+    await waitForReady(id);
+
+    const bare = gitHostRepoPath(id);
+    const root = path.join(os.tmpdir(), `git-host-submodule-${uuidv4().slice(0, 8)}`);
+    const upstream = path.join(root, 'upstream');
+    const work = path.join(root, 'work');
+    mkdirSync(upstream, { recursive: true });
+    mkdirSync(work, { recursive: true });
+
+    // A real repository to embed as a submodule.
+    execSync('git init --initial-branch=main', { cwd: upstream, stdio: 'pipe' });
+    git(upstream, 'config user.email "t@example.com"');
+    git(upstream, 'config user.name "Tester"');
+    writeFileSync(path.join(upstream, 'lib.ts'), 'export const x = 1;\n');
+    git(upstream, 'add -A');
+    git(upstream, 'commit -m "upstream"');
+
+    execSync('git init --initial-branch=main', { cwd: work, stdio: 'pipe' });
+    git(work, 'config user.email "t@example.com"');
+    git(work, 'config user.name "Tester"');
+    writeFileSync(path.join(work, 'root.txt'), 'root\n');
+    git(work, 'add -A');
+    git(work, 'commit -m "root"');
+    // `vendor/` ends up containing ONLY the submodule, which is the case that
+    // used to render as an empty directory.
+    git(work, `-c protocol.file.allow=always submodule add "${upstream}" vendor/dep`);
+    git(work, 'commit -m "add submodule"');
+    git(work, `remote add origin "${bare}"`);
+    git(work, 'push -u origin main');
+
+    const vendor = await request
+      .get(`/api/projects/${id}/git-host/tree`)
+      .query({ path: 'vendor' })
+      .expect(200);
+    expect(vendor.body.entries).toHaveLength(1);
+    expect(vendor.body.entries[0]).toMatchObject({
+      name: 'dep',
+      path: 'vendor/dep',
+      type: 'commit',
+      mode: '160000',
+    });
+
+    // Go to file offers blobs only: a gitlink path is not readable and would
+    // 404 the moment the user selected it.
+    const paths = await request.get(`/api/projects/${id}/git-host/paths`).expect(200);
+    expect(paths.body.paths).toContain('root.txt');
+    expect(paths.body.paths).toContain('.gitmodules');
+    expect(paths.body.paths).not.toContain('vendor/dep');
+    await request
+      .get(`/api/projects/${id}/git-host/file`)
+      .query({ path: 'vendor/dep' })
+      .expect(404);
+  });
+
   it('truncates an oversized README by bytes and flags truncated', async () => {
     const id = await freshProject();
     await request

@@ -110,6 +110,7 @@ import SecurityPage from './components/SecurityPage';
 import NotesEditor from './components/NotesEditor';
 import PullRequestsPage from './components/PullRequestsPage';
 import RepositoryPage from './components/RepositoryPage';
+import { isHubHostedProject } from './components/github/githubRepoIdentity';
 import ProjectWorkflowsPage from './components/ProjectWorkflowsPage';
 import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder';
 import FinalizeSettingsSection from './components/FinalizeSettingsSection';
@@ -7138,6 +7139,18 @@ export default function App({ initialView }: any = {}) {
                     setCurrentView(`kanban:${pullsProjectId}`);
                   }}
                   onOpenEpic={(epicId: any) => setCurrentView(`epic:${pullsProjectId}:${epicId}`)}
+                  // RepositoryPage is backed entirely by git-host endpoints,
+                  // which reject projects without gitHost: 'agenthub'. Passing
+                  // the callback for a GitHub-backed project would light up the
+                  // Code tab and navigate straight to an error page, so it is
+                  // omitted and GitHubRepoChrome renders Code disabled.
+                  onOpenRepo={
+                    isHubHostedProject(projects.find((p: any) => p.id === pullsProjectId))
+                      ? () => {
+                          if (pullsProjectId) setCurrentView(`repo:${pullsProjectId}`);
+                        }
+                      : null
+                  }
                 />
               ) : currentView.startsWith('repo:') ? (
                 <RepositoryPage

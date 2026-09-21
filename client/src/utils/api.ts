@@ -844,6 +844,25 @@ export const api = {
     const qs = params.toString();
     return fetchJSON(`/projects/${projectId}/git-host/readme${qs ? `?${qs}` : ''}`);
   },
+  getGitHostTree: (projectId: any, { branch, path = '' }: any = {}) => {
+    const params = new URLSearchParams();
+    if (branch) params.set('branch', branch);
+    if (path) params.set('path', path);
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/git-host/tree${qs ? `?${qs}` : ''}`);
+  },
+  getGitHostFile: (projectId: any, { branch, path }: any) => {
+    const params = new URLSearchParams();
+    if (branch) params.set('branch', branch);
+    params.set('path', path);
+    return fetchJSON(`/projects/${projectId}/git-host/file?${params}`);
+  },
+  getGitHostPaths: (projectId: any, { branch }: any = {}) => {
+    const params = new URLSearchParams();
+    if (branch) params.set('branch', branch);
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/git-host/paths${qs ? `?${qs}` : ''}`);
+  },
   // GitHub mirror sync status + on-demand reconcile (two-way sync).
   getGitHostMirror: (projectId: any) => fetchJSON(`/projects/${projectId}/git-host/mirror`),
   reconcileGitHostMirror: (projectId: any) =>

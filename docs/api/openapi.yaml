@@ -29717,6 +29717,273 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/git-host/tree:
+    get:
+      tags:
+        - Projects
+      summary: Directory listing of an Agent Hub-hosted repo branch
+      description: "GitHub Code-tab file table: entries in `path` (empty = repo root) with last-commit metadata, plus the directory tip commit and total commit count on the branch. 404 unless gitHost: agenthub or the path/branch is missing."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Defaults to the default branch.
+          required: false
+          description: Defaults to the default branch.
+          name: branch
+          in: query
+        - schema:
+            type: string
+            description: Directory path; empty for root.
+          required: false
+          description: Directory path; empty for root.
+          name: path
+          in: query
+      responses:
+        "200":
+          description: Directory listing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  branch:
+                    type: string
+                  path:
+                    type: string
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        path:
+                          type: string
+                        type:
+                          type: string
+                          enum:
+                            - blob
+                            - tree
+                            - commit
+                          description: "`commit` is a submodule gitlink (mode 160000): neither browsable as a directory nor readable as a blob."
+                        size:
+                          type: number
+                          nullable: true
+                        mode:
+                          type: string
+                        lastCommit:
+                          type: object
+                          nullable: true
+                          properties:
+                            sha:
+                              type: string
+                            subject:
+                              type: string
+                            author:
+                              type: string
+                            date:
+                              type: string
+                          required:
+                            - sha
+                            - subject
+                            - author
+                            - date
+                      required:
+                        - name
+                        - path
+                        - type
+                        - size
+                        - mode
+                        - lastCommit
+                  latestCommit:
+                    type: object
+                    nullable: true
+                    properties:
+                      sha:
+                        type: string
+                      subject:
+                        type: string
+                      author:
+                        type: string
+                      date:
+                        type: string
+                    required:
+                      - sha
+                      - subject
+                      - author
+                      - date
+                  commitCount:
+                    type: number
+                required:
+                  - branch
+                  - path
+                  - entries
+                  - latestCommit
+                  - commitCount
+        "400":
+          description: Invalid branch or path.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project, not Hub-hosted, or unknown branch/path.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/file:
+    get:
+      tags:
+        - Projects
+      summary: File blob of an Agent Hub-hosted repo branch
+      description: "GitHub blob-page payload: UTF-8 content (or binary:true with content null), size, truncated flag. Capped at 512 KiB. 404 unless gitHost: agenthub or the file is missing."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Defaults to the default branch.
+          required: false
+          description: Defaults to the default branch.
+          name: branch
+          in: query
+        - schema:
+            type: string
+            description: Root-relative file path.
+          required: true
+          description: Root-relative file path.
+          name: path
+          in: query
+      responses:
+        "200":
+          description: File contents.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  branch:
+                    type: string
+                  path:
+                    type: string
+                  content:
+                    type: string
+                    nullable: true
+                  binary:
+                    type: boolean
+                  truncated:
+                    type: boolean
+                  size:
+                    type: number
+                  mediaToken:
+                    type: string
+                required:
+                  - branch
+                  - path
+                  - content
+                  - binary
+                  - truncated
+                  - size
+                  - mediaToken
+        "400":
+          description: Invalid branch or path.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project, not Hub-hosted, or unknown file.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/git-host/paths:
+    get:
+      tags:
+        - Projects
+      summary: Recursive file paths of an Agent Hub-hosted repo branch
+      description: 'Flat blob-path index for GitHub-style "Go to file". Capped at 5000 paths. 404 unless gitHost: agenthub.'
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Defaults to the default branch.
+          required: false
+          description: Defaults to the default branch.
+          name: branch
+          in: query
+      responses:
+        "200":
+          description: Path list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  branch:
+                    type: string
+                  paths:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - branch
+                  - paths
+        "400":
+          description: Invalid branch name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/git-host/commits:
     get:
       tags:

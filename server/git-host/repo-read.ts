@@ -1,8 +1,9 @@
 /**
  * Read-only repository browsing for Agent Hub-hosted
  * repos: branch list (with ahead/behind vs the default branch), commit
- * log, and single-commit detail (stat + patch). Backs the Repository
- * page (`GET /api/projects/:id/git-host/{branches,commits}`).
+ * log, single-commit detail (stat + patch), directory tree, blob, and
+ * recursive path index. Backs the Repository page
+ * (`GET /api/projects/:id/git-host/{branches,commits,tree,file,paths}`).
  *
  * Everything shells out to real `git -C <bare>`; reuses the generic
  * runner from native-pr/git-read.ts.
@@ -402,6 +403,315 @@ export async function readRepoBlob(
   };
 }
 
+const MAX_TREE_ENTRIES = 1000;
+const MAX_TREE_LOG = 400;
+const MAX_PATHS = 5000;
+const RECORD_SEP = '\x1e';
+
+export interface RepoTreeLastCommit {
+  sha: string;
+  subject: string;
+  author: string;
+  date: string;
+}
+
+/**
+ * `commit` is a gitlink (submodule). Git records it in the tree with mode
+ * 160000 and type `commit`; it is neither a browsable directory nor a
+ * readable blob, so callers must render it without offering either action.
+ */
+export type RepoTreeEntryType = 'blob' | 'tree' | 'commit';
+
+export interface RepoTreeEntry {
+  name: string;
+  path: string;
+  type: RepoTreeEntryType;
+  size: number | null;
+  mode: string;
+  lastCommit: RepoTreeLastCommit | null;
+}
+
+export interface RepoTreeResult {
+  branch: string;
+  path: string;
+  entries: RepoTreeEntry[];
+  latestCommit: RepoTreeLastCommit | null;
+  commitCount: number;
+}
+
+/**
+ * Parse one `git ls-tree -l -z` record: `<mode> <type> <sha> <size>\t<name>`.
+ *
+ * Callers MUST pass `-z`. Without it git applies `core.quotePath` quoting,
+ * which renders `café.txt` as `"caf\303\251.txt"` (octal escapes inside
+ * quotes) and makes the returned name unusable as a path. `-z` emits the
+ * bytes verbatim, so no unescaping belongs here.
+ */
+function parseLsTreeRecord(line: string): {
+  mode: string;
+  type: RepoTreeEntryType;
+  sha: string;
+  size: number | null;
+  name: string;
+} | null {
+  const tab = line.indexOf('\t');
+  if (tab < 0) return null;
+  const meta = line.slice(0, tab);
+  const name = line.slice(tab + 1);
+  const parts = meta.split(/\s+/);
+  if (parts.length < 4) return null;
+  const [mode, typeRaw, sha, sizeRaw] = parts;
+  // `commit` is a submodule gitlink. Dropping it (as returning null did) made
+  // a directory of submodules render as empty.
+  const type: RepoTreeEntryType | null =
+    typeRaw === 'tree' || typeRaw === 'blob' || typeRaw === 'commit' ? typeRaw : null;
+  if (!type || !name) return null;
+  const size = sizeRaw === '-' ? null : Number.parseInt(sizeRaw, 10);
+  return {
+    mode,
+    type,
+    sha,
+    size: Number.isFinite(size) ? size : null,
+    name,
+  };
+}
+
+function joinRepoPath(dir: string, name: string): string {
+  return dir ? `${dir}/${name}` : name;
+}
+
+function relativeToDir(filePath: string, dir: string): string | null {
+  if (!dir) return filePath;
+  const prefix = `${dir}/`;
+  if (filePath === dir) return '';
+  if (!filePath.startsWith(prefix)) return null;
+  return filePath.slice(prefix.length);
+}
+
+async function lastCommitsForTree(
+  repoPath: string,
+  branch: string,
+  dir: string,
+  entries: RepoTreeEntry[],
+): Promise<RepoTreeLastCommit | null> {
+  const remaining = new Map(entries.map((e) => [e.name, e]));
+  const logArgs = [
+    'log',
+    `--max-count=${MAX_TREE_LOG}`,
+    `--format=${RECORD_SEP}%H${SEP}%s${SEP}%an${SEP}%aI`,
+    '--name-only',
+    // Without -z git quotes non-ASCII paths, so `café.txt` arrives as
+    // `"caf\303\251.txt"` and never matches the ls-tree entry name.
+    '-z',
+    '--first-parent',
+    `refs/heads/${branch}`,
+  ];
+  if (dir) logArgs.push('--', dir);
+  let out: string;
+  try {
+    out = await git(repoPath, logArgs);
+  } catch {
+    return null;
+  }
+
+  let latest: RepoTreeLastCommit | null = null;
+  let current: RepoTreeLastCommit | null = null;
+  // `-z` records: `<RECORD_SEP>sha<SEP>…<NUL>\n<path><NUL><path><NUL>…`. The
+  // newline git inserts between a commit header and its name list rides on the
+  // first path token, so it is stripped there and nowhere else (a path may
+  // legitimately begin with a newline).
+  let afterHeader = false;
+  for (const token of out.split('\0')) {
+    const raw = afterHeader && token.startsWith('\n') ? token.slice(1) : token;
+    afterHeader = false;
+    if (!raw) continue;
+    if (raw.startsWith(RECORD_SEP)) {
+      const [sha, subject, author, date] = raw.slice(1).split(SEP);
+      if (!sha) continue;
+      current = { sha, subject: subject ?? '', author: author ?? '', date: date ?? '' };
+      if (!latest) latest = current;
+      afterHeader = true;
+      continue;
+    }
+    if (!current || remaining.size === 0) continue;
+    const rel = relativeToDir(raw, dir);
+    if (rel === null || rel === '') continue;
+    const top = rel.split('/')[0];
+    const entry = remaining.get(top);
+    if (entry && !entry.lastCommit) {
+      entry.lastCommit = current;
+      remaining.delete(top);
+    }
+  }
+  return latest;
+}
+
+/**
+ * Directory listing of a Hub-hosted repo branch (GitHub Code-tab file
+ * table). `dirPath` empty means the tree root. Returns null when the
+ * hosted repo, branch, or path is missing.
+ */
+export async function listRepoTree(
+  projectId: string,
+  branch?: string,
+  dirPath = '',
+  dataDir: string = config.dataDir,
+): Promise<RepoTreeResult | null> {
+  if (!hostedRepoExists(projectId, dataDir)) return null;
+  if (dirPath && !isSafeRepoPath(dirPath)) return null;
+  const repoPath = gitHostRepoPath(projectId, dataDir);
+  const targetBranch = branch || (await hostedRepoDefaultBranch(projectId, dataDir));
+  if (!targetBranch || !isSafeBranchName(targetBranch)) return null;
+
+  const treeish = dirPath ? `refs/heads/${targetBranch}:${dirPath}` : `refs/heads/${targetBranch}`;
+  let out: string;
+  try {
+    // -z keeps names byte-exact: no `core.quotePath` octal escaping, no
+    // surrounding quotes, and newlines in names stay inside their record.
+    out = await git(repoPath, ['ls-tree', '-l', '-z', treeish]);
+  } catch {
+    return null;
+  }
+
+  const entries: RepoTreeEntry[] = [];
+  for (const record of out.split('\0')) {
+    if (!record) continue;
+    const parsed = parseLsTreeRecord(record);
+    if (!parsed) continue;
+    entries.push({
+      name: parsed.name,
+      path: joinRepoPath(dirPath, parsed.name),
+      type: parsed.type,
+      size: parsed.size,
+      mode: parsed.mode,
+      lastCommit: null,
+    });
+    if (entries.length >= MAX_TREE_ENTRIES) break;
+  }
+
+  // Explicit rank: a two-way `tree ? -1 : 1` test is not a total order once a
+  // third type exists (blob-vs-commit and commit-vs-blob would both return 1).
+  // Submodules sort with directories, as they do on GitHub.
+  const typeRank: Record<RepoTreeEntryType, number> = { tree: 0, commit: 1, blob: 2 };
+  entries.sort((a, b) => {
+    if (a.type !== b.type) return typeRank[a.type] - typeRank[b.type];
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
+
+  const latestCommit = await lastCommitsForTree(repoPath, targetBranch, dirPath, entries);
+
+  let commitCount = 0;
+  try {
+    const countOut = await git(repoPath, ['rev-list', '--count', `refs/heads/${targetBranch}`]);
+    commitCount = Number.parseInt(countOut.trim(), 10);
+    if (!Number.isFinite(commitCount)) commitCount = 0;
+  } catch {
+    commitCount = 0;
+  }
+
+  return {
+    branch: targetBranch,
+    path: dirPath,
+    entries,
+    latestCommit,
+    commitCount,
+  };
+}
+
+/**
+ * Recursive file paths on a branch (GitHub "Go to file"). Directories
+ * are omitted — only blobs. Capped at {@link MAX_PATHS}.
+ */
+export async function listRepoPaths(
+  projectId: string,
+  branch?: string,
+  dataDir: string = config.dataDir,
+): Promise<{ branch: string; paths: string[] } | null> {
+  if (!hostedRepoExists(projectId, dataDir)) return null;
+  const repoPath = gitHostRepoPath(projectId, dataDir);
+  const targetBranch = branch || (await hostedRepoDefaultBranch(projectId, dataDir));
+  if (!targetBranch || !isSafeBranchName(targetBranch)) return null;
+  let out: string;
+  try {
+    // Full records, not --name-only: the type column is the only way to tell a
+    // submodule gitlink from a blob, and offering a gitlink in "Go to file"
+    // just 404s when the user picks it.
+    // -l as well as -r: parseLsTreeRecord expects the size column.
+    out = await git(repoPath, ['ls-tree', '-r', '-l', '-z', `refs/heads/${targetBranch}`]);
+  } catch {
+    return null;
+  }
+  // No trim: `-z` already delimits exactly, and trimming would rewrite a real
+  // ` plain.txt` into `plain.txt`, which then 404s when opened.
+  const paths: string[] = [];
+  for (const record of out.split('\0')) {
+    if (!record) continue;
+    const parsed = parseLsTreeRecord(record);
+    if (!parsed || parsed.type !== 'blob') continue;
+    paths.push(parsed.name);
+    if (paths.length >= MAX_PATHS) break;
+  }
+  return { branch: targetBranch, paths };
+}
+
+export interface RepoFileBrowse {
+  branch: string;
+  path: string;
+  /** UTF-8 text when the blob is not binary; null for binary files. */
+  content: string | null;
+  binary: boolean;
+  truncated: boolean;
+  size: number;
+}
+
+const MAX_FILE_BYTES = 512 * 1024;
+
+/**
+ * Browse a single file on a Hub-hosted branch (GitHub blob page).
+ * Returns null when the repo, branch, or path is missing.
+ */
+export async function readRepoFileBrowse(
+  projectId: string,
+  filePath: string,
+  branch?: string,
+  dataDir: string = config.dataDir,
+): Promise<RepoFileBrowse | null> {
+  if (!hostedRepoExists(projectId, dataDir)) return null;
+  if (!isSafeRepoPath(filePath)) return null;
+  const repoPath = gitHostRepoPath(projectId, dataDir);
+  const targetBranch = branch || (await hostedRepoDefaultBranch(projectId, dataDir));
+  if (!targetBranch || !isSafeBranchName(targetBranch)) return null;
+
+  let size = 0;
+  try {
+    const sizeOut = await git(repoPath, [
+      'cat-file',
+      '-s',
+      `refs/heads/${targetBranch}:${filePath}`,
+    ]);
+    size = Number.parseInt(sizeOut.trim(), 10);
+    if (!Number.isFinite(size)) size = 0;
+  } catch {
+    return null;
+  }
+
+  const blob = await readGitBlobBounded(
+    repoPath,
+    `refs/heads/${targetBranch}:${filePath}`,
+    MAX_FILE_BYTES,
+  );
+  if (!blob) return null;
+  const binary = blob.buffer.includes(0);
+  return {
+    branch: targetBranch,
+    path: filePath,
+    content: binary ? null : blob.buffer.toString('utf8'),
+    binary,
+    truncated: blob.truncated,
+    size,
+  };
+}
+
 /** Branch names come from URLs — refuse anything ref-unsafe. */
 export function isSafeBranchName(name: string): boolean {
   if (!name || name.length > 250) return false;
@@ -410,7 +720,7 @@ export function isSafeBranchName(name: string): boolean {
   return /^[^\s~^:?*[\\]+$/.test(name) && !name.endsWith('.lock') && !name.endsWith('/');
 }
 
-function isSafeRepoPath(filePath: string): boolean {
+export function isSafeRepoPath(filePath: string): boolean {
   if (!filePath || filePath.length > 500 || path.isAbsolute(filePath)) return false;
   return filePath
     .split('/')

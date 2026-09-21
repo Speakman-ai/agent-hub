@@ -16,6 +16,7 @@ import {
   Eye,
   EyeOff,
   Bot,
+  Search,
   Zap,
   ZapOff,
   Undo2,
@@ -28,7 +29,6 @@ import { RunRow } from './CiRunsSection';
 import {
   relativePrTime,
   diffSummary,
-  prStateBadge,
   summarizeChecks,
   checksBadge,
   summarizeReviews,
@@ -47,6 +47,8 @@ import {
   prPreviewAvailable,
   prPreviewSessionLive,
 } from '@shared/utils/prPreview';
+import GitHubRepoChrome from './github/GitHubRepoChrome';
+import { parsePrSearchQuery, prMatchesMerged, prMatchesTerms } from './github/prSearchQuery';
 
 // Shared atoms
 
@@ -121,6 +123,21 @@ const STATE_TABS = [
 
 /** Rows per page. The server clamps `limit` to 100. */
 const PAGE_SIZE = 25;
+/**
+ * Text search filters client-side, so it must run over the whole result set —
+ * filtering one 25-row page hides matches that live on page 2. In search mode
+ * the list is fetched at the server's max page size until exhausted or this
+ * many pages, and the pager is replaced by a result count.
+ */
+const SEARCH_PAGE_SIZE = 100;
+const SEARCH_MAX_PAGES = 5;
+
+function prListIconClass(pr: any) {
+  if (pr.merged || pr.merged_at) return 'text-gh-done';
+  if ((pr.state || '').toLowerCase() === 'closed') return 'text-gh-danger';
+  if (pr.draft) return 'text-gh-muted';
+  return 'text-gh-success';
+}
 
 function PrListItem({
   pr,
@@ -135,7 +152,6 @@ function PrListItem({
   onOpenSession,
   onOpenEpic,
 }: any) {
-  const state = prStateBadge(pr);
   const diff = diffSummary(pr);
   const showCi = Array.isArray(pr.check_rollup) && pr.check_rollup.length > 0;
   const ciBadge = showCi ? checksBadge(summarizeChecks(pr.check_rollup)) : null;
@@ -159,24 +175,43 @@ function PrListItem({
       : resolvingThisRow
         ? 'Resolving…'
         : 'Bring this PR into a session — resolve conflicts, tests, and review feedback, then auto-push';
+  const commentCount = Number(pr.comments || 0) + Number(pr.review_comments || 0);
+  const Icon = pr.merged || pr.merged_at ? GitMerge : GitPullRequest;
 
   return (
-    <div className="flex gap-2 w-full bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors items-stretch">
+    <div className="flex gap-2 w-full px-4 py-3 hover:bg-gh-subtle items-start border-b border-gh-borderMuted last:border-b-0">
+      <Icon size={16} className={`mt-1 flex-shrink-0 ${prListIconClass(pr)}`} aria-hidden />
       <button
         type="button"
         onClick={onOpen}
-        className="flex-1 min-w-0 text-left rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+        className="flex-1 min-w-0 text-left rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-gh-accent/60"
       >
-        <div className="flex items-center gap-2 mb-2">
-          <Badge label={state.label} color={state.color} bg={state.bg} />
-          <span className="text-xs font-medium text-gray-400">#{pr.number}</span>
-          <span className="flex-1" />
-          <span className="text-xs text-gray-500">{relativePrTime(pr.updated_at)}</span>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[16px] font-semibold text-gh-fg hover:text-gh-accent leading-snug">
+            {pr.title}
+          </span>
+          {pr.draft && (
+            <span className="text-[12px] px-1.5 rounded-full border border-gh-border text-gh-muted">
+              Draft
+            </span>
+          )}
         </div>
-        <div className="text-sm font-medium text-white line-clamp-2">{pr.title}</div>
-        <div className="mt-1 text-xs text-gray-400 truncate">
-          {pr.user ? `@${pr.user}` : ''}
-          {pr.head ? ` · ${pr.head} → ${pr.base || 'main'}` : ''}
+        <div className="mt-1 text-[12px] text-gh-muted">
+          #{pr.number} opened {relativePrTime(pr.created_at || pr.updated_at)}
+          {pr.user ? ` by ${pr.user}` : ''}
+          {pr.head ? (
+            <>
+              {' '}
+              ·{' '}
+              <code className="text-[11px] bg-gh-subtle border border-gh-borderMuted rounded px-1">
+                {pr.head}
+              </code>
+              {' into '}
+              <code className="text-[11px] bg-gh-subtle border border-gh-borderMuted rounded px-1">
+                {pr.base || 'main'}
+              </code>
+            </>
+          ) : null}
         </div>
         {pr.linked_card && (
           <div
@@ -208,11 +243,11 @@ function PrListItem({
           </div>
         )}
         {Array.isArray(pr.labels) && pr.labels.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1">
+          <div className="mt-1.5 flex flex-wrap gap-1">
             {pr.labels.slice(0, 4).map((l: any) => (
               <span
                 key={l.name}
-                className="px-1.5 py-0.5 text-[10px] text-gray-300 bg-gray-800 rounded"
+                className="px-1.5 py-0 text-[11px] leading-[18px] font-medium text-sky-300 bg-sky-500/10 border border-sky-500/20 rounded-md"
               >
                 {l.name}
               </span>
@@ -220,7 +255,16 @@ function PrListItem({
           </div>
         )}
       </button>
-      <div className="flex-shrink-0 self-center flex flex-row gap-2 items-stretch">
+      <div className="flex-shrink-0 self-center flex flex-row gap-1.5 items-center">
+        {commentCount > 0 && (
+          <span
+            className="flex items-center gap-1 text-xs text-gh-muted tabular-nums"
+            title="Comments"
+          >
+            <MessageSquare size={14} />
+            {commentCount}
+          </span>
+        )}
         <button
           type="button"
           onClick={(e: any) => {
@@ -231,13 +275,9 @@ function PrListItem({
           disabled={mergeDisabled || !pr.html_url}
           title={mergeTitle}
           aria-label={`Merge PR #${pr.number}`}
-          className="flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg border border-emerald-800/80 bg-emerald-950/40 text-xs font-medium text-emerald-200 hover:bg-emerald-950/70 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-950/40 disabled:hover:text-emerald-200 min-w-[5.5rem]"
+          className="gh-btn-primary gh-btn py-0.5 text-xs"
         >
-          {mergingThisRow ? (
-            <Loader2 size={16} className="animate-spin text-emerald-300" />
-          ) : (
-            <GitMerge size={16} className="text-emerald-300" />
-          )}
+          {mergingThisRow ? <Loader2 size={14} className="animate-spin" /> : <GitMerge size={14} />}
           <span>Merge</span>
         </button>
         {spawnedSessionId ? (
@@ -274,7 +314,7 @@ function PrListItem({
             disabled={resolveDisabled}
             title={resolveTitle}
             aria-label={`Resolve PR #${pr.number}`}
-            className="flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg border border-gray-700 bg-gray-800/80 text-xs font-medium text-gray-200 hover:bg-gray-800 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-w-[5.5rem]"
+            className="gh-btn py-0.5 text-xs"
           >
             {resolvingThisRow ? (
               <Loader2 size={16} className="animate-spin text-gray-400" />
@@ -571,6 +611,9 @@ function PrDetail({
   // A dismissed review renders collapsed (GitHub parity); this holds the id of
   // the one whose body the user chose to expand.
   const [expandedDismissedId, setExpandedDismissedId] = useState<string | null>(null);
+  const [prTab, setPrTab] = useState<'conversation' | 'commits' | 'checks' | 'files'>(
+    'conversation',
+  );
 
   // PR-scoped preview
   // Only native PRs whose project has a dev server configured can preview.
@@ -971,7 +1014,6 @@ function PrDetail({
     }
   };
 
-  const state = prStateBadge(pr);
   const checksSummary = summarizeChecks(detail.checks);
   const cBadge = checksBadge(checksSummary);
   const reviewState = summarizeReviews(detail.reviews);
@@ -1001,18 +1043,18 @@ function PrDetail({
       : autoMergeState.reason;
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="w-full p-4 md:p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex items-center gap-1.5 text-sm text-blue-400 hover:text-blue-300 transition-colors"
-          >
+    <div className="w-full">
+      <div className="flex items-start justify-between gap-3 mb-2 flex-wrap">
+        {editing ? null : (
+          <h1 className="text-2xl font-semibold leading-8 text-gh-fg min-w-0">
+            {pr.title} <span className="text-gh-muted font-medium">#{pr.number}</span>
+          </h1>
+        )}
+        <div className="flex items-center gap-2 flex-wrap ml-auto">
+          <button type="button" onClick={onBack} aria-label="Back to list" className="gh-btn">
             <ArrowLeft size={16} />
-            Back to list
+            Back
           </button>
-          <span className="flex-1" />
           {spawnedSessionId ? (
             <div className="flex items-center gap-2 text-sm text-emerald-400/95">
               <CheckCircle2 size={16} className="flex-shrink-0" aria-hidden />
@@ -1182,591 +1224,711 @@ function PrDetail({
             Refresh
           </button>
         </div>
+      </div>
 
-        {previewAvailable && (
-          <div
-            data-testid="pr-preview-panel"
-            className="mb-3 rounded-lg border border-gray-700/70 bg-gray-800/40 px-3 py-2"
+      <div className="flex items-center gap-2 flex-wrap mb-4">
+        <span
+          className={`inline-flex items-center gap-1 px-2.5 py-[3px] rounded-full text-sm font-medium ${
+            isMerged ? 'gh-state-merged' : isOpen ? 'gh-state-open' : 'gh-state-closed'
+          }`}
+        >
+          {isMerged ? <GitMerge size={14} /> : <GitPullRequest size={14} />}
+          {isMerged ? 'Merged' : isOpen ? 'Open' : 'Closed'}
+        </span>
+        <span className="text-sm text-gh-muted">
+          <span className="font-semibold text-gh-fg">{pr.user || 'someone'}</span>
+          {isMerged ? ' merged' : isOpen ? ' wants to merge' : ' wanted to merge'}
+          {Array.isArray(detail.commits) && detail.commits.length
+            ? ` ${detail.commits.length} commit${detail.commits.length === 1 ? '' : 's'}`
+            : ''}{' '}
+          into{' '}
+          <code className="text-[12px] bg-gray-800 text-sky-300 px-1.5 py-0.5 rounded-md border border-gray-700">
+            {pr.base || 'main'}
+          </code>{' '}
+          from{' '}
+          <code className="text-[12px] bg-gray-800 text-sky-300 px-1.5 py-0.5 rounded-md border border-gray-700">
+            {pr.head}
+          </code>
+        </span>
+      </div>
+
+      <nav className="gh-underline-nav mb-4" aria-label="Pull request">
+        {(
+          [
+            [
+              'conversation',
+              'Conversation',
+              (detail.comments?.length || 0) + (detail.reviews?.length || 0),
+            ],
+            ['commits', 'Commits', Array.isArray(detail.commits) ? detail.commits.length : null],
+            ['checks', 'Checks', Array.isArray(detail.checks) ? detail.checks.length : null],
+            ['files', 'Files changed', pr.changed_files ?? null],
+          ] as const
+        ).map(([key, label, count]) => (
+          <button
+            key={key}
+            type="button"
+            className={`gh-underline-nav-item ${prTab === key ? 'is-active' : ''}`}
+            aria-current={prTab === key ? 'page' : undefined}
+            data-testid={`pr-tab-${key}`}
+            onClick={() => setPrTab(key)}
           >
-            <div className="flex items-center gap-2 flex-wrap">
-              <Eye size={14} className="text-sky-300" />
-              <span className="text-sm font-medium text-gray-200">Preview</span>
+            {label}
+            {count != null && count > 0 ? <span className="gh-counter">{count}</span> : null}
+          </button>
+        ))}
+      </nav>
 
-              {previewView.status === 'idle' &&
-                (previewSessionLive ? (
-                  <button
-                    type="button"
-                    data-testid="pr-preview-enable"
-                    onClick={handleEnablePreview}
-                    disabled={previewBusy}
-                    className="ml-auto flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50"
-                  >
-                    {previewBusy ? (
-                      <Loader2 size={14} className="animate-spin" />
-                    ) : (
-                      <Eye size={14} />
-                    )}
-                    Enable preview
-                  </button>
-                ) : (
-                  <span
-                    data-testid="pr-preview-unavailable"
-                    title="A preview runs against the live session worktree that created this PR. That session has been archived, so its worktree is gone and a preview can no longer be launched."
-                    className="ml-auto flex items-center gap-1.5 text-sm text-gray-500"
-                  >
-                    <EyeOff size={14} />
-                    Preview unavailable — session archived
-                  </span>
-                ))}
+      {previewAvailable && (
+        <div
+          data-testid="pr-preview-panel"
+          className="mb-3 rounded-lg border border-gray-700/70 bg-gray-800/40 px-3 py-2"
+        >
+          <div className="flex items-center gap-2 flex-wrap">
+            <Eye size={14} className="text-sky-300" />
+            <span className="text-sm font-medium text-gray-200">Preview</span>
 
-              {previewView.status === 'loading' && (
-                <>
-                  <span
-                    data-testid="pr-preview-loading"
-                    className="flex items-center gap-1.5 text-sm text-amber-300"
-                  >
-                    <Loader2 size={14} className="animate-spin" />
-                    Starting preview…
-                  </span>
-                  <button
-                    type="button"
-                    data-testid="pr-preview-stop"
-                    onClick={handleStopPreview}
-                    disabled={previewBusy}
-                    className="ml-auto flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-50"
-                  >
-                    <X size={14} />
-                    Stop
-                  </button>
-                </>
-              )}
-
-              {previewView.status === 'ready' && (
-                <>
-                  <a
-                    data-testid="pr-preview-link"
-                    href={previewView.url || '#'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 text-sm text-emerald-300 hover:text-emerald-100 transition-colors"
-                  >
-                    <ExternalLink size={14} />
-                    Open preview
-                  </a>
-                  <button
-                    type="button"
-                    data-testid="pr-preview-stop"
-                    onClick={handleStopPreview}
-                    disabled={previewBusy}
-                    className="ml-auto flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-50"
-                  >
-                    <X size={14} />
-                    Tear down
-                  </button>
-                </>
-              )}
-
-              {previewView.status === 'failed' && (
+            {previewView.status === 'idle' &&
+              (previewSessionLive ? (
                 <button
                   type="button"
-                  data-testid="pr-preview-retry"
+                  data-testid="pr-preview-enable"
                   onClick={handleEnablePreview}
                   disabled={previewBusy}
                   className="ml-auto flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50"
                 >
-                  <RefreshCw size={14} className={previewBusy ? 'animate-spin' : ''} />
-                  Retry
+                  {previewBusy ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
+                  Enable preview
                 </button>
-              )}
-            </div>
+              ) : (
+                <span
+                  data-testid="pr-preview-unavailable"
+                  title="A preview runs against the live session worktree that created this PR. That session has been archived, so its worktree is gone and a preview can no longer be launched."
+                  className="ml-auto flex items-center gap-1.5 text-sm text-gray-500"
+                >
+                  <EyeOff size={14} />
+                  Preview unavailable — session archived
+                </span>
+              ))}
+
+            {previewView.status === 'loading' && (
+              <>
+                <span
+                  data-testid="pr-preview-loading"
+                  className="flex items-center gap-1.5 text-sm text-amber-300"
+                >
+                  <Loader2 size={14} className="animate-spin" />
+                  Starting preview…
+                </span>
+                <button
+                  type="button"
+                  data-testid="pr-preview-stop"
+                  onClick={handleStopPreview}
+                  disabled={previewBusy}
+                  className="ml-auto flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-50"
+                >
+                  <X size={14} />
+                  Stop
+                </button>
+              </>
+            )}
+
+            {previewView.status === 'ready' && (
+              <>
+                <a
+                  data-testid="pr-preview-link"
+                  href={previewView.url || '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 text-sm text-emerald-300 hover:text-emerald-100 transition-colors"
+                >
+                  <ExternalLink size={14} />
+                  Open preview
+                </a>
+                <button
+                  type="button"
+                  data-testid="pr-preview-stop"
+                  onClick={handleStopPreview}
+                  disabled={previewBusy}
+                  className="ml-auto flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-50"
+                >
+                  <X size={14} />
+                  Tear down
+                </button>
+              </>
+            )}
 
             {previewView.status === 'failed' && (
-              <div
-                data-testid="pr-preview-error"
-                className="mt-1.5 flex items-start gap-1.5 text-xs text-rose-300"
+              <button
+                type="button"
+                data-testid="pr-preview-retry"
+                onClick={handleEnablePreview}
+                disabled={previewBusy}
+                className="ml-auto flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50"
               >
-                <XCircle size={13} className="mt-0.5 shrink-0" />
-                <span className="break-words">{previewView.reason}</span>
-              </div>
+                <RefreshCw size={14} className={previewBusy ? 'animate-spin' : ''} />
+                Retry
+              </button>
             )}
           </div>
-        )}
 
-        <div className="flex items-center gap-2 mb-2">
-          <Badge label={state.label} color={state.color} bg={state.bg} />
-          <span className="text-xs font-medium text-gray-400">#{pr.number}</span>
-          {editable && !editing && (
+          {previewView.status === 'failed' && (
+            <div
+              data-testid="pr-preview-error"
+              className="mt-1.5 flex items-start gap-1.5 text-xs text-rose-300"
+            >
+              <XCircle size={13} className="mt-0.5 shrink-0" />
+              <span className="break-words">{previewView.reason}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {editable && !editing && (
+        <button
+          type="button"
+          onClick={startEdit}
+          title="Edit title and description"
+          data-testid="pr-edit-button"
+          className="mb-2 gh-btn"
+        >
+          <Pencil size={13} />
+          Edit
+        </button>
+      )}
+      {editing ? (
+        <div className="space-y-2 mb-2" data-testid="pr-edit-form">
+          <input
+            value={editTitle}
+            onChange={(e: any) => setEditTitle(e.target.value)}
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-lg font-semibold text-white focus:outline-none focus:border-gray-600"
+            placeholder="PR title"
+          />
+          <textarea
+            value={editBody}
+            onChange={(e: any) => setEditBody(e.target.value)}
+            rows={10}
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 font-mono focus:outline-none focus:border-gray-600"
+            placeholder="Description (markdown)"
+          />
+          <label className="flex items-center gap-2 text-xs text-gray-400">
+            <span className="shrink-0">Base branch</span>
+            <code className="bg-gray-800/60 px-1 rounded text-gray-300">{pr.head}</code>
+            <span aria-hidden>→</span>
+            <input
+              value={editBase}
+              onChange={(e: any) => setEditBase(e.target.value)}
+              data-testid="pr-edit-base"
+              className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-gray-200 font-mono focus:outline-none focus:border-gray-600"
+              placeholder="main"
+            />
+          </label>
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={startEdit}
-              title="Edit title and description"
-              data-testid="pr-edit-button"
-              className="ml-1 p-1 rounded text-gray-500 hover:text-gray-200 transition-colors"
+              onClick={saveEdit}
+              disabled={saving || !editTitle.trim()}
+              data-testid="pr-edit-save"
+              className="flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-3 py-1.5 rounded-lg transition-colors"
             >
-              <Pencil size={13} />
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 px-3 py-1.5 transition-colors"
+            >
+              <X size={13} />
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {prTab === 'conversation' && (
+        <>
+          <div className="text-xs text-gray-400">
+            {pr.user ? `@${pr.user}` : 'unknown'}
+            {pr.created_at ? ` opened ${relativePrTime(pr.created_at)}` : ''}
+          </div>
+          {pr.head && (
+            <div className="text-xs text-gray-400 mt-0.5">
+              <code className="bg-gray-800/60 px-1 rounded">{pr.head}</code> →{' '}
+              <code className="bg-gray-800/60 px-1 rounded">{pr.base || 'main'}</code>
+            </div>
+          )}
+          <div className="text-xs text-gray-400 tabular-nums mt-1">{diffSummary(pr)}</div>
+          {pr.linked_card && (
+            <button
+              type="button"
+              onClick={() => onOpenCard && onOpenCard(pr.linked_card.id)}
+              disabled={typeof onOpenCard !== 'function'}
+              title="Open the kanban board"
+              data-testid="pr-detail-linked-card"
+              className="mt-2 inline-flex items-center gap-1.5 text-xs text-sky-300 hover:text-sky-100 bg-sky-500/10 hover:bg-sky-500/20 px-2 py-1 rounded-lg transition-colors disabled:cursor-default disabled:hover:bg-sky-500/10"
+            >
+              <SquareKanban size={12} />
+              <span className="truncate max-w-[28rem]">{pr.linked_card.title}</span>
             </button>
           )}
-        </div>
-        {editing ? (
-          <div className="space-y-2 mb-2" data-testid="pr-edit-form">
-            <input
-              value={editTitle}
-              onChange={(e: any) => setEditTitle(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-lg font-semibold text-white focus:outline-none focus:border-gray-600"
-              placeholder="PR title"
-            />
-            <textarea
-              value={editBody}
-              onChange={(e: any) => setEditBody(e.target.value)}
-              rows={10}
-              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 font-mono focus:outline-none focus:border-gray-600"
-              placeholder="Description (markdown)"
-            />
-            <label className="flex items-center gap-2 text-xs text-gray-400">
-              <span className="shrink-0">Base branch</span>
-              <code className="bg-gray-800/60 px-1 rounded text-gray-300">{pr.head}</code>
-              <span aria-hidden>→</span>
-              <input
-                value={editBase}
-                onChange={(e: any) => setEditBase(e.target.value)}
-                data-testid="pr-edit-base"
-                className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-gray-200 font-mono focus:outline-none focus:border-gray-600"
-                placeholder="main"
-              />
-            </label>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={saveEdit}
-                disabled={saving || !editTitle.trim()}
-                data-testid="pr-edit-save"
-                className="flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-3 py-1.5 rounded-lg transition-colors"
-              >
-                {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
-                Save
-              </button>
-              <button
-                type="button"
-                onClick={() => setEditing(false)}
-                className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 px-3 py-1.5 transition-colors"
-              >
-                <X size={13} />
-                Cancel
-              </button>
+          {pr.linked_epic && (
+            <div>
+              <LinkedEpicChip epic={pr.linked_epic} onOpenEpic={onOpenEpic} prNumber={pr.number} />
             </div>
-          </div>
-        ) : (
-          <h2 className="text-xl font-semibold text-white mb-2">{pr.title}</h2>
-        )}
+          )}
 
-        <div className="text-xs text-gray-400">
-          {pr.user ? `@${pr.user}` : 'unknown'}
-          {pr.created_at ? ` opened ${relativePrTime(pr.created_at)}` : ''}
-        </div>
-        {pr.head && (
-          <div className="text-xs text-gray-400 mt-0.5">
-            <code className="bg-gray-800/60 px-1 rounded">{pr.head}</code> →{' '}
-            <code className="bg-gray-800/60 px-1 rounded">{pr.base || 'main'}</code>
-          </div>
-        )}
-        <div className="text-xs text-gray-400 tabular-nums mt-1">{diffSummary(pr)}</div>
-        {pr.linked_card && (
-          <button
-            type="button"
-            onClick={() => onOpenCard && onOpenCard(pr.linked_card.id)}
-            disabled={typeof onOpenCard !== 'function'}
-            title="Open the kanban board"
-            data-testid="pr-detail-linked-card"
-            className="mt-2 inline-flex items-center gap-1.5 text-xs text-sky-300 hover:text-sky-100 bg-sky-500/10 hover:bg-sky-500/20 px-2 py-1 rounded-lg transition-colors disabled:cursor-default disabled:hover:bg-sky-500/10"
-          >
-            <SquareKanban size={12} />
-            <span className="truncate max-w-[28rem]">{pr.linked_card.title}</span>
-          </button>
-        )}
-        {pr.linked_epic && (
-          <div>
-            <LinkedEpicChip epic={pr.linked_epic} onOpenEpic={onOpenEpic} prNumber={pr.number} />
-          </div>
-        )}
+          {Array.isArray(pr.labels) && pr.labels.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1">
+              {pr.labels.map((l: any) => (
+                <span
+                  key={l.name}
+                  className="px-1.5 py-0.5 text-[10px] text-gray-300 bg-gray-800 rounded"
+                >
+                  {l.name}
+                </span>
+              ))}
+            </div>
+          )}
 
-        {Array.isArray(pr.labels) && pr.labels.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1">
-            {pr.labels.map((l: any) => (
-              <span
-                key={l.name}
-                className="px-1.5 py-0.5 text-[10px] text-gray-300 bg-gray-800 rounded"
-              >
-                {l.name}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* External link only for real GitHub URLs — native PR URLs are
+          {/* External link only for real GitHub URLs — native PR URLs are
             in-app client routes with nothing external to open. */}
-        {pr.html_url && /^https?:\/\//i.test(pr.html_url) && (
-          <a
-            href={pr.html_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 mt-4 text-sm text-blue-400 hover:text-blue-300 bg-gray-800/50 hover:bg-gray-800 px-3 py-1.5 rounded-lg transition-colors"
-          >
-            <ExternalLink size={14} />
-            Open on GitHub
-          </a>
-        )}
-
-        {!editing && pr.body && (
-          <>
-            <SectionHeader>Description</SectionHeader>
-            <div
-              className="markdown-content text-sm text-gray-300 break-words bg-gray-900/40 border border-gray-800 rounded-lg p-3"
-              data-testid="pr-description"
+          {pr.html_url && /^https?:\/\//i.test(pr.html_url) && (
+            <a
+              href={pr.html_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 mt-4 text-sm text-blue-400 hover:text-blue-300 bg-gray-800/50 hover:bg-gray-800 px-3 py-1.5 rounded-lg transition-colors"
             >
-              <MarkdownContent content={pr.body} />
-            </div>
-          </>
-        )}
-
-        {/* Summary strip: checks + reviews + mergeable */}
-        <div className="flex flex-wrap gap-2 mt-5">
-          {pr.finalize_validated && (
-            <Badge
-              label="✓ Validated by Finalize"
-              color="text-emerald-300"
-              bg="bg-emerald-500/15"
-              title="This exact commit already passed review and CI checks in its Finalize run — PR-level CI is skipped."
-            />
+              <ExternalLink size={14} />
+              Open on GitHub
+            </a>
           )}
-          <Badge label={cBadge.label} color={cBadge.color} bg={cBadge.bg} />
-          <Badge label={rBadge.label} color={rBadge.color} bg={rBadge.bg} />
-          {mBadge.show && (
-            <Badge
-              label={mBadge.label}
-              color={mBadge.good ? 'text-emerald-400' : 'text-red-400'}
-              bg={mBadge.good ? 'bg-emerald-500/10' : 'bg-red-500/10'}
-            />
-          )}
-        </div>
 
-        {isNative && (
-          <>
-            <SectionHeader>Reviews</SectionHeader>
-            {pr.review_requested && (
-              <p className="text-xs text-amber-300 mb-2" data-testid="pr-review-requested-hint">
-                Review requested{pr.review_requested_by ? ` by ${pr.review_requested_by}` : ''} —
-                awaiting a verdict.
-              </p>
+          {!editing && pr.body && (
+            <>
+              <SectionHeader>Description</SectionHeader>
+              <div
+                className="markdown-content text-sm text-gray-300 break-words bg-gray-900/40 border border-gray-800 rounded-lg p-3"
+                data-testid="pr-description"
+              >
+                <MarkdownContent content={pr.body} />
+              </div>
+            </>
+          )}
+
+          {/* Summary strip: checks + reviews + mergeable */}
+          <div className="flex flex-wrap gap-2 mt-5">
+            {pr.finalize_validated && (
+              <Badge
+                label="✓ Validated by Finalize"
+                color="text-emerald-300"
+                bg="bg-emerald-500/15"
+                title="This exact commit already passed review and CI checks in its Finalize run — PR-level CI is skipped."
+              />
             )}
-            {(!detail.reviews || detail.reviews.length === 0) && (
-              <p className="text-sm text-gray-500 mb-2">No reviews yet.</p>
+            <Badge label={cBadge.label} color={cBadge.color} bg={cBadge.bg} />
+            <Badge label={rBadge.label} color={rBadge.color} bg={rBadge.bg} />
+            {mBadge.show && (
+              <Badge
+                label={mBadge.label}
+                color={mBadge.good ? 'text-emerald-400' : 'text-red-400'}
+                bg={mBadge.good ? 'bg-emerald-500/10' : 'bg-red-500/10'}
+              />
             )}
-            {Array.isArray(detail.reviews) && detail.reviews.length > 0 && (
-              <div className="space-y-2 mb-3" data-testid="pr-reviews-list">
-                {detail.reviews.map((r: any) => {
-                  const stateUpper = String(r.state || '').toUpperCase();
-                  // GitHub only lets you dismiss a verdict; a comment review
-                  // has none. Dismiss stays available on closed/merged PRs.
-                  const canDismiss =
-                    isNative &&
-                    !r.dismissed &&
-                    (stateUpper === 'APPROVED' || stateUpper === 'CHANGES_REQUESTED');
-                  return (
-                    <div
-                      key={r.id}
-                      data-testid="pr-review-item"
-                      className={`border rounded-lg p-3 ${
-                        r.dismissed
-                          ? 'bg-gray-900/20 border-gray-800/60 opacity-70'
-                          : 'bg-gray-900/40 border-gray-800'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="text-gray-300 font-medium">@{r.user || 'unknown'}</span>
-                        <span
-                          className={
-                            r.dismissed ? 'text-gray-500 line-through' : reviewStateColor(r.state)
-                          }
-                        >
-                          {String(r.state || '')
-                            .toLowerCase()
-                            .replace('_', ' ')}
-                        </span>
-                        {r.dismissed && (
+          </div>
+
+          {isNative && (
+            <>
+              <SectionHeader>Reviews</SectionHeader>
+              {pr.review_requested && (
+                <p className="text-xs text-amber-300 mb-2" data-testid="pr-review-requested-hint">
+                  Review requested{pr.review_requested_by ? ` by ${pr.review_requested_by}` : ''} —
+                  awaiting a verdict.
+                </p>
+              )}
+              {(!detail.reviews || detail.reviews.length === 0) && (
+                <p className="text-sm text-gray-500 mb-2">No reviews yet.</p>
+              )}
+              {Array.isArray(detail.reviews) && detail.reviews.length > 0 && (
+                <div className="space-y-2 mb-3" data-testid="pr-reviews-list">
+                  {detail.reviews.map((r: any) => {
+                    const stateUpper = String(r.state || '').toUpperCase();
+                    // GitHub only lets you dismiss a verdict; a comment review
+                    // has none. Dismiss stays available on closed/merged PRs.
+                    const canDismiss =
+                      isNative &&
+                      !r.dismissed &&
+                      (stateUpper === 'APPROVED' || stateUpper === 'CHANGES_REQUESTED');
+                    return (
+                      <div
+                        key={r.id}
+                        data-testid="pr-review-item"
+                        className={`border rounded-lg p-3 ${
+                          r.dismissed
+                            ? 'bg-gray-900/20 border-gray-800/60 opacity-70'
+                            : 'bg-gray-900/40 border-gray-800'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="text-gray-300 font-medium">@{r.user || 'unknown'}</span>
                           <span
-                            className="text-gray-400 bg-gray-800/80 rounded px-1.5 py-0.5"
-                            data-testid="pr-review-dismissed-badge"
+                            className={
+                              r.dismissed ? 'text-gray-500 line-through' : reviewStateColor(r.state)
+                            }
                           >
-                            dismissed
+                            {String(r.state || '')
+                              .toLowerCase()
+                              .replace('_', ' ')}
                           </span>
-                        )}
-                        <span className="ml-auto text-gray-600">
-                          {relativePrTime(r.submitted_at)}
-                        </span>
-                        {canDismiss && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDismissingId(r.id);
-                              setDismissReason('');
-                            }}
-                            data-testid="pr-review-dismiss"
-                            className="text-gray-400 hover:text-gray-200 transition-colors"
-                          >
-                            Dismiss
-                          </button>
-                        )}
-                      </div>
-                      {/* A dismissed review collapses to its dismissal note;
-                          the original body is hidden behind a Show toggle so a
-                          long, superseded review no longer fills the page. */}
-                      {r.body && (!r.dismissed || expandedDismissedId === r.id) && (
-                        <pre
-                          className="text-sm text-gray-300 whitespace-pre-wrap font-sans mt-1.5"
-                          data-testid="pr-review-body"
-                        >
-                          {r.body}
-                        </pre>
-                      )}
-                      {r.dismissed && r.dismissal_reason && (
-                        <p
-                          className="text-xs text-gray-500 mt-1.5 italic"
-                          data-testid="pr-review-dismissal-reason"
-                        >
-                          Dismissed{r.dismissed_by ? ` by @${r.dismissed_by}` : ''}:{' '}
-                          {r.dismissal_reason}
-                        </p>
-                      )}
-                      {r.dismissed && r.body && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExpandedDismissedId((cur: string | null) =>
-                              cur === r.id ? null : r.id,
-                            )
-                          }
-                          data-testid="pr-review-toggle-body"
-                          className="text-xs text-gray-500 hover:text-gray-300 mt-1 transition-colors"
-                        >
-                          {expandedDismissedId === r.id ? 'Hide review' : 'Show dismissed review'}
-                        </button>
-                      )}
-                      {dismissingId === r.id && (
-                        <div className="mt-2 space-y-2" data-testid="pr-review-dismiss-form">
-                          <textarea
-                            value={dismissReason}
-                            onChange={(e: any) => setDismissReason(e.target.value)}
-                            rows={2}
-                            autoFocus
-                            placeholder="Why are you dismissing this review? (required)"
-                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
-                          />
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleDismissReview(r.id)}
-                              disabled={dismissBusy || !dismissReason.trim()}
-                              data-testid="pr-review-dismiss-confirm"
-                              className="flex items-center gap-1.5 text-sm bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 text-gray-100 px-3 py-1.5 rounded-lg transition-colors"
+                          {r.dismissed && (
+                            <span
+                              className="text-gray-400 bg-gray-800/80 rounded px-1.5 py-0.5"
+                              data-testid="pr-review-dismissed-badge"
                             >
-                              {dismissBusy && <Loader2 size={13} className="animate-spin" />}
-                              Dismiss review
-                            </button>
+                              dismissed
+                            </span>
+                          )}
+                          <span className="ml-auto text-gray-600">
+                            {relativePrTime(r.submitted_at)}
+                          </span>
+                          {canDismiss && (
                             <button
                               type="button"
                               onClick={() => {
-                                setDismissingId(null);
+                                setDismissingId(r.id);
                                 setDismissReason('');
                               }}
-                              className="text-sm text-gray-400 hover:text-gray-200 px-2 py-1.5 transition-colors"
+                              data-testid="pr-review-dismiss"
+                              className="text-gray-400 hover:text-gray-200 transition-colors"
                             >
-                              Cancel
+                              Dismiss
                             </button>
-                          </div>
+                          )}
                         </div>
+                        {/* A dismissed review collapses to its dismissal note;
+                          the original body is hidden behind a Show toggle so a
+                          long, superseded review no longer fills the page. */}
+                        {r.body && (!r.dismissed || expandedDismissedId === r.id) && (
+                          <pre
+                            className="text-sm text-gray-300 whitespace-pre-wrap font-sans mt-1.5"
+                            data-testid="pr-review-body"
+                          >
+                            {r.body}
+                          </pre>
+                        )}
+                        {r.dismissed && r.dismissal_reason && (
+                          <p
+                            className="text-xs text-gray-500 mt-1.5 italic"
+                            data-testid="pr-review-dismissal-reason"
+                          >
+                            Dismissed{r.dismissed_by ? ` by @${r.dismissed_by}` : ''}:{' '}
+                            {r.dismissal_reason}
+                          </p>
+                        )}
+                        {r.dismissed && r.body && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedDismissedId((cur: string | null) =>
+                                cur === r.id ? null : r.id,
+                              )
+                            }
+                            data-testid="pr-review-toggle-body"
+                            className="text-xs text-gray-500 hover:text-gray-300 mt-1 transition-colors"
+                          >
+                            {expandedDismissedId === r.id ? 'Hide review' : 'Show dismissed review'}
+                          </button>
+                        )}
+                        {dismissingId === r.id && (
+                          <div className="mt-2 space-y-2" data-testid="pr-review-dismiss-form">
+                            <textarea
+                              value={dismissReason}
+                              onChange={(e: any) => setDismissReason(e.target.value)}
+                              rows={2}
+                              autoFocus
+                              placeholder="Why are you dismissing this review? (required)"
+                              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
+                            />
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleDismissReview(r.id)}
+                                disabled={dismissBusy || !dismissReason.trim()}
+                                data-testid="pr-review-dismiss-confirm"
+                                className="flex items-center gap-1.5 text-sm bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-500 text-gray-100 px-3 py-1.5 rounded-lg transition-colors"
+                              >
+                                {dismissBusy && <Loader2 size={13} className="animate-spin" />}
+                                Dismiss review
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDismissingId(null);
+                                  setDismissReason('');
+                                }}
+                                className="text-sm text-gray-400 hover:text-gray-200 px-2 py-1.5 transition-colors"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Autofix — hand the PR (incl. review feedback) to an agent. */}
+              {isOpen && (
+                <button
+                  type="button"
+                  onClick={onResolve}
+                  disabled={resolveDisabled}
+                  title={
+                    resolveTitle === 'Resolving…'
+                      ? resolveTitle
+                      : 'Spawn a session to address the review feedback, conflicts, or failing checks, then auto-push the fix to this PR'
+                  }
+                  data-testid="pr-autofix-button"
+                  className="flex items-center gap-1.5 text-sm bg-gray-800 hover:bg-gray-700 text-gray-200 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed mb-3"
+                >
+                  {resolving ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Wrench size={14} />
+                  )}
+                  Autofix from review
+                </button>
+              )}
+
+              {/* Review composer */}
+              {isOpen && (
+                <div
+                  className="bg-gray-900/40 border border-gray-800 rounded-lg p-3 space-y-2"
+                  data-testid="pr-review-composer"
+                >
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={reviewVerdict}
+                      onChange={(e: any) => setReviewVerdict(e.target.value)}
+                      className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
+                      data-testid="pr-review-verdict"
+                    >
+                      <option value="approved">Approve</option>
+                      <option value="changes_requested">Request changes</option>
+                      <option value="commented">Comment</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={handleSubmitReview}
+                      disabled={
+                        submittingReview || (reviewVerdict === 'commented' && !reviewBody.trim())
+                      }
+                      data-testid="pr-review-submit"
+                      className="flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      {submittingReview ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <CheckCircle2 size={13} />
                       )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                      Submit review
+                    </button>
+                  </div>
+                  <textarea
+                    value={reviewBody}
+                    onChange={(e: any) => setReviewBody(e.target.value)}
+                    rows={3}
+                    placeholder="Review notes (required for comments, optional otherwise)…"
+                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
+                  />
+                </div>
+              )}
+            </>
+          )}
 
-            {/* Autofix — hand the PR (incl. review feedback) to an agent. */}
-            {isOpen && (
-              <button
-                type="button"
-                onClick={onResolve}
-                disabled={resolveDisabled}
-                title={
-                  resolveTitle === 'Resolving…'
-                    ? resolveTitle
-                    : 'Spawn a session to address the review feedback, conflicts, or failing checks, then auto-push the fix to this PR'
-                }
-                data-testid="pr-autofix-button"
-                className="flex items-center gap-1.5 text-sm bg-gray-800 hover:bg-gray-700 text-gray-200 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed mb-3"
-              >
-                {resolving ? <Loader2 size={14} className="animate-spin" /> : <Wrench size={14} />}
-                Autofix from review
-              </button>
-            )}
+          <SectionHeader>Activity</SectionHeader>
+          <p className="text-xs text-gray-500 mb-3">
+            Chronological history{isNative ? '' : ' from GitHub'} (open/merge/close, reviews, and
+            comments).
+          </p>
+          <PrActivityTimeline pr={pr} detail={detail} />
 
-            {/* Review composer */}
-            {isOpen && (
-              <div
-                className="bg-gray-900/40 border border-gray-800 rounded-lg p-3 space-y-2"
-                data-testid="pr-review-composer"
-              >
-                <div className="flex items-center gap-2">
-                  <select
-                    value={reviewVerdict}
-                    onChange={(e: any) => setReviewVerdict(e.target.value)}
-                    className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
-                    data-testid="pr-review-verdict"
-                  >
-                    <option value="approved">Approve</option>
-                    <option value="changes_requested">Request changes</option>
-                    <option value="commented">Comment</option>
-                  </select>
+          {isOpen && (
+            <div className="mt-6 border border-gh-border rounded-xl p-4 bg-gh-subtle">
+              <p className="text-sm font-semibold text-gh-fg mb-2">
+                {mergeState.enabled ? 'Ready to merge' : mergeState.reason || 'Merge pull request'}
+              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={onMerge}
+                  disabled={mergeDisabled}
+                  title={mergeTitle}
+                  className="gh-btn-primary gh-btn"
+                >
+                  {merging ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <GitMerge size={14} />
+                  )}
+                  Merge pull request
+                </button>
+                {isOpen && (
                   <button
                     type="button"
-                    onClick={handleSubmitReview}
-                    disabled={
-                      submittingReview || (reviewVerdict === 'commented' && !reviewBody.trim())
-                    }
-                    data-testid="pr-review-submit"
-                    className="flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+                    onClick={handleClose}
+                    disabled={closing || !pr.html_url}
+                    className="gh-btn"
                   >
-                    {submittingReview ? (
-                      <Loader2 size={13} className="animate-spin" />
-                    ) : (
-                      <CheckCircle2 size={13} />
-                    )}
-                    Submit review
+                    Close pull request
                   </button>
-                </div>
-                <textarea
-                  value={reviewBody}
-                  onChange={(e: any) => setReviewBody(e.target.value)}
-                  rows={3}
-                  placeholder="Review notes (required for comments, optional otherwise)…"
-                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
-                />
+                )}
               </div>
-            )}
-          </>
-        )}
+            </div>
+          )}
+        </>
+      )}
 
-        <SectionHeader>Activity</SectionHeader>
-        <p className="text-xs text-gray-500 mb-3">
-          Chronological history{isNative ? '' : ' from GitHub'} (open/merge/close, reviews, and
-          comments).
-        </p>
-        <PrActivityTimeline pr={pr} detail={detail} />
-
-        {/* CI Checks */}
-        <div className="flex items-center gap-3">
-          <SectionHeader>CI Checks</SectionHeader>
-          {ciRerunnable && (
-            <button
-              type="button"
-              onClick={() => handleRerunChecks()}
-              title="Re-run all checks against this commit"
-              data-testid="pr-rerun-checks"
-              className="mt-6 flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+      {prTab === 'commits' && (
+        <div
+          className="border border-gh-border rounded-xl overflow-hidden"
+          data-testid="pr-commits-tab"
+        >
+          {(detail.commits || []).map((c: any) => (
+            <div
+              key={c.sha || c.subject}
+              className="flex items-center gap-3 px-3 py-2 border-b border-gh-borderMuted last:border-b-0"
             >
-              <RefreshCw size={12} />
-              Re-run all checks
-            </button>
+              <GitCommit size={14} className="text-gh-muted" />
+              <span className="text-sm text-gh-fg truncate flex-1">{c.subject}</span>
+              {c.author ? <span className="text-xs text-gh-muted">{c.author}</span> : null}
+              <code className="text-[12px] font-mono text-gh-muted">
+                {String(c.sha || '').slice(0, 8)}
+              </code>
+            </div>
+          ))}
+          {(!detail.commits || detail.commits.length === 0) && (
+            <p className="text-sm text-gh-muted px-3 py-4">
+              No commits listed for this pull request.
+            </p>
           )}
         </div>
-        {displayRun && (
-          <div className="space-y-1.5" data-testid="pr-ci-run-row">
-            <RunRow
-              projectId={projectId}
-              run={displayRun}
-              onRerun={isRerunTarget && ciRerunnable ? () => handleRerunChecks() : null}
-              onStop={isRerunTarget ? handleStopCiRun : null}
-            />
+      )}
+
+      {prTab === 'checks' && (
+        <>
+          {/* CI Checks */}
+          <div className="flex items-center gap-3">
+            <SectionHeader>CI Checks</SectionHeader>
+            {ciRerunnable && (
+              <button
+                type="button"
+                onClick={() => handleRerunChecks()}
+                title="Re-run all checks against this commit"
+                data-testid="pr-rerun-checks"
+                className="mt-6 flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+              >
+                <RefreshCw size={12} />
+                Re-run all checks
+              </button>
+            )}
           </div>
-        )}
-        {!displayRun && (!detail.checks || detail.checks.length === 0) && (
-          <p className="text-sm text-gray-500" data-testid="pr-checks-empty-note">
-            {detail.checks_note || 'No checks reported.'}
-          </p>
-        )}
-        {!displayRun && Array.isArray(detail.checks) && detail.checks.length > 0 && (
-          <div className="bg-gray-900/40 border border-gray-800 rounded-lg overflow-hidden">
-            {detail.checks.map((chk: any, i: any) => (
-              <CheckRow
-                key={chk.id || chk.name || i}
-                chk={chk}
-                onRerunJob={ciRerunnable ? (jobId: any) => handleRerunChecks(jobId) : null}
+          {displayRun && (
+            <div className="space-y-1.5" data-testid="pr-ci-run-row">
+              <RunRow
+                projectId={projectId}
+                run={displayRun}
+                onRerun={isRerunTarget && ciRerunnable ? () => handleRerunChecks() : null}
+                onStop={isRerunTarget ? handleStopCiRun : null}
               />
-            ))}
-          </div>
-        )}
+            </div>
+          )}
+          {!displayRun && (!detail.checks || detail.checks.length === 0) && (
+            <p className="text-sm text-gray-500" data-testid="pr-checks-empty-note">
+              {detail.checks_note || 'No checks reported.'}
+            </p>
+          )}
+          {!displayRun && Array.isArray(detail.checks) && detail.checks.length > 0 && (
+            <div className="bg-gray-900/40 border border-gray-800 rounded-lg overflow-hidden">
+              {detail.checks.map((chk: any, i: any) => (
+                <CheckRow
+                  key={chk.id || chk.name || i}
+                  chk={chk}
+                  onRerunJob={ciRerunnable ? (jobId: any) => handleRerunChecks(jobId) : null}
+                />
+              ))}
+            </div>
+          )}
 
-        {/* Commits now render inline in the Activity timeline above. */}
+          {/* Commits now render inline in the Activity timeline above. */}
+        </>
+      )}
 
-        {/* Files changed — last on the page: diffs can be very long and each
+      {prTab === 'files' && (
+        <>
+          {/* Files changed — last on the page: diffs can be very long and each
             file section starts collapsed so review/activity/checks stay in
             view without scrolling past a wall of patch text. */}
-        <SectionHeader>Files changed</SectionHeader>
-        <PrFilesChanged
-          prUrl={pr.html_url}
-          inlineComments={isNative ? (detail.inline_comments ?? []) : []}
-          onAddComment={
-            editable
-              ? async ({ filePath, line, side, body }: any) => {
-                  try {
-                    await api.addNativePrComment(projectId, pr.number, {
-                      filePath,
-                      line,
-                      side,
-                      body,
-                    });
-                    onRefresh();
-                  } catch (err: any) {
-                    toastErr(err);
+          <SectionHeader>Files changed</SectionHeader>
+          <PrFilesChanged
+            prUrl={pr.html_url}
+            inlineComments={isNative ? (detail.inline_comments ?? []) : []}
+            onAddComment={
+              editable
+                ? async ({ filePath, line, side, body }: any) => {
+                    try {
+                      await api.addNativePrComment(projectId, pr.number, {
+                        filePath,
+                        line,
+                        side,
+                        body,
+                      });
+                      onRefresh();
+                    } catch (err: any) {
+                      toastErr(err);
+                    }
                   }
-                }
-              : null
-          }
-          onDeleteComment={
-            editable
-              ? async (comment: any) => {
-                  try {
-                    await api.deleteNativePrComment(projectId, pr.number, comment.id);
-                    onRefresh();
-                  } catch (err: any) {
-                    toastErr(err);
+                : null
+            }
+            onDeleteComment={
+              editable
+                ? async (comment: any) => {
+                    try {
+                      await api.deleteNativePrComment(projectId, pr.number, comment.id);
+                      onRefresh();
+                    } catch (err: any) {
+                      toastErr(err);
+                    }
                   }
-                }
-              : null
-          }
-          onSetResolved={
-            // Not gated on `editable`: tidying up a finished review is still
-            // useful once the PR is closed or merged.
-            isNative
-              ? async ({ filePath, line, side, resolved }: any) => {
-                  try {
-                    await api.setNativePrCommentThreadResolved(projectId, pr.number, {
-                      filePath,
-                      line,
-                      side,
-                      resolved,
-                    });
-                    onRefresh();
-                  } catch (err: any) {
-                    toastErr(err);
+                : null
+            }
+            onSetResolved={
+              // Not gated on `editable`: tidying up a finished review is still
+              // useful once the PR is closed or merged.
+              isNative
+                ? async ({ filePath, line, side, resolved }: any) => {
+                    try {
+                      await api.setNativePrCommentThreadResolved(projectId, pr.number, {
+                        filePath,
+                        line,
+                        side,
+                        resolved,
+                      });
+                      onRefresh();
+                    } catch (err: any) {
+                      toastErr(err);
+                    }
                   }
-                }
-              : null
-          }
-        />
+                : null
+            }
+          />
+        </>
+      )}
 
-        <div className="h-10" />
-      </div>
+      <div className="h-10" />
     </div>
   );
 }
@@ -2228,7 +2390,19 @@ function NewPrPanel({ projectId, onCreate, onClose, excludedBranches = new Set()
 
 // Main page
 
-export default function PullRequestsPage({
+/**
+ * Remount per project, for the same reason RepositoryPage does: 22 of this
+ * component's 23 state variables were surviving a project switch, and only
+ * `page` was being reset. The worst of them is `sessionSpawnedByPr`, keyed by
+ * PR NUMBER — so project B's PR #123 inherited project A's "session started"
+ * marker. Keying here makes the isolation structural instead of a reset list
+ * nobody can keep complete.
+ */
+export default function PullRequestsPage(props: any) {
+  return <PullRequestsPageInner key={props?.projectId} {...props} />;
+}
+
+function PullRequestsPageInner({
   projectId,
   project,
   onOpenSession,
@@ -2243,6 +2417,8 @@ export default function PullRequestsPage({
   initialPrNumber = null,
   /** Reports the open PR number (null when back on the list) so the URL stays shareable. */
   onPrNumberChange = null,
+  /** Navigate to the GitHub-style Code tab (repository page). */
+  onOpenRepo = null,
 }: any) {
   const [state, setState] = useState('open');
   const [page, setPage] = useState(1);
@@ -2263,6 +2439,22 @@ export default function PullRequestsPage({
   const [bulkResolving, setBulkResolving] = useState(false);
   /** PR numbers for which a resolve run spawned a session (inline checkmark; no auto navigation). */
   const [sessionSpawnedByPr, setSessionSpawnedByPr] = useState<Record<string, any>>(() => ({}));
+  const [openPrCount, setOpenPrCount] = useState<any>(null);
+  const [closedPrCount, setClosedPrCount] = useState<any>(null);
+  const [searchQuery, setSearchQuery] = useState('is:pr is:open');
+  /** True when the search set was capped at SEARCH_MAX_PAGES. */
+  const [searchTruncated, setSearchTruncated] = useState(false);
+
+  const parsedQuery = useMemo(() => parsePrSearchQuery(searchQuery), [searchQuery]);
+  const searchTerms = parsedQuery.terms;
+  const mergedFilter = parsedQuery.merged;
+  // Any constraint the server cannot express has to be applied to rows we
+  // filter ourselves, which is only correct over the WHOLE result set — so
+  // `is:merged` alone must trigger the full fetch just like free text does.
+  const searching = Boolean(searchTerms) || mergedFilter !== null;
+  // Qualifiers in the box win over the tab, so `is:closed` typed on the Open
+  // tab actually requests closed PRs instead of being stripped and ignored.
+  const requestedState = parsedQuery.state ?? state;
 
   const resolveAgentId =
     Array.isArray(project?.agents) && project.agents.length > 0
@@ -2292,10 +2484,39 @@ export default function PullRequestsPage({
       if (soft) setRefreshing(true);
       else setLoading(true);
       try {
-        const data = await api.getProjectPulls(projectId, { state, limit: PAGE_SIZE, page });
+        if (searching) {
+          // Whole-result-set fetch: client-side text matching over a single
+          // page would drop PRs that exist further down the list.
+          const all: any[] = [];
+          let more = false;
+          for (let p = 1; p <= SEARCH_MAX_PAGES; p += 1) {
+            const data = await api.getProjectPulls(projectId, {
+              state: requestedState,
+              limit: SEARCH_PAGE_SIZE,
+              page: p,
+            });
+            if (gen !== listFetchGenRef.current) return;
+            all.push(...(data.pulls || []));
+            more = Boolean(data.hasMore);
+            if (!more) break;
+          }
+          setPulls(all);
+          setHasMore(false);
+          setSearchTruncated(more);
+          return;
+        }
+        setSearchTruncated(false);
+        const data = await api.getProjectPulls(projectId, {
+          state: requestedState,
+          limit: PAGE_SIZE,
+          page,
+        });
         if (gen !== listFetchGenRef.current) return;
         setPulls(data.pulls || []);
         setHasMore(Boolean(data.hasMore));
+        const n = Array.isArray(data.pulls) ? data.pulls.length : 0;
+        if (requestedState === 'open' && page === 1) setOpenPrCount(data.hasMore ? `${n}+` : n);
+        if (requestedState === 'closed' && page === 1) setClosedPrCount(data.hasMore ? `${n}+` : n);
       } catch (err: any) {
         if (gen !== listFetchGenRef.current) return;
         console.warn('Failed to load PRs:', err?.message || err);
@@ -2312,14 +2533,15 @@ export default function PullRequestsPage({
         }
       }
     },
-    [projectId, state, page],
+    [projectId, requestedState, page, searching],
   );
 
-  // A project switch invalidates the page cursor. (The state tabs reset it in
-  // their click handler so the stale page never gets fetched at all.)
+  // Editing the query changes which rows exist, so page 2 of the old result
+  // set is meaningless. Resetting here (not just in the tab handler) covers
+  // qualifiers typed directly into the box.
   useEffect(() => {
     setPage(1);
-  }, [projectId]);
+  }, [requestedState, searchTerms, mergedFilter]);
 
   const loadListRef = useRef(loadList);
   loadListRef.current = loadList;
@@ -2608,11 +2830,31 @@ export default function PullRequestsPage({
     [projectId, resolveAgentId, bulkResolving, resolvingFromList, applyResolveOutcome, onToast],
   );
 
+  /** How the result-count line names the active constraints. */
+  const searchSummaryLabel = searchTerms
+    ? `"${searchTerms}"`
+    : mergedFilter === true
+      ? 'merged pull requests'
+      : mergedFilter === false
+        ? 'unmerged pull requests'
+        : 'this search';
+
+  /** Rows actually on screen — every query constraint is part of the result set. */
+  const visiblePulls = useMemo(
+    () =>
+      searching
+        ? pulls.filter(
+            (pr: any) => prMatchesMerged(pr, mergedFilter) && prMatchesTerms(pr, searchTerms),
+          )
+        : pulls,
+    [pulls, searching, mergedFilter, searchTerms],
+  );
+
   const handleResolveAll = useCallback(async () => {
     if (
       !projectId ||
       !resolveAgentId ||
-      pulls.length === 0 ||
+      visiblePulls.length === 0 ||
       bulkResolving ||
       resolvingFromList != null
     ) {
@@ -2623,7 +2865,9 @@ export default function PullRequestsPage({
     let clean = 0;
     let failed = 0;
     try {
-      for (const pr of pulls) {
+      // visiblePulls, not pulls: a filtered list must not dispatch agent
+      // sessions for rows the user cannot see.
+      for (const pr of visiblePulls) {
         try {
           const res = await api.resolvePR(projectId, pr.number, { agentId: resolveAgentId });
           if (res?.sessionId) {
@@ -2665,7 +2909,7 @@ export default function PullRequestsPage({
     } finally {
       setBulkResolving(false);
     }
-  }, [projectId, resolveAgentId, pulls, bulkResolving, resolvingFromList, onToast]);
+  }, [projectId, resolveAgentId, visiblePulls, bulkResolving, resolvingFromList, onToast]);
 
   // Memoized on the head-branch *content* (not the `pulls` array identity, which
   // gets a fresh reference on every soft refresh / WS-driven reload). A stable Set
@@ -2684,42 +2928,49 @@ export default function PullRequestsPage({
       !openPrHeadBranches.has(push.branch),
   );
 
+  const wrapChrome = (children: any) => (
+    <GitHubRepoChrome
+      project={project}
+      projectId={projectId}
+      active="pulls"
+      openPrCount={openPrCount}
+      onOpenCode={typeof onOpenRepo === 'function' ? onOpenRepo : null}
+      onOpenPulls={() => {
+        if (selectedNumber) handleBack();
+      }}
+    >
+      {children}
+    </GitHubRepoChrome>
+  );
+
   // Detail view
   if (selectedNumber) {
     if (detailLoading && !detail) {
-      return (
-        <div className="flex-1 flex items-center justify-center">
-          <Loader2 size={24} className="animate-spin text-gray-500" />
-        </div>
+      return wrapChrome(
+        <div className="flex items-center justify-center py-16">
+          <Loader2 size={24} className="animate-spin text-gh-muted" />
+        </div>,
       );
     }
     if (detailError && !detailLoading) {
-      return (
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6">
-          <AlertCircle size={24} className="text-red-400" />
-          <p className="text-red-400 text-sm text-center">{detailError}</p>
+      return wrapChrome(
+        <div className="flex flex-col items-center justify-center gap-3 py-12">
+          <AlertCircle size={24} className="text-gh-danger" />
+          <p className="text-gh-danger text-sm text-center">{detailError}</p>
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => loadDetail(selectedNumber)}
-              className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-white text-sm rounded-lg transition-colors"
-            >
+            <button type="button" onClick={() => loadDetail(selectedNumber)} className="gh-btn">
               Retry
             </button>
-            <button
-              type="button"
-              onClick={handleBack}
-              className="px-3 py-1.5 text-gray-400 hover:text-white text-sm transition-colors flex items-center gap-1.5"
-            >
+            <button type="button" onClick={handleBack} aria-label="Back to list" className="gh-btn">
               <ArrowLeft size={14} />
               Back
             </button>
           </div>
-        </div>
+        </div>,
       );
     }
     if (detail) {
-      return (
+      return wrapChrome(
         <PrDetail
           detail={detail}
           onBack={handleBack}
@@ -2736,111 +2987,139 @@ export default function PullRequestsPage({
           onToast={onToast}
           onOpenCard={onOpenCard}
           onOpenEpic={onOpenEpic}
-        />
+        />,
       );
     }
   }
 
   // List view
-  return (
-    <div className="flex-1 overflow-y-auto p-4 md:p-6">
-      <div className="w-full">
-        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-          <div>
-            <h2 className="text-2xl font-bold text-white flex items-center gap-3">
-              <GitPullRequest size={28} />
-              Pull Requests
-            </h2>
-            {project?.name && <p className="text-sm text-gray-400 mt-1">{project.name}</p>}
-          </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+  return wrapChrome(
+    <div className="w-full">
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <div className="flex-1 min-w-[12rem] flex items-center gap-2 bg-gh-inset border border-gh-border rounded-md px-3 py-1.5">
+          <Search size={14} className="text-gh-muted flex-shrink-0" />
+          <input
+            value={searchQuery}
+            onChange={(e: any) => setSearchQuery(e.target.value)}
+            aria-label="Search pull requests"
+            className="flex-1 bg-transparent text-sm text-gh-fg focus:outline-none"
+          />
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={handleResolveAll}
+            disabled={
+              !resolveAgentId ||
+              visiblePulls.length === 0 ||
+              bulkResolving ||
+              resolvingFromList != null ||
+              loading
+            }
+            data-testid="resolve-all-button"
+            title={
+              !resolveAgentId
+                ? 'No agents configured'
+                : visiblePulls.length === 0
+                  ? 'No pull requests to resolve'
+                  : `Run Resolve PR once for each of the ${visiblePulls.length} shown pull request(s) (one session per PR)`
+            }
+            className="gh-btn"
+          >
+            {bulkResolving ? (
+              <Loader2 size={14} className="animate-spin text-gray-400" />
+            ) : (
+              <Wrench size={14} className="text-gray-400" />
+            )}
+            Resolve all
+          </button>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing || loading || bulkResolving}
+            className="gh-btn"
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+          {isHostedProject && (
             <button
               type="button"
-              onClick={handleResolveAll}
-              disabled={
-                !resolveAgentId ||
-                pulls.length === 0 ||
-                bulkResolving ||
-                resolvingFromList != null ||
-                loading
-              }
-              title={
-                !resolveAgentId
-                  ? 'No agents configured'
-                  : pulls.length === 0
-                    ? 'No pull requests to resolve'
-                    : 'Run Resolve PR once for each row in this list (one session per PR)'
-              }
-              className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-800/80 text-gray-200 hover:bg-gray-800 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              onClick={() => setShowNewPr((v: any) => !v)}
+              data-testid="new-pr-button"
+              className="gh-btn-primary gh-btn"
             >
-              {bulkResolving ? (
-                <Loader2 size={14} className="animate-spin text-gray-400" />
-              ) : (
-                <Wrench size={14} className="text-gray-400" />
-              )}
-              Resolve all
+              <GitPullRequest size={14} />
+              New pull request
             </button>
-            <button
-              type="button"
-              onClick={handleRefresh}
-              disabled={refreshing || loading || bulkResolving}
-              className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 disabled:opacity-50 transition-colors"
-            >
-              <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-              Refresh
-            </button>
-            {isHostedProject && (
+          )}
+        </div>
+      </div>
+
+      {showNewPr && isHostedProject && (
+        <NewPrPanel
+          projectId={projectId}
+          onCreate={handleCreatePrFromBranch}
+          onClose={() => setShowNewPr(false)}
+          excludedBranches={openPrHeadBranches}
+        />
+      )}
+
+      {/* GitHub-style "Compare & pull request" banners for recent pushes */}
+      {visibleRecentPushes.map((push: any) => (
+        <RecentPushBanner
+          key={push.branch}
+          push={push}
+          onCreate={handleCreatePrFromBranch}
+          projectId={projectId}
+        />
+      ))}
+
+      {/* State tabs */}
+      <div className="border border-gh-border rounded-xl overflow-hidden bg-gh-canvas">
+        <div className="flex items-center gap-1 px-4 py-2 bg-gh-subtle border-b border-gh-border flex-wrap">
+          {STATE_TABS.filter((t: any) => t.key !== 'all').map((tab: any) => {
+            const count = tab.key === 'open' ? openPrCount : closedPrCount;
+            const active = requestedState === tab.key;
+            return (
               <button
                 type="button"
-                onClick={() => setShowNewPr((v: any) => !v)}
-                data-testid="new-pr-button"
-                className="flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg transition-colors"
+                key={tab.key}
+                onClick={() => {
+                  setState(tab.key);
+                  setPage(1);
+                  setSearchQuery(tab.key === 'open' ? 'is:pr is:open' : 'is:pr is:closed');
+                }}
+                className={`flex items-center gap-1.5 px-2 py-1 text-sm rounded-md ${
+                  active ? 'font-semibold text-gh-fg' : 'text-gh-muted hover:text-gh-fg'
+                }`}
               >
-                <GitPullRequest size={14} />
-                New pull request
+                {tab.key === 'open' ? (
+                  <GitPullRequest size={14} className={active ? 'text-gh-success' : ''} />
+                ) : (
+                  <CheckCircle2 size={14} className={active ? 'text-gh-done' : ''} />
+                )}
+                {count != null ? `${count} ${tab.label}` : tab.label}
               </button>
-            )}
-          </div>
-        </div>
-
-        {showNewPr && isHostedProject && (
-          <NewPrPanel
-            projectId={projectId}
-            onCreate={handleCreatePrFromBranch}
-            onClose={() => setShowNewPr(false)}
-            excludedBranches={openPrHeadBranches}
-          />
-        )}
-
-        {/* GitHub-style "Compare & pull request" banners for recent pushes */}
-        {visibleRecentPushes.map((push: any) => (
-          <RecentPushBanner
-            key={push.branch}
-            push={push}
-            onCreate={handleCreatePrFromBranch}
-            projectId={projectId}
-          />
-        ))}
-
-        {/* State tabs */}
-        <div className="flex gap-2 mb-4">
-          {STATE_TABS.map((tab: any) => (
-            <button
-              type="button"
-              key={tab.key}
-              onClick={() => {
-                setState(tab.key);
-                setPage(1);
-              }}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                state === tab.key
-                  ? 'bg-gray-700 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700/70 hover:text-gray-200'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => {
+              setState('all');
+              setPage(1);
+              setSearchQuery('is:pr');
+            }}
+            className={`px-2 py-1 text-sm rounded-md ${
+              requestedState === 'all'
+                ? 'font-semibold text-gh-fg'
+                : 'text-gh-muted hover:text-gh-fg'
+            }`}
+          >
+            All
+          </button>
+          <span className="flex-1" />
+          <span className="text-xs text-gh-muted hidden sm:inline">Sort: Newest</span>
         </div>
 
         {loading && pulls.length === 0 && (
@@ -2906,51 +3185,57 @@ export default function PullRequestsPage({
           </div>
         )}
 
-        {pulls.length > 0 && (
-          <div className="space-y-2">
-            {pulls.map((pr: any) => (
-              <PrListItem
-                key={pr.number}
-                pr={pr}
-                onOpen={() => handleSelect(pr)}
-                onResolveRow={handleResolveFromList}
-                onMergeRow={handleMergeFromList}
-                resolveAgentId={resolveAgentId}
-                resolvingThisRow={resolvingFromList === pr.number}
-                mergingThisRow={mergingFromList === pr.number}
-                bulkResolving={bulkResolving}
-                spawnedSessionId={sessionSpawnedByPr[pr.number] || null}
-                onOpenSession={onOpenSession}
-                onOpenEpic={onOpenEpic}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* Rendered on the error path too — Previous is how the user steps back
-            off a page that will not load. */}
-        {(page > 1 || hasMore) && (
-          <div className="flex items-center justify-between gap-3 mt-4">
-            <button
-              type="button"
-              disabled={page <= 1 || loading}
-              onClick={() => setPage((p: number) => Math.max(1, p - 1))}
-              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-gray-800 disabled:hover:text-gray-300"
-            >
-              Previous
-            </button>
-            <span className="text-sm text-gray-500">Page {page}</span>
-            <button
-              type="button"
-              disabled={!hasMore || loading}
-              onClick={() => setPage((p: number) => p + 1)}
-              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-gray-800 disabled:hover:text-gray-300"
-            >
-              Next
-            </button>
-          </div>
-        )}
+        {visiblePulls.length > 0 &&
+          visiblePulls.map((pr: any) => (
+            <PrListItem
+              key={pr.number}
+              pr={pr}
+              onOpen={() => handleSelect(pr)}
+              onResolveRow={handleResolveFromList}
+              onMergeRow={handleMergeFromList}
+              resolveAgentId={resolveAgentId}
+              resolvingThisRow={resolvingFromList === pr.number}
+              mergingThisRow={mergingFromList === pr.number}
+              bulkResolving={bulkResolving}
+              spawnedSessionId={sessionSpawnedByPr[pr.number] || null}
+              onOpenSession={onOpenSession}
+              onOpenEpic={onOpenEpic}
+            />
+          ))}
       </div>
-    </div>
+
+      {/* Rendered on the error path too — Previous is how the user steps back
+            off a page that will not load. */}
+      {searching && !loading && !error && (
+        <p className="text-xs text-gh-muted mt-3" data-testid="pr-search-summary">
+          {visiblePulls.length} result{visiblePulls.length === 1 ? '' : 's'} for{' '}
+          {searchSummaryLabel}.
+          {searchTruncated
+            ? ` Searched the most recent ${SEARCH_PAGE_SIZE * SEARCH_MAX_PAGES} pull requests only.`
+            : ''}
+        </p>
+      )}
+      {!searching && (page > 1 || hasMore) && (
+        <div className="flex items-center justify-between gap-3 mt-4">
+          <button
+            type="button"
+            disabled={page <= 1 || loading}
+            onClick={() => setPage((p: number) => Math.max(1, p - 1))}
+            className="px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-gray-800 disabled:hover:text-gray-300"
+          >
+            Previous
+          </button>
+          <span className="text-sm text-gray-500">Page {page}</span>
+          <button
+            type="button"
+            disabled={!hasMore || loading}
+            onClick={() => setPage((p: number) => p + 1)}
+            className="px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-gray-800 disabled:hover:text-gray-300"
+          >
+            Next
+          </button>
+        </div>
+      )}
+    </div>,
   );
 }

@@ -18,8 +18,12 @@ import { disableGitHost, enableGitHost, getGitHostStatus } from '../git-host/lif
 import {
   getRepoCommitDetail,
   isSafeBranchName,
+  isSafeRepoPath,
   listRepoBranches,
   listRepoCommits,
+  listRepoPaths,
+  listRepoTree,
+  readRepoFileBrowse,
   readRepoReadme,
 } from '../git-host/repo-read.js';
 import { issueGitHostMediaToken } from '../git-host-media-mount.js';
@@ -187,6 +191,25 @@ const RepoCommitSchema = z.object({
   subject: z.string(),
   author: z.string(),
   date: z.string(),
+});
+
+const RepoTreeLastCommitSchema = z.object({
+  sha: z.string(),
+  subject: z.string(),
+  author: z.string(),
+  date: z.string(),
+});
+
+const RepoTreeEntrySchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  type: z.enum(['blob', 'tree', 'commit']).openapi({
+    description:
+      '`commit` is a submodule gitlink (mode 160000): neither browsable as a directory nor readable as a blob.',
+  }),
+  size: z.number().nullable(),
+  mode: z.string(),
+  lastCommit: RepoTreeLastCommitSchema.nullable(),
 });
 
 registerPath({
@@ -421,6 +444,101 @@ registerPath({
     200: {
       description: 'README content, or { readme: null } when absent.',
       content: jsonContent(z.object({ readme: RepoReadmeSchema })),
+    },
+    400: { description: 'Invalid branch name.', content: jsonContent(ErrorResponse) },
+    404: { description: 'Unknown project or not Hub-hosted.', content: jsonContent(ErrorResponse) },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/git-host/tree',
+  tags: ['Projects'],
+  summary: 'Directory listing of an Agent Hub-hosted repo branch',
+  description:
+    'GitHub Code-tab file table: entries in `path` (empty = repo root) with last-commit metadata, plus the directory tip commit and total commit count on the branch. 404 unless gitHost: agenthub or the path/branch is missing.',
+  request: {
+    params: z.object({ projectId: z.string() }),
+    query: z.object({
+      branch: z.string().optional().openapi({ description: 'Defaults to the default branch.' }),
+      path: z.string().optional().openapi({ description: 'Directory path; empty for root.' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Directory listing.',
+      content: jsonContent(
+        z.object({
+          branch: z.string(),
+          path: z.string(),
+          entries: z.array(RepoTreeEntrySchema),
+          latestCommit: RepoTreeLastCommitSchema.nullable(),
+          commitCount: z.number(),
+        }),
+      ),
+    },
+    400: { description: 'Invalid branch or path.', content: jsonContent(ErrorResponse) },
+    404: {
+      description: 'Unknown project, not Hub-hosted, or unknown branch/path.',
+      content: jsonContent(ErrorResponse),
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/git-host/file',
+  tags: ['Projects'],
+  summary: 'File blob of an Agent Hub-hosted repo branch',
+  description:
+    'GitHub blob-page payload: UTF-8 content (or binary:true with content null), size, truncated flag. Capped at 512 KiB. 404 unless gitHost: agenthub or the file is missing.',
+  request: {
+    params: z.object({ projectId: z.string() }),
+    query: z.object({
+      branch: z.string().optional().openapi({ description: 'Defaults to the default branch.' }),
+      path: z.string().openapi({ description: 'Root-relative file path.' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'File contents.',
+      content: jsonContent(
+        z.object({
+          branch: z.string(),
+          path: z.string(),
+          content: z.string().nullable(),
+          binary: z.boolean(),
+          truncated: z.boolean(),
+          size: z.number(),
+          mediaToken: z.string(),
+        }),
+      ),
+    },
+    400: { description: 'Invalid branch or path.', content: jsonContent(ErrorResponse) },
+    404: {
+      description: 'Unknown project, not Hub-hosted, or unknown file.',
+      content: jsonContent(ErrorResponse),
+    },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/git-host/paths',
+  tags: ['Projects'],
+  summary: 'Recursive file paths of an Agent Hub-hosted repo branch',
+  description:
+    'Flat blob-path index for GitHub-style "Go to file". Capped at 5000 paths. 404 unless gitHost: agenthub.',
+  request: {
+    params: z.object({ projectId: z.string() }),
+    query: z.object({
+      branch: z.string().optional().openapi({ description: 'Defaults to the default branch.' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'Path list.',
+      content: jsonContent(z.object({ branch: z.string(), paths: z.array(z.string()) })),
     },
     400: { description: 'Invalid branch name.', content: jsonContent(ErrorResponse) },
     404: { description: 'Unknown project or not Hub-hosted.', content: jsonContent(ErrorResponse) },
@@ -721,6 +839,68 @@ export default function createGitHostRoutes(deps: RouteDeps): Router {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: `Failed to read README: ${msg.split('\n')[0]}` });
+    }
+  });
+
+  router.get('/api/projects/:projectId/git-host/tree', async (req: Request, res: Response) => {
+    const project = findHostedProjectOr404(req, res);
+    if (!project) return;
+    const branchParam = typeof req.query.branch === 'string' ? req.query.branch : '';
+    const pathParam = typeof req.query.path === 'string' ? req.query.path : '';
+    if (branchParam && !isSafeBranchName(branchParam)) {
+      return res.status(400).json({ error: 'Invalid branch name' });
+    }
+    if (pathParam && !isSafeRepoPath(pathParam)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+    try {
+      const tree = await listRepoTree(project.id, branchParam || undefined, pathParam);
+      if (!tree) return res.status(404).json({ error: 'Tree not found' });
+      res.json(tree);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: `Failed to list tree: ${msg.split('\n')[0]}` });
+    }
+  });
+
+  router.get('/api/projects/:projectId/git-host/file', async (req: Request, res: Response) => {
+    const project = findHostedProjectOr404(req, res);
+    if (!project) return;
+    const branchParam = typeof req.query.branch === 'string' ? req.query.branch : '';
+    const pathParam = typeof req.query.path === 'string' ? req.query.path : '';
+    if (branchParam && !isSafeBranchName(branchParam)) {
+      return res.status(400).json({ error: 'Invalid branch name' });
+    }
+    if (!pathParam || !isSafeRepoPath(pathParam)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+    try {
+      const file = await readRepoFileBrowse(project.id, pathParam, branchParam || undefined);
+      if (!file) return res.status(404).json({ error: 'File not found' });
+      // Same media authorization the README card gets: a Markdown blob can
+      // reference repo-relative images, which the client resolves against the
+      // hosted repo rather than the SPA URL.
+      res.json({ ...file, mediaToken: issueGitHostMediaToken(project.id, file.branch) });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: `Failed to read file: ${msg.split('\n')[0]}` });
+    }
+  });
+
+  router.get('/api/projects/:projectId/git-host/paths', async (req: Request, res: Response) => {
+    const project = findHostedProjectOr404(req, res);
+    if (!project) return;
+    const branchParam = typeof req.query.branch === 'string' ? req.query.branch : '';
+    if (branchParam && !isSafeBranchName(branchParam)) {
+      return res.status(400).json({ error: 'Invalid branch name' });
+    }
+    try {
+      const data = await listRepoPaths(project.id, branchParam || undefined);
+      if (!data) return res.status(404).json({ error: 'Paths not found' });
+      res.json(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: `Failed to list paths: ${msg.split('\n')[0]}` });
     }
   });
 

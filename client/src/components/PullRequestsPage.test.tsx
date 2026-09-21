@@ -230,6 +230,7 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
     (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
     render(<PullRequestsPage projectId="proj-1" project={project} />);
     fireEvent.click(await screen.findByText('Fix the flaky test' as any));
+    fireEvent.click(await screen.findByTestId('pr-tab-checks' as any));
 
     const runSection = await screen.findByTestId('pr-ci-run-row');
     expect(within(runSection).getByTestId('ci-run-run-pr-1')).toHaveTextContent('pr ci');
@@ -286,6 +287,7 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
     (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
     render(<PullRequestsPage projectId="proj-1" project={project} />);
     fireEvent.click(await screen.findByText('Fix the flaky test' as any));
+    fireEvent.click(await screen.findByTestId('pr-tab-checks' as any));
 
     const runSection = await screen.findByTestId('pr-ci-run-row');
     const runRow = within(runSection).getByTestId('ci-run-fin-1');
@@ -1760,5 +1762,272 @@ describe('PR-scoped preview panel', () => {
       expect.stringContaining('Failed to start preview'),
       'error',
     );
+  });
+});
+
+describe('<PullRequestsPage /> — search and Resolve all', () => {
+  const alpha = { ...prSummary, number: 1, title: 'Alpha work', user: 'alice', head: 'feat/a' };
+  const beta = { ...prSummary, number: 2, title: 'Beta work', user: 'bob', head: 'feat/b' };
+
+  beforeEach(() => {
+    (api.getProjectPulls as any).mockReset();
+    (api.resolvePR as any).mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function typeQuery(value: string) {
+    fireEvent.change(screen.getByLabelText('Search pull requests'), { target: { value } });
+  }
+
+  it('Resolve all only dispatches the rows the filter leaves on screen', async () => {
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [alpha, beta], hasMore: false });
+    (api.resolvePR as any).mockResolvedValue({ sessionId: 'sess-1', triggered: [] });
+
+    render(<PullRequestsPage projectId="proj-1" project={project} onToast={vi.fn()} />);
+    await screen.findByText('Alpha work');
+
+    typeQuery('is:pr is:open Alpha');
+    await waitFor(() => expect(screen.queryByText('Beta work')).toBeNull());
+
+    fireEvent.click(screen.getByTestId('resolve-all-button'));
+    await waitFor(() => expect(api.resolvePR).toHaveBeenCalledTimes(1));
+    expect(api.resolvePR).toHaveBeenCalledWith('proj-1', 1, { agentId: 'agent-alpha' });
+    expect(api.resolvePR).not.toHaveBeenCalledWith('proj-1', 2, expect.anything());
+  });
+
+  it('disables Resolve all when the filter hides every row', async () => {
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [alpha, beta], hasMore: false });
+
+    render(<PullRequestsPage projectId="proj-1" project={project} onToast={vi.fn()} />);
+    await screen.findByText('Alpha work');
+    expect(screen.getByTestId('resolve-all-button')).not.toBeDisabled();
+
+    typeQuery('is:pr is:open zzz-no-such-pr');
+    await waitFor(() => expect(screen.getByTestId('resolve-all-button')).toBeDisabled());
+
+    fireEvent.click(screen.getByTestId('resolve-all-button'));
+    expect(api.resolvePR).not.toHaveBeenCalled();
+  });
+
+  it('is:closed typed on the Open tab actually requests closed PRs', async () => {
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [alpha], hasMore: false });
+
+    render(<PullRequestsPage projectId="proj-1" project={project} onToast={vi.fn()} />);
+    await screen.findByText('Alpha work');
+    expect(api.getProjectPulls).toHaveBeenLastCalledWith(
+      'proj-1',
+      expect.objectContaining({ state: 'open' }),
+    );
+
+    typeQuery('is:pr is:closed');
+    await waitFor(() =>
+      expect(api.getProjectPulls).toHaveBeenLastCalledWith(
+        'proj-1',
+        expect.objectContaining({ state: 'closed' }),
+      ),
+    );
+  });
+
+  it('text search finds a PR that lives past the first page', async () => {
+    const pageOne = Array.from({ length: 100 }, (_, i) => ({
+      ...prSummary,
+      number: 1000 + i,
+      title: `Filler ${i}`,
+      head: `feat/filler-${i}`,
+    }));
+    const pageTwo = [{ ...prSummary, number: 2000, title: 'Needle work', head: 'feat/needle' }];
+    (api.getProjectPulls as any).mockImplementation(async (_id: any, { page }: any) =>
+      page === 1 ? { pulls: pageOne, hasMore: true } : { pulls: pageTwo, hasMore: false },
+    );
+
+    render(<PullRequestsPage projectId="proj-1" project={project} onToast={vi.fn()} />);
+    await screen.findByText('Filler 0');
+    // The default (unsearched) view is one 25-row page — "Needle" is not in it.
+    expect(screen.queryByText('Needle work')).toBeNull();
+
+    typeQuery('is:pr is:open needle');
+    expect(await screen.findByText('Needle work')).toBeInTheDocument();
+    expect(screen.queryByText('Filler 0')).toBeNull();
+    expect(screen.getByTestId('pr-search-summary')).toHaveTextContent('1 result');
+  });
+
+  it('is:merged hides closed-but-unmerged PRs and fetches the whole set', async () => {
+    const mergedPr = {
+      ...prSummary,
+      number: 10,
+      title: 'Merged work',
+      state: 'closed',
+      merged_at: '2026-04-19T10:00:00Z',
+    };
+    const abandoned = {
+      ...prSummary,
+      number: 11,
+      title: 'Abandoned work',
+      state: 'closed',
+      merged: false,
+      merged_at: null,
+    };
+    (api.getProjectPulls as any).mockResolvedValue({
+      pulls: [mergedPr, abandoned],
+      hasMore: false,
+    });
+
+    render(<PullRequestsPage projectId="proj-1" project={project} onToast={vi.fn()} />);
+    await screen.findByText('Alpha work').catch(() => {});
+
+    typeQuery('is:pr is:merged');
+
+    expect(await screen.findByText('Merged work')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Abandoned work')).toBeNull());
+    // is:merged must request closed...
+    expect(api.getProjectPulls).toHaveBeenLastCalledWith(
+      'proj-1',
+      expect.objectContaining({ state: 'closed' }),
+    );
+    // ...and take the whole-result-set path, not a single 25-row page, since
+    // the merged narrowing happens client-side.
+    expect(api.getProjectPulls).toHaveBeenLastCalledWith(
+      'proj-1',
+      expect.objectContaining({ limit: 100 }),
+    );
+    expect(screen.getByTestId('pr-search-summary')).toHaveTextContent('1 result');
+  });
+
+  it('Resolve all under is:merged skips the unmerged rows', async () => {
+    const mergedPr = {
+      ...prSummary,
+      number: 10,
+      title: 'Merged work',
+      state: 'closed',
+      merged_at: '2026-04-19T10:00:00Z',
+    };
+    const abandoned = {
+      ...prSummary,
+      number: 11,
+      title: 'Abandoned work',
+      state: 'closed',
+      merged: false,
+      merged_at: null,
+    };
+    (api.getProjectPulls as any).mockResolvedValue({
+      pulls: [mergedPr, abandoned],
+      hasMore: false,
+    });
+    (api.resolvePR as any).mockResolvedValue({ sessionId: 'sess-1', triggered: [] });
+
+    render(<PullRequestsPage projectId="proj-1" project={project} onToast={vi.fn()} />);
+    typeQuery('is:pr is:merged');
+    await screen.findByText('Merged work');
+    await waitFor(() => expect(screen.queryByText('Abandoned work')).toBeNull());
+
+    fireEvent.click(screen.getByTestId('resolve-all-button'));
+    await waitFor(() => expect(api.resolvePR).toHaveBeenCalledTimes(1));
+    expect(api.resolvePR).toHaveBeenCalledWith('proj-1', 10, { agentId: 'agent-alpha' });
+  });
+
+  it('resets to page one when the query changes', async () => {
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [alpha], hasMore: true });
+
+    render(<PullRequestsPage projectId="proj-1" project={project} onToast={vi.fn()} />);
+    await screen.findByText('Alpha work');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Next$/ }));
+    await waitFor(() =>
+      expect(api.getProjectPulls).toHaveBeenLastCalledWith(
+        'proj-1',
+        expect.objectContaining({ page: 2 }),
+      ),
+    );
+
+    typeQuery('is:pr is:closed');
+    await waitFor(() =>
+      expect(api.getProjectPulls).toHaveBeenLastCalledWith(
+        'proj-1',
+        expect.objectContaining({ state: 'closed', page: 1 }),
+      ),
+    );
+  });
+});
+
+describe('<PullRequestsPage /> — Code tab availability', () => {
+  beforeEach(() => {
+    (api.getProjectPulls as any).mockReset();
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary], hasMore: false });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('disables Code when the project is not Hub-hosted (no onOpenRepo)', async () => {
+    render(<PullRequestsPage projectId="proj-1" project={project} onToast={vi.fn()} />);
+    await screen.findByText('Fix the flaky test');
+
+    // App omits onOpenRepo for GitHub-backed projects; RepositoryPage's
+    // git-host endpoints would reject them, so Code must not be clickable.
+    const codeTab = screen.getByTestId('repo-tab-code');
+    expect(codeTab).toBeDisabled();
+    expect(codeTab).toHaveAttribute('title', expect.stringContaining('Agent Hub-hosted'));
+  });
+
+  it('enables Code when the project is Hub-hosted (onOpenRepo supplied)', async () => {
+    const onOpenRepo = vi.fn();
+    render(
+      <PullRequestsPage
+        projectId="proj-1"
+        project={{ ...project, gitHost: 'agenthub' }}
+        onToast={vi.fn()}
+        onOpenRepo={onOpenRepo}
+      />,
+    );
+    await screen.findByText('Fix the flaky test');
+
+    const codeTab = screen.getByTestId('repo-tab-code');
+    expect(codeTab).not.toBeDisabled();
+    fireEvent.click(codeTab);
+    expect(onOpenRepo).toHaveBeenCalled();
+  });
+});
+
+describe('<PullRequestsPage /> — project isolation', () => {
+  beforeEach(() => {
+    (api.getProjectPulls as any).mockReset();
+    (api.resolvePR as any).mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('does not carry a spawned-session marker onto the same PR number in another project', async () => {
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary], hasMore: false });
+    (api.resolvePR as any).mockResolvedValue({ sessionId: 'sess-a', triggered: [] });
+
+    const { rerender } = render(
+      <PullRequestsPage projectId="proj-1" project={project} onToast={vi.fn()} />,
+    );
+    await screen.findByText('Fix the flaky test');
+
+    fireEvent.click(screen.getByTestId('resolve-all-button'));
+    await waitFor(() => expect(api.resolvePR).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByLabelText(`Session started for PR #${prSummary.number}`),
+    ).toBeInTheDocument();
+
+    // Same PR NUMBER in a different project. sessionSpawnedByPr is keyed by
+    // number, so without per-project isolation proj-2's #123 inherits proj-1's
+    // marker and claims a session that was never started for it.
+    rerender(
+      <PullRequestsPage
+        projectId="proj-2"
+        project={{ ...project, id: 'proj-2' }}
+        onToast={vi.fn()}
+      />,
+    );
+    await screen.findByText('Fix the flaky test');
+    expect(screen.queryByLabelText(`Session started for PR #${prSummary.number}`)).toBeNull();
   });
 });
