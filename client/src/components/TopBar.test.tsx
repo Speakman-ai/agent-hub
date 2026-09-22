@@ -33,6 +33,17 @@ function renderTopBar(overrides: any = {}) {
 }
 
 describe('<TopBar /> engine picker', () => {
+  it.each([
+    undefined,
+    { engineValidModels: { 'claude-code': ['claude-opus-5-5', 'claude-opus-5'] } },
+  ])('offers Opus 5.5 with and without server model configuration (%j)', (modelConfig) => {
+    const onModelChange = vi.fn();
+    renderTopBar({ modelConfig, onModelChange, sessionModel: 'claude-opus-5' });
+    fireEvent.click(screen.getByTitle(/^Model: /));
+    fireEvent.click(screen.getByText('Opus 5.5'));
+    expect(onModelChange).toHaveBeenCalledWith('claude-opus-5-5');
+  });
+
   it('does not render the Ask/Agent mode toggle (removed from the top bar)', () => {
     renderTopBar();
     // The toggle was the only control with an "Ask mode: …" title.

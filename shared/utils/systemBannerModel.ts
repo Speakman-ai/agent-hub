@@ -6,6 +6,7 @@ const ENGINE_DISPLAY: Record<string, string> = {
 };
 
 const MODEL_KNOWN_LABELS: Record<string, string> = {
+  'claude-opus-5-5': 'Opus 5.5',
   'claude-opus-5': 'Opus 5',
   'claude-fable-5-1': 'Fable 5.1',
   // Retired from selection (superseded by Fable 5.1); label retained for history.

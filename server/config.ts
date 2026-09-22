@@ -219,16 +219,9 @@ if (!existsSync(DEFAULT_PROJECTS_DIR) && existsSync(LEGACY_PROJECTS_DIR)) {
 // Exported config object
 
 const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
-  // claude-opus-5: Anthropic's flagship Opus model (API id `claude-opus-5`).
-  // Listed first as the most capable Claude Code option and the claude-code
-  // default. claude-fable-5-1 (Fable 5.1) is the Mythos-class option below it,
-  // replacing claude-fable-5 from selection; the old id's label is retained for
-  // historical sessions. API id and Active status verified against the official
-  // Claude Platform docs (released 2026-09-01, Status: Active/latest):
-  // https://platform.claude.com/docs/en/models/fable-5-1/overview
-  // Keep in sync with client TopBar.jsx MODEL_LABELS, shared systemBannerModel.js
-  // MODEL_KNOWN_LABELS, and mobile engineOptions.js.
+  // Keep Claude model IDs and labels aligned with the web and mobile pickers.
   'claude-code': [
+    'claude-opus-5-5',
     'claude-opus-5',
     'claude-fable-5-1',
     'claude-opus-4-8',
@@ -285,7 +278,7 @@ const mergedEngineValidModelsRaw =
 const mergedEngineValidModels = normalizeCursorAgentEngineModels(mergedEngineValidModelsRaw);
 
 const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
-  'claude-code': 'claude-opus-5',
+  'claude-code': 'claude-opus-5-5',
   'cursor-agent': 'grok-4.7-high',
   // No `gemini-cli` default — Gemini is RAG-only, not a selectable engine.
   // Codex: GPT-6 Astra is the preferred model when the installed CLI advertises
@@ -301,7 +294,7 @@ const mergedEngineDefaultModelsRaw =
 const mergedEngineDefaultModels = { ...mergedEngineDefaultModelsRaw };
 
 // Per-engine, per-project-mode default model. Workflow-mode projects get a
-// lighter Claude default (Sonnet 5); dev/code-mode projects get Opus 4.8.
+// lighter Claude default (Sonnet 5); dev/code-mode projects get Opus 5.5.
 // Consulted only at the bottom default tier of model resolution — explicit
 // picks and per-user overrides still win — and only when a caller threads the
 // project mode through. Engines/modes without an entry fall through to the
@@ -309,7 +302,7 @@ const mergedEngineDefaultModels = { ...mergedEngineDefaultModelsRaw };
 const DEFAULT_ENGINE_MODE_DEFAULT_MODELS: Record<string, Partial<Record<ProjectMode, string>>> = {
   'claude-code': {
     workflow: 'claude-sonnet-5',
-    dev: 'claude-opus-4-8',
+    dev: 'claude-opus-5-5',
   },
 };
 
@@ -446,7 +439,7 @@ const config: AppConfig = {
   ) as string,
 
   // Models
-  defaultModel: resolve(null, 'defaultModel', 'claude-opus-5') as string,
+  defaultModel: resolve(null, 'defaultModel', 'claude-opus-5-5') as string,
 
   engineDefaultModels: mergedEngineDefaultModels,
   engineModeDefaultModels: mergedEngineModeDefaultModels,

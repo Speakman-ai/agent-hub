@@ -59,18 +59,18 @@ describe('mobile engine picker constants', () => {
     expect(models).not.toContain('gpt-5.2-codex');
     expect(models).not.toContain('gpt-5.1-codex-max');
   });
-  it('exposes claude-opus-5 first for claude-code with an Opus 5 label', () => {
-    // Regression: Claude Opus 5 (claude-opus-5) is the flagship Claude Code
+  it('exposes claude-opus-5-5 first for claude-code with an Opus 5.5 label', () => {
+    // Regression: Claude Opus 5.5 (claude-opus-5-5) is the flagship Claude Code
     // model and the default. It must appear first in the mobile picker and
     // stay aligned with server/config.ts and client TopBar.tsx.
     const models = ENGINE_MODELS['claude-code'];
     const ids = models.map((m: any) => m.id);
-    expect(ids).toContain('claude-opus-5');
-    expect(ids[0]).toBe('claude-opus-5');
-    const opus5 = models.find((m: any) => m.id === 'claude-opus-5');
-    expect(opus5.label).toBe('Opus 5');
-    expect(opus5.short).toBe('Opus');
-    expect(ENGINE_DEFAULT_MODELS['claude-code']).toBe('claude-opus-5');
+    expect(ids).toContain('claude-opus-5-5');
+    expect(ids[0]).toBe('claude-opus-5-5');
+    const opus5 = models.find((m: any) => m.id === 'claude-opus-5-5');
+    expect(opus5.label).toBe('Opus 5.5');
+    expect(opus5.short).toBe('Opus 5.5');
+    expect(ENGINE_DEFAULT_MODELS['claude-code']).toBe('claude-opus-5-5');
   });
   it('exposes claude-fable-5-1 for claude-code with a Fable 5.1 label and drops retired claude-fable-5', () => {
     const models = ENGINE_MODELS['claude-code'];

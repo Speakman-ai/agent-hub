@@ -424,25 +424,25 @@ describe('config.ts — claude-code model defaults', () => {
     return (await import('./config.js')).default;
   }
 
-  it('offers claude-opus-5 as a selectable claude-code model', async () => {
-    // Regression: Claude Opus 5 (API id `claude-opus-5`) is Anthropic's flagship
+  it('offers claude-opus-5-5 as a selectable claude-code model', async () => {
+    // Regression: Claude Opus 5.5 (API id `claude-opus-5-5`) is Anthropic's flagship
     // Opus model and must be selectable, otherwise PUT /api/sessions/:id/model
     // rejects it as invalid.
     const cfg = await importDefaults();
-    expect(cfg.engineValidModels['claude-code']).toContain('claude-opus-5');
-    expect(cfg.allValidModels).toContain('claude-opus-5');
+    expect(cfg.engineValidModels['claude-code']).toContain('claude-opus-5-5');
+    expect(cfg.allValidModels).toContain('claude-opus-5-5');
   });
 
-  it('lists claude-opus-5 first as the flagship claude-code option', async () => {
+  it('lists claude-opus-5-5 first as the flagship claude-code option', async () => {
     const cfg = await importDefaults();
-    expect(cfg.engineValidModels['claude-code'][0]).toBe('claude-opus-5');
+    expect(cfg.engineValidModels['claude-code'][0]).toBe('claude-opus-5-5');
   });
 
-  it('defaults claude-code to claude-opus-5', async () => {
-    // Regression: claude-opus-5 is the configured claude-code + top-level default.
+  it('defaults claude-code to claude-opus-5-5', async () => {
+    // Regression: claude-opus-5-5 is the configured claude-code + top-level default.
     const cfg = await importDefaults();
-    expect(cfg.engineDefaultModels['claude-code']).toBe('claude-opus-5');
-    expect(cfg.defaultModel).toBe('claude-opus-5');
+    expect(cfg.engineDefaultModels['claude-code']).toBe('claude-opus-5-5');
+    expect(cfg.defaultModel).toBe('claude-opus-5-5');
   });
 
   it('offers claude-fable-5-1 as a selectable claude-code model and retires claude-fable-5', async () => {
@@ -470,16 +470,16 @@ describe('config.ts — claude-code model defaults', () => {
     expect(cfg.engineValidModels['claude-code']).not.toContain('claude-sonnet-4-6');
   });
 
-  it('defaults claude-code to Sonnet 5 for workflow-mode and Opus 4.8 for dev-mode', async () => {
+  it('defaults claude-code to Sonnet 5 for workflow-mode and Opus 5.5 for dev-mode', async () => {
     // Mode-aware default: workflow (no-code) projects run the lighter Sonnet 5,
-    // dev/code projects run Opus 4.8. Both ids must stay selectable so the
+    // dev/code projects run Opus 5.5. Both ids must stay selectable so the
     // resolved default is not filtered out downstream.
     const cfg = await importDefaults();
     const modeDefaults = cfg.engineModeDefaultModels['claude-code'];
     expect(modeDefaults?.workflow).toBe('claude-sonnet-5');
-    expect(modeDefaults?.dev).toBe('claude-opus-4-8');
+    expect(modeDefaults?.dev).toBe('claude-opus-5-5');
     expect(cfg.engineValidModels['claude-code']).toContain('claude-sonnet-5');
-    expect(cfg.engineValidModels['claude-code']).toContain('claude-opus-4-8');
+    expect(cfg.engineValidModels['claude-code']).toContain('claude-opus-5-5');
   });
 });
 

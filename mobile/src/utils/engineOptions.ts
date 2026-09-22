@@ -13,6 +13,7 @@ export const ENGINE_OPTIONS = [
 ];
 export const ENGINE_MODELS: Record<string, any> = {
   'claude-code': [
+    { id: 'claude-opus-5-5', label: 'Opus 5.5', short: 'Opus 5.5' },
     { id: 'claude-opus-5', label: 'Opus 5', short: 'Opus' },
     { id: 'claude-fable-5-1', label: 'Fable 5.1', short: 'Fable' },
     { id: 'claude-opus-4-8', label: 'Opus 4.8', short: 'Opus 4.8' },
@@ -52,7 +53,7 @@ export const ENGINE_MODELS: Record<string, any> = {
   ],
 };
 export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
-  'claude-code': 'claude-opus-5',
+  'claude-code': 'claude-opus-5-5',
   'cursor-agent': 'grok-4.7-high',
   'codex-cli': 'gpt-6-astra',
   'grok-cli': 'grok-4.7',

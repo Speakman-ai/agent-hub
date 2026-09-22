@@ -196,7 +196,7 @@ RUN install -m 0755 -d /etc/apt/keyrings \
 # stranded prod on 2.1.243 — too old for newer models ("version 2.1.251 or
 # newer is required"). Bumping this literal busts the cache and forces a real
 # reinstall. Update deliberately when a newer CLI is needed.
-RUN npm install -g @anthropic-ai/claude-code@2.1.258
+RUN npm install -g @anthropic-ai/claude-code@2.1.280
 
 # Gemini CLI — lets agents run the `gemini-cli` engine.
 # See https://geminicli.com/docs/ for install + auth details.

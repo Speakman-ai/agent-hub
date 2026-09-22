@@ -106,7 +106,7 @@ export function AppProvider({ children }: any) {
   const [chatScrollNonce, setChatScrollNonce] = useState(0);
   const [streamingEngine, setStreamingEngine] = useState<any>(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
-  const [sessionModel, setSessionModel] = useState('claude-opus-5');
+  const [sessionModel, setSessionModel] = useState('claude-opus-5-5');
   // Codex reasoning ("thinking") preset for the active session: 'high' (default)
   // or 'pro' (→ xhigh). Only meaningful for the codex-cli engine.
   const [sessionReasoningEffort, setSessionReasoningEffort] = useState('high');
@@ -307,7 +307,7 @@ export function AppProvider({ children }: any) {
     if (engine === 'cursor-agent') return 'grok-4.7-high';
     if (engine === 'codex-cli') return 'gpt-5.6-sol';
     if (engine === 'grok-cli') return 'grok-4.7';
-    return 'claude-opus-5';
+    return 'claude-opus-5-5';
   };
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
@@ -1909,7 +1909,7 @@ export function AppProvider({ children }: any) {
     // showing an engine/model the server never accepted. Read the live value
     // through the functional updater (the callback has empty deps).
     let prevEngine = 'claude-code';
-    let prevModel = 'claude-opus-5';
+    let prevModel = 'claude-opus-5-5';
     setSessionEngine((cur: any) => {
       prevEngine = cur;
       return engine;

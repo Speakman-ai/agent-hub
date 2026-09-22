@@ -26,6 +26,10 @@ describe('systemBannerModel', () => {
     expect(modelPrimaryLabel('gpt-5.6-luna')).toBe('GPT-5.6 Luna');
   });
 
+  it('labels Opus 5.5 in session banners', () => {
+    expect(modelPrimaryLabel('claude-opus-5-5')).toBe('Opus 5.5');
+  });
+
   it('maps claude-opus-5 to Opus 5', () => {
     expect(modelPrimaryLabel('claude-opus-5')).toBe('Opus 5');
   });

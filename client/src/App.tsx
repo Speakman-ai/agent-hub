@@ -330,7 +330,7 @@ export default function App({ initialView }: any = {}) {
   const [composerPrefill, setComposerPrefill] = useState<any>(null);
   const [streamingEngine, setStreamingEngine] = useState<any>(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
-  const [sessionModel, setSessionModel] = useState('claude-opus-5');
+  const [sessionModel, setSessionModel] = useState('claude-opus-5-5');
   // Codex reasoning ("thinking") preset for the active session: 'high' (default)
   // or 'pro' (→ xhigh). Only meaningful for the codex-cli engine.
   const [sessionReasoningEffort, setSessionReasoningEffort] = useState('high');
@@ -1764,7 +1764,7 @@ export default function App({ initialView }: any = {}) {
           setSessionModel(
             target.model ||
               modelConfig?.engineDefaultModels?.[target.engine || ag?.engine || 'claude-code'] ||
-              'claude-opus-5',
+              'claude-opus-5-5',
           );
           setSessionConsultMode(isSessionConsultModeEnabled(target));
         } else {
@@ -1773,7 +1773,7 @@ export default function App({ initialView }: any = {}) {
           const fallbackEngine =
             agentsRef.current.find((a: any) => a.id === agentId)?.engine || 'claude-code';
           setSessionEngine(fallbackEngine);
-          setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-5');
+          setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-5-5');
           setSessionConsultMode(false);
         }
       }
@@ -3988,7 +3988,7 @@ export default function App({ initialView }: any = {}) {
           setSessionModel(
             target.model ||
               modelConfig?.engineDefaultModels?.[target.engine || ag?.engine || 'claude-code'] ||
-              'claude-opus-5',
+              'claude-opus-5-5',
           );
           setSessionConsultMode(isSessionConsultModeEnabled(target));
         } else {
@@ -3996,7 +3996,7 @@ export default function App({ initialView }: any = {}) {
           setMessages([]);
           const fallbackEngine = agents.find((a: any) => a.id === agentId)?.engine || 'claude-code';
           setSessionEngine(fallbackEngine);
-          setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-5');
+          setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-5-5');
           setSessionConsultMode(false);
         }
       })
@@ -4869,7 +4869,7 @@ export default function App({ initialView }: any = {}) {
     setSessionModel(
       session.model ||
         modelConfig?.engineDefaultModels?.[session.engine || agent?.engine || 'claude-code'] ||
-        'claude-opus-5',
+        'claude-opus-5-5',
     );
     setSessionConsultMode(isSessionConsultModeEnabled(session));
     setMessages([]);
@@ -4916,7 +4916,7 @@ export default function App({ initialView }: any = {}) {
         setSessionModel(
           updated.model ||
             modelConfig?.engineDefaultModels?.[updated.engine || agent.engine || 'claude-code'] ||
-            'claude-opus-5',
+            'claude-opus-5-5',
         );
         setSessionConsultMode(false);
         setMessages([]);
@@ -4957,7 +4957,7 @@ export default function App({ initialView }: any = {}) {
         setSessionModel(
           session.model ||
             modelConfig?.engineDefaultModels?.[session.engine || agent?.engine || 'claude-code'] ||
-            'claude-opus-5',
+            'claude-opus-5-5',
         );
         setSessionConsultMode(isSessionConsultModeEnabled(session));
         setMessages([]);
@@ -4978,7 +4978,7 @@ export default function App({ initialView }: any = {}) {
       if (engine === 'cursor-agent') return 'grok-4.7-high';
       if (engine === 'codex-cli') return 'gpt-5.6-sol';
       if (engine === 'grok-cli') return 'grok-4.7';
-      return 'claude-opus-5';
+      return 'claude-opus-5-5';
     },
     [modelConfig],
   );
@@ -6053,7 +6053,7 @@ export default function App({ initialView }: any = {}) {
       setSessionModel(
         session.model ||
           modelConfig?.engineDefaultModels?.[session.engine || 'claude-code'] ||
-          'claude-opus-5',
+          'claude-opus-5-5',
       );
       setSessionConsultMode(isSessionConsultModeEnabled(session));
       setMessages([]);

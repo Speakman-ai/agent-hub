@@ -20,7 +20,7 @@ const guestDockerfilePath = path.join(
 
 // The exact claude-code CLI version both images must pin. Bump here (and in both
 // Dockerfiles) together — the tests assert all three agree.
-const EXPECTED_CLAUDE_CODE_PIN = '2.1.258';
+const EXPECTED_CLAUDE_CODE_PIN = '2.1.280';
 const EXPECTED_CODEX_PIN = '0.153.4';
 
 // Every `@anthropic-ai/claude-code[@spec]` occurrence in a Dockerfile, returning

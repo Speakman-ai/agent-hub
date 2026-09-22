@@ -27,6 +27,7 @@ const ENGINE_OPTIONS = [
 ];
 
 const MODEL_LABELS = {
+  'claude-opus-5-5': { label: 'Opus 5.5', short: 'Opus 5.5' },
   'claude-opus-5': { label: 'Opus 5', short: 'Opus' },
   'claude-fable-5-1': { label: 'Fable 5.1', short: 'Fable' },
   // Retired from selection (superseded by Fable 5.1) but retained so historical
@@ -94,6 +95,7 @@ function fallbackModelsForEngine(engine: any) {
       'grok-composer-2.5-fast',
     ];
   return [
+    'claude-opus-5-5',
     'claude-opus-5',
     'claude-fable-5-1',
     'claude-opus-4-8',

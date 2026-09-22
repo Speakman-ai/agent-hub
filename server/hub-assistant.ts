@@ -182,7 +182,7 @@ export function resolveHubEngineAndModel(
   if (!cfg) {
     return {
       engine,
-      model: agent.model || defaultModelForEngine(engine) || 'claude-opus-5',
+      model: agent.model || defaultModelForEngine(engine) || 'claude-opus-5-5',
     };
   }
   const resolved = resolveEffectiveEngineAndModel(cfg, {
@@ -204,7 +204,7 @@ function createHubOwnedSession(
   const id = uuidv4();
   const resolved = resolveHubEngineAndModel(cfg, userId);
   const engine = resolved.engine || agent.engine || 'claude-code';
-  const model = resolved.model || agent.model || defaultModelForEngine(engine) || 'claude-opus-5';
+  const model = resolved.model || agent.model || defaultModelForEngine(engine) || 'claude-opus-5-5';
   stmts.createSession.run(id, agent.id, name, engine, model, 0, 0, 1);
   stmts.updateSessionMode.run(HUB_SESSION_MODE, id);
   setSessionOwner(id, userId);
