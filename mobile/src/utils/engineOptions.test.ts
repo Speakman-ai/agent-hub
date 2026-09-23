@@ -5,6 +5,7 @@ import {
   ENGINE_MODELS,
   ENGINE_DEFAULT_MODELS,
   modelDisplay,
+  modelsForEngine,
 } from './engineOptions';
 describe('mobile engine picker constants', () => {
   it('exposes claude-code, cursor-agent, codex-cli, and grok-cli as engine options', () => {
@@ -25,6 +26,20 @@ describe('mobile engine picker constants', () => {
     const ids = ENGINE_OPTIONS.map((e: any) => e.id);
     expect(ids).not.toContain('gemini-cli');
   });
+  it.each([
+    ['gpt-6-sol', 'GPT-6 Sol', '6 Sol'],
+    ['gpt-6-luna', 'GPT-6 Luna', '6 Luna'],
+  ])('labels advertised %s and respects the server model list', (id, label, short) => {
+    expect(modelsForEngine('codex-cli', { engineValidModels: { 'codex-cli': [id] } })).toEqual([
+      { id, label, short },
+    ]);
+    expect(
+      modelsForEngine('codex-cli', { engineValidModels: { 'codex-cli': ['gpt-6-astra'] } }).map(
+        (m) => m.id,
+      ),
+    ).not.toContain(id);
+  });
+
   it('lists codex-cli with the "Codex" label', () => {
     const codex = ENGINE_OPTIONS.find((e: any) => e.id === 'codex-cli');
     expect(codex).toBeTruthy();

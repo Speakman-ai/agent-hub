@@ -23,6 +23,18 @@ describe('resolveCodexModelSelection', () => {
     return home;
   }
 
+  it.each(['gpt-6-sol', 'gpt-6-luna'])(
+    'forwards %s only for an account advertising it',
+    (model) => {
+      const supportedHome = makeCodexHome('chatgpt', [model]);
+      const unsupportedHome = makeCodexHome('chatgpt', ['gpt-6-astra']);
+      expect(resolveCodexModelSelection(model, { CODEX_HOME: supportedHome }).passModel).toBe(true);
+      expect(resolveCodexModelSelection(model, { CODEX_HOME: unsupportedHome }).passModel).toBe(
+        false,
+      );
+    },
+  );
+
   it('uses the spawn environment home for a per-user GPT-5.6 capability check', () => {
     const home = makeCodexHome('chatgpt', ['gpt-5.6-luna']);
 

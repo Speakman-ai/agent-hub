@@ -131,6 +131,26 @@ describe('codex-model-capability', () => {
       expect(out).toEqual(['gpt-6-astra', 'gpt-5.6-sol', ...BASELINE]);
     });
 
+    it('offers advertised GPT-6 tiers in canonical order', () => {
+      const home = join(dir, 'gpt6');
+      writeCache(home, ['gpt-6-luna', 'gpt-6-astra', 'gpt-6-sol'], '0.156.1');
+      expect(resolveSelectableCodexModels(BASELINE, readCodexModelsCache(home))).toEqual([
+        'gpt-6-astra',
+        'gpt-6-sol',
+        'gpt-6-luna',
+        ...BASELINE,
+      ]);
+    });
+
+    it.each(['gpt-6-sol', 'gpt-6-luna'])('only exposes %s when advertised', (model) => {
+      const home = join(dir, model);
+      writeCache(home, [model], '0.156.1');
+      expect(resolveSelectableCodexModels(BASELINE, readCodexModelsCache(home))).toEqual([
+        model,
+        ...BASELINE,
+      ]);
+    });
+
     it('de-duplicates if a gated model somehow appears in the baseline', () => {
       const home = join(dir, 'dup');
       writeCache(home, ['gpt-5.6-sol']);
@@ -152,9 +172,11 @@ describe('codex-model-capability', () => {
     });
   });
 
-  it('CODEX_CAPABILITY_MODELS lead with GPT-6 Astra, then the real tiered gpt-5.6 ids (not a bare gpt-5.6)', () => {
+  it('orders GPT-6 tiers before GPT-5.6 tiers without an unsuffixed alias', () => {
     expect(CODEX_CAPABILITY_MODELS).toEqual([
       'gpt-6-astra',
+      'gpt-6-sol',
+      'gpt-6-luna',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'gpt-5.6-luna',

@@ -99,7 +99,7 @@ RUN systemctl enable docker.service 2>/dev/null || true
 # guest, so these must exist on PATH here (mirrors server/Dockerfile runtime).
 # Keep Claude Code and Codex pinned in lockstep with server/Dockerfile. A version
 # bump must invalidate Docker's cached install layer in both runtime images.
-RUN npm install -g @anthropic-ai/claude-code@2.1.280 @google/gemini-cli @openai/codex@0.153.4 \
+RUN npm install -g @anthropic-ai/claude-code@2.1.280 @google/gemini-cli @openai/codex@0.156.1 \
     && command -v claude \
     && command -v gemini \
     && command -v codex

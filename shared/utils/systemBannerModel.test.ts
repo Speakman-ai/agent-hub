@@ -12,6 +12,13 @@ describe('systemBannerModel', () => {
     expect(modelPrimaryLabel(id)).toBe(label);
   });
 
+  it.each([
+    ['gpt-6-sol', 'GPT-6 Sol'],
+    ['gpt-6-luna', 'GPT-6 Luna'],
+  ])('labels %s in session banners', (id, label) => {
+    expect(modelPrimaryLabel(id)).toBe(label);
+  });
+
   it('maps gpt-5.5 to GPT-5.5', () => {
     expect(modelPrimaryLabel('gpt-5.5')).toBe('GPT-5.5');
   });

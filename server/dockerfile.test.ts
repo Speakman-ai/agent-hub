@@ -21,7 +21,7 @@ const guestDockerfilePath = path.join(
 // The exact claude-code CLI version both images must pin. Bump here (and in both
 // Dockerfiles) together — the tests assert all three agree.
 const EXPECTED_CLAUDE_CODE_PIN = '2.1.280';
-const EXPECTED_CODEX_PIN = '0.153.4';
+const EXPECTED_CODEX_PIN = '0.156.1';
 
 // Every `@anthropic-ai/claude-code[@spec]` occurrence in a Dockerfile, returning
 // the bare version each carries (`undefined` for an unpinned install).
@@ -211,11 +211,13 @@ describe('server/Dockerfile', () => {
     }
   });
 
-  it('pins the Codex CLI to the Astra-compatible release', () => {
+  it('pins the Codex CLI to the release supporting GPT-6 Sol and Luna', () => {
     const pins = codexPins(readFileSync(dockerfilePath, 'utf8'));
     expect(pins.length).toBeGreaterThan(0);
     for (const pin of pins) {
-      expect(pin, 'Codex install must pin the Astra-compatible release').toBe(EXPECTED_CODEX_PIN);
+      expect(pin, 'Codex install must pin the release supporting GPT-6 Sol and Luna').toBe(
+        EXPECTED_CODEX_PIN,
+      );
     }
   });
 });
@@ -246,7 +248,7 @@ describe('firecracker guest Dockerfile', () => {
     ).toEqual([EXPECTED_CLAUDE_CODE_PIN]);
   });
 
-  it('pins Codex to the exact same Astra-compatible version as server/Dockerfile', () => {
+  it('pins Codex to the same version as server/Dockerfile', () => {
     const serverPins = codexPins(readFileSync(dockerfilePath, 'utf8'));
     const guestPins = codexPins(readFileSync(guestDockerfilePath, 'utf8'));
 

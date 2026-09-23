@@ -40,13 +40,13 @@ import {
  * Ordered newest-first — advertised entries are prepended to the baseline list
  * so the picker surfaces the newest capable model at the top.
  *
- * NOTE: the real Codex IDs are `gpt-5.6-sol` / `-terra` / `-luna`, NOT a bare
- * `gpt-5.6` — the tiered GA (2026-07-09) never shipped an unsuffixed id.
- * `gpt-6-astra` is OpenAI's GPT-6 Astra flagship (2026-09-03), also shipped for
- * Codex; it leads the list so it is the preferred default when advertised.
+ * Astra leads the list as the preferred default when advertised. Sol and Luna
+ * follow it, with each tier gated independently by the account's cache.
  */
 export const CODEX_CAPABILITY_MODELS: readonly string[] = [
   'gpt-6-astra',
+  'gpt-6-sol',
+  'gpt-6-luna',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',

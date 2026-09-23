@@ -73,6 +73,8 @@ export const HISTORICAL_MODEL_LABELS: Record<string, { label: string; short: str
   'gpt-5.6': { label: 'GPT-5.6', short: '5.6' },
   // Capability-gated siblings of the default: absent from the offline
   // fallback list, but the server can advertise them, so keep labels.
+  'gpt-6-sol': { label: 'GPT-6 Sol', short: '6 Sol' },
+  'gpt-6-luna': { label: 'GPT-6 Luna', short: '6 Luna' },
   'gpt-5.6-terra': { label: 'GPT-5.6 Terra', short: '5.6 Terra' },
   'gpt-5.6-luna': { label: 'GPT-5.6 Luna', short: '5.6 Luna' },
 };

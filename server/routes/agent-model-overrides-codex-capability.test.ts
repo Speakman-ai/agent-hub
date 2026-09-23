@@ -90,21 +90,24 @@ describe('agent-model-overrides — codex capability gating', () => {
     expect(String(r.body.error)).toMatch(/gpt-5\.6-sol/);
   });
 
-  it('accepts and persists a gated codex model the CLI cache advertises', async () => {
-    writeUserCodexCache('u1', ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.5']);
-    const app = buildStubbedApp('u1');
+  it.each(['gpt-5.6-sol', 'gpt-6-sol', 'gpt-6-luna'])(
+    'accepts and persists advertised %s',
+    async (model) => {
+      writeUserCodexCache('u1', ['gpt-6-astra', model, 'gpt-5.5']);
+      const app = buildStubbedApp('u1');
 
-    const put = await supertest(app)
-      .put('/api/auth/me/agent-model-overrides/reviewer')
-      .send({ model: 'gpt-5.6-sol' });
-    expect(put.status).toBe(200);
-    expect(put.body.agentModelOverrides.reviewer).toBe('gpt-5.6-sol');
+      const put = await supertest(app)
+        .put('/api/auth/me/agent-model-overrides/reviewer')
+        .send({ model });
+      expect(put.status).toBe(200);
+      expect(put.body.agentModelOverrides.reviewer).toBe(model);
 
-    // GET must not strip the persisted gated pick.
-    const get = await supertest(app).get('/api/auth/me/agent-model-overrides');
-    expect(get.body.agentModelOverrides.reviewer).toBe('gpt-5.6-sol');
-    expect(getUserPreferencesRow('u1').agentModelOverrides?.reviewer).toBe('gpt-5.6-sol');
-  });
+      // GET must not strip the persisted gated pick.
+      const get = await supertest(app).get('/api/auth/me/agent-model-overrides');
+      expect(get.body.agentModelOverrides.reviewer).toBe(model);
+      expect(getUserPreferencesRow('u1').agentModelOverrides?.reviewer).toBe(model);
+    },
+  );
 
   it('whole-map PUT accepts a gated codex model the cache advertises', async () => {
     writeUserCodexCache('u1', ['gpt-6-astra', 'gpt-5.6-sol']);

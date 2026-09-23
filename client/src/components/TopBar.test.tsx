@@ -44,6 +44,33 @@ describe('<TopBar /> engine picker', () => {
     expect(onModelChange).toHaveBeenCalledWith('claude-opus-5-5');
   });
 
+  it.each([
+    ['gpt-6-sol', 'GPT-6 Sol'],
+    ['gpt-6-luna', 'GPT-6 Luna'],
+  ])('offers advertised %s and forwards its model ID', (id, label) => {
+    const onModelChange = vi.fn();
+    renderTopBar({
+      sessionEngine: 'codex-cli',
+      sessionModel: 'gpt-6-astra',
+      onModelChange,
+      modelConfig: { engineValidModels: { 'codex-cli': ['gpt-6-astra', id] } },
+    });
+    fireEvent.click(screen.getByTitle(/^Model: /));
+    fireEvent.click(screen.getByText(label));
+    expect(onModelChange).toHaveBeenCalledWith(id);
+  });
+
+  it('hides unadvertised GPT-6 tiers', () => {
+    renderTopBar({
+      sessionEngine: 'codex-cli',
+      sessionModel: 'gpt-6-astra',
+      modelConfig: { engineValidModels: { 'codex-cli': ['gpt-6-astra'] } },
+    });
+    fireEvent.click(screen.getByTitle(/^Model: /));
+    expect(screen.queryByText('GPT-6 Sol')).toBeNull();
+    expect(screen.queryByText('GPT-6 Luna')).toBeNull();
+  });
+
   it('does not render the Ask/Agent mode toggle (removed from the top bar)', () => {
     renderTopBar();
     // The toggle was the only control with an "Ask mode: …" title.

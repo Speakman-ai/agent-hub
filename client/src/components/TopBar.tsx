@@ -49,6 +49,8 @@ const MODEL_LABELS = {
   // ChatGPT OAuth); labels retained so historical sessions render cleanly.
   'gpt-5.3-codex': { label: 'GPT-5.3 Codex', short: '5.3 Codex' },
   'gpt-5.6': { label: 'GPT-5.6', short: '5.6' },
+  'gpt-6-sol': { label: 'GPT-6 Sol', short: '6 Sol' },
+  'gpt-6-luna': { label: 'GPT-6 Luna', short: '6 Luna' },
   'gpt-6-astra': { label: 'GPT-6 Astra', short: 'Astra' },
   'gpt-5.6-sol': { label: 'GPT-5.6 Sol', short: '5.6 Sol' },
   'gpt-5.6-terra': { label: 'GPT-5.6 Terra', short: '5.6 Terra' },
