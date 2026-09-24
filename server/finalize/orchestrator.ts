@@ -1516,18 +1516,8 @@ export async function runFinalize(
           log,
         );
       }
-      // Nothing configured anywhere. This is the normal state of a
-      // brand-new project, not a defect: `evaluateFinalizeShipGate` already
-      // treats a missing ci.yaml as "no gate, shipping allowed", so failing
-      // the run here made Finalize the only surface that punished the same
-      // condition — and it did so only AFTER the rebase phase, which can
-      // dispatch a conflict-fix turn and wait on it. Degrade to a
-      // checks-free run (rebase → review → push gate) instead, so a fresh
-      // project's first Finalize can complete.
-      //
-      // `mode === 'checks'` ("Run Tests") is the exception: it skips review,
-      // so degrading would leave a run with no phase at all. An explicit
-      // request to run tests when none are configured is a real error.
+      // Without CI config, Finalize still runs rebase and review before the
+      // push gate. Checks-only mode must fail because it has no review phase.
       if (ciSource === 'none' || parseResult === null) {
         checksRequired = false;
         if (!reviewRequired) {

@@ -124,6 +124,8 @@ describe('buildEnrichedPrompt — Active Pull Request awareness', () => {
     });
     expect(prompt).toContain('## Active Pull Request');
     expect(prompt).toContain(prUrl);
+    expect(prompt).toContain('Finalize Code Changes updates the open PR');
+    expect(prompt).not.toContain('Commit and push');
     // The agent must be explicitly warned away from gh pr create — that's the
     // whole point of this block.
     expect(prompt).toMatch(/Do \*\*NOT\*\* run `gh pr create`/);

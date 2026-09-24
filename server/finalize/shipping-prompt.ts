@@ -23,7 +23,7 @@ export const SHIPPING_CONTRACT_MARKER = '<!-- agent-hub-shipping-contract -->';
  */
 export const ANALYZE_FINALIZE_SHIPPING_GUIDELINES = `
 Guidelines for shipping / PR workflow (CRITICAL — do not contradict Agent Hub):
-- Agent Hub dev agents **never** run \`git push\`, \`gh pr create\`, or \`gh pr merge\` during a session when the project is GitHub-connected. The spawn environment blocks direct ship when Finalize is configured; even before \`.agent-hub/ci.yaml\` exists, the human operator owns push/merge via the session UI.
+- Agent Hub dev agents **never** run \`git push\`, \`gh pr create\`, or \`gh pr merge\` during a session when the project is GitHub-connected. The spawn environment blocks direct ship for session agents; even before \`.agent-hub/ci.yaml\` exists, the human operator owns push/merge via the session UI.
 - In the dev agent's \`systemPrompt\`, describe the lifecycle as: implement on a feature branch → run only tests the agent added or changed while debugging → rebase on \`origin/main\` → **commit locally** → stop. Do **not** instruct the agent to open PRs, push, merge, or enable GitHub auto-merge — those steps are handled by **Finalize Code Changes** and per-session automation (Build / Build and Review / Build and Push / Auto Merge).
 - When \`.agent-hub/ci.yaml\` is configured, discourage agents from running existing test suites or broad lint/check commands locally. Existing tests run in the Finalize runner/reviewer workflow; local test runs are for debugging tests the agent added or changed.
 - Per-session **Finalize automation** (set in the chat toolbar): Build (human drives everything manually), Build and Review (rebase + in-hub review + ci.yaml checks after every turn), Build and Push (+ auto-push when gates pass), Auto Merge (+ GitHub native auto-merge on the PR if available). Assigned kanban cards and autonomous dispatch default to **Build and Push**, or **Auto Merge** when the project's auto-merge is enabled — the dev agent still only commits locally; the platform runs Finalize after the session ends.
@@ -40,7 +40,7 @@ export function buildDevAgentShippingContract(project: Project): string {
 
 You are a **dev** agent for ${name}. Your work ends at a **clean local commit** on the session worktree branch.
 
-**Never during a session:** \`git push\`, \`gh pr create\`, \`gh pr merge\`, or enabling GitHub auto-merge. The spawn environment blocks direct ship when \`.agent-hub/ci.yaml\` exists; the operator uses **Finalize Code Changes** on the session instead.
+**Never during a session:** \`git push\`, \`gh pr create\`, \`gh pr merge\`, or enabling GitHub auto-merge. The spawn environment blocks direct ship even without \`.agent-hub/ci.yaml\`; the operator uses **Finalize Code Changes** on the session instead.
 
 **Your loop:** branch → implement → run only tests you added or changed while fixing → rebase on \`origin/main\` → commit locally → stop. Existing tests run in the Finalize runner/reviewer workflow. Do not ask permission to push or open a PR.
 
@@ -58,7 +58,7 @@ export function appendDevAgentShippingContract(systemPrompt: string, project: Pr
 
 const CONTEXT_SHIPPING_SECTION = `## Shipping & Finalize Code Changes
 
-Dev agents **commit locally only**. Push, PR creation, review gates, and optional auto-merge are handled by Agent Hub **Finalize Code Changes** (when \`.agent-hub/ci.yaml\` is configured) and the session's automation dropdown:
+Dev agents **commit locally only**. Push, PR creation, review gates, and optional auto-merge are handled by Agent Hub **Finalize Code Changes** and the session's automation dropdown:
 
 | Level | What runs automatically |
 |-------|-------------------------|
@@ -67,7 +67,7 @@ Dev agents **commit locally only**. Push, PR creation, review gates, and optiona
 | Build and Push | Finalize + push when gates pass |
 | Auto Merge | Finalize + push + GitHub native auto-merge (if available) |
 
-Assigned kanban cards and autonomous dispatch sessions default to **Build and Push**, or **Auto Merge** when the project's auto-merge is enabled. The dev agent never runs \`git push\` or \`gh pr create\` — the spawn environment blocks those when Finalize is configured.
+Assigned kanban cards and autonomous dispatch sessions default to **Build and Push**, or **Auto Merge** when the project's auto-merge is enabled. The dev agent never runs \`git push\` or \`gh pr create\` — the spawn environment blocks those even without a CI config.
 
 When \`.agent-hub/ci.yaml\` is configured, dev agents should only run tests they added or changed while debugging them. Existing tests and broad lint/check suites run in the Finalize runner/reviewer workflow.
 

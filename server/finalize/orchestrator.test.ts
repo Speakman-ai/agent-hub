@@ -1195,11 +1195,6 @@ describe('runFinalize — server-stored CI config fallback', () => {
       error: { code: 'ci_config_absent', message: 'file not found' },
     }) as never;
 
-  // A brand-new project has neither a committed ci.yaml nor a server config.
-  // Finalize used to terminate `ci_config_missing` here, which meant a fresh
-  // project's very first Finalize could never complete — even though
-  // `evaluateFinalizeShipGate` already treats the same condition as
-  // "no gate, shipping allowed".
   it('runs checks-free and parks at ready_to_push when no config exists anywhere', async () => {
     const steps = fakeRunSteps(STEPS_OK);
     const review = fakeRunReview(REVIEW_OK);
@@ -1212,6 +1207,8 @@ describe('runFinalize — server-stored CI config fallback', () => {
     const result = await runFinalize(deps, baseOpts());
 
     expect(result.kind).toBe('ready_to_push');
+    expect(deps.runRebasePhase).toHaveBeenCalledTimes(1);
+    expect(deps.pushAndCreatePr).not.toHaveBeenCalled();
     expect(steps).not.toHaveBeenCalled();
     expect(review).toHaveBeenCalledTimes(1);
     expect(stmts.stmts.markFinalizeRunReadyToPush.run).toHaveBeenCalledTimes(1);

@@ -25,7 +25,7 @@ function session(overrides: Partial<SessionRow> = {}): SessionRow {
 }
 
 describe('evaluateFinalizeShipGate', () => {
-  it('allows legacy ship when no ci.yaml', async () => {
+  it.each(['git_push', 'gh_pr_create'] as const)('blocks %s when no ci.yaml', async (action) => {
     const gate = await evaluateFinalizeShipGate(
       {
         stmts: {
@@ -34,10 +34,25 @@ describe('evaluateFinalizeShipGate', () => {
         } as never,
         ciConfigExists: async () => false,
       },
-      { session: session(), projectId: 'proj', headSha: 'abc' },
+      { session: session(), projectId: 'proj', headSha: 'abc', action },
     );
-    expect(gate.allowed).toBe(true);
+    expect(gate.allowed).toBe(false);
     expect(gate.code).toBe('no_finalize_config');
+  });
+
+  it.each(['git_push', 'gh_pr_create'] as const)('blocks %s without a worktree', async (action) => {
+    const gate = await evaluateFinalizeShipGate(
+      { stmts: {} as never },
+      {
+        session: session({ worktree_path: null, worktree_branch: null }),
+        projectId: 'proj',
+        headSha: null,
+        action,
+      },
+    );
+    expect(gate.allowed).toBe(false);
+    expect(gate.code).toBe('no_worktree');
+    expect(gate.message).toContain('worktree');
   });
 
   it('gates on the host seed when the guest cannot answer', async () => {
@@ -114,7 +129,7 @@ describe('evaluateFinalizeShipGate', () => {
     expect(gate.code).toBe('must_use_finalize');
   });
 
-  it('opens the gate when the worktree genuinely has no ci.yaml', async () => {
+  it('keeps the gate closed when the worktree genuinely has no ci.yaml', async () => {
     setSessionWorktreeIoResolver(async () => fakeEnvOwnedIo({ files: {} }));
 
     const gate = await evaluateFinalizeShipGate(
@@ -127,7 +142,7 @@ describe('evaluateFinalizeShipGate', () => {
       { session: session(), projectId: 'proj', headSha: 'abc123' },
     );
 
-    expect(gate.allowed).toBe(true);
+    expect(gate.allowed).toBe(false);
     expect(gate.code).toBe('no_finalize_config');
   });
 
@@ -168,7 +183,7 @@ describe('evaluateFinalizeShipGate', () => {
     expect(gate.failure_reason).toBe('review_failed');
   });
 
-  it('allows when finalize already pushed', async () => {
+  it('blocks direct shipping when finalize already pushed', async () => {
     const gate = await evaluateFinalizeShipGate(
       {
         stmts: {
@@ -181,11 +196,11 @@ describe('evaluateFinalizeShipGate', () => {
       },
       { session: session(), projectId: 'proj', headSha: 'abc123' },
     );
-    expect(gate.allowed).toBe(true);
-    expect(gate.code).toBe('allowed');
+    expect(gate.allowed).toBe(false);
+    expect(gate.code).toBe('must_use_finalize');
   });
 
-  it('allows git push to attach to an already-open PR (no finalize run needed)', async () => {
+  it('blocks git push to an already-open PR', async () => {
     const stmts = {
       // Should not even be consulted — short-circuits on existing PR.
       getActiveFinalizeRunForSession: { get: vi.fn(() => undefined) },
@@ -201,7 +216,7 @@ describe('evaluateFinalizeShipGate', () => {
         existingPrUrl: 'https://github.com/o/r/pull/42',
       },
     );
-    expect(gate.allowed).toBe(true);
+    expect(gate.allowed).toBe(false);
     expect(gate.code).toBe('existing_pr');
     expect(gate.message).toContain('pull/42');
     expect(stmts.getFinalizeRunByIdempotencyKey.get).not.toHaveBeenCalled();

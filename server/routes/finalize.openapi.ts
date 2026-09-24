@@ -657,7 +657,7 @@ const FinalizeShipGateResponseSchema = registerComponent(
     })
     .openapi({
       description:
-        'Whether `gh pr create` is permitted for this session. Projects with `.agent-hub/ci.yaml` must ship via Finalize.',
+        'Direct shipping by session agents is blocked, including sessions without a worktree or CI config. Use Finalize Code Changes to ship.',
     }),
 );
 
@@ -667,9 +667,10 @@ registerPath({
   tags: ['Finalize'],
   summary: 'Check whether direct PR creation is allowed',
   description:
-    'Returns whether spawned agents may run `gh pr create` for this session. Blocked when Finalize is configured and the run has not completed successfully.',
+    'Returns a denial and actionable guidance for direct git push or gh pr create by session agents. Finalize owns shipping, including updates to existing PRs and projects without CI config.',
   request: {
     params: z.object({ sessionId: z.string() }),
+    query: z.object({ action: z.enum(['git_push', 'gh_pr_create']).optional() }),
   },
   responses: {
     200: {

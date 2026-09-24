@@ -34,11 +34,8 @@ source "$DIR/_common.sh"
 # reviewer-role spawns) via `applyReviewerSpawnIsolation`.
 #
 # Interactive non-reviewer spawns receive the session owner's per-user
-# OAuth in `GH_TOKEN` (`resolveGithubSpawnToken`), so `gh pr create` is
-# allowed when the token is a user credential (`gho_` / `ghp_`) — e.g.
-# create-ticket-and-pr / ship-pr skill turns. App installation tokens
-# (`ghs_`) and tokenless spawns are still blocked under the universal lock
-# so mid-turn autonomous agents cannot author bot-attributed PRs.
+# OAuth in GH_TOKEN. Identity checks alone do not authorize shipping:
+# the session shipping guard below requires Finalize Code Changes.
 # Reviewer-role spawns still block create via `AGENT_HUB_REVIEWER_ROLE_LOCK`.
 #
 # Other write subcommands (`comment`, `merge`, `close`, `ready`, `edit`)
@@ -63,9 +60,7 @@ source "$DIR/_common.sh"
 # ---------------------------------------------------------------------------
 # Block `gh pr create` when the spawn carries an App installation token
 # (`ghs_…`) or no user OAuth — those would attribute the PR to the bot.
-# Per-user OAuth (`gho_` / `ghp_`) is allowed so ship/create-ticket-and-pr
-# skill turns can open PRs under the session owner. See acme/webapp
-# PR #682 for the bot-attribution repro.
+# Per-user OAuth passes the identity check; the shipping guard still applies.
 _pr_create_locked() {
   if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" != "1" ]]; then
     return 0
@@ -82,40 +77,32 @@ run \`gh pr create\` — GitHub attributes the PR to \`agent-hub-reviewer[bot]\`
 instead of the human session owner.
 
 What to do instead:
-  - For ship workflows: use the loaded create-ticket-and-pr skill (POST
-    /api/sessions/:id/ship injects it with the session owner's OAuth).
-  - Mid-turn on autonomous dispatch: commit and push only; let session-end
-    auto-ship open the PR under the owner's credential.
+  Commit locally and stop. The operator or session automation ships through
+  Finalize Code Changes with the session owner's credential.
 
 Other subcommands — comment / view / diff / list — remain available.
 LOCKED
   exit 2
 }
 
-# Block `gh pr create` when the session is on a Finalize-configured project
-# and the run has not completed successfully. Checked via Agent Hub API so
-# agents cannot bypass the Finalize button with a direct gh invocation.
+# Session agents commit locally; the platform owns shipping.
 _finalize_ship_gate() {
-  if [[ -z "${AGENT_HUB_SESSION_ID:-}" || -z "${AGENT_HUB_URL:-}" || -z "${AGENT_HUB_API_KEY:-}" ]]; then
+  if [[ -z "${AGENT_HUB_SESSION_ID:-}" ]]; then
     return 0
   fi
-  local resp allowed
-  resp=$(curl -sS -m 12 -H "x-api-key: $AGENT_HUB_API_KEY" \
-    "$AGENT_HUB_URL/api/sessions/${AGENT_HUB_SESSION_ID}/finalize-ship-gate" 2>/dev/null) || return 0
-  allowed=$(printf '%s' "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print('1' if d.get('allowed') else '0')" 2>/dev/null) || return 0
-  if [[ "$allowed" == "1" ]]; then
-    return 0
+  local resp msg="Shipping policy could not be verified."
+  if [[ -n "${AGENT_HUB_URL:-}" && -n "${AGENT_HUB_API_KEY:-}" ]]; then
+    if resp=$(curl -sS -m 12 -H "x-api-key: $AGENT_HUB_API_KEY" \
+      "$AGENT_HUB_URL/api/sessions/${AGENT_HUB_SESSION_ID}/finalize-ship-gate" 2>/dev/null); then
+      msg=$(printf '%s' "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message','Direct shipping is disabled.'))" 2>/dev/null) \
+        || msg="Invalid shipping policy response."
+    fi
   fi
-  local msg
-  msg=$(printf '%s' "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message','Finalize ship gate blocked direct PR creation.'))" 2>/dev/null) \
-    || msg="Finalize ship gate blocked direct PR creation."
   cat >&2 <<GATE
-error: gh-pr.sh create blocked — ${msg}
+error: gh-pr.sh create blocked: ${msg}
 
-Use **Finalize Code Changes** on the session instead of \`gh pr create\` when
-\`.agent-hub/ci.yaml\` is configured for this project.
-
-Gate API: GET $AGENT_HUB_URL/api/sessions/$AGENT_HUB_SESSION_ID/finalize-ship-gate
+Commit locally. Use **Finalize Code Changes** on the session to ship,
+including when this project has no CI config.
 GATE
   exit 2
 }

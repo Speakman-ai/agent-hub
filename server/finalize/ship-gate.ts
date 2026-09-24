@@ -1,10 +1,4 @@
-/**
- * Gate direct `gh pr create` when Finalize is configured.
- *
- * Card-linked sessions whose worktree contains `.agent-hub/ci.yaml` must
- * ship through **Finalize Code Changes** instead of the direct
- * `create-ticket-and-pr` skill push path.
- */
+/** Direct shipping by session agents is blocked; Finalize owns push and PR creation. */
 import type { FinalizeRunRow, SessionRow, Stmts } from '../types.js';
 import { sessionWorktreeIoFor } from '../session-worktree-io.js';
 import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finalize-keys.js';
@@ -53,19 +47,14 @@ export interface FinalizeShipGateResult {
   failure_reason?: string | null;
 }
 
-/**
- * Which spawn-guarded command is asking. `git_push` may attach commits to an
- * already-open PR; `gh_pr_create` must never run when a PR already exists (it
- * would open a duplicate). Defaults to the stricter `gh_pr_create` so legacy
- * callers that don't pass an action keep today's behavior.
- */
+/** The spawn-guarded command requesting a shipping decision. */
 export type FinalizeShipGateAction = 'git_push' | 'gh_pr_create';
 
 export interface EvaluateFinalizeShipGateArgs {
   session: SessionRow;
   projectId: string;
   headSha: string | null;
-  /** What the caller wants to do; defaults to `gh_pr_create` (stricter). */
+  /** What the caller wants to do; both actions are blocked. */
   action?: FinalizeShipGateAction;
   /** Resolved PR URL for this session's branch, if one is already open. */
   existingPrUrl?: string | null;
@@ -77,23 +66,9 @@ export interface EvaluateFinalizeShipGateDeps {
 }
 
 /**
- * Whether this session's checkout carries `.agent-hub/ci.yaml`.
- *
- * "No ci.yaml" is the answer that *opens* this gate and lets an agent push and
- * open a PR with none of the checks the project requires, so every uncertain
- * outcome here has to resolve to "configured". Two sources, OR-ed, because
- * each is authoritative in one direction only:
- *
- *   - The host seed is the directory the session was created from, and project
- *     config arrives with it, so a hit there means the project is gated even
- *     when the guest cannot be reached. It can go stale the moment the guest
- *     writes, so a miss is not the final answer.
- *   - The guest holds the live tree, so it is the one that knows about a
- *     ci.yaml added during the session.
- *
- * A guest lookup that throws is not evidence of absence — an unreachable
- * microVM would otherwise read as "this project has no CI" and wave the push
- * through. Only two definite negatives open the gate.
+ * Check both the host seed and live worktree for CI configuration so the
+ * denial can point the operator at setup when needed. Unreachable guests
+ * are treated as configured; neither outcome permits direct shipping.
  */
 async function defaultCiConfigExists(session: SessionRow): Promise<boolean> {
   const hostPath = session.worktree_path;
@@ -156,7 +131,6 @@ export async function evaluateFinalizeShipGate(
   args: EvaluateFinalizeShipGateArgs,
 ): Promise<FinalizeShipGateResult> {
   const { session, projectId, headSha } = args;
-  const action: FinalizeShipGateAction = args.action ?? 'gh_pr_create';
   const existingPrUrl =
     typeof args.existingPrUrl === 'string' && args.existingPrUrl.trim()
       ? args.existingPrUrl.trim()
@@ -165,39 +139,28 @@ export async function evaluateFinalizeShipGate(
 
   if (!session.worktree_path || !session.worktree_branch) {
     return {
-      allowed: true,
+      allowed: false,
       code: 'no_worktree',
-      message: 'Session has no worktree; legacy ship path allowed.',
+      message:
+        'Direct shipping is disabled. Open a worktree-backed session and use Finalize Code Changes to ship.',
     };
   }
 
   const hasCi = await ciExists(session);
   if (!hasCi) {
     return {
-      allowed: true,
+      allowed: false,
       code: 'no_finalize_config',
-      message: 'No .agent-hub/ci.yaml in worktree; legacy ship path allowed.',
+      message:
+        'Commit locally and use Finalize Code Changes to ship. No .agent-hub/ci.yaml was found; configure checks in Finalize settings or commit a CI config.',
     };
   }
 
-  // An open PR already exists for this branch (linked card or session title).
-  // The Finalize gate exists to force the *first* push through local CI before
-  // a PR opens; once a PR exists, every push re-triggers GitHub's PR checks, so
-  // attaching commits is safe and matches the "commit & push to the existing
-  // branch" guidance in the spawn prompt. Allow `git push`; still block
-  // `gh pr create` so we never open a duplicate PR.
   if (existingPrUrl) {
-    if (action === 'git_push') {
-      return {
-        allowed: true,
-        code: 'existing_pr',
-        message: `A pull request is already open for this branch (${existingPrUrl}); pushing attaches your commits and re-runs its checks.`,
-      };
-    }
     return {
       allowed: false,
       code: 'existing_pr',
-      message: `A pull request is already open for this branch (${existingPrUrl}). Push to the branch to update it — do not run \`gh pr create\` (it would open a duplicate).`,
+      message: `A pull request is already open for this branch (${existingPrUrl}). Commit locally and use Finalize Code Changes to update it. Do not push directly or create a duplicate PR.`,
     };
   }
 
@@ -217,7 +180,7 @@ export async function evaluateFinalizeShipGate(
     return {
       allowed: false,
       code: 'in_flight',
-      message: `A Finalize run is in flight (${active.status}, phase ${active.phase ?? 'n/a'}). Wait for it to finish or cancel it before opening a PR directly.`,
+      message: `A Finalize run is in flight (${active.status}, phase ${active.phase ?? 'n/a'}). Commit locally and let Finalize finish shipping.`,
       run_id: active.id,
       failure_reason: active.failure_reason,
     };
@@ -256,9 +219,10 @@ export async function evaluateFinalizeShipGate(
 
   if (existing.status === 'pushed') {
     return {
-      allowed: true,
-      code: 'allowed',
-      message: 'Finalize already pushed a PR for this commit.',
+      allowed: false,
+      code: 'must_use_finalize',
+      message:
+        'Finalize already shipped this commit. Commit further changes locally and use Finalize Code Changes to update the PR.',
       run_id: existing.id,
     };
   }

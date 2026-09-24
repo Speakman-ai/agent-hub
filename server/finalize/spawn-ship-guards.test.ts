@@ -55,12 +55,12 @@ describe('applySessionGitGuards', () => {
     expect(env.AGENT_HUB_FINALIZE_CI_CONFIGURED).toBeUndefined();
   });
 
-  it('is a no-op when the session has no worktree', () => {
+  it('installs shipping guards without branch protection when there is no worktree', () => {
     const env: NodeJS.ProcessEnv = { PATH: '/usr/bin:/bin' };
     applySessionGitGuards(env, null);
-    expect(env.PATH).toBe('/usr/bin:/bin');
+    expect(env.PATH).toMatch(/spawn-guards/);
     expect(env.AGENT_HUB_PROTECT_SESSION_BRANCH).toBeUndefined();
-    expect(env.AGENT_HUB_REAL_GIT).toBeUndefined();
+    expect(env.AGENT_HUB_REAL_GIT).toBeTruthy();
   });
 });
 
@@ -146,5 +146,80 @@ describe('git spawn-guard shim — one-branch invariant', () => {
     });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('PASSTHROUGH');
+  });
+});
+
+describe('session direct-shipping guards', () => {
+  const stubDir = path.join(tmpWorktree, 'bin');
+  const guardDir = path.dirname(GUARD_GIT);
+  const skillScript = path.resolve(guardDir, '../../default-skills/github/scripts/gh-pr.sh');
+
+  beforeEach(() => {
+    mkdirSync(stubDir, { recursive: true });
+    for (const name of ['git', 'gh']) {
+      writeFileSync(path.join(stubDir, name), '#!/bin/sh\necho PASSTHROUGH\n', { mode: 0o755 });
+    }
+    writeFileSync(
+      path.join(stubDir, 'curl'),
+      '#!/bin/sh\nprintf "%s" "$TEST_GATE_RESPONSE"\nexit "${TEST_GATE_STATUS:-0}"\n',
+      { mode: 0o755 },
+    );
+  });
+
+  afterEach(() => rmSync(tmpWorktree, { recursive: true, force: true }));
+
+  const commands = [
+    { script: GUARD_GIT, args: ['push'] },
+    { script: path.join(guardDir, 'gh'), args: ['pr', 'create'] },
+    { script: skillScript, args: ['create', '--title', 'Test'] },
+  ];
+
+  it.each(commands)('denies $script $args without contacting real services', ({ script, args }) => {
+    for (const extraEnv of [
+      {
+        TEST_GATE_RESPONSE: JSON.stringify({
+          allowed: false,
+          message: 'Use Finalize Code Changes.',
+        }),
+      },
+      { TEST_GATE_STATUS: '7' },
+      { TEST_GATE_RESPONSE: 'not JSON' },
+      { AGENT_HUB_API_KEY: '' },
+      { TEST_GATE_RESPONSE: '{}' },
+      { TEST_GATE_RESPONSE: JSON.stringify({ allowed: true }) },
+    ]) {
+      const result = spawnSync('bash', [script, ...args], {
+        encoding: 'utf8',
+        env: {
+          PATH: `${stubDir}:/usr/bin:/bin`,
+          AGENT_HUB_SESSION_ID: 'test-session',
+          AGENT_HUB_URL: 'http://127.0.0.1',
+          AGENT_HUB_API_KEY: 'test-key',
+          AGENT_HUB_REAL_GIT: path.join(stubDir, 'git'),
+          AGENT_HUB_REAL_GH: path.join(stubDir, 'gh'),
+          GH_TOKEN: 'gho_test',
+          ...extraEnv,
+        },
+      });
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('Finalize Code Changes');
+      expect(result.stdout).not.toContain('PASSTHROUGH');
+    }
+  });
+
+  it('leaves platform git/gh execution outside the session PATH untouched', () => {
+    const platformEnv = { PATH: `${stubDir}:/usr/bin:/bin` };
+    const sessionEnv = { ...platformEnv, AGENT_HUB_SESSION_ID: 'test-session' };
+    applySessionGitGuards(sessionEnv, null);
+    for (const [command, args] of [
+      ['git', ['push']],
+      ['gh', ['pr', 'create']],
+    ] as const) {
+      const result = spawnSync(command, [...args], { env: platformEnv, encoding: 'utf8' });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('PASSTHROUGH');
+    }
+    expect(platformEnv.PATH).not.toContain('spawn-guards');
+    expect(sessionEnv.PATH).toContain('spawn-guards');
   });
 });

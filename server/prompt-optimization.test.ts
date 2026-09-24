@@ -861,7 +861,7 @@ describe('buildEnrichedPrompt — agent identity anchoring', () => {
   });
 });
 
-describe('buildEnrichedPrompt — agent-owned PR shipping', () => {
+describe('buildEnrichedPrompt: platform-owned PR shipping', () => {
   const gitTmp = path.join(os.tmpdir(), `prompt-auto-test-${Date.now()}`);
 
   beforeEach(() => {
@@ -884,13 +884,13 @@ describe('buildEnrichedPrompt — agent-owned PR shipping', () => {
     rmSync(gitTmp, { recursive: true, force: true });
   });
 
-  it('includes explicit PR shipping guidance (rebase/push/create)', () => {
+  it('requires local commits and platform shipping without CI config', () => {
     const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
       isFirstMessage: true,
     });
     expect(prompt).toMatch(/rebase on latest `origin\/main`/i);
-    expect(prompt).toMatch(/open the PR with `gh pr create`/i);
-    expect(prompt).toMatch(/Summary.*Test plan/i);
+    expect(prompt).toContain('Do not push or open a PR');
+    expect(prompt).toContain('Finalize Code Changes');
   });
 
   it('uses the detected default branch (e.g. master) instead of hardcoded main', () => {
@@ -924,22 +924,24 @@ describe('buildEnrichedPrompt — agent-owned PR shipping', () => {
     expect(prompt).toMatch(/rebase on latest `origin\/release\/2\.0`/i);
   });
 
-  it('requires shipping while forbidding self-merge', () => {
+  it('requires local commits while forbidding self-merge', () => {
     const prompt = buildEnrichedPrompt(makeProject({ cwd: gitTmp }), makeAgent(), {
       isFirstMessage: true,
     });
-    expect(prompt).toMatch(/commit, push, and open the PR/i);
+    expect(prompt).toContain('commit locally');
+    expect(prompt).not.toMatch(/commit, push, and open the PR/i);
     expect(prompt).toMatch(/Never merge your own PR/i);
   });
 
-  it('worktree-only fallback (no GitHub remote) still describes agent-owned shipping', () => {
+  it('worktree-only fallback (no GitHub remote) also requires platform shipping', () => {
     // makeProject defaults to tmpBase (no git remote → isGitHubConnected = false)
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
       isFirstMessage: true,
       useWorktree: true,
     });
     expect(prompt).toContain('Git Workflow');
-    expect(prompt).toMatch(/rebasing on `origin\/main`, pushing, and opening\/updating a PR/i);
+    expect(prompt).toContain('rebase on `origin/main`');
+    expect(prompt).toContain('Do not push or open a PR');
     expect(prompt).toMatch(/Do not merge your own PR/i);
   });
 });

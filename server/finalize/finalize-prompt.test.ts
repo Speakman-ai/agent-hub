@@ -117,14 +117,25 @@ describe('buildEnrichedPrompt — Finalize configured', () => {
     expect(prompt).toContain(tmpBase);
   });
 
-  it('still includes ship instructions when finalizeConfigured is false', () => {
-    const prompt = buildEnrichedPrompt(makeProject() as never, makeAgent() as never, {
-      isFirstMessage: true,
-      finalizeConfigured: false,
-    });
-    expect(prompt).toContain("Bias to Action — Don't Ask, Just Ship");
-    expect(prompt).toMatch(/open the PR with `gh pr create`/i);
-    expect(prompt).toContain('Everything else: ship it.');
+  it.each([
+    { githubRepo: 'owner/repo' },
+    { githubRepo: null, gitHost: 'agenthub' },
+    { githubRepo: null },
+  ])('requires local commits without CI for %j', (project) => {
+    for (const sessionHasLinkedCard of [false, true]) {
+      const prompt = buildEnrichedPrompt(makeProject(project) as never, makeAgent() as never, {
+        isFirstMessage: true,
+        finalizeConfigured: false,
+        useWorktree: true,
+        sessionHasLinkedCard,
+      });
+      expect(prompt).toContain('Do not push or open a PR');
+      expect(prompt).toContain("Bias to Action — Don't Ask, Just Build");
+      expect(prompt).not.toMatch(
+        /commit, push|pushing, and opening|and push to the same branch|ship it\./i,
+      );
+      expect(prompt).toContain('Finalize Code Changes');
+    }
   });
 
   it('closes Bias to Action with "do the work" instead of "ship it" when Finalize is on', () => {

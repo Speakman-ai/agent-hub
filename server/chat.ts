@@ -410,9 +410,8 @@ interface BuildEnrichedPromptOptions {
   /** Locked epic spec decisions for implementation sessions linked to an epic. */
   epicSpecContext?: string | null;
   /**
-   * True when the session worktree contains `.agent-hub/ci.yaml`. Suppresses
-   * agent-owned push/PR instructions and tells the model to commit only — the
-   * human operator ships via Finalize Code Changes.
+   * True when the session worktree contains `.agent-hub/ci.yaml`. Controls
+   * local test guidance; shipping always belongs to Finalize.
    */
   finalizeConfigured?: boolean;
   /** Absolute path to this session's git worktree (when useWorktree). */
@@ -1186,9 +1185,13 @@ Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Start t
 
   // Static instructional blocks — only on first message to save tokens
   if (isFirstMessage) {
-    if (finalizeConfigured && isGitHubConnected && projectMode !== 'workflow') {
+    if (
+      !options.omitDevLifecycle &&
+      (isGitHubConnected || promptWorktree) &&
+      projectMode !== 'workflow'
+    ) {
       prompt += `\n\n## Finalize Code Changes — No Direct Ship
-This project has \`.agent-hub/ci.yaml\` configured. **You must not run \`git push\` or \`gh pr create\`** — the spawn environment blocks them until the human operator completes **Finalize Code Changes** on the session (rebase, review, tests) and clicks **Push to ${pushTargetLabel}**.
+**You must not run \`git push\` or \`gh pr create\`**. Commit locally and stop. The operator or session automation ships through **Finalize Code Changes** and **Push to ${pushTargetLabel}**. This applies even without \`.agent-hub/ci.yaml\`. Configure checks in Finalize settings or commit a CI config; missing CI does not authorize direct shipping.
 
 Your job ends at a clean local commit on the feature branch after tests pass. Do not ask permission to push or open a PR.`;
       if (promptWorktree && options.sessionWorktreePath) {
@@ -1238,17 +1241,15 @@ ${lifecycleStep1}
 ${lifecycleBranchStep}
 3. **Implement**: Follow existing patterns.${project.commands?.install ? ` Install: \`${project.commands.install}\`` : ''}
 4. **Test & Lint**: ${finalizeConfigured ? `Run **targeted** tests only while iterating. ${finalizeTargetedTestGuidance} **Do not run the full \`.agent-hub/ci.yaml\` suite in-session** — the human uses **Finalize Code Changes** for that; read pass/fail and step logs in the session strip.` : `${project.commands?.test ? `\`${project.commands.test}\`` : '`npm test`'}${project.commands?.lint ? ` / \`${project.commands.lint}\`` : ''} — fix before proceeding`}
-5. **${finalizeConfigured ? 'Commit (Finalize ships)' : 'Ship'}**: Rebase on latest \`origin/${lifecycleBaseBranch}\`${finalizeConfigured ? ', commit locally' : ', run tests/lint, and commit'}.${finalizeConfigured ? ` **Stop there** — do not push or open a PR. The human uses **Finalize Code Changes** on the session, then **Push to ${pushTargetLabel}** after gates pass.` : ` Commit, push, and open the PR ${repoHostedOnHub ? 'via the Agent Hub API (`ah-api.sh POST "/api/projects/$PROJECT_ID/pulls"` with headBranch/title/body — this repo is hosted on Agent Hub, do NOT use `gh pr create`)' : 'with `gh pr create`'} yourself. Keep PR title concise (<70 chars) and include **Summary** + **Test plan** in the body. If linked to a kanban card, include the card reference in the PR body and add a comment on the card containing the PR URL.`} Never merge your own PR.
+5. **Commit (Finalize ships)**: Rebase on latest \`origin/${lifecycleBaseBranch}\`, run the required tests/lint, and commit locally. **Stop there**. Do not push or open a PR. The operator or session automation uses **Finalize Code Changes** and **Push to ${pushTargetLabel}**. Never merge your own PR.
 
-**Existing PRs**: ${existingPrCheckout}, read failures (${existingPrReadFailures}), fix, commit${finalizeConfigured ? ' locally' : ', and push to the same branch'}. Do not open duplicate PRs. Do NOT merge.
+**Existing PRs**: ${existingPrCheckout}, read failures (${existingPrReadFailures}), fix, and commit locally. Finalize updates the existing PR. Do not open duplicate PRs. Do NOT merge.
 **Shortcuts**: Trivial fixes skip card creation. Found a bug? Create a "To Do" card.`;
     } else if (isGitHubConnected && projectMode === 'workflow') {
       prompt += `\n\n## Development — Workflow mode
 This project is in **workflow** mode (not the default dev/kanban automation profile). Prioritize workflow definitions, runs, and step outcomes. Work in the project checkout — **per-session git worktrees are off**, and the autonomous kanban→server-PR lifecycle described elsewhere does not apply. Use Git, tests, and the wiki as usual; coordinate shipping through the product's workflow surfaces rather than Agent Hub session PR automation.`;
     } else if (promptWorktree) {
-      const worktreeShipHint = finalizeConfigured
-        ? `, rebase on \`origin/${lifecycleBaseBranch}\`, run tests, and commit — **do not push or open a PR** (Finalize Code Changes handles ship)`
-        : `, then ship by rebasing on \`origin/${lifecycleBaseBranch}\`, pushing, and opening/updating a PR with \`gh\``;
+      const worktreeShipHint = `, rebase on \`origin/${lifecycleBaseBranch}\`, run tests, and commit locally. **Do not push or open a PR** (Finalize Code Changes handles shipping)`;
       prompt += `\n\n## Git Workflow
 You are in a git worktree. Never commit to main. Commit to the current feature branch${worktreeShipHint}. Do not merge your own PR.`;
     }
@@ -1261,41 +1262,27 @@ You are in a git worktree. Never commit to main. Commit to the current feature b
     const implementOnBranch = promptWorktree
       ? "Implement on this session's current branch. Do not create or switch branches."
       : 'Implement on a feature branch.';
+    const commitStep = finalizeConfigured
+      ? 'Rebase and commit locally. Run only tests you added or changed while fixing; existing tests run in Finalize.'
+      : 'Rebase, run tests/lint, and commit locally.';
     const biasToActionSteps =
       projectMode === 'workflow'
         ? `**Just do the work:** implement, test, and commit in the project checkout following team conventions.`
-        : finalizeConfigured
-          ? options.sessionHasLinkedCard
-            ? `**Just do the work:**
+        : options.sessionHasLinkedCard
+          ? `**Just do the work:**
 1. Move your **already-linked** kanban card to In Progress (do NOT create a new card).
 2. ${implementOnBranch}
-3. Rebase and commit locally — run only tests you added or changed while fixing. Existing tests run in Finalize. **Do not push or open a PR** (human uses Finalize Code Changes).`
-            : `**Just do the work:**
+3. ${commitStep} **Do not push or open a PR** (the operator or session automation uses Finalize Code Changes).`
+          : `**Just do the work:**
 1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
 2. Move it to In Progress.
 3. ${implementOnBranch}
-4. Rebase and commit locally — run only tests you added or changed while fixing. Existing tests run in Finalize. **Do not push or open a PR** (human uses Finalize Code Changes).`
-          : options.sessionHasLinkedCard
-            ? `**Just do the work:**
-1. Move your **already-linked** kanban card to In Progress (do NOT create a new card).
-2. ${implementOnBranch}
-3. Rebase, test, commit, push, and open/update the PR.
-4. Move card to Review and comment with PR URL.`
-            : `**Just do the work:**
-1. Create the kanban card (concise title + acceptance criteria + \`session_id\`).
-2. Move it to In Progress.
-3. ${implementOnBranch}
-4. Rebase, test, commit, push, and open the PR.
-5. Move card to Review and comment with PR URL.`;
+4. ${commitStep} **Do not push or open a PR** (the operator or session automation uses Finalize Code Changes).`;
     const biasToActionScope =
       projectMode === 'workflow'
         ? 'starting implementation'
-        : finalizeConfigured
-          ? 'creating a card or starting implementation'
-          : 'creating a card, shipping a PR, or starting implementation';
-    const biasToActionTitle = finalizeConfigured
-      ? "Bias to Action — Don't Ask, Just Build"
-      : "Bias to Action — Don't Ask, Just Ship";
+        : 'creating a card or starting implementation';
+    const biasToActionTitle = "Bias to Action — Don't Ask, Just Build";
     prompt += `\n\n## ${biasToActionTitle}
 When a user describes a problem, feature, or change, **do not ask permission for ${biasToActionScope}.** The default answer is "yes" ~95% of the time, and the review process (PR review, card rejection, human merge gate) lets you act now and be corrected cheaply later. Skip prompts like "Should I implement this?", "Want me to open a PR?", "Should I add a test?", "Do you want me to create a card?".
 
@@ -1306,7 +1293,7 @@ ${biasToActionSteps}
 - The action is destructive and irreversible (e.g. \`git push --force\` to main, deleting production data, rotating shared secrets).
 - The user has explicitly asked you to propose a plan before executing.
 
-${finalizeConfigured ? 'Everything else: do the work.' : 'Everything else: ship it.'} A rejected change costs a few minutes; a blocked agent costs the user's entire turn.
+Everything else: do the work. A rejected change costs a few minutes; a blocked agent costs the user's entire turn.
 
 ## Research Questions — Answer on the Spot, Don't Card It
 When a user asks a research or investigation question (how something works, why it behaves a certain way, where a feature lives, what the current state of X is), just do the research and answer inline. Do **not** offer to open a ticket for the investigation itself. Cards are for work to ship, not questions to answer — if research surfaces a concrete bug or feature, *then* create a card for that follow-up work.
@@ -1495,7 +1482,7 @@ For non-trivial execution updates (you implemented, investigated, or otherwise c
 - \`Result\`
 - \`Next step\` *(optional — only for genuinely deferred work)*
 
-Do not omit \`Evidence\`. **\`Next step\` is optional and must NOT be a parking lot for unexecuted work.** If the next action is something you can do right now in this same turn — write the code, open the PR, run the test, ask the picker question — **do it in this turn** and fold the result into \`Actions taken\` / \`Result\` instead of naming it as a follow-up. Only include \`Next step\` when the work is genuinely deferred: a follow-up card you've already created (cite its id), a question that needs the user's answer, or a hand-off blocked on something outside this turn. Lines like "Next step: implement X" or "Next step: open the PR" are the anti-pattern this rule exists to kill.`;
+Do not omit \`Evidence\`. **\`Next step\` is optional and must NOT be a parking lot for unexecuted work.** If the next action is something you can do right now in this same turn — write the code, run the test, ask the picker question — **do it in this turn** and fold the result into \`Actions taken\` / \`Result\` instead of naming it as a follow-up. Only include \`Next step\` when the work is genuinely deferred: a follow-up card you've already created (cite its id), a question that needs the user's answer, or a hand-off blocked on something outside this turn. Lines like "Next step: implement X" or "Next step: open the PR" are the anti-pattern this rule exists to kill.`;
   }
 
   const outerOrch = formatOuterOrchestrationPromptAppend(
@@ -1522,7 +1509,7 @@ Do not omit \`Evidence\`. **\`Next step\` is optional and must NOT be a parking 
     prompt += `\n\n## Active Pull Request
 A pull request is already open for this worktree's branch: ${options.branchPrUrl}${baseSuffix}
 
-Do **NOT** run \`gh pr create\` — that produces a duplicate PR for the same branch (and possibly a different base). Commit and push to the existing branch instead; GitHub attaches new commits to the open PR automatically. If you genuinely believe a new PR is needed (e.g. you intentionally changed the base), ask the user first.`;
+Do **NOT** run \`gh pr create\` — that produces a duplicate PR for the same branch (and possibly a different base). Commit locally on the existing branch and stop. Finalize Code Changes updates the open PR; do not push directly. If you genuinely believe a new PR is needed (e.g. you intentionally changed the base), ask the user first.`;
   }
 
   logEnrichedPromptSize(prompt, agent.id, isFirstMessage, options.sessionId ?? null);
