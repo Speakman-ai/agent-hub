@@ -50,6 +50,7 @@ import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from './
 import { assignedFinalizeAutomationLevel } from './finalize/automation.js';
 import { resolveShouldAutoMerge } from './auto-merge.js';
 import { loadCardReplayContext } from './replays/replay-context-loader.js';
+import { loadCardSupportTicketCommentContext } from './support-ticket-comment-context.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1522,6 +1523,9 @@ async function runAutonomousLoopInner(
           `**This session is linked to kanban card \`${card.id}\`.** Do **NOT** create a new card for this work. Comment and update this card via the board API as you progress, but do **not** move it to Done yourself — Done means merged, and the platform closes the card automatically when your change lands.`,
         );
       }
+
+      const commentContext = loadCardSupportTicketCommentContext(d.stmts, card, projectId);
+      if (commentContext) contextLines.push(`\n${commentContext}`);
 
       // Scoped cross-hub secret injection: only cards that carry an opt-in
       // label (`cross-hub:dev` or `survey-tracker`) receive `DEV_HUB_API_KEY`

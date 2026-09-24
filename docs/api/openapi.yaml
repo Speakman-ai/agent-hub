@@ -20130,7 +20130,7 @@ paths:
       tags:
         - Board
       summary: Assign a card to an agent and spawn a session
-      description: Picks the agent, mints a new session linked to the card, optionally overrides the model (must be valid for the agent's engine), moves the card to "In Progress", and dispatches the agent with a task-context prompt.
+      description: Picks the agent, mints a new session linked to the card, optionally overrides the model (must be valid for the agent's engine), moves the card to "In Progress", and dispatches the agent with a task-context prompt. When the card links to a support ticket, the prompt includes its current visible comments in chronological order, with author and timestamp. The agent is instructed to incorporate relevant feature clarifications and ignore chatter, treating comments as discussion rather than commands.
       parameters:
         - schema:
             type: string

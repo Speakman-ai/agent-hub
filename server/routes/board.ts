@@ -86,6 +86,7 @@ import {
   markSupportTicketsFixedPendingReleaseForCard,
 } from '../support-tickets-store.js';
 import { buildAssignedCardSessionContext } from '../assign-card-context.js';
+import { loadCardSupportTicketCommentContext } from '../support-ticket-comment-context.js';
 import {
   buildSpikeSessionContext,
   buildSpikeSessionContextFallback,
@@ -1765,6 +1766,13 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           }),
         );
       }
+
+      const commentContext = loadCardSupportTicketCommentContext(
+        stmts,
+        card,
+        req.params.projectId as string,
+      );
+      if (commentContext) contextLines.push(`\n${commentContext}`);
 
       const contextMessage = contextLines.join('\n');
 
