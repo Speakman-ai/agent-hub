@@ -44,6 +44,7 @@ import { api } from '../utils/api';
     revertNativePr: vi.fn(),
     dismissNativePrReview: vi.fn(),
     requestNativePrReview: vi.fn(),
+    requestPrReviewSession: vi.fn(),
     startNativePrPreview: vi.fn(),
     stopNativePrPreview: vi.fn(),
     getNativePrPreviewState: vi.fn(),
@@ -123,6 +124,32 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('opens a private GitHub review session without resolving or posting a review', async () => {
+    const onOpenSession = vi.fn();
+    (api.requestPrReviewSession as any).mockResolvedValue({
+      sessionId: 'review-chat',
+      agentId: 'agent-alpha',
+    });
+    await renderAndOpenDetail({ onOpenSession });
+    const button = await screen.findByTestId('pr-request-agent-review-button');
+    expect(button.getAttribute('title')).toContain('Nothing is pushed or posted');
+    fireEvent.click(button);
+    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('agent-alpha', 'review-chat'));
+    expect(api.requestPrReviewSession).toHaveBeenCalledWith('proj-1', 123, 'agent-alpha');
+    expect(api.requestNativePrReview).not.toHaveBeenCalled();
+    expect(api.resolvePR).not.toHaveBeenCalled();
+  });
+
+  it('shows a failed GitHub review request and allows retry', async () => {
+    const onToast = vi.fn();
+    (api.requestPrReviewSession as any).mockRejectedValue(new Error('Connect GitHub'));
+    await renderAndOpenDetail({ onToast });
+    const button = await screen.findByTestId('pr-request-agent-review-button');
+    fireEvent.click(button);
+    await waitFor(() => expect(onToast).toHaveBeenCalledWith('Connect GitHub', 'error', 6000));
+    expect(button).not.toBeDisabled();
   });
 
   it('calls api.resolvePR with the first agent id on click', async () => {

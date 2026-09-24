@@ -3347,6 +3347,11 @@ export const api = {
   },
   getProjectPullDetail: (projectId: any, number: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}`),
+  requestPrReviewSession: (projectId: string, prNumber: number, agentId: string) =>
+    fetchJSON(`/projects/${projectId}/pulls/${prNumber}/review-session`, {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
+    }),
   resolvePR: (projectId: any, prNumber: any, { agentId }: any = {}) =>
     fetchJSON(`/projects/${projectId}/pulls/${prNumber}/resolve`, {
       method: 'POST',

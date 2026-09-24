@@ -281,7 +281,7 @@ function ActivityRowBody({ item, styles }: any) {
   }
   return null;
 }
-function PrDetail({
+export function PrDetail({
   detail,
   projectId,
   onBack,
@@ -292,7 +292,21 @@ function PrDetail({
   canResolve,
   spawnedSessionId,
   onOpenChat,
+  reviewAgentId,
+  onOpenReviewSession,
 }: any) {
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const requestReview = async () => {
+    setReviewBusy(true);
+    try {
+      const result = await api.requestPrReviewSession(projectId, detail.pr.number, reviewAgentId);
+      onOpenReviewSession?.(result.sessionId, result.agentId);
+    } catch (err: any) {
+      Alert.alert('Review failed', err?.message || 'Failed to start review session');
+    } finally {
+      setReviewBusy(false);
+    }
+  };
   const pr = detail?.pr;
   const caps = prDetailCapabilities(detail);
   // PR actions (diff / review / comment / edit / reopen) — web parity.
@@ -558,6 +572,20 @@ function PrDetail({
         )}
       </View>
 
+      {!caps.isNative && (pr.state || '').toLowerCase() === 'open' && (
+        <TouchableOpacity
+          onPress={requestReview}
+          disabled={reviewBusy || !reviewAgentId}
+          accessibilityLabel="Request Agent Review"
+          accessibilityHint="Review in a private chat session. Nothing is pushed or posted to GitHub."
+          accessibilityState={{ disabled: reviewBusy || !reviewAgentId, busy: reviewBusy }}
+          style={styles.resolveButton}
+        >
+          <Text style={styles.resolveButtonText}>
+            {reviewBusy ? 'Starting review…' : 'Request Agent Review'}
+          </Text>
+        </TouchableOpacity>
+      )}
       <View style={styles.detailHeader}>
         <Badge label={state.label} color={state.color} bg={state.bg} />
         <Text style={styles.prNumber}>#{pr.number}</Text>
@@ -1275,6 +1303,14 @@ export default function PullRequestsScreen({ route, navigation }: any) {
               onResolve={handleResolve}
               resolving={resolving}
               canResolve={Boolean(resolveAgentId)}
+              reviewAgentId={
+                project?.agents?.find((a: any) => a.active !== false && a.role !== 'reviewer')?.id
+              }
+              onOpenReviewSession={(sessionId: string, agentId: string) => {
+                setActiveAgentId(agentId);
+                setActiveSessionId(sessionId);
+                navigation.navigate('Chat');
+              }}
               spawnedSessionId={sessionSpawnedByPr[selectedNumber] || null}
               onOpenChat={
                 sessionSpawnedByPr[selectedNumber]

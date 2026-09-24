@@ -38516,6 +38516,60 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/pulls/{number}/review-session:
+    post:
+      tags:
+        - Pull Requests
+      summary: Review a GitHub PR privately in a session
+      description: Seeds a Consult session with PR context and a diff. No GitHub review is posted and Finalize automation is disabled.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: integer
+            minimum: 0
+            exclusiveMinimum: true
+          required: true
+          name: number
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: string
+                  minLength: 1
+              required:
+                - agentId
+      responses:
+        "201":
+          description: Review session started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  agentId:
+                    type: string
+                required:
+                  - sessionId
+                  - agentId
+        "400":
+          description: Invalid request or project is not GitHub-hosted
+        "404":
+          description: Project, project agent, or PR not found
+        "412":
+          description: Connect GitHub before requesting a review
+        "502":
+          description: PR context could not be fetched or session could not be started
   /api/projects/{projectId}/previews:
     get:
       summary: List active worktree previews for a project

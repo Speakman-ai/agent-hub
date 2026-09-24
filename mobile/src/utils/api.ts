@@ -1655,6 +1655,11 @@ export const api = {
   // client). The server-side resolve spawn is fast to initiate (it returns
   // once the session is spawned, not once the agent finishes), so the default
   // React Native fetch timeout is adequate.
+  requestPrReviewSession: (projectId: string, prNumber: number, agentId: string) =>
+    fetchJSON(`/projects/${projectId}/pulls/${prNumber}/review-session`, {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
+    }),
   resolvePR: (projectId: any, prNumber: any, { agentId }: any = {}) =>
     fetchJSON(`/projects/${projectId}/pulls/${prNumber}/resolve`, {
       method: 'POST',

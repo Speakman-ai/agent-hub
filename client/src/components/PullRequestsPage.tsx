@@ -573,6 +573,7 @@ function PrDetail({
   onToast,
   onOpenCard,
   onOpenEpic,
+  reviewAgentId,
 }: any) {
   const pr = detail?.pr;
   const isNative = detail?.source === 'agenthub';
@@ -878,6 +879,11 @@ function PrDetail({
   const handleRequestAgentReview = async () => {
     setDispatchingAgentReview(true);
     try {
+      if (!isNative) {
+        const res = await api.requestPrReviewSession(projectId, pr.number, reviewAgentId);
+        onOpenSession?.(res.agentId, res.sessionId);
+        return;
+      }
       const res = await api.requestNativePrReview(projectId, pr.number, true, 'agent');
       // Latch the requested state only when a review is genuinely pending — either
       // this call dispatched one, or one was already in flight (the server-side
@@ -1081,15 +1087,19 @@ function PrDetail({
               Resolve PR
             </button>
           )}
-          {isNative && isOpen && (
+          {isOpen && (
             <button
               type="button"
               onClick={handleRequestAgentReview}
-              disabled={dispatchingAgentReview || agentReviewPending}
+              disabled={
+                dispatchingAgentReview || agentReviewPending || (!isNative && !reviewAgentId)
+              }
               title={
-                agentReviewPending
-                  ? 'Agent review in progress — the Reviewer agent is working on this PR'
-                  : 'Request an agent review — dispatches the project Reviewer agent against this PR'
+                !isNative
+                  ? 'Review in a private chat session. Nothing is pushed or posted to GitHub.'
+                  : agentReviewPending
+                    ? 'Agent review in progress — the Reviewer agent is working on this PR'
+                    : 'Request an agent review — dispatches the project Reviewer agent against this PR'
               }
               data-testid="pr-request-agent-review-button"
               className="flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50"
@@ -2981,6 +2991,9 @@ function PullRequestsPageInner({
           onMerge={handleMerge}
           merging={mergingDetail}
           agentId={resolveAgentId}
+          reviewAgentId={
+            project?.agents?.find((a: any) => a.active !== false && a.role !== 'reviewer')?.id
+          }
           spawnedSessionId={sessionSpawnedByPr[selectedNumber] || null}
           onOpenSession={onOpenSession}
           projectId={projectId}

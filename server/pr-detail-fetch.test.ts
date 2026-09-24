@@ -46,6 +46,7 @@ describe('fetchPrDetail', () => {
         return {
           number: 7,
           title: 'User path',
+          body: 'Why this change is needed',
           state: 'open',
           user: { login: 'alice' },
           head: { sha: 'abc' },
@@ -61,6 +62,7 @@ describe('fetchPrDetail', () => {
     expect(out.source).toBe('user-oauth');
     expect((out.pr as Record<string, unknown>).number).toBe(7);
     expect(out.headSha).toBe('abc');
+    expect(out.pr.body).toBe('Why this change is needed');
   });
 
   it('returns headSha=null when the GitHub payload has no head SHA', async () => {

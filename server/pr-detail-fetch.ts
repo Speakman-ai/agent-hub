@@ -75,7 +75,7 @@ export async function fetchPrDetail(
 
       return {
         source: 'user-oauth',
-        pr: normalizePrSummary(prData),
+        pr: { ...normalizePrSummary(prData), body: prData.body ?? null },
         reviews: normalizeReviews(reviewsRaw as unknown),
         comments: normalizeIssueComments(commentsRaw as unknown),
         checks: normalizeCheckRuns(checksRaw as unknown),
