@@ -1,4 +1,5 @@
 import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
+import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, {
   createContext,
@@ -797,6 +798,9 @@ export function AppProvider({ children }: any) {
           }));
           break;
         case 'queue_item_processing':
+          if (forActiveSession) {
+            setMessages((prev: any) => promoteQueuedMessage(prev, data.messageId, data.message));
+          }
           setMessageQueues((prev: any) => {
             const q = prev[data.sessionId];
             if (!q) return prev;

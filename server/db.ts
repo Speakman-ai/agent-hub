@@ -5271,6 +5271,16 @@ function initDb(dataDir: string): void {
       'SELECT MIN(position) as min_pos FROM message_queue WHERE session_id = ?',
     ),
     updateQueueMessage: db.prepare('UPDATE message_queue SET content = ? WHERE id = ?'),
+    prioritizeQueuedMessage: db.prepare(
+      'UPDATE message_queue SET position = (SELECT COALESCE(MIN(position), 0) - 1 FROM message_queue WHERE session_id = ?) WHERE id = ? AND session_id = ?',
+    ),
+    // Queued messages have a provisional transcript position. Promote in place
+    // so attachments and references keep their id, while both history queries
+    // place the prompt after the assistant turn that just finished.
+    promoteQueuedMessage: db.prepare(
+      `UPDATE messages SET rowid = (SELECT MAX(rowid) + 1 FROM messages), created_at = datetime('now')
+       WHERE id = ? AND session_id = ? AND role = 'user' RETURNING *`,
+    ),
     updateMessageContent: db.prepare('UPDATE messages SET content = ? WHERE id = ?'),
     getAllQueuedSessions: db.prepare('SELECT DISTINCT session_id FROM message_queue'),
 

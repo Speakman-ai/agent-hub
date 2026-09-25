@@ -2662,24 +2662,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
         if (isInterrupt && msg._existingMsgId) {
           const existingId = msg._existingMsgId;
-          stmts.dequeueMessage.run(existingId);
+          stmts.prioritizeQueuedMessage.run(sessionId, existingId, sessionId);
           broadcast({
             type: 'queue_updated',
             sessionId,
             queue: stmts.getQueuedMessages.all(sessionId),
           });
-
-          const runExistingQueued = () => {
-            void handleChat(null, {
-              type: 'chat',
-              agentId,
-              sessionId,
-              content,
-              images: msg.images,
-              _fromQueue: true,
-              _existingMsgId: existingId,
-            } as InternalChatMessage);
-          };
 
           console.log(
             `[chat] Interrupt-now on queued message ${existingId} for session ${sessionId}`,
@@ -2690,7 +2678,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             console.info(`[chat] chat_interrupt_queued: sending SIGTERM session=${sessionId}`);
             proc.kill('SIGTERM');
           }
-          setTimeout(runExistingQueued, 100);
+          // The close handler persists the stopped turn before draining. A
+          // timer can start this prompt before that final output is saved.
+          setImmediate(() => drainQueue(sessionId));
           broadcast({ type: 'interrupted', sessionId });
           return;
         }
@@ -2811,7 +2801,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       let userMsgId: string | null = null;
       if (msg._fromQueue) {
         userMsgId = msg._existingMsgId!;
-        broadcast({ type: 'queue_item_processing', sessionId, messageId: userMsgId });
+        const promoted = stmts.promoteQueuedMessage.get(userMsgId, sessionId) as
+          | MessageRow
+          | undefined;
+        broadcast({
+          type: 'queue_item_processing',
+          sessionId,
+          messageId: userMsgId,
+          ...(promoted ? { message: promoted } : {}),
+        });
         reportUserMessagePersisted(true);
       } else if (!isAutoContinuation && !msg._skipUserMessagePersist) {
         userMsgId = uuidv4();

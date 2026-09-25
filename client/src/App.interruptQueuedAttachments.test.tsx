@@ -265,6 +265,28 @@ describe('App — interrupt queued message with persisted attachments', () => {
 
     expect(api.uploadImage).not.toHaveBeenCalled();
     expect(api.uploadFile).not.toHaveBeenCalled();
+
+    await act(async () => {
+      ctl.onMessage({ type: 'interrupted', sessionId: 's-1' });
+      ctl.onMessage({
+        type: 'done',
+        sessionId: 's-1',
+        message: {
+          id: 'streaming-msg-1',
+          role: 'assistant',
+          content: 'Stopped assistant response',
+        },
+      });
+      ctl.onMessage({
+        type: 'queue_item_processing',
+        sessionId: 's-1',
+        messageId: QUEUED_MESSAGE_ROW.id,
+        message: QUEUED_MESSAGE_ROW,
+      });
+    });
+    const assistant = await screen.findByText('Stopped assistant response');
+    const user = screen.getByText('follow-up while streaming');
+    expect(assistant.compareDocumentPosition(user) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   // The legacy heavy grey "cross-agent" streaming bubble (a separate

@@ -76,6 +76,7 @@ import OpenProjectWizard from './components/OpenProjectWizard';
 import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow';
 import SetupWizard from './components/SetupWizard';
 import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
+import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
 import KanbanBoard from './components/KanbanBoard';
 import EpicView from './components/EpicView';
 import KanbanCardTemplatesView from './components/KanbanCardTemplatesView';
@@ -2996,6 +2997,9 @@ export default function App({ initialView }: any = {}) {
           break;
 
         case 'queue_item_processing':
+          if (forActiveSession) {
+            setMessages((prev: any) => promoteQueuedMessage(prev, data.messageId, data.message));
+          }
           // Mark the queued message as no longer queued (it's being processed now).
           // The 'thinking' event that follows will handle the processing indicator.
           setMessageQueues((prev: any) => {

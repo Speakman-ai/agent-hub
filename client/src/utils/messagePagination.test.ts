@@ -95,6 +95,13 @@ describe('prependOlderMessages — prepend without duplicates', () => {
 describe('mergeNewestMessages — reconnect tail recovery', () => {
   const msg = (id: any) => ({ id, content: id });
 
+  it('recovers a missed queue promotion even when all message ids are already loaded', () => {
+    const prev = [msg('prompt'), msg('interrupt'), msg('partial')];
+    const { messages, addedCount } = mergeNewestMessages(prev, [msg('partial'), msg('interrupt')]);
+    expect(messages.map((m: any) => m.id)).toEqual(['prompt', 'partial', 'interrupt']);
+    expect(addedCount).toBe(0);
+  });
+
   it('inserts messages missed while the socket was down into the loaded tail', () => {
     const prev = [msg('run-started'), msg('review-approved')];
     const newest = [msg('review-approved'), msg('checks-round'), msg('ready-to-push')];

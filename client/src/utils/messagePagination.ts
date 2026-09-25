@@ -58,9 +58,14 @@ export function mergeNewestMessages(prev: any, newest: any) {
 
   const have = new Set(prev.map((m: any) => m.id));
   const fresh = page.filter((m: any) => !have.has(m.id));
-  if (fresh.length === 0) return { messages: prev, addedCount: 0 };
-
   const incomingIds = new Set(page.map((m: any) => m.id));
+  if (fresh.length === 0) {
+    const loaded = prev.filter((m: any) => incomingIds.has(m.id));
+    // Queue promotion can change order without inserting a new message.
+    if (loaded.every((m: any, index: number) => m.id === page[index]?.id)) {
+      return { messages: prev, addedCount: 0 };
+    }
+  }
   const overlapIndex = prev.findIndex((m: any) => incomingIds.has(m.id));
   if (overlapIndex === -1) {
     return { messages: [...prev, ...page], addedCount: fresh.length };

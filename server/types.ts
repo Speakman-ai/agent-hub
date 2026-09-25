@@ -2362,6 +2362,8 @@ export interface Stmts {
   getMaxQueuePosition: Stmt;
   getMinQueuePosition: Stmt;
   updateQueueMessage: Stmt;
+  prioritizeQueuedMessage: Stmt;
+  promoteQueuedMessage: Stmt;
   updateMessageContent: Stmt;
   getAllQueuedSessions: Stmt;
 

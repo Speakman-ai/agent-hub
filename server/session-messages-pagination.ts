@@ -8,8 +8,9 @@ import type { MessageRow } from './types.js';
  * pages on scroll-up ("reverse infinite scroll"). We key off the SQLite
  * `rowid` rather than `created_at`: `created_at` is second-resolution and
  * collides constantly within a session, which would make an ORDER BY
- * created_at cursor skip or duplicate rows. `rowid` is monotonic with insert
- * order (== chronological order) and unique, so it is a stable cursor.
+ * created_at cursor skip or duplicate rows. `rowid` is unique and increases
+ * with transcript order. A queued prompt moves to the tail when processing
+ * starts; clients deduplicate overlapping pages by message id.
  *
  * The cursor exposed to the client is the oldest loaded message's `id` (the
  * server resolves it to a rowid via subquery). The paginated response is a
