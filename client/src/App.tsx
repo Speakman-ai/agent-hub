@@ -145,6 +145,7 @@ import { readCollapsedColumnIds, writeCollapsedColumnIds } from './utils/kanbanC
 import { isWorkflowProject } from './utils/projectMode';
 import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate';
 import { coalescePromiseByKey } from '@shared/utils/coalesceInFlight';
+import { coalesceRefreshByKey, type PendingRefresh } from '@shared/utils/coalesceRefresh';
 import {
   isNearBottom,
   distanceFromBottom,
@@ -1292,10 +1293,10 @@ export default function App({ initialView }: any = {}) {
 
   // Coalesced like the security counts above: WS bursts must not fan out into
   // one open-pulls fetch per event and drain the browser socket pool.
-  const pullCountFetchesRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  const pullCountFetchesRef = useRef<Map<string, PendingRefresh>>(new Map());
   const refreshOpenPullCount = useCallback((projectId: any) => {
     if (!projectId) return;
-    void coalescePromiseByKey(pullCountFetchesRef, projectId, () =>
+    void coalesceRefreshByKey(pullCountFetchesRef, projectId, () =>
       api
         .getProjectPulls(projectId, { state: 'open', limit: 100 })
         .then((data: any) => {

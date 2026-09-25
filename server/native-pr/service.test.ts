@@ -262,7 +262,7 @@ describe('NativePrService', () => {
     expect(hasLivePreviewSession).not.toHaveBeenCalled();
   });
 
-  it('fires afterPrMerged with the merged PR row (PR preview teardown hook)', async () => {
+  it('broadcasts a merge without a linked card and fires afterPrMerged', async () => {
     const projectId = `npr-${uuidv4().slice(0, 8)}`;
     const project = makeProject(projectId);
     const branch = 'agent-hub/dev/session-beef0001';
@@ -270,9 +270,10 @@ describe('NativePrService', () => {
 
     const afterPrMerged =
       vi.fn<(args: { project: Project; row: { head_branch: string; status: string } }) => void>();
+    const broadcast = vi.fn<BroadcastFn>();
     const service = createNativePrService({
       stmts,
-      broadcast: () => {},
+      broadcast,
       afterPrMerged: afterPrMerged as unknown as Parameters<
         typeof createNativePrService
       >[0]['afterPrMerged'],
@@ -295,6 +296,13 @@ describe('NativePrService', () => {
       actor: 'u-tester',
     });
     expect(result.ok).toBe(true);
+    expect(broadcast).toHaveBeenCalledWith({
+      type: 'native_pr_update',
+      projectId,
+      prNumber: 1,
+      action: 'merged',
+    });
+    expect(await service.listPulls({ project, state: 'open', limit: 30 })).toEqual([]);
 
     expect(afterPrMerged).toHaveBeenCalledOnce();
     const arg = afterPrMerged.mock.calls[0][0];

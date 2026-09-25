@@ -16,7 +16,7 @@
  * fetch count equals the burst size — the storm this test guards against.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, act, waitFor, cleanup } from '@testing-library/react';
+import { render, act, waitFor, cleanup, screen } from '@testing-library/react';
 
 const ctl = vi.hoisted(() => ({
   resolveProjects: null as any,
@@ -24,6 +24,7 @@ const ctl = vi.hoisted(() => ({
   wsHandler: null as any,
   securityFindingsCalls: 0,
   projectPullsCalls: 0,
+  pullResolvers: [] as Array<(value: unknown) => void>,
 }));
 
 (vi as any).mock('./utils/orgs.js', () => ({
@@ -43,8 +44,8 @@ const ctl = vi.hoisted(() => ({
 }));
 
 (vi as any).mock('./components/Sidebar.jsx', () => ({
-  default: function MockSidebar() {
-    return <div data-testid="sidebar" />;
+  default: function MockSidebar({ openPullCounts }: any) {
+    return <div data-testid="sidebar">{openPullCounts['proj-1']}</div>;
   },
 }));
 
@@ -108,7 +109,7 @@ const ctl = vi.hoisted(() => ({
       }),
       getProjectPulls: vi.fn(() => {
         ctl.projectPullsCalls += 1;
-        return new Promise(() => {});
+        return new Promise((resolve) => ctl.pullResolvers.push(resolve));
       }),
       ensureSessionWorkspace: vi.fn().mockResolvedValue({ ok: true, skipped: true } as any),
     },
@@ -168,6 +169,7 @@ describe('App — kanban_update count-refresh storm', () => {
     ctl.wsHandler = null;
     ctl.securityFindingsCalls = 0;
     ctl.projectPullsCalls = 0;
+    ctl.pullResolvers = [];
     window.history.replaceState(null, '', '/');
   });
 
@@ -194,5 +196,26 @@ describe('App — kanban_update count-refresh storm', () => {
 
     expect(ctl.securityFindingsCalls - findingsBefore).toBe(1);
     expect(ctl.projectPullsCalls - pullsBefore).toBe(1);
+  });
+  it('refreshes again when a PR closes during an in-flight badge request', async () => {
+    await bootApp();
+    await act(async () => {
+      ctl.pullResolvers.shift()!({ pulls: [{ number: 1 }] });
+    });
+    expect(screen.getByTestId('sidebar')).toHaveTextContent('1');
+
+    await act(async () => {
+      ctl.wsHandler({ type: 'kanban_update', projectId: 'proj-1' });
+    });
+    await act(async () => {
+      ctl.wsHandler({ type: 'native_pr_update', projectId: 'proj-1' });
+      ctl.pullResolvers.shift()!({ pulls: [{ number: 1 }] });
+    });
+
+    expect(ctl.pullResolvers).toHaveLength(1);
+    await act(async () => {
+      ctl.pullResolvers.shift()!({ pulls: [] });
+    });
+    expect(screen.getByTestId('sidebar')).toHaveTextContent('0');
   });
 });

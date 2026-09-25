@@ -1058,6 +1058,12 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         );
       }
 
+      broadcast({
+        type: 'native_pr_update',
+        projectId: project.id,
+        prNumber: number,
+        action: 'merged',
+      });
       handleCardOnMerge({ stmts, broadcast }, project.id, updated ?? row, actor);
 
       fireBaseBranchMoved(project, number, row.base_branch, result.mergedSha, 'merge');

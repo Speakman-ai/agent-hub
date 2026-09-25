@@ -45,6 +45,7 @@ import { mapBroadcastToNotification } from '../utils/ticketNotifications';
 import { routeNotificationTap, notificationRouteToNavigation } from '../utils/notificationRouting';
 import { uploadAttachments } from '../utils/uploadAttachments';
 import { coalescePromiseByKey } from '@shared/utils/coalesceInFlight';
+import { coalesceRefreshByKey, type PendingRefresh } from '@shared/utils/coalesceRefresh';
 import { createReloadMessages } from '../utils/sessionReload';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import {
@@ -2358,10 +2359,10 @@ export function AppProvider({ children }: any) {
   }, [projects]);
   // Coalesced like the security counts above: WS bursts must not fan out into
   // one open-pulls fetch per event.
-  const pullCountFetchesRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  const pullCountFetchesRef = useRef<Map<string, PendingRefresh>>(new Map());
   const refreshOpenPullCount = useCallback(async (projectId: any) => {
     if (!projectId) return;
-    await coalescePromiseByKey(pullCountFetchesRef, projectId, async () => {
+    await coalesceRefreshByKey(pullCountFetchesRef, projectId, async () => {
       try {
         const data = await api.getProjectPulls(projectId, { state: 'open', limit: 100 });
         const count = Array.isArray(data?.pulls) ? data.pulls.length : 0;
