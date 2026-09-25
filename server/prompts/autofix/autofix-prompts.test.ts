@@ -53,6 +53,17 @@ describe('autofix prompt templates', () => {
     expect(prompt).toMatch(/autofix\(conflict\)/);
   });
 
+  it.each(AUTOFIX_KINDS)('%s leaves tested local commits for Finalize', (kind) => {
+    const prompt = loadAutofixTemplate(kind);
+    expect(prompt).toContain('End your turn after committing');
+    expect(prompt).toContain('Finalize Code Changes');
+    expect(prompt).toContain('Do not push');
+    expect(prompt).toContain('existing PR');
+    expect(prompt).not.toMatch(/\*\*Push(?: to the PR branch|\.)/);
+    expect(prompt).not.toContain('The PR now reports `mergeable: true`');
+    expect(prompt).not.toContain('The specific failing check is now green on the latest commit');
+  });
+
   it('caches templates across calls', () => {
     const first = loadAutofixTemplate('review');
     const second = loadAutofixTemplate('review');

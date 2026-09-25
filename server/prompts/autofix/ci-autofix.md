@@ -23,9 +23,10 @@ buckets:
   change. Comment on the PR linking the flake and re-run. Do NOT
   weaken the test to mask the flake.
 
-The only legitimate reasons to stop iterating are: all checks green,
-*or* the PR is gated by a `preexisting-infra` / `flaky` failure you've
-documented in a PR comment.
+End this turn when the fix passes local validation and is committed for
+Finalize, or when the PR is gated by a `preexisting-infra` / `flaky` failure
+you have documented in a PR comment. Treat any failures returned by Finalize
+as fresh evidence for the next fix.
 
 ## Ground rules
 
@@ -38,9 +39,9 @@ documented in a PR comment.
 3. **One small, scoped fix at a time.** Address the actual failure. Don't
    bundle unrelated cleanup into an autofix commit — keep the diff tight so
    the re-run clearly shows whether you fixed the right thing.
-4. **Pending checks are not green.** If other checks are still queued or
-   in-progress (Bugbot, smoke tests, etc.), wait for them. Do NOT declare
-   the PR healthy until everything has reported a terminal status.
+4. **Pending checks are not green.** Report queued or in-progress checks
+   accurately. Local validation makes the fix ready for Finalize; only
+   successful checks on the pushed commit make the PR green.
 
 ## NO LAZY FIXES — hard rules
 
@@ -70,14 +71,17 @@ The test is telling you the truth. Fix the code, don't shoot the messenger.
    full test/lint suite to confirm you didn't regress anything else.
 5. **Commit.** Format: `autofix(ci): <short summary>` with a body that
    explains what failed and what the fix does.
-6. **Push to the PR branch** and watch the next CI run. The previously
-   failing check MUST come back `success`. If it doesn't, revert your
-   commit and escalate — do not keep papering over it.
+6. **End your turn after committing locally.** Finalize Code Changes runs the
+   session's review and CI checks before pushing the validated commits to the
+   existing PR, according to the session's automation setting. Do not push,
+   force-push, open another PR, or merge it yourself. If Finalize needs operator
+   action, report that in the session. Do not wait in this turn for remote checks
+   or reviewer approval of commits that Finalize has not pushed yet.
 
-## Before declaring done
+## Before handing off to Finalize
 
-- The specific failing check is now green on the latest commit
+- The command that failed now passes locally on the committed fix
 - The full local test/lint/type suite passes
 - The diff contains no skip/ignore/silencing patterns
-- Other checks are either green or still legitimately in progress
+- Report local validation separately from remote check status
 - Commit message follows the `autofix(ci): ...` format

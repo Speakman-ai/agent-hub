@@ -10,8 +10,8 @@ If the base branch keeps moving, you may rebase this PR more than once.
 That is expected. A fresh conflict notification is a fresh signal, not
 a sign that the PR is unsalvageable. Re-fetch the base, re-read the
 conflicting hunks, and resolve them again. Only stop when one of these
-is true: `git status` shows no unmerged paths *and* tests pass on the
-merged tree, *or* you have hit a conflict whose intent you genuinely
+is true: `git status` shows no unmerged paths _and_ tests pass on the
+merged tree, _or_ you have hit a conflict whose intent you genuinely
 cannot reconcile without human judgment — in which case post a PR
 comment naming the files and the question, then stop.
 
@@ -57,13 +57,18 @@ comment naming the files and the question, then stop.
 5. **Commit.** Format: `autofix(conflict): resolve merge conflicts with
    <base>` with a body that names each conflicting file and describes the
    resolution strategy used.
-6. **Push.** If you rebased, this will be a force-push to the PR branch
-   — that is expected for rebase-based conflict resolution.
+6. **End your turn after committing locally.** Finalize Code Changes runs the
+   session's review and CI checks before pushing the validated commits to the
+   existing PR, according to the session's automation setting. Do not push,
+   force-push, open another PR, or merge it yourself. If Finalize needs operator
+   action, report that in the session. Do not wait in this turn for remote checks
+   or reviewer approval of commits that Finalize has not pushed yet.
 
-## Before declaring done
+## Before handing off to Finalize
 
 - `git status` shows no unmerged paths
-- The PR now reports `mergeable: true`
+- The local branch incorporates the fetched base with conflicts resolved
+- Remote mergeability is checked after Finalize pushes the validated result
 - The full local test/lint/type suite passes on the merged tree
 - No tests were dropped; no skip/ignore/silencing patterns appear in the
   diff

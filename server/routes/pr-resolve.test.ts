@@ -8,15 +8,6 @@ vi.mock('../pr-detail-fetch.js', () => ({
   fetchPrDetail: vi.fn(),
 }));
 
-// Autofix templates — mock so tests don't have to read files off disk.
-vi.mock('../prompts/autofix/index.js', async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
-  return {
-    ...actual,
-    loadAutofixTemplate: (kind: string) => `TEMPLATE[${kind}]`,
-  };
-});
-
 // avoid touching real config loaders.
 vi.mock('../config.js', () => ({
   default: { apiKey: null },
@@ -135,9 +126,9 @@ describe('pr-resolve — pure helpers', () => {
       expect(prompt).toContain('lint: failure');
       expect(prompt).toContain('Review feedback (1 reviewer)');
       expect(prompt).toContain('**bob**: please fix');
-      expect(prompt).toContain('TEMPLATE[review]');
-      expect(prompt).toContain('TEMPLATE[ci]');
-      expect(prompt).toContain('TEMPLATE[conflict]');
+      expect(prompt).toContain('# Autofix — Review Feedback');
+      expect(prompt).toContain('# Autofix — CI Failure');
+      expect(prompt).toContain('# Autofix — Merge Conflict Resolution');
       expect((prompt.match(/\n\n---\n\n/g) || []).length).toBe(3);
     });
 
@@ -175,9 +166,26 @@ describe('pr-resolve — pure helpers', () => {
       // The directive must appear BEFORE the autofix templates so the agent
       // reads it before starting work.
       const setupIdx = prompt.indexOf('## Setup');
-      const templateIdx = prompt.indexOf('TEMPLATE[ci]');
+      const templateIdx = prompt.indexOf('# Autofix — CI Failure');
       expect(setupIdx).toBeGreaterThan(-1);
       expect(templateIdx).toBeGreaterThan(setupIdx);
+    });
+
+    it.each([false, true])('hands real resolve instructions to Finalize (native=%s)', (native) => {
+      const prompt = buildResolvePrompt(
+        { number: 42, title: 'Fix thing', head: 'feature/x', base: 'main' },
+        [],
+        [],
+        [],
+        'o/r',
+        ['review', 'ci', 'conflict'],
+        { native, headBranch: 'feature/x' },
+      );
+      expect(prompt).toContain('End your turn after committing');
+      expect(prompt).toContain('Finalize Code Changes');
+      expect(prompt).toContain('Do not push');
+      expect(prompt).not.toMatch(/\*\*Push(?: to the PR branch|\.)/);
+      expect(prompt).not.toContain('The reviewer explicitly **approved**');
     });
 
     it('omits the setup directive when the PR number is missing/invalid', () => {
@@ -340,9 +348,9 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
     expect(handleChat).toHaveBeenCalledTimes(1);
     const chatArgs = handleChat.mock.calls[0][1];
     expect(chatArgs.content).toContain('## PR Context');
-    expect(chatArgs.content).toContain('TEMPLATE[review]');
-    expect(chatArgs.content).toContain('TEMPLATE[ci]');
-    expect(chatArgs.content).toContain('TEMPLATE[conflict]');
+    expect(chatArgs.content).toContain('# Autofix — Review Feedback');
+    expect(chatArgs.content).toContain('# Autofix — CI Failure');
+    expect(chatArgs.content).toContain('# Autofix — Merge Conflict Resolution');
   });
 
   it('spawns a session with the right template kinds when the PR has failures', async () => {
@@ -412,9 +420,9 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
     expect(handleChat).toHaveBeenCalledTimes(1);
     const chatArgs = handleChat.mock.calls[0][1];
     expect(chatArgs.agentId).toBe('a1');
-    expect(chatArgs.content).toContain('TEMPLATE[review]');
-    expect(chatArgs.content).toContain('TEMPLATE[ci]');
-    expect(chatArgs.content).toContain('TEMPLATE[conflict]');
+    expect(chatArgs.content).toContain('# Autofix — Review Feedback');
+    expect(chatArgs.content).toContain('# Autofix — CI Failure');
+    expect(chatArgs.content).toContain('# Autofix — Merge Conflict Resolution');
     expect(chatArgs.content).toContain('## PR Context');
 
     // Sidebar live-sync: the spawned session must be pushed so the

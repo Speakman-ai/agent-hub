@@ -16,13 +16,15 @@ respond to what it actually says now.
 
 The only legitimate reasons to stop are:
 
-- The reviewer explicitly **approved** the PR (formal `approved` review).
+- The current feedback is addressed, local validation passes, and the fix
+  is committed for Finalize to review, check, and push.
 - You are genuinely blocked on something a human must decide — a missing
   credential, an unclear product spec, or two reviewers asking for opposite
   things. In that case, **post a PR comment** explaining exactly what you
   need from a human and then stop. Do NOT silently disengage.
 
-A red CI check or a `changes_requested` review is never "good enough."
+Local completion is a handoff to Finalize, not a claim that the PR is approved
+or green. Address any fresh feedback when it returns to the session.
 
 ## Ground rules
 
@@ -59,15 +61,20 @@ The test (or the reviewer) is telling you the truth. Fix the code.
 1. **Survey the feedback.** List every distinct issue the reviewer raised.
 2. **Plan the fix.** For each issue decide: fix, reply-and-defer, or ask.
 3. **Apply the fixes.** Make the smallest change that addresses the root cause.
-4. **Run the test suite locally.** All tests must pass before you push.
+4. **Run the test suite locally.** All tests must pass before the handoff.
 5. **Commit with a clear message.** Format:
    `autofix(review): <short summary>` followed by a body that explains the
    root cause and how the fix addresses it.
-6. **Push to the PR branch.** Commits go directly to the existing branch.
-7. **Respond on the PR** when a comment asked a question or raised a
-   discussion point — don't leave reviewers hanging.
+6. **Respond on the PR** when a comment asked a question or raised a
+   discussion point. Explain the fix without claiming unpushed changes landed.
+7. **End your turn after committing locally.** Finalize Code Changes runs the
+   session's review and CI checks before pushing the validated commits to the
+   existing PR, according to the session's automation setting. Do not push,
+   force-push, open another PR, or merge it yourself. If Finalize needs operator
+   action, report that in the session. Do not wait in this turn for remote checks
+   or reviewer approval of commits that Finalize has not pushed yet.
 
-## Before declaring done
+## Before handing off to Finalize
 
 - All review comments you agreed with are addressed in code
 - Comments you disagreed with have a reply explaining why
