@@ -3293,6 +3293,22 @@ export interface BackgroundCustomAgentConfig {
   model?: string | null;
   /** The editable prompt dispatched on each run. Required and non-empty. */
   prompt: string;
+  /**
+   * When true, each run opens a real chat session (visible in the sidebar)
+   * seeded with `prompt`, instead of a headless one-shot spawn.
+   */
+  runAsSession?: boolean;
+  /**
+   * Session control value for session runs: a Finalize level
+   * (`manual`/`review`/`push`/`merge`, all in `chat` mode) or a session mode
+   * (`consult`/`scoping`/`skill-builder`/`autopilot`). Defaults to `manual`.
+   * See `server/background-agent-session.ts`.
+   */
+  sessionMode?: string | null;
+  /** Project agent the session runs under. Null = the project's primary agent. */
+  sessionAgentId?: string | null;
+  /** Skill ids preloaded into the session's first turn. */
+  skills?: string[];
 }
 
 /**

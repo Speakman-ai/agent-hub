@@ -29,6 +29,12 @@ import {
 } from '../finalize/shipping-prompt.js';
 import { runOneShotPrompt } from '../one-shot-spawn.js';
 import { rescheduleProjectBackgroundAgents } from '../heartbeat.js';
+import {
+  backgroundSessionModesForProject,
+  isBackgroundSessionMode,
+  isEligibleBackgroundSessionAgent,
+  MAX_BACKGROUND_SESSION_SKILLS,
+} from '../background-agent-session.js';
 import { getUserById } from '../users-store.js';
 import { isAuthConfigured } from '../auth-store.js';
 import { isOnboardingComplete, markOnboardingComplete } from '../onboarding-complete.js';
@@ -2598,6 +2604,51 @@ This workspace has no git repo and no PR automation — your job is planning, or
                     error: `backgroundAgents.custom[${i}].model must be a string or null`,
                   });
                 } else entry.model = model;
+              }
+              if (Object.prototype.hasOwnProperty.call(c, 'runAsSession')) {
+                if (typeof c.runAsSession !== 'boolean') {
+                  return res.status(400).json({
+                    error: `backgroundAgents.custom[${i}].runAsSession must be a boolean`,
+                  });
+                }
+                entry.runAsSession = c.runAsSession;
+              }
+              if (Object.prototype.hasOwnProperty.call(c, 'sessionMode')) {
+                const mode = c.sessionMode;
+                if (mode === null || mode === '') entry.sessionMode = null;
+                else if (
+                  !isBackgroundSessionMode(mode) ||
+                  !backgroundSessionModesForProject(project).includes(mode)
+                ) {
+                  return res.status(400).json({
+                    error: `backgroundAgents.custom[${i}].sessionMode must be one of: ${backgroundSessionModesForProject(project).join(', ')}`,
+                  });
+                } else entry.sessionMode = mode;
+              }
+              if (Object.prototype.hasOwnProperty.call(c, 'sessionAgentId')) {
+                const sid = c.sessionAgentId;
+                if (sid === null || sid === '') entry.sessionAgentId = null;
+                else if (
+                  typeof sid !== 'string' ||
+                  !isEligibleBackgroundSessionAgent(project.agents.find((a) => a.id === sid))
+                ) {
+                  return res.status(400).json({
+                    error: `backgroundAgents.custom[${i}].sessionAgentId must be a project agent that can host sessions, or null`,
+                  });
+                } else entry.sessionAgentId = sid;
+              }
+              if (Object.prototype.hasOwnProperty.call(c, 'skills')) {
+                const skills = c.skills;
+                if (skills === null) entry.skills = [];
+                else if (
+                  !Array.isArray(skills) ||
+                  skills.length > MAX_BACKGROUND_SESSION_SKILLS ||
+                  !skills.every((k) => typeof k === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(k))
+                ) {
+                  return res.status(400).json({
+                    error: `backgroundAgents.custom[${i}].skills must be an array of up to ${MAX_BACKGROUND_SESSION_SKILLS} skill ids`,
+                  });
+                } else entry.skills = Array.from(new Set(skills as string[]));
               }
               normalized.push(entry);
             }

@@ -1,8 +1,13 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
-import { BookText, Loader2, Plus, Trash2, Bot } from 'lucide-react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { BookText, Loader2, Plus, Trash2, Bot, Play, ExternalLink } from 'lucide-react';
 import { api } from '../utils/api';
 import { getAuthRecord } from '../utils/auth';
 import CronSchedulePicker from './CronSchedulePicker';
+import {
+  backgroundSessionAgents,
+  backgroundSessionModeOptions,
+  defaultBackgroundSessionMode,
+} from '../utils/backgroundSessionModes';
 
 /**
  * Project Settings → AI → Background Agents.
@@ -43,7 +48,25 @@ type CustomAgentCfg = {
   model?: string | null;
   engine?: string | null;
   prompt: string;
+  runAsSession?: boolean;
+  sessionMode?: string | null;
+  sessionAgentId?: string | null;
+  skills?: string[];
 };
+
+type AgentRun = {
+  status: 'running' | 'succeeded' | 'failed';
+  trigger: 'manual' | 'schedule';
+  startedAt: string;
+  finishedAt: string | null;
+  output: string | null;
+  error: string | null;
+  sessionId: string | null;
+  sessionAgentId: string | null;
+};
+
+const RUN_POLL_MS = 3000;
+const IDLE_RUN_POLL_MS = 15000;
 
 function newAgentId(): string {
   try {
@@ -60,6 +83,7 @@ export default function BackgroundAgentsSection({
   projects = [],
   projectId = null,
   onProjectsChange,
+  onNavigate,
   showToast,
 }: any) {
   const project = useMemo(
@@ -107,7 +131,10 @@ export default function BackgroundAgentsSection({
     engineValidModels?: Record<string, string[]>;
   } | null>(null);
 
-  // Re-sync local state when switching projects.
+  // Re-sync local state when switching projects, and once more when the
+  // project itself arrives (the list can load after mount). Not on every
+  // project update, so unsaved edits survive a save round-trip.
+  const projectLoaded = !!project;
   useEffect(() => {
     setEnabled(!!saved.enabled);
     setSchedule(saved.schedule || DEFAULT_WIKI_SCHEDULE);
@@ -116,7 +143,7 @@ export default function BackgroundAgentsSection({
     setLimit(saved.limit || 10);
     setCustomAgents(savedCustom);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [projectId, projectLoaded]);
 
   const addCustomAgent = useCallback(() => {
     setCustomAgents((prev) => [
@@ -130,9 +157,13 @@ export default function BackgroundAgentsSection({
         model: null,
         engine: null,
         prompt: '',
+        runAsSession: false,
+        sessionMode: defaultBackgroundSessionMode(project),
+        sessionAgentId: null,
+        skills: [],
       },
     ]);
-  }, [currentUserId]);
+  }, [currentUserId, project]);
 
   const updateCustomAgent = useCallback((id: string, patch: Partial<CustomAgentCfg>) => {
     setCustomAgents((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
@@ -179,64 +210,202 @@ export default function BackgroundAgentsSection({
   // overridden; offer that engine's models for the optional per-agent override.
   const customModels: string[] = modelConfig?.engineValidModels?.['claude-code'] || [];
 
-  const save = useCallback(async () => {
-    if (!projectId) return;
-    // A model must be chosen explicitly — no silent fallback to the docs
-    // agent's default — but only gate on it when the agent is actually on.
-    if (enabled && !model) {
-      showToast?.('Pick a model for the Wiki agent before enabling it', 'error');
-      return;
-    }
-    // Every custom agent needs a name and a prompt (the server rejects blanks).
+  const save = useCallback(
+    async (opts: { quiet?: boolean } = {}): Promise<boolean> => {
+      if (!projectId) return false;
+      // A model must be chosen explicitly — no silent fallback to the docs
+      // agent's default — but only gate on it when the agent is actually on.
+      if (enabled && !model) {
+        showToast?.('Pick a model for the Wiki agent before enabling it', 'error');
+        return false;
+      }
+      // Every custom agent needs a name and a prompt (the server rejects blanks).
+      for (const a of customAgents) {
+        if (!a.name.trim()) {
+          showToast?.('Give every custom agent a name', 'error');
+          return false;
+        }
+        if (!a.prompt.trim()) {
+          showToast?.(`Add a prompt for "${a.name.trim() || 'the custom agent'}"`, 'error');
+          return false;
+        }
+      }
+      setSaving(true);
+      try {
+        const wiki: WikiCfg = {
+          enabled,
+          schedule: schedule || DEFAULT_WIKI_SCHEDULE,
+          ownerUserId: ownerUserId || null,
+          model: model || null,
+          limit,
+        };
+        const custom: CustomAgentCfg[] = customAgents.map((a) => ({
+          id: a.id,
+          name: a.name.trim(),
+          enabled: !!a.enabled,
+          schedule: a.schedule || DEFAULT_WIKI_SCHEDULE,
+          ownerUserId: a.ownerUserId || null,
+          model: a.model || null,
+          engine: a.engine || null,
+          prompt: a.prompt,
+          runAsSession: !!a.runAsSession,
+          sessionMode: a.sessionMode || defaultBackgroundSessionMode(project),
+          sessionAgentId: a.sessionAgentId || null,
+          skills: a.skills || [],
+        }));
+        const updated = await api.updateProject(projectId, { backgroundAgents: { wiki, custom } });
+        onProjectsChange?.(
+          projects.map((p: any) => (p.id === projectId ? { ...p, ...updated } : p)),
+        );
+        if (!opts.quiet) showToast?.('Background agents saved', 'success');
+        return true;
+      } catch (err: any) {
+        showToast?.(err?.message || 'Failed to save background agents', 'error');
+        return false;
+      } finally {
+        setSaving(false);
+      }
+    },
+    [
+      projectId,
+      enabled,
+      schedule,
+      ownerUserId,
+      model,
+      limit,
+      customAgents,
+      project,
+      projects,
+      onProjectsChange,
+      showToast,
+    ],
+  );
+
+  const sessionAgents = useMemo(() => backgroundSessionAgents(project), [project]);
+  const sessionModeOptions = useMemo(() => backgroundSessionModeOptions(project), [project]);
+
+  // Skill lists per session agent (the merged project/global/bundled list,
+  // narrowed by that agent's allowlist so we never offer a skill it can't load).
+  const [skillsByAgent, setSkillsByAgent] = useState<Record<string, any[] | 'error'>>({});
+  const requestedSkillsRef = useRef(new Set<string>());
+  const ensureSkills = useCallback((agentId: string | null | undefined) => {
+    if (!agentId || requestedSkillsRef.current.has(agentId)) return;
+    requestedSkillsRef.current.add(agentId);
+    api
+      .getSkills(agentId)
+      .then((list: any) =>
+        setSkillsByAgent((prev) => ({ ...prev, [agentId]: Array.isArray(list) ? list : [] })),
+      )
+      .catch(() => {
+        requestedSkillsRef.current.delete(agentId);
+        setSkillsByAgent((prev) => ({ ...prev, [agentId]: 'error' }));
+      });
+  }, []);
+
+  const effectiveSessionAgentId = useCallback(
+    (a: CustomAgentCfg): string | null => a.sessionAgentId || sessionAgents[0]?.id || null,
+    [sessionAgents],
+  );
+
+  useEffect(() => {
     for (const a of customAgents) {
-      if (!a.name.trim()) {
-        showToast?.('Give every custom agent a name', 'error');
-        return;
-      }
-      if (!a.prompt.trim()) {
-        showToast?.(`Add a prompt for "${a.name.trim() || 'the custom agent'}"`, 'error');
-        return;
-      }
+      if (a.runAsSession) ensureSkills(effectiveSessionAgentId(a));
     }
-    setSaving(true);
-    try {
-      const wiki: WikiCfg = {
-        enabled,
-        schedule: schedule || DEFAULT_WIKI_SCHEDULE,
-        ownerUserId: ownerUserId || null,
-        model: model || null,
-        limit,
-      };
-      const custom: CustomAgentCfg[] = customAgents.map((a) => ({
-        id: a.id,
-        name: a.name.trim(),
-        enabled: !!a.enabled,
-        schedule: a.schedule || DEFAULT_WIKI_SCHEDULE,
-        ownerUserId: a.ownerUserId || null,
-        model: a.model || null,
-        engine: a.engine || null,
-        prompt: a.prompt,
-      }));
-      const updated = await api.updateProject(projectId, { backgroundAgents: { wiki, custom } });
-      onProjectsChange?.(projects.map((p: any) => (p.id === projectId ? { ...p, ...updated } : p)));
-      showToast?.('Background agents saved', 'success');
-    } catch (err: any) {
-      showToast?.(err?.message || 'Failed to save background agents', 'error');
-    } finally {
-      setSaving(false);
+  }, [customAgents, ensureSkills, effectiveSessionAgentId]);
+
+  const [runs, setRuns] = useState<Record<string, AgentRun | null>>({});
+  const [startingRun, setStartingRun] = useState<string | null>(null);
+
+  const refreshRun = useCallback(
+    async (agentId: string) => {
+      if (!projectId) return;
+      try {
+        const run = (await api.getBackgroundAgentLastRun(projectId, agentId)) as AgentRun | null;
+        setRuns((prev) => ({ ...prev, [agentId]: run }));
+      } catch {
+        /* agent not saved yet, or transient — leave the last known state */
+      }
+    },
+    [projectId],
+  );
+
+  // Show the latest run for each saved agent. Keyed on the saved ids (not just
+  // projectId) because the project list may arrive after mount; ids already
+  // fetched for this project are not re-requested, so edits and saves don't
+  // wipe what's shown.
+  const fetchedRunIdsRef = useRef<{ projectId: string | null; ids: Set<string> }>({
+    projectId: null,
+    ids: new Set(),
+  });
+  const savedIdsKey = savedCustom.map((a) => a.id).join(',');
+  useEffect(() => {
+    if (fetchedRunIdsRef.current.projectId !== projectId) {
+      fetchedRunIdsRef.current = { projectId, ids: new Set() };
+      setRuns({});
     }
-  }, [
-    projectId,
-    enabled,
-    schedule,
-    ownerUserId,
-    model,
-    limit,
-    customAgents,
-    projects,
-    onProjectsChange,
-    showToast,
-  ]);
+    const fetched = fetchedRunIdsRef.current.ids;
+    for (const id of savedIdsKey ? savedIdsKey.split(',') : []) {
+      if (fetched.has(id)) continue;
+      fetched.add(id);
+      void refreshRun(id);
+    }
+  }, [projectId, savedIdsKey, refreshRun]);
+
+  // Keep every saved agent's last run fresh while the page is open, finished
+  // records included: a session run can flip to failed after its kickoff
+  // settles, and a scheduled run can start at any time. Poll fast while
+  // something is running, slowly otherwise.
+  const anyRunning = Object.values(runs).some((r) => r?.status === 'running');
+  useEffect(() => {
+    if (!savedIdsKey) return;
+    const ids = savedIdsKey.split(',');
+    const t = setInterval(
+      () => {
+        for (const id of ids) void refreshRun(id);
+      },
+      anyRunning ? RUN_POLL_MS : IDLE_RUN_POLL_MS,
+    );
+    return () => clearInterval(t);
+  }, [savedIdsKey, anyRunning, refreshRun]);
+
+  const openSession = useCallback(
+    (agentId: string | null, sessionId: string | null) => {
+      if (!agentId || !sessionId) return;
+      onNavigate?.('chat', { agentId, sessionId });
+    },
+    [onNavigate],
+  );
+
+  const testRun = useCallback(
+    async (agent: CustomAgentCfg) => {
+      if (!projectId) return;
+      setStartingRun(agent.id);
+      try {
+        // Test runs use the saved config, so persist any edits first.
+        const ok = await save({ quiet: true });
+        if (!ok) return;
+        const res: any = await api.runBackgroundAgent(projectId, agent.id);
+        if (res?.status === 'session') {
+          if (res.skippedSkills?.length) {
+            showToast?.(
+              `Session started; skills not loaded: ${res.skippedSkills.join(', ')}`,
+              'error',
+            );
+          } else {
+            showToast?.('Test session started', 'success');
+          }
+        } else {
+          showToast?.('Test run started', 'success');
+        }
+        await refreshRun(agent.id);
+      } catch (err: any) {
+        showToast?.(err?.message || 'Test run failed to start', 'error');
+      } finally {
+        setStartingRun(null);
+      }
+    },
+    [projectId, save, refreshRun, showToast],
+  );
 
   if (!project) {
     return (
@@ -394,6 +563,21 @@ export default function BackgroundAgentsSection({
                 />
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => void testRun(agent)}
+                  disabled={startingRun !== null || saving || runs[agent.id]?.status === 'running'}
+                  data-testid={`custom-agent-test-run-${idx}`}
+                  title="Save and run this agent once now"
+                  className="inline-flex items-center gap-1 border border-gray-700 hover:border-gray-500 disabled:opacity-50 text-gray-200 text-xs rounded-md px-2 py-1 transition-colors"
+                >
+                  {startingRun === agent.id || runs[agent.id]?.status === 'running' ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Play size={12} />
+                  )}
+                  Test run
+                </button>
                 <label className="inline-flex items-center cursor-pointer">
                   <input
                     type="checkbox"
@@ -475,13 +659,217 @@ export default function BackgroundAgentsSection({
                 </select>
               </div>
             </div>
+
+            <div className="space-y-3">
+              <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-200">
+                <input
+                  type="checkbox"
+                  checked={!!agent.runAsSession}
+                  onChange={(e) =>
+                    updateCustomAgent(agent.id, {
+                      runAsSession: e.target.checked,
+                      sessionMode: agent.sessionMode || defaultBackgroundSessionMode(project),
+                    })
+                  }
+                  data-testid={`custom-agent-run-as-session-${idx}`}
+                  className="rounded border-gray-600 bg-gray-900 text-emerald-500"
+                />
+                Run as session
+              </label>
+              {!agent.runAsSession && (
+                <p className="text-[11px] text-gray-600 -mt-2">
+                  Off: runs headless and keeps only the output. On: opens a chat session you can
+                  open and continue.
+                </p>
+              )}
+
+              {agent.runAsSession &&
+                (() => {
+                  const hostId = effectiveSessionAgentId(agent);
+                  const skillList = hostId ? skillsByAgent[hostId] : undefined;
+                  const host = sessionAgents.find((a: any) => a.id === hostId);
+                  const allowed: string[] | null = Array.isArray(host?.allowedSkills)
+                    ? host.allowedSkills
+                    : null;
+                  const options = Array.isArray(skillList)
+                    ? skillList.filter((sk: any) => !allowed || allowed.includes(sk.id))
+                    : [];
+                  const selected = new Set(agent.skills || []);
+                  return (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-400 mb-1">
+                          Session mode
+                        </label>
+                        <select
+                          value={agent.sessionMode || defaultBackgroundSessionMode(project)}
+                          onChange={(e) =>
+                            updateCustomAgent(agent.id, { sessionMode: e.target.value })
+                          }
+                          data-testid={`custom-agent-session-mode-${idx}`}
+                          className="w-full bg-gray-900 border border-gray-800 rounded-md px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
+                        >
+                          {sessionModeOptions.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-[11px] text-gray-600 mt-1">
+                          {sessionModeOptions.find(
+                            (o) =>
+                              o.value ===
+                              (agent.sessionMode || defaultBackgroundSessionMode(project)),
+                          )?.description || ''}
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-medium text-gray-400 mb-1">
+                          Session agent
+                        </label>
+                        <select
+                          value={agent.sessionAgentId || ''}
+                          onChange={(e) =>
+                            updateCustomAgent(agent.id, {
+                              sessionAgentId: e.target.value || null,
+                              skills: [],
+                            })
+                          }
+                          data-testid={`custom-agent-session-agent-${idx}`}
+                          className="w-full bg-gray-900 border border-gray-800 rounded-md px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
+                        >
+                          <option value="">
+                            {sessionAgents[0]
+                              ? `Default (${sessionAgents[0].name || sessionAgents[0].id})`
+                              : 'No eligible agent'}
+                          </option>
+                          {sessionAgents.map((a: any) => (
+                            <option key={a.id} value={a.id}>
+                              {a.name || a.id}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-medium text-gray-400 mb-1">
+                          Default skills{' '}
+                          <span className="text-gray-600">
+                            ({selected.size} selected, loaded into the first turn)
+                          </span>
+                        </label>
+                        {!hostId ? (
+                          <p className="text-xs text-amber-400">
+                            This project has no agent that can host a session.
+                          </p>
+                        ) : skillList === 'error' ? (
+                          <p className="text-xs text-red-400">Couldn’t load skills.</p>
+                        ) : !skillList ? (
+                          <p className="text-xs text-gray-500">Loading skills…</p>
+                        ) : options.length === 0 ? (
+                          <p className="text-xs text-gray-500">No skills available.</p>
+                        ) : (
+                          <div
+                            className="space-y-0.5 max-h-48 overflow-y-auto pr-1 rounded-md border border-gray-800 bg-gray-900 p-1"
+                            data-testid={`custom-agent-skills-${idx}`}
+                          >
+                            {options.map((sk: any) => (
+                              <label
+                                key={sk.id}
+                                className="flex items-start gap-2 py-1 px-2 rounded hover:bg-gray-800 cursor-pointer"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selected.has(sk.id)}
+                                  onChange={() => {
+                                    const next = new Set(selected);
+                                    if (next.has(sk.id)) next.delete(sk.id);
+                                    else next.add(sk.id);
+                                    updateCustomAgent(agent.id, {
+                                      skills: options
+                                        .map((o: any) => o.id)
+                                        .filter((id: string) => next.has(id)),
+                                    });
+                                  }}
+                                  data-testid={`custom-agent-skill-${idx}-${sk.id}`}
+                                  className="mt-0.5 rounded border-gray-600 bg-gray-900 text-emerald-500"
+                                />
+                                <span className="min-w-0">
+                                  <span className="text-sm text-gray-200 font-mono">{sk.id}</span>
+                                  {sk.description ? (
+                                    <span className="block text-xs text-gray-500 truncate">
+                                      {sk.description}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+            </div>
+
+            {runs[agent.id] &&
+              (() => {
+                const run = runs[agent.id] as AgentRun;
+                const label =
+                  run.status === 'running'
+                    ? 'Running…'
+                    : run.status === 'succeeded'
+                      ? 'Last run succeeded'
+                      : 'Last run failed';
+                const color =
+                  run.status === 'running'
+                    ? 'text-gray-400'
+                    : run.status === 'succeeded'
+                      ? 'text-emerald-400'
+                      : 'text-red-400';
+                return (
+                  <div
+                    className="rounded-md border border-gray-800 bg-gray-950/60 p-3 space-y-2"
+                    data-testid={`custom-agent-last-run-${idx}`}
+                  >
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className={color}>
+                        {label}
+                        <span className="text-gray-600">
+                          {' '}
+                          · {run.trigger === 'manual' ? 'test run' : 'scheduled'} ·{' '}
+                          {new Date(run.finishedAt || run.startedAt).toLocaleString()}
+                        </span>
+                      </span>
+                      {run.sessionId && (
+                        <button
+                          type="button"
+                          onClick={() => openSession(run.sessionAgentId, run.sessionId)}
+                          data-testid={`custom-agent-open-session-${idx}`}
+                          className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300"
+                        >
+                          <ExternalLink size={12} />
+                          Open session
+                        </button>
+                      )}
+                    </div>
+                    {run.error && <p className="text-xs text-red-400 break-words">{run.error}</p>}
+                    {run.output && (
+                      <pre className="text-xs text-gray-300 whitespace-pre-wrap break-words max-h-64 overflow-y-auto font-mono">
+                        {run.output}
+                      </pre>
+                    )}
+                  </div>
+                );
+              })()}
           </div>
         ))}
       </div>
 
       <div className="flex justify-end">
         <button
-          onClick={save}
+          onClick={() => void save()}
           disabled={saving}
           data-testid="wiki-agent-save"
           className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium rounded-md px-3 py-1.5 transition-colors"

@@ -65,6 +65,7 @@ export default function ProjectMenuPage({
             projects={projects}
             projectId={projectId}
             onProjectsChange={onProjectsChange}
+            onNavigate={onNavigate}
             showToast={showToast}
           />
         )}

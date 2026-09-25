@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, waitFor, fireEvent, act } from '@testing-library/react';
 import BackgroundAgentsSection from './BackgroundAgentsSection';
 import { api } from '../utils/api';
@@ -19,6 +19,9 @@ vi.mock('../utils/api', () => ({
     getOrgUsers: vi.fn(),
     getModelConfig: vi.fn(),
     updateProject: vi.fn(),
+    getSkills: vi.fn(),
+    runBackgroundAgent: vi.fn(),
+    getBackgroundAgentLastRun: vi.fn(),
   },
 }));
 
@@ -328,5 +331,204 @@ describe('BackgroundAgentsSection', () => {
     expect((getByTestId('custom-agent-name-0') as HTMLInputElement).value).toBe('Existing');
     expect((getByTestId('custom-agent-prompt-0') as HTMLTextAreaElement).value).toBe('run this');
     expect((getByTestId('custom-agent-enabled-0') as HTMLInputElement).checked).toBe(true);
+  });
+});
+
+describe('BackgroundAgentsSection — test run and run as session', () => {
+  const SESSION_PROJECTS = [
+    {
+      id: 'proj-s',
+      name: 'Project S',
+      agents: [
+        { id: 'docs-1', role: 'docs', engine: 'claude-code', name: 'Docs' },
+        { id: 'dev-1', role: 'dev', engine: 'claude-code', name: 'Dev', allowedSkills: null },
+      ],
+      backgroundAgents: {
+        custom: [{ id: 'c1', name: 'Triage', enabled: false, prompt: 'Triage cards' }],
+      },
+    },
+  ];
+
+  beforeEach(() => {
+    (api.getSkills as any).mockResolvedValue([
+      { id: 'agent-hub-kanban', description: 'Board ops' },
+      { id: 'agent-hub-wiki', description: 'Wiki ops' },
+    ]);
+    (api.getBackgroundAgentLastRun as any).mockResolvedValue(null);
+    (api.updateProject as any).mockResolvedValue({});
+  });
+
+  it('reveals mode + skills when Run as session is checked and saves them', async () => {
+    const { getByTestId, queryByTestId } = render(
+      <BackgroundAgentsSection
+        projects={SESSION_PROJECTS}
+        projectId="proj-s"
+        onProjectsChange={vi.fn()}
+        showToast={vi.fn()}
+      />,
+    );
+    expect(queryByTestId('custom-agent-session-mode-0')).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(getByTestId('custom-agent-run-as-session-0'));
+    });
+    const mode = getByTestId('custom-agent-session-mode-0') as HTMLSelectElement;
+    expect(mode.value).toBe('manual');
+    await act(async () => {
+      fireEvent.change(mode, { target: { value: 'consult' } });
+    });
+
+    await waitFor(() => expect(api.getSkills).toHaveBeenCalledWith('dev-1'));
+    await waitFor(() => getByTestId('custom-agent-skill-0-agent-hub-wiki'));
+    await act(async () => {
+      fireEvent.click(getByTestId('custom-agent-skill-0-agent-hub-wiki'));
+    });
+
+    await act(async () => {
+      fireEvent.click(getByTestId('wiki-agent-save'));
+    });
+    const payload = (api.updateProject as any).mock.calls[0][1];
+    expect(payload.backgroundAgents.custom[0]).toMatchObject({
+      runAsSession: true,
+      sessionMode: 'consult',
+      sessionAgentId: null,
+      skills: ['agent-hub-wiki'],
+    });
+  });
+
+  it('Test run saves, starts the run, and links to the new session', async () => {
+    const onNavigate = vi.fn();
+    (api.runBackgroundAgent as any).mockResolvedValue({
+      status: 'session',
+      sessionId: 'sess-1',
+      agentId: 'dev-1',
+      skippedSkills: [],
+    });
+    (api.getBackgroundAgentLastRun as any).mockResolvedValueOnce(null).mockResolvedValue({
+      status: 'succeeded',
+      trigger: 'manual',
+      startedAt: '2026-09-25T00:00:00Z',
+      finishedAt: '2026-09-25T00:00:01Z',
+      output: null,
+      error: null,
+      sessionId: 'sess-1',
+      sessionAgentId: 'dev-1',
+    });
+    const { getByTestId } = render(
+      <BackgroundAgentsSection
+        projects={SESSION_PROJECTS}
+        projectId="proj-s"
+        onProjectsChange={vi.fn()}
+        onNavigate={onNavigate}
+        showToast={vi.fn()}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(getByTestId('custom-agent-test-run-0'));
+    });
+    await waitFor(() => expect(api.runBackgroundAgent).toHaveBeenCalledWith('proj-s', 'c1'));
+    expect(api.updateProject).toHaveBeenCalled();
+
+    const open = await waitFor(() => getByTestId('custom-agent-open-session-0'));
+    fireEvent.click(open);
+    expect(onNavigate).toHaveBeenCalledWith('chat', { agentId: 'dev-1', sessionId: 'sess-1' });
+  });
+
+  it('loads saved agents and their last run when the project list arrives after mount', async () => {
+    (api.getBackgroundAgentLastRun as any).mockResolvedValue({
+      status: 'failed',
+      trigger: 'schedule',
+      startedAt: '2026-09-25T00:00:00Z',
+      finishedAt: '2026-09-25T00:00:01Z',
+      output: null,
+      error: 'Session failed to start: boom',
+      sessionId: 'sess-9',
+      sessionAgentId: 'dev-1',
+    });
+    const props = { projectId: 'proj-s', onProjectsChange: vi.fn(), showToast: vi.fn() };
+    const { rerender, queryByTestId, getByTestId } = render(
+      <BackgroundAgentsSection projects={[]} {...props} />,
+    );
+    expect(queryByTestId('custom-agent-name-0')).toBeNull();
+    expect(api.getBackgroundAgentLastRun).not.toHaveBeenCalled();
+
+    rerender(<BackgroundAgentsSection projects={SESSION_PROJECTS} {...props} />);
+    expect((getByTestId('custom-agent-name-0') as HTMLInputElement).value).toBe('Triage');
+    await waitFor(() => expect(api.getBackgroundAgentLastRun).toHaveBeenCalledWith('proj-s', 'c1'));
+    await waitFor(() => getByTestId('custom-agent-open-session-0'));
+    expect(getByTestId('custom-agent-last-run-0').textContent).toContain('boom');
+  });
+
+  describe('last-run refresh while the page is open', () => {
+    const run = (over: Record<string, unknown>) => ({
+      status: 'succeeded',
+      trigger: 'manual',
+      startedAt: '2026-09-25T00:00:00Z',
+      finishedAt: '2026-09-25T00:00:01Z',
+      output: null,
+      error: null,
+      sessionId: 'sess-1',
+      sessionAgentId: 'dev-1',
+      ...over,
+    });
+
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('picks up a session run that fails after first reporting success', async () => {
+      (api.getBackgroundAgentLastRun as any)
+        .mockResolvedValueOnce(run({}))
+        .mockResolvedValue(
+          run({ status: 'failed', error: 'Session failed to start: engine unavailable' }),
+        );
+      const { getByTestId } = render(
+        <BackgroundAgentsSection
+          projects={SESSION_PROJECTS}
+          projectId="proj-s"
+          onProjectsChange={vi.fn()}
+          showToast={vi.fn()}
+        />,
+      );
+      await waitFor(() =>
+        expect(getByTestId('custom-agent-last-run-0').textContent).toContain('succeeded'),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      await waitFor(() =>
+        expect(getByTestId('custom-agent-last-run-0').textContent).toContain('engine unavailable'),
+      );
+      expect(getByTestId('custom-agent-open-session-0')).toBeTruthy();
+    });
+
+    it('shows a scheduled run that starts after the initial fetch returned nothing', async () => {
+      (api.getBackgroundAgentLastRun as any)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(
+          run({ status: 'running', trigger: 'schedule', finishedAt: null, sessionId: null }),
+        );
+      const { queryByTestId, getByTestId } = render(
+        <BackgroundAgentsSection
+          projects={SESSION_PROJECTS}
+          projectId="proj-s"
+          onProjectsChange={vi.fn()}
+          showToast={vi.fn()}
+        />,
+      );
+      await waitFor(() => expect(api.getBackgroundAgentLastRun).toHaveBeenCalledTimes(1));
+      expect(queryByTestId('custom-agent-last-run-0')).toBeNull();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      await waitFor(() =>
+        expect(getByTestId('custom-agent-last-run-0').textContent).toContain('Running'),
+      );
+      expect(getByTestId('custom-agent-last-run-0').textContent).toContain('scheduled');
+    });
   });
 });

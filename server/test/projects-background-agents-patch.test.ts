@@ -1,5 +1,5 @@
 import type supertest from 'supertest';
-import { getRequest, createProject } from './helpers.js';
+import { getRequest, createProject, createAgent } from './helpers.js';
 
 // ═══════════════════════════════════════════════════════════════════
 // PATCH /api/projects/:projectId — backgroundAgents.wiki
@@ -256,5 +256,121 @@ describe('PATCH /api/projects/:projectId — backgroundAgents.custom', () => {
       .send({ backgroundAgents: { custom: [] } })
       .expect(200);
     expect((res.body as CustomBody).backgroundAgents?.custom).toEqual([]);
+  });
+});
+
+describe('backgroundAgents.custom — run as session', () => {
+  it('persists runAsSession, mode, host agent and skills', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId, role: 'dev' });
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        backgroundAgents: {
+          custom: [
+            {
+              id: 'a1',
+              name: 'Triage',
+              prompt: 'Triage new cards',
+              runAsSession: true,
+              sessionMode: 'consult',
+              sessionAgentId: agent.id,
+              skills: ['agent-hub-kanban', 'agent-hub-kanban', 'agent-hub-wiki'],
+            },
+          ],
+        },
+      })
+      .expect(200);
+    expect((res.body as CustomBody).backgroundAgents?.custom?.[0]).toMatchObject({
+      runAsSession: true,
+      sessionMode: 'consult',
+      sessionAgentId: agent.id,
+      skills: ['agent-hub-kanban', 'agent-hub-wiki'],
+    });
+  });
+
+  it('rejects an unknown session mode', async () => {
+    const project = await createProject();
+    const res = await request
+      .patch(`/api/projects/${project.id as string}`)
+      .send({
+        backgroundAgents: {
+          custom: [{ id: 'a1', name: 'A', prompt: 'x', sessionMode: 'design' }],
+        },
+      })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/sessionMode must be one of/);
+  });
+
+  it('rejects a host agent from another project or with a helper role', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const docs = await createAgent({ projectId, role: 'docs' });
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        backgroundAgents: {
+          custom: [{ id: 'a1', name: 'A', prompt: 'x', sessionAgentId: docs.id }],
+        },
+      })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/sessionAgentId/);
+  });
+
+  it('rejects malformed skill ids', async () => {
+    const project = await createProject();
+    const res = await request
+      .patch(`/api/projects/${project.id as string}`)
+      .send({
+        backgroundAgents: {
+          custom: [{ id: 'a1', name: 'A', prompt: 'x', skills: ['../etc/passwd'] }],
+        },
+      })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/skills must be an array/);
+  });
+});
+
+describe('POST /api/projects/:projectId/background-agents/:agentId/run', () => {
+  it('404s for an unknown background agent', async () => {
+    const project = await createProject();
+    await request
+      .post(`/api/projects/${project.id as string}/background-agents/nope/run`)
+      .expect(404);
+  });
+
+  it('reports a session run that has no eligible host agent as a failed run', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        backgroundAgents: {
+          custom: [{ id: 'a1', name: 'A', prompt: 'x', runAsSession: true }],
+        },
+      })
+      .expect(200);
+    const res = await request
+      .post(`/api/projects/${projectId}/background-agents/a1/run`)
+      .expect(500);
+    expect((res.body as { error: string }).error).toMatch(/no agent that can host/);
+    const last = await request
+      .get(`/api/projects/${projectId}/background-agents/a1/last-run`)
+      .expect(200);
+    expect(last.body).toMatchObject({ status: 'failed', trigger: 'manual' });
+  });
+
+  it('returns null last-run before any run', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ backgroundAgents: { custom: [{ id: 'a1', name: 'A', prompt: 'x' }] } })
+      .expect(200);
+    const res = await request
+      .get(`/api/projects/${projectId}/background-agents/a1/last-run`)
+      .expect(200);
+    expect(res.body).toBeNull();
   });
 });

@@ -757,6 +757,67 @@ components:
           minLength: 1
       required:
         - token
+    BackgroundAgentRun:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - running
+            - succeeded
+            - failed
+        trigger:
+          type: string
+          enum:
+            - manual
+            - schedule
+        startedAt:
+          type: string
+        finishedAt:
+          type: string
+          nullable: true
+        output:
+          type: string
+          nullable: true
+          description: Tail of one-shot output.
+        error:
+          type: string
+          nullable: true
+        sessionId:
+          type: string
+          nullable: true
+          description: Set for session runs.
+        sessionAgentId:
+          type: string
+          nullable: true
+      required:
+        - status
+        - trigger
+        - startedAt
+        - finishedAt
+        - output
+        - error
+        - sessionId
+        - sessionAgentId
+      description: Latest run of a custom background agent (in-memory).
+    BackgroundAgentRunAck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - running
+            - session
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        skippedSkills:
+          type: array
+          items:
+            type: string
+      required:
+        - status
     BackgroundShell:
       type: object
       properties:
@@ -18943,6 +19004,121 @@ paths:
                       - true
                 required:
                   - ok
+  /api/projects/{projectId}/background-agents/{agentId}/run:
+    post:
+      tags:
+        - Projects
+      summary: Test-run a custom background agent now
+      description: Runs the saved config regardless of the enabled toggle. Session runs return the new session id; one-shot runs return immediately with status `running`.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Run started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackgroundAgentRunAck"
+        "400":
+          description: Agent has no prompt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Caller is not the owner or an Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Project or agent not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: A run is already in progress.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Dispatch failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/background-agents/{agentId}/last-run:
+    get:
+      tags:
+        - Projects
+      summary: Latest run of a custom background agent
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Latest run, or null when none since the Hub started.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/BackgroundAgentRun"
+                  - nullable: true
+        "404":
+          description: Project or agent not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/sessions/{sessionId}/background-shells:
     get:
       summary: List background shells for a session

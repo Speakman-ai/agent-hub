@@ -176,6 +176,8 @@ import createDesignRoutes from './routes/designs.js';
 import createSkillRoutes, { DEFAULT_SKILLS_DIR, syncSkillsToClaude } from './routes/skills.js';
 import { resolveGlobalSkillsDir } from './global-skills-dir.js';
 import createSkillEvalRoutes from './routes/skill-evals.js';
+import createBackgroundAgentRoutes from './routes/background-agents.js';
+import { initBackgroundAgentSessionHook } from './background-agent-session.js';
 import createBoardRoutes from './routes/board.js';
 import createConfigRoutes from './routes/config.js';
 import createSessionRoutes, { summarizeTranscript, buildTranscript } from './routes/sessions.js';
@@ -2068,6 +2070,7 @@ app.use(createCronRoutes(routeDeps));
 app.use(createDesignRoutes({ ...routeDeps, getDesignsRoot }));
 app.use(createSkillRoutes(routeDeps));
 app.use(createSkillEvalRoutes(routeDeps));
+app.use(createBackgroundAgentRoutes(routeDeps));
 app.use(createBoardRoutes(routeDeps));
 app.use(createConfigRoutes(routeDeps));
 app.use(createSessionRoutes(routeDeps));
@@ -2373,6 +2376,12 @@ initWikiDocMergeHook({
   config,
   findProject,
   findAgent,
+  handleChat: (ws, msg) => handleChat!(ws, msg),
+  broadcast,
+});
+initBackgroundAgentSessionHook({
+  stmts: stmts!,
+  config,
   handleChat: (ws, msg) => handleChat!(ws, msg),
   broadcast,
 });

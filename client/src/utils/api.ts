@@ -602,6 +602,15 @@ export const api = {
   getProject: (projectId: string) => fetchJSON<ProjectWire>(`/projects/${projectId}`),
   createProject: (data: Record<string, unknown>) =>
     fetchJSON<ProjectWire>('/projects', { method: 'POST', body: JSON.stringify(data) }),
+  runBackgroundAgent: (projectId: string, agentId: string) =>
+    fetchJSON(
+      `/projects/${encodeURIComponent(projectId)}/background-agents/${encodeURIComponent(agentId)}/run`,
+      { method: 'POST', timeout: 120000 },
+    ),
+  getBackgroundAgentLastRun: (projectId: string, agentId: string) =>
+    fetchJSON(
+      `/projects/${encodeURIComponent(projectId)}/background-agents/${encodeURIComponent(agentId)}/last-run`,
+    ),
   updateProject: (projectId: string, data: Record<string, unknown>) =>
     fetchJSON<ProjectWire>(`/projects/${projectId}`, {
       method: 'PATCH',

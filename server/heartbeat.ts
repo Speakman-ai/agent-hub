@@ -16,6 +16,13 @@ import { getOrCreateProcessWorktree } from './worktree.js';
 import { runWorkspacePurge } from './session-purge.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { maybeDispatchScheduledWikiBackfill, isWikiDocSkip } from './wiki-doc-session.js';
+import { dispatchBackgroundAgentSession } from './background-agent-session.js';
+import {
+  finishBackgroundAgentRun,
+  isBackgroundAgentRunning,
+  startBackgroundAgentRun,
+  type BackgroundAgentRun,
+} from './background-agent-runs.js';
 import { listPages, getPage } from './wiki.js';
 import { getProjects } from './project-model.js';
 import {
@@ -1035,20 +1042,67 @@ function runnableCustomAgents(project: Project): BackgroundCustomAgentConfig[] {
   );
 }
 
+/** Outcome of a single custom-agent dispatch, for the manual test-run route. */
+export type CustomAgentDispatchResult =
+  | { status: 'skipped'; reason: 'no_project' | 'no_agent' | 'disabled' | 'no_prompt' | 'busy' }
+  | { status: 'session'; sessionId: string; agentId: string; skippedSkills: string[] }
+  | { status: 'completed'; ok: boolean }
+  | { status: 'failed'; error: string };
+
 /**
- * Fire one custom background agent: run its editable prompt as the configured
- * owner through the same one-shot failover runner crons use. Never throws so a
- * bad run can't kill the scheduler tick.
+ * Fire one custom background agent. Scheduled ticks only run enabled agents;
+ * a manual test run (`force`) runs the saved config regardless of the toggle.
+ * With `runAsSession` the prompt opens a real chat session; otherwise it runs
+ * as the configured owner through the same one-shot failover runner crons use.
+ * Never throws so a bad run can't kill the scheduler tick.
  */
 export async function dispatchBackgroundCustomAgent(
   projectId: string,
   agentId: string,
-): Promise<void> {
+  opts: { force?: boolean; trigger?: 'manual' | 'schedule' } = {},
+): Promise<CustomAgentDispatchResult> {
+  let run: BackgroundAgentRun | null = null;
   try {
     const project = getProjects().find((p) => p.id === projectId);
-    if (!project) return;
-    const agent = runnableCustomAgents(project).find((a) => a.id === agentId);
-    if (!agent) return;
+    if (!project) return { status: 'skipped', reason: 'no_project' };
+    const agent = (project.backgroundAgents?.custom ?? []).find((a) => a && a.id === agentId);
+    if (!agent) return { status: 'skipped', reason: 'no_agent' };
+    if (!agent.enabled && !opts.force) return { status: 'skipped', reason: 'disabled' };
+    if (!agent.prompt || !agent.prompt.trim()) return { status: 'skipped', reason: 'no_prompt' };
+    if (isBackgroundAgentRunning(projectId, agentId)) return { status: 'skipped', reason: 'busy' };
+
+    run = startBackgroundAgentRun(projectId, agentId, opts.trigger ?? 'schedule');
+
+    if (agent.runAsSession) {
+      const sessionRun = run;
+      // Filled in before the kickoff can reject: handleChat always settles
+      // asynchronously, after dispatch has returned.
+      let link: { sessionId: string | null; sessionAgentId: string | null } = {
+        sessionId: null,
+        sessionAgentId: null,
+      };
+      const started = dispatchBackgroundAgentSession(project, agent, {
+        onKickoffError: (message) =>
+          finishBackgroundAgentRun(sessionRun, {
+            ok: false,
+            error: `Session failed to start: ${message}`,
+            ...link,
+          }),
+      });
+      link = { sessionId: started.sessionId, sessionAgentId: started.agentId };
+      finishBackgroundAgentRun(run, {
+        ok: true,
+        ...link,
+        error:
+          started.skippedSkills.length > 0
+            ? `Skills not loaded: ${started.skippedSkills.join(', ')}`
+            : null,
+      });
+      console.log(
+        `[Background Agent] custom "${agent.name}" opened session ${started.sessionId} for "${project.name}"`,
+      );
+      return { status: 'session', ...started };
+    }
 
     const ownerUserId: string | null = agent.ownerUserId ?? null;
     const cwd = await getOrCreateProcessWorktree(
@@ -1096,15 +1150,27 @@ export async function dispatchBackgroundCustomAgent(
       },
       config,
     );
+    const detailed = outcome.detailed;
+    const ok = detailed.code === 0 && !detailed.timedOut;
+    finishBackgroundAgentRun(run, {
+      ok,
+      output: outcome.output,
+      error: ok
+        ? null
+        : detailed.timedOut
+          ? 'Timed out'
+          : (detailed.stderr || '').trim().slice(-2000) || `Exited with code ${detailed.code}`,
+    });
     console.log(
       `[Background Agent] custom "${agent.name}" ran for "${project.name}" via ${outcome.engine}` +
         formatFailoverSummary(outcome.failovers),
     );
+    return { status: 'completed', ok };
   } catch (err: unknown) {
-    console.error(
-      `[Background Agent] custom dispatch threw for ${projectId}/${agentId}:`,
-      (err as Error).message,
-    );
+    const message = (err as Error)?.message ?? String(err);
+    if (run) finishBackgroundAgentRun(run, { ok: false, error: message });
+    console.error(`[Background Agent] custom dispatch threw for ${projectId}/${agentId}:`, message);
+    return { status: 'failed', error: message };
   }
 }
 
@@ -1123,7 +1189,10 @@ export function scheduleCustomBackgroundAgents(): void {
       const key = customBackgroundAgentKey(project.id, agent.id);
       const task = cron.schedule(
         schedule,
-        wrapCronTick(() => dispatchBackgroundCustomAgent(project.id, agent.id), key),
+        wrapCronTick(
+          () => dispatchBackgroundCustomAgent(project.id, agent.id).then(() => undefined),
+          key,
+        ),
         defaultTickOptions({
           intervalSeconds: estimateIntervalSeconds(schedule),
           name: key,
@@ -1164,7 +1233,10 @@ export function rescheduleBackgroundCustomAgents(project: Project): void {
     const key = customBackgroundAgentKey(project.id, agent.id);
     const task = cron.schedule(
       schedule,
-      wrapCronTick(() => dispatchBackgroundCustomAgent(project.id, agent.id), key),
+      wrapCronTick(
+        () => dispatchBackgroundCustomAgent(project.id, agent.id).then(() => undefined),
+        key,
+      ),
       defaultTickOptions({
         intervalSeconds: estimateIntervalSeconds(schedule),
         name: key,
