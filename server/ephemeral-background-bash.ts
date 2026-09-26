@@ -366,6 +366,7 @@ export type EphemeralBashRecoveryReason =
   | 'already_continuing'
   | 'turn_errored'
   | 'chain_cancelled'
+  | 'awaiting_user_input'
   | 'cap_reached';
 
 export interface EphemeralBashRecoveryDecision {
@@ -403,6 +404,8 @@ export function planEphemeralBackgroundBashRecovery(input: {
   turnErrored: boolean;
   /** A Stop landed. The user asked for silence; give them silence. */
   chainCancelled: boolean;
+  /** The turn asked the user a question; a recovery turn would run without the answer. */
+  awaitingUserInput?: boolean;
   /** Recovery continuations already spent on this user turn. */
   priorRecoveryTurns: number;
 }): EphemeralBashRecoveryDecision {
@@ -413,6 +416,7 @@ export function planEphemeralBackgroundBashRecovery(input: {
   });
   if (input.outstandingShells <= 0) return deny('no_outstanding_shells');
   if (input.chainCancelled) return deny('chain_cancelled');
+  if (input.awaitingUserInput) return deny('awaiting_user_input');
   if (input.autoContinuing) return deny('already_continuing');
   if (input.turnErrored) return deny('turn_errored');
   if (input.priorRecoveryTurns >= MAX_EPHEMERAL_BASH_RECOVERY_TURNS) {

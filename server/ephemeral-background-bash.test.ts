@@ -428,6 +428,15 @@ describe('planEphemeralBackgroundBashRecovery', () => {
     expect(decision.reason).toBe('chain_cancelled');
   });
 
+  // The turn ended on a question for the user. A recovery turn would run
+  // without the answer and push the question off screen.
+  it('never continues a turn that is waiting on the user', () => {
+    const decision = planEphemeralBackgroundBashRecovery({ ...base, awaitingUserInput: true });
+    expect(decision.recover).toBe(false);
+    expect(decision.notifyHuman).toBe(false);
+    expect(decision.reason).toBe('awaiting_user_input');
+  });
+
   it('defers to a turn that is already scheduling its own continuation', () => {
     expect(planEphemeralBackgroundBashRecovery({ ...base, autoContinuing: true }).reason).toBe(
       'already_continuing',

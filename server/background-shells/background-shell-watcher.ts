@@ -75,6 +75,13 @@ export interface BackgroundShellWatcherDeps {
    * moment the run parks or a fix turn ends.
    */
   isSessionFinalizing?: (sessionId: string) => boolean;
+  /**
+   * True while the session's last assistant turn asked the user for input
+   * (ask picker / credential card) and no reply has arrived. Wakes and
+   * check-ins are held, not dropped: a turn now would run without the answer
+   * and bury the question. They fire once the user replies.
+   */
+  isSessionAwaitingUserInput?: (sessionId: string) => boolean;
   /** Dispatch the wake turn. Mirrors `handleChat(null, msg)`. */
   dispatchChat: (msg: WatcherChatMessage) => Promise<unknown> | unknown;
   /** Write a `role: 'system'` transcript line. Used only for the give-up notice. */
@@ -205,7 +212,12 @@ export class BackgroundShellWatcher {
         continue;
       }
       const state = this.stateFor(sessionId);
-      if (state.dispatching || state.pending.size > 0 || this.deps.isSessionBusy(sessionId))
+      if (
+        state.dispatching ||
+        state.pending.size > 0 ||
+        this.deps.isSessionBusy(sessionId) ||
+        this.sessionIsAwaitingUserInput(sessionId)
+      )
         continue;
       if (state.lastWakeAtMs !== null && this.now() - state.lastWakeAtMs < MIN_WAKE_INTERVAL_MS)
         continue;
@@ -345,6 +357,7 @@ export class BackgroundShellWatcher {
     });
 
     if (decision.action === 'defer') return;
+    if (decision.action === 'wake' && this.sessionIsAwaitingUserInput(sessionId)) return;
 
     if (decision.action === 'drop') {
       this.logger.log(
@@ -451,6 +464,20 @@ export class BackgroundShellWatcher {
       // Fail closed: a throwing probe must not become a wake that collides
       // with an in-flight Finalize run.
       return true;
+    }
+  }
+
+  private sessionIsAwaitingUserInput(sessionId: string): boolean {
+    try {
+      return this.deps.isSessionAwaitingUserInput?.(sessionId) ?? false;
+    } catch (err) {
+      this.logger.warn(
+        `[bg-watch] isSessionAwaitingUserInput threw session=${sessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      // Fail open: a broken probe must not strand completions forever.
+      return false;
     }
   }
 

@@ -217,6 +217,7 @@ import { allAgents, findProject } from './project-model.js';
 import { setSessionOwner, getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { shouldResetResumeAttemptsOnTurnStart } from './resume-attempts.js';
 import { broadcastAwaitingInputForSession } from './awaiting-input.js';
+import { textRequestsUserInput } from '../shared/utils/userInputRequest.js';
 import { recomputeSessionState } from './session-state.js';
 import { billSessionTurnDurationIfTaggedToFinalize } from './finalize/budget.js';
 import {
@@ -600,6 +601,10 @@ export const MAX_PENDING_CONTEXT_BYTES = 128 * 1024;
  * independently of the `setTimeout`-based scheduler.
  */
 export const AUTO_CONTINUATION_MAX_RETRIES = 12;
+
+/** Transcript line written when the Hub stops a run that asked for user input. */
+export const USER_INPUT_HALT_NOTICE =
+  'Paused: the agent asked for your input, so the run was stopped before it could continue on its own. Answer above to resume.';
 
 /**
  * Decision returned by {@link planAutoContinuationRetry} describing whether
@@ -4263,6 +4268,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const parser = createStreamParser(engine);
       let finalText = '';
       let partialFallback = '';
+      // Set when the agent asked the user for input (ask picker / credential
+      // card) and then kept working; the Hub stops the CLI so nothing runs
+      // until the user answers. The close handler treats that stop as a clean
+      // turn end rather than a cancel.
+      let haltedForUserInput = false;
+      // The parsers lift well-formed ask fences out of the text into
+      // `ask_user_question` events, so the saved text alone can't show them.
+      let askedUserThisTurn = false;
       let errorOutput = '';
       // Accumulates error payloads that arrive on *stdout* (as JSONL for Codex /
       // Gemini) so the close handler can surface a meaningful message even when
@@ -4974,6 +4987,28 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           });
         }
 
+        if (event.type === 'ask_user_question' && !event.parentToolUseId) {
+          askedUserThisTurn = true;
+        }
+
+        if (
+          event.type === 'tool_use' &&
+          !event.parentToolUseId &&
+          !haltedForUserInput &&
+          (askedUserThisTurn || textRequestsUserInput(finalText || partialFallback))
+        ) {
+          haltedForUserInput = true;
+          console.info(
+            `[chat] session ${sessionId}: agent asked for user input, then called ${event.tool}; stopping the run until the user answers`,
+          );
+          try {
+            activeHandle.kill('SIGTERM');
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn(`[chat] awaiting-input stop failed for ${sessionId}: ${message}`);
+          }
+        }
+
         if (event.type === 'tool_use' && typeof event.tool === 'string') {
           const toolInput = (event.input as Record<string, unknown>) || {};
           // Native background Bash shells become unreachable when this CLI
@@ -5128,7 +5163,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
         const assembled = (finalText || partialFallback).trim();
 
-        const termination = resolveChatTerminationOnClose(sessionId, code, signal);
+        let termination = resolveChatTerminationOnClose(sessionId, code, signal);
+        // Our own awaiting-input stop is recorded as no reason (`unknown_signal`).
+        // A real Stop / interrupt that raced it keeps its recorded reason and
+        // still takes the cancel path.
+        if (haltedForUserInput && (!termination || termination.reason === 'unknown_signal')) {
+          termination = null;
+          code = 0;
+          signal = null;
+          persistCloseCardGateSystemMessage(sessionId, USER_INPUT_HALT_NOTICE, {
+            kind: 'awaiting_user_input_halt',
+          });
+        }
         if (termination) {
           console.info(
             formatChatExitLog({
@@ -5521,6 +5567,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // preview. Detected here alongside the other action blocks so the
         // post-stream hook below can dispatch boot + screenshot async.
         const previewDetection = detectPreviewBlock(rawFinalContent);
+        // The agent handed control to the human. No host-scheduled turn
+        // (ReAct hop, error retry, shell recovery) may run before they answer.
+        const awaitingUserInput =
+          haltedForUserInput || askedUserThisTurn || textRequestsUserInput(rawFinalContent);
         let shouldAutoContinue = false;
         let budgetResult: { ok: boolean; reasons: string[] } = { ok: false, reasons: [] };
         let continuationContextAdded = false;
@@ -6265,7 +6315,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // process to kill) still cancels the chain: never schedule the next
         // turn once cancel is requested, regardless of budget.
         const chainCancelled = isReactChainCancelRequested(sessionId);
-        shouldAutoContinue = budgetResult.ok && !chainCancelled;
+        shouldAutoContinue = budgetResult.ok && !chainCancelled && !awaitingUserInput;
 
         if (
           continuationDepth > 0 ||
@@ -6285,20 +6335,26 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             chainElapsedMs: Date.now() - chainStartedAtMs,
             detail: chainCancelled
               ? 'continuation_cancelled_by_user'
-              : budgetResult.ok
-                ? 'continuation_allowed'
-                : budgetResult.reasons.length
-                  ? budgetResult.reasons.join('; ')
-                  : 'blocked_or_ineligible',
+              : awaitingUserInput
+                ? 'continuation_paused_for_user_input'
+                : budgetResult.ok
+                  ? 'continuation_allowed'
+                  : budgetResult.reasons.length
+                    ? budgetResult.reasons.join('; ')
+                    : 'blocked_or_ineligible',
           });
         }
 
         // Persist the automatic wiki-RAG indicator on the assistant row so the
         // "Consulted wiki" chip survives reload (the live chip rides the `done`
         // broadcast below). Only present when retrieval actually ran this turn.
-        const assistantMetadata = wikiRagIndicator
-          ? JSON.stringify({ wikiRag: wikiRagIndicator })
-          : null;
+        const assistantMetadataObj: Record<string, unknown> = {};
+        if (wikiRagIndicator) assistantMetadataObj.wikiRag = wikiRagIndicator;
+        if (awaitingUserInput) assistantMetadataObj.awaitingUserInput = true;
+        const assistantMetadata =
+          Object.keys(assistantMetadataObj).length > 0
+            ? JSON.stringify(assistantMetadataObj)
+            : null;
         try {
           S.addMessage.run(
             assistantMsgId,
@@ -6414,7 +6470,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
         const wouldBaseContinue =
           reactLoopEnabled && continuationContextAdded && !controlFlowPresent;
-        if (wouldBaseContinue && !budgetResult.ok && budgetResult.reasons.length > 0) {
+        if (
+          wouldBaseContinue &&
+          !awaitingUserInput &&
+          !budgetResult.ok &&
+          budgetResult.reasons.length > 0
+        ) {
           const sysId = uuidv4();
           const body = `**ReAct chain halted**\n\nContext was loaded for a follow-up model turn, but orchestration budgets blocked auto-continuation:\n- ${budgetResult.reasons.join('\n- ')}`;
           try {
@@ -6684,6 +6745,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // automation-runner side). Transient errors get a bounded
         // auto-continuation: the engine session resumes with a recovery
         // prompt so the agent verifies and finishes the interrupted work.
+        if (turnEndError && awaitingUserInput) {
+          // The agent already asked its question; retrying or failing over
+          // would run a turn without the answer. Keep the work, wait for input.
+          await runWorktreeAutoCommitAndDrainTail(false);
+          return;
+        }
+
         if (turnEndError) {
           const transientRetries = msg._transientErrorRetry ?? 0;
           const retryPlan = planTransientErrorRetry(transientRetries, turnEndError.errorText);
@@ -6788,6 +6856,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           autoContinuing: false, // the `shouldAutoContinue` branch already returned
           turnErrored: false, // the `turnEndError` branch already returned
           chainCancelled: isReactChainCancelRequested(sessionId),
+          awaitingUserInput,
           priorRecoveryTurns: priorBashRecoveries,
         });
 
@@ -6858,7 +6927,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // from the HTTP stop hook immediately; if git still looked clean, the hook
         // path marked the session "handled" and proc skipped — no `changes_ready`
         // / Create PR banner even with Isolated ON.
-        await runWorktreeAutoCommitAndDrainTail(true);
+        // Never auto-start Finalize on a turn that ends with an open question:
+        // shipping would answer it on the user's behalf.
+        await runWorktreeAutoCommitAndDrainTail(!awaitingUserInput);
       });
 
       cliIo.onError((err: Error) => {

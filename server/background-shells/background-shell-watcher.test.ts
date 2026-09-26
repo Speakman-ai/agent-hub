@@ -157,6 +157,46 @@ describe('BackgroundShellWatcher', () => {
     expect(dispatchChat.mock.calls[26][0].content).toContain('finished successfully');
   });
 
+  it('holds check-ins and completion wakes while the session waits on the user', async () => {
+    let awaiting = true;
+    runtime.put(
+      row({ status: 'running', exit_code: null, created_at: new Date(1_000_000).toISOString() }),
+    );
+    const { watcher, dispatchChat, advance } = build(runtime, {
+      isSessionAwaitingUserInput: () => awaiting,
+    });
+    advance(600_000);
+    watcher.tickAll();
+    await settle();
+    expect(dispatchChat).not.toHaveBeenCalled();
+
+    runtime.emitFinalize(row());
+    await settle();
+    expect(dispatchChat).not.toHaveBeenCalled();
+    // Held, not dropped: the completion is still reported once the user replies.
+    expect(runtime.rows.get('shell-1')?.watch).toBe(1);
+    expect(watcher.pendingCount('sess-1')).toBe(1);
+
+    awaiting = false;
+    advance(MIN_WAKE_INTERVAL_MS);
+    watcher.tickAll();
+    await settle();
+    expect(dispatchChat).toHaveBeenCalledTimes(1);
+    expect(dispatchChat.mock.calls[0][0].content).toContain('finished successfully');
+  });
+
+  it('wakes normally when the awaiting-input probe throws', async () => {
+    const { watcher, dispatchChat } = build(runtime, {
+      isSessionAwaitingUserInput: () => {
+        throw new Error('db down');
+      },
+    });
+    runtime.emitFinalize(row());
+    await settle();
+    expect(dispatchChat).toHaveBeenCalledTimes(1);
+    watcher.close();
+  });
+
   it('defers while busy, coalesces due shells, and measures output since the last check-in', async () => {
     let busy = true;
     const { watcher, dispatchChat, advance } = build(runtime, { isSessionBusy: () => busy });

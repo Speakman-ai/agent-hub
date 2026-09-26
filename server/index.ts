@@ -189,6 +189,7 @@ import {
 } from './project-visibility-middleware.js';
 import { filterVisibleProjects } from './project-visibility.js';
 import { isHubSystemProject } from '../shared/utils/hub.js';
+import { isAwaitingUserReply } from '../shared/utils/userInputRequest.js';
 import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
 import createPreviewSecretsRoutes from './routes/preview-secrets.js';
 import createProjectAwsRoutes from './routes/project-aws.js';
@@ -1410,6 +1411,8 @@ const backgroundShellWatcher = new BackgroundShellWatcher({
       stmts!.getActiveTask.get(sessionId) as ActiveTaskRow | undefined,
     ),
   isSessionFinalizing: (sessionId) => Boolean(stmts!.getActiveFinalizeRunForSession.get(sessionId)),
+  isSessionAwaitingUserInput: (sessionId) =>
+    isAwaitingUserReply(stmts!.getMessages.all(sessionId) as MessageRow[]),
   dispatchChat: (msg) => handleChat!(null, msg as unknown as ChatMessage),
   persistSystemMessage: (sessionId, content, meta) =>
     persistWatchSystemMessage(sessionId, content, meta),
