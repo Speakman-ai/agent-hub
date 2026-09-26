@@ -820,6 +820,9 @@ const LOG_INGEST_PATH = /^\/api\/(?:otel\/v1\/logs|logs\/ingest)\/?$/;
 // 1 MiB cap; letting the 20 MB global parser run first would allow an
 // unauthenticated caller to allocate 20 MB before the token is even checked.
 const INFRA_HEALTH_INGEST_PATH_RE = /^\/api\/infra\/health\/ingest\/?$/;
+// Wiki file uploads read the raw body so a `.json` document is stored as
+// bytes, not parsed into an object by the global JSON parser.
+const WIKI_FILE_UPLOAD_PATH = /^\/api\/projects\/[^/]+\/wiki-files\/?$/;
 const globalJsonParser = express.json({
   limit: '20mb',
   verify: (req: Request, _res, buf: Buffer) => {
@@ -832,7 +835,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     (ARTIFACT_UPLOAD_PATH.test(req.path) ||
       REPLAY_INGEST_PATH.test(req.path) ||
       LOG_INGEST_PATH.test(req.path) ||
-      INFRA_HEALTH_INGEST_PATH_RE.test(req.path))
+      INFRA_HEALTH_INGEST_PATH_RE.test(req.path) ||
+      WIKI_FILE_UPLOAD_PATH.test(req.path))
   ) {
     return next();
   }

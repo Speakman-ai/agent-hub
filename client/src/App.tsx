@@ -3326,6 +3326,10 @@ export default function App({ initialView }: any = {}) {
           window.dispatchEvent(new CustomEvent('git_host_mirror', { detail: data }));
           break;
 
+        case 'wiki_files_update':
+          window.dispatchEvent(new CustomEvent('wiki_files_update', { detail: data }));
+          break;
+
         case 'wiki_delete':
           window.dispatchEvent(new CustomEvent('wiki_delete', { detail: data }));
           break;

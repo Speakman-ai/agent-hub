@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
 import type { z } from 'zod';
 import {
   listPages,
@@ -8,6 +8,8 @@ import {
   deletePage,
   searchPages,
   CATEGORIES as WIKI_CATEGORIES,
+  getPageSourceFile,
+  FileBackedPageError,
 } from '../wiki.js';
 import {
   searchWiki,
@@ -23,7 +25,31 @@ import {
   SearchWikiQuerySchema,
   DocumentBackfillRequestSchema,
   WikiScanRequestSchema,
+  ListWikiFilesQuerySchema,
+  UploadWikiFileQuerySchema,
+  MoveWikiFileRequestSchema,
 } from './wiki.openapi.js';
+import {
+  listWikiFiles,
+  getWikiFile,
+  saveWikiFile,
+  moveWikiFile,
+  deleteWikiFile,
+  WikiFileInputError,
+  MAX_WIKI_FILE_BYTES,
+  getWikiFileStore,
+  wikiUploadGate,
+  wikiDownloadGate,
+} from '../wiki-files.js';
+import {
+  admitted,
+  AdmissionRejectedError,
+  RequestCancelledError,
+  sendAdmissionRejected,
+} from '../upload-admission.js';
+import { UnsupportedWikiFileError, WikiFileTooLargeError } from '../wiki-file-extract.js';
+import { validateUploadContent } from '../upload-validation.js';
+import type { UploadStore } from '../upload-store.js';
 import {
   dispatchWikiDocBackfill,
   dispatchWikiDocScan,
@@ -88,8 +114,10 @@ export default function createWikiRoutes({
   stmts,
   handleChat,
   config,
+  serverDir,
 }: RouteDeps): Router {
   const router = Router({ mergeParams: true });
+  const getFileStore = (): UploadStore => getWikiFileStore(config, serverDir);
 
   function stampLinkedCardDocumented(req: Request, projectId: string): void {
     const sessionId = resolveCardSessionId(req, undefined);
@@ -289,10 +317,164 @@ export default function createWikiRoutes({
     res.json(WIKI_CATEGORIES);
   });
 
+  // Uploaded files live under `/wiki-files`, outside the `/wiki/:slug`
+  // namespace, so no route here can shadow a page whose slug is `files`.
+  router.get('/api/projects/:projectId/wiki-files', (req: Request, res: Response) => {
+    const projectId = req.params.projectId as string;
+    if (!findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+    const parsed = parseQuery(ListWikiFilesQuerySchema, req, res);
+    if (!parsed) return;
+    try {
+      res.json(listWikiFiles(projectId, parsed.folder));
+    } catch (err) {
+      if (err instanceof WikiFileInputError) return res.status(400).json({ error: err.message });
+      throw err;
+    }
+  });
+
+  router.post(
+    '/api/projects/:projectId/wiki-files',
+    // Cheap rejections first, then admission, then (only once admitted) the
+    // body parser. Waiting requests never buffer their bodies.
+    (req: Request, res: Response, next: NextFunction) => {
+      if (!findProject(req.params.projectId as string)) {
+        return res.status(404).json({ error: 'Project not found' });
+      }
+      const declared = Number(req.headers['content-length']);
+      if (Number.isFinite(declared) && declared > MAX_WIKI_FILE_BYTES) {
+        res.setHeader('Connection', 'close');
+        return res
+          .status(413)
+          .json({ error: `File too large. Max size: ${MAX_WIKI_FILE_BYTES / 1024 / 1024}MB` });
+      }
+      next();
+    },
+    admitted(
+      wikiUploadGate,
+      [express.raw({ type: () => true, limit: MAX_WIKI_FILE_BYTES })],
+      async (req: Request, res: Response, signal: AbortSignal) => {
+        const projectId = req.params.projectId as string;
+        const parsed = parseQuery(UploadWikiFileQuerySchema, req, res);
+        if (!parsed) return;
+
+        const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+        const contentType = (req.headers['content-type'] as string | undefined) || '';
+        const rejectReason = body.length > 0 ? validateUploadContent(contentType, body) : null;
+        if (rejectReason) {
+          res.status(400).json({ error: rejectReason });
+          return;
+        }
+
+        try {
+          const result = await saveWikiFile(projectId, getFileStore(), {
+            folder: parsed.folder,
+            filename: parsed.filename,
+            contentType,
+            body,
+            uploadedBy: resolveOwnerUserId(req as AuthenticatedRequest),
+            signal,
+          });
+          stampLinkedCardDocumented(req, projectId);
+          broadcast({ type: 'wiki_update', projectId, page: result.page });
+          broadcast({ type: 'wiki_files_update', projectId });
+          res.status(result.replaced ? 200 : 201).json(result);
+        } catch (err) {
+          if (err instanceof RequestCancelledError) return;
+          if (err instanceof WikiFileInputError) {
+            const tooLarge = err.message.startsWith('File too large');
+            res.status(tooLarge ? 413 : 400).json({ error: err.message });
+          } else if (err instanceof WikiFileTooLargeError) {
+            res.status(413).json({ error: err.message });
+          } else if (err instanceof UnsupportedWikiFileError) {
+            res.status(415).json({ error: err.message });
+          } else if (err instanceof AdmissionRejectedError) {
+            sendAdmissionRejected(res, err);
+          } else {
+            console.warn('[wiki-files] upload failed:', (err as Error).message);
+            res.status(422).json({ error: `Could not read file: ${(err as Error).message}` });
+          }
+        }
+      },
+    ),
+  );
+
+  router.get(
+    '/api/projects/:projectId/wiki-files/:fileId/download',
+    admitted(wikiDownloadGate, [], async (req: Request, res: Response, signal: AbortSignal) => {
+      const file = getWikiFile(req.params.projectId as string, req.params.fileId as string);
+      if (!file) {
+        res.status(404).json({ error: 'File not found' });
+        return;
+      }
+      try {
+        // The slot stays held until this read settles, even if the client leaves.
+        const bytes = await getFileStore().getBytes(file.storage_key);
+        if (signal.aborted) return;
+        if (!bytes) {
+          res.status(404).json({ error: 'File contents are missing' });
+          return;
+        }
+        const asciiName = file.filename.replace(/[^\x20-\x7e]|["\\]/g, '_');
+        res.setHeader('Content-Type', file.content_type || 'application/octet-stream');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+        );
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        // Hold the slot until the bytes have been handed to the socket.
+        await new Promise<void>((resolve) => {
+          res.once('close', resolve);
+          res.send(bytes);
+        });
+      } catch (err) {
+        if (!res.headersSent) res.status(500).json({ error: (err as Error).message });
+      }
+    }),
+  );
+
+  router.patch('/api/projects/:projectId/wiki-files/:fileId', (req: Request, res: Response) => {
+    const projectId = req.params.projectId as string;
+    const parsed = parseBody(MoveWikiFileRequestSchema, req, res);
+    if (!parsed) return;
+    if (!getWikiFile(projectId, req.params.fileId as string)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    try {
+      const { file, pageSlug } = moveWikiFile(
+        projectId,
+        req.params.fileId as string,
+        parsed.folder,
+        resolveOwnerUserId(req as AuthenticatedRequest),
+      );
+      if (pageSlug) broadcast({ type: 'wiki_update', projectId, page: { slug: pageSlug } });
+      broadcast({ type: 'wiki_files_update', projectId });
+      res.json(file);
+    } catch (err) {
+      if (err instanceof WikiFileInputError) {
+        const status = err.message.includes('already exists') ? 409 : 400;
+        return res.status(status).json({ error: err.message });
+      }
+      throw err;
+    }
+  });
+
+  router.delete(
+    '/api/projects/:projectId/wiki-files/:fileId',
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const result = await deleteWikiFile(projectId, getFileStore(), req.params.fileId as string);
+      if (!result.deleted) return res.status(404).json({ error: 'File not found' });
+      if (result.pageSlug) broadcast({ type: 'wiki_delete', projectId, slug: result.pageSlug });
+      broadcast({ type: 'wiki_files_update', projectId });
+      res.json({ ok: true });
+    },
+  );
+
   router.get('/api/projects/:projectId/wiki/:slug', (req: Request, res: Response) => {
     const page = getPage(req.params.projectId as string, req.params.slug as string);
     if (!page) return res.status(404).json({ error: 'Page not found' });
-    res.json(page);
+    // Clients render file-generated pages read-only.
+    res.json({ ...page, source_file: getPageSourceFile(page.id) });
   });
 
   router.post('/api/projects/:projectId/wiki', (req: Request, res: Response) => {
@@ -333,6 +515,11 @@ export default function createWikiRoutes({
       broadcast({ type: 'wiki_update', projectId: req.params.projectId, page });
       res.json(page);
     } catch (err) {
+      if (err instanceof FileBackedPageError) {
+        return res
+          .status(409)
+          .json({ error: err.message, code: 'file_backed_page', source_file: err.sourceFile });
+      }
       if ((err as Error).message.includes('not found'))
         return res.status(404).json({ error: (err as Error).message });
       res.status(409).json({ error: (err as Error).message });

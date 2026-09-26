@@ -44,6 +44,7 @@ const WIKI_CATEGORIES = [
   'test-patterns',
   'troubleshooting',
   'onboarding',
+  'documents',
 ] as const;
 
 const WikiCategoryEnum = z.enum(WIKI_CATEGORIES);
@@ -62,6 +63,10 @@ export const WikiPageComponent = registerComponent(
       updated_by: z.string(),
       created_at: z.string(),
       updated_at: z.string(),
+      source_file: z.object({ id: z.string(), path: z.string() }).nullable().optional().openapi({
+        description:
+          'Set when the page is generated from an uploaded wiki file. Such pages are read-only; PUT returns 409 `file_backed_page`.',
+      }),
     })
     .openapi({ description: 'A wiki page row (includes full content).' }),
 );
@@ -507,5 +512,169 @@ registerPath({
       content: jsonContent(z.object({ ok: z.literal(true) })),
     },
     404: errorResponse('Page not found.'),
+  },
+});
+
+// Wiki files — uploaded documents in folders, indexed via a linked page.
+
+export const WikiFileComponent = registerComponent(
+  'WikiFile',
+  z
+    .object({
+      id: z.string(),
+      project_id: z.string(),
+      folder: z.string().openapi({ description: 'Slash-separated folder path; empty for root.' }),
+      filename: z.string(),
+      path: z.string().openapi({ description: '`folder/filename`.' }),
+      content_type: z.string(),
+      size_bytes: z.number().int(),
+      storage_key: z.string(),
+      page_id: z.string().nullable(),
+      page_slug: z
+        .string()
+        .nullable()
+        .openapi({ description: 'Slug of the wiki page holding the extracted text.' }),
+      extracted_chars: z.number().int(),
+      truncated: z.number().int(),
+      uploaded_by: z.string().nullable(),
+      created_at: z.string(),
+      updated_at: z.string(),
+    })
+    .openapi({
+      description:
+        'An uploaded wiki file. Its extracted text lives in the linked wiki page (category `documents`), which FTS, embeddings, and RAG index.',
+    }),
+);
+
+export const ListWikiFilesQuerySchema = z.object({
+  folder: z.string().optional().openapi({
+    description: 'Only list files directly in this folder. Omit to list every file.',
+  }),
+});
+
+export const UploadWikiFileQuerySchema = z.object({
+  filename: z.string().min(1, 'filename is required'),
+  folder: z.string().optional(),
+});
+
+export const MoveWikiFileRequestSchema = z.object({
+  folder: z.string().openapi({ description: 'Destination folder path; empty string for root.' }),
+});
+
+const wikiFileParams = z.object({ projectId: z.string(), fileId: z.string() });
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/wiki-files',
+  tags: ['Wiki'],
+  summary: 'List uploaded wiki files',
+  request: { params: projectIdParams, query: ListWikiFilesQuerySchema },
+  responses: {
+    200: {
+      description: 'Files, ordered by folder then filename.',
+      content: jsonContent(z.array(WikiFileComponent)),
+    },
+    400: errorResponse('Invalid folder.'),
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/wiki-files',
+  tags: ['Wiki'],
+  summary: 'Upload a file into a wiki folder',
+  description:
+    'Raw request body is the file bytes. Text is extracted (PDF, DOCX, Markdown, HTML, plain-text formats) into a linked wiki page with category `documents`, so the document is searchable and used for RAG. Re-uploading the same `folder` + `filename` replaces the file and rewrites the page in place.',
+  request: {
+    params: projectIdParams,
+    query: UploadWikiFileQuerySchema,
+    body: {
+      content: {
+        'application/octet-stream': {
+          schema: z.string().openapi({ format: 'binary', description: 'Raw file bytes.' }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Existing file replaced.',
+      content: jsonContent(
+        z.object({
+          file: WikiFileComponent,
+          page: z.object({ id: z.string(), slug: z.string(), title: z.string() }),
+          replaced: z.boolean(),
+        }),
+      ),
+    },
+    201: {
+      description: 'New file stored and indexed.',
+      content: jsonContent(
+        z.object({
+          file: WikiFileComponent,
+          page: z.object({ id: z.string(), slug: z.string(), title: z.string() }),
+          replaced: z.boolean(),
+        }),
+      ),
+    },
+    400: errorResponse('Missing filename, bad folder, empty body, or rejected executable.'),
+    404: errorResponse('Project not found.'),
+    413: errorResponse('File too large, or it expands past the extraction limits.'),
+    415: errorResponse('Unsupported file type.'),
+    422: errorResponse('The file could not be parsed.'),
+    503: errorResponse(
+      'Upload capacity is saturated. Retry after the `Retry-After` header (seconds); `code` is `busy`.',
+    ),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/wiki-files/{fileId}/download',
+  tags: ['Wiki'],
+  summary: 'Download the original bytes of an uploaded wiki file',
+  request: { params: wikiFileParams },
+  responses: {
+    200: {
+      description: 'File bytes with the stored content type.',
+      content: {
+        'application/octet-stream': { schema: z.string().openapi({ format: 'binary' }) },
+      },
+    },
+    404: errorResponse('File not found.'),
+    503: errorResponse('Download capacity is saturated. Retry after `Retry-After` seconds.'),
+  },
+});
+
+registerPath({
+  method: 'patch',
+  path: '/api/projects/{projectId}/wiki-files/{fileId}',
+  tags: ['Wiki'],
+  summary: 'Move an uploaded wiki file to another folder',
+  request: {
+    params: wikiFileParams,
+    body: { content: jsonContent(MoveWikiFileRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated file.', content: jsonContent(WikiFileComponent) },
+    400: errorResponse('Invalid folder.'),
+    404: errorResponse('File not found.'),
+    409: errorResponse('A file with that name already exists in the destination folder.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/wiki-files/{fileId}',
+  tags: ['Wiki'],
+  summary: 'Delete an uploaded wiki file and its indexed page',
+  request: { params: wikiFileParams },
+  responses: {
+    200: {
+      description: 'Acknowledgment.',
+      content: jsonContent(z.object({ ok: z.literal(true) })),
+    },
+    404: errorResponse('File not found.'),
   },
 });

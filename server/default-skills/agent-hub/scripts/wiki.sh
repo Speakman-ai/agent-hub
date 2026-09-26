@@ -8,6 +8,8 @@
 #   create <json>               create a page
 #   update <slug> <json>        update a page
 #   document-backfill [limit]   start an on-demand docs-agent wiki review
+#   files  [folder]             list uploaded files (optionally one folder)
+#   upload <file> [folder]      upload a document; its text is indexed for search
 
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,6 +74,23 @@ case "$cmd" in
       hub_api POST "/api/projects/$PROJECT_ID/wiki/document-backfill" -d '{}'
     fi
     ;;
+  files)
+    folder="${1:-}"
+    if [[ -n "$folder" ]]; then
+      hub_api GET "/api/projects/$PROJECT_ID/wiki-files?folder=$(url_encode "$folder")"
+    else
+      hub_api GET "/api/projects/$PROJECT_ID/wiki-files"
+    fi
+    ;;
+  upload)
+    file="${1:-}"; folder="${2:-}"
+    [[ -n "$file" ]] || usage_die "usage: wiki.sh upload <file> [folder]"
+    [[ -f "$file" ]] || usage_die "wiki.sh upload: no such file: $file"
+    qs="filename=$(url_encode "$(basename "$file")")"
+    [[ -n "$folder" ]] && qs+="&folder=$(url_encode "$folder")"
+    # The server stores raw bytes and infers the type from the extension.
+    hub_api POST "/api/projects/$PROJECT_ID/wiki-files?$qs" --data-binary @"$file"
+    ;;
   help|-h|--help|'')
     cat <<EOF
 usage: wiki.sh <subcommand> [args]
@@ -81,6 +100,8 @@ usage: wiki.sh <subcommand> [args]
   create <json>
   update <slug> <json>
   document-backfill [limit]   review oldest undocumented Done cards (on demand)
+  files  [folder]             list uploaded files
+  upload <file> [folder]      upload a document (PDF, DOCX, MD, HTML, text) into a folder
 EOF
     ;;
   *)

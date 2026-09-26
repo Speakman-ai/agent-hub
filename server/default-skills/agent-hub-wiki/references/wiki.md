@@ -13,7 +13,7 @@ Back to [SKILL.md](../SKILL.md).
 ## Categories
 
 `general`, `api-docs`, `architecture`, `conventions`, `test-patterns`,
-`troubleshooting`, `onboarding`.
+`troubleshooting`, `onboarding`, `documents` (text extracted from uploaded files).
 
 ## Always search before creating
 
@@ -42,6 +42,22 @@ scripts/wiki.sh update <slug> '{
   "updatedBy": "your-agent-name"
 }'
 ```
+
+## Uploaded files (SOPs, runbooks, reference docs)
+
+Users can upload documents into folders from the wiki **Files** view. Each
+upload's text is extracted (PDF, DOCX, Markdown, HTML, plain text, CSV, JSON,
+YAML) into a linked page with category `documents`, so normal wiki search and
+RAG already find it. Read the extracted text with `wiki.sh read <slug>`; the
+file row's `page_slug` names the page.
+
+```bash
+scripts/wiki.sh files                        # every file, with folder + page_slug
+scripts/wiki.sh files "SOPs/Safety"          # one folder
+scripts/wiki.sh upload ./lockout.pdf "SOPs/Safety"   # same name + folder replaces
+```
+
+An upload can return 503 `busy` when the server's upload slots are full; wait the `Retry-After` seconds and retry. Pages generated from files are read-only: `wiki.sh update` on one returns 409 `file_backed_page`. Change the text by re-uploading the file.
 
 ## What to write
 

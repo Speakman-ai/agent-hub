@@ -39,7 +39,7 @@ import { resolveCronEngine } from '../cron-engine.js';
 import { resolveOwnerUserId } from '../session-ownership.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
-import { syncWikiPageFts } from '../wiki.js';
+import { syncWikiPageFts, getPageSourceFile } from '../wiki.js';
 import { getUserById } from '../users-store.js';
 import { isEmailIdentifier } from '../auth-validation.js';
 import { applySmtpPatch, maskSmtpConfig } from '../smtp-config.js';
@@ -1430,6 +1430,14 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           const existing = stmts.getWikiPage.get(targetProjectId, slug) as
             | { id?: string }
             | undefined;
+          if (existing && typeof existing.id === 'string' && getPageSourceFile(existing.id)) {
+            // Generated from an uploaded file; the file row owns its text.
+            console.warn(
+              `[wiki] import: skipping "${slug}", it is generated from an uploaded file`,
+            );
+            skipped++;
+            continue;
+          }
           if (existing) {
             stmts.updateWikiPage.run(title, content, category, updatedBy, targetProjectId, slug);
             if (typeof existing.id === 'string') {

@@ -15324,6 +15324,18 @@ components:
           type: string
         updated_at:
           type: string
+        source_file:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            path:
+              type: string
+          required:
+            - id
+            - path
+          description: Set when the page is generated from an uploaded wiki file. Such pages are read-only; PUT returns 409 `file_backed_page`.
       required:
         - id
         - project_id
@@ -15528,6 +15540,62 @@ components:
         - pageCount
         - maxChanges
       description: A docs-agent scan session was started (or an already-running scan was reused). `pageCount` is how many wiki pages existed when the scan was queued.
+    WikiFile:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        folder:
+          type: string
+          description: Slash-separated folder path; empty for root.
+        filename:
+          type: string
+        path:
+          type: string
+          description: "`folder/filename`."
+        content_type:
+          type: string
+        size_bytes:
+          type: integer
+        storage_key:
+          type: string
+        page_id:
+          type: string
+          nullable: true
+        page_slug:
+          type: string
+          nullable: true
+          description: Slug of the wiki page holding the extracted text.
+        extracted_chars:
+          type: integer
+        truncated:
+          type: integer
+        uploaded_by:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - folder
+        - filename
+        - path
+        - content_type
+        - size_bytes
+        - storage_key
+        - page_id
+        - page_slug
+        - extracted_chars
+        - truncated
+        - uploaded_by
+        - created_at
+        - updated_at
+      description: An uploaded wiki file. Its extracted text lives in the linked wiki page (category `documents`), which FTS, embeddings, and RAG index.
     EpicPullsResponse:
       type: object
       properties:
@@ -46285,6 +46353,7 @@ paths:
                     - test-patterns
                     - troubleshooting
                     - onboarding
+                    - documents
   /api/projects/{projectId}/wiki/{slug}:
     get:
       tags:
@@ -46413,6 +46482,294 @@ paths:
                   - ok
         "404":
           description: Page not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+  /api/projects/{projectId}/wiki-files:
+    get:
+      tags:
+        - Wiki
+      summary: List uploaded wiki files
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Only list files directly in this folder. Omit to list every file.
+          required: false
+          description: Only list files directly in this folder. Omit to list every file.
+          name: folder
+          in: query
+      responses:
+        "200":
+          description: Files, ordered by folder then filename.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WikiFile"
+        "400":
+          description: Invalid folder.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+    post:
+      tags:
+        - Wiki
+      summary: Upload a file into a wiki folder
+      description: Raw request body is the file bytes. Text is extracted (PDF, DOCX, Markdown, HTML, plain-text formats) into a linked wiki page with category `documents`, so the document is searchable and used for RAG. Re-uploading the same `folder` + `filename` replaces the file and rewrites the page in place.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: filename
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: folder
+          in: query
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw file bytes.
+      responses:
+        "200":
+          description: Existing file replaced.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  file:
+                    $ref: "#/components/schemas/WikiFile"
+                  page:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      slug:
+                        type: string
+                      title:
+                        type: string
+                    required:
+                      - id
+                      - slug
+                      - title
+                  replaced:
+                    type: boolean
+                required:
+                  - file
+                  - page
+                  - replaced
+        "201":
+          description: New file stored and indexed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  file:
+                    $ref: "#/components/schemas/WikiFile"
+                  page:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      slug:
+                        type: string
+                      title:
+                        type: string
+                    required:
+                      - id
+                      - slug
+                      - title
+                  replaced:
+                    type: boolean
+                required:
+                  - file
+                  - page
+                  - replaced
+        "400":
+          description: Missing filename, bad folder, empty body, or rejected executable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "413":
+          description: File too large, or it expands past the extraction limits.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "415":
+          description: Unsupported file type.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "422":
+          description: The file could not be parsed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "503":
+          description: Upload capacity is saturated. Retry after the `Retry-After` header (seconds); `code` is `busy`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+  /api/projects/{projectId}/wiki-files/{fileId}/download:
+    get:
+      tags:
+        - Wiki
+      summary: Download the original bytes of an uploaded wiki file
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: fileId
+          in: path
+      responses:
+        "200":
+          description: File bytes with the stored content type.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: File not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "503":
+          description: Download capacity is saturated. Retry after `Retry-After` seconds.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+  /api/projects/{projectId}/wiki-files/{fileId}:
+    patch:
+      tags:
+        - Wiki
+      summary: Move an uploaded wiki file to another folder
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: fileId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                folder:
+                  type: string
+                  description: Destination folder path; empty string for root.
+              required:
+                - folder
+      responses:
+        "200":
+          description: Updated file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiFile"
+        "400":
+          description: Invalid folder.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "404":
+          description: File not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "409":
+          description: A file with that name already exists in the destination folder.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+    delete:
+      tags:
+        - Wiki
+      summary: Delete an uploaded wiki file and its indexed page
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: fileId
+          in: path
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "404":
+          description: File not found.
           content:
             application/json:
               schema:

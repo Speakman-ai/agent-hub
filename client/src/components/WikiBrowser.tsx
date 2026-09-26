@@ -1,7 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { BookOpen, Search, Plus, Trash2, Pencil, Save, X, ScanSearch, Loader2 } from 'lucide-react';
+import {
+  BookOpen,
+  Search,
+  Plus,
+  Trash2,
+  Pencil,
+  Save,
+  X,
+  ScanSearch,
+  Loader2,
+  FolderOpen,
+} from 'lucide-react';
 import { getAuthHeaders } from '../utils/connection';
 import { MarkdownContent } from './MarkdownRenderer';
+import WikiFiles from './WikiFiles';
 import { useWikiScan } from '../hooks/useWikiScan';
 
 const CATEGORIES = [
@@ -13,6 +25,7 @@ const CATEGORIES = [
   { value: 'test-patterns', label: 'Test Patterns' },
   { value: 'troubleshooting', label: 'Troubleshooting' },
   { value: 'onboarding', label: 'Onboarding' },
+  { value: 'documents', label: 'Documents' },
 ];
 
 const CATEGORY_COLORS = {
@@ -23,6 +36,7 @@ const CATEGORY_COLORS = {
   'test-patterns': 'bg-green-600 text-green-100',
   troubleshooting: 'bg-red-600 text-red-100',
   onboarding: 'bg-teal-600 text-teal-100',
+  documents: 'bg-orange-600 text-orange-100',
 } as Record<string, any>;
 
 function getCategoryBadge(category: any) {
@@ -49,7 +63,14 @@ function relativeTime(dateStr: any) {
   return `${months}mo ago`;
 }
 
-export default function WikiBrowser({ projectId, apiBase, showToast, onOpenSession }: any) {
+export default function WikiBrowser(props: any) {
+  // One instance per project, like the Files view it hosts: page lists,
+  // selection, search, and in-flight loads all belong to a single project, so
+  // a switch remounts rather than letting an old response land in the new one.
+  return <WikiBrowserForProject key={props.projectId} {...props} />;
+}
+
+function WikiBrowserForProject({ projectId, apiBase, showToast, onOpenSession }: any) {
   const [pages, setPages] = useState<any[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<any>(null);
   const [selectedPage, setSelectedPage] = useState<any>(null);
@@ -63,6 +84,7 @@ export default function WikiBrowser({ projectId, apiBase, showToast, onOpenSessi
   const [_loading, setLoading] = useState(false);
   const [hoveredSlug, setHoveredSlug] = useState<any>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<any>(null);
+  const [mode, setMode] = useState<'pages' | 'files'>('pages');
   const searchTimerRef = useRef<any>(null);
   const {
     starting: scanStarting,
@@ -175,7 +197,7 @@ export default function WikiBrowser({ projectId, apiBase, showToast, onOpenSessi
   };
 
   const handleEdit = () => {
-    if (!selectedPage) return;
+    if (!selectedPage || selectedPage.source_file) return;
     setEditing(true);
     setCreating(false);
     setEditTitle(selectedPage.title);
@@ -242,291 +264,348 @@ export default function WikiBrowser({ projectId, apiBase, showToast, onOpenSessi
     }
   };
 
+  const modeTabs = (
+    <div className="flex items-center gap-1 px-3 py-2 border-b border-gray-800 bg-gray-900">
+      {(
+        [
+          { value: 'pages', label: 'Pages', Icon: BookOpen },
+          { value: 'files', label: 'Files', Icon: FolderOpen },
+        ] as const
+      ).map(({ value, label, Icon }) => (
+        <button
+          key={value}
+          onClick={() => setMode(value)}
+          className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full transition-colors ${
+            mode === value
+              ? 'bg-gray-700 text-white'
+              : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+          }`}
+        >
+          <Icon size={12} />
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (mode === 'files') {
+    return (
+      <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
+        {modeTabs}
+        <WikiFiles
+          projectId={projectId}
+          apiBase={apiBase}
+          onOpenPage={(slug) => {
+            setMode('pages');
+            setEditing(false);
+            setCreating(false);
+            setSelectedSlug(slug);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-1 min-h-0 overflow-hidden">
-      {/* Left panel — page list */}
-      <div className="w-[300px] flex-shrink-0 border-r border-gray-800 flex flex-col bg-gray-900">
-        {/* Header */}
-        <div className="p-3 border-b border-gray-800">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-gray-200 flex items-center gap-2">
-              <BookOpen size={16} />
-              Wiki
-            </h2>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={handleScan}
-                disabled={scanStarting}
-                className="text-gray-400 hover:text-white p-1 rounded hover:bg-gray-800 transition-colors disabled:opacity-50"
-                title="Scan for updates: the docs agent checks the codebase and docs, then adds or updates pages"
-                aria-label="Scan for updates"
-              >
-                {scanStarting ? (
-                  <Loader2 size={16} className="animate-spin" />
-                ) : (
-                  <ScanSearch size={16} />
-                )}
-              </button>
-              <button
-                onClick={handleCreate}
-                className="text-gray-400 hover:text-white p-1 rounded hover:bg-gray-800 transition-colors"
-                title="New Page"
-              >
-                <Plus size={16} />
-              </button>
-            </div>
-          </div>
-          {scan && (
-            <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-gray-800 px-2.5 py-1.5 text-xs text-gray-300">
-              <span>Docs agent is scanning for updates. Pages refresh as they change.</span>
-              {onOpenSession && (
+    <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
+      {modeTabs}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Left panel — page list */}
+        <div className="w-[300px] flex-shrink-0 border-r border-gray-800 flex flex-col bg-gray-900">
+          {/* Header */}
+          <div className="p-3 border-b border-gray-800">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                <BookOpen size={16} />
+                Wiki
+              </h2>
+              <div className="flex items-center gap-1">
                 <button
-                  onClick={() =>
-                    onOpenSession({ sessionId: scan.sessionId, agentId: scan.agentId })
-                  }
-                  className="flex-shrink-0 text-blue-400 hover:text-blue-300"
+                  onClick={handleScan}
+                  disabled={scanStarting}
+                  className="text-gray-400 hover:text-white p-1 rounded hover:bg-gray-800 transition-colors disabled:opacity-50"
+                  title="Scan for updates: the docs agent checks the codebase and docs, then adds or updates pages"
+                  aria-label="Scan for updates"
                 >
-                  View
+                  {scanStarting ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <ScanSearch size={16} />
+                  )}
                 </button>
-              )}
-              <button
-                onClick={dismissScan}
-                className="flex-shrink-0 text-gray-500 hover:text-gray-300"
-                aria-label="Dismiss"
-              >
-                <X size={12} />
-              </button>
+                <button
+                  onClick={handleCreate}
+                  className="text-gray-400 hover:text-white p-1 rounded hover:bg-gray-800 transition-colors"
+                  title="New Page"
+                >
+                  <Plus size={16} />
+                </button>
+              </div>
             </div>
-          )}
-          {scanError && (
-            <div className="mb-3 rounded-lg bg-red-900/40 px-2.5 py-1.5 text-xs text-red-300">
-              {scanError}
-            </div>
-          )}
+            {scan && (
+              <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-gray-800 px-2.5 py-1.5 text-xs text-gray-300">
+                <span>Docs agent is scanning for updates. Pages refresh as they change.</span>
+                {onOpenSession && (
+                  <button
+                    onClick={() =>
+                      onOpenSession({ sessionId: scan.sessionId, agentId: scan.agentId })
+                    }
+                    className="flex-shrink-0 text-blue-400 hover:text-blue-300"
+                  >
+                    View
+                  </button>
+                )}
+                <button
+                  onClick={dismissScan}
+                  className="flex-shrink-0 text-gray-500 hover:text-gray-300"
+                  aria-label="Dismiss"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            )}
+            {scanError && (
+              <div className="mb-3 rounded-lg bg-red-900/40 px-2.5 py-1.5 text-xs text-red-300">
+                {scanError}
+              </div>
+            )}
 
-          {/* Search */}
-          <div className="relative">
-            <Search
-              size={14}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500"
-            />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e: any) => setSearchQuery(e.target.value)}
-              placeholder="Search pages..."
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-8 pr-3 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-gray-600"
-            />
+            {/* Search */}
+            <div className="relative">
+              <Search
+                size={14}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500"
+              />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e: any) => setSearchQuery(e.target.value)}
+                placeholder="Search pages..."
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-8 pr-3 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-gray-600"
+              />
+            </div>
           </div>
-        </div>
 
-        {/* Category tabs */}
-        <div className="px-3 py-2 border-b border-gray-800 overflow-x-auto flex gap-1 scrollbar-hide">
-          {CATEGORIES.map((cat: any) => (
-            <button
-              key={cat.value}
-              onClick={() => setActiveCategory(cat.value)}
-              className={`text-xs px-2 py-1 rounded-full whitespace-nowrap transition-colors ${
-                activeCategory === cat.value
-                  ? 'bg-gray-700 text-white'
-                  : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
-              }`}
-            >
-              {cat.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Page list */}
-        <div className="flex-1 overflow-y-auto">
-          {pages.length === 0 ? (
-            <div className="px-4 py-8 text-center text-gray-600 text-sm">
-              {searchQuery || activeCategory !== 'all'
-                ? 'No pages match your filters.'
-                : 'No wiki pages yet.'}
-            </div>
-          ) : (
-            pages.map((page: any) => (
-              <div
-                key={page.slug}
-                onMouseEnter={() => setHoveredSlug(page.slug)}
-                onMouseLeave={() => {
-                  setHoveredSlug(null);
-                  if (deleteConfirm === page.slug) setDeleteConfirm(null);
-                }}
-                onClick={() => {
-                  setSelectedSlug(page.slug);
-                  setEditing(false);
-                  setCreating(false);
-                }}
-                className={`px-3 py-2.5 cursor-pointer border-b border-gray-800/50 transition-colors ${
-                  selectedSlug === page.slug
-                    ? 'bg-gray-800 text-white'
-                    : 'text-gray-300 hover:bg-gray-800/50'
+          {/* Category tabs */}
+          <div className="px-3 py-2 border-b border-gray-800 overflow-x-auto flex gap-1 scrollbar-hide">
+            {CATEGORIES.map((cat: any) => (
+              <button
+                key={cat.value}
+                onClick={() => setActiveCategory(cat.value)}
+                className={`text-xs px-2 py-1 rounded-full whitespace-nowrap transition-colors ${
+                  activeCategory === cat.value
+                    ? 'bg-gray-700 text-white'
+                    : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
                 }`}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium truncate">{page.title}</div>
-                    <div className="flex items-center gap-2 mt-1">
-                      {getCategoryBadge(page.category)}
-                      <span className="text-xs text-gray-500">{relativeTime(page.updated_at)}</span>
-                      {page.updated_by && (
-                        <span className="text-xs text-gray-600 truncate">{page.updated_by}</span>
-                      )}
-                    </div>
-                  </div>
-                  {hoveredSlug === page.slug && (
-                    <div className="flex-shrink-0">
-                      {deleteConfirm === page.slug ? (
-                        <button
-                          onClick={(e: any) => {
-                            e.stopPropagation();
-                            handleDelete(page.slug);
-                          }}
-                          className="text-xs text-red-400 hover:text-red-300 px-1"
-                        >
-                          Confirm?
-                        </button>
-                      ) : (
-                        <button
-                          onClick={(e: any) => {
-                            e.stopPropagation();
-                            setDeleteConfirm(page.slug);
-                          }}
-                          className="text-gray-600 hover:text-red-400 p-0.5 transition-colors"
-                          title="Delete page"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* Right panel — viewer / editor */}
-      <div className="flex-1 flex flex-col min-w-0 bg-gray-900">
-        {editing ? (
-          /* Edit / Create mode */
-          <div className="flex-1 flex flex-col p-6 overflow-y-auto">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-200">
-                {creating ? 'New Page' : 'Edit Page'}
-              </h2>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleCancel}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition-colors"
-                >
-                  <X size={14} />
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  disabled={!editTitle.trim()}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Save size={14} />
-                  Save
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Title</label>
-                <input
-                  type="text"
-                  value={editTitle}
-                  onChange={(e: any) => setEditTitle(e.target.value)}
-                  placeholder="Page title"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-gray-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Category</label>
-                <select
-                  value={editCategory}
-                  onChange={(e: any) => setEditCategory(e.target.value)}
-                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
-                >
-                  {CATEGORIES.filter((c: any) => c.value !== 'all').map((cat: any) => (
-                    <option key={cat.value} value={cat.value}>
-                      {cat.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex-1">
-                <label className="block text-xs text-gray-500 mb-1">Content (Markdown)</label>
-                <textarea
-                  value={editContent}
-                  onChange={(e: any) => setEditContent(e.target.value)}
-                  placeholder="Write your wiki page content in Markdown..."
-                  className="w-full h-[calc(100vh-350px)] min-h-[300px] bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-gray-600 resize-none font-mono"
-                />
-              </div>
-            </div>
+                {cat.label}
+              </button>
+            ))}
           </div>
-        ) : selectedPage ? (
-          /* View mode */
-          <div className="flex-1 flex flex-col overflow-y-auto">
-            <div className="p-6 border-b border-gray-800">
-              <div className="flex items-start justify-between">
-                <div>
-                  <h1 className="text-xl font-semibold text-gray-100">{selectedPage.title}</h1>
-                  <div className="flex items-center gap-3 mt-2">
-                    {getCategoryBadge(selectedPage.category)}
-                    <span className="text-xs text-gray-500">
-                      Updated {relativeTime(selectedPage.updated_at)}
-                    </span>
-                    {selectedPage.updated_by && (
-                      <span className="text-xs text-gray-500">by {selectedPage.updated_by}</span>
+
+          {/* Page list */}
+          <div className="flex-1 overflow-y-auto">
+            {pages.length === 0 ? (
+              <div className="px-4 py-8 text-center text-gray-600 text-sm">
+                {searchQuery || activeCategory !== 'all'
+                  ? 'No pages match your filters.'
+                  : 'No wiki pages yet.'}
+              </div>
+            ) : (
+              pages.map((page: any) => (
+                <div
+                  key={page.slug}
+                  onMouseEnter={() => setHoveredSlug(page.slug)}
+                  onMouseLeave={() => {
+                    setHoveredSlug(null);
+                    if (deleteConfirm === page.slug) setDeleteConfirm(null);
+                  }}
+                  onClick={() => {
+                    setSelectedSlug(page.slug);
+                    setEditing(false);
+                    setCreating(false);
+                  }}
+                  className={`px-3 py-2.5 cursor-pointer border-b border-gray-800/50 transition-colors ${
+                    selectedSlug === page.slug
+                      ? 'bg-gray-800 text-white'
+                      : 'text-gray-300 hover:bg-gray-800/50'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium truncate">{page.title}</div>
+                      <div className="flex items-center gap-2 mt-1">
+                        {getCategoryBadge(page.category)}
+                        <span className="text-xs text-gray-500">
+                          {relativeTime(page.updated_at)}
+                        </span>
+                        {page.updated_by && (
+                          <span className="text-xs text-gray-600 truncate">{page.updated_by}</span>
+                        )}
+                      </div>
+                    </div>
+                    {hoveredSlug === page.slug && (
+                      <div className="flex-shrink-0">
+                        {deleteConfirm === page.slug ? (
+                          <button
+                            onClick={(e: any) => {
+                              e.stopPropagation();
+                              handleDelete(page.slug);
+                            }}
+                            className="text-xs text-red-400 hover:text-red-300 px-1"
+                          >
+                            Confirm?
+                          </button>
+                        ) : (
+                          <button
+                            onClick={(e: any) => {
+                              e.stopPropagation();
+                              setDeleteConfirm(page.slug);
+                            }}
+                            className="text-gray-600 hover:text-red-400 p-0.5 transition-colors"
+                            title="Delete page"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
-                <button
-                  onClick={handleEdit}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition-colors"
-                >
-                  <Pencil size={14} />
-                  Edit
-                </button>
-              </div>
-            </div>
-            <div className="p-6 flex-1">
-              <div className="prose prose-invert prose-sm max-w-none text-gray-300">
-                <MarkdownContent content={selectedPage.content || ''} />
-              </div>
-            </div>
-          </div>
-        ) : (
-          /* Empty state */
-          <div className="flex-1 flex flex-col items-center justify-center text-gray-600 px-8">
-            <BookOpen size={48} className="mb-4" />
-            <p className="text-lg font-medium text-gray-400 mb-2">Project Wiki</p>
-            <p className="text-sm text-center max-w-md">
-              A shared knowledge base for your team and agents. Document APIs, architecture
-              decisions, conventions, troubleshooting guides, and onboarding notes.
-            </p>
-            {pages.length === 0 && (
-              <button
-                onClick={handleCreate}
-                className="mt-6 flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors text-sm"
-              >
-                <Plus size={16} />
-                Create your first page
-              </button>
+              ))
             )}
           </div>
-        )}
+        </div>
+
+        {/* Right panel — viewer / editor */}
+        <div className="flex-1 flex flex-col min-w-0 bg-gray-900">
+          {editing ? (
+            /* Edit / Create mode */
+            <div className="flex-1 flex flex-col p-6 overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-gray-200">
+                  {creating ? 'New Page' : 'Edit Page'}
+                </h2>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCancel}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition-colors"
+                  >
+                    <X size={14} />
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSave}
+                    disabled={!editTitle.trim()}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Save size={14} />
+                    Save
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Title</label>
+                  <input
+                    type="text"
+                    value={editTitle}
+                    onChange={(e: any) => setEditTitle(e.target.value)}
+                    placeholder="Page title"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-gray-600"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Category</label>
+                  <select
+                    value={editCategory}
+                    onChange={(e: any) => setEditCategory(e.target.value)}
+                    className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-600"
+                  >
+                    {CATEGORIES.filter((c: any) => c.value !== 'all').map((cat: any) => (
+                      <option key={cat.value} value={cat.value}>
+                        {cat.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex-1">
+                  <label className="block text-xs text-gray-500 mb-1">Content (Markdown)</label>
+                  <textarea
+                    value={editContent}
+                    onChange={(e: any) => setEditContent(e.target.value)}
+                    placeholder="Write your wiki page content in Markdown..."
+                    className="w-full h-[calc(100vh-350px)] min-h-[300px] bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-gray-600 resize-none font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+          ) : selectedPage ? (
+            /* View mode */
+            <div className="flex-1 flex flex-col overflow-y-auto">
+              <div className="p-6 border-b border-gray-800">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h1 className="text-xl font-semibold text-gray-100">{selectedPage.title}</h1>
+                    <div className="flex items-center gap-3 mt-2">
+                      {getCategoryBadge(selectedPage.category)}
+                      <span className="text-xs text-gray-500">
+                        Updated {relativeTime(selectedPage.updated_at)}
+                      </span>
+                      {selectedPage.updated_by && (
+                        <span className="text-xs text-gray-500">by {selectedPage.updated_by}</span>
+                      )}
+                    </div>
+                  </div>
+                  {selectedPage.source_file ? (
+                    <span
+                      className="text-xs text-gray-500 max-w-xs text-right"
+                      title="Generated from an uploaded file"
+                    >
+                      Read-only: generated from {selectedPage.source_file.path}. Re-upload the file
+                      to change its text.
+                    </span>
+                  ) : (
+                    <button
+                      onClick={handleEdit}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition-colors"
+                    >
+                      <Pencil size={14} />
+                      Edit
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="p-6 flex-1">
+                <div className="prose prose-invert prose-sm max-w-none text-gray-300">
+                  <MarkdownContent content={selectedPage.content || ''} />
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Empty state */
+            <div className="flex-1 flex flex-col items-center justify-center text-gray-600 px-8">
+              <BookOpen size={48} className="mb-4" />
+              <p className="text-lg font-medium text-gray-400 mb-2">Project Wiki</p>
+              <p className="text-sm text-center max-w-md">
+                A shared knowledge base for your team and agents. Document APIs, architecture
+                decisions, conventions, troubleshooting guides, and onboarding notes.
+              </p>
+              {pages.length === 0 && (
+                <button
+                  onClick={handleCreate}
+                  className="mt-6 flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors text-sm"
+                >
+                  <Plus size={16} />
+                  Create your first page
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

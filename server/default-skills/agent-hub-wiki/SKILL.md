@@ -31,12 +31,14 @@ scripts/wiki-upsert.sh <slug> ./page.md --category architecture
 scripts/wiki.sh read <slug>                             # single page
 scripts/wiki.sh list [category]                         # all pages (filtered)
 scripts/wiki.sh document-backfill [limit]               # on-demand historical review
+scripts/wiki.sh files [folder]                          # uploaded files (SOPs, docs)
+scripts/wiki.sh upload <file> [folder]                  # upload; text indexed as a documents page
 ```
 
 ## Categories
 
 `general`, `api-docs`, `architecture`, `conventions`, `test-patterns`,
-`troubleshooting`, `onboarding`. Choose the narrowest one that fits — agents
+`troubleshooting`, `onboarding`, `documents`. Choose the narrowest one that fits — agents
 filter by category often.
 
 ## Slug conventions

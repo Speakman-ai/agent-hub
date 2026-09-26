@@ -18,6 +18,7 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { SidebarContext } from '../context/SidebarContext';
+import WikiFilesView from '../components/WikiFilesView';
 const CATEGORIES = [
   { key: 'all', label: 'All', color: colors.gray500 },
   { key: 'general', label: 'General', color: '#6b7280' },
@@ -27,6 +28,7 @@ const CATEGORIES = [
   { key: 'test-patterns', label: 'Tests', color: '#10b981' },
   { key: 'troubleshooting', label: 'Troubleshooting', color: '#ef4444' },
   { key: 'onboarding', label: 'Onboarding', color: '#14b8a6' },
+  { key: 'documents', label: 'Documents', color: '#f97316' },
 ];
 const mdStyles = {
   body: { color: colors.gray200, fontSize: 14 },
@@ -75,8 +77,15 @@ function CategoryBadge({ category }: any) {
 }
 export default function WikiScreen({ route }: any) {
   const { projects } = useApp();
-  const { openSidebar } = React.useContext(SidebarContext);
   const projectId = route?.params?.projectId || projects?.[0]?.id;
+  // One instance per project: pages, selection, and in-flight loads belong to
+  // a single project, so a switch remounts instead of mixing responses.
+  return <WikiScreenForProject key={projectId ?? 'none'} projectId={projectId} />;
+}
+
+function WikiScreenForProject({ projectId }: { projectId: string | undefined }) {
+  const { projects } = useApp();
+  const { openSidebar } = React.useContext(SidebarContext);
   const project = projects?.find((p: any) => p.id === projectId);
   const [pages, setPages] = useState<any[]>([]);
   const [selectedPage, setSelectedPage] = useState<any>(null);
@@ -85,6 +94,7 @@ export default function WikiScreen({ route }: any) {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
   const [loading, setLoading] = useState(false);
+  const [mode, setMode] = useState<'pages' | 'files'>('pages');
   // Edit form state
   const [editTitle, setEditTitle] = useState('');
   const [editContent, setEditContent] = useState('');
@@ -130,7 +140,7 @@ export default function WikiScreen({ route }: any) {
     }
   };
   const handleEdit = () => {
-    if (!selectedPage) return;
+    if (!selectedPage || selectedPage.source_file) return;
     setEditTitle(selectedPage.title);
     setEditContent(selectedPage.content || '');
     setEditCategory(selectedPage.category || 'general');
@@ -230,100 +240,124 @@ export default function WikiScreen({ route }: any) {
               {project.name}
             </Text>
           )}
-          <TouchableOpacity
-            onPress={handleScan}
-            disabled={scanning}
-            style={[styles.scanButton, scanning && { opacity: 0.5 }]}
-            accessibilityLabel="Scan for updates"
-          >
-            <Text style={styles.scanButtonText}>{scanning ? 'Scanning…' : 'Scan'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={handleCreate} style={styles.addButton}>
-            <Text style={styles.addButtonText}>+</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Search */}
-        <View style={styles.searchContainer}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search wiki..."
-            placeholderTextColor={colors.gray600}
-            value={searchQuery}
-            onChangeText={handleSearch}
-          />
-        </View>
-
-        {/* Category filters */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.categoryBar}
-          contentContainerStyle={styles.categoryContent}
-        >
-          {CATEGORIES.map((cat: any) => (
+          {mode === 'pages' && (
             <TouchableOpacity
-              key={cat.key}
-              style={[
-                styles.categoryChip,
-                activeCategory === cat.key && { backgroundColor: cat.color + '33' },
-              ]}
-              onPress={() => setActiveCategory(cat.key)}
+              onPress={handleScan}
+              disabled={scanning}
+              style={[styles.scanButton, scanning && { opacity: 0.5 }]}
+              accessibilityLabel="Scan for updates"
             >
-              <View style={[styles.categoryDot, { backgroundColor: cat.color }]} />
-              <Text
-                style={[
-                  styles.categoryChipText,
-                  activeCategory === cat.key && { color: colors.white },
-                ]}
-              >
-                {cat.label}
+              <Text style={styles.scanButtonText}>{scanning ? 'Scanning…' : 'Scan'}</Text>
+            </TouchableOpacity>
+          )}
+          {mode === 'pages' && (
+            <TouchableOpacity onPress={handleCreate} style={styles.addButton}>
+              <Text style={styles.addButtonText}>+</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <View style={styles.modeBar}>
+          {(['pages', 'files'] as const).map((m) => (
+            <TouchableOpacity
+              key={m}
+              style={[styles.categoryChip, mode === m && { backgroundColor: colors.gray700 }]}
+              onPress={() => setMode(m)}
+            >
+              <Text style={[styles.categoryChipText, mode === m && { color: colors.white }]}>
+                {m === 'pages' ? 'Pages' : 'Files'}
               </Text>
             </TouchableOpacity>
           ))}
-        </ScrollView>
+        </View>
 
-        {/* Page list */}
-        {pages.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>No wiki pages yet</Text>
-            <Text style={styles.emptyDesc}>
-              Create pages to build a shared knowledge base for your agents. Agents can search and
-              update the wiki as they work.
-            </Text>
-            <TouchableOpacity style={styles.emptyButton} onPress={handleCreate}>
-              <Text style={styles.emptyButtonText}>Create First Page</Text>
-            </TouchableOpacity>
-          </View>
+        {mode === 'files' && projectId ? (
+          <WikiFilesView projectId={projectId} onOpenPage={(slug) => handleSelectPage({ slug })} />
         ) : (
-          <FlatList
-            data={pages}
-            keyExtractor={(item: any) => item.id || item.slug}
-            renderItem={({ item }: any) => (
-              <TouchableOpacity
-                style={styles.pageItem}
-                onPress={() => handleSelectPage(item)}
-                onLongPress={() => handleDelete(item)}
-              >
-                <View style={styles.pageItemHeader}>
-                  <Text style={styles.pageTitle} numberOfLines={1}>
-                    {item.title}
+          <>
+            {/* Search */}
+            <View style={styles.searchContainer}>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search wiki..."
+                placeholderTextColor={colors.gray600}
+                value={searchQuery}
+                onChangeText={handleSearch}
+              />
+            </View>
+
+            {/* Category filters */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.categoryBar}
+              contentContainerStyle={styles.categoryContent}
+            >
+              {CATEGORIES.map((cat: any) => (
+                <TouchableOpacity
+                  key={cat.key}
+                  style={[
+                    styles.categoryChip,
+                    activeCategory === cat.key && { backgroundColor: cat.color + '33' },
+                  ]}
+                  onPress={() => setActiveCategory(cat.key)}
+                >
+                  <View style={[styles.categoryDot, { backgroundColor: cat.color }]} />
+                  <Text
+                    style={[
+                      styles.categoryChipText,
+                      activeCategory === cat.key && { color: colors.white },
+                    ]}
+                  >
+                    {cat.label}
                   </Text>
-                  <CategoryBadge category={item.category} />
-                </View>
-                {item.snippet && (
-                  <Text style={styles.pageSnippet} numberOfLines={2}>
-                    {item.snippet.replace(/<\/?mark>/g, '')}
-                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            {/* Page list */}
+            {pages.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyTitle}>No wiki pages yet</Text>
+                <Text style={styles.emptyDesc}>
+                  Create pages to build a shared knowledge base for your agents. Agents can search
+                  and update the wiki as they work.
+                </Text>
+                <TouchableOpacity style={styles.emptyButton} onPress={handleCreate}>
+                  <Text style={styles.emptyButtonText}>Create First Page</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <FlatList
+                data={pages}
+                keyExtractor={(item: any) => item.id || item.slug}
+                renderItem={({ item }: any) => (
+                  <TouchableOpacity
+                    style={styles.pageItem}
+                    onPress={() => handleSelectPage(item)}
+                    onLongPress={() => handleDelete(item)}
+                  >
+                    <View style={styles.pageItemHeader}>
+                      <Text style={styles.pageTitle} numberOfLines={1}>
+                        {item.title}
+                      </Text>
+                      <CategoryBadge category={item.category} />
+                    </View>
+                    {item.snippet && (
+                      <Text style={styles.pageSnippet} numberOfLines={2}>
+                        {item.snippet.replace(/<\/?mark>/g, '')}
+                      </Text>
+                    )}
+                    <View style={styles.pageItemFooter}>
+                      <Text style={styles.pageMeta}>{item.updated_by || 'user'}</Text>
+                      <Text style={styles.pageMeta}>{relativeTime(item.updated_at)}</Text>
+                    </View>
+                  </TouchableOpacity>
                 )}
-                <View style={styles.pageItemFooter}>
-                  <Text style={styles.pageMeta}>{item.updated_by || 'user'}</Text>
-                  <Text style={styles.pageMeta}>{relativeTime(item.updated_at)}</Text>
-                </View>
-              </TouchableOpacity>
+                contentContainerStyle={{ padding: 12 }}
+              />
             )}
-            contentContainerStyle={{ padding: 12 }}
-          />
+          </>
         )}
       </SafeAreaView>
     );
@@ -349,9 +383,11 @@ export default function WikiScreen({ route }: any) {
         <View style={{ flex: 1 }} />
         {!editing && !creating && selectedPage && (
           <>
-            <TouchableOpacity onPress={handleEdit} style={styles.headerAction}>
-              <Text style={styles.headerActionText}>Edit</Text>
-            </TouchableOpacity>
+            {!selectedPage.source_file && (
+              <TouchableOpacity onPress={handleEdit} style={styles.headerAction}>
+                <Text style={styles.headerActionText}>Edit</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               onPress={() => handleDelete(selectedPage)}
               style={styles.headerAction}
@@ -443,6 +479,12 @@ export default function WikiScreen({ route }: any) {
                 by {selectedPage?.updated_by || 'user'} {relativeTime(selectedPage?.updated_at)}
               </Text>
             </View>
+            {selectedPage?.source_file && (
+              <Text style={styles.pageMeta}>
+                Read-only: generated from {selectedPage.source_file.path}. Re-upload the file to
+                change its text.
+              </Text>
+            )}
           </View>
 
           {/* Content */}
@@ -457,6 +499,12 @@ export default function WikiScreen({ route }: any) {
   );
 }
 const styles = StyleSheet.create({
+  modeBar: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+  },
   container: {
     flex: 1,
     backgroundColor: colors.gray950,

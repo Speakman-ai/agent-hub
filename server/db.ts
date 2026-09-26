@@ -934,6 +934,28 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_wiki_project ON wiki_pages(project_id);
     CREATE INDEX IF NOT EXISTS idx_wiki_category ON wiki_pages(project_id, category);
 
+    -- Wiki files: uploaded documents (SOPs, PDFs, DOCX, ...) organized in
+    -- folders. The original bytes live in the upload store; the extracted
+    -- text lives in the linked wiki page so FTS, embeddings, and RAG index it.
+    CREATE TABLE IF NOT EXISTS wiki_files (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      folder TEXT NOT NULL DEFAULT '',
+      filename TEXT NOT NULL,
+      content_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      storage_key TEXT NOT NULL,
+      page_id TEXT,
+      extracted_chars INTEGER NOT NULL DEFAULT 0,
+      extracted_text TEXT NOT NULL DEFAULT '',
+      truncated INTEGER NOT NULL DEFAULT 0,
+      uploaded_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(project_id, folder, filename)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wiki_files_project ON wiki_files(project_id, folder);
+
     -- Threads: group log entries for cron runs, heartbeat checks, etc.
     CREATE TABLE IF NOT EXISTS threads (
       id TEXT PRIMARY KEY,

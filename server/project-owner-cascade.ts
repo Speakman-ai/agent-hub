@@ -24,6 +24,7 @@ import { deleteAllPreviewSecretsForProject } from './preview/preview-secrets-sto
 import { deleteProjectSkillsDir } from './project-skill-paths.js';
 import { deleteProjectBrandingDir } from './project-branding.js';
 import { removeAllProjectMembers } from './project-members-store.js';
+import { purgeProjectWikiFiles } from './wiki-files.js';
 
 export interface CascadeDeps {
   stmts: Stmts;
@@ -64,6 +65,11 @@ export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
   stmts.deleteSupportTicketsByProject.run(project.id);
   stmts.deleteNotesByProject.run(project.id);
   stmts.deleteWikiPagesByProject.run(project.id);
+  try {
+    purgeProjectWikiFiles(project.id);
+  } catch (err) {
+    console.warn(`[deleteProjectScopedRows] Failed to purge wiki files for "${project.id}":`, err);
+  }
   stmts.deleteBoardsByProject.run(project.id);
   stmts.deleteWorkflowsByProject.run(project.id);
   stmts.deleteThreadsByProject.run(project.id);

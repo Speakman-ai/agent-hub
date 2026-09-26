@@ -2054,4 +2054,13 @@ export const api = {
     fetchJSON(`/projects/${projectId}/wiki/${slug}`, { method: 'DELETE' }),
   scanWiki: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/wiki/scan`, { method: 'POST', body: '{}' }),
+  // Wiki files (uploads go through utils/wikiFileTransfer for raw bytes)
+  listWikiFiles: (projectId: string) => fetchJSON(`/projects/${projectId}/wiki-files`),
+  moveWikiFile: (projectId: string, fileId: string, folder: string) =>
+    fetchJSON(`/projects/${projectId}/wiki-files/${fileId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ folder }),
+    }),
+  deleteWikiFile: (projectId: string, fileId: string) =>
+    fetchJSON(`/projects/${projectId}/wiki-files/${fileId}`, { method: 'DELETE' }),
 };

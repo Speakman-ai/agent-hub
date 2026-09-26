@@ -1468,6 +1468,23 @@ export interface WikiPageRow {
   updated_at: string;
 }
 
+export interface WikiFileRow {
+  id: string;
+  project_id: string;
+  folder: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  storage_key: string;
+  page_id: string | null;
+  extracted_chars: number;
+  extracted_text: string;
+  truncated: number;
+  uploaded_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ThreadRow {
   id: string;
   project_id: string;

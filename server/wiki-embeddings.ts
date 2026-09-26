@@ -177,6 +177,8 @@ export function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): nu
 // embeddings under the old model name are NOT compatible and should be
 // re-generated via the backfill endpoint. `GEMINI_EMBED_MODEL` env override
 // is preserved for staging/testing alternative models.
+const EMBED_REQUEST_TIMEOUT_MS = 60_000;
+
 export const DEFAULT_MODEL = process.env.GEMINI_EMBED_MODEL || 'gemini-embedding-001';
 
 class MissingGeminiKeyError extends Error {
@@ -217,6 +219,8 @@ export const defaultEmbedClient: EmbedClient = {
     };
 
     const res = await fetch(url, {
+      // A hung call would pin one of the few embed slots indefinitely.
+      signal: AbortSignal.timeout(EMBED_REQUEST_TIMEOUT_MS),
       method: 'POST',
       headers: {
         'x-goog-api-key': apiKey,
@@ -259,6 +263,8 @@ export function isGeminiConfigured(): boolean {
 
 // Embed pipeline
 
+export const EMBED_BATCH_SIZE = 100;
+
 export interface EmbedPageResult {
   pageId: string;
   chunks: number;
@@ -294,10 +300,13 @@ export async function embedPage(
   }
 
   try {
-    const vectors = await client.embedTexts(
-      chunks.map((c) => c.text),
-      'RETRIEVAL_DOCUMENT',
-    );
+    // batchEmbedContents caps requests per call; long uploaded documents
+    // easily exceed that, so embed in fixed-size batches.
+    const vectors: EmbeddingVector[] = [];
+    for (let i = 0; i < chunks.length; i += EMBED_BATCH_SIZE) {
+      const batch = chunks.slice(i, i + EMBED_BATCH_SIZE).map((c) => c.text);
+      vectors.push(...(await client.embedTexts(batch, 'RETRIEVAL_DOCUMENT')));
+    }
     if (vectors.length !== chunks.length) {
       throw new Error(`Gemini returned ${vectors.length} embeddings for ${chunks.length} chunks`);
     }
@@ -327,21 +336,64 @@ export async function embedPage(
   }
 }
 
+/** Background embeds allowed at once. */
+export const MAX_CONCURRENT_EMBEDS = 2;
+
+// Pending work is keyed by page id and holds no page text: the text is read
+// from the database when the embed runs. Memory stays O(distinct pages) no
+// matter how fast pages are written, repeated saves of one page coalesce into
+// one embed of its latest text, and a page that no longer exists (deleted, or
+// its save rolled back) is simply skipped.
+const pendingEmbeds = new Map<string, string>(); // pageId -> projectId
+const runningEmbeds = new Set<string>();
+let embedsIdle: Promise<void> = Promise.resolve();
+let resolveIdle: (() => void) | null = null;
+
+function pumpEmbeds(): void {
+  for (const [pageId, projectId] of pendingEmbeds) {
+    if (runningEmbeds.size >= MAX_CONCURRENT_EMBEDS) return;
+    // A page already embedding waits; its newer text runs after.
+    if (runningEmbeds.has(pageId)) continue;
+    pendingEmbeds.delete(pageId);
+    runningEmbeds.add(pageId);
+    void (async () => {
+      try {
+        const page = (stmts as Stmts).getWikiPageById.get(pageId) as WikiPageRow | undefined;
+        if (page) await embedPage(projectId, page);
+      } catch (e) {
+        console.warn('[wiki-embeddings] background embed error:', (e as Error).message);
+      } finally {
+        runningEmbeds.delete(pageId);
+        if (pendingEmbeds.size === 0 && runningEmbeds.size === 0) {
+          resolveIdle?.();
+          resolveIdle = null;
+        }
+        pumpEmbeds();
+      }
+    })();
+  }
+}
+
 /**
- * Fire-and-forget embedding trigger invoked from wiki save hooks. Swallows all
- * errors after logging — saves must never block on embedding.
+ * Queue a background (re-)embed after a wiki save. Never blocks the save and
+ * never throws; the backfill endpoint exists for manual re-runs.
  */
-export function scheduleEmbedPage(
-  projectId: string,
-  page: { id: string; title: string; content: string },
-): void {
-  // Run on next tick so the HTTP response isn't held. No retry; the backfill
-  // endpoint exists for manual re-runs.
-  setImmediate(() => {
-    embedPage(projectId, page).catch((e: Error) => {
-      console.warn('[wiki-embeddings] background embed error:', e.message);
-    });
-  });
+export function scheduleEmbedPage(projectId: string, page: { id: string }): void {
+  if (pendingEmbeds.size === 0 && runningEmbeds.size === 0) {
+    embedsIdle = new Promise((r) => (resolveIdle = r));
+  }
+  pendingEmbeds.set(page.id, projectId);
+  // Next tick, so a surrounding transaction commits (or rolls back) first.
+  setImmediate(pumpEmbeds);
+}
+
+export function embedQueueStats(): { pending: number; running: number } {
+  return { pending: pendingEmbeds.size, running: runningEmbeds.size };
+}
+
+/** Resolves once no embeds are pending or running (tests). */
+export function whenEmbedsIdle(): Promise<void> {
+  return pendingEmbeds.size === 0 && runningEmbeds.size === 0 ? Promise.resolve() : embedsIdle;
 }
 
 export function deletePageEmbeddings(pageId: string): void {

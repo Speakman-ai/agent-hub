@@ -12,6 +12,7 @@ const CATEGORIES = [
   'test-patterns',
   'troubleshooting',
   'onboarding',
+  'documents',
 ] as const;
 
 type WikiCategory = (typeof CATEGORIES)[number];
@@ -42,6 +43,40 @@ interface CreatedPage {
 interface WikiSearchResult extends Omit<WikiPageRow, 'content'> {
   snippet?: string;
   rank?: number;
+}
+
+/**
+ * A page generated from an uploaded wiki file. Its title and content are
+ * rendered from the `wiki_files` row, so direct edits would be silently
+ * overwritten on the next move or re-upload; every page writer refuses them.
+ */
+export interface WikiPageSourceFile {
+  id: string;
+  path: string;
+}
+
+export class FileBackedPageError extends Error {
+  readonly sourceFile: WikiPageSourceFile;
+  constructor(slug: string, sourceFile: WikiPageSourceFile) {
+    super(
+      `Page "${slug}" is generated from the uploaded file "${sourceFile.path}" and cannot be edited. Re-upload the file to change its text.`,
+    );
+    this.name = 'FileBackedPageError';
+    this.sourceFile = sourceFile;
+  }
+}
+
+/** The uploaded file a page is generated from, or null for a normal page. */
+export function getPageSourceFile(pageId: string): WikiPageSourceFile | null {
+  try {
+    const row = (db as Database.Database)
+      .prepare('SELECT id, folder, filename FROM wiki_files WHERE page_id = ?')
+      .get(pageId) as { id: string; folder: string; filename: string } | undefined;
+    if (!row) return null;
+    return { id: row.id, path: row.folder ? `${row.folder}/${row.filename}` : row.filename };
+  } catch {
+    return null; // wiki_files absent in narrow test schemas
+  }
 }
 
 function slugify(title: string): string {
@@ -124,7 +159,7 @@ export function createPage(
     /* FTS table might not exist yet */
   }
 
-  scheduleEmbedPage(projectId, { id, title, content });
+  scheduleEmbedPage(projectId, { id });
 
   return { id, slug, title, content, category, updatedBy };
 }
@@ -153,6 +188,8 @@ export function updatePage(
 ): CreatedPage {
   const existing = (stmts as Stmts).getWikiPage.get(projectId, slug) as WikiPageRow | undefined;
   if (!existing) throw new Error(`Page "${slug}" not found`);
+  const sourceFile = getPageSourceFile(existing.id);
+  if (sourceFile) throw new FileBackedPageError(slug, sourceFile);
 
   const newTitle = title ?? existing.title;
   const newContent = content ?? existing.content;
@@ -211,7 +248,7 @@ export function updatePage(
   // Re-embed only if title or content changed — category/slug-only updates
   // don't affect semantic content.
   if (title !== undefined || content !== undefined) {
-    scheduleEmbedPage(projectId, { id: existing.id, title: newTitle, content: newContent });
+    scheduleEmbedPage(projectId, { id: existing.id });
   }
 
   return {
@@ -245,6 +282,16 @@ export function deletePage(projectId: string, slug: string): boolean {
     deletePageEmbeddings(existing.id);
   } catch {
     /* skip */
+  }
+
+  // An uploaded file whose page is deleted by hand stays downloadable but is
+  // no longer indexed; re-uploading it recreates the page.
+  try {
+    (db as Database.Database)
+      .prepare('UPDATE wiki_files SET page_id = NULL WHERE page_id = ?')
+      .run(existing.id);
+  } catch {
+    /* wiki_files may not exist in narrow test schemas */
   }
 
   (stmts as Stmts).deleteWikiPage.run(projectId, slug);
