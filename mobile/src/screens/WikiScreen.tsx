@@ -137,6 +137,23 @@ export default function WikiScreen({ route }: any) {
     setEditing(true);
     setCreating(false);
   };
+  const [scanning, setScanning] = useState(false);
+  const handleScan = async () => {
+    if (!projectId || scanning) return;
+    setScanning(true);
+    try {
+      const res = await api.scanWiki(projectId);
+      Alert.alert(
+        res?.reused ? 'Scan already running' : 'Scan started',
+        'The docs agent is checking the codebase and docs, then adding or updating pages. The list refreshes as pages change.',
+      );
+    } catch (err: any) {
+      Alert.alert('Scan failed', err?.message || 'Could not start the wiki scan');
+    } finally {
+      setScanning(false);
+    }
+  };
+
   const handleCreate = () => {
     setEditTitle('');
     setEditContent('');
@@ -213,6 +230,14 @@ export default function WikiScreen({ route }: any) {
               {project.name}
             </Text>
           )}
+          <TouchableOpacity
+            onPress={handleScan}
+            disabled={scanning}
+            style={[styles.scanButton, scanning && { opacity: 0.5 }]}
+            accessibilityLabel="Scan for updates"
+          >
+            <Text style={styles.scanButtonText}>{scanning ? 'Scanning…' : 'Scan'}</Text>
+          </TouchableOpacity>
           <TouchableOpacity onPress={handleCreate} style={styles.addButton}>
             <Text style={styles.addButtonText}>+</Text>
           </TouchableOpacity>
@@ -466,8 +491,20 @@ const styles = StyleSheet.create({
     color: colors.gray500,
     maxWidth: 100,
   },
-  addButton: {
+  scanButton: {
     marginLeft: 'auto',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: colors.gray800,
+    borderRadius: 6,
+  },
+  scanButtonText: {
+    fontSize: 13,
+    color: colors.gray300,
+    fontWeight: '600',
+  },
+  addButton: {
+    marginLeft: 6,
     paddingHorizontal: 10,
     paddingVertical: 4,
     backgroundColor: colors.gray800,

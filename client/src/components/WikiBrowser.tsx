@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { BookOpen, Search, Plus, Trash2, Pencil, Save, X } from 'lucide-react';
+import { BookOpen, Search, Plus, Trash2, Pencil, Save, X, ScanSearch, Loader2 } from 'lucide-react';
 import { getAuthHeaders } from '../utils/connection';
 import { MarkdownContent } from './MarkdownRenderer';
+import { useWikiScan } from '../hooks/useWikiScan';
 
 const CATEGORIES = [
   { value: 'all', label: 'All' },
@@ -48,7 +49,7 @@ function relativeTime(dateStr: any) {
   return `${months}mo ago`;
 }
 
-export default function WikiBrowser({ projectId, apiBase }: any) {
+export default function WikiBrowser({ projectId, apiBase, showToast, onOpenSession }: any) {
   const [pages, setPages] = useState<any[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<any>(null);
   const [selectedPage, setSelectedPage] = useState<any>(null);
@@ -63,6 +64,13 @@ export default function WikiBrowser({ projectId, apiBase }: any) {
   const [hoveredSlug, setHoveredSlug] = useState<any>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<any>(null);
   const searchTimerRef = useRef<any>(null);
+  const {
+    starting: scanStarting,
+    scan,
+    error: scanError,
+    startScan: handleScan,
+    dismiss: dismissScan,
+  } = useWikiScan(apiBase, projectId, showToast);
 
   const fetchPages = useCallback(
     async (query: any = '', category: any = '') => {
@@ -245,14 +253,56 @@ export default function WikiBrowser({ projectId, apiBase }: any) {
               <BookOpen size={16} />
               Wiki
             </h2>
-            <button
-              onClick={handleCreate}
-              className="text-gray-400 hover:text-white p-1 rounded hover:bg-gray-800 transition-colors"
-              title="New Page"
-            >
-              <Plus size={16} />
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={handleScan}
+                disabled={scanStarting}
+                className="text-gray-400 hover:text-white p-1 rounded hover:bg-gray-800 transition-colors disabled:opacity-50"
+                title="Scan for updates: the docs agent checks the codebase and docs, then adds or updates pages"
+                aria-label="Scan for updates"
+              >
+                {scanStarting ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <ScanSearch size={16} />
+                )}
+              </button>
+              <button
+                onClick={handleCreate}
+                className="text-gray-400 hover:text-white p-1 rounded hover:bg-gray-800 transition-colors"
+                title="New Page"
+              >
+                <Plus size={16} />
+              </button>
+            </div>
           </div>
+          {scan && (
+            <div className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-gray-800 px-2.5 py-1.5 text-xs text-gray-300">
+              <span>Docs agent is scanning for updates. Pages refresh as they change.</span>
+              {onOpenSession && (
+                <button
+                  onClick={() =>
+                    onOpenSession({ sessionId: scan.sessionId, agentId: scan.agentId })
+                  }
+                  className="flex-shrink-0 text-blue-400 hover:text-blue-300"
+                >
+                  View
+                </button>
+              )}
+              <button
+                onClick={dismissScan}
+                className="flex-shrink-0 text-gray-500 hover:text-gray-300"
+                aria-label="Dismiss"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
+          {scanError && (
+            <div className="mb-3 rounded-lg bg-red-900/40 px-2.5 py-1.5 text-xs text-red-300">
+              {scanError}
+            </div>
+          )}
 
           {/* Search */}
           <div className="relative">

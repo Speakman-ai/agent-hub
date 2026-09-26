@@ -4,7 +4,9 @@
  * Forward path: when a PR merges, spawn the project's docs agent to review
  * the landed change and write or update at most one wiki page (or skip).
  * Historical cards stay undocumented until a human asks; that is
- * `POST /wiki/document-backfill`, not a scheduled drain.
+ * `POST /wiki/document-backfill`, not a scheduled drain. `POST /wiki/scan`
+ * is the operator's "Scan for updates" button: an audit of the wiki against
+ * the codebase and in-repo docs that adds or updates a bounded set of pages.
  *
  * `documented = 1` means "reviewed for the wiki", not "has its own article".
  * The wiki is not a changelog; git already is.
@@ -49,6 +51,10 @@ export function wikiDocBackfillSessionName(): string {
   return `${WIKI_DOC_SESSION_PREFIX} backfill`;
 }
 
+export function wikiDocScanSessionName(): string {
+  return `${WIKI_DOC_SESSION_PREFIX} scan`;
+}
+
 export function resolveDocsAgent(project: Project): Agent | null {
   const agents = project.agents ?? [];
   return agents.find((a) => (a.role ?? '').trim().toLowerCase() === 'docs') ?? null;
@@ -72,12 +78,14 @@ export type WikiDocSkipReason =
   | 'no_card'
   | 'dispatch_error';
 
+export type WikiDocKind = 'merge' | 'backfill' | 'scan';
+
 export interface WikiDocDispatchResult {
   sessionId: string;
   session: SessionRow;
   agentId: string;
   reused: boolean;
-  kind: 'merge' | 'backfill';
+  kind: WikiDocKind;
   cardId?: string;
 }
 
@@ -174,6 +182,56 @@ export function buildWikiDocBackfillPrompt(args: {
   ].join('\n');
 }
 
+export interface WikiDocScanPage {
+  slug: string;
+  title: string;
+  category?: string | null;
+  updated_at?: string | null;
+}
+
+/** How many of the least-recently-updated pages to name as staleness suspects. */
+export const WIKI_SCAN_STALE_SAMPLE = 15;
+
+export function buildWikiDocScanPrompt(args: {
+  projectId: string;
+  projectName: string;
+  cwd?: string | null;
+  pages: WikiDocScanPage[];
+  maxChanges: number;
+}): string {
+  const stale = [...args.pages]
+    .sort((a, b) => String(a.updated_at ?? '').localeCompare(String(b.updated_at ?? '')))
+    .slice(0, WIKI_SCAN_STALE_SAMPLE)
+    .map((p) => `- ${p.slug} - ${p.title}${p.updated_at ? ` (updated ${p.updated_at})` : ''}`)
+    .join('\n');
+  const codeLine = args.cwd?.trim()
+    ? `The codebase is checked out at \`${args.cwd.trim()}\`. Read it there (\`git -C ${args.cwd.trim()} log\`, grep, file reads).`
+    : 'Read the codebase from your working directory.';
+  return [
+    `The operator pressed "Scan for updates" on the "${args.projectName}" wiki.`,
+    'Audit the wiki against the current codebase and in-repo documentation, then add or modify pages so the wiki matches reality.',
+    '',
+    '## Inputs',
+    `- Wiki pages: ${args.pages.length}. List them with \`wiki.sh list\`, read with \`wiki.sh read <slug>\`.`,
+    `- ${codeLine}`,
+    '- In-repo docs worth checking: README*, CLAUDE.md, AGENTS.md, docs/, .cursor/rules/, and module header comments.',
+    args.pages.length > 0
+      ? `- Least recently updated pages (check these for staleness first):\n${stale}`
+      : '- The wiki is empty. Start with the architecture overview and the conventions a new engineer needs.',
+    '',
+    '## What to do',
+    '1. Look at recent history (`git log --since="30 days ago" --stat`) and the docs above to find durable knowledge: architecture, API contracts, conventions, gotchas.',
+    '2. For each topic, search first (`wiki-search.sh "<topic>"`). Update the existing page when one covers it; only create a page when nothing does.',
+    '3. Fix pages that are now wrong: renamed files, removed features, changed behavior. Verify against the code before editing; do not guess.',
+    `4. Make at most **${args.maxChanges}** page writes (creates + updates) this run. Pick the highest-value gaps first.`,
+    '5. Skip bugfixes, copy tweaks, and chores. The wiki is not a changelog; git already is.',
+    '6. Finish with a short summary: slugs created, slugs updated, and notable gaps left for a later scan.',
+    '',
+    `Write pages with \`wiki-upsert.sh <slug> <file> --category <category>\` (project \`${args.projectId}\`).`,
+    'Do not edit application code, do not commit, and do not open a PR.',
+  ].join('\n');
+}
+
 /**
  * Find a running wiki-doc session for this project. Pass `cardId` to match
  * the merge session for that card; pass `backfill: true` to match the
@@ -183,15 +241,18 @@ export function buildWikiDocBackfillPrompt(args: {
 export function findActiveWikiDocSession(
   stmts: Stmts,
   project: Project,
-  opts: { cardId?: string; backfill?: boolean } = {},
+  opts: { cardId?: string; backfill?: boolean; scan?: boolean } = {},
 ): SessionRow | null {
   const agentIds = new Set((project.agents ?? []).map((a) => a.id));
   if (agentIds.size === 0) return null;
+  const exact = Boolean(opts.backfill || opts.scan || opts.cardId);
   const needle = opts.backfill
     ? wikiDocBackfillSessionName()
-    : opts.cardId
-      ? wikiDocSessionNameForCard(opts.cardId)
-      : WIKI_DOC_SESSION_PREFIX;
+    : opts.scan
+      ? wikiDocScanSessionName()
+      : opts.cardId
+        ? wikiDocSessionNameForCard(opts.cardId)
+        : WIKI_DOC_SESSION_PREFIX;
   const running = stmts.getRunningBackgroundTasks.all() as Array<{
     session_id: string;
     agent_id: string;
@@ -203,7 +264,7 @@ export function findActiveWikiDocSession(
     if (typeof session.name !== 'string' || !session.name.startsWith(WIKI_DOC_SESSION_PREFIX)) {
       continue;
     }
-    if (opts.backfill || opts.cardId) {
+    if (exact) {
       if (session.name === needle || session.name.startsWith(`${needle} `)) return session;
     } else {
       return session;
@@ -218,7 +279,7 @@ function kickWikiDocSession(
     docsAgent: Agent;
     sessionName: string;
     prompt: string;
-    kind: 'merge' | 'backfill';
+    kind: WikiDocKind;
     cardId?: string;
     ownerUserId?: string | null;
     modelOverride?: string | null;
@@ -389,6 +450,47 @@ export function dispatchWikiDocBackfill(
     kind: 'backfill',
     ownerUserId: args.ownerUserId,
     modelOverride: args.modelOverride,
+  });
+}
+
+export function dispatchWikiDocScan(
+  deps: WikiDocDispatchDeps,
+  args: {
+    project: Project;
+    pages: WikiDocScanPage[];
+    maxChanges: number;
+    ownerUserId?: string | null;
+  },
+): WikiDocOutcome {
+  const docsAgent = resolveDocsAgent(args.project);
+  if (!docsAgent) return { skipped: true, reason: 'no_docs_agent' };
+  const found = deps.findAgent(docsAgent.id);
+  if (!found) return { skipped: true, reason: 'no_docs_agent' };
+
+  const active = findActiveWikiDocSession(deps.stmts, args.project, { scan: true });
+  if (active) {
+    return {
+      sessionId: active.id,
+      session: active,
+      agentId: active.agent_id,
+      reused: true,
+      kind: 'scan',
+    };
+  }
+
+  const prompt = buildWikiDocScanPrompt({
+    projectId: args.project.id,
+    projectName: args.project.name,
+    cwd: args.project.cwd,
+    pages: args.pages,
+    maxChanges: args.maxChanges,
+  });
+  return kickWikiDocSession(deps, {
+    docsAgent: found.agent,
+    sessionName: wikiDocScanSessionName(),
+    prompt,
+    kind: 'scan',
+    ownerUserId: args.ownerUserId,
   });
 }
 

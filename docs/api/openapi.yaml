@@ -15508,6 +15508,26 @@ components:
       required:
         - skipped
       description: "Result of an on-demand wiki documentation backfill. `skipped: true` with `reason: none_undocumented` means the Done column has no remaining undocumented cards. Otherwise a docs-agent session was started (or reused) and `queued` is how many cards were handed to it."
+    WikiScanResult:
+      type: object
+      properties:
+        reused:
+          type: boolean
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        pageCount:
+          type: integer
+        maxChanges:
+          type: integer
+      required:
+        - reused
+        - sessionId
+        - agentId
+        - pageCount
+        - maxChanges
+      description: A docs-agent scan session was started (or an already-running scan was reused). `pageCount` is how many wiki pages existed when the scan was queued.
     EpicPullsResponse:
       type: object
       properties:
@@ -46173,6 +46193,63 @@ paths:
                 $ref: "#/components/schemas/WikiErrorResponse"
         "409":
           description: Backfill skipped for another reason.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+  /api/projects/{projectId}/wiki/scan:
+    post:
+      tags:
+        - Wiki
+      summary: Scan the codebase and docs for wiki updates
+      description: Spawns the project docs agent to audit the wiki against the current codebase and in-repo documentation. The agent adds missing pages and fixes stale ones, capped at `maxChanges` page writes. A second call while a scan is running returns the running session instead of starting another.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                maxChanges:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+                  description: Max page writes (creates + updates) the docs agent may make this run (default 5, cap 20).
+      responses:
+        "200":
+          description: A scan is already running; its session is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiScanResult"
+        "201":
+          description: Scan session started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiScanResult"
+        "400":
+          description: Validation failed (invalid maxChanges).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "404":
+          description: Project or docs agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WikiErrorResponse"
+        "409":
+          description: Scan could not be started.
           content:
             application/json:
               schema:

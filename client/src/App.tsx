@@ -6921,7 +6921,14 @@ export default function App({ initialView }: any = {}) {
                   wsRef={wsRef}
                 />
               ) : currentView === 'wiki' && wikiProjectId ? (
-                <WikiBrowser projectId={wikiProjectId} apiBase={getApiBase()} />
+                <WikiBrowser
+                  projectId={wikiProjectId}
+                  apiBase={getApiBase()}
+                  showToast={showToast}
+                  onOpenSession={({ sessionId, agentId }: any) =>
+                    focusAgentSession(agentId, sessionId)
+                  }
+                />
               ) : currentView === 'notes' && notesProjectId ? (
                 <NotesEditor projectId={notesProjectId} />
               ) : currentView === 'reviewer' && reviewerProjectId ? (

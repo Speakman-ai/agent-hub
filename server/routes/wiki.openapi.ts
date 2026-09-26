@@ -236,6 +236,13 @@ export const DocumentBackfillRequestSchema = z.object({
   }),
 });
 
+export const WikiScanRequestSchema = z.object({
+  maxChanges: z.number().int().min(1).max(20).optional().openapi({
+    description:
+      'Max page writes (creates + updates) the docs agent may make this run (default 5, cap 20).',
+  }),
+});
+
 // OpenAPI path registrations
 
 const projectIdParams = z.object({
@@ -369,6 +376,51 @@ registerPath({
     400: errorResponse('Validation failed (invalid limit).'),
     404: errorResponse('Project or docs agent not found.'),
     409: errorResponse('Backfill skipped for another reason.'),
+  },
+});
+
+const WikiScanResultComponent = registerComponent(
+  'WikiScanResult',
+  z
+    .object({
+      reused: z.boolean(),
+      sessionId: z.string(),
+      agentId: z.string(),
+      pageCount: z.number().int(),
+      maxChanges: z.number().int(),
+    })
+    .openapi({
+      description:
+        'A docs-agent scan session was started (or an already-running scan was reused). `pageCount` is how many wiki pages existed when the scan was queued.',
+    }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/wiki/scan',
+  tags: ['Wiki'],
+  summary: 'Scan the codebase and docs for wiki updates',
+  description: [
+    'Spawns the project docs agent to audit the wiki against the current codebase and in-repo documentation.',
+    'The agent adds missing pages and fixes stale ones, capped at `maxChanges` page writes.',
+    'A second call while a scan is running returns the running session instead of starting another.',
+  ].join(' '),
+  request: {
+    params: projectIdParams,
+    body: { content: jsonContent(WikiScanRequestSchema), required: false },
+  },
+  responses: {
+    200: {
+      description: 'A scan is already running; its session is returned.',
+      content: jsonContent(WikiScanResultComponent),
+    },
+    201: {
+      description: 'Scan session started.',
+      content: jsonContent(WikiScanResultComponent),
+    },
+    400: errorResponse('Validation failed (invalid maxChanges).'),
+    404: errorResponse('Project or docs agent not found.'),
+    409: errorResponse('Scan could not be started.'),
   },
 });
 

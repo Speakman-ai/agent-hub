@@ -2052,4 +2052,6 @@ export const api = {
     fetchJSON(`/projects/${projectId}/wiki/${slug}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteWikiPage: (projectId: any, slug: any) =>
     fetchJSON(`/projects/${projectId}/wiki/${slug}`, { method: 'DELETE' }),
+  scanWiki: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/wiki/scan`, { method: 'POST', body: '{}' }),
 };

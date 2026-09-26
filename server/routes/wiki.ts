@@ -22,9 +22,11 @@ import {
   ListWikiPagesQuerySchema,
   SearchWikiQuerySchema,
   DocumentBackfillRequestSchema,
+  WikiScanRequestSchema,
 } from './wiki.openapi.js';
 import {
   dispatchWikiDocBackfill,
+  dispatchWikiDocScan,
   isWikiDocSkip,
   maybeMarkLinkedCardDocumented,
 } from '../wiki-doc-session.js';
@@ -229,6 +231,57 @@ export default function createWikiRoutes({
       sessionId: outcome.sessionId,
       agentId: outcome.agentId,
       queued: cards.length,
+    });
+  });
+
+  // "Scan for updates": the docs agent audits the wiki against the codebase
+  // and in-repo docs, then adds or updates a bounded number of pages.
+  router.post('/api/projects/:projectId/wiki/scan', (req: Request, res: Response) => {
+    const projectId = req.params.projectId as string;
+    const project = findProject(projectId);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const parsedBody = WikiScanRequestSchema.safeParse(req.body ?? {});
+    if (!parsedBody.success) {
+      const first = parsedBody.error.issues[0];
+      return res.status(400).json({
+        error: first?.message ?? 'Validation failed',
+        details: parsedBody.error.issues.map((i) => ({ path: i.path, message: i.message })),
+      });
+    }
+    const maxChanges = parsedBody.data.maxChanges ?? 5;
+    const pages = listPages(projectId);
+
+    const outcome = dispatchWikiDocScan(
+      { stmts, config, findProject, findAgent, handleChat, broadcast },
+      {
+        project,
+        pages: pages.map((p) => ({
+          slug: p.slug,
+          title: p.title,
+          category: p.category,
+          updated_at: p.updated_at,
+        })),
+        maxChanges,
+        ownerUserId: resolveOwnerUserId(req as AuthenticatedRequest),
+      },
+    );
+
+    if (isWikiDocSkip(outcome)) {
+      if (outcome.reason === 'no_docs_agent') {
+        return res.status(404).json({
+          error: 'No docs agent found for this project. Add an agent with the docs role to scan.',
+        });
+      }
+      return res.status(409).json({ error: `Wiki scan skipped: ${outcome.reason}` });
+    }
+
+    res.status(outcome.reused ? 200 : 201).json({
+      reused: outcome.reused,
+      sessionId: outcome.sessionId,
+      agentId: outcome.agentId,
+      pageCount: pages.length,
+      maxChanges,
     });
   });
 
