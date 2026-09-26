@@ -136,9 +136,26 @@ export default function LoginScreen({ onAuthenticated }: any) {
         </div>
 
         {mode !== 'loading' && !isForgotSent && (
-          <form onSubmit={handleSubmit} className="space-y-3">
+          // Keyed so the MFA step mounts a fresh <form> and <input>. Without the key
+          // React reuses the password input node for the code field, and password
+          // managers keep treating it as the login password instead of a TOTP field.
+          <form
+            key={pendingMfa ? 'mfa' : 'credentials'}
+            onSubmit={handleSubmit}
+            className="space-y-3"
+          >
             {pendingMfa ? (
               <>
+                <input
+                  type="text"
+                  name="username"
+                  autoComplete="username"
+                  value={username}
+                  readOnly
+                  hidden
+                  aria-hidden="true"
+                  tabIndex={-1}
+                />
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
@@ -168,13 +185,14 @@ export default function LoginScreen({ onAuthenticated }: any) {
                     {mfaMode === 'recovery' ? 'Recovery code' : 'Authenticator code'}
                   </label>
                   <input
+                    key={mfaMode}
                     id="login-mfa-code"
                     name={mfaMode === 'recovery' ? 'recovery-code' : 'totpCode'}
                     type="text"
                     value={mfaCode}
                     onChange={(e: any) => setMfaCode(e.target.value)}
                     autoFocus
-                    autoComplete="one-time-code"
+                    autoComplete={mfaMode === 'recovery' ? 'off' : 'one-time-code'}
                     inputMode={mfaMode === 'recovery' ? 'text' : 'numeric'}
                     required
                     className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"

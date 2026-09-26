@@ -135,6 +135,47 @@ describe('LoginScreen', () => {
     expect(recoveryField.getAttribute('name')?.toLowerCase()).not.toContain('totp');
   });
 
+  it('mounts a fresh form and input for the MFA step instead of mutating the password field', async () => {
+    // Regression: React reconciled the MFA fragment onto the password fragment by
+    // position, so the authenticator input was the same DOM node as the password
+    // input with type flipped to "text". Bitwarden and 1Password classify a field
+    // once when they first see it, so they kept treating it as the login password
+    // (offering "Save login?") and never offered the TOTP.
+    (getAuthStatus as any).mockResolvedValue({
+      authConfigured: true,
+      email: 'owner@example.com',
+      needsEmailUpdate: false,
+    });
+    (login as any).mockResolvedValue({ mfaRequired: true, challengeId: 'mfa_123' });
+
+    const { container } = render(<LoginScreen onAuthenticated={vi.fn()} />);
+    await screen.findByRole('button', { name: /^Sign in$/i });
+    const inputs = container.querySelectorAll('input');
+    const passwordInput = inputs[1];
+    const passwordForm = passwordInput.closest('form')!;
+    fireEvent.change(inputs[0], { target: { value: 'owner@example.com' } });
+    fireEvent.change(passwordInput, { target: { value: 'correct-password' } });
+    fireEvent.submit(passwordForm);
+
+    const totpField = (await screen.findByLabelText(/Authenticator code/i)) as HTMLInputElement;
+    expect(totpField).not.toBe(passwordInput);
+    expect(passwordInput.isConnected).toBe(false);
+    expect(totpField.closest('form')).not.toBe(passwordForm);
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+
+    // Multi-step sign-in: carry the account identifier so the manager can match
+    // the TOTP to the right vault item.
+    const usernameHint = container.querySelector(
+      'input[autocomplete="username"]',
+    ) as HTMLInputElement;
+    expect(usernameHint.value).toBe('owner@example.com');
+
+    fireEvent.click(screen.getByRole('button', { name: /Recovery code/i }));
+    const recoveryField = (await screen.findByLabelText(/Recovery code/i)) as HTMLInputElement;
+    expect(recoveryField).not.toBe(totpField);
+    expect(recoveryField.getAttribute('autocomplete')).not.toBe('one-time-code');
+  });
+
   it('forgot mode hides the password field and submits the reset request with just the email', async () => {
     // Regression: the shared login form kept rendering a `required` password
     // field in forgot mode and the submit button stayed disabled until a
