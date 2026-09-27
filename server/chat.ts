@@ -2628,6 +2628,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         activeMultiAgentRounds.has(sessionId) ||
         worktreeTurnStartBlocked;
 
+      // Last await is behind us: from here to the insert below is synchronous,
+      // so this check and the persist cannot interleave with the caller
+      // closing the gate. The finally block releases the lock and reports
+      // the turn as not persisted.
+      if (msg._acceptTurn && !msg._acceptTurn({ busy: sessionBusy })) {
+        console.info(`[chat] session ${sessionId}: caller withdrew this turn; dropping it.`);
+        return;
+      }
+
       if (
         sessionBusy &&
         ((!msg._fromQueue && !msg._multiAgentInternal) || worktreeTurnStartBlocked)

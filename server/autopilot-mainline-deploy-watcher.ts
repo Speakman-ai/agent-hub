@@ -17,6 +17,8 @@
  *   and escalate once after an hour; they never clear the slot.
  * - Obligations outlive run state: the sweep covers every session whose slot
  *   is owed, whatever its run status, mode, or archive state.
+ * - `reporting` is handed to the `report` dep, which proves delivery by
+ *   report key before freeing the slot.
  *
  * The sweep is serial and single-flight per process, so one process never
  * starts two deploys for the same landing.
@@ -77,6 +79,12 @@ export interface MainlineDeployWatcherDeps {
    * stays single-flight; a slot it moves to `landed` deploys in the same pass.
    */
   reconcile?: (session: MainlineWatcherSessionRow) => Promise<void>;
+  /**
+   * Delivers the result of a `reporting` slot (see
+   * autopilot-mainline-report.ts). Synchronous: it dispatches the verify turn
+   * without awaiting it.
+   */
+  report?: (session: MainlineWatcherSessionRow) => void;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -455,6 +463,8 @@ export function createMainlineDeployWatcher(deps: MainlineDeployWatcherDeps) {
     } else if (state.slot.phase === 'deploying') {
       handleDeploying(session, state.slot);
     }
+    // A deploy that finished in this pass reports in the same pass.
+    if (deps.report && readSlot(session.id)?.slot.phase === 'reporting') deps.report(session);
   }
 
   async function sweepOnce(): Promise<void> {

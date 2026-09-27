@@ -274,6 +274,15 @@ export function mainlineLandingKey(sessionId: string, attemptId: string): string
   return `${sessionId}:${attemptId}`;
 }
 
+/**
+ * Carried by the verify turn or result notice for one landing. The slot
+ * leaves `reporting` only once this string is found in the session's
+ * messages or queue.
+ */
+export function mainlineReportKey(sessionId: string, attemptId: string): string {
+  return `autopilot-report:${mainlineLandingKey(sessionId, attemptId)}`;
+}
+
 function parseOutcome(raw: unknown): MainlineOutcome | null {
   if (!raw || typeof raw !== 'object') return null;
   const row = raw as Record<string, unknown>;

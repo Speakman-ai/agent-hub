@@ -5,7 +5,7 @@
  */
 import { existsSync } from 'fs';
 import path from 'path';
-import type { AppConfig, BroadcastFn, Project, SessionRow, Stmts } from './types.js';
+import type { AppConfig, BroadcastFn, ChatMessage, Project, SessionRow, Stmts } from './types.js';
 import { getDb } from './db.js';
 import {
   createMainlineDeployWatcher,
@@ -35,6 +35,11 @@ import {
 import { assertMainlineOrigin, isMainlinePushLive } from './finalize/push-to-default-branch.js';
 import { resolveMainlineGitEnv } from './finalize/push-run.js';
 import { gitHostRepoPath } from './git-host/repo-store.js';
+import {
+  createMainlineReportDelivery,
+  findMainlineReportKey,
+} from './autopilot-mainline-report.js';
+import { kickoffSeededTurn } from './seeded-session-kickoff.js';
 
 type FindAgent = (agentId: string) => { project?: Project | null } | null | undefined;
 
@@ -103,6 +108,8 @@ export function initMainlineDeployWatcher(args: {
   orgId: () => string;
   /** Start Finalize again after the reconciler found a push absent. */
   restartFinalize: MainlineReconcilerDeps['restartFinalize'];
+  /** Chat entry point for the verify turn. Dispatched, never awaited by the sweep. */
+  handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
 }): MainlineDeployWatcher {
   const { stmts, broadcast, config, findProject, findAgent } = args;
   const postNotice = (sessionId: string, content: string) =>
@@ -121,9 +128,30 @@ export function initMainlineDeployWatcher(args: {
     restartFinalize: args.restartFinalize,
     postNotice,
   });
+  let watcher: MainlineDeployWatcher | null = null;
+  const reporter = createMainlineReportDelivery({
+    stmts,
+    findReportKey: (sessionId, key) => findMainlineReportKey(getDb(), sessionId, key),
+    dispatchTurn: (session, content, acceptTurn) =>
+      kickoffSeededTurn({
+        acceptTurn,
+        handleChat: args.handleChat,
+        agentId: session.agent_id,
+        sessionId: session.id,
+        content,
+        onBackgroundError: (err) =>
+          console.warn(
+            `[autopilot-report] verify turn failed after delivery session=${session.id}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+      }),
+    postNotice,
+    requestSweep: () => watcher?.kick(),
+  });
   const prepareCheckout = ({ project, ref }: { project: Project; ref: string }) =>
     prepareDeploymentCheckout({ project, ref });
-  const watcher = createMainlineDeployWatcher({
+  const created = createMainlineDeployWatcher({
     stmts,
     listCandidates: () => listMainlineWatcherSessions(getDb()),
     findProjectForAgent: (agentId) => findAgent(agentId)?.project ?? null,
@@ -145,8 +173,10 @@ export function initMainlineDeployWatcher(args: {
     getDeployment,
     postNotice,
     reconcile: (session) => reconciler.reconcile(session),
+    report: (session) => reporter.deliver(session),
   });
-  setMainlineSlotLandedListener(() => watcher.kick());
-  watcher.start();
-  return watcher;
+  watcher = created;
+  setMainlineSlotLandedListener(() => created.kick());
+  created.start();
+  return created;
 }

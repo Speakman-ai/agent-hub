@@ -286,3 +286,75 @@ describe('turn-error gate lifecycle (sessions.last_turn_error)', () => {
     expect(getFlag(sessionId)).toContain('exited with code 1');
   });
 });
+
+describe('handleChat _acceptTurn gate', () => {
+  function messageCount(sessionId: string): number {
+    return (getStmts().getMessages.all(sessionId) as unknown[]).length;
+  }
+
+  it('drops a withdrawn turn before persisting or spawning', async () => {
+    const { agentId, sessionId } = seedSession('accept-closed');
+    const deps = makeDeps(agentId, slowCleanBin);
+    const accepted = vi.fn();
+    const { handleChat } = createChatHandler(deps);
+    await handleChat(null, {
+      type: 'chat',
+      agentId,
+      sessionId,
+      content: 'late verify turn',
+      _acceptTurn: () => false,
+      _onUserMessagePersisted: accepted,
+    });
+    expect(accepted).toHaveBeenCalledWith(false);
+    expect(messageCount(sessionId)).toBe(0);
+    expect(deps.activeProcesses.has(sessionId)).toBe(false);
+  });
+
+  it('tells the gate the session is busy, and a refusal is not queued', async () => {
+    const { agentId, sessionId } = seedSession('accept-busy');
+    const deps = makeDeps(agentId, slowCleanBin);
+    deps.activeProcesses.set(sessionId, {} as ActiveChatProcess);
+    const accepted = vi.fn();
+    const gate = vi.fn(({ busy }: { busy: boolean }) => !busy);
+    const { handleChat } = createChatHandler(deps);
+    try {
+      await handleChat(null, {
+        type: 'chat',
+        agentId,
+        sessionId,
+        content: 'late verify turn',
+        _acceptTurn: gate,
+        _onUserMessagePersisted: accepted,
+      });
+      expect(gate).toHaveBeenCalledWith({ busy: true });
+      expect(accepted).toHaveBeenCalledWith(false);
+      expect(messageCount(sessionId)).toBe(0);
+      expect(getStmts().getNextQueuedMessage.get(sessionId)).toBeUndefined();
+    } finally {
+      deps.activeProcesses.delete(sessionId);
+    }
+  });
+
+  it('persists when the gate is open', async () => {
+    const { agentId, sessionId } = seedSession('accept-open');
+    const deps = makeDeps(agentId, slowCleanBin);
+    deps.activeProcesses.set(sessionId, {} as ActiveChatProcess);
+    const accepted = vi.fn();
+    const { handleChat } = createChatHandler(deps);
+    try {
+      await handleChat(null, {
+        type: 'chat',
+        agentId,
+        sessionId,
+        content: 'verify turn',
+        _acceptTurn: () => true,
+        _onUserMessagePersisted: accepted,
+      });
+      expect(accepted).toHaveBeenCalledWith(true);
+      expect(getStmts().getNextQueuedMessage.get(sessionId)).toBeDefined();
+    } finally {
+      deps.activeProcesses.delete(sessionId);
+      getStmts().clearSessionQueue.run(sessionId);
+    }
+  });
+});

@@ -381,7 +381,7 @@ describe('mainline copy', () => {
   it('stop notice does not ask a human to merge', () => {
     const msg = autopilotStopNoticeContent('expired', 'main', 'mainline');
     expect(msg).not.toContain('merge');
-    expect(msg).toContain('owed');
+    expect(msg).toContain('No deploy is in flight.');
   });
 
   it('unstick message names the environment', () => {

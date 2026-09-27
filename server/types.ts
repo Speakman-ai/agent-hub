@@ -4404,6 +4404,13 @@ export interface ChatMessage {
    * webhook dedup does not advance when `handleChat` drops a system inject (e.g. queue full).
    */
   _onUserMessagePersisted?: (accepted: boolean) => void;
+  /**
+   * Internal: checked synchronously right before the user message is persisted
+   * or queued, with whether the session is busy (the turn would be queued).
+   * Returning false drops the turn (reported as not persisted). Lets a caller
+   * decide at landing time, e.g. refuse a queued turn or one it gave up on.
+   */
+  _acceptTurn?: (ctx: { busy: boolean }) => boolean;
   /** Internal: skip multi-agent routing and run a single executor/advisor turn. */
   _multiAgentInternal?: boolean;
   /** Internal: do not persist a user message (follow-up executor turns). */

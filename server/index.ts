@@ -2301,6 +2301,7 @@ initMainlineDeployWatcher({
   findAgent,
   orgId: getActiveOrgId,
   restartFinalize: restartFinalizeAfterMainlineAbsent,
+  handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws, msg),
 });
 
 attachDefaultPreviewProxyUpgrade(

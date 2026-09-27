@@ -194,7 +194,12 @@ export function enforceAutopilotExpiry(args: { deps: AutopilotNoticeDeps; sessio
     postAutopilotSystemNotice(
       deps,
       session.id,
-      autopilotStopNoticeContent('expired', stopped.cfg.branch, stopped.cfg.target),
+      autopilotStopNoticeContent(
+        'expired',
+        stopped.cfg.branch,
+        stopped.cfg.target,
+        stopped.cfg.mainline,
+      ),
     );
     return { blocked: true };
   }
@@ -287,7 +292,7 @@ export function scheduleAutopilotAfterPush(args: {
     postAutopilotSystemNotice(
       deps,
       session.id,
-      autopilotStopNoticeContent(next.status, branch, next.target),
+      autopilotStopNoticeContent(next.status, branch, next.target, next.mainline),
     );
     return;
   }

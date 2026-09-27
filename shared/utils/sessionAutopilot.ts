@@ -9,6 +9,7 @@
 
 import {
   type AutopilotMainlineConfig,
+  type MainlineSlot,
   parseAutopilotMainlineConfig,
 } from './autopilotMainlineSlot.js';
 
@@ -426,6 +427,7 @@ export function autopilotStopNoticeContent(
   status: AutopilotStatus,
   branch: string,
   target: AutopilotTarget = 'branch',
+  mainline?: Pick<AutopilotMainlineConfig, 'deployEnvironment' | 'slot'> | null,
 ): string {
   const reason =
     status === 'expired'
@@ -436,13 +438,161 @@ export function autopilotStopNoticeContent(
   if (target === 'mainline') {
     return (
       `Autopilot stopped: ${reason}. No further agent turns or pushes to \`${branch}\` will run for this session. ` +
-      'A deploy already owed for a landed commit still finishes and reports here.'
+      mainlineInFlightSentence(branch, mainline)
     );
   }
   return (
     `Autopilot stopped: ${reason}. Branch \`${branch}\` is ready for a human to review and merge. ` +
     'No further automatic work or pushes will run for this session.'
   );
+}
+
+function shortCommit(sha: string | null): string {
+  return (sha ?? '').slice(0, 7) || 'the last commit';
+}
+
+/** What the stop notice says about a landing that is still owed. */
+function mainlineInFlightSentence(
+  branch: string,
+  mainline: Pick<AutopilotMainlineConfig, 'deployEnvironment' | 'slot'> | null | undefined,
+): string {
+  const slot = mainline?.slot;
+  if (!mainline || !slot || slot.phase === 'idle') return 'No deploy is in flight.';
+  const sha = `\`${shortCommit(slot.sha)}\``;
+  const env = `\`${mainline.deployEnvironment}\``;
+  const where =
+    slot.phase === 'pushing' || slot.phase === 'uncertain'
+      ? `is still landing on \`${branch}\` and then deploys to ${env}`
+      : slot.phase === 'reporting'
+        ? `already deployed to ${env}`
+        : `is still deploying to ${env}`;
+  return `${sha} ${where}; it finishes and its result posts here as a notice, with no agent turn.`;
+}
+
+/** Why a mainline deploy result posted as a notice instead of an agent turn. */
+export type AutopilotMainlineNoticeReason =
+  | 'stopped'
+  | 'expired'
+  | 'mode_switched'
+  | 'archived'
+  | 'dispatch_failed'
+  | 'dispatch_stalled';
+
+function mainlineNoticeReasonText(reason: AutopilotMainlineNoticeReason, status: string): string {
+  switch (reason) {
+    case 'stopped':
+      return `Autopilot is not running (status is ${status})`;
+    case 'expired':
+      return 'the Autopilot time limit was reached';
+    case 'mode_switched':
+      return 'the session left Autopilot mode';
+    case 'archived':
+      return 'the session is archived';
+    case 'dispatch_failed':
+      return 'the verify turn could not be started after several tries';
+    case 'dispatch_stalled':
+      return 'the verify turn did not start in time';
+  }
+}
+
+function mainlineResultHeadline(
+  slot: MainlineSlot,
+  environment: string,
+  branch: string,
+): { headline: string; ok: boolean } {
+  const sha = `\`${shortCommit(slot.sha)}\``;
+  const env = `\`${environment}\``;
+  const detail = slot.outcome?.detail ? ` (${slot.outcome.detail})` : '';
+  switch (slot.outcome?.status) {
+    case 'succeeded':
+      return { headline: `The deploy of ${sha} to ${env} succeeded.`, ok: true };
+    case 'failed':
+      return { headline: `The deploy of ${sha} to ${env} failed${detail}.`, ok: false };
+    case 'cancelled':
+      return { headline: `The deploy of ${sha} to ${env} was cancelled${detail}.`, ok: false };
+    case 'missing':
+      return {
+        headline: `The deployment of ${sha} to ${env} disappeared before it finished${detail}.`,
+        ok: false,
+      };
+    case 'undeployable':
+    default:
+      return {
+        headline: `${sha} is on \`${branch}\` but could not be deployed to ${env}${detail}.`,
+        ok: false,
+      };
+  }
+}
+
+function mainlineTargetLines(slot: MainlineSlot): string[] {
+  const origin = slot.outcome?.origin ?? null;
+  const readiness = slot.outcome?.readiness ?? null;
+  return [
+    `Live origin: ${origin ?? 'not declared in deploy.yaml'}`,
+    `Readiness: ${readiness ?? 'not declared in deploy.yaml'}`,
+  ];
+}
+
+/** Line that carries the report key. Delivery is proven by finding it. */
+export function autopilotMainlineReportKeyLine(reportKey: string): string {
+  return `Report key: ${reportKey}`;
+}
+
+/**
+ * The verify turn after a mainline deploy. Carries the report key so the Hub
+ * can prove the turn was delivered (found in messages or the queue).
+ */
+export function buildAutopilotMainlineVerifyMessage(args: {
+  cfg: AutopilotSessionConfig;
+  slot: MainlineSlot;
+  environment: string;
+  reportKey: string;
+}): string {
+  const { cfg, slot, environment, reportKey } = args;
+  const { headline, ok } = mainlineResultHeadline(slot, environment, cfg.branch);
+  const lines = [`Autopilot deploy result: ${headline}`, ...mainlineTargetLines(slot), ''];
+  if (ok) {
+    lines.push(
+      `Verify on the live \`${environment}\` environment at the origin above (browser tool), not the session preview. Check readiness first.`,
+      '',
+      'Check:',
+      '1. The last change works live.',
+      `2. Goal: ${cfg.goal}`,
+      '3. No obvious regression against that goal.',
+      '',
+      'If verify finds a bug, fix it forward: commit the fix in this worktree and leave it for Finalize to land. If the goal holds, say so clearly and stop. Otherwise pick the next improvement from the brief.',
+    );
+  } else {
+    lines.push(
+      `The commit is already on \`${cfg.branch}\`, so fix forward: read the deployment logs on the Deployments page, commit a fix in this worktree, and leave it for Finalize to land and deploy.`,
+      `Goal: ${cfg.goal}`,
+    );
+  }
+  lines.push(
+    'Do not revert by pushing, roll back the deploy, switch branches, merge, or open a PR yourself.',
+    autopilotEscalationInstruction(cfg.escalation),
+    '',
+    autopilotMainlineReportKeyLine(reportKey),
+  );
+  return lines.join('\n');
+}
+
+/** Transcript notice for a deploy result that must not start an agent turn. */
+export function buildAutopilotMainlineResultNotice(args: {
+  cfg: AutopilotSessionConfig;
+  slot: MainlineSlot;
+  environment: string;
+  reportKey: string;
+  reason: AutopilotMainlineNoticeReason;
+}): string {
+  const { cfg, slot, environment, reportKey, reason } = args;
+  const { headline } = mainlineResultHeadline(slot, environment, cfg.branch);
+  return [
+    `Autopilot deploy result: ${headline}`,
+    ...mainlineTargetLines(slot),
+    `No agent turn was started: ${mainlineNoticeReasonText(reason, cfg.status)}.`,
+    autopilotMainlineReportKeyLine(reportKey),
+  ].join('\n');
 }
 
 function autopilotDurationLabel(cfg: AutopilotSessionConfig): string {

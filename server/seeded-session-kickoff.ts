@@ -29,6 +29,8 @@ export interface KickoffSeededTurnArgs {
   images?: ChatMessage['images'];
   /** Invoked if handleChat rejects *after* the seed was accepted. */
   onBackgroundError?: (err: unknown) => void;
+  /** Checked right before the seed is persisted or queued; false drops the turn. */
+  acceptTurn?: (ctx: { busy: boolean }) => boolean;
 }
 
 /**
@@ -60,6 +62,7 @@ export function kickoffSeededTurn(args: KickoffSeededTurnArgs): Promise<void> {
         sessionId,
         content,
         ...(args.images?.length ? { images: args.images } : {}),
+        ...(args.acceptTurn ? { _acceptTurn: args.acceptTurn } : {}),
         _onUserMessagePersisted: (accepted) => {
           if (accepted) succeed();
           else fail(new SeededTurnNotAcceptedError());
