@@ -44,7 +44,9 @@ function runningConfig(overrides: Record<string, unknown> = {}) {
     brief: 'Harden the 3D print UI',
     goal: 'Baseline journeys pass on preview',
     escalation: 'medium',
+    target: 'branch',
     branch: 'autopilot/print-ui',
+    deployEnvironment: null,
     ...overrides,
   });
 }
@@ -57,7 +59,9 @@ describe('startAutopilotConfig', () => {
         brief: 'Do the work',
         goal: 'Done',
         escalation: 'low',
+        target: 'branch',
         branch: 'autopilot/x',
+        deployEnvironment: null,
       },
       '2026-09-17T12:00:00.000Z',
     );
@@ -73,9 +77,33 @@ describe('startAutopilotConfig', () => {
       brief: 'Do the work',
       goal: 'Done',
       escalation: 'none',
+      target: 'branch',
       branch: 'autopilot/x',
+      deployEnvironment: null,
     });
     expect(cfg.deadlineAt).toBeNull();
+  });
+
+  it('starts a mainline run with an idle slot and no stray setup fields', () => {
+    const cfg = startAutopilotConfig(
+      {
+        durationHours: 1,
+        brief: 'Do the work',
+        goal: 'Done',
+        escalation: 'none',
+        target: 'mainline',
+        branch: '',
+        deployEnvironment: 'staging',
+      },
+      '2026-09-17T12:00:00.000Z',
+    );
+    expect(cfg.target).toBe('mainline');
+    expect(cfg.mainline).toEqual({
+      deployEnvironment: 'staging',
+      landedCount: 0,
+      slot: expect.objectContaining({ phase: 'idle', attemptId: null }),
+    });
+    expect(cfg).not.toHaveProperty('deployEnvironment');
   });
 });
 

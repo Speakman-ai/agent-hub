@@ -177,7 +177,12 @@ export const api = {
       brief: string;
       goal: string;
       escalation: string;
-      branch: string;
+      /** `branch` (default) or `mainline` (default branch + deploy). */
+      target?: string;
+      /** Required for `branch`. */
+      branch?: string;
+      /** Required for `mainline`: the deploy.yaml environment to deploy and verify. */
+      deployEnvironment?: string;
       images?: UploadedAttachment[];
     },
   ) =>

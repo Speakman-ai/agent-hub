@@ -4,8 +4,11 @@ import { useMemo, useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
 import { api } from '../utils/api';
 import {
+  AUTOPILOT_MAINLINE_UNAVAILABLE_MESSAGE,
+  autopilotStartRequestBody,
   validateAutopilotSetupInput,
   type AutopilotEscalation,
+  type AutopilotTarget,
 } from '@shared/utils/sessionAutopilot';
 import { colors } from '../theme/colors';
 
@@ -13,20 +16,30 @@ type PendingFile = { uri: string; name: string; type: string; size?: number };
 
 const ESCALATION: AutopilotEscalation[] = ['none', 'low', 'medium', 'high'];
 
+const TARGETS: { value: AutopilotTarget; label: string }[] = [
+  { value: 'branch', label: 'Isolated branch' },
+  { value: 'mainline', label: 'Default branch + deploy' },
+];
+
 export default function AutopilotSetupPrompt({
   sessionId,
   onStarted,
   onError,
+  mainlineAvailable = false,
 }: {
   sessionId: string;
   onStarted?: (session: unknown) => void;
   onError?: (message: string) => void;
+  /** The session's `can_autopilot_mainline`: whether the server accepts "Default branch + deploy". */
+  mainlineAvailable?: boolean;
 }) {
   const [durationHours, setDurationHours] = useState('4');
   const [brief, setBrief] = useState('');
   const [goal, setGoal] = useState('');
   const [escalation, setEscalation] = useState<AutopilotEscalation>('medium');
+  const [target, setTarget] = useState<AutopilotTarget>('branch');
   const [branch, setBranch] = useState('autopilot/');
+  const [deployEnvironment, setDeployEnvironment] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [files, setFiles] = useState<PendingFile[]>([]);
@@ -39,9 +52,11 @@ export default function AutopilotSetupPrompt({
         brief,
         goal,
         escalation,
+        target,
         branch,
+        deployEnvironment,
       }),
-    [durationHours, brief, goal, escalation, branch],
+    [durationHours, brief, goal, escalation, target, branch, deployEnvironment],
   );
 
   async function pickAttachments(photos: boolean) {
@@ -97,7 +112,7 @@ export default function AutopilotSetupPrompt({
     try {
       const images = await Promise.all(files.map((file) => api.uploadFile(file)));
       const updated = await api.startSessionAutopilot(sessionId, {
-        ...preview.value,
+        ...autopilotStartRequestBody(preview.value),
         ...(images.length ? { images } : {}),
       });
       onStarted?.(updated);
@@ -113,9 +128,37 @@ export default function AutopilotSetupPrompt({
   return (
     <View testID="autopilot-setup-prompt" style={styles.card}>
       <Text style={styles.title}>Autopilot</Text>
-      <Text style={styles.hint}>
-        Pushes a named branch, verifies in preview, and waits for you to merge. Never ships to main.
+      <Text testID="autopilot-setup-summary" style={styles.hint}>
+        {target === 'mainline'
+          ? 'Pushes each validated change to the default branch, deploys it, and verifies on the live environment. Every change goes live.'
+          : 'Pushes a named branch, verifies in preview, and waits for you to merge. Never ships to main.'}
       </Text>
+      <Text style={styles.label}>Where to ship</Text>
+      <View style={styles.row}>
+        {TARGETS.map((opt) => {
+          const unavailable = opt.value === 'mainline' && !mainlineAvailable;
+          return (
+            <Pressable
+              key={opt.value}
+              testID={`autopilot-setup-target-${opt.value}`}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: target === opt.value, disabled: unavailable }}
+              disabled={saving || unavailable}
+              onPress={() => setTarget(opt.value)}
+              style={[
+                styles.chip,
+                target === opt.value && styles.chipOn,
+                unavailable && styles.chipDisabled,
+              ]}
+            >
+              <Text style={styles.chipText}>{opt.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {!mainlineAvailable ? (
+        <Text style={styles.hint}>{AUTOPILOT_MAINLINE_UNAVAILABLE_MESSAGE}</Text>
+      ) : null}
       <Text style={styles.label}>How long (hours; 0 = no limit)</Text>
       <TextInput
         testID="autopilot-setup-duration"
@@ -188,15 +231,34 @@ export default function AutopilotSetupPrompt({
           </Pressable>
         ))}
       </View>
-      <Text style={styles.label}>Branch name</Text>
-      <TextInput
-        testID="autopilot-setup-branch"
-        value={branch}
-        onChangeText={setBranch}
-        editable={!saving}
-        autoCapitalize="none"
-        style={styles.input}
-      />
+      {target === 'mainline' ? (
+        <>
+          <Text style={styles.label}>Deploy environment (from .agent-hub/deploy.yaml)</Text>
+          <TextInput
+            testID="autopilot-setup-deploy-env"
+            value={deployEnvironment}
+            onChangeText={setDeployEnvironment}
+            editable={!saving}
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="staging"
+            placeholderTextColor={colors.gray500}
+            style={styles.input}
+          />
+        </>
+      ) : (
+        <>
+          <Text style={styles.label}>Branch name</Text>
+          <TextInput
+            testID="autopilot-setup-branch"
+            value={branch}
+            onChangeText={setBranch}
+            editable={!saving}
+            autoCapitalize="none"
+            style={styles.input}
+          />
+        </>
+      )}
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <Pressable
         testID="autopilot-setup-start"
@@ -241,6 +303,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   chipOn: { borderColor: colors.emerald500, backgroundColor: colors.emerald800 },
+  chipDisabled: { opacity: 0.5 },
   chipText: { color: colors.gray200, fontSize: 12 },
   error: { color: colors.rose400, fontSize: 12 },
   button: {

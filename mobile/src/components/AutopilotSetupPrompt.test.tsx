@@ -124,4 +124,37 @@ describe('Autopilot attachments on mobile', () => {
       expect.objectContaining({ images: [uploaded] }),
     );
   });
+
+  it('disables the default-branch option until the landing path ships', () => {
+    const option = renderer.root.findByProps({ testID: 'autopilot-setup-target-mainline' });
+    expect(option.props.disabled).toBe(true);
+    expect(JSON.stringify(renderer.toJSON())).toContain('not available yet');
+  });
+
+  it('starts a default-branch run with a deploy environment', async () => {
+    await act(async () => {
+      renderer.update(<AutopilotSetupPrompt sessionId="session-1" mainlineAvailable />);
+    });
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'autopilot-setup-target-mainline' }).props.onPress();
+    });
+    expect(renderer.root.findAllByProps({ testID: 'autopilot-setup-branch' })).toHaveLength(0);
+    expect(JSON.stringify(renderer.toJSON())).toContain('Every change goes live');
+    await start();
+    expect(api.startSessionAutopilot).not.toHaveBeenCalled();
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'autopilot-setup-deploy-env' })
+        .props.onChangeText('staging');
+    });
+    await start();
+    expect(api.startSessionAutopilot).toHaveBeenCalledWith('session-1', {
+      durationHours: 4,
+      brief: 'Use the reference',
+      goal: 'Matches reference',
+      escalation: 'medium',
+      target: 'mainline',
+      deployEnvironment: 'staging',
+    });
+  });
 });

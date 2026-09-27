@@ -59,6 +59,10 @@ export const SessionComponent = registerComponent(
         description:
           'True when Firecracker is registered on this host so the session may enter `isolated` (VM) mode. False for workflow (no-code) projects when the owning project is known. Clients hide the VM option when this is false.',
       }),
+      can_autopilot_mainline: z.boolean().optional().openapi({
+        description:
+          'True when this server accepts an Autopilot start with `target: mainline` for this session. False until the default-branch landing path ships (unless the server opts in), and for workflow or unknown projects. Setup forms disable "Default branch + deploy" when false.',
+      }),
       model: z.string(),
       use_worktree: z.number().int(),
       ask_mode: z.number().int(),
@@ -469,7 +473,17 @@ export const StartSessionAutopilotRequestSchema = z.object({
   brief: z.string().trim().min(1).max(8000),
   goal: z.string().trim().min(1).max(4000),
   escalation: z.enum(['none', 'low', 'medium', 'high']),
-  branch: z.string().trim().min(1).max(255),
+  target: z.enum(['branch', 'mainline']).optional().openapi({
+    description:
+      'Where Autopilot ships. `branch` (default) pushes a named feature branch and a human merges. `mainline` (refused with `autopilot_mainline_unavailable` until the landing path ships) lands each validated change on the repository default branch, deploys `deployEnvironment`, and verifies on it.',
+  }),
+  branch: z.string().trim().max(255).optional().openapi({
+    description: 'Feature branch for the `branch` target (required there). Ignored for `mainline`.',
+  }),
+  deployEnvironment: z.string().trim().max(64).optional().openapi({
+    description:
+      'Required for `mainline`: a deploy.yaml environment declared on the default branch and not paused.',
+  }),
   images: z
     .array(
       z.object({
@@ -1219,16 +1233,37 @@ registerPath({
   tags: ['Sessions'],
   summary: 'Configure and start Autopilot on a session',
   description:
-    'Persists duration, brief, goal, escalation, and a named feature branch, pins Finalize to push (never merge), and kicks the implement → push → preview-verify loop on this same session.',
+    'Persists duration, brief, goal, escalation, and where to ship, pins Finalize to push, and kicks the Autopilot loop on this same session. The `branch` target binds a named feature branch and verifies in the session preview (merge stays human). The `mainline` target keeps the session branch, lands each validated change on the default branch, deploys `deployEnvironment`, and verifies on that live environment.',
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(StartSessionAutopilotRequestSchema) },
   },
   responses: {
     200: { description: 'Autopilot started.', content: jsonContent(SessionComponent) },
-    400: errorResponse('Validation failed or the named branch could not be bound.'),
+    400: {
+      description:
+        'Validation failed, the named branch could not be bound, `mainline` is not available on this server yet (`autopilot_mainline_unavailable`), or (mainline) the default branch deploy.yaml is missing, invalid, does not declare `deployEnvironment`, or has it paused. Preflight errors list `declaredEnvironments`.',
+      content: jsonContent(
+        z.object({
+          error: z.string(),
+          message: z.string().optional(),
+          details: z.array(z.object({ field: z.string(), message: z.string() })).optional(),
+          declaredEnvironments: z.array(z.string()).optional(),
+        }),
+      ),
+    },
     404: errorResponse('Session not found.'),
-    409: errorResponse('The opening Autopilot turn was not accepted.'),
+    409: {
+      description:
+        "The session is busy, the opening turn was not accepted, this session's mainline slot still owes a landing (`autopilot_slot_busy`), or another session owns that project/environment (`autopilot_environment_owned`).",
+      content: jsonContent(
+        z.object({
+          error: z.string(),
+          message: z.string().optional(),
+          ownerSessionId: z.string().optional(),
+        }),
+      ),
+    },
   },
 });
 

@@ -155,6 +155,17 @@ import {
   buildAutopilotStartUserMessage,
 } from '../session-autopilot.js';
 import { unstickAutopilotSession } from '../session-autopilot-unstick.js';
+import {
+  autopilotMainlineStartEnabled,
+  checkMainlineAutopilotTarget,
+  findMainlineEnvironmentOwner,
+  listMainlineAutopilotCandidates,
+} from '../session-autopilot-mainline-start.js';
+import {
+  AUTOPILOT_MAINLINE_UNAVAILABLE_MESSAGE,
+  parseAutopilotSessionConfig,
+} from '../../shared/utils/sessionAutopilot.js';
+import { resolveDefaultBranchIn } from '../git-default-branch.js';
 import { getUserProjectDefaultFinalizeAutomation } from '../user-project-settings.js';
 import {
   enrichSessionForClient,
@@ -2351,6 +2362,42 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(enriched);
   });
 
+  class AutopilotStartRaceError extends Error {}
+
+  /** Which obligation the stored mainline slot still holds, or null when idle. */
+  function autopilotSlotBusy(raw: string | null | undefined): string | null {
+    const stored = parseAutopilotSessionConfig(raw ?? null);
+    const phase = stored?.target === 'mainline' ? stored.mainline?.slot.phase : 'idle';
+    if (!phase || phase === 'idle') return null;
+    if (phase === 'pushing' || phase === 'uncertain') return 'landing';
+    if (phase === 'reporting') return 'reporting on';
+    return 'deploying';
+  }
+
+  function mainlineOwnerConflict(
+    sessionId: string,
+    projectId: string | null,
+    environment: string,
+  ): Record<string, unknown> | null {
+    if (!projectId) return null;
+    const owner = findMainlineEnvironmentOwner({
+      candidates: listMainlineAutopilotCandidates(getDb()),
+      projectOf: (agentId) => findAgent(agentId)?.project?.id ?? null,
+      projectId,
+      environment,
+      excludeSessionId: sessionId,
+    });
+    if (!owner) return null;
+    return {
+      error: 'autopilot_environment_owned',
+      message:
+        owner.reason === 'owes_landing'
+          ? `Another session is still landing a commit on environment "${environment.trim()}". Start again once its deploy finishes.`
+          : `Another session is already running default-branch Autopilot on environment "${environment.trim()}". Stop it first.`,
+      ownerSessionId: owner.sessionId,
+    };
+  }
+
   router.post('/api/sessions/:sessionId/autopilot', async (req: Request, res: Response) => {
     const parsed = parseBody(StartSessionAutopilotRequestSchema, req, res);
     if (!parsed) return;
@@ -2371,6 +2418,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (!validated.ok) {
       return res.status(400).json({ error: 'invalid_autopilot_setup', details: validated.errors });
     }
+    if (validated.value.target === 'mainline' && !autopilotMainlineStartEnabled()) {
+      return res.status(400).json({
+        error: 'autopilot_mainline_unavailable',
+        message: AUTOPILOT_MAINLINE_UNAVAILABLE_MESSAGE,
+      });
+    }
 
     // Serialize startup under the same worktree lock the branch picker uses.
     // Positioning the checkout onto the Autopilot branch and persisting the
@@ -2385,6 +2438,23 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     try {
       const current = stmts.getSession.get(sessionId) as SessionRow | undefined;
       if (!current) return res.status(404).json({ error: 'Session not found' });
+
+      // A new config replaces the stored one wholesale, so a slot that still
+      // owes a landing (push in flight, deploy owed, report undelivered)
+      // must drain first or that obligation is lost.
+      const slotBusy = autopilotSlotBusy(current.autopilot_session_config);
+      if (slotBusy) {
+        return res.status(409).json({
+          error: 'autopilot_slot_busy',
+          message: `This session's previous default-branch run is still ${slotBusy} a commit. Start again once it finishes.`,
+        });
+      }
+      const mainlineEnv =
+        validated.value.target === 'mainline' ? validated.value.deployEnvironment : null;
+      if (mainlineEnv) {
+        const owner = mainlineOwnerConflict(sessionId, sessionProject?.id ?? null, mainlineEnv);
+        if (owner) return res.status(409).json(owner);
+      }
 
       // A provisioned worktree may already hold active or unpushed work.
       // Repositioning it onto the Autopilot branch would strand that work
@@ -2430,29 +2500,91 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
 
       const cfg = startAutopilotConfig(validated.value);
-      const bound = await bindAutopilotBranch({
-        session: current,
-        branch: cfg.branch,
-        // Record the Autopilot branch as both the fresh-branch name and the
-        // existing-branch checkout target, so a session provisioned later
-        // resumes an existing remote branch from its tip (and a not-yet-created
-        // name still cuts fresh). See worktree.ts requireExactBranch handling.
-        persistBranch: (branch) => {
-          stmts.updateSessionWorktreeBranch.run(branch, sessionId);
-          stmts.setSessionWorktreeCheckoutBranch.run(branch, sessionId);
-        },
-      });
-      if (!bound.ok) {
-        return res.status(400).json({ error: 'autopilot_branch_failed', message: bound.message });
+      if (cfg.target === 'mainline' && cfg.mainline) {
+        // Mainline keeps the session's own worktree branch: Finalize lands
+        // each validated commit on the default branch, so there is no
+        // Autopilot branch to bind.
+        if (!sessionProject) return res.status(404).json({ error: 'Project not found' });
+        const checked = await checkMainlineAutopilotTarget(
+          sessionProject,
+          cfg.mainline.deployEnvironment,
+          {
+            sessionDefaultBranch: async () => {
+              const io = current.worktree_path ? await sessionWorktreeIo(current) : null;
+              return io ? resolveDefaultBranchIn(io) : null;
+            },
+          },
+        );
+        if (!checked.ok) {
+          return res.status(400).json({
+            error: checked.error,
+            message: checked.message,
+            declaredEnvironments: checked.declaredEnvironments,
+          });
+        }
+        cfg.branch = checked.defaultBranch;
+      } else {
+        const bound = await bindAutopilotBranch({
+          session: current,
+          branch: cfg.branch,
+          // Record the Autopilot branch as both the fresh-branch name and the
+          // existing-branch checkout target, so a session provisioned later
+          // resumes an existing remote branch from its tip (and a not-yet-created
+          // name still cuts fresh). See worktree.ts requireExactBranch handling.
+          persistBranch: (branch) => {
+            stmts.updateSessionWorktreeBranch.run(branch, sessionId);
+            stmts.setSessionWorktreeCheckoutBranch.run(branch, sessionId);
+          },
+        });
+        if (!bound.ok) {
+          return res.status(400).json({ error: 'autopilot_branch_failed', message: bound.message });
+        }
+        cfg.branch = bound.branch;
       }
-      cfg.branch = bound.branch;
-      getDb().transaction(() => {
+      // The checks above ran across awaits. Decide again from the stored rows
+      // in the same synchronous transaction as the write, so a concurrent
+      // start cannot claim the environment or refill the slot in between.
+      const persistStart = getDb().transaction((): Record<string, unknown> | null => {
+        const fresh = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        const storedRaw = fresh?.autopilot_session_config ?? null;
+        const busyNow = autopilotSlotBusy(storedRaw);
+        if (busyNow) {
+          return {
+            error: 'autopilot_slot_busy',
+            message: `This session's previous default-branch run is still ${busyNow} a commit. Start again once it finishes.`,
+          };
+        }
+        if (cfg.target === 'mainline' && cfg.mainline) {
+          const owner = mainlineOwnerConflict(
+            sessionId,
+            sessionProject?.id ?? null,
+            cfg.mainline.deployEnvironment,
+          );
+          if (owner) return owner;
+        }
         stmts.updateSessionMode.run('autopilot', sessionId);
         stmts.updateSessionFinalizeAutomation.run('push', sessionId);
         stmts.updateSessionAskMode.run(0, sessionId);
         stmts.updateSessionReactLoop.run(1, sessionId);
-        stmts.updateSessionAutopilotConfig.run(serializeAutopilotConfig(cfg), sessionId);
-      })();
+        const wrote = stmts.casSessionAutopilotConfig.run(
+          serializeAutopilotConfig(cfg),
+          sessionId,
+          storedRaw,
+        );
+        if (wrote.changes !== 1) throw new AutopilotStartRaceError();
+        return null;
+      });
+      let refused: Record<string, unknown> | null;
+      try {
+        refused = persistStart();
+      } catch (err) {
+        if (!(err instanceof AutopilotStartRaceError)) throw err;
+        refused = {
+          error: 'autopilot_session_busy',
+          message: 'The Autopilot config changed while starting. Try again.',
+        };
+      }
+      if (refused) return res.status(409).json(refused);
       cfgForKickoff = cfg;
     } finally {
       releaseSessionWorktreeLock(sessionId, 'autopilot-start');

@@ -82,10 +82,48 @@ describe('AutopilotSetupPrompt', () => {
         brief: 'Harden preview',
         goal: 'Journeys pass',
         escalation: 'medium',
+        target: 'branch',
         branch: 'autopilot/preview',
       });
     });
     await waitFor(() => expect(onStarted).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows the default-branch option disabled until the landing path ships', () => {
+    render(<AutopilotSetupPrompt sessionId="session-1" />);
+    expect(screen.getByTestId('autopilot-setup-target-mainline')).toBeDisabled();
+    expect(screen.getByText(/not available yet/)).toBeInTheDocument();
+    expect(screen.getByTestId('autopilot-setup-target-branch')).toBeChecked();
+  });
+
+  it('ships to the default branch with a deploy environment instead of a branch', async () => {
+    render(<AutopilotSetupPrompt sessionId="session-1" mainlineAvailable />);
+    fireEvent.click(screen.getByTestId('autopilot-setup-target-mainline'));
+    expect(screen.queryByTestId('autopilot-setup-branch')).toBeNull();
+    expect(screen.getByTestId('autopilot-setup-summary')).toHaveTextContent(
+      'Every change goes live',
+    );
+    fireEvent.change(screen.getByTestId('autopilot-setup-brief'), {
+      target: { value: 'Harden preview' },
+    });
+    fireEvent.change(screen.getByTestId('autopilot-setup-goal'), {
+      target: { value: 'Journeys pass' },
+    });
+    expect(screen.getByTestId('autopilot-setup-start')).toBeDisabled();
+    fireEvent.change(screen.getByTestId('autopilot-setup-deploy-env'), {
+      target: { value: 'staging' },
+    });
+    fireEvent.click(screen.getByTestId('autopilot-setup-start'));
+    await waitFor(() => {
+      expect(api.startSessionAutopilot).toHaveBeenCalledWith('session-1', {
+        durationHours: 4,
+        brief: 'Harden preview',
+        goal: 'Journeys pass',
+        escalation: 'medium',
+        target: 'mainline',
+        deployEnvironment: 'staging',
+      });
+    });
   });
 });
 

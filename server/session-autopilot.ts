@@ -10,6 +10,7 @@ import { isAutopilotModeActive } from './session-mode.js';
 import { checkoutAutopilotSessionBranch } from './worktree.js';
 import { startSessionPreview } from './preview/start-session-preview.js';
 import { casAutopilotConfig, stopAutopilotRun } from './session-autopilot-slot.js';
+import { idleMainlineSlot } from '../shared/utils/autopilotMainlineSlot.js';
 import {
   type AutopilotSessionConfig,
   type AutopilotSetupInput,
@@ -47,6 +48,22 @@ export function buildAutopilotModePreamble(cfg: AutopilotSessionConfig | null): 
       ? 'no time limit'
       : `${cfg.durationHours} hours (deadline ${cfg.deadlineAt ?? 'unknown'})`;
   const escalationLine = autopilotEscalationInstruction(cfg.escalation);
+  if (cfg.target === 'mainline' && cfg.mainline) {
+    const env = cfg.mainline.deployEnvironment;
+    return [
+      '## Autopilot mode (default branch + deploy)',
+      '',
+      'You are running a Hub-owned implement → land → deploy → live-verify loop in this same session.',
+      `- Every validated change goes live. Finalize validates your committed changes and pushes them to the default branch \`${cfg.branch}\`; the Hub then deploys environment \`${env}\`.`,
+      '- Never `git checkout`, never create another branch, never push, merge, or open a PR yourself. Leave committable changes when a slice is ready; do not open a second session.',
+      `- After each deploy the Hub reports the result here. Verify against the live \`${env}\` environment, not the session preview. If the deploy failed or verify finds a bug, fix it in the next slice.`,
+      `- Brief: ${cfg.brief}`,
+      `- Goal: ${cfg.goal}`,
+      `- Duration: ${duration}`,
+      `- ${escalationLine}`,
+      '- When the goal holds, say so clearly and stop. When time is up, stop even if the goal is unmet.',
+    ].join('\n');
+  }
   return [
     '## Autopilot mode',
     '',
@@ -149,7 +166,7 @@ export function enforceAutopilotExpiry(args: { deps: AutopilotNoticeDeps; sessio
     postAutopilotSystemNotice(
       deps,
       session.id,
-      autopilotStopNoticeContent('expired', stopped.cfg.branch),
+      autopilotStopNoticeContent('expired', stopped.cfg.branch, stopped.cfg.target),
     );
     return { blocked: true };
   }
@@ -157,19 +174,31 @@ export function enforceAutopilotExpiry(args: { deps: AutopilotNoticeDeps; sessio
   return { blocked: stopped.cfg?.status !== 'running' };
 }
 
+/**
+ * A started config. For `mainline` the caller sets `branch` to the resolved
+ * default branch before persisting.
+ */
 export function startAutopilotConfig(
   input: AutopilotSetupInput,
   nowIso: string = new Date().toISOString(),
 ): AutopilotSessionConfig {
+  const { deployEnvironment, ...setup } = input;
   return {
-    ...input,
+    ...setup,
     startedAt: nowIso,
     deadlineAt: deadlineAtFromDuration(nowIso, input.durationHours),
     status: 'running',
     cycle: 0,
     lastPushSha: null,
-    target: 'branch',
-    mainline: null,
+    target: input.target,
+    mainline:
+      input.target === 'mainline' && deployEnvironment
+        ? {
+            deployEnvironment,
+            slot: idleMainlineSlot(nowIso),
+            landedCount: 0,
+          }
+        : null,
   };
 }
 
@@ -227,7 +256,11 @@ export function scheduleAutopilotAfterPush(args: {
   if (next.status !== 'running') {
     // Announce the stop as a plain transcript line — never via handleChat,
     // which would launch another model turn on an already-stopped session.
-    postAutopilotSystemNotice(deps, session.id, autopilotStopNoticeContent(next.status, branch));
+    postAutopilotSystemNotice(
+      deps,
+      session.id,
+      autopilotStopNoticeContent(next.status, branch, next.target),
+    );
     return;
   }
 

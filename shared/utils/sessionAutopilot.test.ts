@@ -13,6 +13,9 @@ import {
   autopilotEscalationInstruction,
   autopilotStopNoticeContent,
   serializeAutopilotSessionConfig,
+  autopilotShipCounter,
+  formatAutopilotMainlinePushLabel,
+  autopilotStartRequestBody,
 } from './sessionAutopilot';
 
 const valid = {
@@ -261,5 +264,127 @@ describe('autopilotStopNoticeContent', () => {
     expect(expired).toContain('autopilot/x');
     expect(expired.toLowerCase()).toContain('no further automatic work');
     expect(autopilotStopNoticeContent('completed', 'autopilot/x')).toContain('the goal was met');
+  });
+});
+
+describe('mainline target setup', () => {
+  const mainline = {
+    durationHours: 2,
+    brief: 'Ship it',
+    goal: 'Live checks pass',
+    escalation: 'low' as const,
+    target: 'mainline',
+    deployEnvironment: ' staging ',
+  };
+
+  it('defaults an absent target to branch', () => {
+    const result = validateAutopilotSetupInput(valid);
+    expect(result.ok && result.value.target).toBe('branch');
+    expect(result.ok && result.value.deployEnvironment).toBeNull();
+  });
+
+  it('accepts mainline without a branch and trims the environment', () => {
+    const result = validateAutopilotSetupInput({ ...mainline, branch: 'main' });
+    expect(result).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        target: 'mainline',
+        branch: '',
+        deployEnvironment: 'staging',
+      }),
+    });
+  });
+
+  it('requires a deploy environment for mainline', () => {
+    const result = validateAutopilotSetupInput({ ...mainline, deployEnvironment: '' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.map((e) => e.field)).toEqual(['deployEnvironment']);
+  });
+
+  it('builds a request body with only the fields its target uses', () => {
+    const m = validateAutopilotSetupInput(mainline);
+    const b = validateAutopilotSetupInput(valid);
+    if (!m.ok || !b.ok) throw new Error('expected valid setups');
+    expect(autopilotStartRequestBody(m.value)).toEqual({
+      durationHours: 2,
+      brief: 'Ship it',
+      goal: 'Live checks pass',
+      escalation: 'low',
+      target: 'mainline',
+      deployEnvironment: 'staging',
+    });
+    const body = autopilotStartRequestBody(b.value);
+    expect(body).toMatchObject({ target: 'branch', branch: 'autopilot/print-ui' });
+    expect(body).not.toHaveProperty('deployEnvironment');
+  });
+
+  it('rejects an unknown target', () => {
+    const result = validateAutopilotSetupInput({ ...valid, target: 'prod' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.map((e) => e.field)).toEqual(['target']);
+  });
+});
+
+describe('autopilotShipCounter', () => {
+  const mainlineRow = {
+    autopilot: {
+      durationHours: 1,
+      brief: 'b',
+      goal: 'g',
+      escalation: 'none',
+      branch: 'main',
+      status: 'running',
+      target: 'mainline',
+      mainline: { deployEnvironment: 'staging', landedCount: 3, slot: { phase: 'idle' } },
+    },
+  };
+
+  it('counts landings on the default branch for mainline', () => {
+    expect(autopilotShipCounter(mainlineRow, 9)).toEqual({
+      mainline: true,
+      count: 3,
+      label: '3 pushes to main',
+    });
+    expect(formatAutopilotMainlinePushLabel(1, 'trunk')).toBe('1 push to trunk');
+    expect(formatAutopilotMainlinePushLabel(0, null)).toBe('0 pushes to the default branch');
+  });
+
+  it('keeps the PR label for branch sessions', () => {
+    expect(autopilotShipCounter({ autopilot: null }, 2)).toEqual({
+      mainline: false,
+      count: 2,
+      label: '2 PRs committed',
+    });
+  });
+});
+
+describe('mainline copy', () => {
+  const cfg = parseAutopilotSessionConfig({
+    durationHours: 0,
+    brief: 'Ship it',
+    goal: 'Live checks pass',
+    escalation: 'none',
+    branch: 'main',
+    status: 'running',
+    target: 'mainline',
+    mainline: { deployEnvironment: 'staging', slot: { phase: 'idle' } },
+  })!;
+
+  it('kickoff describes the deploy and live verification', () => {
+    const msg = buildAutopilotKickoffMessage(cfg);
+    expect(msg).toContain('default branch `main`');
+    expect(msg).toContain('deploys environment `staging`');
+    expect(msg).toContain('verify on that live environment');
+    expect(msg).not.toContain('never merge to the default branch');
+  });
+
+  it('stop notice does not ask a human to merge', () => {
+    const msg = autopilotStopNoticeContent('expired', 'main', 'mainline');
+    expect(msg).not.toContain('merge');
+    expect(msg).toContain('owed');
+  });
+
+  it('unstick message names the environment', () => {
+    expect(buildAutopilotUnstickContinueMessage(cfg)).toContain('deployed to `staging`');
   });
 });

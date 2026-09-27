@@ -1,4 +1,5 @@
 import type { BroadcastFn, Project, SessionRow, Stmts } from './types.js';
+import { autopilotMainlineStartEnabled } from './autopilot-mainline-availability.js';
 import { computeSessionState, DEFAULT_SESSION_STATE, type SessionState } from './session-state.js';
 import { isWorkflowProject, sessionCanUseDesignMode } from './project-mode-guards.js';
 import { isFirecrackerBackendRegistered } from './session-env/firecracker/firecracker-backend-status.js';
@@ -71,6 +72,12 @@ export type SessionWireRow = SessionRow & {
    * does not hide VM after a `session-updated` overwrite.
    */
   can_isolated_mode: boolean;
+  /**
+   * Whether an Autopilot start may pick "Default branch + deploy" (`target:
+   * mainline`). Mirrors the start route's gate so the setup forms enable the
+   * option exactly when the server would accept it.
+   */
+  can_autopilot_mainline: boolean;
   autopilot: AutopilotSessionConfig | null;
 };
 
@@ -241,6 +248,11 @@ export function enrichSessionForClient(
     // that omitted `project`.
     can_isolated_mode:
       isFirecrackerBackendRegistered() &&
+      resolvedProject != null &&
+      !isWorkflowProject(resolvedProject),
+    // Same gate as the start route; workflow and unknown projects fail closed.
+    can_autopilot_mainline:
+      autopilotMainlineStartEnabled() &&
       resolvedProject != null &&
       !isWorkflowProject(resolvedProject),
     autopilot: parseAutopilotSessionConfig(row.autopilot_session_config),

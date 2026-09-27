@@ -1,12 +1,14 @@
 import express from 'express';
 import request from 'supertest';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteDeps, SessionRow } from '../types.js';
 
 const mocks = vi.hoisted(() => ({
   kickoffSeededTurn: vi.fn(async (_args: { content?: string }) => undefined),
   checkWorktreeChanges: vi.fn(async () => ({ hasUncommitted: false, hasUnpushed: false })),
   unstickAutopilotSession: vi.fn(),
+  checkMainlineAutopilotTarget: vi.fn(),
+  mainlineCandidates: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock('../seeded-session-kickoff.js', () => ({
@@ -16,6 +18,14 @@ vi.mock('../seeded-session-kickoff.js', () => ({
 vi.mock('../auto-git.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return { ...actual, checkWorktreeChanges: mocks.checkWorktreeChanges };
+});
+vi.mock('../session-autopilot-mainline-start.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    checkMainlineAutopilotTarget: mocks.checkMainlineAutopilotTarget,
+    listMainlineAutopilotCandidates: () => mocks.mainlineCandidates,
+  };
 });
 vi.mock('../session-autopilot-unstick.js', () => ({
   unstickAutopilotSession: mocks.unstickAutopilotSession,
@@ -99,6 +109,13 @@ function makeApp(options: { session?: Partial<SessionRow>; projectMode?: string 
         session.autopilot_session_config = json;
       }),
     },
+    casSessionAutopilotConfig: {
+      run: vi.fn((json: string, _id: string, expected: string | null) => {
+        if ((session.autopilot_session_config ?? null) !== expected) return { changes: 0 };
+        session.autopilot_session_config = json;
+        return { changes: 1 };
+      }),
+    },
     updateSessionWorktreeBranch: {
       run: vi.fn((branch: string) => {
         session.worktree_branch = branch;
@@ -172,6 +189,12 @@ describe('session Autopilot routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.kickoffSeededTurn.mockResolvedValue(undefined);
+    mocks.mainlineCandidates = [];
+    mocks.checkMainlineAutopilotTarget.mockResolvedValue({
+      ok: true,
+      defaultBranch: 'main',
+      declaredEnvironments: ['staging', 'production'],
+    });
   });
 
   it('PUT /mode pins Finalize to push when entering Autopilot', async () => {
@@ -337,6 +360,232 @@ describe('session Autopilot routes', () => {
       .expect(409);
     expect(res.body.error).toBe('autopilot_worktree_dirty');
     expect(mocks.kickoffSeededTurn).not.toHaveBeenCalled();
+  });
+
+  describe('mainline target', () => {
+    const MAINLINE_BODY = {
+      durationHours: 4,
+      brief: 'Harden the 3D print UI',
+      goal: 'Baseline journeys pass on staging',
+      escalation: 'medium',
+      target: 'mainline',
+      deployEnvironment: 'staging',
+    };
+
+    beforeEach(() => {
+      vi.stubEnv('AGENT_HUB_AUTOPILOT_MAINLINE', '1');
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('is refused until the landing path is available', async () => {
+      vi.stubEnv('AGENT_HUB_AUTOPILOT_MAINLINE', '');
+      const { app, stmts } = makeApp();
+      const res = await request(app)
+        .post('/api/sessions/sess-1/autopilot')
+        .send(MAINLINE_BODY)
+        .expect(400);
+      expect(res.body.error).toBe('autopilot_mainline_unavailable');
+      expect(mocks.checkMainlineAutopilotTarget).not.toHaveBeenCalled();
+      expect(stmts.updateSessionMode.run).not.toHaveBeenCalled();
+      expect(mocks.kickoffSeededTurn).not.toHaveBeenCalled();
+    });
+
+    function mainlineConfig(phase: string, overrides: Record<string, unknown> = {}) {
+      return JSON.stringify({
+        durationHours: 4,
+        brief: 'b',
+        goal: 'g',
+        escalation: 'none',
+        branch: 'main',
+        startedAt: '2026-09-27T10:00:00.000Z',
+        deadlineAt: null,
+        status: 'running',
+        cycle: 0,
+        lastPushSha: null,
+        target: 'mainline',
+        mainline: {
+          deployEnvironment: 'staging',
+          landedCount: 2,
+          slot:
+            phase === 'idle'
+              ? { phase: 'idle' }
+              : { phase, attemptId: 'att-1', sha: 'abcdef1234567', deploymentId: 'dep-1' },
+        },
+        ...overrides,
+      });
+    }
+
+    it('persists a mainline config on the default branch without binding a branch', async () => {
+      const { app, session, stmts } = makeApp();
+      const res = await request(app)
+        .post('/api/sessions/sess-1/autopilot')
+        .send(MAINLINE_BODY)
+        .expect(200);
+      expect(stmts.updateSessionWorktreeBranch.run).not.toHaveBeenCalled();
+      expect(stmts.setSessionWorktreeCheckoutBranch.run).not.toHaveBeenCalled();
+      expect(session.worktree_branch).toBeNull();
+      expect(res.body.autopilot).toMatchObject({
+        target: 'mainline',
+        branch: 'main',
+        status: 'running',
+        mainline: { deployEnvironment: 'staging', landedCount: 0, slot: { phase: 'idle' } },
+      });
+      const kickoff = mocks.kickoffSeededTurn.mock.calls[0]?.[0] as { content?: string };
+      expect(kickoff.content).toContain('deploys environment `staging`');
+      expect(kickoff.content).toContain('live environment');
+    });
+
+    it('requires a deploy environment', async () => {
+      const { app } = makeApp();
+      const res = await request(app)
+        .post('/api/sessions/sess-1/autopilot')
+        .send({ ...MAINLINE_BODY, deployEnvironment: '' })
+        .expect(400);
+      expect(res.body.error).toBe('invalid_autopilot_setup');
+      expect(res.body.details).toEqual([expect.objectContaining({ field: 'deployEnvironment' })]);
+    });
+
+    it('returns the preflight error with the declared environments', async () => {
+      mocks.checkMainlineAutopilotTarget.mockResolvedValue({
+        ok: false,
+        error: 'autopilot_deploy_env_unknown',
+        message: 'deploy.yaml on \'main\' does not declare environment "staging".',
+        declaredEnvironments: ['production'],
+      });
+      const { app, stmts } = makeApp();
+      const res = await request(app)
+        .post('/api/sessions/sess-1/autopilot')
+        .send(MAINLINE_BODY)
+        .expect(400);
+      expect(res.body).toMatchObject({
+        error: 'autopilot_deploy_env_unknown',
+        declaredEnvironments: ['production'],
+      });
+      expect(stmts.updateSessionMode.run).not.toHaveBeenCalled();
+      expect(mocks.kickoffSeededTurn).not.toHaveBeenCalled();
+    });
+
+    it('refuses when another session runs mainline Autopilot on the environment', async () => {
+      mocks.mainlineCandidates = [
+        {
+          id: 'sess-2',
+          agent_id: 'agent-1',
+          session_mode: 'autopilot',
+          deleted_at: null,
+          autopilot_session_config: mainlineConfig('idle'),
+        },
+      ];
+      const { app, stmts } = makeApp();
+      const res = await request(app)
+        .post('/api/sessions/sess-1/autopilot')
+        .send(MAINLINE_BODY)
+        .expect(409);
+      expect(res.body).toMatchObject({
+        error: 'autopilot_environment_owned',
+        ownerSessionId: 'sess-2',
+      });
+      expect(stmts.updateSessionMode.run).not.toHaveBeenCalled();
+    });
+
+    it('re-checks ownership at write time, after the preflight awaits', async () => {
+      mocks.checkMainlineAutopilotTarget.mockImplementation(async () => {
+        // Another session claims the environment while the preflight reads git.
+        mocks.mainlineCandidates = [
+          {
+            id: 'sess-2',
+            agent_id: 'agent-1',
+            session_mode: 'autopilot',
+            deleted_at: null,
+            autopilot_session_config: mainlineConfig('idle'),
+          },
+        ];
+        return { ok: true, defaultBranch: 'main', declaredEnvironments: ['staging'] };
+      });
+      const { app, session } = makeApp();
+      const res = await request(app)
+        .post('/api/sessions/sess-1/autopilot')
+        .send(MAINLINE_BODY)
+        .expect(409);
+      expect(res.body.error).toBe('autopilot_environment_owned');
+      expect(session.autopilot_session_config).toBeNull();
+      expect(mocks.kickoffSeededTurn).not.toHaveBeenCalled();
+    });
+
+    it('allows a different environment or a stopped owner with an idle slot', async () => {
+      mocks.mainlineCandidates = [
+        {
+          id: 'sess-2',
+          agent_id: 'agent-1',
+          session_mode: 'autopilot',
+          deleted_at: null,
+          autopilot_session_config: mainlineConfig('idle', { status: 'expired' }),
+        },
+        {
+          id: 'sess-3',
+          agent_id: 'agent-1',
+          session_mode: 'autopilot',
+          deleted_at: null,
+          autopilot_session_config: mainlineConfig('idle', {
+            mainline: { deployEnvironment: 'production', landedCount: 0, slot: { phase: 'idle' } },
+          }),
+        },
+      ];
+      const { app } = makeApp();
+      await request(app).post('/api/sessions/sess-1/autopilot').send(MAINLINE_BODY).expect(200);
+    });
+
+    it('refuses while a stopped or archived owner still owes a deploy', async () => {
+      mocks.mainlineCandidates = [
+        {
+          id: 'sess-2',
+          agent_id: 'agent-1',
+          session_mode: 'chat',
+          deleted_at: '2026-09-27 11:00:00',
+          autopilot_session_config: mainlineConfig('deploying', { status: 'expired' }),
+        },
+      ];
+      const { app } = makeApp();
+      const res = await request(app)
+        .post('/api/sessions/sess-1/autopilot')
+        .send(MAINLINE_BODY)
+        .expect(409);
+      expect(res.body.error).toBe('autopilot_environment_owned');
+      expect(res.body.message).toContain('still landing');
+    });
+
+    it.each(['branch', 'mainline'])(
+      "refuses a %s start while this session's slot is not idle",
+      async (target) => {
+        const stored = mainlineConfig('landed', { status: 'expired' });
+        const { app, session } = makeApp({
+          session: { session_mode: 'autopilot', autopilot_session_config: stored },
+        });
+        const body = target === 'mainline' ? MAINLINE_BODY : VALID_BODY;
+        const res = await request(app)
+          .post('/api/sessions/sess-1/autopilot')
+          .send(body)
+          .expect(409);
+        expect(res.body.error).toBe('autopilot_slot_busy');
+        expect(session.autopilot_session_config).toBe(stored);
+        expect(mocks.kickoffSeededTurn).not.toHaveBeenCalled();
+      },
+    );
+
+    it('restarts a session whose previous mainline slot is idle', async () => {
+      const { app, session } = makeApp({
+        session: {
+          session_mode: 'autopilot',
+          autopilot_session_config: mainlineConfig('idle', { status: 'completed' }),
+        },
+      });
+      await request(app).post('/api/sessions/sess-1/autopilot').send(MAINLINE_BODY).expect(200);
+      expect(JSON.parse(session.autopilot_session_config as string)).toMatchObject({
+        status: 'running',
+        mainline: { landedCount: 0 },
+      });
+    });
   });
 
   it('POST /autopilot/unstick kills the hung turn and continues', async () => {

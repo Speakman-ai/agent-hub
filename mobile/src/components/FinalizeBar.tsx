@@ -30,7 +30,7 @@ import {
 import { sessionControlAppIcon } from '../utils/sessionControlIcons';
 import { deriveFinalizeButton, canPush, isFullyValidated } from '../utils/finalizeView';
 import { describeRunPhase } from '../utils/finalizeRun';
-import { formatAutopilotPrCommittedLabel } from '@shared/utils/sessionAutopilot';
+import { autopilotShipCounter } from '@shared/utils/sessionAutopilot';
 import { useApp } from '../context/AppContext';
 const PURPLE = '#7C3AED';
 
@@ -76,6 +76,7 @@ export default function FinalizeBar({
   const [mode, setMode] = useState(() => resolveSessionModeFromRow(session));
   const { lastFinalizeRunEvent } = useApp();
   const [prCount, setPrCount] = useState(() => Number(session?.finalize_pushed_count) || 0);
+  const [liveAutopilot, setLiveAutopilot] = useState<unknown>(() => session?.autopilot ?? null);
   const [unsticking, setUnsticking] = useState(false);
   // Re-sync the dropdown from the session whenever the session changes (the bar
   // is reused across sessions) or these fields change (e.g. session arrived
@@ -98,14 +99,18 @@ export default function FinalizeBar({
     if (Number.isFinite(next) && next >= 0) setPrCount(Math.floor(next));
   }, [sessionId, session?.finalize_pushed_count]);
   useEffect(() => {
+    setLiveAutopilot(session?.autopilot ?? null);
+  }, [sessionId, session?.autopilot]);
+  useEffect(() => {
     if (!sessionId) return;
     if (lastFinalizeRunEvent?.sessionId !== sessionId) return;
     if (lastFinalizeRunEvent?.status !== 'pushed') return;
     api
       .getSession(sessionId)
-      .then((row: { finalize_pushed_count?: unknown }) => {
+      .then((row: { finalize_pushed_count?: unknown; autopilot?: unknown }) => {
         const next = Number(row?.finalize_pushed_count);
         if (Number.isFinite(next) && next >= 0) setPrCount(Math.floor(next));
+        if (row && 'autopilot' in row) setLiveAutopilot(row.autopilot);
       })
       .catch(() => {
         /* keep last known count */
@@ -118,6 +123,7 @@ export default function FinalizeBar({
   // Skill Builder is a dev-agent mode; hide it from the picker when this
   // session's agent is a helper (the server rejects it for those roles too).
   const workflowProject = project?.mode === 'workflow';
+  const shipCounter = autopilotShipCounter({ autopilot: liveAutopilot }, prCount);
   const sessionAgent =
     (sessionAgents || []).find((a: any) => a.id === session?.agent_id) ||
     (sessionAgents || [])[0] ||
@@ -309,12 +315,14 @@ export default function FinalizeBar({
                 <View
                   style={styles.prCounter}
                   testID="autopilot-pr-counter"
-                  accessibilityLabel={formatAutopilotPrCommittedLabel(prCount)}
+                  accessibilityLabel={shipCounter.label}
                 >
-                  <AppIcon name="git-pull-request-outline" size={12} color={colors.emerald300} />
-                  <Text style={styles.prCounterText}>
-                    {formatAutopilotPrCommittedLabel(prCount)}
-                  </Text>
+                  <AppIcon
+                    name={shipCounter.mainline ? 'git-commit-outline' : 'git-pull-request-outline'}
+                    size={12}
+                    color={colors.emerald300}
+                  />
+                  <Text style={styles.prCounterText}>{shipCounter.label}</Text>
                 </View>
               </>
             ) : !workflowProject && !consultActive ? (

@@ -3,9 +3,25 @@ import { useMemo, useRef, useState } from 'react';
 import { Paperclip, Rocket, X } from 'lucide-react';
 import { api } from '../utils/api';
 import {
+  AUTOPILOT_MAINLINE_UNAVAILABLE_MESSAGE,
+  autopilotStartRequestBody,
   validateAutopilotSetupInput,
   type AutopilotEscalation,
+  type AutopilotTarget,
 } from '@shared/utils/sessionAutopilot';
+
+const TARGET_OPTIONS: { value: AutopilotTarget; label: string; hint: string }[] = [
+  {
+    value: 'branch',
+    label: 'Isolated branch',
+    hint: 'Push a named branch, verify in the session preview, stop for a human merge.',
+  },
+  {
+    value: 'mainline',
+    label: 'Default branch + deploy',
+    hint: 'Push each validated change to the default branch, deploy it, and verify on the live environment.',
+  },
+];
 
 const ESCALATION_OPTIONS: { value: AutopilotEscalation; label: string; hint: string }[] = [
   { value: 'none', label: 'None', hint: 'Do not stop until the goal is met or time runs out' },
@@ -18,16 +34,21 @@ export default function AutopilotSetupPrompt({
   sessionId,
   onStarted,
   onError,
+  mainlineAvailable = false,
 }: {
   sessionId: string;
   onStarted?: (session: unknown) => void;
   onError?: (message: string) => void;
+  /** The session's `can_autopilot_mainline`: whether the server accepts "Default branch + deploy". */
+  mainlineAvailable?: boolean;
 }) {
   const [durationHours, setDurationHours] = useState('4');
   const [brief, setBrief] = useState('');
   const [goal, setGoal] = useState('');
   const [escalation, setEscalation] = useState<AutopilotEscalation>('medium');
+  const [target, setTarget] = useState<AutopilotTarget>('branch');
   const [branch, setBranch] = useState('autopilot/');
+  const [deployEnvironment, setDeployEnvironment] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [files, setFiles] = useState<File[]>([]);
@@ -41,9 +62,11 @@ export default function AutopilotSetupPrompt({
         brief,
         goal,
         escalation,
+        target,
         branch,
+        deployEnvironment,
       }),
-    [parsedDuration, brief, goal, escalation, branch],
+    [parsedDuration, brief, goal, escalation, target, branch, deployEnvironment],
   );
 
   function addFiles(incoming: File[]) {
@@ -60,7 +83,7 @@ export default function AutopilotSetupPrompt({
     try {
       const images = await Promise.all(files.map((file) => api.uploadFile(file)));
       const updated = await api.startSessionAutopilot(sessionId, {
-        ...preview.value,
+        ...autopilotStartRequestBody(preview.value),
         ...(images.length ? { images } : {}),
       });
       onStarted?.(updated);
@@ -88,10 +111,41 @@ export default function AutopilotSetupPrompt({
         <span className="text-xs font-medium text-emerald-100">Autopilot</span>
       </div>
       <div className="p-3 space-y-3">
-        <p className="text-xs text-emerald-100/70">
-          This session will push a named branch over and over, verify in preview, and stop for a
-          human merge. It never ships to main.
+        <p data-testid="autopilot-setup-summary" className="text-xs text-emerald-100/70">
+          {target === 'mainline'
+            ? 'This session will push each validated change straight to the default branch, deploy it, and verify on the live environment. Every change goes live.'
+            : 'This session will push a named branch over and over, verify in preview, and stop for a human merge. It never ships to main.'}
         </p>
+
+        <fieldset className="space-y-1">
+          <legend className="text-xs text-emerald-100/80 mb-1">Where to ship</legend>
+          {TARGET_OPTIONS.map((opt) => {
+            const unavailable = opt.value === 'mainline' && !mainlineAvailable;
+            return (
+              <label
+                key={opt.value}
+                className={`flex items-start gap-2 text-sm text-emerald-100 ${unavailable ? 'opacity-50' : ''}`}
+              >
+                <input
+                  type="radio"
+                  name="autopilot-target"
+                  data-testid={`autopilot-setup-target-${opt.value}`}
+                  value={opt.value}
+                  checked={target === opt.value}
+                  onChange={() => setTarget(opt.value)}
+                  disabled={saving || unavailable}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="font-medium">{opt.label}</span>
+                  <span className="block text-xs text-emerald-100/60">
+                    {unavailable ? AUTOPILOT_MAINLINE_UNAVAILABLE_MESSAGE : opt.hint}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </fieldset>
 
         <label className="block">
           <span className="block text-xs text-emerald-100/80 mb-1">
@@ -199,26 +253,44 @@ export default function AutopilotSetupPrompt({
           ))}
         </fieldset>
 
-        <label className="block">
-          <span className="block text-xs text-emerald-100/80 mb-1">Branch name</span>
-          <input
-            data-testid="autopilot-setup-branch"
-            value={branch}
-            onChange={(e) => setBranch(e.target.value)}
-            disabled={saving}
-            placeholder="autopilot/improvements"
-            className="w-full rounded-md border border-emerald-800/70 bg-gray-950/80 px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
-          />
-        </label>
+        {target === 'mainline' ? (
+          <label className="block">
+            <span className="block text-xs text-emerald-100/80 mb-1">
+              Deploy environment (from .agent-hub/deploy.yaml)
+            </span>
+            <input
+              data-testid="autopilot-setup-deploy-env"
+              value={deployEnvironment}
+              onChange={(e) => setDeployEnvironment(e.target.value)}
+              disabled={saving}
+              placeholder="staging"
+              className="w-full rounded-md border border-emerald-800/70 bg-gray-950/80 px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
+            />
+          </label>
+        ) : (
+          <label className="block">
+            <span className="block text-xs text-emerald-100/80 mb-1">Branch name</span>
+            <input
+              data-testid="autopilot-setup-branch"
+              value={branch}
+              onChange={(e) => setBranch(e.target.value)}
+              disabled={saving}
+              placeholder="autopilot/improvements"
+              className="w-full rounded-md border border-emerald-800/70 bg-gray-950/80 px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
+            />
+          </label>
+        )}
 
         {error && (
           <div className="text-xs text-rose-200 bg-rose-950/40 border border-rose-700/50 rounded-md px-3 py-2">
             {error}
           </div>
         )}
-        {!preview.ok && preview.errors.length > 0 && (brief || goal || branch !== 'autopilot/') && (
-          <div className="text-xs text-amber-200/80">{preview.errors[0]?.message}</div>
-        )}
+        {!preview.ok &&
+          preview.errors.length > 0 &&
+          (brief || goal || branch !== 'autopilot/' || deployEnvironment) && (
+            <div className="text-xs text-amber-200/80">{preview.errors[0]?.message}</div>
+          )}
 
         <div className="flex justify-end">
           <button

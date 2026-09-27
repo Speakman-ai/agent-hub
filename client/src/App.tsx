@@ -7376,6 +7376,9 @@ export default function App({ initialView }: any = {}) {
                                         <div className="w-full max-w-lg text-left">
                                           <AutopilotSetupPrompt
                                             key={activeSessionId}
+                                            mainlineAvailable={
+                                              activeSession?.can_autopilot_mainline === true
+                                            }
                                             sessionId={activeSessionId}
                                             onStarted={(updated: any) => {
                                               setSessions((prev: any) =>
@@ -7904,6 +7907,7 @@ export default function App({ initialView }: any = {}) {
                                       <AutopilotPrCounter
                                         sessionId={activeSessionId}
                                         count={activeSession?.finalize_pushed_count ?? 0}
+                                        autopilot={activeSession?.autopilot}
                                       />
                                     </>
                                   ) : (
@@ -7951,6 +7955,7 @@ export default function App({ initialView }: any = {}) {
                           <div className="mx-3 mb-2">
                             <AutopilotSetupPrompt
                               key={activeSessionId}
+                              mainlineAvailable={activeSession?.can_autopilot_mainline === true}
                               sessionId={activeSessionId}
                               onStarted={(updated: any) => {
                                 setSessions((prev: any) =>

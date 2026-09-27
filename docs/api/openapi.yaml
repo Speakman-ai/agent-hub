@@ -2382,6 +2382,9 @@ components:
         can_isolated_mode:
           type: boolean
           description: True when Firecracker is registered on this host so the session may enter `isolated` (VM) mode. False for workflow (no-code) projects when the owning project is known. Clients hide the VM option when this is false.
+        can_autopilot_mainline:
+          type: boolean
+          description: 'True when this server accepts an Autopilot start with `target: mainline` for this session. False until the default-branch landing path ships (unless the server opts in), and for workflow or unknown projects. Setup forms disable "Default branch + deploy" when false.'
         model:
           type: string
         use_worktree:
@@ -23617,7 +23620,7 @@ paths:
       tags:
         - Sessions
       summary: Configure and start Autopilot on a session
-      description: Persists duration, brief, goal, escalation, and a named feature branch, pins Finalize to push (never merge), and kicks the implement → push → preview-verify loop on this same session.
+      description: Persists duration, brief, goal, escalation, and where to ship, pins Finalize to push, and kicks the Autopilot loop on this same session. The `branch` target binds a named feature branch and verifies in the session preview (merge stays human). The `mainline` target keeps the session branch, lands each validated change on the default branch, deploys `deployEnvironment`, and verifies on that live environment.
       parameters:
         - schema:
             type: string
@@ -23651,10 +23654,20 @@ paths:
                     - low
                     - medium
                     - high
+                target:
+                  type: string
+                  enum:
+                    - branch
+                    - mainline
+                  description: Where Autopilot ships. `branch` (default) pushes a named feature branch and a human merges. `mainline` (refused with `autopilot_mainline_unavailable` until the landing path ships) lands each validated change on the repository default branch, deploys `deployEnvironment`, and verifies on it.
                 branch:
                   type: string
-                  minLength: 1
                   maxLength: 255
+                  description: Feature branch for the `branch` target (required there). Ignored for `mainline`.
+                deployEnvironment:
+                  type: string
+                  maxLength: 64
+                  description: "Required for `mainline`: a deploy.yaml environment declared on the default branch and not paused."
                 images:
                   type: array
                   items:
@@ -23687,7 +23700,6 @@ paths:
                 - brief
                 - goal
                 - escalation
-                - branch
       responses:
         "200":
           description: Autopilot started.
@@ -23696,11 +23708,34 @@ paths:
               schema:
                 $ref: "#/components/schemas/Session"
         "400":
-          description: Validation failed or the named branch could not be bound.
+          description: Validation failed, the named branch could not be bound, `mainline` is not available on this server yet (`autopilot_mainline_unavailable`), or (mainline) the default branch deploy.yaml is missing, invalid, does not declare `deployEnvironment`, or has it paused. Preflight errors list `declaredEnvironments`.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
+                type: object
+                properties:
+                  error:
+                    type: string
+                  message:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        field:
+                          type: string
+                        message:
+                          type: string
+                      required:
+                        - field
+                        - message
+                  declaredEnvironments:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - error
         "404":
           description: Session not found.
           content:
@@ -23708,11 +23743,20 @@ paths:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "409":
-          description: The opening Autopilot turn was not accepted.
+          description: The session is busy, the opening turn was not accepted, this session's mainline slot still owes a landing (`autopilot_slot_busy`), or another session owns that project/environment (`autopilot_environment_owned`).
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SessionErrorResponse"
+                type: object
+                properties:
+                  error:
+                    type: string
+                  message:
+                    type: string
+                  ownerSessionId:
+                    type: string
+                required:
+                  - error
   /api/sessions/{sessionId}/autopilot/unstick:
     post:
       tags:

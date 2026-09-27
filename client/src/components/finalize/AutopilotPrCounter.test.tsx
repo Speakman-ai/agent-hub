@@ -57,4 +57,33 @@ describe('AutopilotPrCounter', () => {
     expect(api.getSessionDetail).not.toHaveBeenCalled();
     expect(screen.getByTestId('autopilot-pr-counter')).toHaveTextContent('1 PR committed');
   });
+
+  it('counts pushes to the default branch for a mainline session', async () => {
+    const autopilot = (landedCount: number) => ({
+      durationHours: 1,
+      brief: 'b',
+      goal: 'g',
+      escalation: 'none',
+      branch: 'main',
+      status: 'running',
+      target: 'mainline',
+      mainline: { deployEnvironment: 'staging', landedCount, slot: { phase: 'idle' } },
+    });
+    (api.getSessionDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      finalize_pushed_count: 9,
+      autopilot: autopilot(2),
+    });
+    render(<AutopilotPrCounter sessionId="s1" count={5} autopilot={autopilot(1)} />);
+    expect(screen.getByTestId('autopilot-pr-counter')).toHaveTextContent('1 push to main');
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('finalize_run_completed', {
+          detail: { session_id: 's1', status: 'pushed', run_id: 'run-3' },
+        }),
+      );
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('autopilot-pr-counter')).toHaveTextContent('2 pushes to main'),
+    );
+  });
 });

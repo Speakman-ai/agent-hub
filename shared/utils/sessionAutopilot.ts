@@ -49,6 +49,17 @@ export const AUTOPILOT_MAX_DURATION_HOURS = 72;
 export const AUTOPILOT_TARGETS = ['branch', 'mainline'] as const;
 export type AutopilotTarget = (typeof AUTOPILOT_TARGETS)[number];
 
+/**
+ * Whether a `mainline` run can actually execute. Until Finalize lands commits
+ * on the default branch and the Hub deploys and reports them, the start API
+ * refuses mainline and the setup forms show the option disabled. Flip this
+ * when that path ships.
+ */
+export const AUTOPILOT_MAINLINE_AVAILABLE = false;
+
+export const AUTOPILOT_MAINLINE_UNAVAILABLE_MESSAGE =
+  'Default branch + deploy is not available yet: Finalize cannot land commits on the default branch and deploy them. Use an isolated branch for now.';
+
 export interface AutopilotSessionConfig {
   durationHours: number;
   brief: string;
@@ -70,8 +81,25 @@ export interface AutopilotSetupInput {
   brief: string;
   goal: string;
   escalation: AutopilotEscalation;
+  target: AutopilotTarget;
+  /** Feature branch for `branch`; empty for `mainline` (the server fills in the default branch). */
   branch: string;
+  /** deploy.yaml environment for `mainline`; null for `branch`. */
+  deployEnvironment: string | null;
 }
+
+/** Raw setup fields as a form or request body carries them. */
+export interface AutopilotSetupRequest {
+  durationHours?: unknown;
+  brief?: unknown;
+  goal?: unknown;
+  escalation?: unknown;
+  target?: unknown;
+  branch?: unknown;
+  deployEnvironment?: unknown;
+}
+
+export const AUTOPILOT_DEPLOY_ENVIRONMENT_MAX = 64;
 
 export type AutopilotSetupError = { field: string; message: string };
 
@@ -79,6 +107,10 @@ export function isAutopilotEscalation(value: unknown): value is AutopilotEscalat
   return (
     typeof value === 'string' && (AUTOPILOT_ESCALATION_LEVELS as readonly string[]).includes(value)
   );
+}
+
+export function isAutopilotTarget(value: unknown): value is AutopilotTarget {
+  return typeof value === 'string' && (AUTOPILOT_TARGETS as readonly string[]).includes(value);
 }
 
 export function isAutopilotStatus(value: unknown): value is AutopilotStatus {
@@ -114,7 +146,7 @@ export function isReservedAutopilotBranch(branch: string, defaultBranch?: string
 }
 
 export function validateAutopilotSetupInput(
-  input: Partial<AutopilotSetupInput> | null | undefined,
+  input: AutopilotSetupRequest | null | undefined,
   options: { defaultBranch?: string | null } = {},
 ): { ok: true; value: AutopilotSetupInput } | { ok: false; errors: AutopilotSetupError[] } {
   const errors: AutopilotSetupError[] = [];
@@ -153,21 +185,46 @@ export function validateAutopilotSetupInput(
     });
   }
 
-  const branch = normalizeAutopilotBranch(asTrimmedString(input?.branch));
-  if (!branch) {
-    errors.push({ field: 'branch', message: 'Name the branch Autopilot should push to.' });
-  } else if (branch.length > 255) {
-    errors.push({ field: 'branch', message: 'Branch name is too long.' });
-  } else if (!AUTOPILOT_BRANCH_RE.test(branch)) {
+  // Absent target means the isolated-branch mode every older client sends.
+  const rawTarget = input?.target ?? 'branch';
+  const target: AutopilotTarget = isAutopilotTarget(rawTarget) ? rawTarget : 'branch';
+  if (!isAutopilotTarget(rawTarget)) {
     errors.push({
-      field: 'branch',
-      message: 'Branch name must be a valid git ref (letters, numbers, ., _, /, no leading dash).',
+      field: 'target',
+      message: 'Pick where Autopilot ships: an isolated branch or the default branch + deploy.',
     });
-  } else if (isReservedAutopilotBranch(branch, options.defaultBranch)) {
-    errors.push({
-      field: 'branch',
-      message: `Autopilot cannot push to '${branch}'. Pick a feature branch; merge to the default branch stays a human action.`,
-    });
+  }
+
+  let branch = '';
+  let deployEnvironment: string | null = null;
+  if (target === 'mainline') {
+    deployEnvironment = asTrimmedString(input?.deployEnvironment);
+    if (!deployEnvironment) {
+      errors.push({
+        field: 'deployEnvironment',
+        message: 'Name the deploy.yaml environment Autopilot should deploy and verify.',
+      });
+    } else if (deployEnvironment.length > AUTOPILOT_DEPLOY_ENVIRONMENT_MAX) {
+      errors.push({ field: 'deployEnvironment', message: 'Environment name is too long.' });
+    }
+  } else {
+    branch = normalizeAutopilotBranch(asTrimmedString(input?.branch));
+    if (!branch) {
+      errors.push({ field: 'branch', message: 'Name the branch Autopilot should push to.' });
+    } else if (branch.length > 255) {
+      errors.push({ field: 'branch', message: 'Branch name is too long.' });
+    } else if (!AUTOPILOT_BRANCH_RE.test(branch)) {
+      errors.push({
+        field: 'branch',
+        message:
+          'Branch name must be a valid git ref (letters, numbers, ., _, /, no leading dash).',
+      });
+    } else if (isReservedAutopilotBranch(branch, options.defaultBranch)) {
+      errors.push({
+        field: 'branch',
+        message: `Autopilot cannot push to '${branch}'. Pick a feature branch; merge to the default branch stays a human action.`,
+      });
+    }
   }
 
   if (errors.length > 0) return { ok: false, errors };
@@ -178,9 +235,33 @@ export function validateAutopilotSetupInput(
       brief,
       goal,
       escalation: escalation as AutopilotEscalation,
+      target,
       branch,
+      deployEnvironment: target === 'mainline' ? deployEnvironment : null,
     },
   };
+}
+
+/** POST /api/sessions/:id/autopilot body for a validated setup (attachments added by the caller). */
+export function autopilotStartRequestBody(value: AutopilotSetupInput): {
+  durationHours: number;
+  brief: string;
+  goal: string;
+  escalation: AutopilotEscalation;
+  target: AutopilotTarget;
+  branch?: string;
+  deployEnvironment?: string;
+} {
+  const base = {
+    durationHours: value.durationHours,
+    brief: value.brief,
+    goal: value.goal,
+    escalation: value.escalation,
+    target: value.target,
+  };
+  return value.target === 'mainline'
+    ? { ...base, deployEnvironment: value.deployEnvironment ?? '' }
+    : { ...base, branch: value.branch };
 }
 
 export function deadlineAtFromDuration(startedAtIso: string, durationHours: number): string | null {
@@ -259,6 +340,38 @@ export function formatAutopilotPrCommittedLabel(count: number): string {
   return n === 1 ? '1 PR committed' : `${n} PRs committed`;
 }
 
+/** Toolbar label for a mainline session: confirmed landings on the default branch. */
+export function formatAutopilotMainlinePushLabel(count: number, branch: string | null): string {
+  const n = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+  const target = branch && branch.trim() ? branch.trim() : 'the default branch';
+  return `${n} ${n === 1 ? 'push' : 'pushes'} to ${target}`;
+}
+
+/**
+ * The Autopilot toolbar counter. Branch sessions count Finalize pushes (each
+ * opens or updates a PR); mainline sessions count commits confirmed on the
+ * default branch.
+ */
+export function autopilotShipCounter(
+  session: { autopilot?: unknown; finalize_pushed_count?: unknown } | null | undefined,
+  pushedCount: number,
+): { mainline: boolean; count: number; label: string } {
+  const cfg = autopilotConfigFromSession(session);
+  if (cfg?.target === 'mainline' && cfg.mainline) {
+    const count = cfg.mainline.landedCount;
+    return {
+      mainline: true,
+      count,
+      label: formatAutopilotMainlinePushLabel(count, cfg.branch),
+    };
+  }
+  return {
+    mainline: false,
+    count: pushedCount,
+    label: formatAutopilotPrCommittedLabel(pushedCount),
+  };
+}
+
 export function needsAutopilotSetup(
   session:
     | { session_mode?: string | null; autopilot?: unknown; autopilot_session_config?: unknown }
@@ -309,24 +422,56 @@ export function autopilotEscalationInstruction(escalation: AutopilotEscalation):
  * message (never a model turn) so a stopped/expired session does not launch
  * another autonomous cycle just to announce that it stopped.
  */
-export function autopilotStopNoticeContent(status: AutopilotStatus, branch: string): string {
+export function autopilotStopNoticeContent(
+  status: AutopilotStatus,
+  branch: string,
+  target: AutopilotTarget = 'branch',
+): string {
   const reason =
     status === 'expired'
       ? 'the time limit was reached'
       : status === 'completed'
         ? 'the goal was met'
         : `status is ${status}`;
+  if (target === 'mainline') {
+    return (
+      `Autopilot stopped: ${reason}. No further agent turns or pushes to \`${branch}\` will run for this session. ` +
+      'A deploy already owed for a landed commit still finishes and reports here.'
+    );
+  }
   return (
     `Autopilot stopped: ${reason}. Branch \`${branch}\` is ready for a human to review and merge. ` +
     'No further automatic work or pushes will run for this session.'
   );
 }
 
+function autopilotDurationLabel(cfg: AutopilotSessionConfig): string {
+  return cfg.durationHours === 0
+    ? 'no time limit'
+    : `${cfg.durationHours} hour${cfg.durationHours === 1 ? '' : 's'}`;
+}
+
 export function buildAutopilotKickoffMessage(cfg: AutopilotSessionConfig): string {
-  const duration =
-    cfg.durationHours === 0
-      ? 'no time limit'
-      : `${cfg.durationHours} hour${cfg.durationHours === 1 ? '' : 's'}`;
+  const duration = autopilotDurationLabel(cfg);
+  if (cfg.target === 'mainline' && cfg.mainline) {
+    const env = cfg.mainline.deployEnvironment;
+    return [
+      'Start Autopilot on this session.',
+      '',
+      `Ships to: the default branch \`${cfg.branch}\`, then deploys environment \`${env}\``,
+      `Duration: ${duration}`,
+      `Escalation: ${cfg.escalation}`,
+      '',
+      'What to do:',
+      cfg.brief,
+      '',
+      'Goal to check for:',
+      cfg.goal,
+      '',
+      `Loop: pick the next improvement against that brief and implement it in this session's worktree. Leave committable changes so Finalize can validate them and push them to \`${cfg.branch}\`. Every validated change goes live: the Hub deploys \`${env}\` and then asks you to verify on that live environment. If verify finds a bug, fix it. If the goal is unmet, pick the next improvement. Stop when the goal holds or time runs out.`,
+      'Do not switch branches, push, merge, or open a PR yourself. Finalize lands each change.',
+    ].join('\n');
+  }
   return [
     'Start Autopilot on this session.',
     '',
@@ -376,6 +521,20 @@ export function buildAutopilotVerifyContinueMessage(args: {
  * not to restart the brief from scratch.
  */
 export function buildAutopilotUnstickContinueMessage(cfg: AutopilotSessionConfig): string {
+  if (cfg.target === 'mainline' && cfg.mainline) {
+    return [
+      'Autopilot was unstuck by the user after a stalled turn (network drop, hung process, or stuck CI).',
+      '',
+      'The in-flight agent process, queued messages, and any running Finalize/CI for this session were stopped.',
+      'Continue from the current worktree. Do not restart the Autopilot brief from scratch.',
+      '',
+      `Ships to: \`${cfg.branch}\`, deployed to \`${cfg.mainline.deployEnvironment}\``,
+      `Goal: ${cfg.goal}`,
+      '',
+      'Check git status and the latest transcript, then pick up the next incomplete step (implement, leave committable changes so Finalize can land them, or verify on the live environment after a deploy).',
+      'Do not switch branches, push, or merge yourself. Finalize lands each change.',
+    ].join('\n');
+  }
   return [
     'Autopilot was unstuck by the user after a stalled turn (network drop, hung process, or stuck CI).',
     '',

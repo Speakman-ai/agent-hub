@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { GitPullRequest } from 'lucide-react';
-import { formatAutopilotPrCommittedLabel } from '@shared/utils/sessionAutopilot';
+import { GitCommitHorizontal, GitPullRequest } from 'lucide-react';
+import { autopilotShipCounter } from '@shared/utils/sessionAutopilot';
 import { api } from '../../utils/api';
 import { SESSION_ACTION_TOOLBAR_BUTTON_CLASS } from '../../utils/sessionActionMenu';
 
@@ -9,18 +9,30 @@ function readPushedCount(value: unknown): number | null {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
 }
 
+/**
+ * Toolbar counter for an Autopilot session: committed PRs for an isolated
+ * branch run, "N pushes to <branch>" for a default-branch run.
+ */
 export default function AutopilotPrCounter({
   sessionId,
   count = 0,
+  autopilot = null,
 }: {
   sessionId: string;
   count?: number;
+  /** The session's `autopilot` config; selects the mainline counter. */
+  autopilot?: unknown;
 }) {
   const [liveCount, setLiveCount] = useState(() => readPushedCount(count) ?? 0);
+  const [liveAutopilot, setLiveAutopilot] = useState<unknown>(autopilot);
 
   useEffect(() => {
     setLiveCount(readPushedCount(count) ?? 0);
   }, [sessionId, count]);
+
+  useEffect(() => {
+    setLiveAutopilot(autopilot);
+  }, [sessionId, autopilot]);
 
   useEffect(() => {
     if (!sessionId) return undefined;
@@ -32,6 +44,7 @@ export default function AutopilotPrCounter({
           if (cancelled) return;
           const next = readPushedCount(session?.finalize_pushed_count);
           if (next != null) setLiveCount(next);
+          if (session && 'autopilot' in session) setLiveAutopilot(session.autopilot);
         })
         .catch(() => {
           /* keep the last known count */
@@ -52,14 +65,15 @@ export default function AutopilotPrCounter({
     };
   }, [sessionId]);
 
-  const label = formatAutopilotPrCommittedLabel(liveCount);
+  const { mainline, label } = autopilotShipCounter({ autopilot: liveAutopilot }, liveCount);
+  const Icon = mainline ? GitCommitHorizontal : GitPullRequest;
   return (
     <div
       data-testid="autopilot-pr-counter"
       title={label}
       className={`${SESSION_ACTION_TOOLBAR_BUTTON_CLASS} border-emerald-700/60 bg-emerald-950/40 text-emerald-100 cursor-default`}
     >
-      <GitPullRequest size={14} className="shrink-0" aria-hidden />
+      <Icon size={14} className="shrink-0" aria-hidden />
       <span className="font-medium">{label}</span>
     </div>
   );
