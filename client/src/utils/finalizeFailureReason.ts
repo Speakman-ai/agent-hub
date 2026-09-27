@@ -47,6 +47,12 @@ const FINALIZE_FAILURE_REASON_DESCRIPTIONS = {
   rebase_aborted:
     'The rebase onto the base branch was aborted, likely due to conflicts that could not be auto-resolved.',
   cancelled: 'The run was cancelled.',
+  mainline_push_rejected:
+    'The remote refused the push to the default branch, usually because it moved on. Rebase and run Finalize again.',
+  mainline_push_uncertain:
+    'The push to the default branch may or may not have landed. Autopilot checks the remote before doing anything else.',
+  mainline_origin_refused:
+    "The session's origin is not this project's repository, so nothing was pushed to the default branch.",
 } as Record<string, any>;
 
 /**

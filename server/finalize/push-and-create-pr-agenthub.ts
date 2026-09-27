@@ -19,6 +19,8 @@
  */
 
 import { bareRepoPath } from '../native-pr/host.js';
+import { isHostedRepoUrl } from '../git-host/hosted-remote.js';
+import { readOriginPushUrls } from './branch-facts.js';
 import type { NativePrService } from '../native-pr/service.js';
 import {
   buildForceWithLeasePushArgs,
@@ -36,6 +38,46 @@ import type { PushAndCreatePrArgs, PushAndCreatePrResult } from './orchestrator.
 const PUSH_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_BUFFER = 10 * 1024 * 1024;
 
+/**
+ * Throw unless every URL `git push origin` would write to is this project's
+ * hosted repo: the exact bare path, or `/git/<projectId>.git` on a base this
+ * Hub serves.
+ */
+export async function assertHostedOriginMatchesProject(
+  projectId: string,
+  worktreePath: string,
+  opts: { baseUrls?: string[] } = {},
+): Promise<void> {
+  const urls = await readOriginPushUrls(worktreePath, undefined);
+  if (urls.length === 0) {
+    throw new Error(
+      `agenthub push refused: worktree has no origin push URL for project ${projectId}.`,
+    );
+  }
+  const barePath = bareRepoPath(projectId);
+  const bad = urls.find((url) => !isHostedRepoUrl(url, projectId, { barePath, ...opts }));
+  if (bad !== undefined) {
+    throw new Error(
+      `agenthub push refused: worktree origin push URL (${redactUrl(bad)}) is not the hosted repo for project ${projectId}. ` +
+        `Recreate the session worktree after enabling Agent Hub git hosting.`,
+    );
+  }
+}
+
+/** Drop userinfo so an embedded credential never reaches a log line. */
+function redactUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    if (u.username || u.password) {
+      u.username = '';
+      u.password = '';
+    }
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
 export async function pushAndCreateNativePr(
   nativePr: NativePrService,
   args: PushAndCreatePrArgs,
@@ -45,20 +87,7 @@ export async function pushAndCreateNativePr(
   // still points at GitHub (e.g. opt-in happened mid-session, before the
   // session clone was recreated) would otherwise silently ship to the
   // wrong host with no native PR to gate it.
-  const { stdout: originOut } = await execGit('git', ['remote', 'get-url', 'origin'], {
-    cwd: args.worktreePath,
-    timeout: 10_000,
-    maxBuffer: MAX_BUFFER,
-  });
-  const origin = originOut.trim();
-  const expectedBare = bareRepoPath(args.project.id);
-  const expectedHttpSuffix = `/git/${args.project.id}.git`;
-  if (origin !== expectedBare && !origin.endsWith(expectedHttpSuffix)) {
-    throw new Error(
-      `agenthub push refused: worktree origin (${origin}) is not the hosted repo for project ${args.project.id}. ` +
-        `Recreate the session worktree after enabling Agent Hub git hosting.`,
-    );
-  }
+  await assertHostedOriginMatchesProject(args.project.id, args.worktreePath);
 
   // Resolve the native-PR author BEFORE any remote mutation. PR creation is
   // intentionally blocked without an attributed Hub user, so an auth-enabled

@@ -218,6 +218,27 @@ describe('assertWorktreeOriginMatchesProject', () => {
     ).rejects.toThrow(/cannot be verified/);
   });
 
+  it('checks the push URLs, not the fetch URL', async () => {
+    // `get-url --push --all` prints the pushurl entries; one points elsewhere.
+    mockOrigins({
+      '/tmp/wt': 'https://github.com/acme/proj.git\nhttps://github.com/attacker/evil.git',
+    });
+    await expect(
+      assertWorktreeOriginMatchesProject(
+        { id: 'proj-1', cwd: '/tmp/proj', githubRepo: 'acme/proj' },
+        '/tmp/wt',
+        undefined,
+      ),
+    ).rejects.toThrow(/attacker\/evil/);
+    expect(mockExecFile.mock.calls[0]![1]).toEqual([
+      'remote',
+      'get-url',
+      '--push',
+      '--all',
+      'origin',
+    ]);
+  });
+
   it('throws when the worktree origin cannot be read but a config repo is set', async () => {
     mockOrigins({ '/tmp/wt': new Error('not a git repository') });
     await expect(

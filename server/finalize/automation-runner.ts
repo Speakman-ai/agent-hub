@@ -407,3 +407,17 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
     lock.handle.release();
   }
 }
+
+/**
+ * A mainline session's landing slot went back to `idle`. If a validated run
+ * was refused while the slot was busy, it is still parked at ready_to_push:
+ * push it now (subject to the usual auto-push gates).
+ */
+export function retryParkedPushAfterSlotFreed(sessionId: string): void {
+  if (!routeDeps) return;
+  const latest = routeDeps.stmts.getLatestFinalizeRunForSession.get(sessionId) as
+    | FinalizeRunRow
+    | undefined;
+  if (latest?.status !== 'ready_to_push') return;
+  void maybeAutoPushReadyFinalizeRun({ sessionId, runId: latest.id });
+}

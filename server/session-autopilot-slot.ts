@@ -83,6 +83,31 @@ export type MainlineSlotWrite =
       slot: MainlineSlot | null;
     };
 
+type SlotFreedListener = (sessionId: string) => void;
+let slotFreedListener: SlotFreedListener | null = null;
+
+/**
+ * Called after a write returns the slot to `idle`. Finalize uses it to retry a
+ * push it refused while the slot was busy. The listener runs synchronously
+ * inside the transition, so it should defer any real work.
+ */
+export function setMainlineSlotFreedListener(fn: SlotFreedListener | null): void {
+  slotFreedListener = fn;
+}
+
+function notifySlotFreed(sessionId: string): void {
+  if (!slotFreedListener) return;
+  try {
+    slotFreedListener(sessionId);
+  } catch (err) {
+    console.warn(
+      `[autopilot-slot] slot-freed listener threw session=${sessionId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
 /**
  * Apply one slot event, but only if the stored slot is still the
  * `(phase, attemptId)` the caller acted on. Returns whether it wrote.
@@ -121,7 +146,10 @@ export function transitionMainlineSlot(args: {
       result: applied.slot,
     };
   });
-  if (res.wrote) return { wrote: true, slot: res.result };
+  if (res.wrote) {
+    if (res.result.phase === 'idle' && expect.phase !== 'idle') notifySlotFreed(sessionId);
+    return { wrote: true, slot: res.result };
+  }
   if (refused.value) return refused.value;
   return {
     wrote: false,

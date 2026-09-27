@@ -43,7 +43,23 @@ import {
   POST_FINALIZE_PUSH_LOCK_ERROR,
   POST_FINALIZE_PUSH_LOCK_MESSAGE,
 } from './post-push-session-lock.js';
-import { scheduleAutopilotAfterPush } from '../session-autopilot.js';
+import {
+  postAutopilotMainlinePushNotice,
+  scheduleAutopilotAfterPush,
+} from '../session-autopilot.js';
+import { isAutopilotModeActive } from '../session-mode.js';
+import { autopilotConfigFromSession } from '../../shared/utils/sessionAutopilot.js';
+import type { MainlineSlot } from '../../shared/utils/autopilotMainlineSlot.js';
+import {
+  autoGitChildEnv,
+  resolveAutoGitGithubToken,
+  resolveOrgOwnerGithubToken,
+} from '../auto-git.js';
+import {
+  pushValidatedCommitToDefaultBranch,
+  type DefaultBranchGitRunner,
+  type MainlineOriginGuard,
+} from './push-to-default-branch.js';
 import { stopBackgroundShellsAfterFinalizePush } from './post-push-background-shells.js';
 import {
   BASE_BRANCH_MOVED_ERROR,
@@ -114,7 +130,8 @@ async function ensurePushSourcePath(args: {
 }
 
 export type FinalizePushOutcome =
-  | { ok: true; prUrl: string }
+  /** `prUrl` is null for a mainline push: the commit went to the default branch. */
+  | { ok: true; prUrl: string | null }
   | { ok: false; httpStatus: number; error: string; message: string };
 
 /** Baseline SHA for the §9 push gate at human push time. */
@@ -354,6 +371,256 @@ export interface RunFinalizePushArgs {
     staleMs?: number;
     pollMs?: number;
   };
+  /** Test seams for the mainline (default-branch) push. */
+  mainlinePush?: {
+    git?: DefaultBranchGitRunner;
+    guardOrigin?: MainlineOriginGuard;
+    env?: NodeJS.ProcessEnv;
+  };
+}
+
+export const AUTOPILOT_SLOT_BUSY_ERROR = 'autopilot_slot_busy';
+
+interface MainlinePushTarget {
+  defaultBranch: string;
+  slot: MainlineSlot;
+}
+
+/**
+ * A mainline Autopilot session ships by landing on the default branch, never
+ * through a PR. Keyed on the stored config, not on run status: a mainline
+ * session must never fall back to opening a PR.
+ */
+export function resolveMainlinePushTarget(session: SessionRow): MainlinePushTarget | null {
+  if (!isAutopilotModeActive(session)) return null;
+  const cfg = autopilotConfigFromSession(session);
+  if (!cfg || cfg.target !== 'mainline' || !cfg.mainline || !cfg.branch) return null;
+  return { defaultBranch: cfg.branch, slot: cfg.mainline.slot };
+}
+
+async function resolveMainlinePushEnv(
+  deps: RouteDeps,
+  project: Project,
+  sessionId: string,
+): Promise<NodeJS.ProcessEnv> {
+  if (project.gitHost === 'agenthub') return process.env;
+  const token =
+    (await resolveAutoGitGithubToken(sessionId, deps.config)) ??
+    (await resolveOrgOwnerGithubToken(deps.config, project.githubRepo ?? null));
+  return autoGitChildEnv(token);
+}
+
+function finishFailedPush(
+  deps: RouteDeps,
+  run: FinalizeRunRow,
+  session: SessionRow,
+  status: 'failed' | 'infra_error',
+  reason: string,
+): void {
+  try {
+    deps.stmts.failFinalizeRun.run(status, reason, run.id);
+  } catch {
+    /* best-effort */
+  }
+  deps.broadcast({
+    type: 'finalize_run_phase_changed',
+    run_id: run.id,
+    session_id: session.id,
+    phase: null,
+    status,
+    failure_reason: reason,
+  });
+  deps.broadcast({
+    type: 'finalize_run_completed',
+    run_id: run.id,
+    session_id: session.id,
+    status,
+  });
+  writeFinalizeRunTerminalTimeline(
+    { stmts: deps.stmts as Stmts, broadcast: deps.broadcast },
+    {
+      sessionId: session.id,
+      runId: run.id,
+      status,
+      failureReason: reason,
+      round: readFinalizeLoopRound(run),
+    },
+  );
+}
+
+/**
+ * Land the validated commit on the default branch. No PR, no card move to
+ * Review, no approval mirror: the deploy and live verification that follow
+ * are this mode's review.
+ */
+async function executeMainlinePush(args: {
+  deps: RouteDeps;
+  project: Project;
+  run: FinalizeRunRow;
+  session: SessionRow;
+  sourcePath: string;
+  validatedHeadSha: string;
+  target: MainlinePushTarget;
+  seams?: RunFinalizePushArgs['mainlinePush'];
+}): Promise<FinalizePushOutcome> {
+  const { deps, project, run, session, sourcePath, validatedHeadSha, target } = args;
+  const { stmts, broadcast } = deps;
+
+  try {
+    stmts.updateFinalizeRunPhase.run('push', 'pushing', run.id);
+  } catch {
+    /* best-effort */
+  }
+  broadcast({
+    type: 'finalize_run_phase_changed',
+    run_id: run.id,
+    session_id: session.id,
+    phase: 'push',
+    status: 'pushing',
+  });
+
+  let env: NodeJS.ProcessEnv;
+  try {
+    env = args.seams?.env ?? (await resolveMainlinePushEnv(deps, project, session.id));
+  } catch (err) {
+    env = process.env;
+    console.warn(
+      `[finalize-push] mainline token lookup failed run=${run.id}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
+  const result = await pushValidatedCommitToDefaultBranch({
+    stmts: stmts as Stmts,
+    sessionId: session.id,
+    project,
+    worktreePath: sourcePath,
+    sha: validatedHeadSha,
+    defaultBranch: target.defaultBranch,
+    env,
+    git: args.seams?.git,
+    guardOrigin: args.seams?.guardOrigin,
+  });
+
+  if (result.kind === 'refused') {
+    if (result.reason === 'origin_refused') {
+      console.error(`[finalize-push] mainline push refused run=${run.id}: ${result.message}`);
+      finishFailedPush(deps, run, session, 'failed', 'mainline_origin_refused');
+      return {
+        ok: false,
+        httpStatus: 409,
+        error: 'mainline_origin_refused',
+        message: result.message,
+      };
+    }
+    // Nothing reached the remote: park the run again so it is pushed once the
+    // slot frees (see retryParkedPushAfterSlotFreed).
+    try {
+      stmts.markFinalizeRunReadyToPush.run(validatedHeadSha, run.id);
+    } catch {
+      /* best-effort */
+    }
+    broadcast({
+      type: 'finalize_run_phase_changed',
+      run_id: run.id,
+      session_id: session.id,
+      phase: null,
+      status: 'ready_to_push',
+    });
+    console.warn(
+      `[finalize-push] mainline push deferred run=${run.id} (${result.reason}): ${result.message}`,
+    );
+    return {
+      ok: false,
+      httpStatus: 409,
+      error:
+        result.reason === 'slot_busy' ? AUTOPILOT_SLOT_BUSY_ERROR : 'autopilot_slot_write_failed',
+      message: result.message,
+    };
+  }
+
+  if (result.kind === 'rejected') {
+    console.warn(
+      `[finalize-push] mainline push rejected run=${run.id} branch=${target.defaultBranch}: ${result.detail}`,
+    );
+    finishFailedPush(deps, run, session, 'failed', 'mainline_push_rejected');
+    postAutopilotMainlinePushNotice(deps, session.id, {
+      outcome: 'rejected',
+      sha: validatedHeadSha,
+      branch: target.defaultBranch,
+      detail: result.detail,
+    });
+    return {
+      ok: false,
+      httpStatus: 409,
+      error: 'mainline_push_rejected',
+      message: `The remote rejected the push to ${target.defaultBranch}: ${result.detail}`,
+    };
+  }
+
+  if (result.kind === 'unknown') {
+    // `failed`, not `infra_error`: a push retry must not run while the remote
+    // may already hold the commit. The reconciler settles the slot.
+    console.warn(
+      `[finalize-push] mainline push outcome unknown run=${run.id} branch=${target.defaultBranch}: ${result.detail}`,
+    );
+    finishFailedPush(deps, run, session, 'failed', 'mainline_push_uncertain');
+    postAutopilotMainlinePushNotice(deps, session.id, {
+      outcome: 'unknown',
+      sha: validatedHeadSha,
+      branch: target.defaultBranch,
+      detail: result.detail,
+    });
+    return {
+      ok: false,
+      httpStatus: 502,
+      error: 'mainline_push_uncertain',
+      message: `Could not confirm the push to ${target.defaultBranch}: ${result.detail}`,
+    };
+  }
+
+  try {
+    stmts.markFinalizeRunPushed.run(run.id);
+  } catch (err) {
+    // The commit is on the default branch and the slot says so; the run row
+    // is bookkeeping. Report it, but do not claim the push failed.
+    console.error(
+      `[finalize-push] mainline run=${run.id} landed but could not be marked pushed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  broadcast({
+    type: 'finalize_run_phase_changed',
+    run_id: run.id,
+    session_id: session.id,
+    phase: 'push',
+    status: 'pushed',
+  });
+  broadcast({
+    type: 'finalize_run_completed',
+    run_id: run.id,
+    session_id: session.id,
+    status: 'pushed',
+    pr_url: null,
+  });
+  writeFinalizeRunTerminalTimeline(
+    { stmts: stmts as Stmts, broadcast },
+    {
+      sessionId: session.id,
+      runId: run.id,
+      status: 'pushed',
+      round: readFinalizeLoopRound(run),
+    },
+  );
+  postAutopilotMainlinePushNotice(deps, session.id, {
+    outcome: 'landed',
+    sha: validatedHeadSha,
+    branch: target.defaultBranch,
+  });
+  if (session.worktree_branch) await syncSessionAfterPush(run, session, session.worktree_branch);
+  return { ok: true, prUrl: null };
 }
 
 async function executePush(args: {
@@ -719,17 +986,30 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     }
   }
 
+  const mainline = resolveMainlinePushTarget(session);
+  if (mainline && mainline.slot.phase !== 'idle') {
+    // The run stays ready_to_push and is pushed when the slot frees.
+    return {
+      ok: false,
+      httpStatus: 409,
+      error: AUTOPILOT_SLOT_BUSY_ERROR,
+      message: `The previous landing is still ${mainline.slot.phase}; this push waits until it finishes.`,
+    };
+  }
+
   // Serialize the whole check-through-landing sequence on (project, base).
   // The drift check alone is check-then-act: two runs can both read the same
   // base as clean and both land on it. Holding this lock means the second run
   // only evaluates drift once the first has finished landing, so it sees the
   // base the first one produced. Re-entrant by run id — the automation path
   // takes the same lock around push + auto-merge before calling in here.
-  const lockBaseBranch = await resolveFinalizeBaseBranchForCard({
-    card,
-    worktreePath: sourcePath,
-    getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
-  });
+  const lockBaseBranch =
+    mainline?.defaultBranch ??
+    (await resolveFinalizeBaseBranchForCard({
+      card,
+      worktreePath: sourcePath,
+      getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
+    }));
   const lock = await acquirePushLock({
     stmts: deps.stmts as PushLockStmts,
     projectId: project.id,
@@ -896,6 +1176,19 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
       }
     }
 
+    if (mainline) {
+      return await executeMainlinePush({
+        deps,
+        project,
+        run,
+        session,
+        sourcePath,
+        validatedHeadSha,
+        target: mainline,
+        seams: args.mainlinePush,
+      });
+    }
+
     const pushBranch = await resolvePushBranch(
       sourcePath,
       session.worktree_branch,
@@ -944,6 +1237,14 @@ export async function runSessionPushToGithub(
 ): Promise<FinalizePushOutcome> {
   const { deps, project, session, card } = args;
   const resolveHead = args.resolveHeadSha ?? defaultResolveHeadSha;
+  if (resolveMainlinePushTarget(session)) {
+    return {
+      ok: false,
+      httpStatus: 409,
+      error: 'mainline_requires_finalize',
+      message: 'Default-branch Autopilot sessions only ship through a validated Finalize run.',
+    };
+  }
   if (sessionIsLockedAfterFinalizePush(deps.stmts as Stmts, session)) {
     return {
       ok: false,

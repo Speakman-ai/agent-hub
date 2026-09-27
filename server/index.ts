@@ -307,9 +307,11 @@ import {
   type TriggerUncommittedCommitNudgeArgs,
 } from './uncommitted-commit-nudge.js';
 import { setReadyToPushAutomationHook } from './finalize/orchestrator.js';
+import { setMainlineSlotFreedListener } from './session-autopilot-slot.js';
 import {
   maybeAutoPushReadyFinalizeRun,
   maybeAutoMergeAfterChecks,
+  retryParkedPushAfterSlotFreed,
   setFinalizeAutomationRouteDeps,
 } from './finalize/automation-runner.js';
 import { initWikiDocMergeHook } from './wiki-doc-session.js';
@@ -2394,6 +2396,10 @@ initBackgroundAgentSessionHook({
 });
 setReadyToPushAutomationHook((sessionId, runId) => {
   void maybeAutoPushReadyFinalizeRun({ sessionId, runId });
+});
+// Deferred: the listener fires inside the slot write that freed it.
+setMainlineSlotFreedListener((sessionId) => {
+  setImmediate(() => retryParkedPushAfterSlotFreed(sessionId));
 });
 // When a hosted-repo head's checks pass, complete any deferred native
 // Auto-Merge that earlier raced an in-flight required check. The work is

@@ -138,9 +138,17 @@ describe('pushAndCreateNativePr (via createPushAndCreatePr host branch)', () => 
     git(worktree, `remote set-url origin "http://127.0.0.1:9/git/${projectId}.git"`);
     const { service } = makeNativePrStub();
     const fn = createPushAndCreatePr({ config: TEST_CONFIG, nativePr: service });
-    // The push to the dead HTTP URL fails, but AFTER the origin guard —
-    // proving the guard accepted the URL shape.
-    await expect(fn(makeArgs())).rejects.toThrow(/git push failed/);
+    // The guard only accepts HTTP origins on a base this Hub serves, so make
+    // the dead port one of them.
+    const savedPublicUrl = config.publicUrl;
+    config.publicUrl = 'http://127.0.0.1:9';
+    try {
+      // The push to the dead HTTP URL fails, but AFTER the origin guard —
+      // proving the guard accepted the URL shape.
+      await expect(fn(makeArgs())).rejects.toThrow(/git push failed/);
+    } finally {
+      config.publicUrl = savedPublicUrl;
+    }
   });
 
   it('resolves the author before pushing — missing attribution fails without mutating the remote', async () => {

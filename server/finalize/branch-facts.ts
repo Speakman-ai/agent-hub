@@ -149,3 +149,25 @@ export async function collectPrDiffStat(
     return '';
   }
 }
+
+/**
+ * Every URL `git push origin` would write to: `pushurl` entries when set,
+ * otherwise the fetch URLs, with `insteadOf` / `pushInsteadOf` applied.
+ * Guards must check these, not the fetch URL, or a `remote.origin.pushurl`
+ * sends the push somewhere the guard never looked.
+ */
+export async function readOriginPushUrls(
+  worktreePath: string,
+  env: NodeJS.ProcessEnv | undefined,
+): Promise<string[]> {
+  const { stdout } = await execGit('git', ['remote', 'get-url', '--push', '--all', 'origin'], {
+    cwd: worktreePath,
+    env,
+    timeout: READ_TIMEOUT_MS,
+    maxBuffer: MAX_BUFFER,
+  });
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}

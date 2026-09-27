@@ -133,6 +133,34 @@ function postAutopilotSystemNotice(
 }
 
 /**
+ * Transcript notice for a mainline push. Posted without a model turn: the
+ * next turn comes from the deploy result, not from the push.
+ */
+export function postAutopilotMainlinePushNotice(
+  deps: AutopilotNoticeDeps,
+  sessionId: string,
+  args: {
+    outcome: 'landed' | 'rejected' | 'unknown';
+    sha: string;
+    branch: string;
+    detail?: string;
+  },
+): void {
+  const short = args.sha.slice(0, 7);
+  const content =
+    args.outcome === 'landed'
+      ? `Autopilot pushed ${short} to ${args.branch}. The deploy runs next.`
+      : args.outcome === 'rejected'
+        ? `Autopilot could not push ${short} to ${args.branch}: the remote rejected it` +
+          (args.detail ? ` (${args.detail})` : '') +
+          '. Rebase and Finalize again.'
+        : `Autopilot does not know whether ${short} reached ${args.branch}` +
+          (args.detail ? ` (${args.detail})` : '') +
+          '. It will check the remote before doing anything else.';
+  postAutopilotSystemNotice(deps, sessionId, content);
+}
+
+/**
  * Deadline / stopped gate applied BEFORE any further automatic work or push.
  *
  * The post-push cycle bump is not enough on its own: a session that never

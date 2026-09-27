@@ -33,6 +33,7 @@
  */
 import { parseGithubRemote, type RepoOwner } from '../github-remote-owner.js';
 import { execGit } from './push-and-create-pr.js';
+import { readOriginPushUrls } from './branch-facts.js';
 import type { Project } from '../types.js';
 
 const GET_ORIGIN_TIMEOUT_MS = 10_000;
@@ -183,23 +184,22 @@ export async function assertWorktreeOriginMatchesProject(
     expectedSource = 'project-checkout';
   }
 
-  let originUrl: string | null = null;
+  // Check where the push actually goes: a `remote.origin.pushurl` can differ
+  // from the fetch URL, and every push URL receives the commits.
+  let pushUrls: string[];
   try {
-    const { stdout } = await execGit('git', ['remote', 'get-url', 'origin'], {
-      cwd: worktreePath,
-      env,
-      timeout: GET_ORIGIN_TIMEOUT_MS,
-      maxBuffer: MAX_BUFFER,
-    });
-    originUrl = stdout.trim();
+    pushUrls = await readOriginPushUrls(worktreePath, env);
   } catch {
-    originUrl = null;
+    pushUrls = [];
   }
+  if (pushUrls.length === 0) pushUrls = [''];
 
-  const decision = evaluateOriginGuard(project.id, expected, originUrl);
-  if (!decision.ok) {
-    throw new Error(decision.message);
+  let decision: OriginGuardDecision | null = null;
+  for (const url of pushUrls) {
+    decision = evaluateOriginGuard(project.id, expected, url);
+    if (!decision.ok) throw new Error(decision.message);
   }
+  if (!decision || !decision.ok) throw new Error('github push refused: no origin push URL');
   return {
     expectedSource,
     summary: `origin-guard: project ${project.id} origin locked to ${decision.expected.owner}/${decision.expected.repo} (source: ${expectedSource})`,

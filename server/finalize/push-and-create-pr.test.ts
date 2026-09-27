@@ -312,7 +312,7 @@ describe('createPushAndCreatePr', () => {
     expect(mockExecFile).toHaveBeenCalledTimes(9);
     const originArgs = mockExecFile.mock.calls[0]!;
     expect(originArgs[0]).toBe('git');
-    expect(originArgs[1]).toEqual(['remote', 'get-url', 'origin']);
+    expect(originArgs[1]).toEqual(['remote', 'get-url', '--push', '--all', 'origin']);
 
     const lsRemoteArgs = mockExecFile.mock.calls[1]!;
     expect(lsRemoteArgs[0]).toBe('git');
@@ -441,7 +441,13 @@ describe('createPushAndCreatePr', () => {
     expect(result).toEqual({ prUrl: 'https://github.com/acme/proj/pull/1241' });
     // git remote get-url (lock) → ls-remote (lease pin) → git push → gh pr list.
     expect(mockExecFile).toHaveBeenCalledTimes(4);
-    expect(mockExecFile.mock.calls[0]![1]).toEqual(['remote', 'get-url', 'origin']);
+    expect(mockExecFile.mock.calls[0]![1]).toEqual([
+      'remote',
+      'get-url',
+      '--push',
+      '--all',
+      'origin',
+    ]);
     expect(mockExecFile.mock.calls[1]![1]).toEqual([
       'ls-remote',
       'origin',
@@ -500,7 +506,13 @@ describe('createPushAndCreatePr', () => {
     ).rejects.toThrow(/push refused/);
     // Only the origin read ran — no ls-remote, no push, no gh.
     expect(mockExecFile).toHaveBeenCalledTimes(1);
-    expect(mockExecFile.mock.calls[0]![1]).toEqual(['remote', 'get-url', 'origin']);
+    expect(mockExecFile.mock.calls[0]![1]).toEqual([
+      'remote',
+      'get-url',
+      '--push',
+      '--all',
+      'origin',
+    ]);
   });
 
   it('throws when gh emits no parseable URL', async () => {
@@ -620,7 +632,13 @@ describe('createPushAndCreatePr — force-with-lease pinning', () => {
 
     // calls[0] = git remote get-url (lock), calls[1] = ls-remote (lease pin),
     // calls[2] = git push.
-    expect(mockExecFile.mock.calls[0]![1]).toEqual(['remote', 'get-url', 'origin']);
+    expect(mockExecFile.mock.calls[0]![1]).toEqual([
+      'remote',
+      'get-url',
+      '--push',
+      '--all',
+      'origin',
+    ]);
     expect(mockExecFile.mock.calls[1]![1]).toEqual([
       'ls-remote',
       'origin',
