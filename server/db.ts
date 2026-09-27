@@ -4879,6 +4879,11 @@ function initDb(dataDir: string): void {
     updateSessionAutopilotConfig: db.prepare(
       "UPDATE sessions SET autopilot_session_config = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    // Compare-and-set: writes only when the stored config still equals the
+    // value the caller read (`IS` so a NULL expectation matches NULL).
+    casSessionAutopilotConfig: db.prepare(
+      "UPDATE sessions SET autopilot_session_config = ?, updated_at = datetime('now') WHERE id = ? AND autopilot_session_config IS ?",
+    ),
     updateSessionReasoningEffort: db.prepare(
       "UPDATE sessions SET reasoning_effort = ?, updated_at = datetime('now') WHERE id = ?",
     ),

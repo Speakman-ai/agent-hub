@@ -7,6 +7,11 @@
  * always a human action.
  */
 
+import {
+  type AutopilotMainlineConfig,
+  parseAutopilotMainlineConfig,
+} from './autopilotMainlineSlot.js';
+
 export const AUTOPILOT_ESCALATION_LEVELS = ['none', 'low', 'medium', 'high'] as const;
 export type AutopilotEscalation = (typeof AUTOPILOT_ESCALATION_LEVELS)[number];
 
@@ -37,6 +42,13 @@ export const AUTOPILOT_RESERVED_BRANCHES = new Set([
 
 export const AUTOPILOT_MAX_DURATION_HOURS = 72;
 
+/**
+ * Where a cycle ships: `branch` pushes the named branch and a human merges;
+ * `mainline` lands on the default branch and deploys `mainline.deployEnvironment`.
+ */
+export const AUTOPILOT_TARGETS = ['branch', 'mainline'] as const;
+export type AutopilotTarget = (typeof AUTOPILOT_TARGETS)[number];
+
 export interface AutopilotSessionConfig {
   durationHours: number;
   brief: string;
@@ -48,6 +60,9 @@ export interface AutopilotSessionConfig {
   status: AutopilotStatus;
   cycle: number;
   lastPushSha: string | null;
+  target: AutopilotTarget;
+  /** Set exactly when `target` is `mainline`. */
+  mainline: AutopilotMainlineConfig | null;
 }
 
 export interface AutopilotSetupInput {
@@ -196,6 +211,15 @@ export function parseAutopilotSessionConfig(raw: unknown): AutopilotSessionConfi
   if (!isAutopilotEscalation(row.escalation)) return null;
   const status = isAutopilotStatus(row.status) ? row.status : 'configuring';
   const cycle = asFiniteNumber(row.cycle);
+  // Rows written before targets existed carry no `target`: they are branch-target.
+  const target: AutopilotTarget = row.target === 'mainline' ? 'mainline' : 'branch';
+  let mainline: AutopilotMainlineConfig | null = null;
+  if (target === 'mainline') {
+    mainline = parseAutopilotMainlineConfig(row.mainline);
+    // A mainline row that cannot name its environment is unusable; refuse it
+    // rather than quietly downgrading it to branch pushes.
+    if (!mainline) return null;
+  }
   return {
     durationHours,
     brief,
@@ -207,7 +231,17 @@ export function parseAutopilotSessionConfig(raw: unknown): AutopilotSessionConfi
     status,
     cycle: cycle != null && cycle >= 0 ? Math.floor(cycle) : 0,
     lastPushSha: typeof row.lastPushSha === 'string' && row.lastPushSha ? row.lastPushSha : null,
+    target,
+    mainline,
   };
+}
+
+/** Canonical stored form; `parseAutopilotSessionConfig` round-trips it. */
+export function serializeAutopilotSessionConfig(cfg: AutopilotSessionConfig): string {
+  const { mainline, ...rest } = cfg;
+  return JSON.stringify(
+    cfg.target === 'mainline' && mainline ? { ...rest, mainline } : { ...rest, target: 'branch' },
+  );
 }
 
 export function autopilotConfigFromSession(

@@ -2464,6 +2464,78 @@ components:
             lastPushSha:
               type: string
               nullable: true
+            target:
+              type: string
+              enum:
+                - branch
+                - mainline
+              description: "`branch` pushes the named branch for a human to merge; `mainline` lands on the default branch and deploys `mainline.deployEnvironment`. Rows written before targets existed read as `branch`."
+            mainline:
+              type: object
+              nullable: true
+              properties:
+                deployEnvironment:
+                  type: string
+                landedCount:
+                  type: integer
+                slot:
+                  type: object
+                  properties:
+                    phase:
+                      type: string
+                      enum:
+                        - idle
+                        - pushing
+                        - uncertain
+                        - landed
+                        - deploying
+                        - reporting
+                    attemptId:
+                      type: string
+                      nullable: true
+                    sha:
+                      type: string
+                      nullable: true
+                    deploymentId:
+                      type: string
+                      nullable: true
+                    outcome:
+                      type: object
+                      nullable: true
+                      properties:
+                        status:
+                          type: string
+                          enum:
+                            - succeeded
+                            - failed
+                            - cancelled
+                            - missing
+                            - undeployable
+                        detail:
+                          type: string
+                          nullable: true
+                      required:
+                        - status
+                        - detail
+                    escalatedAt:
+                      type: string
+                      nullable: true
+                    enteredAt:
+                      type: string
+                      nullable: true
+                  required:
+                    - phase
+                    - attemptId
+                    - sha
+                    - deploymentId
+                    - outcome
+                    - escalatedAt
+                    - enteredAt
+              required:
+                - deployEnvironment
+                - landedCount
+                - slot
+              description: Mainline landing slot; set only when `target` is `mainline`. One cycle at a time moves idle → pushing → (uncertain) → landed → deploying → reporting → idle.
           required:
             - durationHours
             - brief
@@ -2475,6 +2547,8 @@ components:
             - status
             - cycle
             - lastPushSha
+            - target
+            - mainline
           description: Parsed Autopilot session config when `session_mode` is `autopilot`. Null until the startup card is submitted.
         code_changed_at:
           type: string

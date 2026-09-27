@@ -9,10 +9,10 @@ import type { MessageRow, RouteDeps, SessionRow } from './types.js';
 import { isAutopilotModeActive } from './session-mode.js';
 import { checkoutAutopilotSessionBranch } from './worktree.js';
 import { startSessionPreview } from './preview/start-session-preview.js';
+import { casAutopilotConfig, stopAutopilotRun } from './session-autopilot-slot.js';
 import {
   type AutopilotSessionConfig,
   type AutopilotSetupInput,
-  type AutopilotStatus,
   autopilotConfigFromSession,
   autopilotDeadlineReached,
   autopilotEscalationInstruction,
@@ -22,6 +22,7 @@ import {
   deadlineAtFromDuration,
   isAutopilotRunning,
   parseAutopilotSessionConfig,
+  serializeAutopilotSessionConfig,
   validateAutopilotSetupInput,
 } from '../shared/utils/sessionAutopilot.js';
 
@@ -62,7 +63,7 @@ export function buildAutopilotModePreamble(cfg: AutopilotSessionConfig | null): 
 }
 
 export function serializeAutopilotConfig(cfg: AutopilotSessionConfig): string {
-  return JSON.stringify(cfg);
+  return serializeAutopilotSessionConfig(cfg);
 }
 
 type AutopilotNoticeDeps = Pick<RouteDeps, 'stmts' | 'broadcast'>;
@@ -114,24 +115,6 @@ function postAutopilotSystemNotice(
   }
 }
 
-function persistAutopilotStatus(
-  deps: AutopilotNoticeDeps,
-  sessionId: string,
-  cfg: AutopilotSessionConfig,
-  status: AutopilotStatus,
-): AutopilotSessionConfig {
-  const next: AutopilotSessionConfig = { ...cfg, status };
-  try {
-    deps.stmts.updateSessionAutopilotConfig.run(serializeAutopilotConfig(next), sessionId);
-  } catch (err) {
-    console.warn(
-      `[autopilot-session] failed to persist status=${status} session=${sessionId}:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
-  return next;
-}
-
 /**
  * Deadline / stopped gate applied BEFORE any further automatic work or push.
  *
@@ -154,9 +137,24 @@ export function enforceAutopilotExpiry(args: { deps: AutopilotNoticeDeps; sessio
   // Already stopped (expired/completed/paused/escalated): no more auto work.
   if (cfg.status !== 'running') return { blocked: true };
   if (!autopilotDeadlineReached(cfg)) return { blocked: false };
-  persistAutopilotStatus(deps, session.id, cfg, 'expired');
-  postAutopilotSystemNotice(deps, session.id, autopilotStopNoticeContent('expired', cfg.branch));
-  return { blocked: true };
+  // Decide again from the stored row: only the caller that moves it off
+  // `running` posts the notice, so concurrent gates announce the stop once.
+  const stopped = stopAutopilotRun({
+    stmts: deps.stmts,
+    sessionId: session.id,
+    to: 'expired',
+    when: (current) => autopilotDeadlineReached(current),
+  });
+  if (stopped.wrote && stopped.cfg) {
+    postAutopilotSystemNotice(
+      deps,
+      session.id,
+      autopilotStopNoticeContent('expired', stopped.cfg.branch),
+    );
+    return { blocked: true };
+  }
+  // Someone else changed the row first; block unless it is still running.
+  return { blocked: stopped.cfg?.status !== 'running' };
 }
 
 export function startAutopilotConfig(
@@ -170,6 +168,8 @@ export function startAutopilotConfig(
     status: 'running',
     cycle: 0,
     lastPushSha: null,
+    target: 'branch',
+    mainline: null,
   };
 }
 
@@ -206,22 +206,23 @@ export function scheduleAutopilotAfterPush(args: {
   const cfg = autopilotConfigFromSession(session);
   if (!isAutopilotRunning(cfg) || !cfg) return;
 
-  const next: AutopilotSessionConfig = {
-    ...cfg,
-    cycle: cfg.cycle + 1,
-    lastPushSha: sha,
-  };
-  if (autopilotDeadlineReached(next)) {
-    next.status = 'expired';
+  const bumped = casAutopilotConfig<AutopilotSessionConfig>(deps.stmts, session.id, (current) => {
+    if (!isAutopilotRunning(current)) return { skip: current };
+    const next: AutopilotSessionConfig = {
+      ...current,
+      cycle: current.cycle + 1,
+      lastPushSha: sha,
+    };
+    if (autopilotDeadlineReached(next)) next.status = 'expired';
+    return { write: next, result: next };
+  });
+  if (!bumped.wrote) {
+    if (bumped.reason === 'conflict') {
+      console.warn(`[autopilot-session] cycle bump lost the row race session=${session.id}`);
+    }
+    return;
   }
-  try {
-    deps.stmts.updateSessionAutopilotConfig.run(serializeAutopilotConfig(next), session.id);
-  } catch (err) {
-    console.warn(
-      `[autopilot-session] failed to persist cycle after push session=${session.id}:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
+  const next = bumped.result;
 
   if (next.status !== 'running') {
     // Announce the stop as a plain transcript line — never via handleChat,

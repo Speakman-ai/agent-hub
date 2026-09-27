@@ -90,6 +90,34 @@ export const SessionComponent = registerComponent(
           status: z.enum(['configuring', 'running', 'paused', 'completed', 'expired', 'escalated']),
           cycle: z.number().int(),
           lastPushSha: z.string().nullable(),
+          target: z.enum(['branch', 'mainline']).openapi({
+            description:
+              '`branch` pushes the named branch for a human to merge; `mainline` lands on the default branch and deploys `mainline.deployEnvironment`. Rows written before targets existed read as `branch`.',
+          }),
+          mainline: z
+            .object({
+              deployEnvironment: z.string(),
+              landedCount: z.number().int(),
+              slot: z.object({
+                phase: z.enum(['idle', 'pushing', 'uncertain', 'landed', 'deploying', 'reporting']),
+                attemptId: z.string().nullable(),
+                sha: z.string().nullable(),
+                deploymentId: z.string().nullable(),
+                outcome: z
+                  .object({
+                    status: z.enum(['succeeded', 'failed', 'cancelled', 'missing', 'undeployable']),
+                    detail: z.string().nullable(),
+                  })
+                  .nullable(),
+                escalatedAt: z.string().nullable(),
+                enteredAt: z.string().nullable(),
+              }),
+            })
+            .nullable()
+            .openapi({
+              description:
+                'Mainline landing slot; set only when `target` is `mainline`. One cycle at a time moves idle → pushing → (uncertain) → landed → deploying → reporting → idle.',
+            }),
         })
         .nullable()
         .optional()

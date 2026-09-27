@@ -12,6 +12,7 @@ import {
   formatAutopilotPrCommittedLabel,
   autopilotEscalationInstruction,
   autopilotStopNoticeContent,
+  serializeAutopilotSessionConfig,
 } from './sessionAutopilot';
 
 const valid = {
@@ -77,6 +78,60 @@ describe('isReservedAutopilotBranch', () => {
 });
 
 describe('parseAutopilotSessionConfig / needsAutopilotSetup', () => {
+  it('reads a config stored before targets existed as branch-target', () => {
+    const legacy = JSON.stringify({
+      ...valid,
+      startedAt: '2026-09-17T12:00:00.000Z',
+      deadlineAt: null,
+      status: 'running',
+      cycle: 3,
+      lastPushSha: 'abc1234',
+    });
+    const cfg = parseAutopilotSessionConfig(legacy)!;
+    expect(cfg.target).toBe('branch');
+    expect(cfg.mainline).toBeNull();
+    const again = parseAutopilotSessionConfig(serializeAutopilotSessionConfig(cfg));
+    expect(again).toEqual(cfg);
+  });
+
+  it('ignores a stray mainline block on a branch-target config', () => {
+    const cfg = parseAutopilotSessionConfig({
+      ...valid,
+      target: 'branch',
+      mainline: { deployEnvironment: 'prod' },
+    })!;
+    expect(cfg.mainline).toBeNull();
+    expect(JSON.parse(serializeAutopilotSessionConfig(cfg)).mainline).toBeUndefined();
+  });
+
+  it('round-trips a mainline config with its slot', () => {
+    const slot = {
+      phase: 'deploying',
+      attemptId: 'att-1',
+      sha: 'b'.repeat(40),
+      deploymentId: 'dep-1',
+      outcome: null,
+      escalatedAt: null,
+      enteredAt: '2026-09-27T12:00:00.000Z',
+    };
+    const cfg = parseAutopilotSessionConfig({
+      ...valid,
+      status: 'running',
+      target: 'mainline',
+      mainline: { deployEnvironment: 'prod', landedCount: 4, slot },
+    })!;
+    expect(cfg.target).toBe('mainline');
+    expect(cfg.mainline).toEqual({ deployEnvironment: 'prod', landedCount: 4, slot });
+    expect(parseAutopilotSessionConfig(serializeAutopilotSessionConfig(cfg))).toEqual(cfg);
+  });
+
+  it('refuses a mainline config without a deploy environment', () => {
+    expect(
+      parseAutopilotSessionConfig({ ...valid, target: 'mainline', mainline: { slot: {} } }),
+    ).toBeNull();
+    expect(parseAutopilotSessionConfig({ ...valid, target: 'mainline' })).toBeNull();
+  });
+
   it('parses a stored JSON blob', () => {
     const cfg = parseAutopilotSessionConfig(
       JSON.stringify({

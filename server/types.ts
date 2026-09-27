@@ -2211,6 +2211,7 @@ export interface Stmts {
   updateSessionReactLoop: Stmt;
   updateSessionMode: Stmt;
   updateSessionAutopilotConfig: Stmt;
+  casSessionAutopilotConfig: Stmt<[string, string, string | null]>;
   updateSessionReasoningEffort: Stmt;
   updateSessionChangesReady: Stmt;
   updateSessionCodeChangedAt: Stmt;

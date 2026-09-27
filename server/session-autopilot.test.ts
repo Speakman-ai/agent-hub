@@ -20,6 +20,24 @@ const {
   startAutopilotConfig,
 } = await import('./session-autopilot.js');
 
+/** In-memory session row with SQL-like compare-and-set semantics. */
+function fakeRow(cfg: unknown) {
+  let raw: string | null = cfg == null ? null : JSON.stringify(cfg);
+  const cas = vi.fn((next: string, _id: string, expected: string | null) => {
+    if (expected !== raw) return { changes: 0 };
+    raw = next;
+    return { changes: 1 };
+  });
+  return {
+    stmts: {
+      getSession: { get: vi.fn(() => ({ autopilot_session_config: raw })) },
+      casSessionAutopilotConfig: { run: cas },
+    },
+    cas,
+    stored: () => (raw == null ? null : JSON.parse(raw)),
+  };
+}
+
 function runningConfig(overrides: Record<string, unknown> = {}) {
   return startAutopilotConfig({
     durationHours: 4,
@@ -107,8 +125,8 @@ describe('scheduleAutopilotAfterPush', () => {
 
   it('starts preview and continues the same session after a successful push', async () => {
     const handleChat = vi.fn().mockResolvedValue(undefined);
-    const persist = vi.fn();
     const cfg = runningConfig();
+    const row = fakeRow(cfg);
     const session = {
       id: 's1',
       agent_id: 'agent-1',
@@ -118,10 +136,7 @@ describe('scheduleAutopilotAfterPush', () => {
 
     scheduleAutopilotAfterPush({
       deps: {
-        stmts: {
-          updateSessionAutopilotConfig: { run: persist },
-          getSession: { get: vi.fn(() => session) },
-        },
+        stmts: row.stmts,
         handleChat,
         broadcast: vi.fn(),
         findAgent: vi.fn(),
@@ -136,8 +151,7 @@ describe('scheduleAutopilotAfterPush', () => {
     });
 
     await vi.waitFor(() => expect(handleChat).toHaveBeenCalledTimes(1));
-    expect(persist).toHaveBeenCalled();
-    const stored = JSON.parse(persist.mock.calls[0][0]);
+    const stored = row.stored();
     expect(stored.cycle).toBe(1);
     expect(stored.lastPushSha).toBe('deadbeefcafebabe');
     expect(mocks.startSessionPreview).toHaveBeenCalledWith(
@@ -161,7 +175,7 @@ describe('scheduleAutopilotAfterPush', () => {
     scheduleAutopilotAfterPush({
       deps: {
         stmts: {
-          updateSessionAutopilotConfig: { run: vi.fn() },
+          ...fakeRow(cfg).stmts,
           addMessage: { run: addMessage },
           getMessageById: { get: vi.fn(() => undefined) },
         },
@@ -197,17 +211,19 @@ describe('scheduleAutopilotAfterPush', () => {
 });
 
 describe('enforceAutopilotExpiry', () => {
-  function makeDeps() {
-    const updateSessionAutopilotConfig = vi.fn();
+  function makeDeps(cfg: unknown = null) {
+    const row = fakeRow(cfg);
+    const updateSessionAutopilotConfig = row.cas;
     const addMessage = vi.fn();
     const broadcast = vi.fn();
     return {
+      row,
       updateSessionAutopilotConfig,
       addMessage,
       broadcast,
       deps: {
         stmts: {
-          updateSessionAutopilotConfig: { run: updateSessionAutopilotConfig },
+          ...row.stmts,
           addMessage: { run: addMessage },
           getMessageById: { get: vi.fn(() => undefined) },
         },
@@ -241,12 +257,12 @@ describe('enforceAutopilotExpiry', () => {
   });
 
   it('blocks, persists expiry, and posts a notice when the deadline has passed', () => {
-    const { deps, updateSessionAutopilotConfig, addMessage } = makeDeps();
     const cfg = {
       ...runningConfig(),
       startedAt: '2020-01-01T00:00:00.000Z',
       deadlineAt: '2020-01-01T01:00:00.000Z',
     };
+    const { deps, updateSessionAutopilotConfig, addMessage } = makeDeps(cfg);
     const blocked = enforceAutopilotExpiry({
       deps,
       session: {
@@ -259,6 +275,53 @@ describe('enforceAutopilotExpiry', () => {
     expect(updateSessionAutopilotConfig).toHaveBeenCalledTimes(1);
     expect(JSON.parse(updateSessionAutopilotConfig.mock.calls[0][0]).status).toBe('expired');
     expect(addMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('posts the stop notice once when two gates race on the same stale snapshot', () => {
+    const cfg = {
+      ...runningConfig(),
+      startedAt: '2020-01-01T00:00:00.000Z',
+      deadlineAt: '2020-01-01T01:00:00.000Z',
+    };
+    const { deps, addMessage, row } = makeDeps(cfg);
+    const snapshot = {
+      id: 's1',
+      session_mode: 'autopilot',
+      autopilot_session_config: JSON.stringify(cfg),
+    } as SessionRow;
+    expect(enforceAutopilotExpiry({ deps, session: snapshot }).blocked).toBe(true);
+    expect(enforceAutopilotExpiry({ deps, session: snapshot }).blocked).toBe(true);
+    expect(addMessage).toHaveBeenCalledTimes(1);
+    expect(row.stored().status).toBe('expired');
+  });
+
+  it('keeps an owed mainline slot when the run expires', () => {
+    const slot = {
+      phase: 'deploying',
+      attemptId: 'a1',
+      sha: 'd'.repeat(40),
+      deploymentId: 'dep-1',
+      outcome: null,
+      escalatedAt: null,
+      enteredAt: null,
+    };
+    const cfg = {
+      ...runningConfig(),
+      startedAt: '2020-01-01T00:00:00.000Z',
+      deadlineAt: '2020-01-01T01:00:00.000Z',
+      target: 'mainline',
+      mainline: { deployEnvironment: 'prod', landedCount: 1, slot },
+    };
+    const { deps, row } = makeDeps(cfg);
+    enforceAutopilotExpiry({
+      deps,
+      session: {
+        id: 's1',
+        session_mode: 'autopilot',
+        autopilot_session_config: JSON.stringify(cfg),
+      } as SessionRow,
+    });
+    expect(row.stored()).toMatchObject({ status: 'expired', mainline: { slot } });
   });
 
   it('blocks an already-stopped autopilot session without re-posting', () => {
