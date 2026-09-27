@@ -25,7 +25,10 @@ function slotIn(phase: MainlineSlotPhase): MainlineSlot {
     attemptId: 'att-1',
     sha: SHA,
     deploymentId: phase === 'deploying' || phase === 'reporting' ? 'dep-1' : null,
-    outcome: phase === 'reporting' ? { status: 'succeeded', detail: null } : null,
+    outcome:
+      phase === 'reporting'
+        ? { status: 'succeeded', detail: null, origin: null, readiness: null }
+        : null,
     escalatedAt: null,
     enteredAt: '2026-09-27T11:00:00.000Z',
   };
@@ -110,7 +113,7 @@ describe('applyMainlineSlotEvent', () => {
       attemptId: 'att-7',
       sha: SHA,
       deploymentId: 'dep-7',
-      outcome: { status: 'succeeded', detail: null },
+      outcome: { status: 'succeeded', detail: null, origin: null, readiness: null },
       escalatedAt: null,
       enteredAt: NOW,
     });
@@ -127,7 +130,7 @@ describe('applyMainlineSlotEvent', () => {
     expect(res.ok && res.slot).toMatchObject({
       phase: 'reporting',
       deploymentId: null,
-      outcome: { status: 'undeployable', detail: 'no prod env' },
+      outcome: { status: 'undeployable', detail: 'no prod env', origin: null, readiness: null },
     });
   });
 

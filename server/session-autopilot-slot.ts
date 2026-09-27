@@ -108,6 +108,31 @@ function notifySlotFreed(sessionId: string): void {
   }
 }
 
+let slotLandedListener: SlotFreedListener | null = null;
+
+/**
+ * Called after a write moves the slot into `landed` (a push landed, or the
+ * reconciler found the commit on the remote). The deploy watcher uses it to
+ * start the owed deploy without waiting for its next sweep. Runs
+ * synchronously inside the transition, so it should defer real work.
+ */
+export function setMainlineSlotLandedListener(fn: SlotFreedListener | null): void {
+  slotLandedListener = fn;
+}
+
+function notifySlotLanded(sessionId: string): void {
+  if (!slotLandedListener) return;
+  try {
+    slotLandedListener(sessionId);
+  } catch (err) {
+    console.warn(
+      `[autopilot-slot] slot-landed listener threw session=${sessionId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
 /**
  * Apply one slot event, but only if the stored slot is still the
  * `(phase, attemptId)` the caller acted on. Returns whether it wrote.
@@ -148,6 +173,7 @@ export function transitionMainlineSlot(args: {
   });
   if (res.wrote) {
     if (res.result.phase === 'idle' && expect.phase !== 'idle') notifySlotFreed(sessionId);
+    if (res.result.phase === 'landed' && expect.phase !== 'landed') notifySlotLanded(sessionId);
     return { wrote: true, slot: res.result };
   }
   if (refused.value) return refused.value;

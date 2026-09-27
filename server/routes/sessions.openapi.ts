@@ -111,6 +111,8 @@ export const SessionComponent = registerComponent(
                   .object({
                     status: z.enum(['succeeded', 'failed', 'cancelled', 'missing', 'undeployable']),
                     detail: z.string().nullable(),
+                    origin: z.string().nullable(),
+                    readiness: z.string().nullable(),
                   })
                   .nullable(),
                 escalatedAt: z.string().nullable(),

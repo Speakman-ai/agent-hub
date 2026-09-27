@@ -2517,9 +2517,17 @@ components:
                         detail:
                           type: string
                           nullable: true
+                        origin:
+                          type: string
+                          nullable: true
+                        readiness:
+                          type: string
+                          nullable: true
                       required:
                         - status
                         - detail
+                        - origin
+                        - readiness
                     escalatedAt:
                       type: string
                       nullable: true

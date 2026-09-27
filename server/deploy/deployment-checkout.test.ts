@@ -5,7 +5,12 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Project } from '../types.js';
-import { prepareDeploymentCheckout, readDeployYamlAtRef } from './deployment-checkout.js';
+import {
+  DeploymentCheckoutError,
+  prepareDeploymentCheckout,
+  readDeployYamlAtCommit,
+  readDeployYamlAtRef,
+} from './deployment-checkout.js';
 
 const roots: string[] = [];
 
@@ -118,5 +123,44 @@ describe('readDeployYamlAtRef', () => {
     });
 
     expect(raw).toBeNull();
+  });
+});
+
+describe('readDeployYamlAtCommit', () => {
+  function repoWithCommits(): { project: Project; withYaml: string; withoutYaml: string } {
+    const root = makeRoot('deploy-yaml-commit-');
+    const cwd = path.join(root, 'repo');
+    mkdirSync(path.join(cwd, '.agent-hub'), { recursive: true });
+    git(cwd, ['init', '--initial-branch=main']);
+    writeFileSync(path.join(cwd, 'README.md'), '# repo\n');
+    git(cwd, ['add', 'README.md']);
+    git(cwd, ['commit', '-m', 'no deploy config']);
+    const withoutYaml = execFileSync('git', ['rev-parse', 'HEAD'], { cwd }).toString().trim();
+    writeFileSync(path.join(cwd, '.agent-hub', 'deploy.yaml'), 'version: 1\n');
+    git(cwd, ['add', '.agent-hub/deploy.yaml']);
+    git(cwd, ['commit', '-m', 'add deploy config']);
+    const withYaml = execFileSync('git', ['rev-parse', 'HEAD'], { cwd }).toString().trim();
+    const project = { id: 'p', name: 'P', cwd, ahw: path.join(root, 'ahw'), agents: [] } as Project;
+    return { project, withYaml, withoutYaml };
+  }
+
+  it('reads the file at a commit that has it', async () => {
+    const { project, withYaml } = repoWithCommits();
+    expect(await readDeployYamlAtCommit({ project, sha: withYaml })).toEqual({
+      kind: 'present',
+      raw: 'version: 1\n',
+    });
+  });
+
+  it('reports absent only when the commit is known and its tree lacks the file', async () => {
+    const { project, withoutYaml } = repoWithCommits();
+    expect(await readDeployYamlAtCommit({ project, sha: withoutYaml })).toEqual({ kind: 'absent' });
+  });
+
+  it('throws, never absent, for a commit the workspace does not have', async () => {
+    const { project } = repoWithCommits();
+    await expect(readDeployYamlAtCommit({ project, sha: 'f'.repeat(40) })).rejects.toBeInstanceOf(
+      DeploymentCheckoutError,
+    );
   });
 });

@@ -116,6 +116,27 @@ export function listDeploymentsForEnvironment(
   ) as DeploymentRow[];
 }
 
+/**
+ * Deployments whose meta carries `autopilotLandingKey = landingKey`, oldest
+ * first, in any status.
+ */
+export function listDeploymentsByLandingKey(
+  projectId: string,
+  landingKey: string,
+): DeploymentRow[] {
+  return getDb()
+    .prepare(
+      `SELECT *
+         FROM deployments
+        WHERE project_id = ?
+          AND meta IS NOT NULL
+          AND json_valid(meta)
+          AND json_extract(meta, '$.autopilotLandingKey') = ?
+        ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(projectId, landingKey) as DeploymentRow[];
+}
+
 export function listRecoverableDeployments(): DeploymentRow[] {
   return getDb()
     .prepare(

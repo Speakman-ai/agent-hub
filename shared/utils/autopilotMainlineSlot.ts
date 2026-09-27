@@ -36,6 +36,10 @@ export type MainlineOutcomeStatus = (typeof MAINLINE_OUTCOME_STATUSES)[number];
 export interface MainlineOutcome {
   status: MainlineOutcomeStatus;
   detail: string | null;
+  /** Live origin of the environment, from deploy.yaml at the landed commit. */
+  origin: string | null;
+  /** Readiness URL or check, from deploy.yaml at the landed commit. */
+  readiness: string | null;
 }
 
 export interface MainlineSlot {
@@ -87,6 +91,8 @@ export type MainlineSlotEvent =
       type: 'deploy_finished';
       status: Exclude<MainlineOutcomeStatus, 'undeployable'>;
       detail?: string | null;
+      origin?: string | null;
+      readiness?: string | null;
     }
   | { type: 'report_delivered' }
   | { type: 'escalate' };
@@ -211,7 +217,12 @@ export function applyMainlineSlotEvent(
     }
     case 'deploy_undeployable':
       return enter('reporting', {
-        outcome: { status: 'undeployable', detail: optionalDetail(event.detail) },
+        outcome: {
+          status: 'undeployable',
+          detail: optionalDetail(event.detail),
+          origin: null,
+          readiness: null,
+        },
       });
     case 'deploy_finished': {
       if (!isOutcomeStatus(event.status) || (event.status as string) === 'undeployable') {
@@ -222,7 +233,12 @@ export function applyMainlineSlotEvent(
         };
       }
       return enter('reporting', {
-        outcome: { status: event.status, detail: optionalDetail(event.detail) },
+        outcome: {
+          status: event.status,
+          detail: optionalDetail(event.detail),
+          origin: optionalDetail(event.origin),
+          readiness: optionalDetail(event.readiness),
+        },
       });
     }
     case 'escalate':
@@ -248,7 +264,12 @@ function parseOutcome(raw: unknown): MainlineOutcome | null {
   if (!raw || typeof raw !== 'object') return null;
   const row = raw as Record<string, unknown>;
   if (!isOutcomeStatus(row.status)) return null;
-  return { status: row.status, detail: optionalDetail(row.detail) };
+  return {
+    status: row.status,
+    detail: optionalDetail(row.detail),
+    origin: optionalDetail(row.origin),
+    readiness: optionalDetail(row.readiness),
+  };
 }
 
 /**

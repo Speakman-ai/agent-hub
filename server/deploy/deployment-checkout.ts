@@ -94,6 +94,79 @@ export async function readDeployYamlAtRef(args: {
   }
 }
 
+export type DeployYamlAtCommit = { kind: 'present'; raw: string } | { kind: 'absent' };
+
+/**
+ * Read `.agent-hub/deploy.yaml` at one commit, telling a missing file apart
+ * from a git read that failed. `absent` is returned only when git completed a
+ * listing of that commit's tree without the file; a commit this workspace does
+ * not have (after one fetch), or any other git failure, throws
+ * {@link DeploymentCheckoutError}. Callers that treat `absent` as final rely
+ * on that split: {@link readDeployYamlAtRef} maps an unknown revision to
+ * "no config", which is only safe for read-only display.
+ */
+export async function readDeployYamlAtCommit(args: {
+  project: Project;
+  sha: string;
+}): Promise<DeployYamlAtCommit> {
+  const source = projectWorkspace(args.project);
+  if (!source) {
+    throw new DeploymentCheckoutError('no_workspace', 'Project has no workspace configured.');
+  }
+  const commit = `${args.sha}^{commit}`;
+  const hasCommit = async (): Promise<boolean> => {
+    try {
+      await git(['-C', source, 'cat-file', '-e', commit]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!(await hasCommit())) {
+    try {
+      await git(['-C', source, 'fetch', '--quiet', 'origin']);
+    } catch {
+      /* a failed fetch leaves the commit unknown; reported below */
+    }
+    if (!(await hasCommit())) {
+      throw new DeploymentCheckoutError(
+        'git_error',
+        `Commit ${args.sha} is not in the project workspace yet.`,
+      );
+    }
+  }
+  let listing: string;
+  try {
+    listing = await git([
+      '-C',
+      source,
+      'ls-tree',
+      '--name-only',
+      args.sha,
+      '--',
+      DEPLOY_YAML_REL_PATH,
+    ]);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new DeploymentCheckoutError('git_error', `Could not list ${args.sha}: ${detail}`);
+  }
+  if (!listing.split('\n').includes(DEPLOY_YAML_REL_PATH)) return { kind: 'absent' };
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', source, 'show', `${args.sha}:${DEPLOY_YAML_REL_PATH}`],
+      { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 },
+    );
+    return { kind: 'present', raw: stdout };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new DeploymentCheckoutError(
+      'git_error',
+      `Could not read ${args.sha}:${DEPLOY_YAML_REL_PATH}: ${detail}`,
+    );
+  }
+}
+
 /**
  * Materialize `ref` into an isolated detached checkout without mutating the
  * project's primary workspace. The caller owns the returned directory: gated

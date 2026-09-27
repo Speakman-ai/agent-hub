@@ -145,6 +145,14 @@ function buildDeployBaseEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * Rejection for a trigger against an environment that already holds an in-flight
  * (or awaiting-approval) deploy. The REST layer maps this to HTTP 409.
  */
+/**
+ * Error stamped on a row that lost the environment-lock race right after it was
+ * created. Such a row never ran; callers that look deployments up by meta
+ * (Autopilot adoption by landing key) skip it.
+ */
+export const LOCK_RACE_CANCEL_ERROR =
+  'environment busy: another deployment acquired the lock first';
+
 export class EnvironmentBusyError extends Error {
   readonly activeDeploymentId: string | null;
   constructor(activeDeploymentId: string | null) {
@@ -1560,7 +1568,7 @@ export async function triggerDeployment(
   // wins the lock; the loser cancels its just-created row and is rejected.
   if (!acquireEnvironmentLock(projectId, environment, deployment.id)) {
     updateDeploymentStatus(deployment.id, 'cancelled', {
-      error: 'environment busy: another deployment acquired the lock first',
+      error: LOCK_RACE_CANCEL_ERROR,
     });
     if (input.cleanupWorktreeOnTerminal) cleanupDeploymentWorktree(worktreePath, deployment.id);
     const cur = getDeploymentEnvironment(projectId, environment);

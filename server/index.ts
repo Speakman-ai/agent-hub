@@ -242,6 +242,10 @@ import createDeploymentRoutes from './routes/deployments.js';
 import { recoverInFlightDeployments } from './deploy/deploy-orchestrator.js';
 import { prepareDeploymentCheckout } from './deploy/deployment-checkout.js';
 import { maybeRunDeployTriggers } from './deploy/deploy-trigger-hook.js';
+import {
+  initMainlineDeployWatcher,
+  mainlineSessionOwnsEnvironment,
+} from './autopilot-mainline-deploy-wiring.js';
 import { initDeploySchedules } from './deploy/deploy-schedule-ticker.js';
 import { initReleaseGates, requestReleaseGateSweep } from './deploy/release-gate-ticker.js';
 import { initDailySummarySchedules } from './daily-summary-schedule.js';
@@ -727,7 +731,13 @@ app.use(
       // deployment for the mapped environment. Fire-and-forget — the module gates
       // on a cheap indexed query, honors the per-env concurrency lock, and
       // swallows failures so it never breaks the push path.
-      void maybeRunDeployTriggers(project, 'push', refs, { broadcast, config, findProject });
+      void maybeRunDeployTriggers(project, 'push', refs, {
+        broadcast,
+        config,
+        findProject,
+        skipOwnedTarget: (projectId, env) =>
+          mainlineSessionOwnsEnvironment(findAgent, projectId, env),
+      });
       // Review safety net for external pushes: any moved branch backing
       // an open PR gets the Reviewer agent when the head isn't already
       // Finalize-validated. Merge policy does not suppress review.
@@ -895,6 +905,8 @@ const nativePr = createNativePrService({
       broadcast,
       config,
       findProject,
+      skipOwnedTarget: (projectId, env) =>
+        mainlineSessionOwnsEnvironment(findAgent, projectId, env),
     });
     // A merge may have completed the last session/epic a release gate is waiting
     // on — nudge an off-cadence sweep so the gate fires promptly (the minute
@@ -2277,6 +2289,16 @@ recoverInFlightDeployments({
     return { worktreePath: checkout.worktreePath, cleanupWorktreeOnTerminal: true };
   },
   releaseDigestConfig: config,
+});
+// After deployment recovery, so an in-flight Autopilot deploy is running
+// again before the watcher reads its row.
+initMainlineDeployWatcher({
+  stmts: stmts!,
+  broadcast,
+  config,
+  findProject,
+  findAgent,
+  orgId: getActiveOrgId,
 });
 
 attachDefaultPreviewProxyUpgrade(

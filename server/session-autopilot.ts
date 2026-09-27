@@ -90,7 +90,7 @@ type AutopilotNoticeDeps = Pick<RouteDeps, 'stmts' | 'broadcast'>;
  * calling handleChat, so announcing that Autopilot stopped never launches
  * another model turn.
  */
-function postAutopilotSystemNotice(
+export function postAutopilotSystemNotice(
   deps: AutopilotNoticeDeps,
   sessionId: string,
   content: string,
