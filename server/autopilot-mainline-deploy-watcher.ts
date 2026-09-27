@@ -70,6 +70,13 @@ export interface MainlineDeployWatcherDeps {
   getDeployment: (id: string) => DeploymentRow | null;
   /** Transcript line with no model turn. */
   postNotice: (sessionId: string, content: string) => void;
+  /**
+   * Settles a `pushing` or `uncertain` slot against the remote, and retries
+   * an owed Finalize restart on an `idle` one (see
+   * autopilot-mainline-reconciler.ts). Runs inside this sweep so the loop
+   * stays single-flight; a slot it moves to `landed` deploys in the same pass.
+   */
+  reconcile?: (session: MainlineWatcherSessionRow) => Promise<void>;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -431,8 +438,15 @@ export function createMainlineDeployWatcher(deps: MainlineDeployWatcherDeps) {
   }
 
   async function sweepSession(session: MainlineWatcherSessionRow): Promise<void> {
-    const state = readSlot(session.id);
+    let state = readSlot(session.id);
     if (!state) return;
+    // `idle` too: an owed Finalize restart lives on an idle slot.
+    const settles = ['pushing', 'uncertain', 'idle'].includes(state.slot.phase);
+    if (deps.reconcile && settles) {
+      await deps.reconcile(session);
+      state = readSlot(session.id);
+      if (!state) return;
+    }
     if (state.slot.phase === 'landed') {
       await handleLanded(session, state.slot, state.environment);
       // A fresh start moves straight on if the deploy already ended.

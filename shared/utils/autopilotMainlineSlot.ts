@@ -57,11 +57,25 @@ export interface MainlineSlot {
   enteredAt: string | null;
 }
 
+/**
+ * Finalize owes a fresh run: the remote confirmed this attempt's commit never
+ * reached the default branch. Written in the same compare-and-set that frees
+ * the slot, and cleared only once a run is accepted (or the restart is
+ * dropped because the session stopped, expired, or a human cancelled), so a
+ * failed start is retried instead of lost.
+ */
+export interface MainlineRestartOwed {
+  attemptId: string;
+  sha: string;
+  since: string;
+}
+
 export interface AutopilotMainlineConfig {
   deployEnvironment: string;
   slot: MainlineSlot;
   /** Commits confirmed on the default branch (entered `landed`). */
   landedCount: number;
+  restartOwed?: MainlineRestartOwed | null;
 }
 
 export const IDLE_MAINLINE_SLOT: Readonly<MainlineSlot> = Object.freeze({
@@ -314,6 +328,17 @@ export function parseMainlineSlot(raw: unknown): MainlineSlot {
   return idleMainlineSlot(enteredAt);
 }
 
+function parseRestartOwed(raw: unknown): MainlineRestartOwed | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const row = raw as Record<string, unknown>;
+  if (!nonEmpty(row.attemptId) || !nonEmpty(row.sha) || !SHA_RE.test(row.sha.trim())) return null;
+  return {
+    attemptId: row.attemptId.trim(),
+    sha: row.sha.trim(),
+    since: nonEmpty(row.since) ? row.since : '',
+  };
+}
+
 /** Parse the `mainline` block; null when it cannot name an environment. */
 export function parseAutopilotMainlineConfig(raw: unknown): AutopilotMainlineConfig | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -321,22 +346,39 @@ export function parseAutopilotMainlineConfig(raw: unknown): AutopilotMainlineCon
   const deployEnvironment = nonEmpty(row.deployEnvironment) ? row.deployEnvironment.trim() : '';
   if (!deployEnvironment) return null;
   const count = typeof row.landedCount === 'number' ? row.landedCount : NaN;
+  const restartOwed = parseRestartOwed(row.restartOwed);
   return {
     deployEnvironment,
     slot: parseMainlineSlot(row.slot),
     landedCount: Number.isFinite(count) && count > 0 ? Math.floor(count) : 0,
+    ...(restartOwed ? { restartOwed } : {}),
   };
 }
 
-/** Next mainline block after a slot transition; counts each confirmed landing once. */
+/**
+ * Next mainline block after a slot transition. Counts each confirmed landing
+ * once, records an owed Finalize restart when the remote answers absent
+ * (`uncertain` → `idle`), and drops that debt once a new push begins.
+ */
 export function withMainlineSlot(
   mainline: AutopilotMainlineConfig,
   next: MainlineSlot,
 ): AutopilotMainlineConfig {
-  const landedNow = next.phase === 'landed' && mainline.slot.phase !== 'landed';
-  return {
+  const prev = mainline.slot;
+  const landedNow = next.phase === 'landed' && prev.phase !== 'landed';
+  const out: AutopilotMainlineConfig = {
     ...mainline,
     slot: next,
     landedCount: mainline.landedCount + (landedNow ? 1 : 0),
   };
+  if (prev.phase === 'uncertain' && next.phase === 'idle' && prev.attemptId && prev.sha) {
+    out.restartOwed = {
+      attemptId: prev.attemptId,
+      sha: prev.sha,
+      since: next.enteredAt ?? '',
+    };
+  } else if (next.phase === 'pushing' && mainline.restartOwed) {
+    out.restartOwed = null;
+  }
+  return out;
 }

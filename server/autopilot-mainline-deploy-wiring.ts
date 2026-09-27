@@ -3,7 +3,9 @@
  * ownership check push/merge deploy triggers use to stay off an environment a
  * mainline session deploys.
  */
-import type { AppConfig, BroadcastFn, Project, Stmts } from './types.js';
+import { existsSync } from 'fs';
+import path from 'path';
+import type { AppConfig, BroadcastFn, Project, SessionRow, Stmts } from './types.js';
 import { getDb } from './db.js';
 import {
   createMainlineDeployWatcher,
@@ -21,6 +23,18 @@ import { buildDeployOrchestratorDeps } from './deploy/deploy-trigger-hook.js';
 import { prepareDeploymentCheckout, readDeployYamlAtCommit } from './deploy/deployment-checkout.js';
 import { getDeployment, listDeploymentsByLandingKey } from './deploy/deployment-store.js';
 import { isEnvironmentDeployable } from './deploy/deployment-env-config-store.js';
+import {
+  createMainlineReconciler,
+  type MainlineReconcilerDeps,
+} from './autopilot-mainline-reconciler.js';
+import {
+  checkCommitOnRemoteBranch,
+  type RemoteCheckSource,
+  type RemoteCommitAnswer,
+} from './autopilot-mainline-remote-check.js';
+import { assertMainlineOrigin, isMainlinePushLive } from './finalize/push-to-default-branch.js';
+import { resolveMainlineGitEnv } from './finalize/push-run.js';
+import { gitHostRepoPath } from './git-host/repo-store.js';
 
 type FindAgent = (agentId: string) => { project?: Project | null } | null | undefined;
 
@@ -54,6 +68,32 @@ export function mainlineSessionOwnsEnvironment(
   }
 }
 
+/**
+ * Where to read the remote's default branch for a session:
+ * - Hub-hosted: the hosted bare repo is the remote, so read its ref directly.
+ * - Otherwise: fetch through the session worktree, whose origin was checked
+ *   by the same guard the push uses. Without a worktree there is nothing
+ *   verified to fetch through, and the answer stays unknown.
+ */
+export async function resolveRemoteCheckSource(args: {
+  session: Pick<SessionRow, 'id' | 'worktree_path'>;
+  project: Project;
+  config: AppConfig;
+}): Promise<RemoteCheckSource> {
+  const { session, project, config } = args;
+  if (project.gitHost === 'agenthub') {
+    const hosted = gitHostRepoPath(project.id);
+    if (existsSync(path.join(hosted, 'HEAD'))) return { kind: 'local', repoPath: hosted };
+  }
+  const worktree = session.worktree_path;
+  if (!worktree || !existsSync(worktree)) {
+    throw new Error('the session worktree is gone, so the remote cannot be fetched');
+  }
+  const env = await resolveMainlineGitEnv(config, project, session.id);
+  await assertMainlineOrigin({ project, worktreePath: worktree, env });
+  return { kind: 'fetch', repoPath: worktree, env };
+}
+
 export function initMainlineDeployWatcher(args: {
   stmts: Stmts;
   broadcast: BroadcastFn;
@@ -61,8 +101,26 @@ export function initMainlineDeployWatcher(args: {
   findProject: (id: string) => Project | null | undefined;
   findAgent: FindAgent;
   orgId: () => string;
+  /** Start Finalize again after the reconciler found a push absent. */
+  restartFinalize: MainlineReconcilerDeps['restartFinalize'];
 }): MainlineDeployWatcher {
   const { stmts, broadcast, config, findProject, findAgent } = args;
+  const postNotice = (sessionId: string, content: string) =>
+    postAutopilotSystemNotice({ stmts, broadcast }, sessionId, content);
+  const reconciler = createMainlineReconciler({
+    stmts,
+    isPushLive: isMainlinePushLive,
+    checkRemote: async ({ session, sha, branch }): Promise<RemoteCommitAnswer> => {
+      const project = findAgent(session.agent_id)?.project ?? null;
+      if (!project) return { kind: 'unknown', detail: 'project not found for this session' };
+      const row = stmts.getSession.get(session.id) as SessionRow | undefined;
+      if (!row) return { kind: 'unknown', detail: 'session row not found' };
+      const source = await resolveRemoteCheckSource({ session: row, project, config });
+      return checkCommitOnRemoteBranch({ source, sha, branch });
+    },
+    restartFinalize: args.restartFinalize,
+    postNotice,
+  });
   const prepareCheckout = ({ project, ref }: { project: Project; ref: string }) =>
     prepareDeploymentCheckout({ project, ref });
   const watcher = createMainlineDeployWatcher({
@@ -85,8 +143,8 @@ export function initMainlineDeployWatcher(args: {
       ),
     listDeploymentsByLandingKey,
     getDeployment,
-    postNotice: (sessionId, content) =>
-      postAutopilotSystemNotice({ stmts, broadcast }, sessionId, content),
+    postNotice,
+    reconcile: (session) => reconciler.reconcile(session),
   });
   setMainlineSlotLandedListener(() => watcher.kick());
   watcher.start();

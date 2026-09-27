@@ -102,6 +102,14 @@ export const SessionComponent = registerComponent(
             .object({
               deployEnvironment: z.string(),
               landedCount: z.number().int(),
+              restartOwed: z
+                .object({ attemptId: z.string(), sha: z.string(), since: z.string() })
+                .nullable()
+                .optional()
+                .openapi({
+                  description:
+                    'Set when the remote confirmed an uncertain push never landed; Finalize owes a fresh run until one is accepted.',
+                }),
               slot: z.object({
                 phase: z.enum(['idle', 'pushing', 'uncertain', 'landed', 'deploying', 'reporting']),
                 attemptId: z.string().nullable(),

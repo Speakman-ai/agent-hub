@@ -398,15 +398,16 @@ export function resolveMainlinePushTarget(session: SessionRow): MainlinePushTarg
   return { defaultBranch: cfg.branch, slot: cfg.mainline.slot };
 }
 
-async function resolveMainlinePushEnv(
-  deps: RouteDeps,
-  project: Project,
+/** Git env for talking to a mainline session's remote (push or reconcile fetch). */
+export async function resolveMainlineGitEnv(
+  config: RouteDeps['config'],
+  project: Pick<Project, 'gitHost' | 'githubRepo'>,
   sessionId: string,
 ): Promise<NodeJS.ProcessEnv> {
   if (project.gitHost === 'agenthub') return process.env;
   const token =
-    (await resolveAutoGitGithubToken(sessionId, deps.config)) ??
-    (await resolveOrgOwnerGithubToken(deps.config, project.githubRepo ?? null));
+    (await resolveAutoGitGithubToken(sessionId, config)) ??
+    (await resolveOrgOwnerGithubToken(config, project.githubRepo ?? null));
   return autoGitChildEnv(token);
 }
 
@@ -481,7 +482,7 @@ async function executeMainlinePush(args: {
 
   let env: NodeJS.ProcessEnv;
   try {
-    env = args.seams?.env ?? (await resolveMainlinePushEnv(deps, project, session.id));
+    env = args.seams?.env ?? (await resolveMainlineGitEnv(deps.config, project, session.id));
   } catch (err) {
     env = process.env;
     console.warn(

@@ -315,6 +315,7 @@ import { setMainlineSlotFreedListener } from './session-autopilot-slot.js';
 import {
   maybeAutoPushReadyFinalizeRun,
   maybeAutoMergeAfterChecks,
+  restartFinalizeAfterMainlineAbsent,
   retryParkedPushAfterSlotFreed,
   setFinalizeAutomationRouteDeps,
 } from './finalize/automation-runner.js';
@@ -2299,6 +2300,7 @@ initMainlineDeployWatcher({
   findProject,
   findAgent,
   orgId: getActiveOrgId,
+  restartFinalize: restartFinalizeAfterMainlineAbsent,
 });
 
 attachDefaultPreviewProxyUpgrade(

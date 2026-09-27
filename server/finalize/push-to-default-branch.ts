@@ -187,6 +187,20 @@ export const assertMainlineOrigin: MainlineOriginGuard = async ({ project, workt
   }
 };
 
+/**
+ * Pushes in flight in this process, keyed `sessionId:attemptId`. A stored
+ * `pushing` slot whose attempt is not here has no push that can still report
+ * (a restart, or a write that was lost), so the reconciler moves it to
+ * `uncertain`. Registered before the intent is written and removed only after
+ * the outcome write, so a sweep never sees `pushing` for a live attempt that
+ * is missing from this set.
+ */
+const livePushes = new Set<string>();
+
+export function isMainlinePushLive(sessionId: string, attemptId: string): boolean {
+  return livePushes.has(`${sessionId}:${attemptId}`);
+}
+
 export type MainlinePushRefusal =
   | 'not_mainline'
   | 'slot_busy'
@@ -232,7 +246,7 @@ export async function pushValidatedCommitToDefaultBranch(args: {
   mintAttemptId?: () => string;
   log?: (message: string) => void;
 }): Promise<MainlinePushResult> {
-  const { stmts, sessionId, project, worktreePath, sha, defaultBranch, env } = args;
+  const { stmts, sessionId, project, worktreePath, env } = args;
   const git = args.git ?? runGitCapturingOutput;
   const guardOrigin = args.guardOrigin ?? assertMainlineOrigin;
   const log = args.log ?? ((m: string) => console.warn(m));
@@ -267,6 +281,27 @@ export async function pushValidatedCommitToDefaultBranch(args: {
   }
 
   const attemptId = (args.mintAttemptId ?? uuidv4)();
+  const liveKey = `${sessionId}:${attemptId}`;
+  livePushes.add(liveKey);
+  try {
+    return await pushWithIntent({ ...args, git, log, attemptId });
+  } finally {
+    livePushes.delete(liveKey);
+  }
+}
+
+async function pushWithIntent(args: {
+  stmts: AutopilotRowStmts;
+  sessionId: string;
+  worktreePath: string;
+  sha: string;
+  defaultBranch: string;
+  env: NodeJS.ProcessEnv | undefined;
+  git: DefaultBranchGitRunner;
+  log: (message: string) => void;
+  attemptId: string;
+}): Promise<MainlinePushResult> {
+  const { stmts, sessionId, worktreePath, sha, defaultBranch, env, git, log, attemptId } = args;
   const begin = transitionMainlineSlot({
     stmts,
     sessionId,

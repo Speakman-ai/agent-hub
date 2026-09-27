@@ -41,6 +41,7 @@ import { sessionWorktreeIoFor } from '../session-worktree-io.js';
 import { resolveFinalizeGateBase } from './resolve-base-branch.js';
 import { flakeGateBlocksAutoPush, parseFlakeGate } from './flake-recovery.js';
 import { sessionBlocksFinalize } from '../project-mode-guards.js';
+import { isAutopilotModeActive } from '../session-mode.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -315,6 +316,22 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
 }
 
 /**
+ * What an auto-push attempt did:
+ * - `pushed`: the push went through (and any auto-merge ran).
+ * - `push_failed`: the push ran and failed; `stillParked` says whether the
+ *   run is back at ready_to_push (e.g. a busy landing slot) or finished.
+ * - `deferred`: a transient gate (landing lock, turn error, context, run not
+ *   parked right now); nothing was pushed and a later pass may succeed.
+ * - `blocked`: a standing gate that only a human can clear (automation
+ *   level, expiry, flake gate, post-push lock, non-shipping session).
+ */
+export type AutoPushReadyOutcome =
+  | { kind: 'pushed' }
+  | { kind: 'push_failed'; error: string; stillParked: boolean }
+  | { kind: 'deferred'; reason: string }
+  | { kind: 'blocked'; reason: string };
+
+/**
  * When a run parks at ready_to_push, auto-push (and optionally auto-merge)
  * if the session automation level allows it.
  */
@@ -322,25 +339,55 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
   sessionId: string;
   runId: string;
 }): Promise<void> {
-  if (!routeDeps) return;
-  if (sessionPostFinalizePushBlocksAutomation(args.sessionId, 'auto-push')) return;
-  const ctx = await loadSessionContext(args.sessionId);
-  if (!ctx) return;
-  if (sessionBlocksFinalize(ctx.project, ctx.session)) return;
+  await autoPushReadyFinalizeRun(args);
+}
+
+function runIsParked(runId: string): boolean {
+  const run = routeDeps?.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+  return run?.status === 'ready_to_push';
+}
+
+/** {@link maybeAutoPushReadyFinalizeRun}, reporting what happened. Never throws. */
+export async function autoPushReadyFinalizeRun(args: {
+  sessionId: string;
+  runId: string;
+}): Promise<AutoPushReadyOutcome> {
+  if (!routeDeps) return { kind: 'deferred', reason: 'Finalize automation is not ready yet' };
+  if (sessionPostFinalizePushBlocksAutomation(args.sessionId, 'auto-push')) {
+    return { kind: 'blocked', reason: 'the session already shipped' };
+  }
+  let ctx: Awaited<ReturnType<typeof loadSessionContext>>;
+  try {
+    ctx = await loadSessionContext(args.sessionId);
+  } catch (err) {
+    return { kind: 'deferred', reason: `could not load the session: ${errText(err)}` };
+  }
+  if (!ctx) return { kind: 'deferred', reason: 'could not load the session context' };
+  if (sessionBlocksFinalize(ctx.project, ctx.session)) {
+    return { kind: 'blocked', reason: 'this session does not ship through Finalize' };
+  }
 
   // Autopilot deadline gate — a run parked at ready_to_push must not auto-push
   // once the session's time is up (or it already stopped).
-  if (enforceAutopilotExpiry({ deps: routeDeps, session: ctx.session }).blocked) return;
+  if (enforceAutopilotExpiry({ deps: routeDeps, session: ctx.session }).blocked) {
+    return { kind: 'blocked', reason: 'Autopilot has stopped or its time is up' };
+  }
 
   // Same fail-closed gate as auto-start: a ready_to_push run parked before
   // the errored turn must not auto-push/auto-merge over it.
-  if (sessionTurnErrorBlocksAutomation(ctx.session, args.sessionId, 'auto-push')) return;
+  if (sessionTurnErrorBlocksAutomation(ctx.session, args.sessionId, 'auto-push')) {
+    return { kind: 'deferred', reason: 'the last turn ended in an engine error' };
+  }
 
   const level = resolveSessionFinalizeAutomation(ctx.session);
-  if (!shouldAutoPushAfterReady(level)) return;
+  if (!shouldAutoPushAfterReady(level)) {
+    return { kind: 'blocked', reason: 'the parked run waits for a manual push' };
+  }
 
   const run = routeDeps.stmts.getFinalizeRun.get(args.runId) as FinalizeRunRow | undefined;
-  if (!run || run.status !== 'ready_to_push') return;
+  if (!run || run.status !== 'ready_to_push') {
+    return { kind: 'deferred', reason: `run ${args.runId} is not parked at ready_to_push` };
+  }
 
   // Flake-recovery gate (fail-closed): block auto-push/auto-merge unless the
   // run's flake gate is proven `clean`. A `flake_recovered` run laundered an
@@ -355,7 +402,7 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
         (gate.reason ? ` (${gate.reason})` : '') +
         ` requires explicit human acknowledgement (manual push)`,
     );
-    return;
+    return { kind: 'blocked', reason: `flake gate ${gate.status} needs a manual push` };
   }
 
   // Hold the (project, base) landing lock across push AND merge. Under
@@ -363,17 +410,23 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
   // released at push time would let a second run evaluate base drift against
   // a base this run is about to change. `runFinalizePush` takes the same lock
   // by the same run id, which is re-entrant and releases nothing.
-  const lockBaseBranch = await resolveFinalizeBaseBranchForCard({
-    card: ctx.card,
-    worktreePath: ctx.session.worktree_path ?? '',
-    getEpic: (epicId) => routeDeps!.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
-  });
-  const lock = await acquirePushLock({
-    stmts: routeDeps.stmts as PushLockStmts,
-    projectId: ctx.project.id,
-    baseBranch: lockBaseBranch,
-    holderRunId: run.id,
-  });
+  let lock: Awaited<ReturnType<typeof acquirePushLock>>;
+  let lockBaseBranch: string;
+  try {
+    lockBaseBranch = await resolveFinalizeBaseBranchForCard({
+      card: ctx.card,
+      worktreePath: ctx.session.worktree_path ?? '',
+      getEpic: (epicId) => routeDeps!.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
+    });
+    lock = await acquirePushLock({
+      stmts: routeDeps.stmts as PushLockStmts,
+      projectId: ctx.project.id,
+      baseBranch: lockBaseBranch,
+      holderRunId: run.id,
+    });
+  } catch (err) {
+    return { kind: 'deferred', reason: `could not take the landing lock: ${errText(err)}` };
+  }
   if (!lock.ok) {
     // Non-terminal: the run stays ready_to_push, so the next automation pass
     // or a human push picks it up once the current holder lands.
@@ -381,31 +434,45 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
       `[finalize-automation] Auto-push deferred session=${args.sessionId} run=${args.runId}: ` +
         `landing lock for ${ctx.project.id}/${lockBaseBranch} held by run=${lock.heldBy ?? 'unknown'}`,
     );
-    return;
+    return { kind: 'deferred', reason: `landing lock held by run ${lock.heldBy ?? 'unknown'}` };
   }
 
   try {
-    const outcome = await runFinalizePush({
-      deps: routeDeps,
-      project: ctx.project,
-      run,
-      card: ctx.card,
-      session: ctx.session,
-    });
+    let outcome: Awaited<ReturnType<typeof runFinalizePush>>;
+    try {
+      outcome = await runFinalizePush({
+        deps: routeDeps,
+        project: ctx.project,
+        run,
+        card: ctx.card,
+        session: ctx.session,
+      });
+    } catch (err) {
+      return { kind: 'push_failed', error: errText(err), stillParked: runIsParked(run.id) };
+    }
     if (!outcome.ok) {
       console.warn(
         `[finalize-automation] Auto-push failed session=${args.sessionId} run=${args.runId}: ${outcome.message ?? outcome.error}`,
       );
-      return;
+      return {
+        kind: 'push_failed',
+        error: outcome.error ?? outcome.message ?? 'push failed',
+        stillParked: runIsParked(run.id),
+      };
     }
     if (outcome.prUrl && shouldEnableAutoMergeForAutomation(level)) {
       // Awaited, not fire-and-forget: the merge must complete inside the lock
       // hold. `autoMergeFinalizedPr` swallows its own failures.
       await autoMergeFinalizedPr(outcome.prUrl, ctx.project, true, ctx.session.worktree_path!);
     }
+    return { kind: 'pushed' };
   } finally {
     lock.handle.release();
   }
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -420,4 +487,128 @@ export function retryParkedPushAfterSlotFreed(sessionId: string): void {
     | undefined;
   if (latest?.status !== 'ready_to_push') return;
   void maybeAutoPushReadyFinalizeRun({ sessionId, runId: latest.id });
+}
+
+export type MainlineAbsentRestartDecision = 'start' | 'push_parked' | 'in_flight' | 'cancelled';
+
+/**
+ * What an owed Finalize restart should do, given the session's latest run.
+ * A parked `ready_to_push` run already holds the validated commit and only
+ * needs pushing; an in-flight run will push on its own; a run a human
+ * cancelled stays cancelled. Anything else (the failed uncertain run, an
+ * `infra_error` from a restart, an older pushed run, no run) starts fresh.
+ */
+export function decideMainlineAbsentRestart(
+  latest: Pick<FinalizeRunRow, 'status'> | undefined,
+): MainlineAbsentRestartDecision {
+  if (!latest) return 'start';
+  if (latest.status === 'ready_to_push') return 'push_parked';
+  if (latest.status === 'cancelled') return 'cancelled';
+  if (!FINALIZE_TERMINAL_STATUSES.has(latest.status)) return 'in_flight';
+  return 'start';
+}
+
+const FINALIZE_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
+  'pushed',
+  'failed',
+  'timed_out',
+  'infra_error',
+  'cancelled',
+  'stalled_no_response',
+]);
+
+/**
+ * An owed restart that found a parked run is settled by what the push did,
+ * not by having asked for it. Only a push that went through is `accepted`;
+ * a run still parked afterwards, or a transient gate, is `retry`; a standing
+ * gate or a run that pushed and finished failed is `dropped` (the failed run
+ * carries its own outcome, and a push that went uncertain is reconciled
+ * again as a new attempt).
+ */
+export function restartResultFromAutoPush(
+  runId: string,
+  out: AutoPushReadyOutcome,
+): MainlineRestartOutcome {
+  switch (out.kind) {
+    case 'pushed':
+      return { kind: 'accepted', detail: `parked run ${runId} pushed` };
+    case 'push_failed':
+      return out.stillParked
+        ? { kind: 'retry', detail: `push of parked run ${runId} failed: ${out.error}` }
+        : { kind: 'dropped', detail: `the push of run ${runId} failed (${out.error})` };
+    case 'deferred':
+      return { kind: 'retry', detail: `push of parked run ${runId} deferred: ${out.reason}` };
+    case 'blocked':
+      return { kind: 'dropped', detail: out.reason };
+  }
+}
+
+export type MainlineRestartOutcome =
+  | { kind: 'accepted'; detail: string }
+  | { kind: 'dropped'; detail: string }
+  | { kind: 'retry'; detail: string };
+
+/**
+ * The reconciler confirmed a mainline push never reached the default branch
+ * and freed the slot: validate and push the commit again with a fresh run.
+ * The caller keeps the restart owed (and asks again after a backoff) until
+ * this returns `accepted` or `dropped`. `ui_button` makes the kickoff open a
+ * new attempt instead of de-duping onto the finished run for the same head
+ * (same as boot re-trigger).
+ */
+export async function restartFinalizeAfterMainlineAbsent(
+  sessionId: string,
+): Promise<MainlineRestartOutcome> {
+  if (!routeDeps) return { kind: 'retry', detail: 'Finalize automation is not ready yet' };
+  const row = routeDeps.stmts.getSession.get(sessionId) as SessionRow | undefined;
+  if (!row) return { kind: 'dropped', detail: 'the session no longer exists' };
+  if (!row.worktree_path) return { kind: 'dropped', detail: 'the session has no worktree' };
+  if (!isAutopilotModeActive(row)) {
+    return { kind: 'dropped', detail: 'the session is no longer in Autopilot mode' };
+  }
+  const latest = routeDeps.stmts.getLatestFinalizeRunForSession.get(sessionId) as
+    | FinalizeRunRow
+    | undefined;
+  const decision = decideMainlineAbsentRestart(latest);
+  if (decision === 'in_flight')
+    return { kind: 'accepted', detail: `run ${latest!.id} is in flight` };
+  if (decision === 'cancelled') {
+    return { kind: 'dropped', detail: 'the latest Finalize run was cancelled' };
+  }
+  const ctx = await loadSessionContext(sessionId);
+  if (!ctx) return { kind: 'retry', detail: 'could not load the session context' };
+  if (sessionBlocksFinalize(ctx.project, ctx.session)) {
+    return { kind: 'dropped', detail: 'this session does not ship through Finalize' };
+  }
+  if (enforceAutopilotExpiry({ deps: routeDeps, session: ctx.session }).blocked) {
+    return { kind: 'dropped', detail: 'Autopilot has stopped or its time is up' };
+  }
+  const level = resolveSessionFinalizeAutomation(ctx.session);
+  if (!shouldAutoStartFinalize(level)) {
+    return { kind: 'dropped', detail: 'Finalize automation is manual for this session' };
+  }
+  if (decision === 'push_parked') {
+    return restartResultFromAutoPush(
+      latest!.id,
+      await autoPushReadyFinalizeRun({ sessionId, runId: latest!.id }),
+    );
+  }
+  const started = await startFinalizeRunBackground(routeDeps, {
+    project: ctx.project,
+    card: ctx.card,
+    session: ctx.session,
+    triggerSource: 'ui_button',
+    triggeredByUserId: 'automation',
+  });
+  if (started.ok) return { kind: 'accepted', detail: `run ${started.runId} started` };
+  if (started.error === 'ready_to_push' && started.runId) {
+    return restartResultFromAutoPush(
+      started.runId,
+      await autoPushReadyFinalizeRun({ sessionId, runId: started.runId }),
+    );
+  }
+  return {
+    kind: 'retry',
+    detail: `Finalize did not start: ${started.error}${started.message ? ` (${started.message})` : ''}`,
+  };
 }

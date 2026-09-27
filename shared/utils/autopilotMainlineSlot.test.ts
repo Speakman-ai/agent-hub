@@ -231,6 +231,27 @@ describe('parseAutopilotMainlineConfig / withMainlineSlot', () => {
     expect(withMainlineSlot(landed, slotIn('deploying')).landedCount).toBe(3);
   });
 
+  it('records an owed restart on uncertain → idle, keeps it, and drops it on the next push', () => {
+    const cfg = { deployEnvironment: 'prod', slot: slotIn('uncertain'), landedCount: 0 };
+    const freed = withMainlineSlot(cfg, idleMainlineSlot(NOW));
+    expect(freed.restartOwed).toEqual({ attemptId: 'att-1', sha: SHA, since: NOW });
+    // Round-trips through the stored JSON.
+    expect(parseAutopilotMainlineConfig(JSON.parse(JSON.stringify(freed)))?.restartOwed).toEqual(
+      freed.restartOwed,
+    );
+    const pushing = withMainlineSlot(freed, { ...slotIn('pushing'), attemptId: 'att-2' });
+    expect(pushing.restartOwed).toBeNull();
+    // Other ways back to idle owe nothing.
+    const rejected = withMainlineSlot(
+      { deployEnvironment: 'prod', slot: slotIn('pushing'), landedCount: 0 },
+      idleMainlineSlot(NOW),
+    );
+    expect(rejected.restartOwed).toBeUndefined();
+    expect(
+      parseAutopilotMainlineConfig({ deployEnvironment: 'prod', restartOwed: { sha: 'x' } }),
+    ).not.toHaveProperty('restartOwed');
+  });
+
   it('builds the landing key from session and attempt', () => {
     expect(mainlineLandingKey('s1', 'att-1')).toBe('s1:att-1');
   });

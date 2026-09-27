@@ -184,6 +184,26 @@ export function transitionMainlineSlot(args: {
   };
 }
 
+/**
+ * Clear the owed Finalize restart for `attemptId`, and only that one. Returns
+ * whether it wrote; a restart owed for another attempt is left alone.
+ */
+export function clearMainlineRestartOwed(args: {
+  stmts: AutopilotRowStmts;
+  sessionId: string;
+  attemptId: string;
+}): boolean {
+  const { stmts, sessionId, attemptId } = args;
+  const res = casAutopilotConfig<true>(stmts, sessionId, (current) => {
+    const mainline = current.target === 'mainline' ? current.mainline : null;
+    if (!mainline?.restartOwed || mainline.restartOwed.attemptId !== attemptId) {
+      return { skip: true };
+    }
+    return { write: { ...current, mainline: { ...mainline, restartOwed: null } }, result: true };
+  });
+  return res.wrote;
+}
+
 /** Statuses that end a run. `running` is only ever entered by starting. */
 export type AutopilotStopStatus = Exclude<AutopilotStatus, 'running' | 'configuring'>;
 

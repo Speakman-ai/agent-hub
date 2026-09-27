@@ -2481,6 +2481,21 @@ components:
                   type: string
                 landedCount:
                   type: integer
+                restartOwed:
+                  type: object
+                  nullable: true
+                  properties:
+                    attemptId:
+                      type: string
+                    sha:
+                      type: string
+                    since:
+                      type: string
+                  required:
+                    - attemptId
+                    - sha
+                    - since
+                  description: Set when the remote confirmed an uncertain push never landed; Finalize owes a fresh run until one is accepted.
                 slot:
                   type: object
                   properties:
