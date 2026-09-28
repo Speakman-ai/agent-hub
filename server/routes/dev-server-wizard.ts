@@ -19,6 +19,9 @@
  *
  *   POST /api/projects/:projectId/dev-server/wizard-complete
  *     User+. Broadcasts `dev_server_wizard_complete` for the Settings panel.
+ *     When called for a `[Dev Server Setup]` session (body `sessionId` or the
+ *     `X-Agent-Hub-Session-Id` header), returns 409 `preview_not_ready` unless
+ *     that session's preview is `ready`.
  */
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
@@ -31,6 +34,7 @@ import { applyWizardSecrets, validateWizardSecrets } from '../wizard-secrets-app
 import type { PreviewSetupApplySecrets } from '../preview-setup-apply.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, Project, SessionRow } from '../types.js';
+import type { PreviewRuntimeActiveLookup } from '../preview/preview-runtime-lookup.js';
 
 interface DevServerApplyBody {
   /** The authored `prEnv.devServer` block (validated by parseDevServerConfig). */
@@ -48,6 +52,51 @@ function pickWizardAgent(project: Project): string | null {
 
 export function isDevServerSetupWizardSession(session: { name?: string | null }): boolean {
   return typeof session.name === 'string' && session.name.startsWith('[Dev Server Setup]');
+}
+
+export type WizardPreviewGate = { ok: true } | { ok: false; status: string; message: string };
+
+/**
+ * The wizard may only finish once the session's preview actually booted and
+ * passed its health probe. Anything short of `ready` (never started, still
+ * starting, failed, runtime not wired) keeps the wizard open so the agent
+ * goes back to fixing the config or the repo.
+ */
+export function checkWizardPreviewReady(
+  runtime: PreviewRuntimeActiveLookup | null | undefined,
+  sessionId: string,
+): WizardPreviewGate {
+  if (!runtime) {
+    return {
+      ok: false,
+      status: 'unavailable',
+      message:
+        'The preview runtime is not available on this server, so the dev server cannot be verified.',
+    };
+  }
+  const row = runtime.getActiveBySessionId(sessionId);
+  if (!row) {
+    return {
+      ok: false,
+      status: 'not_started',
+      message:
+        'No preview is running for this session. Boot it with {"tool":"preview","op":"start"} and wait for status ready.',
+    };
+  }
+  if (row.status === 'ready') return { ok: true };
+  if (row.status === 'starting') {
+    return {
+      ok: false,
+      status: 'starting',
+      message:
+        'The preview is still starting. Poll {"tool":"preview","op":"state"} until it is ready, then call wizard-complete again.',
+    };
+  }
+  return {
+    ok: false,
+    status: row.status,
+    message: `The preview is ${row.status}. Read {"tool":"preview","op":"logs"}, fix the cause, restart it with {"tool":"preview","op":"start"}, and retry once it is ready.`,
+  };
 }
 
 export function buildDevServerKickoffPrompt(
@@ -110,10 +159,12 @@ export function buildDevServerKickoffPrompt(
     '7. **Persist** — `POST $AGENT_HUB_URL/api/projects/' +
       projectId +
       '/dev-server/setup-apply` with `{ "devServer": { … }, "secrets": { "env": "<dotenv lines for secret values>" } }`. `devServer.env` holds non-secret values; `devServer.secretKeys` lists secret NAMES only; the plaintext secret values go in `secrets.env` as `KEY=value` dotenv lines (stored encrypted, never in the config). On HTTP 400 fix the reported `prEnv.devServer.<path>` error and retry.',
-    '8. **Verify (optional)** — Tell the user they can click **Start preview** on this session to boot the dev server and confirm it comes up on the mapped port. Preview is gated **solely** by a configured `devServer.startCommand` — once setup-apply succeeds it is ready to start. The legacy `prEnv.enabled` flag is a **no-op** left over from the removed PR-environments subsystem; it does not gate the dev-server preview, there is no toggle to flip, and `enabled: false` in the project config is **not** a blocker — never report it as one.',
-    '9. **`POST $AGENT_HUB_URL/api/projects/' +
+    '8. **Verify (required — do not skip)** — The wizard is not done until the preview actually comes up. Boot it yourself with a naked `<agenthub:react>{"actions":[{"tool":"preview","op":"start"}]}</agenthub:react>` block (first boot can take minutes), then poll `{"tool":"preview","op":"state"}` / `{"tool":"preview","op":"logs"}` until the status is **ready** or **failed**. When ready, take `{"tool":"preview","op":"screenshot"}` and confirm the app actually rendered (not a blank page, error overlay, 400/403 host rejection, or a page whose API calls all fail). If it failed or rendered broken: read the logs, find the cause, fix it (re-POST `setup-apply` for config fixes, edit + commit the repo for code fixes such as bind address, allowed hosts, or loopback API URLs), and start it again. `op:"start"` re-boots a failed preview; if a ready preview needs a restart to pick up a config change, ask the human to press **Restart**. Repeat until it is ready and renders. Preview is gated **solely** by a configured `devServer.startCommand`. The legacy `prEnv.enabled` flag is a **no-op** left over from the removed PR-environments subsystem; it does not gate the dev-server preview, there is no toggle to flip, and `enabled: false` in the project config is **not** a blocker — never report it as one. Only stop and hand back to the user when a fix needs something you cannot supply (a secret value, a paid service, a host-level change); say exactly what is missing and do not call wizard-complete.',
+    '9. **Complete** — `POST $AGENT_HUB_URL/api/projects/' +
       projectId +
-      '/dev-server/wizard-complete`** then `<agenthub:close-card>`.',
+      '/dev-server/wizard-complete` with body `{"sessionId":"' +
+      sessionId +
+      '"}`. The server returns **409 `preview_not_ready`** unless this session\'s preview is ready; if you get it, go back to step 8. Only after a 200, end with `<agenthub:close-card>`.',
     '',
     '**Ask JSON must use `question` + `header` + `options[].label` + `options[].description`** — not `prompt`, `id`, or `type` (those render as raw code).',
     '',
@@ -281,6 +332,30 @@ export default function createDevServerWizardRoutes(deps: RouteDeps): Router {
     requireRole('User'),
     (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
+      const body = (req.body ?? {}) as { sessionId?: unknown };
+      const headerSession = req.get('x-agent-hub-session-id');
+      const sessionId =
+        typeof body.sessionId === 'string' && body.sessionId
+          ? body.sessionId
+          : headerSession || null;
+      if (sessionId) {
+        const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        if (session && isDevServerSetupWizardSession(session)) {
+          const runtime = deps.getDevServerRuntime?.() as
+            | PreviewRuntimeActiveLookup
+            | null
+            | undefined;
+          const gate = checkWizardPreviewReady(runtime, sessionId);
+          if (!gate.ok) {
+            res.status(409).json({
+              error: 'preview_not_ready',
+              previewStatus: gate.status,
+              message: gate.message,
+            });
+            return;
+          }
+        }
+      }
       if (project) {
         broadcast({
           type: 'dev_server_wizard_complete',

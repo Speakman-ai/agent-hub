@@ -81,6 +81,15 @@ describe('dev-server-setup skill — remote-browser reachability', () => {
     expect(skill).toMatch(/does \*\*not\*\* block|not a blocker|never report/i);
   });
 
+  it('makes preview verification mandatory before wizard-complete', () => {
+    const skill = readSkill();
+    expect(skill).toContain('## Verify (required)');
+    expect(skill).toContain('{"tool":"preview","op":"start"}');
+    expect(skill).toMatch(/Repeat until it is `ready`/);
+    expect(skill).toContain('preview_not_ready');
+    expect(skill).toContain('$AGENT_HUB_SESSION_ID');
+  });
+
   it('declares a version above the config-only 1.0.0', () => {
     const version = /^version:\s*(\S+)/m.exec(readSkill())?.[1];
     expect(version).toBeDefined();

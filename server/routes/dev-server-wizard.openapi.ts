@@ -196,9 +196,32 @@ registerPath({
   tags: ['Dev Server'],
   summary: 'Signal Dev Server wizard completion',
   description:
-    'User+. Broadcasts `dev_server_wizard_complete` so the Settings panel refetches the project record after the wizard persists config.',
-  request: { params: ProjectIdParam },
+    "User+. Broadcasts `dev_server_wizard_complete` so the Settings panel refetches the project record after the wizard persists config. When `sessionId` (body) or `X-Agent-Hub-Session-Id` names a `[Dev Server Setup]` session, completion is refused with 409 until that session's preview is `ready`.",
+  request: {
+    params: ProjectIdParam,
+    body: {
+      required: false,
+      content: jsonContent(
+        z.object({
+          sessionId: z
+            .string()
+            .optional()
+            .openapi({ description: 'Wizard session whose preview must be ready.' }),
+        }),
+      ),
+    },
+  },
   responses: {
     200: { description: 'Completion broadcast (idempotent).', content: jsonContent(OkResponse) },
+    409: {
+      description: "The wizard session's preview is not ready (not started, starting, or failed).",
+      content: jsonContent(
+        z.object({
+          error: z.literal('preview_not_ready'),
+          previewStatus: z.string(),
+          message: z.string(),
+        }),
+      ),
+    },
   },
 });

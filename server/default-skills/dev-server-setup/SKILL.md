@@ -10,7 +10,7 @@ description: >-
   dev-server/setup-apply. Also checks the app itself is reachable from a remote
   browser (bind address, host allowlist, API base URL, trusted origins). The
   config lives in projects.json; only the reachability fixes touch the repo.
-version: 1.2.0
+version: 1.3.0
 keep-coding-instructions: true
 ---
 
@@ -28,8 +28,8 @@ Finalize to push. The one exception is step 6: most apps assume the browser runs
 on the same machine as the server, which is false for a preview, and correcting
 that means editing the repo. Commit those edits on this session's branch.
 
-This is a worktree-backed session, which lets the user click **Start preview**
-afterward to boot the dev server and verify everything live.
+This is a worktree-backed session, so you can boot the preview yourself and
+verify the dev server comes up. Setup is not finished until it does.
 
 Preview is gated **solely** by a configured `devServer.startCommand`: once
 `setup-apply` persists one, **Start preview** works. The legacy `prEnv.enabled`
@@ -85,6 +85,7 @@ Key fields:
 5. **Env vs secrets** — scan `process.env` / `import.meta.env` usage (`Read`/`grep` the source). For each var, ask whether it is non-secret (→ `env`) or a secret (→ `secretKeys` + a value stored via `secrets.env`). Never echo secret values back.
 6. **System dependencies** — check whether the app needs native OS libraries that pip/npm can't install (a `MagickWand shared library not found` / `libGL.so` / `ImportError: lib*` crash at import is the tell). If so, add the apt package names to `aptPackages` (e.g. `imagemagick`, `libmagickwand-dev`). Tell the user these install only under the sysbox session backend; on the host backend they'll see a skip warning and must instead bake the libs into a compose image.
 7. **Reachability from a remote browser** — work the checklist below and edit the repo where it fails. Skipping this is how a preview goes green and still shows a blank page or an app whose every request fails.
+8. **Persist, then verify** — POST `setup-apply`, boot the preview, and fix until it comes up (see **Verify** below). Do not finish before that.
 
 ## Reachability from a remote browser
 
@@ -160,11 +161,43 @@ curl -s -X POST "$AGENT_HUB_URL/api/projects/$PROJECT_ID/dev-server/setup-apply"
 - On HTTP **400** the body is `{ "error": "prEnv.devServer.<path>: <message>" }`
   — fix that field and retry.
 
+## Verify (required)
+
+Saving the config is not the end. The wizard is done only when the preview
+boots and the app renders.
+
+1. Boot it: `<agenthub:react>{"actions":[{"tool":"preview","op":"start"}]}</agenthub:react>`
+   (naked tag, not in a code fence). First boot can take several minutes.
+2. Poll `{"tool":"preview","op":"state"}` and `{"tool":"preview","op":"logs"}`
+   until the status is `ready` or `failed`.
+3. When `ready`, take `{"tool":"preview","op":"screenshot"}` and check the page
+   really rendered: no blank page, error overlay, host-rejection 400/403, or
+   API calls that all fail (reachability #2 and #3).
+4. If it failed or rendered broken, read the logs, fix the cause, and boot
+   again. Config fixes go through `setup-apply`; code fixes (bind address,
+   allowed hosts, loopback API URL, missing native deps) are repo edits you
+   commit on this branch. `op:"start"` re-boots a failed preview. A `ready`
+   preview that needs a restart to pick up a config change needs the human to
+   press **Restart**, so ask.
+5. Repeat until it is `ready` and renders.
+
+Only hand back without a working preview when the fix needs something you
+cannot provide (a secret value, an external service, a host-level change). Say
+exactly what is missing and do **not** call `wizard-complete`.
+
 ## Finish
 
-1. Tell the user they can click **Start preview** on this session to boot the dev server and confirm it comes up on the mapped port.
-2. `curl -s -X POST "$AGENT_HUB_URL/api/projects/$PROJECT_ID/dev-server/wizard-complete" -H "X-API-Key: $AGENT_HUB_API_KEY"` so Settings refetches.
-3. End with `<agenthub:close-card>`.
+1. Mark the wizard complete, passing this session's id:
+
+   ```bash
+   curl -s -X POST "$AGENT_HUB_URL/api/projects/$PROJECT_ID/dev-server/wizard-complete" \
+     -H "X-API-Key: $AGENT_HUB_API_KEY" -H 'Content-Type: application/json' \
+     -d "{\"sessionId\":\"$AGENT_HUB_SESSION_ID\"}"
+   ```
+
+   The server answers **409** `{ "error": "preview_not_ready", "previewStatus", "message" }`
+   unless this session's preview is `ready`. On 409, go back to Verify.
+2. After a 200, end with `<agenthub:close-card>`.
 
 Do **not** create a new branch and do **not** create or move any kanban card.
 

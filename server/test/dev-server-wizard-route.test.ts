@@ -20,6 +20,7 @@ import path from 'path';
 import './setup.js';
 import {
   buildDevServerKickoffPrompt,
+  checkWizardPreviewReady,
   isDevServerSetupWizardSession,
 } from '../routes/dev-server-wizard.js';
 import type { DevServerSetupDraft } from '../dev-server-setup-draft.js';
@@ -247,6 +248,20 @@ describe('buildDevServerKickoffPrompt', () => {
     expect(prompt).toMatch(/not a blocker|never report it as one/i);
   });
 
+  it('requires the agent to boot the preview and fix it until it is ready', () => {
+    // Regression: step 8 used to be "Verify (optional)" and only told the user
+    // they could click Start preview, so the wizard finished on configs that
+    // never came up.
+    const prompt = buildDevServerKickoffPrompt('proj-1', '/tmp/work', draft, 'sess-1');
+    expect(prompt).not.toMatch(/Verify \(optional\)/);
+    expect(prompt).toMatch(/Verify \(required/);
+    expect(prompt).toContain('{"tool":"preview","op":"start"}');
+    expect(prompt).toContain('{"tool":"preview","op":"screenshot"}');
+    expect(prompt).toMatch(/Repeat until it is ready/);
+    expect(prompt).toContain('{"sessionId":"sess-1"}');
+    expect(prompt).toContain('preview_not_ready');
+  });
+
   it('keeps the walkthrough steps uniquely numbered', () => {
     // The step list is hand-numbered prose, so inserting one is easy to get
     // wrong — two "6." entries would have the agent skip a step silently.
@@ -334,7 +349,62 @@ describe('POST /api/projects/:projectId/dev-server/setup-apply', () => {
   });
 });
 
+describe('checkWizardPreviewReady', () => {
+  const runtimeWith = (row: { id: string; status: string; port: number } | null) => ({
+    getActiveBySessionId: () => row,
+  });
+
+  it('passes only when the session preview is ready', () => {
+    expect(
+      checkWizardPreviewReady(runtimeWith({ id: 'g', status: 'ready', port: 1 }), 's'),
+    ).toEqual({ ok: true });
+  });
+
+  it.each([
+    ['not_started', null],
+    ['starting', { id: 'g', status: 'starting', port: 1 }],
+    ['failed', { id: 'g', status: 'failed', port: 1 }],
+  ])('blocks when the preview is %s', (status, row) => {
+    const gate = checkWizardPreviewReady(runtimeWith(row), 's');
+    expect(gate.ok).toBe(false);
+    if (!gate.ok) expect(gate.status).toBe(status);
+  });
+
+  it('blocks when no preview runtime is wired', () => {
+    const gate = checkWizardPreviewReady(null, 's');
+    expect(gate).toMatchObject({ ok: false, status: 'unavailable' });
+  });
+});
+
 describe('POST /api/projects/:projectId/dev-server/wizard-complete', () => {
+  it('409 preview_not_ready for a wizard session whose preview never came up', async () => {
+    const cwd = makeViteCwd();
+    const projectId = await makeProject(cwd);
+    await makeAgent(projectId);
+    const started = await request
+      .post(`/api/projects/${projectId}/dev-server/setup-wizard`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({})
+      .expect(201);
+    const sessionId = (started.body as { sessionId: string }).sessionId;
+
+    const res = await request
+      .post(`/api/projects/${projectId}/dev-server/wizard-complete`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .send({ sessionId })
+      .expect(409);
+    expect(res.body.error).toBe('preview_not_ready');
+    expect(typeof res.body.previewStatus).toBe('string');
+
+    // The session header path is gated the same way.
+    await request
+      .post(`/api/projects/${projectId}/dev-server/wizard-complete`)
+      .set('Authorization', `Bearer ${adminJwt}`)
+      .set('X-Agent-Hub-Session-Id', sessionId)
+      .send({})
+      .expect(409);
+  });
+
   it('returns ok (idempotent broadcast)', async () => {
     const cwd = makeViteCwd();
     const projectId = await makeProject(cwd);

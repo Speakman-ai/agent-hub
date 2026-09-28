@@ -28146,7 +28146,7 @@ paths:
       tags:
         - Dev Server
       summary: Signal Dev Server wizard completion
-      description: User+. Broadcasts `dev_server_wizard_complete` so the Settings panel refetches the project record after the wizard persists config.
+      description: User+. Broadcasts `dev_server_wizard_complete` so the Settings panel refetches the project record after the wizard persists config. When `sessionId` (body) or `X-Agent-Hub-Session-Id` names a `[Dev Server Setup]` session, completion is refused with 409 until that session's preview is `ready`.
       parameters:
         - schema:
             type: string
@@ -28155,6 +28155,16 @@ paths:
           description: Project slug.
           name: projectId
           in: path
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessionId:
+                  type: string
+                  description: Wizard session whose preview must be ready.
       responses:
         "200":
           description: Completion broadcast (idempotent).
@@ -28162,6 +28172,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DevServerWizardOkResponse"
+        "409":
+          description: The wizard session's preview is not ready (not started, starting, or failed).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    enum:
+                      - preview_not_ready
+                  previewStatus:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - error
+                  - previewStatus
+                  - message
   /api/escalations:
     get:
       tags:
