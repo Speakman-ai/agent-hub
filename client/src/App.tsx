@@ -59,6 +59,8 @@ import {
 } from './utils/sessionPreviewState';
 import { resolveSessionRightPaneFlags } from './utils/sessionRightPaneFlags';
 import FinalizeButton from './components/finalize/FinalizeButton';
+import type { DiscardResult } from './components/finalize/DiscardChangesButton';
+import { markSessionDiscarded, withoutChangesReady } from './utils/sessionDiscardState';
 import AutopilotPrCounter from './components/finalize/AutopilotPrCounter';
 import AutopilotUnstickButton from './components/finalize/AutopilotUnstickButton';
 import FinalizeAutomationSelect from './components/finalize/FinalizeAutomationSelect';
@@ -428,6 +430,10 @@ export default function App({ initialView }: any = {}) {
   const [subagents, setSubagents] = useState<Record<string, any>>({});
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState<Record<string, any>>({});
+  const applySessionDiscarded = useCallback((sessionId: string, discardedAt: string | null) => {
+    setChangesReady((prev) => withoutChangesReady(prev, sessionId));
+    setSessions((prev) => markSessionDiscarded(prev, sessionId, discardedAt));
+  }, []);
   // Latest Finalize Code Changes status per session (e.g. 'ready_to_push').
   // Seeded from the sessions list (`session.finalize_status`) and patched
   // live by the finalize_run_* WebSocket events. Drives the sidebar
@@ -2345,19 +2351,7 @@ export default function App({ initialView }: any = {}) {
         }
         case 'changes_discarded': {
           // Worktree changes were thrown away — the session no longer needs shipping.
-          setChangesReady((prev: any) => {
-            if (!prev[data.sessionId]) return prev;
-            const next = { ...prev };
-            delete next[data.sessionId];
-            return next;
-          });
-          setSessions((prev: any) =>
-            prev.map((s: any) =>
-              s.id === data.sessionId
-                ? { ...s, changes_ready: null, discarded_at: data.discardedAt ?? null }
-                : s,
-            ),
-          );
+          applySessionDiscarded(data.sessionId, data.discardedAt ?? null);
           break;
         }
         case 'auto_pr_created': {
@@ -7939,6 +7933,14 @@ export default function App({ initialView }: any = {}) {
                                       isResolveSession={isResolvePrSessionTitle(
                                         activeSession?.name,
                                       )}
+                                      onDiscarded={
+                                        isResolvePrSessionTitle(activeSession?.name)
+                                          ? undefined
+                                          : ({ sessionId, discardedAt }: DiscardResult) => {
+                                              applySessionDiscarded(sessionId, discardedAt);
+                                              showToast('Session changes discarded', 'success');
+                                            }
+                                      }
                                     />
                                   ))}
                               </>

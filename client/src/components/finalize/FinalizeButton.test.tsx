@@ -77,6 +77,22 @@ describe('FinalizeButton', () => {
     (api.cancelFinalizeRun as any).mockResolvedValue({ ok: true, status: 'cancelled' } as any);
   });
 
+  it('shows Discard only when the strip is given an onDiscarded handler', () => {
+    const { rerender } = render(<FinalizeButton {...baseProps} />);
+    expect(screen.queryByTestId('discard-changes-button')).not.toBeInTheDocument();
+    rerender(<FinalizeButton {...baseProps} onDiscarded={vi.fn()} />);
+    expect(screen.getByTestId('discard-changes-button')).not.toBeDisabled();
+  });
+
+  it('disables Discard while a Finalize run is in flight', () => {
+    setHookState({
+      run: { id: 'run-99', status: 'running', phase: 'tasks', mode: 'full' },
+      status: 'running',
+    });
+    render(<FinalizeButton {...baseProps} onDiscarded={vi.fn()} />);
+    expect(screen.getByTestId('discard-changes-button')).toBeDisabled();
+  });
+
   it('renders a single enabled "Finalize" button when idle', () => {
     render(<FinalizeButton {...baseProps} />);
     const finalize = screen.getByTestId('finalize-button');

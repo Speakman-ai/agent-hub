@@ -1643,6 +1643,9 @@ export const api = {
   getSessionSkillInvocations: (sessionId: any) =>
     fetchJSON(`/sessions/${sessionId}/skill-invocations`),
   getSessionChanges: (sessionId: any) => fetchJSON(`/sessions/${sessionId}/changes`),
+  /** Reset the session worktree to its base and clear `changes_ready`. */
+  discardSessionChanges: (sessionId: any) =>
+    fetchJSON(`/sessions/${sessionId}/discard-changes`, { method: 'POST' }),
   getSessionChangesDiff: (sessionId: any, file: any) =>
     fetchJSON(`/sessions/${sessionId}/changes/diff?file=${encodeURIComponent(file)}`),
   // Pull Requests (read-only viewer)

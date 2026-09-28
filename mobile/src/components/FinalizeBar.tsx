@@ -32,6 +32,9 @@ import { deriveFinalizeButton, canPush, isFullyValidated } from '../utils/finali
 import { describeRunPhase } from '../utils/finalizeRun';
 import { autopilotShipCounter } from '@shared/utils/sessionAutopilot';
 import { useApp } from '../context/AppContext';
+import { discardBlockedReason } from '@shared/utils/discardChanges';
+import { isResolvePrSessionTitle } from '@shared/utils/sessionTitlePr';
+import DiscardChangesButton from './DiscardChangesButton';
 const PURPLE = '#7C3AED';
 
 function resolveSessionModeFromRow(session: any) {
@@ -74,7 +77,7 @@ export default function FinalizeBar({
   const [busy, setBusy] = useState(false); // finalize/cancel in flight (optimistic)
   const [pushing, setPushing] = useState(false);
   const [mode, setMode] = useState(() => resolveSessionModeFromRow(session));
-  const { lastFinalizeRunEvent } = useApp();
+  const { lastFinalizeRunEvent, dismissChangesReady } = useApp();
   const [prCount, setPrCount] = useState(() => Number(session?.finalize_pushed_count) || 0);
   const [liveAutopilot, setLiveAutopilot] = useState<unknown>(() => session?.autopilot ?? null);
   const [unsticking, setUnsticking] = useState(false);
@@ -370,6 +373,23 @@ export default function FinalizeBar({
                     {pushLabel}
                   </Text>
                 </TouchableOpacity>
+
+                {/* Discard (not for Resolve-PR sessions: their PR is open, so the server refuses) */}
+                {sessionId && !isResolvePrSessionTitle(session?.name) ? (
+                  <DiscardChangesButton
+                    sessionId={sessionId}
+                    blockedReason={discardBlockedReason({
+                      sessionId,
+                      finalizeInFlight: btn.inFlight || busy,
+                      readyToPush: status === 'ready_to_push',
+                    })}
+                    onDiscarded={({ sessionId: id }) => {
+                      dismissChangesReady(id);
+                      void onChanged?.();
+                    }}
+                    onError={reportError}
+                  />
+                ) : null}
               </>
             ) : null}
           </>

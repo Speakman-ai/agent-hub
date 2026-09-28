@@ -1742,6 +1742,12 @@ export const api = {
   /** Live git status — uncommitted or unpushed work in the session worktree. */
   getSessionWorktreeChanges: (sessionId: any, opts: any = {}) =>
     fetchJSON(`/sessions/${sessionId}/worktree-changes`, { signal: opts.signal }),
+  /** Total session delta vs base (file list with +/- counts). */
+  getSessionChanges: (sessionId: any, opts: any = {}) =>
+    fetchJSON(`/sessions/${sessionId}/changes`, { signal: opts.signal }),
+  /** Reset the session worktree to its base and clear `changes_ready`. */
+  discardSessionChanges: (sessionId: any) =>
+    fetchJSON(`/sessions/${sessionId}/discard-changes`, { method: 'POST', timeout: 60_000 }),
   /** Documents an agent generated during the session (Artifacts panel). */
   getSessionArtifacts: (sessionId: any, opts: any = {}) =>
     fetchJSON(`/sessions/${sessionId}/artifacts`, { signal: opts.signal }),

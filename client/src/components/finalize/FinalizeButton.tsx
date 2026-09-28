@@ -14,6 +14,8 @@ import {
   noCommittableChangesTooltip,
 } from '../../utils/committableChanges';
 import { SESSION_ACTION_MENU_ITEM_CLASS } from '../../utils/sessionActionMenu';
+import { discardBlockedReason } from '@shared/utils/discardChanges';
+import DiscardChangesButton from './DiscardChangesButton';
 
 const OPTIMISTIC_BLOCK_MS = 1500;
 const WORKTREE_POLL_MS = 15_000;
@@ -65,6 +67,8 @@ export default function FinalizeButton({
   hosted = false,
   /** True for `[Resolve PR #N]` sessions — push updates the existing PR. */
   isResolveSession = false,
+  /** Shows the Discard action when set; called after the server reset the worktree. */
+  onDiscarded,
 }: any) {
   const { run, steps, phases, status, phase, activeSeconds } = useFinalizeRun({
     sessionId,
@@ -397,6 +401,19 @@ export default function FinalizeButton({
           )}
           Push changes
         </button>
+      ) : null}
+      {onDiscarded && sessionId ? (
+        <DiscardChangesButton
+          sessionId={sessionId}
+          variant={variant}
+          blockedReason={discardBlockedReason({
+            sessionId,
+            finalizeInFlight: inFlight,
+            readyToPush,
+          })}
+          onDiscarded={onDiscarded}
+          onError={onError}
+        />
       ) : null}
     </div>
   );
