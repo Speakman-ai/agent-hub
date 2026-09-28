@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runFinalizePush, runSessionPushToGithub } from './push-run.js';
+import {
+  isFinalizeRunPushInProgress,
+  runFinalizePush,
+  runSessionPushToGithub,
+} from './push-run.js';
 import { postFinalizeApprovalReview } from './post-finalize-approval-review.js';
 import type { FinalizeRunRow, KanbanCardRow, Project, SessionRow } from '../types.js';
 import {
@@ -48,7 +52,10 @@ const run = (): FinalizeRunRow =>
 const card = { id: 'card-1', pr_base_branch: 'main' } as KanbanCardRow;
 const project = { id: 'proj-1', githubRepo: 'o/r' } as Project;
 
-function config(slot: MainlineSlot = idleMainlineSlot()): AutopilotSessionConfig {
+function config(
+  slot: MainlineSlot = idleMainlineSlot(),
+  lastLandedSha: string | null = null,
+): AutopilotSessionConfig {
   return {
     durationHours: 0,
     brief: 'b',
@@ -61,18 +68,18 @@ function config(slot: MainlineSlot = idleMainlineSlot()): AutopilotSessionConfig
     cycle: 0,
     lastPushSha: null,
     target: 'mainline',
-    mainline: { deployEnvironment: 'prod', landedCount: 0, slot },
+    mainline: { deployEnvironment: 'prod', landedCount: 0, slot, lastLandedSha },
   };
 }
 
 /** Deps whose session row is stateful, so slot compare-and-set works end to end. */
-function harness(slot?: MainlineSlot) {
+function harness(slot?: MainlineSlot, lastLandedSha: string | null = null) {
   const row = {
     id: 'sess-1',
     worktree_path: '/tmp/wt',
     worktree_branch: 'agent-hub/dev/session-1',
     session_mode: 'autopilot',
-    autopilot_session_config: JSON.stringify(config(slot)),
+    autopilot_session_config: JSON.stringify(config(slot, lastLandedSha)),
   };
   const session = { ...row } as unknown as SessionRow;
   const stmts = {
@@ -152,6 +159,35 @@ describe('runFinalizePush: mainline session', () => {
     expect(h.storedCount()).toBe(1);
     // Mainline sessions keep shipping; no ask-mode lock.
     expect(h.stmts.updateSessionAskMode.run).not.toHaveBeenCalled();
+  });
+
+  it('a re-push of the last landing finishes pushed with no new landing', async () => {
+    const h = harness(undefined, SHA);
+    const git = gitWith(`To origin\n=\t${SHA}:refs/heads/main\t[up to date]\nDone\n`);
+    const { outcome } = await push(h, git);
+
+    expect(outcome).toEqual({ ok: true, prUrl: null });
+    expect(h.stmts.markFinalizeRunPushed.run).toHaveBeenCalledWith('run-1');
+    expect(h.storedSlot().phase).toBe('idle');
+    expect(h.storedCount()).toBe(0);
+    const notices = h.stmts.addMessage.run.mock.calls.map((c) => String(c[3]));
+    expect(notices).toContainEqual(expect.stringContaining('already on main'));
+    expect(notices).not.toContainEqual(expect.stringContaining('deploy runs next'));
+  });
+
+  it('marks the run as pushing in this process only while the push runs', async () => {
+    const h = harness();
+    let release!: () => void;
+    const git = vi.fn<DefaultBranchGitRunner>(async () => {
+      expect(isFinalizeRunPushInProgress('run-1')).toBe(true);
+      await new Promise<void>((resolve) => (release = resolve));
+      return { exitCode: 0, stdout: `To origin\n \t${SHA}:refs/heads/main\ta..b\n`, stderr: '' };
+    });
+    const pending = push(h, git);
+    await vi.waitFor(() => expect(git).toHaveBeenCalled());
+    release();
+    await pending;
+    expect(isFinalizeRunPushInProgress('run-1')).toBe(false);
   });
 
   it('refuses when the slot is busy and leaves the run parked', async () => {

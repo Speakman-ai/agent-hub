@@ -13,6 +13,7 @@ import { getDb, getStmts } from './db.js';
 import { wipeTables } from './test/destructive-db.js';
 import type { DeploymentRow, Project } from './types.js';
 import {
+  MAINLINE_RECONCILE_BACKOFF_MAX_MS,
   MAINLINE_RECONCILE_ESCALATE_AFTER_MS,
   createMainlineReconciler,
   mainlineReconcileBackoffMs,
@@ -656,5 +657,104 @@ describe('owed Finalize restarts', () => {
     await reconciler.settled();
     expect(h.restart).toHaveBeenCalledTimes(2);
     expect(stored(id).mainline!.restartOwed ?? null).toBeNull();
+  });
+});
+
+describe('parked pushes on an idle slot', () => {
+  const session = (id: string) => ({ id, agent_id: 'agent-ml-rec' });
+
+  it('asks Finalize to push a parked run, one request at a time, backing off on retry', async () => {
+    const id = seedSession(config({ phase: 'idle' }));
+    let release!: (r: { kind: 'retry'; detail: string }) => void;
+    const resume = vi.fn(
+      () => new Promise<{ kind: 'retry'; detail: string }>((resolve) => (release = resolve)),
+    );
+    const h = harness({ resumeFinalize: resume });
+    const reconciler = createMainlineReconciler(h.deps);
+
+    await reconciler.reconcile(session(id));
+    await reconciler.reconcile(session(id));
+    expect(resume).toHaveBeenCalledTimes(1);
+
+    release({ kind: 'retry', detail: 'still parked' });
+    await reconciler.settled();
+    expect(reconciler.backoffFor(`resume:${id}`)).toEqual({
+      failures: 1,
+      nextAt: T0 + mainlineReconcileBackoffMs(1),
+    });
+    await reconciler.reconcile(session(id));
+    expect(resume).toHaveBeenCalledTimes(1);
+
+    h.clock.now = T0 + mainlineReconcileBackoffMs(1);
+    resume.mockResolvedValueOnce({ kind: 'accepted', detail: 'pushed' } as never);
+    await reconciler.reconcile(session(id));
+    await reconciler.settled();
+    expect(resume).toHaveBeenCalledTimes(2);
+    expect(reconciler.backoffFor(`resume:${id}`)).toBeUndefined();
+  });
+
+  it('a parked run waiting on something else is asked again only after the longest backoff', async () => {
+    const id = seedSession(config({ phase: 'idle' }));
+    const resume = vi.fn(async () => ({ kind: 'dropped' as const, detail: 'manual push' }));
+    const h = harness({ resumeFinalize: resume });
+    const reconciler = createMainlineReconciler(h.deps);
+    await reconciler.reconcile(session(id));
+    await reconciler.settled();
+    expect(reconciler.backoffFor(`resume:${id}`)?.nextAt).toBe(
+      T0 + MAINLINE_RECONCILE_BACKOFF_MAX_MS,
+    );
+  });
+
+  it('an owed restart takes precedence over resuming', async () => {
+    const id = seedSession(config({ phase: 'uncertain', attemptId: ATTEMPT, sha: commit('a') }));
+    const resume = vi.fn(async () => ({ kind: 'accepted' as const, detail: 'nothing parked' }));
+    const h = harness({ resumeFinalize: resume });
+    h.restart.mockImplementation(async () => ({ kind: 'retry', detail: 'lock busy' }) as never);
+    const reconciler = createMainlineReconciler(h.deps);
+    await reconciler.reconcile(session(id)); // absent: idle with a restart owed
+    await reconciler.settled();
+    h.clock.now += MAINLINE_RECONCILE_BACKOFF_MAX_MS;
+    await reconciler.reconcile(session(id));
+    await reconciler.settled();
+    expect(h.restart).toHaveBeenCalledTimes(2);
+    expect(resume).not.toHaveBeenCalled();
+  });
+});
+
+describe('re-pushed commits', () => {
+  it("present, and already this session's last landing: frees the slot with no deploy and no restart owed", async () => {
+    const sha = commit('a');
+    publish();
+    const h = harness();
+    const base = config({ phase: 'uncertain', attemptId: ATTEMPT, sha });
+    const id = seedSession({
+      ...base,
+      mainline: { ...base.mainline!, landedCount: 1, lastLandedSha: sha },
+    });
+    const reconciler = createMainlineReconciler(h.deps);
+    await reconciler.reconcile({ id, agent_id: 'agent-ml-rec' });
+    await reconciler.settled();
+
+    expect(stored(id).mainline).toMatchObject({
+      slot: { phase: 'idle', attemptId: null },
+      landedCount: 1,
+      lastLandedSha: sha,
+    });
+    expect(stored(id).mainline!.restartOwed ?? null).toBeNull();
+    expect(h.restart).not.toHaveBeenCalled();
+    expect(h.notices).toEqual([expect.stringContaining('already on main')]);
+  });
+
+  it('present for a commit this session never landed: lands and records it', async () => {
+    const sha = commit('a');
+    publish();
+    const h = harness();
+    const id = seedSession(config({ phase: 'uncertain', attemptId: ATTEMPT, sha }));
+    await createMainlineReconciler(h.deps).reconcile({ id, agent_id: 'agent-ml-rec' });
+    expect(stored(id).mainline).toMatchObject({
+      slot: { phase: 'landed' },
+      landedCount: 1,
+      lastLandedSha: sha,
+    });
   });
 });

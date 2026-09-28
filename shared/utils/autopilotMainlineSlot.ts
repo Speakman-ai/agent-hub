@@ -76,6 +76,12 @@ export interface AutopilotMainlineConfig {
   /** Commits confirmed on the default branch (entered `landed`). */
   landedCount: number;
   restartOwed?: MainlineRestartOwed | null;
+  /**
+   * Commit of this session's most recent landing (set on entering `landed`).
+   * A landing leaves the slot only through its report, so a commit equal to
+   * this was already deployed and reported by this session.
+   */
+  lastLandedSha?: string | null;
 }
 
 export const IDLE_MAINLINE_SLOT: Readonly<MainlineSlot> = Object.freeze({
@@ -96,9 +102,11 @@ export type MainlineSlotEvent =
   | { type: 'begin_push'; attemptId: string; sha: string }
   | { type: 'push_landed' }
   | { type: 'push_rejected' }
+  | { type: 'push_already_landed' }
   | { type: 'push_unknown' }
   | { type: 'remote_present' }
   | { type: 'remote_absent' }
+  | { type: 'remote_already_landed' }
   | { type: 'deploy_started'; deploymentId: string }
   | { type: 'deploy_undeployable'; detail?: string | null }
   | {
@@ -126,10 +134,15 @@ export const MAINLINE_SLOT_TRANSITIONS: Readonly<
   begin_push: { from: ['idle'], to: 'pushing' },
   push_landed: { from: ['pushing'], to: 'landed' },
   push_rejected: { from: ['pushing'], to: 'idle' },
+  // The remote already had the commit and `lastLandedSha` proves an earlier
+  // cycle of this session landed (and so deployed and reported) it: nothing
+  // is owed. Only callers holding that evidence may send these.
+  push_already_landed: { from: ['pushing'], to: 'idle' },
   // A lost push reply, or a restart found the slot still `pushing`.
   push_unknown: { from: ['pushing'], to: 'uncertain' },
   remote_present: { from: ['uncertain'], to: 'landed' },
   remote_absent: { from: ['uncertain'], to: 'idle' },
+  remote_already_landed: { from: ['uncertain'], to: 'idle' },
   deploy_started: { from: ['landed'], to: 'deploying' },
   deploy_undeployable: { from: ['landed'], to: 'reporting' },
   deploy_finished: { from: ['deploying'], to: 'reporting' },
@@ -216,6 +229,8 @@ export function applyMainlineSlotEvent(
     case 'push_unknown':
       return enter('uncertain');
     case 'push_rejected':
+    case 'push_already_landed':
+    case 'remote_already_landed':
     case 'remote_absent':
     case 'report_delivered':
       return { ok: true, slot: idleMainlineSlot(nowIso) };
@@ -356,22 +371,29 @@ export function parseAutopilotMainlineConfig(raw: unknown): AutopilotMainlineCon
   if (!deployEnvironment) return null;
   const count = typeof row.landedCount === 'number' ? row.landedCount : NaN;
   const restartOwed = parseRestartOwed(row.restartOwed);
+  const lastLandedSha =
+    nonEmpty(row.lastLandedSha) && SHA_RE.test(row.lastLandedSha.trim())
+      ? row.lastLandedSha.trim()
+      : null;
   return {
     deployEnvironment,
     slot: parseMainlineSlot(row.slot),
     landedCount: Number.isFinite(count) && count > 0 ? Math.floor(count) : 0,
     ...(restartOwed ? { restartOwed } : {}),
+    ...(lastLandedSha ? { lastLandedSha } : {}),
   };
 }
 
 /**
  * Next mainline block after a slot transition. Counts each confirmed landing
- * once, records an owed Finalize restart when the remote answers absent
- * (`uncertain` → `idle`), and drops that debt once a new push begins.
+ * once and records its commit as `lastLandedSha`, records an owed Finalize
+ * restart when the remote answers absent (`uncertain` → `idle`, except
+ * `remote_already_landed`), and drops that debt once a new push begins.
  */
 export function withMainlineSlot(
   mainline: AutopilotMainlineConfig,
   next: MainlineSlot,
+  eventType?: MainlineSlotEventType,
 ): AutopilotMainlineConfig {
   const prev = mainline.slot;
   const landedNow = next.phase === 'landed' && prev.phase !== 'landed';
@@ -380,7 +402,14 @@ export function withMainlineSlot(
     slot: next,
     landedCount: mainline.landedCount + (landedNow ? 1 : 0),
   };
-  if (prev.phase === 'uncertain' && next.phase === 'idle' && prev.attemptId && prev.sha) {
+  if (landedNow && next.sha) out.lastLandedSha = next.sha;
+  if (
+    prev.phase === 'uncertain' &&
+    next.phase === 'idle' &&
+    eventType !== 'remote_already_landed' &&
+    prev.attemptId &&
+    prev.sha
+  ) {
     out.restartOwed = {
       attemptId: prev.attemptId,
       sha: prev.sha,

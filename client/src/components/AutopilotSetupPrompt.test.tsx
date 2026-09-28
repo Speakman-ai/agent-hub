@@ -92,7 +92,7 @@ describe('AutopilotSetupPrompt', () => {
   it('shows the default-branch option disabled until the landing path ships', () => {
     render(<AutopilotSetupPrompt sessionId="session-1" />);
     expect(screen.getByTestId('autopilot-setup-target-mainline')).toBeDisabled();
-    expect(screen.getByText(/not available yet/)).toBeInTheDocument();
+    expect(screen.getByText(/turned off on this server/)).toBeInTheDocument();
     expect(screen.getByTestId('autopilot-setup-target-branch')).toBeChecked();
   });
 

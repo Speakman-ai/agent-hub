@@ -379,8 +379,8 @@ describe('session Autopilot routes', () => {
       vi.unstubAllEnvs();
     });
 
-    it('is refused until the landing path is available', async () => {
-      vi.stubEnv('AGENT_HUB_AUTOPILOT_MAINLINE', '');
+    it('is refused when the server turned mainline off', async () => {
+      vi.stubEnv('AGENT_HUB_AUTOPILOT_MAINLINE', '0');
       const { app, stmts } = makeApp();
       const res = await request(app)
         .post('/api/sessions/sess-1/autopilot')

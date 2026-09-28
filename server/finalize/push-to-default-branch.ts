@@ -50,6 +50,8 @@ export interface DefaultBranchPushClassification {
   outcome: DefaultBranchPushOutcome;
   /** The destination ref's porcelain line(s), one per endpoint that reported. */
   line: string | null;
+  /** Landed because every endpoint already had the commit (`=`); nothing moved. */
+  upToDate: boolean;
 }
 
 type EndpointResult = DefaultBranchPushOutcome | 'missing';
@@ -120,10 +122,14 @@ export function classifyDefaultBranchPush(
   while (endpoints.length < expectedEndpoints) endpoints.push('missing');
 
   const line = lines.length ? lines.join('\n') : null;
-  if (endpoints.length === 0) return { outcome: 'unknown', line };
-  if (endpoints.every((e) => e === 'landed')) return { outcome: 'landed', line };
-  if (endpoints.every((e) => e === 'rejected')) return { outcome: 'rejected', line };
-  return { outcome: 'unknown', line };
+  if (endpoints.length === 0) return { outcome: 'unknown', line, upToDate: false };
+  if (endpoints.every((e) => e === 'landed')) {
+    const upToDate = lines.length > 0 && lines.every((l) => l.split('\t')[0] === '=');
+    return { outcome: 'landed', line, upToDate };
+  }
+  if (endpoints.every((e) => e === 'rejected'))
+    return { outcome: 'rejected', line, upToDate: false };
+  return { outcome: 'unknown', line, upToDate: false };
 }
 
 export interface GitRunResult {
@@ -210,7 +216,14 @@ export type MainlinePushRefusal =
 export type MainlinePushResult =
   | { kind: 'refused'; reason: MainlinePushRefusal; message: string; slot: MainlineSlot | null }
   | {
-      kind: DefaultBranchPushOutcome;
+      /**
+       * `already_landed`: the remote already had the commit and it is this
+       * session's last landing (`lastLandedSha`), which was deployed and
+       * reported; pushing it again (a Finalize run re-triggered after a
+       * restart) must not deploy it twice. A `=` for any other commit is
+       * `landed` and deploys.
+       */
+      kind: DefaultBranchPushOutcome | 'already_landed';
       attemptId: string;
       line: string | null;
       detail: string;
@@ -225,6 +238,28 @@ function readMainlineSlot(stmts: AutopilotRowStmts, sessionId: string): Mainline
   const cfg = parseAutopilotSessionConfig(row?.autopilot_session_config ?? null);
   if (!cfg || cfg.target !== 'mainline' || !cfg.mainline) return null;
   return cfg.mainline.slot;
+}
+
+/**
+ * Whether this session's most recent landing was `sha`. A landing leaves the
+ * slot only through its report, so a match means the commit was already
+ * deployed and reported. Null when the row could not be read.
+ */
+function landedBefore(stmts: AutopilotRowStmts, sessionId: string, sha: string): boolean | null {
+  try {
+    const row = stmts.getSession.get(sessionId) as
+      | { autopilot_session_config?: string | null }
+      | undefined;
+    const cfg = parseAutopilotSessionConfig(row?.autopilot_session_config ?? null);
+    if (!cfg || cfg.target !== 'mainline' || !cfg.mainline) return null;
+    return cfg.mainline.lastLandedSha === sha;
+  } catch {
+    return null;
+  }
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function describeGitResult(result: GitRunResult): string {
@@ -251,7 +286,17 @@ export async function pushValidatedCommitToDefaultBranch(args: {
   const guardOrigin = args.guardOrigin ?? assertMainlineOrigin;
   const log = args.log ?? ((m: string) => console.warn(m));
 
-  const before = readMainlineSlot(stmts, sessionId);
+  let before: MainlineSlot | null;
+  try {
+    before = readMainlineSlot(stmts, sessionId);
+  } catch (err) {
+    return {
+      kind: 'refused',
+      reason: 'slot_write_failed',
+      message: `Could not read the landing slot (${errText(err)}); nothing was pushed.`,
+      slot: null,
+    };
+  }
   if (!before) {
     return {
       kind: 'refused',
@@ -302,12 +347,24 @@ async function pushWithIntent(args: {
   attemptId: string;
 }): Promise<MainlinePushResult> {
   const { stmts, sessionId, worktreePath, sha, defaultBranch, env, git, log, attemptId } = args;
-  const begin = transitionMainlineSlot({
-    stmts,
-    sessionId,
-    expect: { phase: 'idle', attemptId: null },
-    event: { type: 'begin_push', attemptId, sha },
-  });
+  let begin: ReturnType<typeof transitionMainlineSlot>;
+  try {
+    begin = transitionMainlineSlot({
+      stmts,
+      sessionId,
+      expect: { phase: 'idle', attemptId: null },
+      event: { type: 'begin_push', attemptId, sha },
+    });
+  } catch (err) {
+    // The write may or may not have committed. Nothing was pushed, and a
+    // committed intent with no live push is swept to `uncertain`.
+    return {
+      kind: 'refused',
+      reason: 'slot_write_failed',
+      message: `Could not record the push intent (${errText(err)}); nothing was pushed.`,
+      slot: null,
+    };
+  }
   if (!begin.wrote) {
     const busy = begin.reason === 'stale' && begin.slot !== null && begin.slot.phase !== 'idle';
     return {
@@ -321,7 +378,12 @@ async function pushWithIntent(args: {
   }
 
   // Prove the intent is durable before touching the remote.
-  const stored = readMainlineSlot(stmts, sessionId);
+  let stored: MainlineSlot | null;
+  try {
+    stored = readMainlineSlot(stmts, sessionId);
+  } catch {
+    stored = null;
+  }
   if (
     !stored ||
     stored.phase !== 'pushing' ||
@@ -350,28 +412,45 @@ async function pushWithIntent(args: {
       stderr: err instanceof Error ? err.message : String(err),
     };
   }
-  const { outcome, line } = classifyDefaultBranchPush(result.stdout, destination);
+  const { outcome, line, upToDate } = classifyDefaultBranchPush(result.stdout, destination);
   const detail = line ?? describeGitResult(result);
+  // `=` alone does not prove this session deployed the commit: a fresh
+  // session can validate a commit already on the default branch, or someone
+  // else can push it first. Only this session's own landing record does; an
+  // unreadable record leaves the attempt uncertain for the reconciler, which
+  // makes the same check.
+  let kind: DefaultBranchPushOutcome | 'already_landed' = outcome;
+  if (outcome === 'landed' && upToDate) {
+    const before = landedBefore(stmts, sessionId, sha);
+    kind = before === null ? 'unknown' : before ? 'already_landed' : 'landed';
+  }
 
   const event =
-    outcome === 'landed'
-      ? ({ type: 'push_landed' } as const)
-      : outcome === 'rejected'
-        ? ({ type: 'push_rejected' } as const)
-        : ({ type: 'push_unknown' } as const);
-  const recorded = transitionMainlineSlot({
-    stmts,
-    sessionId,
-    expect: { phase: 'pushing', attemptId },
-    event,
-  });
+    kind === 'already_landed'
+      ? ({ type: 'push_already_landed' } as const)
+      : kind === 'landed'
+        ? ({ type: 'push_landed' } as const)
+        : kind === 'rejected'
+          ? ({ type: 'push_rejected' } as const)
+          : ({ type: 'push_unknown' } as const);
+  let recorded: { wrote: boolean; reason?: string };
+  try {
+    recorded = transitionMainlineSlot({
+      stmts,
+      sessionId,
+      expect: { phase: 'pushing', attemptId },
+      event,
+    });
+  } catch (err) {
+    recorded = { wrote: false, reason: errText(err) };
+  }
   if (!recorded.wrote) {
-    // The slot moved under us (or the row is unreadable). Leave it: a stored
+    // The slot moved under us, or the write failed. Leave it: a stored
     // `pushing` slot is swept to `uncertain` and checked against the remote.
     log(
-      `[finalize-mainline] session=${sessionId} attempt=${attemptId} push ${outcome} but the slot ` +
+      `[finalize-mainline] session=${sessionId} attempt=${attemptId} push ${kind} but the slot ` +
         `write was refused (${recorded.reason})`,
     );
   }
-  return { kind: outcome, attemptId, line, detail, slotRecorded: recorded.wrote };
+  return { kind, attemptId, line, detail, slotRecorded: recorded.wrote };
 }

@@ -128,7 +128,7 @@ describe('Autopilot attachments on mobile', () => {
   it('disables the default-branch option until the landing path ships', () => {
     const option = renderer.root.findByProps({ testID: 'autopilot-setup-target-mainline' });
     expect(option.props.disabled).toBe(true);
-    expect(JSON.stringify(renderer.toJSON())).toContain('not available yet');
+    expect(JSON.stringify(renderer.toJSON())).toContain('turned off on this server');
   });
 
   it('starts a default-branch run with a deploy environment', async () => {

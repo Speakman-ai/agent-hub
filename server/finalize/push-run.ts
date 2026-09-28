@@ -616,7 +616,7 @@ async function executeMainlinePush(args: {
     },
   );
   postAutopilotMainlinePushNotice(deps, session.id, {
-    outcome: 'landed',
+    outcome: result.kind,
     sha: validatedHeadSha,
     branch: target.defaultBranch,
   });
@@ -850,7 +850,31 @@ async function executePush(args: {
 /**
  * Push an approved finalize run to GitHub and open the PR.
  */
+/**
+ * Runs inside {@link runFinalizePush} in this process, by run id. Every write
+ * of `status = 'pushing'` happens inside it, so a row at `pushing` whose run
+ * is not here ended without recording its result (the status write failed,
+ * or the Hub restarted).
+ */
+const pushesInProgress = new Map<string, number>();
+
+export function isFinalizeRunPushInProgress(runId: string): boolean {
+  return (pushesInProgress.get(runId) ?? 0) > 0;
+}
+
 export async function runFinalizePush(args: RunFinalizePushArgs): Promise<FinalizePushOutcome> {
+  const id = args.run.id;
+  pushesInProgress.set(id, (pushesInProgress.get(id) ?? 0) + 1);
+  try {
+    return await runFinalizePushInner(args);
+  } finally {
+    const left = (pushesInProgress.get(id) ?? 1) - 1;
+    if (left > 0) pushesInProgress.set(id, left);
+    else pushesInProgress.delete(id);
+  }
+}
+
+async function runFinalizePushInner(args: RunFinalizePushArgs): Promise<FinalizePushOutcome> {
   const { deps, project, run, card, session, force = false } = args;
   const resolveHead = args.resolveHeadSha ?? defaultResolveHeadSha;
 

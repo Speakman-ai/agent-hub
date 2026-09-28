@@ -98,9 +98,18 @@ describe('classifyDefaultBranchPush', () => {
   const line = (flag: string, to = DEST) => `${flag}\t${SHA}:${to}\t[summary]`;
 
   it.each([' ', '+', '*', '='])('flag %j is landed', (flag) => {
-    expect(classifyDefaultBranchPush(`To origin\n${line(flag)}\nDone\n`, DEST).outcome).toBe(
-      'landed',
-    );
+    expect(classifyDefaultBranchPush(`To origin\n${line(flag)}\nDone\n`, DEST)).toMatchObject({
+      outcome: 'landed',
+      upToDate: flag === '=',
+    });
+  });
+
+  it('is up to date only when every endpoint already had the commit', () => {
+    const out = `To a\n${line('=')}\nTo b\n${line(' ')}\nDone\n`;
+    expect(classifyDefaultBranchPush(out, DEST, 2)).toMatchObject({
+      outcome: 'landed',
+      upToDate: false,
+    });
   });
 
   it('flag ! is rejected', () => {
@@ -108,6 +117,7 @@ describe('classifyDefaultBranchPush', () => {
     expect(classifyDefaultBranchPush(out, DEST)).toEqual({
       outcome: 'rejected',
       line: `!\t${SHA}:${DEST}\t[rejected] (non-fast-forward)`,
+      upToDate: false,
     });
   });
 
@@ -141,7 +151,11 @@ describe('classifyDefaultBranchPush', () => {
   });
 
   it('no destination line is unknown', () => {
-    expect(classifyDefaultBranchPush('', DEST)).toEqual({ outcome: 'unknown', line: null });
+    expect(classifyDefaultBranchPush('', DEST)).toEqual({
+      outcome: 'unknown',
+      line: null,
+      upToDate: false,
+    });
   });
 });
 
@@ -197,6 +211,77 @@ describe('pushValidatedCommitToDefaultBranch', () => {
     expect(git).toHaveBeenCalledOnce();
     expect(git.mock.calls[0]![0]).toEqual(buildDefaultBranchPushArgs(SHA, 'main'));
     expect(stored(id).mainline).toMatchObject({ slot: { phase: 'landed' }, landedCount: 1 });
+  });
+
+  const upToDate = () =>
+    gitReturning({ exitCode: 0, stdout: `To origin\n=\t${SHA}:${DEST}\t[up to date]\nDone\n` });
+
+  it("a re-push of this session's last landing (`=`) frees the slot without a new landing", async () => {
+    const cfg = baseConfig();
+    const id = seedSession({
+      ...cfg,
+      mainline: { ...cfg.mainline!, landedCount: 1, lastLandedSha: SHA },
+    });
+    expect(await push(id, upToDate())).toMatchObject({
+      kind: 'already_landed',
+      slotRecorded: true,
+    });
+    expect(stored(id).mainline).toMatchObject({
+      slot: { phase: 'idle', attemptId: null },
+      landedCount: 1,
+    });
+  });
+
+  it('a `=` for a commit this session never landed is a landing that deploys', async () => {
+    const cfg = baseConfig();
+    const id = seedSession({
+      ...cfg,
+      mainline: { ...cfg.mainline!, landedCount: 1, lastLandedSha: 'c'.repeat(40) },
+    });
+    expect(await push(id, upToDate())).toMatchObject({ kind: 'landed', slotRecorded: true });
+    expect(stored(id).mainline).toMatchObject({
+      slot: { phase: 'landed', sha: SHA },
+      landedCount: 2,
+      lastLandedSha: SHA,
+    });
+  });
+
+  it('an intent write that throws pushes nothing and reports the write failure', async () => {
+    const id = seedSession(baseConfig());
+    const real = getStmts();
+    const stmts = {
+      getSession: real.getSession,
+      casSessionAutopilotConfig: {
+        run: () => {
+          throw new Error('SQLITE_IOERR: disk I/O error');
+        },
+      },
+    } as unknown as AutopilotRowStmts;
+    const git = gitReturning({ exitCode: 0 });
+    expect(await push(id, git, stmts)).toMatchObject({
+      kind: 'refused',
+      reason: 'slot_write_failed',
+    });
+    expect(git).not.toHaveBeenCalled();
+    expect(stored(id).mainline!.slot.phase).toBe('idle');
+  });
+
+  it('an outcome write that throws leaves the intent for the reconciler', async () => {
+    const id = seedSession(baseConfig());
+    const real = getStmts();
+    let writes = 0;
+    const stmts = {
+      getSession: real.getSession,
+      casSessionAutopilotConfig: {
+        run: (...args: [string, string, string | null]) => {
+          if (++writes > 1) throw new Error('SQLITE_IOERR: disk I/O error');
+          return real.casSessionAutopilotConfig.run(...args);
+        },
+      },
+    } as unknown as AutopilotRowStmts;
+    const git = gitReturning({ exitCode: 0, stdout: `To origin\n \t${SHA}:${DEST}\ta..b\n` });
+    expect(await push(id, git, stmts)).toMatchObject({ kind: 'landed', slotRecorded: false });
+    expect(stored(id).mainline!.slot).toMatchObject({ phase: 'pushing', attemptId: 'attempt-1' });
   });
 
   it('tag rejected but branch landed (non-zero exit) is landed', async () => {

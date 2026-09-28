@@ -185,9 +185,11 @@ describe('findMainlineEnvironmentOwner', () => {
 });
 
 describe('autopilotMainlineStartEnabled', () => {
-  it('is off by default and on only with the explicit opt-in', () => {
-    expect(autopilotMainlineStartEnabled({})).toBe(false);
-    expect(autopilotMainlineStartEnabled({ AGENT_HUB_AUTOPILOT_MAINLINE: 'true' })).toBe(false);
+  it('is on by default and off only with the explicit opt-out', () => {
+    expect(autopilotMainlineStartEnabled({})).toBe(true);
+    expect(autopilotMainlineStartEnabled({ AGENT_HUB_AUTOPILOT_MAINLINE: '' })).toBe(true);
     expect(autopilotMainlineStartEnabled({ AGENT_HUB_AUTOPILOT_MAINLINE: '1' })).toBe(true);
+    expect(autopilotMainlineStartEnabled({ AGENT_HUB_AUTOPILOT_MAINLINE: 'false' })).toBe(true);
+    expect(autopilotMainlineStartEnabled({ AGENT_HUB_AUTOPILOT_MAINLINE: '0' })).toBe(false);
   });
 });

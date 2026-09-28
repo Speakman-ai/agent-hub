@@ -140,7 +140,7 @@ export function postAutopilotMainlinePushNotice(
   deps: AutopilotNoticeDeps,
   sessionId: string,
   args: {
-    outcome: 'landed' | 'rejected' | 'unknown';
+    outcome: 'landed' | 'already_landed' | 'rejected' | 'unknown';
     sha: string;
     branch: string;
     detail?: string;
@@ -150,13 +150,15 @@ export function postAutopilotMainlinePushNotice(
   const content =
     args.outcome === 'landed'
       ? `Autopilot pushed ${short} to ${args.branch}. The deploy runs next.`
-      : args.outcome === 'rejected'
-        ? `Autopilot could not push ${short} to ${args.branch}: the remote rejected it` +
-          (args.detail ? ` (${args.detail})` : '') +
-          '. Rebase and Finalize again.'
-        : `Autopilot does not know whether ${short} reached ${args.branch}` +
-          (args.detail ? ` (${args.detail})` : '') +
-          '. It will check the remote before doing anything else.';
+      : args.outcome === 'already_landed'
+        ? `${short} was already on ${args.branch} from an earlier landing, so nothing new was pushed or deployed.`
+        : args.outcome === 'rejected'
+          ? `Autopilot could not push ${short} to ${args.branch}: the remote rejected it` +
+            (args.detail ? ` (${args.detail})` : '') +
+            '. Rebase and Finalize again.'
+          : `Autopilot does not know whether ${short} reached ${args.branch}` +
+            (args.detail ? ` (${args.detail})` : '') +
+            '. It will check the remote before doing anything else.';
   postAutopilotSystemNotice(deps, sessionId, content);
 }
 

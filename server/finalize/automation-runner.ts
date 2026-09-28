@@ -21,7 +21,7 @@ import { AUTO_MERGE_ACTOR, autoMergeReadyPr } from './auto-merge-ready-pr.js';
 import { tryAutoMergeArmedNativePr } from '../native-pr/auto-merge-armed.js';
 import { handleGithubCardOnMerge } from '../github-card-on-merge.js';
 import { ensureKanbanCardForSession } from './ensure-kanban-card.js';
-import { runFinalizePush } from './push-run.js';
+import { isFinalizeRunPushInProgress, runFinalizePush } from './push-run.js';
 import { acquirePushLock, type PushLockStmts } from './push-lock.js';
 import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
 import { startFinalizeRunBackground } from './trigger-run.js';
@@ -541,6 +541,55 @@ export function restartResultFromAutoPush(
     case 'blocked':
       return { kind: 'dropped', detail: out.reason };
   }
+}
+
+/**
+ * Move Finalize forward for an idle mainline slot with no restart owed. The
+ * reconciler calls this on every sweep, because nothing else would:
+ *
+ * - A run parked at `ready_to_push` is pushed. A push refused because its
+ *   intent write failed parks the run on a slot that never leaves `idle`, so
+ *   {@link retryParkedPushAfterSlotFreed} never fires.
+ * - A latest run still at `pushing` with no push in progress in this process
+ *   ended without recording its result (the `ready_to_push`, `pushed`, or
+ *   `failed` write failed). It is parked again and pushed. A commit that
+ *   already landed comes back `=` as this session's last landing and finishes
+ *   `pushed` without deploying again.
+ * - With no run in flight, the normal end-of-turn auto-start runs again, so
+ *   committed work whose run was never created (the insert failed) gets one.
+ *   That kickoff is idempotent per head (it reuses any run already created
+ *   for it) and keeps every auto-start gate, so it starts nothing new for
+ *   work that already has a run, or for a session that stopped or errored.
+ *   It waits while an agent turn is running; the turn's end starts Finalize.
+ */
+export async function resumeMainlineFinalize(sessionId: string): Promise<MainlineRestartOutcome> {
+  if (!routeDeps) return { kind: 'retry', detail: 'Finalize automation is not ready yet' };
+  let latest = routeDeps.stmts.getLatestFinalizeRunForSession.get(sessionId) as
+    | FinalizeRunRow
+    | undefined;
+  if (latest?.status === 'pushing' && !isFinalizeRunPushInProgress(latest.id)) {
+    const sha = latest.validated_head_sha ?? latest.head_sha;
+    try {
+      routeDeps.stmts.markFinalizeRunReadyToPush.run(sha, latest.id);
+    } catch (err) {
+      return { kind: 'retry', detail: `could not re-park run ${latest.id}: ${errText(err)}` };
+    }
+    latest = routeDeps.stmts.getFinalizeRun.get(latest.id) as FinalizeRunRow | undefined;
+  }
+  if (latest?.status === 'ready_to_push') {
+    return restartResultFromAutoPush(
+      latest.id,
+      await autoPushReadyFinalizeRun({ sessionId, runId: latest.id }),
+    );
+  }
+  if (latest && !FINALIZE_TERMINAL_STATUSES.has(latest.status)) {
+    return { kind: 'accepted', detail: `run ${latest.id} is in flight` };
+  }
+  if (routeDeps.activeProcesses.has(sessionId)) {
+    return { kind: 'accepted', detail: 'an agent turn is running; its end starts Finalize' };
+  }
+  await maybeAutoStartFinalizeForSession(sessionId);
+  return { kind: 'accepted', detail: 'auto-start checked' };
 }
 
 export type MainlineRestartOutcome =

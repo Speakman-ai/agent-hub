@@ -167,7 +167,7 @@ export function transitionMainlineSlot(args: {
       return { skip: mainline.slot };
     }
     return {
-      write: { ...current, mainline: withMainlineSlot(mainline, applied.slot) },
+      write: { ...current, mainline: withMainlineSlot(mainline, applied.slot, event.type) },
       result: applied.slot,
     };
   });

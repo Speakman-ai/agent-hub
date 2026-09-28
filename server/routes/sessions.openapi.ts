@@ -102,6 +102,10 @@ export const SessionComponent = registerComponent(
             .object({
               deployEnvironment: z.string(),
               landedCount: z.number().int(),
+              lastLandedSha: z.string().nullable().optional().openapi({
+                description:
+                  "Commit of this session's most recent landing. A re-push of it is recognised as already deployed.",
+              }),
               restartOwed: z
                 .object({ attemptId: z.string(), sha: z.string(), since: z.string() })
                 .nullable()
@@ -485,7 +489,7 @@ export const StartSessionAutopilotRequestSchema = z.object({
   escalation: z.enum(['none', 'low', 'medium', 'high']),
   target: z.enum(['branch', 'mainline']).optional().openapi({
     description:
-      'Where Autopilot ships. `branch` (default) pushes a named feature branch and a human merges. `mainline` (refused with `autopilot_mainline_unavailable` until the landing path ships) lands each validated change on the repository default branch, deploys `deployEnvironment`, and verifies on it.',
+      'Where Autopilot ships. `branch` (default) pushes a named feature branch and a human merges. `mainline` (refused with `autopilot_mainline_unavailable` when the server turned it off) lands each validated change on the repository default branch, deploys `deployEnvironment`, and verifies on it.',
   }),
   branch: z.string().trim().max(255).optional().openapi({
     description: 'Feature branch for the `branch` target (required there). Ignored for `mainline`.',
@@ -1252,7 +1256,7 @@ registerPath({
     200: { description: 'Autopilot started.', content: jsonContent(SessionComponent) },
     400: {
       description:
-        'Validation failed, the named branch could not be bound, `mainline` is not available on this server yet (`autopilot_mainline_unavailable`), or (mainline) the default branch deploy.yaml is missing, invalid, does not declare `deployEnvironment`, or has it paused. Preflight errors list `declaredEnvironments`.',
+        'Validation failed, the named branch could not be bound, `mainline` is turned off on this server (`autopilot_mainline_unavailable`), or (mainline) the default branch deploy.yaml is missing, invalid, does not declare `deployEnvironment`, or has it paused. Preflight errors list `declaredEnvironments`.',
       content: jsonContent(
         z.object({
           error: z.string(),

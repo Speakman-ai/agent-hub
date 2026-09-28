@@ -2481,6 +2481,10 @@ components:
                   type: string
                 landedCount:
                   type: integer
+                lastLandedSha:
+                  type: string
+                  nullable: true
+                  description: Commit of this session's most recent landing. A re-push of it is recognised as already deployed.
                 restartOwed:
                   type: object
                   nullable: true
@@ -23682,7 +23686,7 @@ paths:
                   enum:
                     - branch
                     - mainline
-                  description: Where Autopilot ships. `branch` (default) pushes a named feature branch and a human merges. `mainline` (refused with `autopilot_mainline_unavailable` until the landing path ships) lands each validated change on the repository default branch, deploys `deployEnvironment`, and verifies on it.
+                  description: Where Autopilot ships. `branch` (default) pushes a named feature branch and a human merges. `mainline` (refused with `autopilot_mainline_unavailable` when the server turned it off) lands each validated change on the repository default branch, deploys `deployEnvironment`, and verifies on it.
                 branch:
                   type: string
                   maxLength: 255
@@ -23731,7 +23735,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Session"
         "400":
-          description: Validation failed, the named branch could not be bound, `mainline` is not available on this server yet (`autopilot_mainline_unavailable`), or (mainline) the default branch deploy.yaml is missing, invalid, does not declare `deployEnvironment`, or has it paused. Preflight errors list `declaredEnvironments`.
+          description: Validation failed, the named branch could not be bound, `mainline` is turned off on this server (`autopilot_mainline_unavailable`), or (mainline) the default branch deploy.yaml is missing, invalid, does not declare `deployEnvironment`, or has it paused. Preflight errors list `declaredEnvironments`.
           content:
             application/json:
               schema:

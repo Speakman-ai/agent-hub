@@ -38,6 +38,8 @@ const SAMPLE_EVENTS: Record<MainlineSlotEventType, MainlineSlotEvent> = {
   begin_push: { type: 'begin_push', attemptId: 'att-2', sha: SHA },
   push_landed: { type: 'push_landed' },
   push_rejected: { type: 'push_rejected' },
+  push_already_landed: { type: 'push_already_landed' },
+  remote_already_landed: { type: 'remote_already_landed' },
   push_unknown: { type: 'push_unknown' },
   remote_present: { type: 'remote_present' },
   remote_absent: { type: 'remote_absent' },
@@ -52,6 +54,8 @@ const EXPECTED_MOVES: Array<[MainlineSlotEventType, MainlineSlotPhase, MainlineS
   ['begin_push', 'idle', 'pushing'],
   ['push_landed', 'pushing', 'landed'],
   ['push_rejected', 'pushing', 'idle'],
+  ['push_already_landed', 'pushing', 'idle'],
+  ['remote_already_landed', 'uncertain', 'idle'],
   ['push_unknown', 'pushing', 'uncertain'],
   ['remote_present', 'uncertain', 'landed'],
   ['remote_absent', 'uncertain', 'idle'],
@@ -229,6 +233,26 @@ describe('parseAutopilotMainlineConfig / withMainlineSlot', () => {
     const escalated = withMainlineSlot(landed, { ...slotIn('landed'), escalatedAt: NOW });
     expect(escalated.landedCount).toBe(3);
     expect(withMainlineSlot(landed, slotIn('deploying')).landedCount).toBe(3);
+  });
+
+  it('remembers the last landed commit across the rest of the cycle and the stored JSON', () => {
+    const cfg = { deployEnvironment: 'prod', slot: slotIn('uncertain'), landedCount: 0 };
+    const landed = withMainlineSlot(cfg, slotIn('landed'), 'remote_present');
+    expect(landed.lastLandedSha).toBe(SHA);
+    const idle = withMainlineSlot(
+      withMainlineSlot(landed, slotIn('reporting')),
+      idleMainlineSlot(NOW),
+      'report_delivered',
+    );
+    expect(idle.lastLandedSha).toBe(SHA);
+    expect(parseAutopilotMainlineConfig(JSON.parse(JSON.stringify(idle)))?.lastLandedSha).toBe(SHA);
+  });
+
+  it('an uncertain push that was already landed frees the slot without owing a restart', () => {
+    const cfg = { deployEnvironment: 'prod', slot: slotIn('uncertain'), landedCount: 1 };
+    const freed = withMainlineSlot(cfg, idleMainlineSlot(NOW), 'remote_already_landed');
+    expect(freed.restartOwed).toBeUndefined();
+    expect(freed.landedCount).toBe(1);
   });
 
   it('records an owed restart on uncertain → idle, keeps it, and drops it on the next push', () => {

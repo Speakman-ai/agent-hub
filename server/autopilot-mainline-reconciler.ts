@@ -11,6 +11,9 @@
  *   retried with backoff until a run is accepted or the restart is dropped
  *   (session stopped or expired, a human cancelled, automation is manual),
  *   and only then cleared, so a failed start survives sweeps and restarts.
+ * - An idle slot with no restart owed resumes a Finalize run parked at
+ *   `ready_to_push` (its push was refused before anything reached the
+ *   remote, e.g. the intent write failed), since no slot-freed event will.
  * - Every write is a compare-and-set on the stored `(phase, attemptId)`, so an
  *   answer that arrives after the slot moved on writes nothing.
  * - Only a completed git answer clears the attempt (see
@@ -56,6 +59,16 @@ export interface MainlineReconcilerDeps {
    * `retry`.
    */
   restartFinalize: (sessionId: string) => Promise<MainlineRestartResult>;
+  /**
+   * Move Finalize forward on an idle slot with no restart owed. Nothing else
+   * wakes these up: a run parked at `ready_to_push` because its intent write
+   * failed (the slot never left `idle`), a run left at `pushing` because its
+   * status write failed, and committed work whose Finalize run was never
+   * created. `accepted`: done, or nothing to do. `dropped`: a parked run waits
+   * on something else (a manual push, a stopped session); asked again after
+   * the longest backoff. `retry`: asked again after a backoff.
+   */
+  resumeFinalize?: (sessionId: string) => Promise<MainlineRestartResult>;
   postNotice: (sessionId: string, content: string) => void;
   now?: () => number;
   log?: (message: string) => void;
@@ -91,16 +104,24 @@ export function createMainlineReconciler(deps: MainlineReconcilerDeps) {
   const backoffs = new Map<string, Backoff>();
   const pendingRestarts = new Map<string, Promise<void>>();
 
-  function readState(
-    sessionId: string,
-  ): { slot: MainlineSlot; branch: string | null; restartOwed: MainlineRestartOwed | null } | null {
+  function readState(sessionId: string): {
+    slot: MainlineSlot;
+    branch: string | null;
+    restartOwed: MainlineRestartOwed | null;
+    lastLandedSha: string | null;
+  } | null {
     const row = deps.stmts.getSession.get(sessionId) as
       | { autopilot_session_config?: string | null }
       | undefined;
     const cfg = parseAutopilotSessionConfig(row?.autopilot_session_config ?? null);
     if (!cfg || cfg.target !== 'mainline' || !cfg.mainline) return null;
     const branch = typeof cfg.branch === 'string' && cfg.branch.trim() ? cfg.branch.trim() : null;
-    return { slot: cfg.mainline.slot, branch, restartOwed: cfg.mainline.restartOwed ?? null };
+    return {
+      slot: cfg.mainline.slot,
+      branch,
+      restartOwed: cfg.mainline.restartOwed ?? null,
+      lastLandedSha: cfg.mainline.lastLandedSha ?? null,
+    };
   }
 
   function nowIso(): string {
@@ -199,6 +220,7 @@ export function createMainlineReconciler(deps: MainlineReconcilerDeps) {
     if (!state) return;
     if (state.slot.phase === 'idle') {
       if (state.restartOwed) requestRestart(session, state.restartOwed);
+      else requestResume(session);
       return;
     }
     let slot: MainlineSlot | null = state.slot;
@@ -215,11 +237,22 @@ export function createMainlineReconciler(deps: MainlineReconcilerDeps) {
       return;
     }
 
+    // Present, and this session's last landing is the same commit: this
+    // attempt re-pushed a commit that was already deployed and reported. The
+    // record cannot change while this attempt holds the slot, and the write
+    // below is a compare-and-set on it.
+    const alreadyLanded = answer.kind === 'present' && state.lastLandedSha === slot.sha;
     const write = transitionMainlineSlot({
       stmts: deps.stmts,
       sessionId: session.id,
       expect: { phase: 'uncertain', attemptId: slot.attemptId },
-      event: { type: answer.kind === 'present' ? 'remote_present' : 'remote_absent' },
+      event: {
+        type: alreadyLanded
+          ? 'remote_already_landed'
+          : answer.kind === 'present'
+            ? 'remote_present'
+            : 'remote_absent',
+      },
       nowIso: nowIso(),
     });
     if (!write.wrote) {
@@ -239,6 +272,13 @@ export function createMainlineReconciler(deps: MainlineReconcilerDeps) {
     }
     backoffs.delete(key);
     const branch = state.branch as string;
+    if (alreadyLanded) {
+      deps.postNotice(
+        session.id,
+        `${shortSha(slot.sha)} was already on ${branch} from an earlier landing, so nothing new was deployed.`,
+      );
+      return;
+    }
     if (answer.kind === 'present') {
       deps.postNotice(
         session.id,
@@ -282,6 +322,45 @@ export function createMainlineReconciler(deps: MainlineReconcilerDeps) {
         log(
           `[autopilot-reconcile] session=${session.id} restart settle failed: ${errMessage(err)}`,
         ),
+      )
+      .finally(() => pendingRestarts.delete(key));
+    pendingRestarts.set(key, run);
+  }
+
+  /** Same single-flight and backoff rules as {@link requestRestart}. */
+  function requestResume(session: MainlineReconcileSession): void {
+    const resume = deps.resumeFinalize;
+    if (!resume) return;
+    const key = `resume:${session.id}`;
+    if (pendingRestarts.has(key)) return;
+    const wait = backoffs.get(key);
+    if (wait && now() < wait.nextAt) return;
+    const run = (async () => {
+      let result: MainlineRestartResult;
+      try {
+        result = await resume(session.id);
+      } catch (err) {
+        result = { kind: 'retry', detail: `resume threw: ${errMessage(err)}` };
+      }
+      if (result.kind === 'accepted') {
+        backoffs.delete(key);
+        return;
+      }
+      const failures = (backoffs.get(key)?.failures ?? 0) + 1;
+      const delay =
+        result.kind === 'dropped'
+          ? MAINLINE_RECONCILE_BACKOFF_MAX_MS
+          : mainlineReconcileBackoffMs(failures);
+      backoffs.set(key, { failures, nextAt: now() + delay });
+      if (result.kind === 'retry') {
+        log(
+          `[autopilot-reconcile] session=${session.id} parked push not resumed ` +
+            `(attempt ${failures}, retry in ${Math.round(delay / 1000)}s): ${result.detail}`,
+        );
+      }
+    })()
+      .catch((err) =>
+        log(`[autopilot-reconcile] session=${session.id} resume settle failed: ${errMessage(err)}`),
       )
       .finally(() => pendingRestarts.delete(key));
     pendingRestarts.set(key, run);

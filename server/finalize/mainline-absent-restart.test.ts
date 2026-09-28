@@ -10,8 +10,10 @@ const runFinalizePush = vi.fn();
 const startFinalizeRunBackground = vi.fn();
 const acquirePushLock = vi.fn();
 
+const pushesInProgress = new Set<string>();
 vi.mock('./push-run.js', () => ({
   runFinalizePush: (...args: unknown[]) => runFinalizePush(...args),
+  isFinalizeRunPushInProgress: (id: string) => pushesInProgress.has(id),
 }));
 vi.mock('./trigger-run.js', () => ({
   startFinalizeRunBackground: (...args: unknown[]) => startFinalizeRunBackground(...args),
@@ -40,6 +42,10 @@ vi.mock('../session-autopilot.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../session-autopilot.js')>()),
   enforceAutopilotExpiry: () => ({ blocked: false }),
 }));
+vi.mock('./worktree-changes.js', () => ({
+  getSessionCommittableChanges: async () => ({ ok: true }),
+}));
+vi.mock('../session-worktree-io.js', () => ({ sessionWorktreeIoFor: async () => ({}) }));
 vi.mock('../session-mode.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../session-mode.js')>()),
   isAutopilotModeActive: () => true,
@@ -49,6 +55,7 @@ import {
   decideMainlineAbsentRestart,
   restartFinalizeAfterMainlineAbsent,
   restartResultFromAutoPush,
+  resumeMainlineFinalize,
   setFinalizeAutomationRouteDeps,
 } from './automation-runner.js';
 import {
@@ -72,6 +79,8 @@ function run(id: string, status: string): FinalizeRunRow {
 /** Finalize run rows keyed by id; `latest` is what the session reports. */
 const runs = new Map<string, FinalizeRunRow>();
 let latestId: string | null = null;
+let reparkFails = false;
+const activeProcesses = new Map<string, unknown>();
 
 function wire(): void {
   setFinalizeAutomationRouteDeps({
@@ -81,9 +90,18 @@ function wire(): void {
       },
       getLatestFinalizeRunForSession: { get: () => (latestId ? runs.get(latestId) : undefined) },
       getFinalizeRun: { get: (id: string) => runs.get(id) },
+      markFinalizeRunReadyToPush: {
+        run: (sha: string, id: string) => {
+          if (reparkFails) throw new Error('SQLITE_IOERR');
+          const row = runs.get(id);
+          if (row) runs.set(id, { ...row, status: 'ready_to_push', validated_head_sha: sha });
+          return { changes: row ? 1 : 0 };
+        },
+      },
       getKanbanEpic: { get: () => undefined },
     },
     findAgent: () => ({ project: { id: 'p1' } }),
+    activeProcesses,
     broadcast: vi.fn(),
     config: {},
   } as unknown as RouteDeps);
@@ -92,6 +110,9 @@ function wire(): void {
 beforeEach(() => {
   runs.clear();
   latestId = null;
+  reparkFails = false;
+  pushesInProgress.clear();
+  activeProcesses.clear();
   runFinalizePush.mockReset();
   startFinalizeRunBackground.mockReset();
   acquirePushLock.mockReset();
@@ -239,5 +260,74 @@ describe('owed restart through the reconciler sweep', () => {
     await reconciler.settled();
     expect(runFinalizePush).toHaveBeenCalledTimes(2);
     expect(owed(id)).toBeNull();
+  });
+});
+
+describe('resumeMainlineFinalize', () => {
+  it('pushes a parked run, and pushes nothing when none is parked', async () => {
+    startFinalizeRunBackground.mockResolvedValue({ ok: true, runId: 'r-new' });
+    runs.set('r1', run('r1', 'pushed'));
+    latestId = 'r1';
+    expect(await resumeMainlineFinalize(SESSION)).toMatchObject({ kind: 'accepted' });
+    expect(runFinalizePush).not.toHaveBeenCalled();
+
+    runs.set('r2', run('r2', 'ready_to_push'));
+    latestId = 'r2';
+    runFinalizePush.mockResolvedValueOnce({ ok: true, prUrl: null });
+    expect(await resumeMainlineFinalize(SESSION)).toMatchObject({ kind: 'accepted' });
+    expect(runFinalizePush).toHaveBeenCalledTimes(1);
+  });
+
+  it('a run left at pushing with no push in progress is parked again and pushed', async () => {
+    runs.set('r1', { ...run('r1', 'pushing'), validated_head_sha: SHA } as FinalizeRunRow);
+    latestId = 'r1';
+    runFinalizePush.mockResolvedValueOnce({ ok: true, prUrl: null });
+    expect(await resumeMainlineFinalize(SESSION)).toMatchObject({ kind: 'accepted' });
+    expect(runs.get('r1')).toMatchObject({ status: 'ready_to_push', validated_head_sha: SHA });
+    expect(runFinalizePush).toHaveBeenCalledTimes(1);
+  });
+
+  it('never touches a run whose push is still in progress', async () => {
+    runs.set('r1', { ...run('r1', 'pushing'), validated_head_sha: SHA } as FinalizeRunRow);
+    latestId = 'r1';
+    pushesInProgress.add('r1');
+    expect(await resumeMainlineFinalize(SESSION)).toMatchObject({ kind: 'accepted' });
+    expect(runs.get('r1')!.status).toBe('pushing');
+    expect(runFinalizePush).not.toHaveBeenCalled();
+  });
+
+  it('a failed re-park is retried later', async () => {
+    runs.set('r1', { ...run('r1', 'pushing'), validated_head_sha: SHA } as FinalizeRunRow);
+    latestId = 'r1';
+    reparkFails = true;
+    expect(await resumeMainlineFinalize(SESSION)).toMatchObject({ kind: 'retry' });
+    expect(runFinalizePush).not.toHaveBeenCalled();
+  });
+});
+
+describe('resumeMainlineFinalize with no run to push', () => {
+  it('runs the end-of-turn auto-start again when the latest run is finished or missing', async () => {
+    startFinalizeRunBackground.mockResolvedValue({ ok: true, runId: 'r-new' });
+    expect(await resumeMainlineFinalize(SESSION)).toMatchObject({ kind: 'accepted' });
+    expect(startFinalizeRunBackground).toHaveBeenCalledTimes(1);
+    expect(startFinalizeRunBackground.mock.calls[0]![1]).toMatchObject({
+      triggerSource: 'agent_block',
+    });
+
+    runs.set('r1', run('r1', 'failed'));
+    latestId = 'r1';
+    await resumeMainlineFinalize(SESSION);
+    expect(startFinalizeRunBackground).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts nothing while a run is in flight or an agent turn is running', async () => {
+    runs.set('r1', run('r1', 'reviewing'));
+    latestId = 'r1';
+    expect(await resumeMainlineFinalize(SESSION)).toMatchObject({ kind: 'accepted' });
+
+    runs.set('r1', run('r1', 'pushed'));
+    activeProcesses.set(SESSION, {});
+    expect(await resumeMainlineFinalize(SESSION)).toMatchObject({ kind: 'accepted' });
+    expect(startFinalizeRunBackground).not.toHaveBeenCalled();
   });
 });

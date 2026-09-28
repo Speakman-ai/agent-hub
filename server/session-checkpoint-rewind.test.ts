@@ -220,12 +220,12 @@ describe('broadcastSessionCreated', () => {
 
   it('offers the mainline Autopilot target only when the start route would accept it', () => {
     const dev = { id: 'p1', mode: 'dev' } as any;
-    vi.stubEnv('AGENT_HUB_AUTOPILOT_MAINLINE', '');
+    vi.stubEnv('AGENT_HUB_AUTOPILOT_MAINLINE', '0');
     try {
       expect(
         enrichSessionForClient(minimalSession({}), undefined, dev).can_autopilot_mainline,
       ).toBe(false);
-      vi.stubEnv('AGENT_HUB_AUTOPILOT_MAINLINE', '1');
+      vi.stubEnv('AGENT_HUB_AUTOPILOT_MAINLINE', '');
       expect(
         enrichSessionForClient(minimalSession({}), undefined, dev).can_autopilot_mainline,
       ).toBe(true);

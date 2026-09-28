@@ -316,6 +316,7 @@ import {
   maybeAutoPushReadyFinalizeRun,
   maybeAutoMergeAfterChecks,
   restartFinalizeAfterMainlineAbsent,
+  resumeMainlineFinalize,
   retryParkedPushAfterSlotFreed,
   setFinalizeAutomationRouteDeps,
 } from './finalize/automation-runner.js';
@@ -2301,6 +2302,7 @@ initMainlineDeployWatcher({
   findAgent,
   orgId: getActiveOrgId,
   restartFinalize: restartFinalizeAfterMainlineAbsent,
+  resumeFinalize: resumeMainlineFinalize,
   handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws, msg),
 });
 

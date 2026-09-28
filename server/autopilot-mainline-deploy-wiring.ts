@@ -108,6 +108,8 @@ export function initMainlineDeployWatcher(args: {
   orgId: () => string;
   /** Start Finalize again after the reconciler found a push absent. */
   restartFinalize: MainlineReconcilerDeps['restartFinalize'];
+  /** Move Finalize forward while the slot is idle (see the reconciler dep). */
+  resumeFinalize?: MainlineReconcilerDeps['resumeFinalize'];
   /** Chat entry point for the verify turn. Dispatched, never awaited by the sweep. */
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
 }): MainlineDeployWatcher {
@@ -126,6 +128,7 @@ export function initMainlineDeployWatcher(args: {
       return checkCommitOnRemoteBranch({ source, sha, branch });
     },
     restartFinalize: args.restartFinalize,
+    resumeFinalize: args.resumeFinalize,
     postNotice,
   });
   let watcher: MainlineDeployWatcher | null = null;

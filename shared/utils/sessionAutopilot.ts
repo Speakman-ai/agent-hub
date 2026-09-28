@@ -51,15 +51,14 @@ export const AUTOPILOT_TARGETS = ['branch', 'mainline'] as const;
 export type AutopilotTarget = (typeof AUTOPILOT_TARGETS)[number];
 
 /**
- * Whether a `mainline` run can actually execute. Until Finalize lands commits
- * on the default branch and the Hub deploys and reports them, the start API
- * refuses mainline and the setup forms show the option disabled. Flip this
- * when that path ships.
+ * Whether servers offer the `mainline` target by default. An operator can
+ * still turn it off per server (`AGENT_HUB_AUTOPILOT_MAINLINE=0`); clients
+ * read the answer from the session's `can_autopilot_mainline`.
  */
-export const AUTOPILOT_MAINLINE_AVAILABLE = false;
+export const AUTOPILOT_MAINLINE_AVAILABLE = true;
 
 export const AUTOPILOT_MAINLINE_UNAVAILABLE_MESSAGE =
-  'Default branch + deploy is not available yet: Finalize cannot land commits on the default branch and deploy them. Use an isolated branch for now.';
+  'Default branch + deploy is turned off on this server. Use an isolated branch.';
 
 export interface AutopilotSessionConfig {
   durationHours: number;
