@@ -54,6 +54,7 @@ import type {
   ReviewerThreadRow,
   Stmts,
 } from '../types.js';
+import { terminationReasonLabel, type ProcessTerminationReason } from '../process-termination.js';
 import { formatThreadsForDispatchBody } from './reviewer-dispatch.js';
 import {
   looksLikeRunnerTeardownForHint,
@@ -202,6 +203,11 @@ export type FixDispatchOutcome =
 
 export interface FixDispatchResult {
   outcome: FixDispatchOutcome;
+  /**
+   * Set on `spawn_failed` when the turn was killed rather than failing to
+   * start: why the Hub terminated it (`user_cancel`, `chat_wall_timeout`, …).
+   */
+  terminationReason?: ProcessTerminationReason;
   /** Inserted session message id (the §7 prompt). */
   messageId: string;
   /** Active-seconds billed on entry. The orchestrator may have already paid; see {@link FixDispatchOptions.skipActiveSecondsCharge}. */
@@ -217,10 +223,14 @@ export interface FixDispatchResult {
  * `subscribe` returns an unsubscribe fn. The helper calls it on every
  * exit path so we never leak listeners.
  */
+export interface TurnEndDetail {
+  terminationReason?: ProcessTerminationReason;
+}
+
 export interface TurnEndSubscriber {
   subscribe(
     sessionId: string,
-    onTurnEnd: (outcome: 'turn_ended' | 'spawn_failed') => void,
+    onTurnEnd: (outcome: 'turn_ended' | 'spawn_failed', detail?: TurnEndDetail) => void,
   ): () => void;
 }
 
@@ -487,7 +497,7 @@ export async function dispatchFixMessage(
     let unsubscribeTurnEnd: (() => void) | null = null;
     let unsubscribeCancel: (() => void) | null = null;
 
-    const finish = (outcome: FixDispatchOutcome): void => {
+    const finish = (outcome: FixDispatchOutcome, detail?: TurnEndDetail): void => {
       if (settled) return;
       settled = true;
       try {
@@ -505,14 +515,19 @@ export async function dispatchFixMessage(
       } catch {
         /* best-effort */
       }
-      resolve({ outcome, messageId, activeSecondsBilled });
+      resolve({
+        outcome,
+        messageId,
+        activeSecondsBilled,
+        ...(detail?.terminationReason ? { terminationReason: detail.terminationReason } : {}),
+      });
     };
 
     // Subscribe to turn-end first so a same-tick `done` event that
     // fires synchronously during watchdog setup is not missed.
     try {
-      unsubscribeTurnEnd = deps.turnEnd.subscribe(opts.sessionId, (outcome) =>
-        finish(outcome === 'spawn_failed' ? 'spawn_failed' : 'turn_ended'),
+      unsubscribeTurnEnd = deps.turnEnd.subscribe(opts.sessionId, (outcome, detail) =>
+        finish(outcome === 'spawn_failed' ? 'spawn_failed' : 'turn_ended', detail),
       );
     } catch (err) {
       log(
@@ -758,6 +773,97 @@ export function composeDispatchBody(trigger: FixDispatchTrigger): string {
   lines.push(hasFailedStep ? DISPATCH_TRAILER : DISPATCH_TRAILER_REVIEWER);
 
   return lines.join('\n');
+}
+
+/**
+ * How many times a fix turn that died before finishing is handed back to the
+ * session agent before the run fails as `dispatch_failure`. Each retry is a
+ * full dispatch (system row + agent turn), so the cap bounds a CLI that can
+ * never start.
+ */
+export const DEFAULT_MAX_FIX_REDISPATCHES = 2;
+
+export function resolveMaxFixRedispatches(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.FINALIZE_MAX_FIX_REDISPATCHES;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_MAX_FIX_REDISPATCHES;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_FIX_REDISPATCHES;
+  return Math.min(Math.floor(n), 10);
+}
+
+/**
+ * A human pressing Stop is a decision, not a fault: the run should end.
+ * Every other way a fix turn dies (wall timeout, errored CLI exit, spawn
+ * error, interrupt, Autopilot unstick) is something the agent can recover
+ * from by being told what happened and trying again.
+ */
+export function isRecoverableFixTurnFailure(result: FixDispatchResult): boolean {
+  if (result.outcome !== 'spawn_failed') return false;
+  return result.terminationReason !== 'user_cancel';
+}
+
+export function describeFixTurnFailure(reason: ProcessTerminationReason | undefined): string {
+  return reason
+    ? `it was stopped (${terminationReasonLabel(reason)})`
+    : 'the agent CLI failed to start or exited with an error';
+}
+
+export function buildFixRedispatchBody(args: {
+  originalBody: string;
+  reason: ProcessTerminationReason | undefined;
+  attempt: number;
+  maxAttempts: number;
+}): string {
+  return [
+    `Finalize Code Changes: your previous fix turn did not finish because ${describeFixTurnFailure(
+      args.reason,
+    )}. Retry ${args.attempt} of ${args.maxAttempts}.`,
+    'Pick up where you left off: check `git status` and the branch log for work that already landed, then finish the items below, commit on this branch, and end your turn.',
+    '',
+    args.originalBody,
+  ].join('\n');
+}
+
+/**
+ * Run a fix dispatch, and when the agent's turn dies before finishing, feed
+ * that failure back to the same session and dispatch again (bounded by
+ * `maxRedispatches`). Without this, one killed or errored fix turn failed the
+ * whole run as `dispatch_failure` and left the session parked until a human
+ * re-ran Finalize.
+ */
+export async function dispatchFixWithRecovery(
+  dispatch: typeof dispatchFixMessage,
+  deps: FixDispatchDeps,
+  opts: FixDispatchOptions,
+  recovery: { maxRedispatches: number; log?: (msg: string) => void },
+): Promise<FixDispatchResult> {
+  const log = recovery.log ?? ((msg: string) => console.warn(msg));
+  const originalBody = opts.bodyOverride?.trim()
+    ? opts.bodyOverride
+    : composeDispatchBody(opts.trigger);
+  let result = await dispatch(deps, opts);
+  for (let attempt = 1; attempt <= recovery.maxRedispatches; attempt += 1) {
+    if (!isRecoverableFixTurnFailure(result) || opts.signal?.aborted) return result;
+    log(
+      `[finalize-fix-dispatch] fix turn did not finish for session=${opts.sessionId} run=${
+        opts.runId
+      } (${result.terminationReason ?? 'spawn_failed'}); re-dispatching ${attempt}/${
+        recovery.maxRedispatches
+      }`,
+    );
+    result = await dispatch(deps, {
+      ...opts,
+      bodyOverride: buildFixRedispatchBody({
+        originalBody,
+        reason: result.terminationReason,
+        attempt,
+        maxAttempts: recovery.maxRedispatches,
+      }),
+      // The first dispatch already billed the phase entry.
+      skipActiveSecondsCharge: true,
+    });
+  }
+  return result;
 }
 
 export const __test = {

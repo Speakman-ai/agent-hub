@@ -223,6 +223,7 @@ import { billSessionTurnDurationIfTaggedToFinalize } from './finalize/budget.js'
 import {
   notifyFinalizeSessionTurnEnd,
   notifyFinalizeSessionSpawnFailed,
+  shouldNotifyFinalizeOfTermination,
 } from './finalize/turn-end.js';
 import { applySessionGitGuards } from './finalize/spawn-ship-guards.js';
 import { worktreeHasFinalizeCi } from './finalize/worktree-has-ci.js';
@@ -5217,8 +5218,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           // under the automation-driven `agent_block` trigger). Signal
           // spawn-failed so the orchestrator settles the run promptly instead.
           // No-op unless a Finalize wait subscriber is registered for the id.
+          //
+          // Except on server shutdown: settling here would write the run as a
+          // terminal `dispatch_failure` in the last moments of the process, and
+          // boot recovery only re-triggers runs still in flight. Leaving the
+          // wait open lets the restarted Hub sweep and re-run it.
           try {
-            notifyFinalizeSessionSpawnFailed(sessionId);
+            if (!shouldNotifyFinalizeOfTermination(termination.reason)) {
+              console.info(
+                `[chat] finalize wait for ${sessionId} left open for boot recovery (${termination.reason})`,
+              );
+            } else {
+              notifyFinalizeSessionSpawnFailed(sessionId, {
+                terminationReason: termination.reason,
+              });
+            }
           } catch (err) {
             console.warn(
               `[chat] finalize spawn-failed notify (termination) threw for ${sessionId}: ${

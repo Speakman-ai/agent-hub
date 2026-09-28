@@ -765,6 +765,75 @@ describe('runFinalize — split modes', () => {
     expect(gate.jobs.map((j) => j.jobId)).toContain('server');
   });
 
+  it('re-dispatches a fix turn that was killed instead of failing the run', async () => {
+    // Regression: one fix turn killed mid-flight (wall timeout, errored CLI
+    // exit) used to end the run as `dispatch_failure`. The failure is now fed
+    // back to the session and the fix dispatched again.
+    const steps = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 'failure',
+        stepResults: [],
+        failedStep: {
+          index: 0,
+          name: 'unit-tests',
+          run: 'npm test',
+          exitCode: 1,
+          outputTail: ['boom'],
+        },
+        activeSecondsBilled: 5,
+      })
+      .mockResolvedValue(STEPS_OK);
+    const dispatch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        outcome: 'spawn_failed',
+        terminationReason: 'chat_wall_timeout',
+        messageId: 'msg-fix-1',
+        activeSecondsBilled: 1,
+      })
+      .mockResolvedValue(FIX_TURN_ENDED);
+    const { deps, stmts } = makeDeps({
+      runJobPhase: steps as never,
+      dispatchFixMessage: dispatch as never,
+      maxFixRedispatches: 2,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    const retryOpts = dispatch.mock.calls[1][1] as { bodyOverride?: string };
+    expect(retryOpts.bodyOverride).toContain('your previous fix turn did not finish');
+    expect(retryOpts.bodyOverride).toContain('unit-tests');
+    expect(stmts.failCalls.some((c) => c.reason === 'dispatch_failure')).toBe(false);
+    expect(result.kind).toBe('ready_to_push');
+  });
+
+  it('fails as dispatch_failure when the human stopped the fix turn', async () => {
+    const dispatch = fakeDispatchFix({
+      outcome: 'spawn_failed',
+      terminationReason: 'user_cancel',
+      messageId: 'msg-fix',
+      activeSecondsBilled: 1,
+    });
+    const { deps, stmts } = makeDeps({
+      runJobPhase: fakeRunSteps({
+        status: 'failure',
+        stepResults: [],
+        failedStep: { index: 0, name: 'unit-tests', run: 'npm test', exitCode: 1, outputTail: [] },
+        activeSecondsBilled: 5,
+      }),
+      dispatchFixMessage: dispatch,
+      maxFixRedispatches: 2,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(result.kind).toBe('failed');
+    expect(stmts.failCalls.some((c) => c.reason === 'dispatch_failure')).toBe(true);
+  });
+
   it('checks mode still dispatches a fix when the tasks phase fails', async () => {
     const failingSteps = fakeRunSteps({
       status: 'failure',

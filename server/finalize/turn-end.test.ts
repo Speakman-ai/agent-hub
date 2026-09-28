@@ -5,6 +5,7 @@ import {
   finalizeTurnEndSubscriber,
   notifyFinalizeSessionTurnEnd,
   notifyFinalizeSessionSpawnFailed,
+  shouldNotifyFinalizeOfTermination,
   subscribeAllTurnEnds,
 } from './turn-end.js';
 
@@ -54,5 +55,24 @@ describe('finalize turn-end bus', () => {
     unsub();
     notifyFinalizeSessionTurnEnd('sess-a');
     expect(onAll).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('finalize turn-end bus: termination detail', () => {
+  afterEach(() => {
+    __testResetFinalizeTurnEndListeners();
+  });
+
+  it('forwards the termination reason to per-session subscribers', () => {
+    const onEnd = vi.fn();
+    finalizeTurnEndSubscriber.subscribe('sess-1', onEnd);
+    notifyFinalizeSessionSpawnFailed('sess-1', { terminationReason: 'chat_wall_timeout' });
+    expect(onEnd).toHaveBeenCalledWith('spawn_failed', { terminationReason: 'chat_wall_timeout' });
+  });
+
+  it('leaves the Finalize wait open on a server-shutdown kill so boot recovery re-runs it', () => {
+    expect(shouldNotifyFinalizeOfTermination('server_shutdown')).toBe(false);
+    expect(shouldNotifyFinalizeOfTermination('user_cancel')).toBe(true);
+    expect(shouldNotifyFinalizeOfTermination('chat_wall_timeout')).toBe(true);
   });
 });

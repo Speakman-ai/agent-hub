@@ -74,7 +74,12 @@ import type { StepRunResult } from './step-runner.js';
 import { runJobPhase } from './job-runner.js';
 import { reconcileFinalizeRunTerminalSteps } from './reconcile-terminal-steps.js';
 import type { FinalizeStepLogStore } from './finalize-log-store.js';
-import { dispatchFixMessage, type SpawnFixTurnFn } from './fix-dispatch.js';
+import {
+  dispatchFixMessage,
+  dispatchFixWithRecovery,
+  resolveMaxFixRedispatches,
+  type SpawnFixTurnFn,
+} from './fix-dispatch.js';
 import {
   computeRootCauseEscalation,
   resolveRootCauseEscalationRounds,
@@ -468,6 +473,11 @@ export interface OrchestratorDeps {
   runReviewerDispatch?: typeof runReviewerDispatch;
   runJobPhase?: typeof runJobPhase;
   dispatchFixMessage?: typeof dispatchFixMessage;
+  /**
+   * How many times a fix turn that died before finishing is re-dispatched
+   * to the session. Defaults to `FINALIZE_MAX_FIX_REDISPATCHES` (2).
+   */
+  maxFixRedispatches?: number;
   /** Spawn originating agent after §7 fix dispatch (see `spawn-fix-turn.ts`). */
   spawnFixTurn?: SpawnFixTurnFn;
   /**
@@ -618,7 +628,15 @@ export async function runFinalize(
   const loadCi = deps.loadCiConfigFromFile ?? loadCiConfigFromFile;
   const runReview = deps.runReviewerDispatch ?? runReviewerDispatch;
   const runJobs = deps.runJobPhase ?? runJobPhase;
-  const dispatchFix = deps.dispatchFixMessage ?? dispatchFixMessage;
+  const rawDispatchFix = deps.dispatchFixMessage ?? dispatchFixMessage;
+  // A fix turn that dies before finishing is fed back to the session agent
+  // and dispatched again instead of failing the run on the first miss.
+  const maxFixRedispatches = deps.maxFixRedispatches ?? resolveMaxFixRedispatches();
+  const dispatchFix: typeof dispatchFixMessage = (fixDeps, fixOpts) =>
+    dispatchFixWithRecovery(rawDispatchFix, fixDeps, fixOpts, {
+      maxRedispatches: maxFixRedispatches,
+      log,
+    });
   const resolveHead = deps.resolveHeadSha ?? defaultResolveHeadSha;
   const resolveUncommitted = deps.resolveUncommittedChanges ?? defaultResolveUncommittedChanges;
   // `transactional` is technically optional on the type so unit tests can
@@ -1074,7 +1092,9 @@ export async function runFinalize(
           runId,
           'failed',
           'dispatch_failure',
-          'agent CLI spawn failed during fix dispatch',
+          fix.terminationReason
+            ? `fix turn stopped (${fix.terminationReason}) and was not resumed`
+            : 'agent CLI spawn failed during fix dispatch',
           log,
         );
       }

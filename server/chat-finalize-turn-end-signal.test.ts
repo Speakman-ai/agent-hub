@@ -33,6 +33,7 @@ import {
   __testResetFinalizeTurnEndListeners,
 } from './finalize/turn-end.js';
 import type { ActiveChatProcess } from './active-chat-process.js';
+import { markSessionTermination } from './process-termination.js';
 import type { Agent, EnrichedAgent, Project } from './types.js';
 
 vi.mock('./per-user-cli-spawn.js', () => ({
@@ -43,6 +44,7 @@ vi.mock('./per-user-cli-spawn.js', () => ({
 const testPrefix = `fte-${randomUUID().slice(0, 8)}`;
 let binDir: string;
 let failBin: string;
+let killedBin: string;
 
 beforeAll(() => {
   binDir = mkdtempSync(path.join(tmpdir(), 'finalize-turn-end-'));
@@ -51,6 +53,10 @@ beforeAll(() => {
   failBin = path.join(binDir, 'fail.sh');
   writeFileSync(failBin, '#!/bin/sh\ncat > /dev/null 2>&1\nexit 1\n');
   chmodSync(failBin, 0o755);
+  // A turn the Hub killed mid-flight: the CLI dies by SIGTERM.
+  killedBin = path.join(binDir, 'killed.sh');
+  writeFileSync(killedBin, '#!/bin/sh\ncat > /dev/null 2>&1\nkill -TERM $$\n');
+  chmodSync(killedBin, 0o755);
 });
 
 afterAll(() => {
@@ -153,5 +159,41 @@ describe('Finalize turn-end signal on terminal close', () => {
     await expect(
       handleChat(null, { type: 'chat', agentId, sessionId, content: 'do the fix' }),
     ).resolves.toBeUndefined();
+  });
+
+  it('a killed turn settles the finalize wait with its termination reason', async () => {
+    const { agentId, sessionId } = seedSession('killed-timeout');
+    const seen: Array<{ outcome: string; reason?: string }> = [];
+    const unsubscribe = finalizeTurnEndSubscriber.subscribe(sessionId, (o, detail) =>
+      seen.push({ outcome: o, reason: detail?.terminationReason }),
+    );
+    try {
+      markSessionTermination(sessionId, 'chat_wall_timeout');
+      const { handleChat } = createChatHandler(makeDeps(agentId, killedBin));
+      await handleChat(null, { type: 'chat', agentId, sessionId, content: 'do the fix' });
+      await waitFor(() => seen.length > 0);
+      expect(seen).toEqual([{ outcome: 'spawn_failed', reason: 'chat_wall_timeout' }]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('a server-shutdown kill leaves the finalize wait open for boot recovery', async () => {
+    // Regression: the shutdown kill used to settle the wait as spawn_failed,
+    // which wrote the run as a terminal dispatch_failure right before the
+    // process exited, so boot recovery never re-triggered it.
+    const { agentId, sessionId } = seedSession('killed-shutdown');
+    const outcomes: string[] = [];
+    const unsubscribe = finalizeTurnEndSubscriber.subscribe(sessionId, (o) => outcomes.push(o));
+    const deps = makeDeps(agentId, killedBin);
+    try {
+      markSessionTermination(sessionId, 'server_shutdown');
+      const { handleChat } = createChatHandler(deps);
+      await handleChat(null, { type: 'chat', agentId, sessionId, content: 'do the fix' });
+      await waitFor(() => (deps.drainQueue as ReturnType<typeof vi.fn>).mock.calls.length > 0);
+      expect(outcomes).toEqual([]);
+    } finally {
+      unsubscribe();
+    }
   });
 });
