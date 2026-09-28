@@ -50,8 +50,9 @@ describe('systemBannerModel', () => {
     expect(modelPrimaryLabel('claude-fable-5')).toBe('Fable 5');
   });
 
-  it('maps claude-sonnet-5 to Sonnet and keeps claude-sonnet-4-6 as historical', () => {
-    expect(modelPrimaryLabel('claude-sonnet-5')).toBe('Sonnet');
+  it('maps claude-sonnet-5-5 to Sonnet 5.5 and keeps older Sonnet ids as historical', () => {
+    expect(modelPrimaryLabel('claude-sonnet-5-5')).toBe('Sonnet 5.5');
+    expect(modelPrimaryLabel('claude-sonnet-5')).toBe('Sonnet 5');
     expect(modelPrimaryLabel('claude-sonnet-4-6')).toBe('Sonnet 4.6');
   });
 

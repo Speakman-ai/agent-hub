@@ -639,7 +639,7 @@ export async function installPersistentDocumentNavigationGuard(
 export function resolveStagehandModelName(): string {
   const fromEnv = process.env.STAGEHAND_MODEL?.trim();
   if (fromEnv) return fromEnv;
-  return 'anthropic/claude-sonnet-5';
+  return 'anthropic/claude-sonnet-5-5';
 }
 
 /**

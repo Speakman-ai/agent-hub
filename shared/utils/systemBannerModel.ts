@@ -9,12 +9,13 @@ const MODEL_KNOWN_LABELS: Record<string, string> = {
   'claude-opus-5-5': 'Opus 5.5',
   'claude-opus-5': 'Opus 5',
   'claude-fable-5-1': 'Fable 5.1',
+  'claude-sonnet-5-5': 'Sonnet 5.5',
   // Retired from selection (superseded by Fable 5.1); label retained for history.
   'claude-fable-5': 'Fable 5',
   'claude-opus-4-8': 'Opus 4.8',
   'claude-opus-4-7': 'Opus 4.7',
   'claude-opus-4-6': 'Opus 4.6',
-  'claude-sonnet-5': 'Sonnet',
+  'claude-sonnet-5': 'Sonnet 5',
   // Retired from selection; label retained for historical sessions.
   'claude-sonnet-4-6': 'Sonnet 4.6',
   'composer-2.5': 'Composer 2.5',

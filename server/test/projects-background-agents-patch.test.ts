@@ -33,14 +33,14 @@ describe('PATCH /api/projects/:projectId — backgroundAgents.wiki', () => {
       .patch(`/api/projects/${projectId}`)
       .send({
         backgroundAgents: {
-          wiki: { enabled: true, schedule: '0 6 * * *', model: 'claude-sonnet-5', limit: 5 },
+          wiki: { enabled: true, schedule: '0 6 * * *', model: 'claude-sonnet-5-5', limit: 5 },
         },
       })
       .expect(200);
     expect((res.body as Body).backgroundAgents?.wiki).toEqual({
       enabled: true,
       schedule: '0 6 * * *',
-      model: 'claude-sonnet-5',
+      model: 'claude-sonnet-5-5',
       limit: 5,
     });
   });

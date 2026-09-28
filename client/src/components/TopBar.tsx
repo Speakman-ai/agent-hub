@@ -28,17 +28,16 @@ const ENGINE_OPTIONS = [
 
 const MODEL_LABELS = {
   'claude-opus-5-5': { label: 'Opus 5.5', short: 'Opus 5.5' },
-  'claude-opus-5': { label: 'Opus 5', short: 'Opus' },
   'claude-fable-5-1': { label: 'Fable 5.1', short: 'Fable' },
-  // Retired from selection (superseded by Fable 5.1) but retained so historical
-  // sessions/crons still render a clean label instead of a title-cased id.
+  'claude-sonnet-5-5': { label: 'Sonnet 5.5', short: 'Sonnet 5.5' },
+  // Retired from selection but retained so historical sessions/crons still
+  // render a clean label instead of a title-cased id.
+  'claude-opus-5': { label: 'Opus 5', short: 'Opus' },
   'claude-fable-5': { label: 'Fable 5', short: 'Fable' },
   'claude-opus-4-8': { label: 'Opus 4.8', short: 'Opus 4.8' },
   'claude-opus-4-7': { label: 'Opus 4.7', short: 'Opus 4.7' },
   'claude-opus-4-6': { label: 'Opus 4.6', short: 'Opus 4.6' },
-  'claude-sonnet-5': { label: 'Sonnet', short: 'Sonnet' },
-  // Retired from selection but retained so historical sessions/crons still
-  // render a clean label instead of a title-cased id.
+  'claude-sonnet-5': { label: 'Sonnet 5', short: 'Sonnet 5' },
   'claude-sonnet-4-6': { label: 'Sonnet 4.6', short: 'Sonnet 4.6' },
   'composer-2.5': { label: 'Composer 2.5', short: 'Composer 2.5' },
   'grok-4.7-high': { label: 'Grok 4.7', short: 'Grok 4.7' },
@@ -76,6 +75,16 @@ function modelDisplay(id: any) {
   return { id, label: label || 'Unknown model', short: label || 'Unknown' };
 }
 
+// A session keeps running on its stored model even after that id is removed
+// from the picker, so label it by the real model instead of the first option.
+export function currentModelDisplay(engineModels: any[], sessionModel: any) {
+  return (
+    engineModels.find((m: any) => m.id === sessionModel) ||
+    (sessionModel ? modelDisplay(sessionModel) : engineModels[0]) ||
+    modelDisplay('unknown-model')
+  );
+}
+
 function fallbackModelsForEngine(engine: any) {
   if (engine === 'cursor-agent')
     return [
@@ -96,15 +105,7 @@ function fallbackModelsForEngine(engine: any) {
       'grok-build',
       'grok-composer-2.5-fast',
     ];
-  return [
-    'claude-opus-5-5',
-    'claude-opus-5',
-    'claude-fable-5-1',
-    'claude-opus-4-8',
-    'claude-opus-4-7',
-    'claude-opus-4-6',
-    'claude-sonnet-5',
-  ];
+  return ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5'];
 }
 
 export default function TopBar({
@@ -160,10 +161,7 @@ export default function TopBar({
     ? modelConfig.engineValidModels[sessionEngine] || []
     : fallbackModelsForEngine(sessionEngine);
   const engineModels = engineModelIds.map((id: any) => modelDisplay(id));
-  const currentModel =
-    engineModels.find((m: any) => m.id === sessionModel) ||
-    engineModels[0] ||
-    modelDisplay(sessionModel || 'unknown-model');
+  const currentModel = currentModelDisplay(engineModels, sessionModel);
   const copyActiveSessionId = async () => {
     if (!activeSessionId) return;
     const ok = await copyToClipboard(activeSessionId);

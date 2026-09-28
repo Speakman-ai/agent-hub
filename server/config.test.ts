@@ -460,25 +460,34 @@ describe('config.ts — claude-code model defaults', () => {
     expect(cfg.engineValidModels['claude-code']).toContain(cfg.engineDefaultModels['claude-code']);
   });
 
-  it('offers claude-sonnet-5 and drops the retired claude-sonnet-4-6', async () => {
-    // Regression: Claude Sonnet 5 (API id `claude-sonnet-5`, released 2026-06-30)
-    // replaces claude-sonnet-4-6 as the selectable Sonnet-tier option. The old id
-    // must no longer be selectable, otherwise the picker offers a retired model.
+  it('offers claude-sonnet-5-5 and drops the retired Sonnet and Opus ids', async () => {
+    // Sonnet 5.5 replaces Sonnet 5 as the selectable Sonnet-tier option, and the
+    // older Opus ids are no longer offered. Retired ids must stay out of the
+    // allowlist or the picker offers models we no longer use.
     const cfg = await importDefaults();
-    expect(cfg.engineValidModels['claude-code']).toContain('claude-sonnet-5');
-    expect(cfg.allValidModels).toContain('claude-sonnet-5');
-    expect(cfg.engineValidModels['claude-code']).not.toContain('claude-sonnet-4-6');
+    expect(cfg.engineValidModels['claude-code']).toContain('claude-sonnet-5-5');
+    expect(cfg.allValidModels).toContain('claude-sonnet-5-5');
+    for (const retired of [
+      'claude-sonnet-5',
+      'claude-sonnet-4-6',
+      'claude-opus-5',
+      'claude-opus-4-8',
+      'claude-opus-4-7',
+      'claude-opus-4-6',
+    ]) {
+      expect(cfg.engineValidModels['claude-code']).not.toContain(retired);
+    }
   });
 
-  it('defaults claude-code to Sonnet 5 for workflow-mode and Opus 5.5 for dev-mode', async () => {
-    // Mode-aware default: workflow (no-code) projects run the lighter Sonnet 5,
+  it('defaults claude-code to Sonnet 5.5 for workflow-mode and Opus 5.5 for dev-mode', async () => {
+    // Mode-aware default: workflow (no-code) projects run the lighter Sonnet,
     // dev/code projects run Opus 5.5. Both ids must stay selectable so the
     // resolved default is not filtered out downstream.
     const cfg = await importDefaults();
     const modeDefaults = cfg.engineModeDefaultModels['claude-code'];
-    expect(modeDefaults?.workflow).toBe('claude-sonnet-5');
+    expect(modeDefaults?.workflow).toBe('claude-sonnet-5-5');
     expect(modeDefaults?.dev).toBe('claude-opus-5-5');
-    expect(cfg.engineValidModels['claude-code']).toContain('claude-sonnet-5');
+    expect(cfg.engineValidModels['claude-code']).toContain('claude-sonnet-5-5');
     expect(cfg.engineValidModels['claude-code']).toContain('claude-opus-5-5');
   });
 });

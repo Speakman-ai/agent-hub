@@ -14,12 +14,8 @@ export const ENGINE_OPTIONS = [
 export const ENGINE_MODELS: Record<string, any> = {
   'claude-code': [
     { id: 'claude-opus-5-5', label: 'Opus 5.5', short: 'Opus 5.5' },
-    { id: 'claude-opus-5', label: 'Opus 5', short: 'Opus' },
     { id: 'claude-fable-5-1', label: 'Fable 5.1', short: 'Fable' },
-    { id: 'claude-opus-4-8', label: 'Opus 4.8', short: 'Opus 4.8' },
-    { id: 'claude-opus-4-7', label: 'Opus 4.7', short: 'Opus 4.7' },
-    { id: 'claude-opus-4-6', label: 'Opus 4.6', short: 'Opus 4.6' },
-    { id: 'claude-sonnet-5', label: 'Sonnet', short: 'Sonnet' },
+    { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', short: 'Sonnet 5.5' },
   ],
   'cursor-agent': [
     { id: 'grok-4.7-high', label: 'Grok 4.7', short: 'Grok 4.7' },
@@ -65,7 +61,12 @@ export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
 // client's split between MODEL_LABELS (display) and fallbackModelsForEngine
 // (selectable) in client/src/components/TopBar.tsx.
 export const HISTORICAL_MODEL_LABELS: Record<string, { label: string; short: string }> = {
+  'claude-sonnet-5': { label: 'Sonnet 5', short: 'Sonnet 5' },
   'claude-sonnet-4-6': { label: 'Sonnet 4.6', short: 'Sonnet 4.6' },
+  'claude-opus-5': { label: 'Opus 5', short: 'Opus' },
+  'claude-opus-4-8': { label: 'Opus 4.8', short: 'Opus 4.8' },
+  'claude-opus-4-7': { label: 'Opus 4.7', short: 'Opus 4.7' },
+  'claude-opus-4-6': { label: 'Opus 4.6', short: 'Opus 4.6' },
   // Superseded by claude-fable-5-1 (Fable 5.1); label retained for history.
   'claude-fable-5': { label: 'Fable 5', short: 'Fable' },
   // Retired from selection (rejected under ChatGPT OAuth).
@@ -89,6 +90,15 @@ export function modelDisplay(id: any) {
     .replace(/-/g, ' ')
     .replace(/\b\w/g, (c: any) => c.toUpperCase());
   return { id, label: label || 'Unknown model', short: label || 'Unknown' };
+}
+// A session keeps running on its stored model even after that id is removed
+// from the picker, so label it by the real model instead of the first option.
+export function currentModelDisplay(engineModels: any[], sessionModel: any) {
+  return (
+    engineModels.find((m: any) => m.id === sessionModel) ||
+    (sessionModel ? modelDisplay(sessionModel) : engineModels[0]) ||
+    modelDisplay('unknown-model')
+  );
 }
 export function engineOptionsFromConfig(modelConfig: any) {
   if (!modelConfig?.engineValidModels) return ENGINE_OPTIONS;

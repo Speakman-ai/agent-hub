@@ -222,16 +222,11 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // Keep Claude model IDs and labels aligned with the web and mobile pickers.
   'claude-code': [
     'claude-opus-5-5',
-    'claude-opus-5',
     'claude-fable-5-1',
-    'claude-opus-4-8',
-    'claude-opus-4-7',
-    'claude-opus-4-6',
-    // claude-sonnet-5: Anthropic's Sonnet-tier model (API id `claude-sonnet-5`,
-    // released 2026-06-30). Replaces the retired-from-selection claude-sonnet-4-6,
-    // whose display label is retained for historical sessions in TopBar.tsx /
-    // systemBannerModel.ts / mobile engineOptions.ts.
-    'claude-sonnet-5',
+    // Sonnet 5.5 (API id `claude-sonnet-5-5`, released 2026-09-28). The retired
+    // Sonnet and Opus ids keep display labels for historical sessions in
+    // TopBar.tsx / systemBannerModel.ts / mobile engineOptions.ts.
+    'claude-sonnet-5-5',
     'claude-haiku-4-6',
   ],
   // cursor-agent: only IDs the Hub passes through to `agent --model` (see
@@ -294,14 +289,14 @@ const mergedEngineDefaultModelsRaw =
 const mergedEngineDefaultModels = { ...mergedEngineDefaultModelsRaw };
 
 // Per-engine, per-project-mode default model. Workflow-mode projects get a
-// lighter Claude default (Sonnet 5); dev/code-mode projects get Opus 5.5.
+// lighter Claude default (Sonnet 5.5); dev/code-mode projects get Opus 5.5.
 // Consulted only at the bottom default tier of model resolution — explicit
 // picks and per-user overrides still win — and only when a caller threads the
 // project mode through. Engines/modes without an entry fall through to the
 // flat `engineDefaultModels`.
 const DEFAULT_ENGINE_MODE_DEFAULT_MODELS: Record<string, Partial<Record<ProjectMode, string>>> = {
   'claude-code': {
-    workflow: 'claude-sonnet-5',
+    workflow: 'claude-sonnet-5-5',
     dev: 'claude-opus-5-5',
   },
 };

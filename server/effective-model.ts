@@ -193,7 +193,7 @@ export function resolveEffectiveModel(
   }
 
   // Mode-aware default (e.g. workflow-mode claude-code → Sonnet, dev-mode →
-  // Opus 4.8). Sits below explicit picks / per-user / shared-agent tiers and
+  // Opus 5.5). Sits below explicit picks / per-user / shared-agent tiers and
   // only applies when the caller threaded the project mode through and the
   // resolved id is still valid for the engine.
   const mode = opts.projectMode;

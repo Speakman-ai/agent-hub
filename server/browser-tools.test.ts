@@ -835,7 +835,7 @@ describe('browser-tools — resolveStagehandModelName', () => {
     try {
       expect(resolveStagehandModelName()).toMatch(/^anthropic\//);
       // Pin the exact default so a model bump is a deliberate, reviewed change.
-      expect(resolveStagehandModelName()).toBe('anthropic/claude-sonnet-5');
+      expect(resolveStagehandModelName()).toBe('anthropic/claude-sonnet-5-5');
     } finally {
       if (prev !== undefined) process.env.STAGEHAND_MODEL = prev;
     }

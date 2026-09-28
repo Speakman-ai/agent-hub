@@ -6,6 +6,7 @@ import {
   ENGINE_DEFAULT_MODELS,
   modelDisplay,
   modelsForEngine,
+  currentModelDisplay,
 } from './engineOptions';
 describe('mobile engine picker constants', () => {
   it('exposes claude-code, cursor-agent, codex-cli, and grok-cli as engine options', () => {
@@ -101,15 +102,25 @@ describe('mobile engine picker constants', () => {
     expect(out.label).toBe('Fable 5');
     expect(out.short).toBe('Fable');
   });
-  it('exposes claude-sonnet-5 as the selectable Sonnet and drops retired claude-sonnet-4-6', () => {
-    // Regression: claude-sonnet-4-6 is retired from the server allowlist. It
-    // must NOT be selectable in the mobile picker (offline fallback source),
-    // otherwise a user could pick a model the backend rejects.
+  it('exposes claude-sonnet-5-5 as the selectable Sonnet and drops retired Sonnet/Opus ids', () => {
+    // The server allowlist no longer accepts these ids, so the picker must not
+    // offer them. Labels stay available for historical sessions.
     const ids = ENGINE_MODELS['claude-code'].map((m: any) => m.id);
-    expect(ids).toContain('claude-sonnet-5');
-    expect(ids).not.toContain('claude-sonnet-4-6');
-    const sonnet = ENGINE_MODELS['claude-code'].find((m: any) => m.id === 'claude-sonnet-5');
-    expect(sonnet.label).toBe('Sonnet');
+    expect(ids).toContain('claude-sonnet-5-5');
+    for (const retired of [
+      'claude-sonnet-5',
+      'claude-sonnet-4-6',
+      'claude-opus-5',
+      'claude-opus-4-8',
+      'claude-opus-4-7',
+      'claude-opus-4-6',
+    ]) {
+      expect(ids).not.toContain(retired);
+      expect(modelDisplay(retired).label).not.toMatch(/^Claude /);
+    }
+    const sonnet = ENGINE_MODELS['claude-code'].find((m: any) => m.id === 'claude-sonnet-5-5');
+    expect(sonnet.label).toBe('Sonnet 5.5');
+    expect(modelDisplay('claude-opus-4-8').label).toBe('Opus 4.8');
   });
   it('still labels the retired claude-sonnet-4-6 cleanly for historical sessions', () => {
     // The historical label lives in HISTORICAL_MODEL_LABELS (display metadata),
@@ -157,5 +168,12 @@ describe('mobile engine picker constants', () => {
         `default "${def}" for engine "${engine}" must be in ENGINE_MODELS`,
       ).toBe(true);
     }
+  });
+  it('labels a session on a retired model by its real model, not the first option', () => {
+    const models = modelsForEngine('claude-code', undefined);
+    expect(models.map((m: any) => m.id)).not.toContain('claude-opus-4-8');
+    expect(currentModelDisplay(models, 'claude-opus-4-8').label).toBe('Opus 4.8');
+    expect(currentModelDisplay(models, 'claude-sonnet-5-5').label).toBe('Sonnet 5.5');
+    expect(currentModelDisplay(models, '').id).toBe(models[0].id);
   });
 });

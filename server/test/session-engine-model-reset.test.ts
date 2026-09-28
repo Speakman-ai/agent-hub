@@ -3,11 +3,11 @@
  *
  * Symptom (from the browser console): after clicking "codex-cli" in the
  * TopBar engine picker, the session's engine was updated but its `model`
- * field still held the previous Claude model (e.g. `claude-opus-4-8`).
+ * field still held the previous Claude model (e.g. `claude-opus-5-5`).
  * The client would then fire `PUT /api/sessions/:id/model` with that
  * stale Claude model and the server correctly rejected it with:
  *
- *   400  Model "claude-opus-4-8" is not valid for engine "codex-cli".
+ *   400  Model "claude-opus-5-5" is not valid for engine "codex-cli".
  *        Allowed: gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.2
  *
  * Fix: when `PUT /api/sessions/:id/engine` switches to an engine whose
@@ -46,12 +46,12 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
     // "will be invalid after switch" state to assert against.
     const pinned = await request
       .put(`/api/sessions/${sessionId}/model`)
-      .send({ model: 'claude-opus-4-8' })
+      .send({ model: 'claude-opus-5-5' })
       .expect(200);
     expect(pinned.body.engine).toBe('claude-code');
-    expect(pinned.body.model).toBe('claude-opus-4-8');
+    expect(pinned.body.model).toBe('claude-opus-5-5');
 
-    // Switch to codex-cli. The server must notice that `claude-opus-4-8`
+    // Switch to codex-cli. The server must notice that `claude-opus-5-5`
     // is not in the codex allowlist and reset the model field.
     const switched = await request
       .put(`/api/sessions/${sessionId}/engine`)
@@ -79,7 +79,7 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
 
     await request
       .put(`/api/sessions/${sessionId}/model`)
-      .send({ model: 'claude-sonnet-5' })
+      .send({ model: 'claude-sonnet-5-5' })
       .expect(200);
 
     const switched = await request
@@ -89,7 +89,7 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
     expect(switched.body.engine).toBe('claude-code');
     // Model is still valid for the (unchanged) engine, so the server
     // must leave it alone — not reset to the engine default.
-    expect(switched.body.model).toBe('claude-sonnet-5');
+    expect(switched.body.model).toBe('claude-sonnet-5-5');
   });
 
   it('resets a null model to the engine default on engine switch', async () => {

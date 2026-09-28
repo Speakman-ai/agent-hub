@@ -35,13 +35,42 @@ function renderTopBar(overrides: any = {}) {
 describe('<TopBar /> engine picker', () => {
   it.each([
     undefined,
-    { engineValidModels: { 'claude-code': ['claude-opus-5-5', 'claude-opus-5'] } },
+    { engineValidModels: { 'claude-code': ['claude-opus-5-5', 'claude-fable-5-1'] } },
   ])('offers Opus 5.5 with and without server model configuration (%j)', (modelConfig) => {
     const onModelChange = vi.fn();
-    renderTopBar({ modelConfig, onModelChange, sessionModel: 'claude-opus-5' });
+    renderTopBar({ modelConfig, onModelChange, sessionModel: 'claude-fable-5-1' });
     fireEvent.click(screen.getByTitle(/^Model: /));
     fireEvent.click(screen.getByText('Opus 5.5'));
     expect(onModelChange).toHaveBeenCalledWith('claude-opus-5-5');
+  });
+
+  it('offers Sonnet 5.5 and hides retired Claude models in the offline fallback list', () => {
+    const onModelChange = vi.fn();
+    renderTopBar({ onModelChange, sessionModel: 'claude-opus-5-5' });
+    fireEvent.click(screen.getByTitle(/^Model: /));
+    for (const retired of ['Opus 5', 'Opus 4.8', 'Opus 4.7', 'Opus 4.6', 'Sonnet 5']) {
+      expect(screen.queryByText(retired)).toBeNull();
+    }
+    fireEvent.click(screen.getByText('Sonnet 5.5'));
+    expect(onModelChange).toHaveBeenCalledWith('claude-sonnet-5-5');
+  });
+
+  it.each([
+    ['claude-opus-4-8', 'Opus 4.8', undefined],
+    [
+      'claude-sonnet-5',
+      'Sonnet 5',
+      { engineValidModels: { 'claude-code': ['claude-opus-5-5', 'claude-sonnet-5-5'] } },
+    ],
+  ])('labels a session on retired %s by its real model', (sessionModel, label, modelConfig) => {
+    renderTopBar({ modelConfig, sessionModel });
+    const trigger = screen.getByTitle(`Model: ${label}`);
+    const labelsBeforeOpen = screen.getAllByText(label).length;
+    fireEvent.click(trigger);
+    // Still labelled correctly, but not offered as a selectable option.
+    expect(screen.getAllByText(label)).toHaveLength(labelsBeforeOpen);
+    expect(screen.queryByText('✓')).toBeNull();
+    expect(screen.getByText('Opus 5.5')).toBeTruthy();
   });
 
   it.each([

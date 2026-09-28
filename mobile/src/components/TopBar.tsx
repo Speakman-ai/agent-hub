@@ -6,7 +6,11 @@ import { colors } from '../theme/colors';
 import { SidebarContext } from '../context/SidebarContext';
 import { api } from '../utils/api';
 import { copyToClipboard } from '../utils/clipboard';
-import { engineOptionsFromConfig, modelsForEngine, modelDisplay } from '../utils/engineOptions';
+import {
+  engineOptionsFromConfig,
+  modelsForEngine,
+  currentModelDisplay,
+} from '../utils/engineOptions';
 import ForwardSessionModal, { filterForwardTargets } from './ForwardSessionModal';
 import SessionStateIcon from './SessionStateIcon';
 import SessionEngineModelSheet from './SessionEngineModelSheet';
@@ -92,10 +96,7 @@ export default function TopBar() {
   const engineOptions = engineOptionsFromConfig(modelConfig);
   const currentEngine = engineOptions.find((e: any) => e.id === sessionEngine) || engineOptions[0];
   const engineModels = modelsForEngine(sessionEngine, modelConfig);
-  const currentModel =
-    engineModels.find((m: any) => m.id === sessionModel) ||
-    engineModels[0] ||
-    modelDisplay(sessionModel || 'unknown-model');
+  const currentModel = currentModelDisplay(engineModels, sessionModel);
   return (
     <View style={styles.container}>
       <View style={styles.left}>
