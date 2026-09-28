@@ -41,6 +41,8 @@ export interface SessionRow {
    */
   worktree_checkout_branch?: string | null;
   changes_ready: string | null;
+  /** ISO timestamp set when the session's worktree changes were discarded. */
+  discarded_at?: string | null;
   /**
    * ISO timestamp of the first worktree mutation detected during this session
    * (mutating tool_use + `git status --porcelain`). NULL / absent = no tracked edits yet.
@@ -2222,6 +2224,7 @@ export interface Stmts {
   updateSessionTaskState: Stmt;
   updateSessionOrchestration: Stmt;
   clearSessionChangesReady: Stmt;
+  markSessionChangesDiscarded: Stmt;
   getStalePendingPrSessions: Stmt;
   markStalePrNotified: Stmt;
 
@@ -2843,6 +2846,7 @@ export interface Stmts {
    * duration to that run's §13 active-time budget.
    */
   getActiveFinalizeRunForSession: Stmt;
+  getUnfinishedFinalizeRunForSession: Stmt;
   /**
    * All **non-terminal** `finalize_runs` rows that have a `session_id`,
    * newest first. "Non-terminal" excludes the six terminal statuses

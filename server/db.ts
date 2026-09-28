@@ -3076,6 +3076,15 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN autopilot_session_config TEXT DEFAULT NULL');
   }
 
+  // Set when the session's worktree changes were thrown away through
+  // POST /api/sessions/:id/discard-changes, so "ended by discard" stays
+  // distinguishable from shipped (PR) and archived sessions.
+  try {
+    db.prepare('SELECT discarded_at FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN discarded_at TEXT DEFAULT NULL');
+  }
+
   try {
     db.prepare('SELECT card_kind FROM kanban_cards LIMIT 1').get();
   } catch {
@@ -4911,6 +4920,9 @@ function initDb(dataDir: string): void {
     // Also nulls `stale_pr_notified_at` so a future stale period for the
     // same session re-notifies rather than being permanently suppressed by
     // a prior notification.
+    markSessionChangesDiscarded: db.prepare(
+      "UPDATE sessions SET changes_ready = NULL, stale_pr_notified_at = NULL, discarded_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+    ),
     clearSessionChangesReady: db.prepare(
       "UPDATE sessions SET changes_ready = NULL, stale_pr_notified_at = NULL, updated_at = datetime('now') WHERE id = ?",
     ),
@@ -6914,6 +6926,16 @@ function initDb(dataDir: string): void {
     // run so the client converges regardless of which live events it missed.
     // Excludes the six terminal statuses but keeps the parked `ready_to_push`
     // so the sidebar/button reflect that state after a reconnect too.
+    // Any non-terminal run for the session, including the parked
+    // `ready_to_push`: discarding the worktree under either would strand it.
+    getUnfinishedFinalizeRunForSession: db.prepare(
+      `SELECT *
+         FROM finalize_runs
+        WHERE session_id = ?
+          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response')
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1`,
+    ),
     getActiveFinalizeRuns: db.prepare(
       `SELECT id, session_id, phase, status
          FROM finalize_runs

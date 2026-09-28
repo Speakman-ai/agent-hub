@@ -213,6 +213,7 @@ import createDashboardRoutes from './routes/dashboard.js';
 import createUploadRoutes from './routes/uploads.js';
 import createArtifactRoutes from './routes/artifacts.js';
 import createBackgroundShellRoutes from './routes/background-shells.js';
+import createSessionDiscardRoutes from './routes/session-discard.js';
 import createTranscribeRoutes from './routes/transcribe.js';
 import createMiscRoutes, { createHealthRoute } from './routes/misc.js';
 import createReleasesRoutes from './routes/releases.js';
@@ -2097,6 +2098,7 @@ app.use(createBackgroundAgentRoutes(routeDeps));
 app.use(createBoardRoutes(routeDeps));
 app.use(createConfigRoutes(routeDeps));
 app.use(createSessionRoutes(routeDeps));
+app.use(createSessionDiscardRoutes(routeDeps));
 app.use(createArtifactRoutes(routeDeps));
 app.use(
   createBackgroundShellRoutes({

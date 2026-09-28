@@ -2343,6 +2343,23 @@ export default function App({ initialView }: any = {}) {
           }
           break;
         }
+        case 'changes_discarded': {
+          // Worktree changes were thrown away — the session no longer needs shipping.
+          setChangesReady((prev: any) => {
+            if (!prev[data.sessionId]) return prev;
+            const next = { ...prev };
+            delete next[data.sessionId];
+            return next;
+          });
+          setSessions((prev: any) =>
+            prev.map((s: any) =>
+              s.id === data.sessionId
+                ? { ...s, changes_ready: null, discarded_at: data.discardedAt ?? null }
+                : s,
+            ),
+          );
+          break;
+        }
         case 'auto_pr_created': {
           // Clear changes_ready state when a PR is created (manually or automatically)
           setChangesReady((prev: any) => {

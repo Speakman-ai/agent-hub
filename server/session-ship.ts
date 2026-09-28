@@ -1,3 +1,4 @@
+import { getSessionWorktreeLockOwner } from './session-worktree-lock.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { ChildProcess } from 'child_process';
 import type {
@@ -96,6 +97,11 @@ export type TriggerSessionShipResult =
 
 /** Prevents duplicate POST /ship or double auto-ship before handleChat registers activeProcesses. */
 const sessionsWithShipInFlight = new Set<string>();
+
+/** True while a Create ticket & PR run is starting for the session. */
+export function isSessionShipInFlight(sessionId: string): boolean {
+  return sessionsWithShipInFlight.has(sessionId);
+}
 
 /** Test-only reset for in-flight ship guard. */
 export function resetShipInFlightForTests(): void {
@@ -202,6 +208,15 @@ export function triggerSessionShip(args: TriggerSessionShipArgs): TriggerSession
   const systemMessage = isAuto ? SHIP_AUTO_SYSTEM_MESSAGE : SHIP_SYSTEM_MESSAGE;
   const cliPrompt = isAuto ? SHIP_AUTO_CLI_PROMPT : SHIP_CLI_PROMPT;
   const skillReason = isAuto ? 'auto-session-end' : 'create-ticket-pr-button';
+
+  if (getSessionWorktreeLockOwner(sessionId) === 'discard') {
+    return {
+      ok: false,
+      status: 409,
+      error: "This session's changes are being discarded",
+      code: 'discard_in_progress',
+    };
+  }
 
   if (getProjectMode(project) === 'workflow') {
     return {

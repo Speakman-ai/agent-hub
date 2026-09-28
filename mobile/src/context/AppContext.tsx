@@ -924,8 +924,9 @@ export function AppProvider({ children }: any) {
           }));
           break;
         }
-        // A PR was opened (manually or automatically) — clear the banner.
+        // A PR was opened, or the session's changes were discarded — clear the banner.
         case 'auto_pr_created':
+        case 'changes_discarded':
           setChangesReady((prev: any) => {
             if (!prev[data.sessionId]) return prev;
             const next = { ...prev };

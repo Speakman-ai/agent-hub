@@ -2604,7 +2604,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       let finalizeLockOwned = false;
       if (session && sessionUsesWorktree(session) && !msg._multiAgentInternal) {
-        if (getSessionWorktreeLockOwner(sessionId) === 'branch-switch') {
+        // Both rewrite the worktree under the session; a turn must start on the result.
+        const blockingOwner = getSessionWorktreeLockOwner(sessionId);
+        if (blockingOwner === 'branch-switch' || blockingOwner === 'discard') {
           await waitForSessionWorktreeLockRelease(sessionId);
           session = stmts.getSession.get(sessionId) as SessionRow | undefined;
           if (!session) {

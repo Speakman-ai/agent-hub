@@ -4,7 +4,8 @@ export type SessionWorktreeLockOwner =
   | 'turn-start'
   | 'multi-agent-round'
   | 'finalize'
-  | 'autopilot-start';
+  | 'autopilot-start'
+  | 'discard';
 
 const owners = new Map<string, SessionWorktreeLockOwner>();
 const waiters = new Map<string, Array<() => void>>();
