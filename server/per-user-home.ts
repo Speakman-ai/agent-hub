@@ -46,7 +46,7 @@
  *   `<userId>/home` dir is kept so the next login can reuse the same
  *   tree without re-creating the path.
  */
-import { mkdirSync, rmSync, existsSync } from 'fs';
+import { mkdirSync, rmSync, existsSync, statSync } from 'fs';
 import path from 'path';
 
 const ROOT_SUBDIR = 'per-user-creds';
@@ -114,4 +114,23 @@ export function clearPerUserCliCache(userId: string, dataDir: string, subdir: st
   const target = path.join(home, subdir);
   if (!existsSync(target)) return;
   rmSync(target, { recursive: true, force: true });
+}
+
+/**
+ * True when the user's per-user HOME contains a non-empty
+ * `.claude/.credentials.json`. Claude Code stores its OAuth session there
+ * after `claude login` / "Sign in with Claude"; the file is the only
+ * file-based form of per-user Claude auth (the env-var path is the
+ * `claude_code_oauth_token` column). Shared by the spawn gate and the model
+ * picker's auth check so the two can't disagree about whether Claude is usable.
+ */
+export function perUserHomeHasClaudeCache(userId: string, dataDir: string): boolean {
+  try {
+    const credPath = path.join(perUserHomePath(userId, dataDir), '.claude', '.credentials.json');
+    if (!existsSync(credPath)) return false;
+    const st = statSync(credPath);
+    return st.isFile() && st.size > 0;
+  } catch {
+    return false;
+  }
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { tmpdir } from 'os';
-import { mkdtempSync, mkdirSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 
 // engine-auth-status reads `~/.claude/.credentials.json` and shells out via
@@ -87,6 +87,43 @@ describe('getEngineAuthStatus — strictly per-account (no host fallback)', () =
     });
     expect(out.claude).toBe(true);
     expect(out.any).toBe(true);
+  });
+
+  it('detects a "Sign in with Claude" browser login in the per-user HOME', async () => {
+    // Browser-login users have no stored key/token, only the CLI's credentials
+    // file. The spawn gate accepts it, so the model picker must too, or the
+    // Claude model list comes back empty while chats still run.
+    const user = createUser({ username: 'claude-browser-login', passwordHash: 'x' });
+    const home = ensurePerUserHome(user.id, TMP_DIR);
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    writeFileSync(
+      path.join(home, '.claude', '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r' } }),
+    );
+
+    const out = await getEngineAuthStatus({
+      cursorBin: '/nonexistent/cursor-agent',
+      userId: user.id,
+      dataDir: TMP_DIR,
+      cursorProbePerUserHome: noCursor,
+    });
+    expect(out.claude).toBe(true);
+    expect(out.any).toBe(true);
+  });
+
+  it('ignores an empty per-user Claude credentials file', async () => {
+    const user = createUser({ username: 'claude-empty-cache', passwordHash: 'x' });
+    const home = ensurePerUserHome(user.id, TMP_DIR);
+    mkdirSync(path.join(home, '.claude'), { recursive: true });
+    writeFileSync(path.join(home, '.claude', '.credentials.json'), '');
+
+    const out = await getEngineAuthStatus({
+      cursorBin: '/nonexistent/cursor-agent',
+      userId: user.id,
+      dataDir: TMP_DIR,
+      cursorProbePerUserHome: noCursor,
+    });
+    expect(out.claude).toBe(false);
   });
 
   it('does not consult per-user Claude creds when userId is omitted', async () => {

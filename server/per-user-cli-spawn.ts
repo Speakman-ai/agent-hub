@@ -3,7 +3,7 @@
  * and/or browser/device OAuth caches) vs when a spawn should fall back to
  * the operator's host-wide credentials.
  */
-import { existsSync, readdirSync, statSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import path from 'path';
 import { buildSpawnEnv, type BuildSpawnEnvOptions, type SpawnEnvOverride } from './config.js';
 import type { AppConfig } from './types.js';
@@ -14,7 +14,7 @@ import {
   getUserGeminiAuth,
   getUserGrokAuth,
 } from './users-store.js';
-import { perUserHomePath } from './per-user-home.js';
+import { perUserHomePath, perUserHomeHasClaudeCache } from './per-user-home.js';
 import { hasPopulatedCodexDeviceAuth } from './per-user-codex-device-login.js';
 import { detectCodexAuthMode } from './codex-auth.js';
 import { detectGrokAuthMode } from './grok-device-auth-parse.js';
@@ -50,24 +50,6 @@ export function perUserHomeHasGrokCache(userId: string, dataDir: string): boolea
     const home = perUserHomePath(userId, dataDir);
     const info = detectGrokAuthMode(path.join(home, '.grok'));
     return info.present && info.mode === 'oauth';
-  } catch {
-    return false;
-  }
-}
-
-/**
- * True when the user's per-user HOME contains a non-empty
- * `.claude/.credentials.json`. Claude Code stores its OAuth session there
- * after `claude login` / "Sign in with Claude"; the file is the only
- * file-based form of per-user Claude auth (the env-var path is the
- * `claude_code_oauth_token` column).
- */
-function perUserHomeHasClaudeCache(userId: string, dataDir: string): boolean {
-  try {
-    const credPath = path.join(perUserHomePath(userId, dataDir), '.claude', '.credentials.json');
-    if (!existsSync(credPath)) return false;
-    const st = statSync(credPath);
-    return st.isFile() && st.size > 0;
   } catch {
     return false;
   }

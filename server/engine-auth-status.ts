@@ -21,7 +21,7 @@ import { detectCodexAuthMode } from './codex-auth.js';
 import { getCursorAuthenticatedCached } from './cursor-auth-cache.js';
 import { parseCursorStatusJson } from './cursor-auth-parse.js';
 import { getUserClaudeAuth, getUserCursorAuth, getUserCodexAuth } from './users-store.js';
-import { ensurePerUserHome } from './per-user-home.js';
+import { ensurePerUserHome, perUserHomeHasClaudeCache } from './per-user-home.js';
 import {
   hasPopulatedCodexDeviceAuth,
   perUserCodexHomePath,
@@ -96,7 +96,8 @@ export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<Engin
     return { claude: false, cursor: false, codex: false, any: false };
   }
 
-  // Claude — per-user API key or OAuth token.
+  // Claude — per-user API key or OAuth token, else a browser-login cache in
+  // the per-user HOME (same sources the spawn gate accepts).
   let claude = false;
   try {
     const stored = getUserClaudeAuth(userId);
@@ -106,6 +107,9 @@ export async function getEngineAuthStatus(opts: EngineAuthInputs): Promise<Engin
   } catch {
     // users-store schema may be missing on bare bootstraps — treat as no creds.
     claude = false;
+  }
+  if (!claude && dataDir) {
+    claude = perUserHomeHasClaudeCache(userId, dataDir);
   }
 
   let hasUserCodexApiKey = false;
