@@ -19712,7 +19712,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/FinalizeErrorResponse"
         "409":
-          description: A non-terminal Finalize run already exists for this (branch, head_sha).
+          description: "A non-terminal Finalize run already exists for this (branch, head_sha), or the session is a spike (`spike_session`: spike code never ships)."
           content:
             application/json:
               schema:
@@ -19797,7 +19797,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/FinalizeErrorResponse"
         "409":
-          description: A non-terminal Finalize run already exists for this (branch, head_sha).
+          description: "A non-terminal Finalize run already exists for this (branch, head_sha), or the session is a spike (`spike_session`: spike code never ships)."
           content:
             application/json:
               schema:
@@ -19971,7 +19971,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/FinalizeErrorResponse"
         "409":
-          description: Run is not ready_to_push (unless force=true), or HEAD moved since checks passed.
+          description: Run is not ready_to_push (unless force=true), HEAD moved since checks passed, or the session is a spike (`spike_session`).
           content:
             application/json:
               schema:
@@ -20054,7 +20054,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/FinalizeErrorResponse"
         "409":
-          description: Finalize checks have not passed (confirm with force=true).
+          description: Finalize checks have not passed (confirm with force=true), or the session is a spike (`spike_session`).
           content:
             application/json:
               schema:
@@ -24247,7 +24247,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "409":
-          description: Session is streaming, ship is in progress, or is a resolve-PR session.
+          description: Session is streaming, ship is in progress, is a resolve-PR session, or is a spike session.
           content:
             application/json:
               schema:

@@ -8,10 +8,9 @@ import type { AuthenticatedRequest } from '../auth.js';
 
 // ═══════════════════════════════════════════════════════════════════
 // POST /board/cards/:cardId/assign — first-message context for a spike
-// card. The session is created in scoping mode (no worktree, manual
-// finalize), so its first message must be spike/research instructions —
-// even when the spike has no linked spec item, where it previously fell
-// back to the implementation prompt ("# Task: …"). Mirror autonomous
+// card. The session is created in scoping mode with a worktree and manual
+// finalize, so its first message must be spike instructions (try code, ship
+// nothing), even when the spike has no linked spec item. Mirror autonomous
 // dispatch's fallback.
 // ═══════════════════════════════════════════════════════════════════
 
@@ -22,6 +21,8 @@ function buildApp(card: Partial<KanbanCardRow>, specItem?: KanbanEpicSpecItemRow
     return Promise.resolve();
   });
   const noop = { run: () => {} };
+  const createSession = { run: vi.fn() };
+  const updateSessionSpikeCard = { run: vi.fn() };
   const fullCard = {
     id: 'card-1',
     column_id: 'col-todo',
@@ -47,12 +48,13 @@ function buildApp(card: Partial<KanbanCardRow>, specItem?: KanbanEpicSpecItemRow
   const stmts = {
     getKanbanCard: { get: () => fullCard },
     getKanbanSpecItemBySpikeCard: { get: () => specItem },
-    createSession: noop,
+    createSession,
     updateSessionMode: noop,
     updateSessionFinalizeAutomation: noop,
     updateSessionAutoShipOnComplete: noop,
     updateSessionLinkedEpic: noop,
     updateSessionLinkedSpecItem: noop,
+    updateSessionSpikeCard,
     getKanbanBoard: { get: () => ({ id: 'board-1' }) },
     getKanbanColumns: { all: () => [{ id: 'col-prog', name: 'In Progress' }] },
     updateKanbanCard: noop,
@@ -93,19 +95,29 @@ function buildApp(card: Partial<KanbanCardRow>, specItem?: KanbanEpicSpecItemRow
     next();
   });
   app.use(createBoardRoutes(deps));
-  return { request: supertest(app), captured };
+  return { request: supertest(app), captured, createSession, updateSessionSpikeCard };
 }
 
 const url = '/api/projects/proj-1/board/cards/card-1/assign';
 
 describe('board assign — spike card first-message context', () => {
   it('uses the spike/research fallback for a spike card with no linked spec item', async () => {
-    const { request, captured } = buildApp({ card_kind: 'spike', epic_id: null });
+    const { request, captured, createSession, updateSessionSpikeCard } = buildApp({
+      card_kind: 'spike',
+      epic_id: null,
+    });
     await request.post(url).send({ agentId: 'agent-1' }).expect(200);
 
-    // Spike planning instructions, NOT the implementation prompt.
+    // Spike identity lives on the session, so reassigning the card later
+    // cannot unlock ship/Finalize on this session.
+    expect(updateSessionSpikeCard.run).toHaveBeenCalledWith('card-1', expect.any(String));
+
+    // use_worktree = 1: spikes try code in their own worktree.
+    expect(createSession.run.mock.calls[0][5]).toBe(1);
+    // Spike instructions, NOT the implementation prompt.
     expect(captured.content).toMatch(/spike session/i);
-    expect(captured.content).toMatch(/no code/i);
+    expect(captured.content).toMatch(/may\*\* edit files and run code/i);
+    expect(captured.content).toMatch(/do not run Finalize/i);
     expect(captured.content).not.toMatch(/^# Task:/m);
     expect(captured.content).not.toMatch(/begin working on it/i);
   });

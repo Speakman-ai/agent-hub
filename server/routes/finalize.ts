@@ -54,6 +54,11 @@ import type {
 import { type OrchestratorOutcome } from '../finalize/orchestrator.js';
 import { ensureKanbanCardForSession } from '../finalize/ensure-kanban-card.js';
 import { triggerFinalizeRun } from '../finalize/trigger-run.js';
+import {
+  isSpikeSession,
+  SPIKE_SESSION_SHIP_ERROR,
+  SPIKE_SESSION_SHIP_MESSAGE,
+} from '../epic-spec.js';
 import { abortFinalizeRunInProcess } from '../finalize/run-abort-registry.js';
 import { cancelSessionChatRun } from '../session-chat-cancel.js';
 import { runFinalizePush, runSessionPushToGithub } from '../finalize/push-run.js';
@@ -133,6 +138,11 @@ const JOBS_UNSUPPORTED_BODY = {
   error: 'jobs_unsupported',
   message:
     'Single-job Finalize runs (the `jobs` field) are no longer supported — Finalize always runs the full rebase + reviewer + checks pipeline. Remove `jobs` from the request to run the full pipeline.',
+} as const;
+
+const SPIKE_SESSION_FINALIZE_BODY = {
+  error: SPIKE_SESSION_SHIP_ERROR,
+  message: SPIKE_SESSION_SHIP_MESSAGE,
 } as const;
 
 const CONSULT_FINALIZE_BLOCKED_BODY = {
@@ -359,6 +369,9 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
           message: POST_FINALIZE_PUSH_LOCK_MESSAGE,
         });
       }
+      if (isSpikeSession(stmts, session, card)) {
+        return res.status(409).json(SPIKE_SESSION_FINALIZE_BODY);
+      }
 
       const outcome = await triggerFinalizeRun(deps, {
         req: req as AuthenticatedRequest,
@@ -408,6 +421,9 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
           error: POST_FINALIZE_PUSH_LOCK_ERROR,
           message: POST_FINALIZE_PUSH_LOCK_MESSAGE,
         });
+      }
+      if (isSpikeSession(stmts, session)) {
+        return res.status(409).json(SPIKE_SESSION_FINALIZE_BODY);
       }
 
       const { card, created: cardCreated } = ensureKanbanCardForSession(

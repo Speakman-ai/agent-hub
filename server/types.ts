@@ -131,6 +131,11 @@ export interface SessionRow {
   /** Spec decision being resolved in a spike session (scoping mode). */
   linked_spec_item_id?: string | null;
   /**
+   * Spike card this session was dispatched for. Stays set when the card is
+   * reassigned, so the session keeps refusing Finalize, push, and ship.
+   */
+  spike_card_id?: string | null;
+  /**
    * When `1`, session end may commit/push/open a PR without the operator
    * clicking Create ticket & PR (board assign + autonomous dispatch).
    */
@@ -2511,6 +2516,7 @@ export interface Stmts {
   deleteKanbanSpecItem: Stmt;
   setKanbanCardKind: Stmt;
   updateSessionLinkedSpecItem: Stmt;
+  updateSessionSpikeCard: Stmt;
   getAutonomousPhases: Stmt;
   getEligibleAutonomousCardsByPhase: Stmt;
   getEligibleAutonomousSpikeCardsByPhase: Stmt;

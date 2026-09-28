@@ -27,8 +27,18 @@ export function buildScopingModePreamble(args: {
   specItems?: KanbanEpicSpecItemRow[];
   linkedSpecItem?: KanbanEpicSpecItemRow | null;
   projectId?: string;
+  /** Spike session with a worktree: code may be written and run, never shipped. */
+  spikeCodeAllowed?: boolean;
 }): string {
-  const { projectName, linkedEpic, phases = [], specItems = [], linkedSpecItem, projectId } = args;
+  const {
+    projectName,
+    linkedEpic,
+    phases = [],
+    specItems = [],
+    linkedSpecItem,
+    projectId,
+    spikeCodeAllowed = false,
+  } = args;
   const epicLine = linkedEpic
     ? `You are scoping epic **${linkedEpic.name}** (\`${linkedEpic.id}\`).`
     : 'No epic is linked yet — create or select an epic first, then organize phases under it.';
@@ -99,7 +109,9 @@ export function buildScopingModePreamble(args: {
         linkedSpecItem.id +
         '` → `{ "decision": "## Decision\\n...\\n\\n## Rationale\\n...", "status": "chosen" }`.',
       'That decision appears under **Spec decisions** on the epic — implementation tickets inherit it.',
-      '**No code, no PRs, no Finalize.** Do not create kanban tickets for this work.',
+      spikeCodeAllowed
+        ? '**Spike:** you may edit and run code in this worktree to answer the question, but nothing ships. No Finalize, no push, no PRs. Do not create kanban tickets for this work.'
+        : '**No code, no PRs, no Finalize.** Do not create kanban tickets for this work.',
     );
   } else if (openSpecs.length > 0) {
     lines.push(
@@ -122,7 +134,9 @@ export function buildScopingModePreamble(args: {
     '### Rules',
     '',
     '- Add spec decisions before creating implementation tickets when starting fresh.',
-    '- Decide-for-me / scoping sessions are **research-only** — no code, no PRs. Output is a locked **spec decision** on the epic.',
+    spikeCodeAllowed
+      ? '- Spike sessions may try code in their worktree but never ship it (no Finalize, push, or PRs). Output is a locked **spec decision** with findings on the epic.'
+      : '- Decide-for-me / scoping sessions are **research-only** — no code, no PRs. Output is a locked **spec decision** on the epic.',
     '- When you create an epic, always create at least one phase under it — even if the whole epic is just one phase. Never leave an epic with zero phases.',
     '- Every implementation ticket should belong to a phase when scoping an epic.',
     '- Phases can enable **autonomous dispatch** only after all spec items are `chosen`.',

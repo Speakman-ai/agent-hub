@@ -343,7 +343,8 @@ registerPath({
     ),
     404: errorResponse('Project or card not found, or caller does not own the session.'),
     409: {
-      description: 'A non-terminal Finalize run already exists for this (branch, head_sha).',
+      description:
+        'A non-terminal Finalize run already exists for this (branch, head_sha), or the session is a spike (`spike_session`: spike code never ships).',
       content: jsonContent(StartFinalizeRunInFlight),
     },
     410: errorResponse(
@@ -392,7 +393,8 @@ registerPath({
     400: errorResponse('Missing worktree, branch, or HEAD SHA.'),
     404: errorResponse('Project or session not found, or caller does not own the session.'),
     409: {
-      description: 'A non-terminal Finalize run already exists for this (branch, head_sha).',
+      description:
+        'A non-terminal Finalize run already exists for this (branch, head_sha), or the session is a spike (`spike_session`: spike code never ships).',
       content: jsonContent(StartFinalizeRunInFlight),
     },
     410: errorResponse(
@@ -721,7 +723,8 @@ registerPath({
     400: errorResponse('Missing worktree, branch, or HEAD SHA.'),
     404: errorResponse('Project or session not found, or caller does not own the session.'),
     409: {
-      description: 'A non-terminal Finalize run already exists for this (branch, head_sha).',
+      description:
+        'A non-terminal Finalize run already exists for this (branch, head_sha), or the session is a spike (`spike_session`: spike code never ships).',
       content: jsonContent(StartFinalizeRunInFlight),
     },
     410: errorResponse(
@@ -759,7 +762,7 @@ registerPath({
     },
     404: errorResponse('Project, run, or session not found.'),
     409: errorResponse(
-      'Run is not ready_to_push (unless force=true), or HEAD moved since checks passed.',
+      'Run is not ready_to_push (unless force=true), HEAD moved since checks passed, or the session is a spike (`spike_session`).',
     ),
     502: errorResponse('GitHub push or PR creation failed.'),
   },
@@ -805,7 +808,9 @@ registerPath({
       content: jsonContent(PushFinalizeRunResponse),
     },
     404: errorResponse('Project or session not found.'),
-    409: errorResponse('Finalize checks have not passed (confirm with force=true).'),
+    409: errorResponse(
+      'Finalize checks have not passed (confirm with force=true), or the session is a spike (`spike_session`).',
+    ),
     502: errorResponse('GitHub push or PR creation failed.'),
   },
 });

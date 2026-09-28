@@ -189,6 +189,27 @@ describe('triggerSessionShip', () => {
     expect(handleChat).not.toHaveBeenCalled();
   });
 
+  it('refuses a spike session', () => {
+    stmts.getKanbanCardBySession.get.mockReturnValueOnce({ card_kind: 'spike' } as never);
+    const result = triggerSessionShip({
+      sessionId: 'sess-1',
+      session: baseSession,
+      project: { id: 'p1' } as never,
+      agent: { id: 'agent-1' } as never,
+      stmts: stmts as never,
+      broadcast,
+      activeProcesses: new Map(),
+      handleChat,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.status).toBe(409);
+      expect(result.code).toBe('spike_session');
+    }
+    expect(handleChat).not.toHaveBeenCalled();
+    expect(stmts.addMessage.run).not.toHaveBeenCalled();
+  });
+
   it('rejects when Finalize is configured on the worktree', async () => {
     const { worktreeHasFinalizeCi } = await import('./finalize/worktree-has-ci.js');
     vi.mocked(worktreeHasFinalizeCi).mockReturnValueOnce(true);

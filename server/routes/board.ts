@@ -1640,7 +1640,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
               : undefined;
 
       const spikeAssign = isSpikeCard(card);
-      const wt = spikeAssign ? 0 : defaultSessionUseWorktreeFlag(project);
+      // Spikes get a worktree so they can try code; ship routes refuse them.
+      const wt = defaultSessionUseWorktreeFlag(project);
       let linkedSpecItem = spikeAssign ? getSpecItemForSpikeCard(stmts, card.id) : null;
       if (spikeAssign && card.epic_id) {
         linkedSpecItem = ensureSpecItemForSpikeCard(stmts, card) ?? linkedSpecItem;
@@ -1648,6 +1649,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, wt, 0, 1);
       if (spikeAssign) {
         stmts.updateSessionMode.run('scoping', sessionId);
+        stmts.updateSessionSpikeCard.run(card.id, sessionId);
         if (card.epic_id) stmts.updateSessionLinkedEpic.run(card.epic_id, sessionId);
         if (linkedSpecItem) stmts.updateSessionLinkedSpecItem.run(linkedSpecItem.id, sessionId);
         markSessionFinalizeAutomation(stmts, sessionId, 'manual');
@@ -1718,12 +1720,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
       const contextLines: string[] = [];
       if (spikeAssign) {
-        // The session was created in scoping mode (no worktree, manual
-        // finalize) — its first message must be spike/research instructions,
-        // never the implementation prompt. Mirror autonomous dispatch: use the
-        // spec-linked context when one exists, else the planning-only fallback
-        // (deriving the question from the card title). Emitting `# Task: …`
-        // here would tell the agent to start building in a no-worktree session.
+        // The session was created in scoping mode with manual finalize, so its
+        // first message must be the spike instructions, never the
+        // implementation prompt. Mirror autonomous dispatch: use the
+        // spec-linked context when one exists, else the fallback (deriving the
+        // question from the card title). Emitting `# Task: …` here would tell
+        // the agent to build and ship the feature.
         contextLines.push(
           linkedSpecItem
             ? buildSpikeSessionContext({

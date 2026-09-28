@@ -5,6 +5,11 @@
  * run in `ready_to_push`. Performs phase 8 only when the
  * operator clicks **Push to GitHub**.
  */
+import {
+  isSpikeSession,
+  SPIKE_SESSION_SHIP_ERROR,
+  SPIKE_SESSION_SHIP_MESSAGE,
+} from '../epic-spec.js';
 import { v4 as uuidv4 } from 'uuid';
 import { execFile } from 'child_process';
 import { access } from 'fs/promises';
@@ -878,6 +883,15 @@ async function runFinalizePushInner(args: RunFinalizePushArgs): Promise<Finalize
   const { deps, project, run, card, session, force = false } = args;
   const resolveHead = args.resolveHeadSha ?? defaultResolveHeadSha;
 
+  if (isSpikeSession(deps.stmts as Stmts, session, card)) {
+    return {
+      ok: false,
+      httpStatus: 409,
+      error: SPIKE_SESSION_SHIP_ERROR,
+      message: SPIKE_SESSION_SHIP_MESSAGE,
+    };
+  }
+
   if (run.status === 'pushed') {
     return {
       ok: false,
@@ -1262,6 +1276,14 @@ export async function runSessionPushToGithub(
 ): Promise<FinalizePushOutcome> {
   const { deps, project, session, card } = args;
   const resolveHead = args.resolveHeadSha ?? defaultResolveHeadSha;
+  if (isSpikeSession(deps.stmts as Stmts, session, card)) {
+    return {
+      ok: false,
+      httpStatus: 409,
+      error: SPIKE_SESSION_SHIP_ERROR,
+      message: SPIKE_SESSION_SHIP_MESSAGE,
+    };
+  }
   if (resolveMainlinePushTarget(session)) {
     return {
       ok: false,

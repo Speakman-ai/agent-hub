@@ -1,6 +1,11 @@
 /**
  * Shared Finalize run kickoff for card and session routes.
  */
+import {
+  isSpikeSession,
+  SPIKE_SESSION_SHIP_ERROR,
+  SPIKE_SESSION_SHIP_MESSAGE,
+} from '../epic-spec.js';
 import { createHash } from 'crypto';
 import type { AuthenticatedRequest } from '../auth.js';
 import type {
@@ -183,6 +188,9 @@ async function kickoffFinalizeRunBody(
   }
   if (!session.worktree_branch) {
     return { kind: 'error', error: 'no_branch', message: 'Session has no worktree_branch.' };
+  }
+  if (isSpikeSession(stmts, session, card)) {
+    return { kind: 'error', error: SPIKE_SESSION_SHIP_ERROR, message: SPIKE_SESSION_SHIP_MESSAGE };
   }
 
   // Defense in depth for the post-push lock. HTTP kickoff already checks this
@@ -569,7 +577,10 @@ export async function triggerFinalizeRun(
     case 'error':
       // Match the HTTP pre-check for the post-push lock so a TOCTOU refuse
       // inside kickoff surfaces the same 409 clients already handle.
-      if (outcome.error === POST_FINALIZE_PUSH_LOCK_ERROR) {
+      if (
+        outcome.error === POST_FINALIZE_PUSH_LOCK_ERROR ||
+        outcome.error === SPIKE_SESSION_SHIP_ERROR
+      ) {
         return {
           httpStatus: 409,
           body: { error: outcome.error, message: outcome.message },

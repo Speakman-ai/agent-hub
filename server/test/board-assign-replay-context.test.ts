@@ -144,6 +144,7 @@ function buildApp(opts: { replay?: unknown; card?: Partial<KanbanCardRow> } = {}
     updateSessionAutoShipOnComplete: noop,
     updateSessionLinkedEpic: noop,
     updateSessionLinkedSpecItem: noop,
+    updateSessionSpikeCard: noop,
     getKanbanBoard: { get: () => ({ id: 'board-1' }) },
     getKanbanColumns: { all: () => [{ id: 'col-prog', name: 'In Progress' }] },
     updateKanbanCard: noop,

@@ -3071,6 +3071,12 @@ function initDb(dataDir: string): void {
   }
 
   try {
+    db.prepare('SELECT spike_card_id FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN spike_card_id TEXT DEFAULT NULL');
+  }
+
+  try {
     db.prepare('SELECT autopilot_session_config FROM sessions LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE sessions ADD COLUMN autopilot_session_config TEXT DEFAULT NULL');
@@ -4753,6 +4759,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionLinkedSpecItem: db.prepare(
       "UPDATE sessions SET linked_spec_item_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionSpikeCard: db.prepare(
+      "UPDATE sessions SET spike_card_id = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     deleteSession: db.prepare('DELETE FROM sessions WHERE id = ?'),
     // Soft-delete: mark the row archived. Worktree is intentionally preserved

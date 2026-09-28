@@ -1204,3 +1204,45 @@ describe('runFinalizePush landing lock', () => {
     expect(release).toHaveBeenCalledWith('proj-1', 'main', 'run-1');
   });
 });
+
+describe('push refuses spike sessions', () => {
+  const spikeCard = {
+    ...card,
+    title: 'Spike: pick a transport',
+    card_kind: 'spike',
+  } as KanbanCardRow;
+
+  it('runFinalizePush refuses even with force', async () => {
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn();
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card: spikeCard,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+    expect(outcome).toMatchObject({ ok: false, httpStatus: 409, error: 'spike_session' });
+    expect(pushAndCreatePr).not.toHaveBeenCalled();
+    expect(deps.stmts.claimFinalizeRunPush.run).not.toHaveBeenCalled();
+  });
+
+  it('runSessionPushToGithub refuses a spike-research scoping session', async () => {
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn();
+    const outcome = await runSessionPushToGithub({
+      deps: deps as never,
+      project,
+      session: { ...session, session_mode: 'scoping', linked_spec_item_id: 'spec-1' } as SessionRow,
+      card,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      resolveCurrentBranch: vi.fn().mockResolvedValue('feature/x'),
+      pushAndCreatePr,
+    });
+    expect(outcome).toMatchObject({ ok: false, httpStatus: 409, error: 'spike_session' });
+    expect(pushAndCreatePr).not.toHaveBeenCalled();
+  });
+});

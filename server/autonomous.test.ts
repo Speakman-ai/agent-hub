@@ -91,6 +91,7 @@ interface MockStmts {
   updateSessionMode?: { run: Mock };
   updateSessionLinkedEpic?: { run: Mock };
   updateSessionLinkedSpecItem?: { run: Mock };
+  updateSessionSpikeCard?: { run: Mock };
   getKanbanColumns: { all: Mock };
   getSession: { get: Mock };
   getKanbanCard: { get: Mock };
@@ -136,6 +137,7 @@ function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
     updateSessionMode: { run: vi.fn() },
     updateSessionLinkedEpic: { run: vi.fn() },
     updateSessionLinkedSpecItem: { run: vi.fn() },
+    updateSessionSpikeCard: { run: vi.fn() },
     getKanbanColumns: { all: vi.fn(() => []) },
     getSession: { get: vi.fn(() => null) },
     // Default: the card re-read inside the transactional slot claim is still
@@ -699,6 +701,7 @@ describe('runAutonomousLoop — dispatch', () => {
       getKanbanSpecItemBySpikeCard: { get: vi.fn(() => specItem) },
       getKanbanSpecItemsByEpic: { all: vi.fn(() => [specItem]) },
       updateSessionLinkedSpecItem: { run: vi.fn() },
+      updateSessionSpikeCard: { run: vi.fn() },
     });
     const deps = makeDeps(stmts);
     deps.findProject.mockReturnValue(makeProject());
@@ -718,13 +721,15 @@ describe('runAutonomousLoop — dispatch', () => {
       spikeCard.title,
       'claude-code',
       expect.any(String),
-      0,
+      // use_worktree 1: spikes try code in a worktree; ship routes refuse them.
+      1,
       // ask_mode 0: a spike records its findings on the board, which plan mode blocks.
       0,
       1,
     );
     expect(stmts.updateSessionMode!.run).toHaveBeenCalledWith('scoping', expect.any(String));
     expect(stmts.updateSessionLinkedEpic!.run).toHaveBeenCalledWith('epic-1', expect.any(String));
+    expect(stmts.updateSessionSpikeCard!.run).toHaveBeenCalledWith('spike-1', expect.any(String));
     expect(stmts.updateSessionLinkedSpecItem!.run).toHaveBeenCalledWith(
       'spec-spike-1',
       expect.any(String),

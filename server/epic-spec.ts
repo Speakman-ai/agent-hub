@@ -20,6 +20,42 @@ export function isSpikeCard(
   return title.toLowerCase().startsWith('spike:');
 }
 
+/**
+ * True when a session is a spike (or other spec-decision research) session.
+ * Spike sessions may edit and run code in their worktree, but that code is
+ * throwaway: the Hub's Finalize, Push, and ship actions refuse them.
+ *
+ * Dispatch stamps `spike_card_id` on the session, which survives the card
+ * being reassigned (its `session_id` moves to the newer session). Rows that
+ * predate the stamp fall back to a spec-linked scoping session, or to the card
+ * currently linked to this session being a spike.
+ */
+export function isSpikeSession(
+  stmts: Pick<Stmts, 'getKanbanCardBySession'>,
+  session: {
+    id: string;
+    session_mode?: string | null;
+    linked_spec_item_id?: string | null;
+    spike_card_id?: string | null;
+  },
+  /** The session's card when the caller already holds it; skips the lookup. */
+  knownCard?: Pick<KanbanCardRow, 'card_kind' | 'title'> | null,
+): boolean {
+  if ((session.spike_card_id ?? '').trim()) return true;
+  if ((session.linked_spec_item_id ?? '').trim() && session.session_mode === 'scoping') {
+    return true;
+  }
+  const card =
+    knownCard !== undefined
+      ? knownCard
+      : (stmts.getKanbanCardBySession.get(session.id) as KanbanCardRow | undefined);
+  return isSpikeCard(card);
+}
+
+export const SPIKE_SESSION_SHIP_ERROR = 'spike_session';
+export const SPIKE_SESSION_SHIP_MESSAGE =
+  'Spike sessions do not ship. Record the decision and findings on the spec item and build tickets; the spike code stays out of main.';
+
 /** True when this card is the linked spike ticket for a spec item. */
 export function isLinkedSpikeCard(stmts: Stmts, cardId: string): boolean {
   return getSpecItemForSpikeCard(stmts, cardId) != null;
@@ -148,6 +184,52 @@ export function ensureSpecItemForSpikeCard(
   return (stmts.getKanbanSpecItem.get(id) as KanbanEpicSpecItemRow | undefined) ?? null;
 }
 
+/**
+ * Spike rules shared by both first-message builders. Spikes may write and run
+ * code in their worktree to answer the question, but nothing ships, so what
+ * carries forward is the decision plus file/function findings. Only the Hub's
+ * Finalize, Push, and ship actions are refused; the prompt asks the agent not
+ * to push or open a PR by other means.
+ */
+function spikeRulesAndDeliverable(args: {
+  card: KanbanCardRow;
+  projectId: string;
+  recordDecisionLines: string[];
+}): string[] {
+  const { card, projectId, recordDecisionLines } = args;
+  const epicRef = card.epic_id ? `\`${card.epic_id}\`` : 'the epic';
+  return [
+    '## Scope',
+    '',
+    '- **Answer the spec question, then stop.** Do not finish the feature. Build only as much as it takes to prove or disprove an option.',
+    '- There is no turn, time, or token budget. The scope above is the limit.',
+    '',
+    '## Code rules',
+    '',
+    '- You **may** edit files and run code, tests, and scripts in this session worktree to try options out.',
+    "- **Nothing ships.** Do not run Finalize, do not `git push`, and do not open a PR by any route. The Hub's Finalize, Push, and Create PR actions refuse spike sessions.",
+    '- Treat spike code as **throwaway**. It never merges, and build tickets start from the default branch, not this worktree, so anything worth keeping must be written into the findings below.',
+    '',
+    '## Your deliverable',
+    '',
+    '1. **Decision** on the spec item:',
+    ...recordDecisionLines,
+    '',
+    '2. **Findings** in the decision text, under a `## Findings` heading:',
+    '   - What was tried.',
+    '   - What broke.',
+    '   - Roadblocks and open risks for the build work.',
+    '',
+    '3. **Code references** for the build work: the files, functions, and call sites that must be added or changed, one line each, e.g. `server/autonomous.ts` `dispatchCard`: spikes pass `wt=0`, flip for code spikes.',
+    `   - Post each reference as a comment on the build ticket it applies to: \`POST /api/projects/${projectId}/board/cards/<buildCardId>/comments\` with \`{ "author": "<your agent name>", "content": "..." }\` (\`board.sh comment\`).`,
+    `   - References that span several tickets go on the epic description (${epicRef}): \`PUT /api/projects/${projectId}/board/epics/${card.epic_id ?? '<epicId>'}\` with the updated \`description\`. Append; do not overwrite what is there.`,
+    '',
+    '4. Move this spike card to **Done** once the spec item is `chosen`.',
+    '',
+    `**Kanban card:** \`${card.id}\``,
+  ];
+}
+
 /** First-message context for a spike card without a linked spec item. */
 export function buildSpikeSessionContextFallback(args: {
   card: KanbanCardRow;
@@ -158,38 +240,34 @@ export function buildSpikeSessionContextFallback(args: {
   const lines = [
     `# Spike: ${question}`,
     '',
-    'You are running a **spike session** — research the question and **lock an architecture decision on the epic**.',
+    'You are running a **spike session**: answer this question and **lock an architecture decision on the epic**.',
     '',
-    '## Hard constraints',
+    'The decision belongs on the epic as a spec decision (visible under **Spec decisions** on the epic page), not only in chat or card comments.',
     '',
-    '- **No code** — do not edit files, open PRs, run Finalize, or ship anything.',
-    '- **No implementation** — spikes are planning-only; workers pick up build tickets later.',
-    '- **Decision output belongs on the epic** — record it as a spec decision (visible under **Spec decisions** on the epic page), not only in chat or card comments.',
-    '',
-    '## Your deliverable',
-    '',
-    '1. Investigate trade-offs for this decision.',
-    '2. Create or update the matching **spec item** on the epic:',
-    '',
-    '```',
-    `POST /api/projects/${projectId}/board/spec-items`,
-    `{ "epicId": "${card.epic_id ?? '<epicId>'}", "tag": "TAG", "title": "${question}", "decision": "<clear, actionable decision text>", "status": "chosen", "phaseId": ${card.phase_id ? `"${card.phase_id}"` : 'null'} }`,
-    '```',
-    '',
-    'If a spec item already exists for this spike, update it instead:',
-    '',
-    '```',
-    `PUT /api/projects/${projectId}/board/spec-items/<specItemId>`,
-    `{ "decision": "<clear, actionable decision text>", "status": "chosen" }`,
-    '```',
-    '',
-    '3. Move this spike card to **Done** once the spec item is `chosen`.',
-    '',
-    `**Kanban card:** \`${card.id}\``,
   ];
   if (card.description?.trim()) {
-    lines.splice(8, 0, `\n## Spike card notes\n${card.description.trim()}`);
+    lines.push(`## Spike card notes\n${card.description.trim()}`, '');
   }
+  lines.push(
+    ...spikeRulesAndDeliverable({
+      card,
+      projectId,
+      recordDecisionLines: [
+        '',
+        '```',
+        `POST /api/projects/${projectId}/board/spec-items`,
+        `{ "epicId": "${card.epic_id ?? '<epicId>'}", "tag": "TAG", "title": "${question}", "decision": "## Decision\\n...\\n\\n## Findings\\n...", "status": "chosen", "phaseId": ${card.phase_id ? `"${card.phase_id}"` : 'null'} }`,
+        '```',
+        '',
+        'If a spec item already exists for this spike, update it instead:',
+        '',
+        '```',
+        `PUT /api/projects/${projectId}/board/spec-items/<specItemId>`,
+        '{ "decision": "## Decision\\n...\\n\\n## Findings\\n...", "status": "chosen" }',
+        '```',
+      ],
+    }),
+  );
   return lines.join('\n');
 }
 
@@ -203,34 +281,30 @@ export function buildSpikeSessionContext(args: {
   const lines = [
     `# Spike: ${specItem.title}`,
     '',
-    'You are running a **spike session** — research the question and **lock an architecture decision on the epic**.',
+    'You are running a **spike session**: answer this question and **lock an architecture decision on the epic**.',
     '',
+  ];
+  if (card.description?.trim()) {
+    lines.push(`## Spike card notes\n${card.description.trim()}`, '');
+  }
+  lines.push(
     `**Spec item:** \`${specItem.id}\` · tag \`${specItem.tag}\` (shown under **Spec decisions** on the epic page)`,
     specItem.decision?.trim()
       ? `\n## Current draft\n${specItem.decision.trim()}`
       : '\n_No decision recorded yet._',
     '',
-    '## Hard constraints',
-    '',
-    '- **No code** — do not edit files, open PRs, run Finalize, or ship anything.',
-    '- **No implementation** — spikes are planning-only.',
-    '- **The decision must land on the epic spec item** — chat and card comments are not sufficient on their own.',
-    '',
-    '## Your deliverable',
-    '',
-    '1. Investigate trade-offs for this decision.',
-    '2. Record the final decision on the epic spec item (this is what implementation tickets inherit):',
-    '',
-    '```',
-    `PUT /api/projects/${projectId}/board/spec-items/${specItem.id}`,
-    `{ "decision": "<clear, actionable decision text>", "status": "chosen" }`,
-    '```',
-    '',
-    '3. Move this spike card to **Done** when the spec item is `chosen`.',
-  ];
-  if (card.description?.trim()) {
-    lines.splice(4, 0, `\n## Spike card notes\n${card.description.trim()}`);
-  }
+    ...spikeRulesAndDeliverable({
+      card,
+      projectId,
+      recordDecisionLines: [
+        '',
+        '```',
+        `PUT /api/projects/${projectId}/board/spec-items/${specItem.id}`,
+        '{ "decision": "## Decision\\n...\\n\\n## Findings\\n...", "status": "chosen" }',
+        '```',
+      ],
+    }),
+  );
   return lines.join('\n');
 }
 

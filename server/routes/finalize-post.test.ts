@@ -1178,3 +1178,83 @@ describe('resolveFinalizeAttempt', () => {
     expect(r).toEqual({ kind: 'in_flight', run: active });
   });
 });
+
+describe('Finalize refuses spike sessions', () => {
+  it('409 spike_session and no run when the card is a spike', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1', githubRepo: 'acme/proj' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+      created_by: 'user-1',
+      title: 'Spike: pick a transport',
+      card_kind: 'spike',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+      session_mode: 'scoping',
+    });
+    stmts.getFinalizeRunByIdempotencyKey.get.mockReturnValue(undefined);
+
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({})
+      .expect(409);
+    expect(res.body.error).toBe('spike_session');
+    expect(runFinalize).not.toHaveBeenCalled();
+  });
+
+  it('409 spike_session on the session route for a spec-linked scoping session', async () => {
+    const { app, findProject, findAgent, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1' });
+    findAgent.mockReturnValue({
+      project: { id: 'proj-1' },
+      agent: { id: 'agent-1', name: 'Dev' },
+    });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      agent_id: 'agent-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+      session_mode: 'scoping',
+      linked_spec_item_id: 'spec-1',
+    });
+
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/sessions/sess-1/finalize')
+      .send({})
+      .expect(409);
+    expect(res.body.error).toBe('spike_session');
+    expect(runFinalize).not.toHaveBeenCalled();
+  });
+
+  it('409 spike_session after an unlinked spike card was reassigned away', async () => {
+    const { app, findProject, findAgent, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1' });
+    findAgent.mockReturnValue({
+      project: { id: 'proj-1' },
+      agent: { id: 'agent-1', name: 'Dev' },
+    });
+    // No spec link, and the card's session_id now points elsewhere.
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      agent_id: 'agent-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+      session_mode: 'scoping',
+      linked_spec_item_id: null,
+      spike_card_id: 'card-spike',
+    });
+
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/sessions/sess-1/finalize')
+      .send({})
+      .expect(409);
+    expect(res.body.error).toBe('spike_session');
+    expect(runFinalize).not.toHaveBeenCalled();
+  });
+});

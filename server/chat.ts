@@ -165,7 +165,11 @@ import {
   isConsultBehaviorActive,
   resolveCliWorkspaceAccess,
 } from './session-mode.js';
-import { formatEpicSpecDecisionsForContext, loadChosenSpecItemsForEpic } from './epic-spec.js';
+import {
+  formatEpicSpecDecisionsForContext,
+  isSpikeSession,
+  loadChosenSpecItemsForEpic,
+} from './epic-spec.js';
 import {
   detectTagBlockInLastFence,
   extractJsonFromTagBody,
@@ -3224,6 +3228,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           specItems,
           linkedSpecItem,
           projectId,
+          // The worktree is created later in this turn, so judge by the row's
+          // isolation flag rather than `worktree_path`.
+          spikeCodeAllowed:
+            Number(session!.use_worktree) === 1 && isSpikeSession(stmts as Stmts, session!),
         });
         enrichedPrompt = `${scopingPreamble}\n\n${enrichedPrompt}`;
       }

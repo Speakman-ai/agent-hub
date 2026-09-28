@@ -1408,7 +1408,8 @@ async function runAutonomousLoopInner(
       }
       const projRow = d.findProject(projectId);
       const spikeAssign = isSpikeCard(card);
-      const wt = spikeAssign ? 0 : defaultSessionUseWorktreeFlag(projRow);
+      // Spikes get a worktree so they can try code; ship routes refuse them.
+      const wt = defaultSessionUseWorktreeFlag(projRow);
       let linkedSpecItem = spikeAssign ? getSpecItemForSpikeCard(d.stmts, card.id) : null;
       if (spikeAssign && card.epic_id) {
         linkedSpecItem = ensureSpecItemForSpikeCard(d.stmts, card) ?? linkedSpecItem;
@@ -1416,6 +1417,7 @@ async function runAutonomousLoopInner(
       d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, wt, 0, 1);
       if (spikeAssign) {
         d.stmts.updateSessionMode.run('scoping', sessionId);
+        d.stmts.updateSessionSpikeCard.run(card.id, sessionId);
         if (card.epic_id) d.stmts.updateSessionLinkedEpic.run(card.epic_id, sessionId);
         if (linkedSpecItem) {
           d.stmts.updateSessionLinkedSpecItem.run(linkedSpecItem.id, sessionId);

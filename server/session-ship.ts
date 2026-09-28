@@ -1,4 +1,9 @@
 import { getSessionWorktreeLockOwner } from './session-worktree-lock.js';
+import {
+  isSpikeSession,
+  SPIKE_SESSION_SHIP_ERROR,
+  SPIKE_SESSION_SHIP_MESSAGE,
+} from './epic-spec.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { ChildProcess } from 'child_process';
 import type {
@@ -215,6 +220,15 @@ export function triggerSessionShip(args: TriggerSessionShipArgs): TriggerSession
       status: 409,
       error: "This session's changes are being discarded",
       code: 'discard_in_progress',
+    };
+  }
+
+  if (isSpikeSession(stmts, session)) {
+    return {
+      ok: false,
+      status: 409,
+      error: SPIKE_SESSION_SHIP_MESSAGE,
+      code: SPIKE_SESSION_SHIP_ERROR,
     };
   }
 
