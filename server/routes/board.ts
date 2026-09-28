@@ -1645,16 +1645,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       if (spikeAssign && card.epic_id) {
         linkedSpecItem = ensureSpecItemForSpikeCard(stmts, card) ?? linkedSpecItem;
       }
-      stmts.createSession.run(
-        sessionId,
-        agentId,
-        card.title,
-        engine,
-        resolvedModel,
-        wt,
-        spikeAssign ? 1 : 0,
-        1,
-      );
+      stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, wt, 0, 1);
       if (spikeAssign) {
         stmts.updateSessionMode.run('scoping', sessionId);
         if (card.epic_id) stmts.updateSessionLinkedEpic.run(card.epic_id, sessionId);
@@ -2814,7 +2805,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         engine,
         resolvedModel,
         0,
-        1,
+        0,
         1,
       );
       stmts.updateSessionMode.run('scoping', sessionId);
@@ -2914,7 +2905,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       });
 
       const sessionTitle = `Scope: ${epic.name}`;
-      stmts.createSession.run(sessionId, agent.id, sessionTitle, engine, resolvedModel, 0, 1, 1);
+      stmts.createSession.run(sessionId, agent.id, sessionTitle, engine, resolvedModel, 0, 0, 1);
       stmts.updateSessionMode.run('scoping', sessionId);
       stmts.updateSessionLinkedEpic.run(epic.id, sessionId);
       markSessionFinalizeAutomation(stmts, sessionId, 'manual');
@@ -2979,7 +2970,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
       const rawTitle = (parsed.title ?? '').trim();
       const sessionTitle = rawTitle ? `Scope: ${rawTitle}` : 'Scope: notes';
-      stmts.createSession.run(sessionId, agent.id, sessionTitle, engine, resolvedModel, 0, 1, 1);
+      stmts.createSession.run(sessionId, agent.id, sessionTitle, engine, resolvedModel, 0, 0, 1);
       stmts.updateSessionMode.run('scoping', sessionId);
       markSessionFinalizeAutomation(stmts, sessionId, 'manual');
       setSessionOwner(sessionId, ownerUserId);

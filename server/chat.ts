@@ -134,7 +134,6 @@ import { routeSkillsFromMessage } from './skill-router.js';
 import { listProjectDefaultSkillIds } from './project-default-skills-store.js';
 import {
   isDesignModeActive,
-  isConsultModeActive,
   isScopingModeActive,
   isHubModeActive,
   isAutopilotModeActive,
@@ -161,7 +160,11 @@ import { buildConsultModePreamble } from './consult-mode-prompt.js';
 import { buildHubModePreamble } from './hub-mode-prompt.js';
 import { isSessionRecoveryBlockingChat } from './session-recovery.js';
 import { buildAutopilotModePreamble, parseAutopilotSessionConfig } from './session-autopilot.js';
-import { isSkillBuilderModeActive, isConsultBehaviorActive } from './session-mode.js';
+import {
+  isSkillBuilderModeActive,
+  isConsultBehaviorActive,
+  resolveCliWorkspaceAccess,
+} from './session-mode.js';
 import { formatEpicSpecDecisionsForContext, loadChosenSpecItemsForEpic } from './epic-spec.js';
 import {
   detectTagBlockInLastFence,
@@ -3985,12 +3988,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // Hub rules into `-p` — but kept as the seam for any future file-backed
       // engine env.)
       let extraChildEnv: Record<string, string> | null = null;
-      const workflowSession = isWorkflowProject(project as Project);
-      const consultModeSession = isConsultModeActive(session!);
-      const hubModeSession = isHubModeActive(session!);
-      const legacyAskSession = Number(session!.ask_mode ?? 0) !== 0;
-      const hubOnlySession = workflowSession || consultModeSession || hubModeSession;
-      const readOnlyCliSession = legacyAskSession && !hubOnlySession;
+      const cliAccess = resolveCliWorkspaceAccess({
+        session: session!,
+        workflowProject: isWorkflowProject(project as Project),
+        hasWorktree: effectiveCwd !== project.cwd,
+      });
+      const readOnlyCliSession = cliAccess.readOnly;
       const committable = shouldPinLocalCommitReminder({
         hasWorktree: effectiveCwd !== project.cwd,
         askMode: readOnlyCliSession,
@@ -4250,7 +4253,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           // Agent Hub provides skills via the `<agenthub:skill>` block protocol;
           // disable Claude Code's native `Skill` tool so agents don't fall back
           // to it for skills outside the bundled list (see claude-cli-args.ts).
-          ...disableNativeSkillToolArgs({ codeMutationTools: hubOnlySession }),
+          ...disableNativeSkillToolArgs({ codeMutationTools: cliAccess.blockCodeMutationTools }),
         ];
         if (isNewEngineSession) {
           args.push('--session-id', sessionId);

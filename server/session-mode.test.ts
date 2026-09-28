@@ -12,6 +12,7 @@ import {
   isNonShippingSessionBehavior,
   isIsolatedModeActive,
   isShippingCompatibleSessionMode,
+  resolveCliWorkspaceAccess,
   defaultSessionModeForProject,
   sessionHasUsableWorktree,
 } from './session-mode.js';
@@ -175,6 +176,61 @@ describe('session-mode helpers', () => {
       expect(sessionHasUsableWorktree({})).toBe(false);
       expect(sessionHasUsableWorktree(null)).toBe(false);
       expect(sessionHasUsableWorktree(undefined)).toBe(false);
+    });
+  });
+
+  describe('resolveCliWorkspaceAccess', () => {
+    const access = (
+      session: { session_mode?: string | null; ask_mode?: number | null },
+      opts: { workflowProject?: boolean; hasWorktree?: boolean } = {},
+    ) =>
+      resolveCliWorkspaceAccess({
+        session,
+        workflowProject: opts.workflowProject ?? false,
+        hasWorktree: opts.hasWorktree ?? false,
+      });
+
+    it('never spawns a scoping session read-only, even with a stray ask_mode flag', () => {
+      // Scoping sessions opened from notes / epics were inserted with ask_mode=1,
+      // which put Claude in plan mode and blocked the board writes.
+      expect(access({ session_mode: 'scoping', ask_mode: 1 }).readOnly).toBe(false);
+      expect(access({ session_mode: 'scoping', ask_mode: 0 }).readOnly).toBe(false);
+    });
+
+    it('keeps native edit tools off for scoping in the shared checkout only', () => {
+      expect(
+        access({ session_mode: 'scoping' }, { hasWorktree: false }).blockCodeMutationTools,
+      ).toBe(true);
+      expect(
+        access({ session_mode: 'scoping' }, { hasWorktree: true }).blockCodeMutationTools,
+      ).toBe(false);
+    });
+
+    it('keeps legacy ask_mode chat rows read-only', () => {
+      expect(access({ session_mode: 'chat', ask_mode: 1 })).toEqual({
+        readOnly: true,
+        blockCodeMutationTools: false,
+      });
+    });
+
+    it('lets Hub-only sessions write through Bash but not edit code', () => {
+      for (const s of [
+        { session_mode: 'consult', ask_mode: 1 },
+        { session_mode: 'hub', ask_mode: 0 },
+      ]) {
+        expect(access(s)).toEqual({ readOnly: false, blockCodeMutationTools: true });
+      }
+      expect(access({ session_mode: 'chat', ask_mode: 1 }, { workflowProject: true })).toEqual({
+        readOnly: false,
+        blockCodeMutationTools: true,
+      });
+    });
+
+    it('leaves a plain build session fully writable', () => {
+      expect(access({ session_mode: 'chat', ask_mode: 0 }, { hasWorktree: true })).toEqual({
+        readOnly: false,
+        blockCodeMutationTools: false,
+      });
     });
   });
 });

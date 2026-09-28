@@ -719,7 +719,8 @@ describe('runAutonomousLoop — dispatch', () => {
       'claude-code',
       expect.any(String),
       0,
-      1,
+      // ask_mode 0: a spike records its findings on the board, which plan mode blocks.
+      0,
       1,
     );
     expect(stmts.updateSessionMode!.run).toHaveBeenCalledWith('scoping', expect.any(String));

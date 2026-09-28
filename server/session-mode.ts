@@ -211,3 +211,31 @@ export function sessionHasUsableWorktree(
 ): boolean {
   return !!(session?.worktree_path ?? '').trim();
 }
+
+/**
+ * How the engine CLI may touch the workspace for one spawn.
+ *
+ * `readOnly` maps to Claude `--permission-mode plan` (and the equivalent
+ * no-auto-approve flags on other engines), which also blocks Bash, so the Hub
+ * wrappers (`board.sh`, `ah-api.sh`) cannot run. Only a legacy `ask_mode` row
+ * with no Hub-writing mode gets it. Scoping is excluded because creating the
+ * epic, phases and tickets is the whole job of the mode.
+ *
+ * `blockCodeMutationTools` disables Claude's native Edit/Write tools while
+ * keeping Bash for Hub wrappers: Hub-only sessions always, and scoping sessions
+ * that run in the shared project checkout instead of their own worktree.
+ */
+export function resolveCliWorkspaceAccess(args: {
+  session: { session_mode?: string | null; ask_mode?: number | null };
+  workflowProject: boolean;
+  hasWorktree: boolean;
+}): { readOnly: boolean; blockCodeMutationTools: boolean } {
+  const { session, workflowProject, hasWorktree } = args;
+  const hubOnly = workflowProject || isConsultModeActive(session) || isHubModeActive(session);
+  const scoping = isScopingModeActive(session);
+  const legacyAsk = Number(session.ask_mode ?? 0) !== 0;
+  return {
+    readOnly: legacyAsk && !hubOnly && !scoping,
+    blockCodeMutationTools: hubOnly || (scoping && !hasWorktree),
+  };
+}

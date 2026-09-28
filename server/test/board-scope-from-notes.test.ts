@@ -115,6 +115,11 @@ describe('POST /board/scope-from-notes', () => {
     // Scoping mode is set (drives the scoping preamble in chat.ts) and NO epic
     // is linked (this route is not epic-bound).
     expect(spies.updateSessionMode).toHaveBeenCalledWith('scoping', body.sessionId);
+    // ask_mode must be 0: a 1 here spawned Claude with --permission-mode plan,
+    // which blocked every board write the scoping session exists to make.
+    const createArgs = spies.createSession.mock.calls[0] as unknown[];
+    expect(createArgs[0]).toBe(body.sessionId);
+    expect(createArgs[6]).toBe(0);
 
     // The note content is auto-sent as the first turn (unlike the epic route).
     expect(spies.handleChat).toHaveBeenCalledTimes(1);

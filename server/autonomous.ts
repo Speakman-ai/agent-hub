@@ -1413,16 +1413,7 @@ async function runAutonomousLoopInner(
       if (spikeAssign && card.epic_id) {
         linkedSpecItem = ensureSpecItemForSpikeCard(d.stmts, card) ?? linkedSpecItem;
       }
-      d.stmts.createSession.run(
-        sessionId,
-        agent.id,
-        card.title,
-        engine,
-        model,
-        wt,
-        spikeAssign ? 1 : 0,
-        1,
-      );
+      d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, wt, 0, 1);
       if (spikeAssign) {
         d.stmts.updateSessionMode.run('scoping', sessionId);
         if (card.epic_id) d.stmts.updateSessionLinkedEpic.run(card.epic_id, sessionId);
