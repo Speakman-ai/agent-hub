@@ -287,8 +287,16 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     { pkg: '@hono/node-server', min: '2.0.5', advisory: 'GHSA-frvp-7c67-39w9' },
     // GHSA-r4q5-vmmm-2653: Authorization header leaked across a cross-domain redirect.
     { pkg: 'follow-redirects', min: '1.16.0', advisory: 'GHSA-r4q5-vmmm-2653' },
-    // GHSA-v2v4-37r5-5v8g: XSS in the Address6 HTML-emitting methods.
-    { pkg: 'ip-address', min: '10.1.1', advisory: 'GHSA-v2v4-37r5-5v8g' },
+    // GHSA-v2v4-37r5-5v8g (10.1.1): XSS in the Address6 HTML-emitting methods.
+    // 10.5.1 then fixed two classifier gaps that let an address slip past an
+    // SSRF / trust-boundary check: GHSA-2vr4-cq9g-pvrc (NAT64 local-use
+    // 64:ff9b:1::/48 unrecognized) and GHSA-rpw4-54j3-4h4q (isLinkLocal() only
+    // matched fe80::/64 instead of fe80::/10).
+    {
+      pkg: 'ip-address',
+      min: '10.5.1',
+      advisory: ['GHSA-v2v4-37r5-5v8g', 'GHSA-2vr4-cq9g-pvrc', 'GHSA-rpw4-54j3-4h4q'],
+    },
     // GHSA-v422-hmwv-36x6: an invalid `limit` silently disables size enforcement.
     // Patched separately on each supported line, and both lines are live here
     // (express@4 pulls 1.x, express@5 under @slack/bolt + MCP SDK pulls 2.x).
@@ -333,8 +341,22 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // node-gyp declares `^6.25.0` and mobile's @expo/cli `^6.18.2`, while jsdom
     // (root + client) declares `^7.24.5`. Every patched version sits inside its
     // parent's range, so this is a plain re-resolve with no override.
-    { pkg: 'undici', min: '6.28.0', advisory: 'GHSA-8xcm-r25x-g524', line: '6.x' },
-    { pkg: 'undici', min: '7.29.0', advisory: 'GHSA-4cwx-7wf7-3272', line: '7.x' },
+    //
+    // GHSA-3wwx-pv8p-q78v (unhandled error in WebSocket permessage-deflate
+    // decompression, DoS) raised both lines again: patched in 6.28.1 and 7.29.1.
+    // Same plain re-resolve, still inside every parent's range.
+    {
+      pkg: 'undici',
+      min: '6.28.1',
+      advisory: ['GHSA-8xcm-r25x-g524', 'GHSA-3wwx-pv8p-q78v'],
+      line: '6.x',
+    },
+    {
+      pkg: 'undici',
+      min: '7.29.1',
+      advisory: ['GHSA-4cwx-7wf7-3272', 'GHSA-3wwx-pv8p-q78v'],
+      line: '7.x',
+    },
 
     // --- 10-finding audit (js-yaml / mermaid) ---
 
@@ -458,12 +480,17 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     //   GHSA-cc9r-2j5m-2m83  recipient-domain validation bypass    (9.1.0)
     //   GHSA-wmmp-3585-3rmp  IDN/Punycode allow-list bypass        (9.1.0)
     //   GHSA-8m3c-c648-2xjj  resolveContent() disableFileAccess bypass (9.1.1)
-    // 9.1.1 subsumes the 9.1.0 set. Server declares `nodemailer: ^9.0.1`, which
-    // admits 9.1.1, so this is a plain re-resolve with no override. Server-only.
+    // 9.1.1 subsumes the 9.1.0 set.
+    // GHSA-6vj9-mwq6-2f5v then followed: the process-global DNS cache reused a
+    // TLS `servername` across transports (cross-tenant SMTP credential
+    // disclosure), patched only on the 10.x line at 10.0.2. The server manifest
+    // moved to `^10.0.12`; 10.0.0's only breaking change is Node >= 20.
+    // Server-only.
     {
       pkg: 'nodemailer',
-      min: '9.1.1',
+      min: '10.0.2',
       advisory: [
+        'GHSA-6vj9-mwq6-2f5v',
         'GHSA-2x7j-588g-ccc2',
         'GHSA-cc9r-2j5m-2m83',
         'GHSA-wmmp-3585-3rmp',
@@ -1188,9 +1215,12 @@ describe('unpatched advisories (containment guards)', () => {
       why: 'puppeteer-core pins @puppeteer/browsers at exactly 2.3.0 (an override to the 3.x line that drops extract-zip breaks that pin), 22.15.0 is the top of the 22.x line stagehand accepts, and the only clean escape is stagehand 3 -> 4, which replaces the whole browser backend',
     },
     // Two advisories, same shape: an infinite loop in a format parser (JXL/HEIF
-    // and ICNS). Vulnerable range `<= 2.0.2` covers 2.0.2, the newest published
-    // version -- and metro@0.87.0, the newest metro, still declares
-    // `image-size: ^1.0.2`, so no parent bump escapes it either.
+    // and ICNS). Vulnerable range `<= 2.0.2`; the fix exists only on the 2.x
+    // line (2.0.3). 2.x removed file-path input from `imageSize()`, and the
+    // metro@0.83 that Expo SDK 54 pins calls it with a path
+    // (`metro/src/Assets.js` getAssetData), so an override would break asset
+    // bundling. metro@0.87.1 drops image-size entirely, but reaching it means an
+    // Expo SDK upgrade.
     {
       workspace: 'mobile',
       pkg: 'image-size',
@@ -1199,7 +1229,7 @@ describe('unpatched advisories (containment guards)', () => {
       dependents: ['metro'],
       // Metro is the bundler: it measures image assets committed to this repo
       // at build time and never runs inside the shipped app.
-      why: 'every published version is vulnerable and 2.x is a breaking major outside metro’s `^1.0.2` range, so a bump would break the bundler without clearing the advisory',
+      why: 'the only patched line is image-size 2.x, which no longer accepts a file path, and metro@0.83 (pinned by Expo SDK 54, range `^1.0.2`) passes one; the clean escape is an Expo SDK bump that brings metro >= 0.87.1, which drops image-size',
     },
   ];
 
