@@ -3378,6 +3378,19 @@ function initDb(dataDir: string): void {
     console.warn('[wiki] FTS5 creation failed (may already exist):', (e as Error).message);
   }
 
+  // Notes ownership: NULL owner = created before per-user notes, always shared.
+  // Existing rows keep shared = 1 so nothing disappears from teammates.
+  try {
+    db.prepare('SELECT owner_user_id FROM notes LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE notes ADD COLUMN owner_user_id TEXT');
+  }
+  try {
+    db.prepare('SELECT shared FROM notes LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE notes ADD COLUMN shared INTEGER NOT NULL DEFAULT 1');
+  }
+
   // Migration: create notes FTS5 index
   try {
     db.exec(`
@@ -6622,12 +6635,13 @@ function initDb(dataDir: string): void {
 
     // Notes
     getNotes: db.prepare(
-      'SELECT id, project_id, title, created_at, updated_at FROM notes WHERE project_id = ? ORDER BY updated_at DESC',
+      'SELECT id, project_id, title, owner_user_id, shared, created_at, updated_at FROM notes WHERE project_id = ? ORDER BY updated_at DESC',
     ),
     getNote: db.prepare('SELECT * FROM notes WHERE id = ?'),
     createNote: db.prepare(
-      'INSERT INTO notes (id, project_id, title, content) VALUES (?, ?, ?, ?)',
+      'INSERT INTO notes (id, project_id, title, content, owner_user_id, shared) VALUES (?, ?, ?, ?, ?, ?)',
     ),
+    setNoteShared: db.prepare('UPDATE notes SET shared = ?, owner_user_id = ? WHERE id = ?'),
     updateNote: db.prepare(
       "UPDATE notes SET title = ?, content = ?, updated_at = datetime('now') WHERE id = ?",
     ),

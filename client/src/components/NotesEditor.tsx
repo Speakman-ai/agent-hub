@@ -31,10 +31,13 @@ import {
   ImagePlus,
   Mic,
   Square,
+  Lock,
+  Users,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { buildVoiceNoteMarkdown, padBlockForInsert } from '@shared/utils/voiceNoteMarkdown';
+import { describeNoteVisibility } from '@shared/utils/noteVisibility';
 
 // Render markdown links/images so server-hosted `/uploads/...` assets resolve
 // against the same origin as the UI (remote mode / Vite dev proxy). Module-scope
@@ -223,6 +226,40 @@ function relativeTime(dateStr: any) {
   return `${months}mo ago`;
 }
 
+/**
+ * Private/Shared pill. Clickable for the note's owner; read-only otherwise.
+ * Notes are private by default; sharing makes them visible to every project member.
+ */
+export function NoteVisibilityToggle({
+  note,
+  busy,
+  onToggle,
+}: {
+  note: { shared?: boolean; can_manage?: boolean; owner_username?: string | null };
+  busy?: boolean;
+  onToggle: () => void;
+}) {
+  const { shared, canManage, label, hint } = describeNoteVisibility(note);
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={!canManage || busy}
+      aria-pressed={shared}
+      aria-label={canManage ? `${label} note. Toggle sharing` : `${label} note`}
+      title={canManage ? `${hint} Click to ${shared ? 'make it private' : 'share it'}.` : hint}
+      className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border transition-colors disabled:cursor-default ${
+        shared
+          ? 'border-emerald-700/60 text-emerald-400 enabled:hover:bg-emerald-600/10'
+          : 'border-gray-700 text-gray-400 enabled:hover:bg-gray-800'
+      } ${busy ? 'opacity-50' : ''}`}
+    >
+      {shared ? <Users size={12} /> : <Lock size={12} />}
+      {label}
+    </button>
+  );
+}
+
 const PROCESS_TARGETS = [
   { value: 'auto', label: 'Auto-detect', desc: 'Let the agent decide wiki, memory, or both' },
   { value: 'wiki', label: 'Wiki', desc: 'Create or update wiki pages' },
@@ -257,6 +294,7 @@ export default function NotesEditor({ projectId }: any) {
   const [hoveredNoteId, setHoveredNoteId] = useState<any>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<any>(null);
   const [saving, setSaving] = useState(false);
+  const [togglingShare, setTogglingShare] = useState(false);
   // Processing state
   const [processing, setProcessing] = useState(false);
   const [processTarget, setProcessTarget] = useState('auto');
@@ -364,6 +402,14 @@ export default function NotesEditor({ projectId }: any) {
         const data = await api.getNote(projectId, noteId);
         setSelectedNote(data);
       } catch (err: any) {
+        // The owner made a shared note private (or deleted it) while we had it open.
+        if (/not found/i.test(err?.message || '') && selectedNoteIdRef.current === noteId) {
+          selectedNoteIdRef.current = null;
+          setSelectedNoteId(null);
+          setSelectedNote(null);
+          setEditing(false);
+          return;
+        }
         console.error('Failed to fetch note:', err);
       }
     },
@@ -894,6 +940,21 @@ export default function NotesEditor({ projectId }: any) {
     }
   };
 
+  const handleToggleShared = async () => {
+    const note = selectedNote;
+    if (!note || togglingShare || note.can_manage === false) return;
+    setTogglingShare(true);
+    try {
+      const updated = await api.updateNote(projectId, note.id, { shared: note.shared === false });
+      if (selectedNoteIdRef.current === note.id) setSelectedNote(updated);
+      fetchNotes(searchQuery);
+    } catch (err: any) {
+      console.error('Failed to change note visibility:', err);
+    } finally {
+      setTogglingShare(false);
+    }
+  };
+
   const handleProcess = async () => {
     if (!selectedNote || processing) return;
     setProcessing(true);
@@ -1122,13 +1183,27 @@ export default function NotesEditor({ projectId }: any) {
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium truncate">{note.title}</div>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {note.shared === false && (
+                        <Lock
+                          size={11}
+                          className="flex-shrink-0 text-gray-500"
+                          aria-label="Private note"
+                        />
+                      )}
+                      <span className="text-sm font-medium truncate">{note.title}</span>
+                    </div>
                     <div className="flex items-center gap-2 mt-1">
                       <span className="text-xs text-gray-500">{relativeTime(note.updated_at)}</span>
+                      {note.can_manage === false && note.owner_username && (
+                        <span className="text-xs text-gray-600 truncate">
+                          by {note.owner_username}
+                        </span>
+                      )}
                       {note.snippet && <SnippetText snippet={note.snippet} />}
                     </div>
                   </div>
-                  {hoveredNoteId === note.id && (
+                  {hoveredNoteId === note.id && note.can_manage !== false && (
                     <div className="flex-shrink-0">
                       {deleteConfirm === note.id ? (
                         <button
@@ -1175,6 +1250,13 @@ export default function NotesEditor({ projectId }: any) {
                 {saving && <span className="text-xs text-gray-500 animate-pulse">Saving...</span>}
                 {!saving && !creating && selectedNoteId && (
                   <span className="text-xs text-gray-600">Auto-saved</span>
+                )}
+                {!creating && selectedNote && (
+                  <NoteVisibilityToggle
+                    note={selectedNote}
+                    busy={togglingShare}
+                    onToggle={handleToggleShared}
+                  />
                 )}
                 {uploading && (
                   <span className="text-xs text-blue-400 animate-pulse">Uploading…</span>
@@ -1352,6 +1434,11 @@ export default function NotesEditor({ projectId }: any) {
                     <span className="text-xs text-gray-600">
                       Created {relativeTime(selectedNote.created_at)}
                     </span>
+                    <NoteVisibilityToggle
+                      note={selectedNote}
+                      busy={togglingShare}
+                      onToggle={handleToggleShared}
+                    />
                   </div>
                 </div>
                 <div className="flex items-center gap-2">

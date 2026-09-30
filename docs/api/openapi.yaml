@@ -11245,6 +11245,19 @@ components:
         content:
           type: string
           nullable: true
+        owner_user_id:
+          type: string
+          nullable: true
+          description: Creator. Null for notes that predate ownership (always shared).
+        owner_username:
+          type: string
+          nullable: true
+        shared:
+          type: boolean
+          description: True when every project member can see the note; false = owner only.
+        can_manage:
+          type: boolean
+          description: Whether the caller may change visibility or delete the note.
         created_at:
           type: string
         updated_at:
@@ -11254,9 +11267,13 @@ components:
         - project_id
         - title
         - content
+        - owner_user_id
+        - owner_username
+        - shared
+        - can_manage
         - created_at
         - updated_at
-      description: A single project note row.
+      description: A single project note row. Other users' private notes are never returned. List/search rows omit `content`.
     OrgTodosErrorResponse:
       type: object
       properties:
@@ -37571,6 +37588,9 @@ paths:
                   minLength: 1
                 content:
                   type: string
+                shared:
+                  type: boolean
+                  description: Share with every project member. Defaults to false (private) for signed-in callers; callers without a user identity always create shared notes.
               required:
                 - title
       responses:
@@ -37581,7 +37601,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Note"
         "400":
-          description: Title is required.
+          description: Title is required, or `shared` is not a boolean.
           content:
             application/json:
               schema:
@@ -37652,6 +37672,9 @@ paths:
                   type: string
                 content:
                   type: string
+                shared:
+                  type: boolean
+                  description: Toggle shared/private. Owner only; making an ownerless note private assigns it to the caller.
       responses:
         "200":
           description: Updated note.
@@ -37659,8 +37682,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Note"
+        "400":
+          description: Invalid `shared` value, or a private note without an owner.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesErrorResponse"
+        "403":
+          description: Only the note owner can change its visibility.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesErrorResponse"
         "404":
-          description: Note not found.
+          description: Note not found or not visible to the caller.
           content:
             application/json:
               schema:
@@ -37698,8 +37733,14 @@ paths:
                     type: boolean
                 required:
                   - ok
+        "403":
+          description: Only the note owner can delete it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotesErrorResponse"
         "404":
-          description: Note not found.
+          description: Note not found or not visible to the caller.
           content:
             application/json:
               schema:

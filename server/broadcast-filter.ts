@@ -158,6 +158,15 @@ export function shouldDeliverBroadcast(
     return stamp.userId === owner;
   }
 
+  // 3b-note. Private project notes go only to their owner, with no Owner-role
+  //    override (same stance as todos). Shared notes fall through to the
+  //    project visibility check below.
+  if ((data.type === 'note_update' || data.type === 'note_delete') && data.noteShared === false) {
+    const owner =
+      typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
+    if (!owner || stamp.userId !== owner) return false;
+  }
+
   // 3b-org. Shared organization-todo events fan out to every MEMBER of the org,
   //    and no one else — the list is team-visible but still org-private. A
   //    missing orgId, an absent membership resolver, or a stamp with no user id

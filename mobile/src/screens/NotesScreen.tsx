@@ -24,6 +24,7 @@ import AppIcon from '../components/AppIcon';
 import { useVoiceTranscription } from '../hooks/useVoiceTranscription';
 import NoteMarkdown from '../components/NoteMarkdown';
 import { buildVoiceNoteMarkdown } from '@shared/utils/voiceNoteMarkdown';
+import { describeNoteVisibility } from '@shared/utils/noteVisibility';
 import { relativeTime } from '../utils/time';
 import { SidebarContext } from '../context/SidebarContext';
 import { listMarkdownSections, listMarkdownLineItems } from '@shared/utils/markdownSections';
@@ -344,7 +345,25 @@ export default function NotesScreen({ route }: any) {
       Alert.alert('Error', err.message || 'Failed to save');
     }
   };
+  const [togglingShare, setTogglingShare] = useState(false);
+  const handleToggleShared = async () => {
+    const note = selectedNote;
+    if (!note || togglingShare) return;
+    const { shared, canManage } = describeNoteVisibility(note);
+    if (!canManage) return;
+    setTogglingShare(true);
+    try {
+      const updated = await api.updateNote(projectId, note.id, { shared: !shared });
+      setSelectedNote((current: any) => (current?.id === note.id ? updated : current));
+      loadNotes();
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to change sharing');
+    } finally {
+      setTogglingShare(false);
+    }
+  };
   const handleDelete = (note: any) => {
+    if (!describeNoteVisibility(note).canManage) return;
     Alert.alert('Delete Note', `Delete "${note.title}"?`, [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -605,7 +624,13 @@ export default function NotesScreen({ route }: any) {
                   </Text>
                 ) : null}
                 <View style={styles.noteItemFooter}>
-                  <Text style={styles.noteMeta}>{relativeTime(item.updated_at)}</Text>
+                  <Text style={styles.noteMeta}>
+                    {relativeTime(item.updated_at)}
+                    {item.shared === false ? ' · Private' : ''}
+                    {item.can_manage === false && item.owner_username
+                      ? ` · by ${item.owner_username}`
+                      : ''}
+                  </Text>
                 </View>
               </TouchableOpacity>
             )}
@@ -759,7 +784,38 @@ export default function NotesScreen({ route }: any) {
         <ScrollView style={styles.viewContainer}>
           <View style={styles.noteHeader}>
             <Text style={styles.noteViewTitle}>{selectedNote?.title}</Text>
-            <Text style={styles.noteMeta}>Updated {relativeTime(selectedNote?.updated_at)}</Text>
+            <View style={styles.noteMetaRow}>
+              <Text style={styles.noteMeta}>Updated {relativeTime(selectedNote?.updated_at)}</Text>
+              {selectedNote &&
+                (() => {
+                  const v = describeNoteVisibility(selectedNote);
+                  return (
+                    <TouchableOpacity
+                      onPress={handleToggleShared}
+                      disabled={!v.canManage || togglingShare}
+                      accessibilityRole="switch"
+                      accessibilityState={{ checked: v.shared, disabled: !v.canManage }}
+                      accessibilityLabel={`${v.label} note`}
+                      accessibilityHint={v.hint}
+                      style={[
+                        styles.visibilityPill,
+                        v.shared && styles.visibilityPillShared,
+                        togglingShare && { opacity: 0.5 },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.visibilityPillText,
+                          v.shared && styles.visibilityPillTextShared,
+                        ]}
+                      >
+                        {v.shared ? 'Shared' : 'Private'}
+                        {v.canManage ? '' : ` · ${selectedNote.owner_username || 'teammate'}`}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })()}
+            </View>
           </View>
           <View style={styles.markdownContainer}>
             <NoteMarkdown
@@ -912,6 +968,17 @@ const styles = StyleSheet.create({
   },
   noteItemFooter: { flexDirection: 'row', justifyContent: 'space-between' },
   noteMeta: { fontSize: 11, color: colors.gray600 },
+  noteMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  visibilityPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+  },
+  visibilityPillShared: { borderColor: colors.emerald700 },
+  visibilityPillText: { fontSize: 11, color: colors.gray400 },
+  visibilityPillTextShared: { color: colors.emerald400 },
   emptyState: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
   emptyTitle: { fontSize: 18, fontWeight: '600', color: colors.gray400, marginBottom: 8 },
   emptyDesc: {

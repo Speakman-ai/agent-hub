@@ -1556,6 +1556,10 @@ export interface NoteRow {
   project_id: string;
   title: string;
   content: string;
+  /** NULL for notes created before per-user ownership; those are always shared. */
+  owner_user_id: string | null;
+  /** 1 = visible to every project member, 0 = owner only. */
+  shared: number;
   created_at: string;
   updated_at: string;
 }
@@ -2710,6 +2714,7 @@ export interface Stmts {
   createNote: Stmt;
   updateNote: Stmt;
   deleteNote: Stmt;
+  setNoteShared: Stmt;
 
   // Workflows (Hub workflow builder — see workflows-schema.ts)
   getWorkflowsByProject: Stmt;

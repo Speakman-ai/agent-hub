@@ -33,20 +33,41 @@ export const NoteComponent = registerComponent(
       project_id: z.string(),
       title: z.string(),
       content: z.string().nullable(),
+      owner_user_id: z.string().nullable().openapi({
+        description: 'Creator. Null for notes that predate ownership (always shared).',
+      }),
+      owner_username: z.string().nullable(),
+      shared: z.boolean().openapi({
+        description: 'True when every project member can see the note; false = owner only.',
+      }),
+      can_manage: z.boolean().openapi({
+        description: 'Whether the caller may change visibility or delete the note.',
+      }),
       created_at: z.string(),
       updated_at: z.string(),
     })
-    .openapi({ description: 'A single project note row.' }),
+    .openapi({
+      description:
+        "A single project note row. Other users' private notes are never returned. List/search rows omit `content`.",
+    }),
 );
 
 export const CreateNoteRequestSchema = z.object({
   title: z.string().min(1, 'Title is required'),
   content: z.string().optional(),
+  shared: z.boolean().optional().openapi({
+    description:
+      'Share with every project member. Defaults to false (private) for signed-in callers; callers without a user identity always create shared notes.',
+  }),
 });
 
 export const UpdateNoteRequestSchema = z.object({
   title: z.string().optional(),
   content: z.string().optional(),
+  shared: z.boolean().optional().openapi({
+    description:
+      'Toggle shared/private. Owner only; making an ownerless note private assigns it to the caller.',
+  }),
 });
 
 const projectIdParams = z.object({
@@ -111,7 +132,7 @@ registerPath({
   },
   responses: {
     201: { description: 'Created note.', content: jsonContent(NoteComponent) },
-    400: errorResponse('Title is required.'),
+    400: errorResponse('Title is required, or `shared` is not a boolean.'),
     404: errorResponse('Project not found.'),
     409: errorResponse('Slug collision or constraint violation.'),
   },
@@ -128,7 +149,9 @@ registerPath({
   },
   responses: {
     200: { description: 'Updated note.', content: jsonContent(NoteComponent) },
-    404: errorResponse('Note not found.'),
+    400: errorResponse('Invalid `shared` value, or a private note without an owner.'),
+    403: errorResponse('Only the note owner can change its visibility.'),
+    404: errorResponse('Note not found or not visible to the caller.'),
     500: errorResponse('Update failed.'),
   },
 });
@@ -144,6 +167,7 @@ registerPath({
       description: 'Deleted.',
       content: jsonContent(z.object({ ok: z.boolean() })),
     },
-    404: errorResponse('Note not found.'),
+    403: errorResponse('Only the note owner can delete it.'),
+    404: errorResponse('Note not found or not visible to the caller.'),
   },
 });
