@@ -486,7 +486,7 @@ export function saveDailySummary(userId: string, report: HubDailySummaryStored):
   mergeUserPreferencesJson(userId, { hubDailySummary: report });
 }
 
-function hubWorkspaceCwd(): string {
+export function hubWorkspaceCwd(): string {
   try {
     const cwd = ensureHubProject().cwd?.trim();
     if (cwd) return cwd;

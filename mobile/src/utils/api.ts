@@ -1043,6 +1043,11 @@ export const api = {
   // Binary upload for videos and arbitrary files (web parity). `fileRef` is
   // `{ uri, name, type }` from expo-image-picker / expo-document-picker.
   uploadFile: (fileRef: any) => uploadFileImpl(fileRef),
+  // Summarize a dictated note with the caller's default model (server fails over engines).
+  summarizeVoiceTranscript: (
+    transcript: string,
+  ): Promise<{ summary: string; engine: string; model: string }> =>
+    fetchJSON('/transcribe/summary', { method: 'POST', body: JSON.stringify({ transcript }) }),
   // Voice transcription — raw audio bytes to /api/transcribe (web parity).
   transcribeAudio: (uri: any, contentType: any) => transcribeAudioImpl(uri, contentType),
   // Slack

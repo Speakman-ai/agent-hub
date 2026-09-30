@@ -38,7 +38,7 @@ async function flush() {
 // unmounted after each test to release anything it still holds.
 const mounted: Array<() => void> = [];
 
-function mount(initialKey: number, onError: any = vi.fn()) {
+function mount(initialKey: number, onError: any = vi.fn(), prepareTranscript?: any) {
   const state: any = { value: 'hello', key: initialKey, hook: null };
   const cursorRef = { current: 5 };
   function Harness() {
@@ -53,6 +53,7 @@ function mount(initialKey: number, onError: any = vi.fn()) {
       isProcessing: false,
       sessionKey: state.key,
       onError,
+      prepareTranscript,
     });
     return null;
   }
@@ -110,6 +111,60 @@ describe('useVoiceTranscription', () => {
       await flush();
     });
     expect(h.state.value).toBe('hello world');
+  });
+
+  it('inserts a prepared transcript as its own block, tracking edits made while preparing', async () => {
+    let finish: (v: string) => void = () => {};
+    const prepare = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const h = mount(1, vi.fn(), prepare);
+    await h.render();
+    await recordThenStop(h);
+    await act(async () => {
+      transcribe.resolve!({ transcript: 'world' });
+      await flush();
+    });
+    expect(prepare).toHaveBeenCalledWith('world');
+    expect(h.state.hook.isPreparing).toBe(true);
+    expect(h.state.hook.micDisabled).toBe(true);
+    await act(async () => {
+      h.state.hook.trackEdit('hello', '> hello');
+      h.state.setValue('> hello');
+    });
+    await act(async () => {
+      finish('SUMMARY');
+      await flush();
+    });
+    expect(h.state.value).toBe('> hello\n\nSUMMARY');
+    expect(h.state.hook.isPreparing).toBe(false);
+  });
+
+  it('cancel() while preparing drops the prepared text', async () => {
+    let finish: (v: string) => void = () => {};
+    const prepare = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const h = mount(1, vi.fn(), prepare);
+    await h.render();
+    await recordThenStop(h);
+    await act(async () => {
+      transcribe.resolve!({ transcript: 'world' });
+      await flush();
+    });
+    await act(async () => {
+      h.state.hook.cancel();
+      finish('SUMMARY');
+      await flush();
+    });
+    expect(h.state.value).toBe('hello');
+    expect(h.state.hook.isPreparing).toBe(false);
   });
 
   it('drops the transcript when the session key changed mid-upload', async () => {

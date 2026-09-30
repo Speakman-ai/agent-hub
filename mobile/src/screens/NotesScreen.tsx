@@ -15,7 +15,6 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Markdown from 'react-native-markdown-display';
 import * as ImagePicker from 'expo-image-picker';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
@@ -23,6 +22,8 @@ import { getServerBaseUrl } from '../utils/config';
 import { colors } from '../theme/colors';
 import AppIcon from '../components/AppIcon';
 import { useVoiceTranscription } from '../hooks/useVoiceTranscription';
+import NoteMarkdown from '../components/NoteMarkdown';
+import { buildVoiceNoteMarkdown } from '@shared/utils/voiceNoteMarkdown';
 import { relativeTime } from '../utils/time';
 import { SidebarContext } from '../context/SidebarContext';
 import { listMarkdownSections, listMarkdownLineItems } from '@shared/utils/markdownSections';
@@ -201,9 +202,23 @@ export default function NotesScreen({ route }: any) {
       return next;
     });
   }, []);
+  // Dictated notes get a model summary with the raw transcript folded below it.
+  // A failed summary still keeps the transcript.
+  const summarizeTranscript = useCallback(async (transcript: string) => {
+    try {
+      const { summary } = await api.summarizeVoiceTranscript(transcript);
+      return buildVoiceNoteMarkdown({ summary, transcript });
+    } catch (err: any) {
+      setVoiceError(
+        `Couldn't summarize the recording (${err?.message || 'unknown error'}). Kept the transcript.`,
+      );
+      return buildVoiceNoteMarkdown({ transcript });
+    }
+  }, []);
   const {
     isRecording,
     isTranscribing,
+    isPreparing: isSummarizing,
     micDisabled,
     handleMicClick,
     cancel: cancelVoice,
@@ -216,6 +231,7 @@ export default function NotesScreen({ route }: any) {
     isProcessing: false,
     sessionKey: editSessionRef.current,
     onError: (msg: string) => setVoiceError(msg),
+    prepareTranscript: summarizeTranscript,
   });
   const handleVoicePress = () => {
     if (!isRecording) setVoiceError('');
@@ -684,11 +700,13 @@ export default function NotesScreen({ route }: any) {
                   style={styles.attachButton}
                   accessibilityRole="button"
                   accessibilityLabel={
-                    isTranscribing
-                      ? 'Transcribing voice input'
-                      : isRecording
-                        ? 'Stop recording'
-                        : 'Voice input'
+                    isSummarizing
+                      ? 'Summarizing voice input'
+                      : isTranscribing
+                        ? 'Transcribing voice input'
+                        : isRecording
+                          ? 'Stop recording'
+                          : 'Voice input'
                   }
                   accessibilityState={{ disabled: !!micDisabled, selected: !!isRecording }}
                 >
@@ -709,7 +727,8 @@ export default function NotesScreen({ route }: any) {
                 style={[styles.voiceStatus, voiceError ? { color: colors.red400 } : null]}
                 accessibilityLiveRegion="polite"
               >
-                {voiceError || (isRecording ? 'Recording…' : 'Transcribing…')}
+                {voiceError ||
+                  (isRecording ? 'Recording…' : isSummarizing ? 'Summarizing…' : 'Transcribing…')}
               </Text>
             ) : null}
             <TextInput
@@ -743,9 +762,11 @@ export default function NotesScreen({ route }: any) {
             <Text style={styles.noteMeta}>Updated {relativeTime(selectedNote?.updated_at)}</Text>
           </View>
           <View style={styles.markdownContainer}>
-            <Markdown style={mdStyles as any} rules={markdownRules as any}>
-              {selectedNote?.content || '*No content yet*'}
-            </Markdown>
+            <NoteMarkdown
+              content={selectedNote?.content || '*No content yet*'}
+              style={mdStyles as any}
+              rules={markdownRules as any}
+            />
           </View>
         </ScrollView>
       )}

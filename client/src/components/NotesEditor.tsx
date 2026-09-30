@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { normalizeNotesMarkdown } from '../utils/notesMarkdown';
+import remarkDetails from '../utils/remarkDetails';
 import { resolveServerMediaUrl } from '../utils/resolveServerMediaUrl';
 import { sliceSectionAtLine } from '@shared/utils/markdownSections';
 import { pickTodoColumn } from '@shared/utils/pickTodoColumn';
@@ -32,12 +33,15 @@ import {
   Square,
 } from 'lucide-react';
 import { api } from '../utils/api';
-import { useVoiceRecorder, padTranscriptForInsert } from '../hooks/useVoiceRecorder';
+import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
+import { buildVoiceNoteMarkdown, padBlockForInsert } from '@shared/utils/voiceNoteMarkdown';
 
 // Render markdown links/images so server-hosted `/uploads/...` assets resolve
 // against the same origin as the UI (remote mode / Vite dev proxy). Module-scope
 // constant so its identity is stable — passing it to react-markdown never forces
 // a preview remount. Merged into the scope/ticket component map for view mode.
+const NOTES_REMARK_PLUGINS = [remarkGfm, remarkDetails];
+
 const mediaMarkdownComponents = {
   img: ({ node: _node, src, alt, ...props }: any) => (
     <img
@@ -268,6 +272,8 @@ export default function NotesEditor({ projectId }: any) {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const [voiceError, setVoiceError] = useState('');
+  const [summarizing, setSummarizing] = useState(false);
+  const summaryAbortRef = useRef<AbortController | null>(null);
   // Where a dictated transcript should land: the caret at the moment the mic
   // was clicked, tagged with the edit-session it belongs to. The range is kept
   // current by handleContentChange so typing during the upload doesn't
@@ -666,8 +672,8 @@ export default function NotesEditor({ projectId }: any) {
   const {
     isRecording,
     isTranscribing,
-    toggle: toggleVoice,
-    cancel: cancelVoice,
+    toggle: toggleRecorder,
+    cancel: cancelRecorder,
   } = useVoiceRecorder({
     onStart: () => {
       setVoiceError('');
@@ -676,17 +682,63 @@ export default function NotesEditor({ projectId }: any) {
       const at = ta && typeof ta.selectionStart === 'number' ? ta.selectionStart : len;
       voiceAnchorRef.current = { gen: draftGenRef.current, range: { start: at, end: at } };
     },
+    // The anchor stays live through the summary call so handleContentChange
+    // keeps shifting it while the user types.
     onTranscript: (transcript: string) => {
       const anchor = voiceAnchorRef.current;
-      voiceAnchorRef.current = null;
-      // Dropped if the user left this note/edit-session mid-transcription.
-      if (!anchor || anchor.gen !== draftGenRef.current) return;
-      const at = anchor.range.start;
-      const snippet = padTranscriptForInsert(editContentRef.current || '', at, transcript);
-      if (snippet) insertSnippetAt(snippet, at, at);
+      if (!anchor || anchor.gen !== draftGenRef.current) {
+        voiceAnchorRef.current = null;
+        return;
+      }
+      void summarizeAndInsert(transcript, anchor);
     },
     onError: (msg: string) => setVoiceError(msg),
   });
+
+  const summarizeAndInsert = async (
+    transcript: string,
+    anchor: { gen: number; range: { start: number; end: number } },
+  ) => {
+    const controller = new AbortController();
+    summaryAbortRef.current = controller;
+    setSummarizing(true);
+    let summary = '';
+    try {
+      summary = (await api.summarizeVoiceTranscript(transcript, { signal: controller.signal }))
+        .summary;
+    } catch (err: any) {
+      if (controller.signal.aborted) return;
+      setVoiceError(
+        `Couldn't summarize the recording (${err?.message || 'unknown error'}). Kept the transcript.`,
+      );
+    } finally {
+      if (summaryAbortRef.current === controller) {
+        summaryAbortRef.current = null;
+        setSummarizing(false);
+      }
+    }
+    if (controller.signal.aborted) return;
+    voiceAnchorRef.current = null;
+    // Dropped if the user left this note/edit-session mid-summary.
+    if (anchor.gen !== draftGenRef.current) return;
+    const at = anchor.range.start;
+    const block = buildVoiceNoteMarkdown({ summary, transcript });
+    const snippet = padBlockForInsert(editContentRef.current || '', at, block);
+    if (snippet) insertSnippetAt(snippet, at, at);
+  };
+
+  const cancelVoice = useCallback(() => {
+    cancelRecorder();
+    summaryAbortRef.current?.abort();
+    summaryAbortRef.current = null;
+    voiceAnchorRef.current = null;
+    setSummarizing(false);
+  }, [cancelRecorder]);
+
+  const toggleVoice = () => {
+    if (summarizing) return;
+    toggleRecorder();
+  };
 
   // Leaving the editor stops the mic; the button lives in the edit toolbar.
   useEffect(() => {
@@ -984,7 +1036,10 @@ export default function NotesEditor({ projectId }: any) {
 
   const renderMarkdownPreview = (content: any, components?: any) => (
     <div className="prose prose-invert prose-sm max-w-none text-gray-300">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components || mediaMarkdownComponents}>
+      <ReactMarkdown
+        remarkPlugins={NOTES_REMARK_PLUGINS}
+        components={components || mediaMarkdownComponents}
+      >
         {normalizeNotesMarkdown(content || '')}
       </ReactMarkdown>
     </div>
@@ -1131,6 +1186,9 @@ export default function NotesEditor({ projectId }: any) {
                 {isTranscribing && (
                   <span className="text-xs text-blue-400 animate-pulse">Transcribing…</span>
                 )}
+                {summarizing && (
+                  <span className="text-xs text-blue-400 animate-pulse">Summarizing…</span>
+                )}
                 {voiceError && <span className="text-xs text-red-400">{voiceError}</span>}
               </div>
               <div className="flex items-center gap-1">
@@ -1158,24 +1216,28 @@ export default function NotesEditor({ projectId }: any) {
                   )}
                 </button>
 
-                {/* Voice input: record, transcribe, insert at the caret. */}
+                {/* Voice input: record, transcribe, summarize, insert at the caret. */}
                 <button
                   onClick={toggleVoice}
-                  disabled={isTranscribing}
+                  disabled={isTranscribing || summarizing}
                   aria-pressed={isRecording}
                   aria-label={
                     isTranscribing
                       ? 'Transcribing audio'
-                      : isRecording
-                        ? 'Stop recording'
-                        : 'Start voice input'
+                      : summarizing
+                        ? 'Summarizing recording'
+                        : isRecording
+                          ? 'Stop recording'
+                          : 'Start voice input'
                   }
                   title={
                     isTranscribing
                       ? 'Transcribing...'
-                      : isRecording
-                        ? 'Stop recording'
-                        : 'Voice input (dictate into the note)'
+                      : summarizing
+                        ? 'Summarizing...'
+                        : isRecording
+                          ? 'Stop recording'
+                          : 'Voice input (dictate into the note)'
                   }
                   className={`p-1.5 rounded transition-colors disabled:opacity-50 ${
                     isRecording
@@ -1183,7 +1245,7 @@ export default function NotesEditor({ projectId }: any) {
                       : 'text-gray-500 hover:text-gray-300'
                   }`}
                 >
-                  {isTranscribing ? (
+                  {isTranscribing || summarizing ? (
                     <Loader2 size={14} className="animate-spin" />
                   ) : isRecording ? (
                     <Square size={14} fill="currentColor" />

@@ -210,6 +210,12 @@ export interface DailySummaryReportWire {
   generatedAt: string;
 }
 
+export interface VoiceTranscriptSummaryWire {
+  summary: string;
+  engine: string;
+  model: string;
+}
+
 export interface DailySummaryWire {
   date: string;
   timeZone: string;
@@ -1022,6 +1028,17 @@ export const api = {
     const qs = params.toString();
     return fetchJSON<DailySummaryWire>(`/me/daily-summary${qs ? `?${qs}` : ''}`);
   },
+  /**
+   * Summarize a dictated note with the caller's default model. The server
+   * fails over across engines, so allow several one-shot attempts.
+   */
+  summarizeVoiceTranscript: (transcript: string, opts: { signal?: AbortSignal } = {}) =>
+    fetchJSON<VoiceTranscriptSummaryWire>('/transcribe/summary', {
+      method: 'POST',
+      body: JSON.stringify({ transcript }),
+      timeout: 400_000,
+      signal: opts.signal,
+    }),
   generateDailySummary: (opts: { tz?: string } = {}) =>
     fetchJSON<DailySummaryWire>('/me/daily-summary', {
       method: 'POST',

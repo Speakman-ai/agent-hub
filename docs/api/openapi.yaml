@@ -15402,6 +15402,30 @@ components:
           type: string
       required:
         - error
+    VoiceSummaryResponse:
+      type: object
+      properties:
+        summary:
+          type: string
+          description: Markdown summary of the transcript.
+        engine:
+          type: string
+        model:
+          type: string
+      required:
+        - summary
+        - engine
+        - model
+      description: Summary of a dictated note, plus the engine/model that wrote it.
+    VoiceSummaryErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+      required:
+        - error
     VotingWizardErrorResponse:
       type: object
       properties:
@@ -46205,6 +46229,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UploadErrorResponse"
+  /api/transcribe/summary:
+    post:
+      tags:
+        - Transcription
+      summary: Summarize a voice note transcript
+      description: Runs the caller's default model (their Hub engine/model pick) over a dictated transcript and returns a Markdown summary. Unauthenticated engines are skipped up front, and a run that dies on quota, auth, or upstream errors fails over to the next engine.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transcript:
+                  type: string
+                  minLength: 1
+                  maxLength: 200000
+              required:
+                - transcript
+      responses:
+        "200":
+          description: Markdown summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceSummaryResponse"
+        "400":
+          description: Invalid body, or engine credentials missing for this account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceSummaryErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceSummaryErrorResponse"
+        "502":
+          description: Every engine failed to produce a summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceSummaryErrorResponse"
+        "503":
+          description: No AI engines are configured or available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceSummaryErrorResponse"
   /api/projects/{projectId}/voting/setup-wizard:
     post:
       tags:

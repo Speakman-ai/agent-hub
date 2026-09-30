@@ -24,7 +24,9 @@ vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' 
 vi.mock('react-native-markdown-display', () => ({ default: 'Markdown' }));
 vi.mock('expo-image-picker', () => ({}));
 vi.mock('../components/AppIcon', () => ({ default: 'AppIcon' }));
-vi.mock('../utils/api', () => ({ api: { getNotes: vi.fn(async () => []) } }));
+vi.mock('../utils/api', () => ({
+  api: { getNotes: vi.fn(async () => []), summarizeVoiceTranscript: vi.fn() },
+}));
 vi.mock('../utils/config', () => ({ getServerBaseUrl: () => 'https://hub.test' }));
 vi.mock('../context/AppContext', () => ({
   useApp: () => ({ projects: [{ id: 'p1', name: 'P1' }] }),
@@ -52,6 +54,8 @@ vi.mock('../hooks/useVoiceTranscription', () => ({
 }));
 
 const { default: NotesScreen } = await import('./NotesScreen');
+const { api } = await import('../utils/api');
+const { buildVoiceNoteMarkdown } = await import('@shared/utils/voiceNoteMarkdown');
 
 function textOf(renderer: any): string[] {
   return renderer.root
@@ -105,5 +109,30 @@ describe('NotesScreen voice input', () => {
       input.props.onChangeText('abc');
     });
     expect(voice.trackEdit).toHaveBeenCalledWith('', 'abc');
+  });
+
+  it('summarizes a dictated transcript and folds the original below it', async () => {
+    await openNewNote();
+    (api.summarizeVoiceTranscript as any).mockResolvedValueOnce({
+      summary: '**Call Bob.**',
+      engine: 'claude-code',
+      model: 'm',
+    });
+    const out = await voice.opts.prepareTranscript('uh call bob');
+    expect(api.summarizeVoiceTranscript).toHaveBeenCalledWith('uh call bob');
+    expect(out).toBe(
+      buildVoiceNoteMarkdown({ summary: '**Call Bob.**', transcript: 'uh call bob' }),
+    );
+  });
+
+  it('keeps the folded transcript and reports the error when summarizing fails', async () => {
+    const renderer = await openNewNote();
+    (api.summarizeVoiceTranscript as any).mockRejectedValueOnce(new Error('503: no engines'));
+    let out = '';
+    await act(async () => {
+      out = await voice.opts.prepareTranscript('just words');
+    });
+    expect(out).toBe(buildVoiceNoteMarkdown({ transcript: 'just words' }));
+    expect(textOf(renderer).some((t) => t.includes("Couldn't summarize the recording"))).toBe(true);
   });
 });

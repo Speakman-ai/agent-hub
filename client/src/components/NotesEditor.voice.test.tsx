@@ -3,6 +3,7 @@ import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import NotesEditor from './NotesEditor';
 import { api } from '../utils/api';
 import { padTranscriptForInsert } from '../hooks/useVoiceRecorder';
+import { buildVoiceNoteMarkdown } from '@shared/utils/voiceNoteMarkdown';
 
 vi.mock('../utils/api', () => ({
   api: {
@@ -17,6 +18,7 @@ vi.mock('../utils/api', () => ({
     createCard: vi.fn(),
     processNote: vi.fn(),
     scopeFromNotes: vi.fn(),
+    summarizeVoiceTranscript: vi.fn(),
   },
 }));
 
@@ -50,6 +52,11 @@ beforeEach(() => {
   (api.getNotes as any).mockResolvedValue([]);
   (api.createNote as any).mockResolvedValue({ id: 'new-note', title: '', content: '' });
   (api.updateNote as any).mockResolvedValue({ id: 'new-note', title: '', content: '' });
+  (api.summarizeVoiceTranscript as any).mockResolvedValue({
+    summary: '**Gist.**',
+    engine: 'claude-code',
+    model: 'claude-opus-5-5',
+  });
   (window as any).MediaRecorder = FakeMediaRecorder;
   (globalThis as any).MediaRecorder = FakeMediaRecorder;
   Object.defineProperty(navigator, 'mediaDevices', {
@@ -110,10 +117,18 @@ async function respond(transcript: string) {
 }
 
 describe('NotesEditor voice input', () => {
-  it('inserts the transcript at the caret captured when recording started', async () => {
+  it('inserts the summary and a collapsed transcript at the caret captured when recording started', async () => {
     const textarea = await startNewNote();
     fireEvent.change(textarea, { target: { value: 'hello world' } });
     textarea.setSelectionRange(5, 5);
+
+    let finishSummary: (v: any) => void = () => {};
+    (api.summarizeVoiceTranscript as any).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSummary = resolve;
+        }),
+    );
 
     await recordAndStop();
     expect((fetch as any).mock.calls[0][0]).toBe('/api/transcribe');
@@ -121,8 +136,30 @@ describe('NotesEditor voice input', () => {
     // Typing at the front while the upload is pending shifts the anchor.
     fireEvent.change(textarea, { target: { value: '> hello world' } });
     await respond('big');
+    await waitFor(() => expect(screen.getByText('Summarizing…')).toBeTruthy());
+    expect(api.summarizeVoiceTranscript).toHaveBeenCalledWith('big', expect.anything());
 
-    await waitFor(() => expect(textarea.value).toBe('> hello big world'));
+    // ...and while the summary is pending.
+    fireEvent.change(textarea, { target: { value: '>> hello world' } });
+    await act(async () => {
+      finishSummary({ summary: '**Big.**', engine: 'claude-code', model: 'm' });
+      await Promise.resolve();
+    });
+
+    const block = buildVoiceNoteMarkdown({ summary: '**Big.**', transcript: 'big' });
+    await waitFor(() => expect(textarea.value).toBe(`>> hello\n\n${block}\n\n world`));
+  });
+
+  it('keeps the collapsed transcript when summarizing fails', async () => {
+    const textarea = await startNewNote();
+    (api.summarizeVoiceTranscript as any).mockRejectedValueOnce(new Error('503: no engines'));
+    await recordAndStop();
+    await respond('just the words');
+
+    await waitFor(() =>
+      expect(textarea.value).toBe(buildVoiceNoteMarkdown({ transcript: 'just the words' })),
+    );
+    expect(screen.getByText(/Couldn't summarize the recording \(503: no engines\)/)).toBeTruthy();
   });
 
   it('drops a transcript that resolves after the note was closed', async () => {

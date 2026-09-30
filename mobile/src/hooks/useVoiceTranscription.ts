@@ -10,6 +10,7 @@ import {
 import { applyTranscriptAtAnchor, contentTypeForRecordingUri } from '../utils/voiceTranscription';
 import { transcribeAudio } from '../utils/transcribeAudio';
 import { transformRange } from '@shared/utils/noteAttachments';
+import { padBlockForInsert } from '@shared/utils/voiceNoteMarkdown';
 /**
  * Voice-input hook for the chat composer and the notes editor. Records via expo-av, uploads to
  * /api/transcribe, and splices the transcript at the captured caret position.
@@ -23,9 +24,16 @@ export function useVoiceTranscription({
   isProcessing,
   onError,
   sessionKey,
+  prepareTranscript,
 }: any) {
+  // `prepareTranscript` (optional) turns the raw transcript into the text to
+  // insert, e.g. notes wrap it with a model summary. Its result is inserted as
+  // its own markdown block instead of inline words.
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isPreparing, setIsPreparing] = useState(false);
+  const prepareRef = useRef<((t: string) => Promise<string>) | undefined>(prepareTranscript);
+  prepareRef.current = prepareTranscript;
   const recordingRef = useRef<any>(null);
   const transcribeAnchorRef = useRef<any>(null);
   // Callers that swap the edited buffer (notes) pass a key identifying it; a
@@ -64,11 +72,18 @@ export function useVoiceTranscription({
     [onError],
   );
   const applyTranscript = useCallback(
-    (text: any) => {
+    (text: any, asBlock = false) => {
       const anchor = transcribeAnchorRef.current;
       transcribeAnchorRef.current = null;
       if (startKeyRef.current !== sessionKeyRef.current) return;
       setValue((prev: any) => {
+        if (asBlock) {
+          const at =
+            typeof anchor === 'number' ? Math.min(Math.max(0, anchor), prev.length) : prev.length;
+          const block = padBlockForInsert(prev, at, text);
+          cursorRef.current = at + block.length;
+          return prev.slice(0, at) + block + prev.slice(at);
+        }
         const { text: next, caret } = applyTranscriptAtAnchor(prev, text, anchor);
         cursorRef.current = caret;
         return next;
@@ -134,7 +149,24 @@ export function useVoiceTranscription({
       try {
         const { transcript } = await transcribeAudio(uri, contentTypeForRecordingUri(uri));
         if (!isLive(attempt)) return;
-        applyTranscript(transcript);
+        const prepare = prepareRef.current;
+        if (typeof prepare !== 'function') {
+          applyTranscript(transcript);
+          return;
+        }
+        if (startKeyRef.current !== sessionKeyRef.current) {
+          transcribeAnchorRef.current = null;
+          return;
+        }
+        setIsPreparing(true);
+        let prepared: string;
+        try {
+          prepared = await prepare(transcript);
+        } finally {
+          if (isLive(attempt)) setIsPreparing(false);
+        }
+        if (!isLive(attempt)) return;
+        applyTranscript(prepared, true);
       } catch (err: any) {
         if (!isLive(attempt)) return;
         reportError(err?.message || 'Transcription failed. Tap mic to retry.');
@@ -161,6 +193,7 @@ export function useVoiceTranscription({
     recordingRef.current = null;
     setIsRecording(false);
     setIsTranscribing(false);
+    setIsPreparing(false);
     if (rec) void releaseRecording(attempt, rec);
   }, []);
   // Keeps the captured dictation anchor aligned with edits made while the
@@ -178,6 +211,7 @@ export function useVoiceTranscription({
   return {
     isRecording,
     isTranscribing,
+    isPreparing,
     micDisabled,
     handleMicClick,
     cancel,
