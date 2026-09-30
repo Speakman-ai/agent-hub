@@ -98,6 +98,10 @@ import {
 import { detectPreviewBlock, describePreviewReason } from './preview/preview-block.js';
 import { handleMutatingToolUseForCodeChange } from './code-change-tracker.js';
 import {
+  notePreviewWatchToolResult,
+  notePreviewWatchToolUse,
+} from './preview/preview-watch-nudge.js';
+import {
   resolveTurnEndError,
   planTransientErrorRetry,
   buildTurnErrorContinuationPrompt,
@@ -5053,9 +5057,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             worktreePath: effectiveCwd,
             getDevServerRuntime,
           });
+          notePreviewWatchToolUse(
+            sessionId,
+            typeof event.id === 'string' ? event.id : undefined,
+            event.tool,
+            toolInput,
+          );
         }
 
         if (event.type === 'tool_result' && typeof event.toolUseId === 'string') {
+          // Rename-style shell writes (sed -i, mv) can slip past the preview
+          // dev server's watcher; re-touch what the command changed.
+          notePreviewWatchToolResult(sessionId, event.toolUseId, {
+            broadcast,
+            worktreePath: effectiveCwd,
+            getDevServerRuntime,
+          });
           // Resolves a background launch's shell handle, and retires a shell
           // whose BashOutput poll came back with a terminal status.
           noteEphemeralBackgroundBashToolResult(
