@@ -355,7 +355,14 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // sanitize returned. 3.4.13 neutralizes the detached subtree inline. The
     // floor names the stricter constraint; the behavioural guard further down
     // asserts the installed code actually strips those handlers.
-    { pkg: 'dompurify', min: '3.4.13', advisory: 'GHSA-55q2-fjhq-7xh7' },
+    // GHSA-p98j-92pf-mc4p (3.4.16): the same neutralization was wired only into
+    // the before/upon hook sites, so a node removed by an afterSanitizeElements
+    // or afterSanitizeAttributes hook kept its descendants' handlers armed.
+    {
+      pkg: 'dompurify',
+      min: '3.4.16',
+      advisory: ['GHSA-55q2-fjhq-7xh7', 'GHSA-p98j-92pf-mc4p'],
+    },
     // GHSA-4x5r-pxfx-6jf8: arbitrary file read via a sourceMappingURL comment.
     { pkg: '@babel/core', min: '7.29.6', advisory: 'GHSA-4x5r-pxfx-6jf8' },
     // GHSA-6vfc-qv3f-vr6c (12.3.2) + GHSA-6v5v-wf23-fmfq (>14.1.1, i.e. 14.2.0).
@@ -947,7 +954,20 @@ describe('hono/cors bounds preflight header parsing (GHSA-8j4g-w8fx-2239)', () =
  * versions -- the detached subtree is the only place the difference shows --
  * so the assertion has to reach into the node the hook kept a reference to.
  */
-describe('dompurify neutralizes hook-detached IN_PLACE subtrees (GHSA-55q2-fjhq-7xh7)', () => {
+describe('dompurify neutralizes hook-detached IN_PLACE subtrees (GHSA-55q2-fjhq-7xh7, GHSA-p98j-92pf-mc4p)', () => {
+  /**
+   * Every hook site that may detach a node. 3.4.13 covered the first two
+   * (GHSA-55q2-fjhq-7xh7); the after* sites were only closed in 3.4.16
+   * (GHSA-p98j-92pf-mc4p). Mutation-checked: 3.4.13 leaves `onerror` armed for
+   * both after* hooks, 3.4.16 strips it for all four.
+   */
+  const HOOKS = [
+    { hook: 'uponSanitizeElement', advisory: 'GHSA-55q2-fjhq-7xh7' },
+    { hook: 'beforeSanitizeElements', advisory: 'GHSA-55q2-fjhq-7xh7' },
+    { hook: 'afterSanitizeElements', advisory: 'GHSA-p98j-92pf-mc4p' },
+    { hook: 'afterSanitizeAttributes', advisory: 'GHSA-p98j-92pf-mc4p' },
+  ] as const;
+
   const require_ = createRequire(import.meta.url);
 
   /** Minimal surface of the two untyped modules this guard drives. */
@@ -955,7 +975,7 @@ describe('dompurify neutralizes hook-detached IN_PLACE subtrees (GHSA-55q2-fjhq-
     JSDOM: new (html: string) => { window: { document: Document } };
   }
   interface PurifyInstance {
-    addHook: (event: string, cb: (node: Element, data: { tagName: string }) => void) => void;
+    addHook: (event: string, cb: (node: Element) => void) => void;
     sanitize: (node: Element, cfg: Record<string, unknown>) => unknown;
   }
 
@@ -997,42 +1017,42 @@ describe('dompurify neutralizes hook-detached IN_PLACE subtrees (GHSA-55q2-fjhq-
     it.skip('jsdom is not installed, so the DOM guard cannot run (run npm ci --include=dev)', () => {});
   }
 
-  for (const { workspace, key, dir, version } of jsdom ? copies : []) {
-    it(`${workspace}: ${key}@${version} strips handlers from a hook-detached subtree`, () => {
-      const { JSDOM } = jsdom!;
-      const createDOMPurify = require_(dir) as (win: unknown) => PurifyInstance;
+  for (const { workspace, key, dir, version } of jsdom ? copies : [])
+    for (const { hook, advisory } of HOOKS) {
+      it(`${workspace}: ${key}@${version} strips handlers from a subtree detached in ${hook}`, () => {
+        const { JSDOM } = jsdom!;
+        const createDOMPurify = require_(dir) as (win: unknown) => PurifyInstance;
 
-      const dom = new JSDOM('<!doctype html><body></body>');
-      const purify = createDOMPurify(dom.window);
+        const dom = new JSDOM('<!doctype html><body></body>');
+        const purify = createDOMPurify(dom.window);
 
-      let detached: Element | null = null;
-      purify.addHook('uponSanitizeElement', (node, data) => {
-        if (data.tagName === 'section') {
-          detached = node;
-          node.remove();
-        }
+        let detached: Element | null = null;
+        purify.addHook(hook, (node) => {
+          if (node.nodeName === 'SECTION') {
+            detached = node;
+            node.remove();
+          }
+        });
+
+        const root = dom.window.document.createElement('div');
+        root.innerHTML = '<section><img src=x onerror="alert(1)"></section>';
+        dom.window.document.body.appendChild(root);
+
+        purify.sanitize(root, { IN_PLACE: true });
+
+        const subtree = detached as Element | null;
+        expect(subtree, `${key} hook never saw the <section> to detach`).not.toBeNull();
+        const img = subtree!.querySelector('img');
+        // Asserts the fix did not simply empty the subtree -- a neutralized
+        // <img> must still be there, just disarmed.
+        expect(img, `${key} detached subtree lost its <img>`).not.toBeNull();
+        expect(
+          img!.getAttribute('onerror'),
+          `${key}@${version} left onerror armed on a subtree detached by an ` +
+            `${hook} hook during IN_PLACE sanitize; it is missing the ${advisory} fix.`,
+        ).toBeNull();
       });
-
-      const root = dom.window.document.createElement('div');
-      root.innerHTML = '<section><img src=x onerror="alert(1)"></section>';
-      dom.window.document.body.appendChild(root);
-
-      purify.sanitize(root, { IN_PLACE: true });
-
-      const subtree = detached as Element | null;
-      expect(subtree, `${key} hook never saw the <section> to detach`).not.toBeNull();
-      const img = subtree!.querySelector('img');
-      // Asserts the fix did not simply empty the subtree -- a neutralized
-      // <img> must still be there, just disarmed.
-      expect(img, `${key} detached subtree lost its <img>`).not.toBeNull();
-      expect(
-        img!.getAttribute('onerror'),
-        `${key}@${version} left onerror armed on a subtree detached by an ` +
-          'uponSanitizeElement hook during IN_PLACE sanitize; it is missing the ' +
-          'GHSA-55q2-fjhq-7xh7 fix.',
-      ).toBeNull();
-    });
-  }
+    }
 });
 
 /**
