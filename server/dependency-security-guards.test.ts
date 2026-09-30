@@ -186,16 +186,19 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     //   GHSA-jqff-g426-hqxp  host confusion via percent-encoded scheme normalization
     //   GHSA-5jgf-p345-68v8  host confusion via skipped IDN canonicalization on
     //                        scheme-relative references
-    // The 3.1.6 floor subsumes every earlier fix. Every copy sits under `ajv`'s
-    // `fast-uri: ^3.0.1`, so each patch re-resolves in range with no override.
+    // GHSA-hrr3-gc8f-f4qj (inconsistent host case normalization via
+    // percent-encoded octets) followed on 3.1.8, which subsumes every earlier
+    // fix. Every copy sits under `ajv`'s `fast-uri: ^3.0.1`, so each patch
+    // re-resolves in range with no override.
     {
       pkg: 'fast-uri',
-      min: '3.1.6',
+      min: '3.1.8',
       advisory: [
         'GHSA-f65p-4m7j-42xc',
         'GHSA-fph4-wmhf-6fwf',
         'GHSA-jqff-g426-hqxp',
         'GHSA-5jgf-p345-68v8',
+        'GHSA-hrr3-gc8f-f4qj',
       ],
     },
     // GHSA-v245-v573-v5vm: quadratic-complexity DoS in the `mailto:` validator.
@@ -223,16 +226,55 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // intermediate array before the cap ever applied. Its patched set is
     // (<1.1.18, <2.1.4, <3.0.6, <5.0.9), which the 1.x and 2.x backports
     // already satisfy at the versions pinned here -- only the 5.x floor moved.
-    { pkg: 'brace-expansion', min: '1.1.18', advisory: 'GHSA-rgw5-rvv9-x895', line: '1.x' },
-    { pkg: 'brace-expansion', min: '2.1.4', advisory: 'GHSA-rgw5-rvv9-x895', line: '2.x' },
-    { pkg: 'brace-expansion', min: '5.0.9', advisory: 'GHSA-rgw5-rvv9-x895', line: '5.x' },
+    //
+    // Three more DoS advisories were then patched on every live line at once:
+    //   GHSA-6j4f-fj2g-mc7p  uncontrolled recursion in parseCommaParts
+    //                        (1.1.19 / 2.1.5 / 5.0.10)
+    //   GHSA-qhr7-859c-m2p7  uncontrolled recursion on nested brace groups
+    //                        (1.1.20 / 2.1.6 / 5.0.11)
+    //   GHSA-q2hr-2g5m-vwhr  quadratic-time '{a},b}' rewrite
+    //                        (1.1.21 / 2.1.7 / 5.0.12)
+    // The last patch on each line subsumes the other two. 1.1.21 and 2.1.7 stay
+    // inside the minimatch parent ranges, and the 5.x copy is the exact-pinned
+    // devDependency in root, server and mobile.
+    ...(['1.1.21', '2.1.7', '5.0.12'] as const).map((min) => ({
+      pkg: 'brace-expansion',
+      min,
+      advisory: [
+        'GHSA-rgw5-rvv9-x895',
+        'GHSA-6j4f-fj2g-mc7p',
+        'GHSA-qhr7-859c-m2p7',
+        'GHSA-q2hr-2g5m-vwhr',
+      ],
+      line: `${min.split('.')[0]}.x`,
+    })),
 
     // --- 33-finding audit (electron / uuid / qs / protobufjs / hono / ...) ---
 
     // GHSA-4p4r-m79c-wq3v (39.8.3) response-header injection, GHSA-xwr5-m59h-vwqr
     // (39.8.4) nodeIntegrationInWorker scoping, GHSA-f3pv-wv63-48x8 +
     // GHSA-f37v-82c4-4x64 + GHSA-8x5q-pvf5-64mp (39.8.5). 39.8.5 clears all five.
-    { pkg: 'electron', min: '39.8.5', advisory: 'GHSA-f3pv-wv63-48x8' },
+    //
+    // Four later advisories have no fix on the 39.x line (39 is out of support):
+    //   GHSA-hq2x-r82h-9wj4  popups via OpenURLFromTab drop inherited sandbox (41.10.4)
+    //   GHSA-j84w-jfhq-vhvj  file/http protocol handlers allow cross-origin reads (41.10.6)
+    //   GHSA-gr2m-v5gq-v685  windows opened from a sandboxed document escape it (41.10.6)
+    //   GHSA-9qh4-3jw8-366w  <webview> enables Node in Web Workers (41.10.6)
+    // So the desktop shell moved 39 -> 41. The 40/41 breaking changes (renderer
+    // clipboard deprecation, in-WebContents PDFs, cookie change causes, Linux
+    // showHiddenFiles) touch nothing in electron/main.ts or preload.cjs, and
+    // better-sqlite3 12.x supports the Node 24 ABI that Electron 41 embeds.
+    {
+      pkg: 'electron',
+      min: '41.10.6',
+      advisory: [
+        'GHSA-f3pv-wv63-48x8',
+        'GHSA-hq2x-r82h-9wj4',
+        'GHSA-j84w-jfhq-vhvj',
+        'GHSA-gr2m-v5gq-v685',
+        'GHSA-9qh4-3jw8-366w',
+      ],
+    },
     // GHSA-w5hq-g745-h8pq: missing buffer bounds check in v3/v5/v6. Patched only
     // on the 11.x line, so mobile's xcode@3 (uuid ^7) and server's
     // @langchain/core (uuid ^10) both need the `uuid` override to reach it.
@@ -320,7 +362,13 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // react-native-markdown-display@7 declares `markdown-it ^10.0.0` and has no
     // newer release, so mobile forces 14.x via an override. The renderer's call
     // surface is guarded by mobile/src/utils/markdownItRendererContract.test.ts.
-    { pkg: 'markdown-it', min: '14.2.0', advisory: 'GHSA-6v5v-wf23-fmfq' },
+    // GHSA-253c-mchw-3w2r (14.3.1): two quadratic paths under `linkify: true`;
+    // the mobile override floor was raised to ^14.3.1 to match.
+    {
+      pkg: 'markdown-it',
+      min: '14.3.1',
+      advisory: ['GHSA-6v5v-wf23-fmfq', 'GHSA-253c-mchw-3w2r'],
+    },
     // GHSA-g7r4-m6w7-qqqr: arbitrary file read from the Windows dev server.
     // Scoped to `server`: the advisory covers the 0.27.x line that tsx pulled in,
     // and client's esbuild@0.25 (via vite@6) is outside the affected range.
@@ -1188,20 +1236,9 @@ describe('unpatched advisories (containment guards)', () => {
     // exploitable by an archive an attacker controls.
     //
     // Escaping it needs a parent that drops the dependency outright:
-    // `@puppeteer/browsers` 3.x swapped to `modern-tar`, and electron 43 moved
-    // to `@electron-internal/extract-zip`. Both are rejected below.
-    {
-      workspace: 'root',
-      pkg: 'extract-zip',
-      advisory: ['GHSA-jmr9-qjv8-65gv', 'GHSA-7pqw-9j4j-h8q3'],
-      vulnerableRange: '<= 2.0.1',
-      dependents: ['electron'],
-      // devDependency: it runs at `npm install` time to unpack the Electron
-      // release archive from the project's own GitHub releases, never a
-      // user-supplied zip, and it is not part of any shipped artifact.
-      flags: { dev: true },
-      why: 'electron 39 -> 43 is four majors of the desktop shell (Chromium/Node bumps, API removals) for a dev-only unpack of a trusted archive',
-    },
+    // `@puppeteer/browsers` 3.x swapped to `modern-tar` (rejected below), and
+    // electron 41.10.x moved to `@electron-internal/extract-zip`, which is how
+    // root got rid of its copy (asserted after this loop).
     {
       workspace: 'server',
       pkg: 'extract-zip',
@@ -1282,6 +1319,16 @@ describe('unpatched advisories (containment guards)', () => {
       });
     }
   }
+
+  it('root: electron no longer pulls in extract-zip (GHSA-jmr9-qjv8-65gv, GHSA-7pqw-9j4j-h8q3)', () => {
+    const packages = lockPackages(LOCKFILES.find((l) => l.name === 'root')!.lock);
+    const copies = Object.keys(packages).filter((key) => packageNameOf(key) === 'extract-zip');
+    expect(
+      copies,
+      'electron >= 41.10 unpacks its release archive with @electron-internal/extract-zip; a ' +
+        'returning extract-zip copy carries the unfixed symlink advisories and needs a containment entry',
+    ).toEqual([]);
+  });
 
   /**
    * GHSA-866g-f22w-33x8 (low): uncontrolled resource consumption in
