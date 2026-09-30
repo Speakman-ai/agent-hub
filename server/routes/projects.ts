@@ -89,6 +89,7 @@ import type {
   GithubWorkflowSettings,
   BackgroundCustomAgentConfig,
 } from '../types.js';
+import { isPushConcurrencyMode } from '../git-host/push-concurrency.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { resolveProjectSkillsDir } from '../project-model.js';
 import { getProjectMode, getWorkflowWorkspaceDir } from '../project-mode.js';
@@ -2313,6 +2314,30 @@ This workspace has no git repo and no PR automation — your job is planning, or
         (project as Record<string, unknown>).ciOnPush = {
           ...(project.ciOnPush ?? {}),
           ...(enabled !== undefined ? { enabled } : {}),
+        };
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'pushConcurrency')) {
+      const rawPc = (req.body as Record<string, unknown>).pushConcurrency;
+      if (rawPc === null) {
+        delete (project as Record<string, unknown>).pushConcurrency;
+      } else if (typeof rawPc !== 'object' || Array.isArray(rawPc)) {
+        return res.status(400).json({ error: 'pushConcurrency must be an object or null' });
+      } else {
+        const next: NonNullable<Project['pushConcurrency']> = {};
+        for (const kind of ['ci', 'review'] as const) {
+          const value = (rawPc as Record<string, unknown>)[kind];
+          if (value === undefined) continue;
+          if (!isPushConcurrencyMode(value)) {
+            return res
+              .status(400)
+              .json({ error: `pushConcurrency.${kind} must be "queue" or "cancel"` });
+          }
+          next[kind] = value;
+        }
+        (project as Record<string, unknown>).pushConcurrency = {
+          ...(project.pushConcurrency ?? {}),
+          ...next,
         };
       }
     }

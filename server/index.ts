@@ -793,6 +793,7 @@ app.use(
               config,
               broadcast,
               handleChat: routeDeps.handleChat,
+              cancelReviewSession: handleCancel,
             },
             // Run the review as the user who pushed, so it uses their
             // reviewer engine/model + per-account credentials. If receive-pack
@@ -932,6 +933,7 @@ const nativePr = createNativePrService({
         config,
         broadcast,
         handleChat: routeDeps.handleChat,
+        cancelReviewSession: handleCancel,
       },
       { trigger: meta.reason === 'created' ? 'pr_create' : 'head_update' },
     );

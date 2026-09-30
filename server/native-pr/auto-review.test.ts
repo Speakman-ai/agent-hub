@@ -25,6 +25,7 @@ import { replaceUserPreferencesJson } from '../user-preferences-store.js';
 
 let maybeRunPrAutoReview: typeof import('./auto-review.js').maybeRunPrAutoReview;
 let __clearAutoReviewDispatches: typeof import('./auto-review.js').__clearAutoReviewDispatches;
+let __hasQueuedReview: typeof import('./auto-review.js').__hasQueuedReview;
 let stmts: import('../types.js').Stmts;
 let config: import('../types.js').AppConfig;
 let request: Awaited<ReturnType<typeof import('../test/helpers.js').getRequest>>;
@@ -34,7 +35,8 @@ let probeSpy: MockInstance<typeof engineAvailability.probeEngineAvailability>;
 beforeAll(async () => {
   const helpers = await import('../test/helpers.js');
   request = await helpers.getRequest();
-  ({ maybeRunPrAutoReview, __clearAutoReviewDispatches } = await import('./auto-review.js'));
+  ({ maybeRunPrAutoReview, __clearAutoReviewDispatches, __hasQueuedReview } =
+    await import('./auto-review.js'));
   stmts = (await import('../db.js')).stmts!;
   config = (await import('../config.js')).default;
   ({ gitHostRepoPath } = await import('../git-host/repo-store.js'));
@@ -1127,5 +1129,190 @@ describe('maybeRunPrAutoReview', () => {
     };
     expect(session.engine).toBe('codex-cli');
     expect(session.owner_user_id).toBe('ryan');
+  });
+});
+
+/** Move the PR head branch forward one commit, as an external push would. */
+function advanceHead(project: Project, branch: string): string {
+  const bare = gitHostRepoPath(project.id);
+  const work = path.join(os.tmpdir(), `autorev-adv-${uuidv4().slice(0, 8)}`);
+  execSync(`git clone --quiet --branch ${branch} "${bare}" "${work}"`, { stdio: 'pipe' });
+  git(work, 'config user.email "t@example.com"');
+  git(work, 'config user.name "T"');
+  writeFileSync(path.join(work, 'b.txt'), `${uuidv4()}\n`);
+  git(work, 'commit -am more');
+  git(bare, `fetch --quiet "${work}" +refs/heads/${branch}:refs/heads/${branch}`);
+  return git(bare, `rev-parse refs/heads/${branch}`);
+}
+
+function seedPrRow(project: Project, branch: string): void {
+  const now = Date.now();
+  stmts.insertPullRequest.run(
+    `pr-${project.id}-1`,
+    project.id,
+    1,
+    'T',
+    '',
+    branch,
+    'main',
+    'deadbeef',
+    'ryan',
+    now,
+    now,
+  );
+}
+
+describe('push concurrency for a review already in flight', () => {
+  const pr = (branch: string) => ({
+    number: 1,
+    head_branch: branch,
+    status: 'open' as const,
+    author: 'ryan',
+  });
+
+  it('queue (default): holds the newest push and reviews it when the running review ends', async () => {
+    const { project, branch } = await hostedPrProject();
+    seedPrRow(project, branch);
+    let endFirstTurn: () => void = () => {};
+    const handleChat = vi
+      .fn()
+      .mockReturnValueOnce(new Promise<void>((resolve) => (endFirstTurn = resolve)))
+      .mockReturnValue(new Promise<void>(() => {}));
+    const deps = {
+      stmts,
+      config,
+      broadcast: vi.fn(),
+      handleChat: handleChat as RouteDeps['handleChat'],
+      cancelReviewSession: vi.fn(),
+    };
+
+    const first = await maybeRunPrAutoReview(project, pr(branch), deps, {
+      force: true,
+      trigger: 'pr_create',
+    });
+    expect(first.dispatched).toBe(true);
+
+    const newHead = advanceHead(project, branch);
+    const second = await maybeRunPrAutoReview(project, pr(branch), deps, {
+      force: true,
+      pushedByUserId: 'ryan',
+    });
+    expect(second).toMatchObject({ dispatched: false, reason: 'queued' });
+    expect(__hasQueuedReview(project.id, 1)).toBe(true);
+    expect(deps.cancelReviewSession).not.toHaveBeenCalled();
+    expect(handleChat).toHaveBeenCalledOnce();
+
+    endFirstTurn();
+    await vi.waitFor(() => expect(handleChat).toHaveBeenCalledTimes(2));
+    const msg = handleChat.mock.calls[1]![1] as { sessionId: string };
+    const session = stmts.getSession.get(msg.sessionId) as { name: string };
+    expect(session.name).toContain(newHead.slice(0, 8));
+    expect(__hasQueuedReview(project.id, 1)).toBe(false);
+  });
+
+  it('cancel: stops the running reviewer and reviews the new head immediately', async () => {
+    const { project, branch } = await hostedPrProject();
+    project.pushConcurrency = { review: 'cancel' };
+    seedPrRow(project, branch);
+    const handleChat = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+    const cancelReviewSession = vi.fn();
+    const deps = {
+      stmts,
+      config,
+      broadcast: vi.fn(),
+      handleChat: handleChat as RouteDeps['handleChat'],
+      cancelReviewSession,
+    };
+
+    const first = await maybeRunPrAutoReview(project, pr(branch), deps, {
+      force: true,
+      trigger: 'pr_create',
+    });
+    expect(first.dispatched).toBe(true);
+
+    const newHead = advanceHead(project, branch);
+    const second = await maybeRunPrAutoReview(project, pr(branch), deps, {
+      force: true,
+      pushedByUserId: 'ryan',
+    });
+    expect(second.dispatched).toBe(true);
+    expect(cancelReviewSession).toHaveBeenCalledWith(first.sessionId);
+    expect(handleChat).toHaveBeenCalledTimes(2);
+    const row = stmts.getPullRequestByNumber.get(project.id, 1) as {
+      agent_review_session_id: string | null;
+    };
+    expect(row.agent_review_session_id).toBe(second.sessionId);
+    const session = stmts.getSession.get(second.sessionId!) as { name: string };
+    expect(session.name).toContain(newHead.slice(0, 8));
+  });
+
+  it('cancel: a push resolving to the head already under review neither cancels nor queues', async () => {
+    const { project, branch } = await hostedPrProject();
+    project.pushConcurrency = { review: 'cancel' };
+    seedPrRow(project, branch);
+    const handleChat = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+    const cancelReviewSession = vi.fn();
+    const deps = {
+      stmts,
+      config,
+      broadcast: vi.fn(),
+      handleChat: handleChat as RouteDeps['handleChat'],
+      cancelReviewSession,
+    };
+
+    // A manual request records no per-sha dedup key, so the push below reaches
+    // the in-flight handling for the SAME head.
+    const first = await maybeRunPrAutoReview(project, pr(branch), deps, {
+      force: true,
+      trigger: 'manual_request',
+    });
+    expect(first.dispatched).toBe(true);
+
+    const second = await maybeRunPrAutoReview(project, pr(branch), deps, {
+      force: true,
+      pushedByUserId: 'ryan',
+    });
+    expect(second).toMatchObject({ dispatched: false, reason: 'already_in_flight' });
+    expect(cancelReviewSession).not.toHaveBeenCalled();
+    expect(__hasQueuedReview(project.id, 1)).toBe(false);
+    expect(handleChat).toHaveBeenCalledOnce();
+  });
+
+  it('cancel: a stale push slow to admit cannot displace the review of a newer head', async () => {
+    const { project, branch, headSha: b } = await hostedPrProject();
+    project.pushConcurrency = { review: 'cancel' };
+    seedPrRow(project, branch);
+    let releaseProbe: () => void = () => {};
+    const probeHeld = new Promise<void>((resolve) => (releaseProbe = resolve));
+    // B's admission resolves head B, then stalls in the engine probe.
+    probeSpy.mockImplementationOnce(async () => {
+      await probeHeld;
+      return { engine: 'claude-code', available: true };
+    });
+    const handleChat = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+    const deps = {
+      stmts,
+      config,
+      broadcast: vi.fn(),
+      handleChat: handleChat as RouteDeps['handleChat'],
+      cancelReviewSession: vi.fn(),
+    };
+    const push = { force: true, pushedByUserId: 'ryan' };
+
+    const pB = maybeRunPrAutoReview(project, pr(branch), deps, push);
+    await vi.waitFor(() => expect(probeSpy).toHaveBeenCalled());
+    const c = advanceHead(project, branch);
+    const pC = maybeRunPrAutoReview(project, pr(branch), deps, push);
+    // Give C every chance to overtake B's stalled admission.
+    await new Promise((r) => setTimeout(r, 500));
+    releaseProbe();
+    await Promise.all([pB, pC]);
+
+    const row = stmts.getPullRequestByNumber.get(project.id, 1) as {
+      agent_review_session_id: string | null;
+    };
+    const session = stmts.getSession.get(row.agent_review_session_id!) as { name: string };
+    expect(session.name).toContain(c.slice(0, 8));
+    expect(session.name).not.toContain(b.slice(0, 8));
   });
 });

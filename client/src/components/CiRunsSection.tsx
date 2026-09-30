@@ -626,6 +626,51 @@ export function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
   );
 }
 
+const PUSH_CONCURRENCY_OPTIONS = [
+  { value: 'queue', label: 'Queue after the running one' },
+  { value: 'cancel', label: 'Cancel the running one' },
+];
+
+/**
+ * GitHub-Actions-style `cancel-in-progress` for work a branch push retriggers.
+ * Queue keeps only the newest waiting push; cancel stops the running job.
+ */
+function PushConcurrencySettings({ value, onChange, saving }: any) {
+  const rows = [
+    { kind: 'ci', label: 'CI' },
+    { kind: 'review', label: 'Review' },
+  ];
+  return (
+    <div className="space-y-2" data-testid="push-concurrency-settings">
+      <div>
+        <span className="text-sm text-gray-200">When a branch gets a new push</span>
+        <p className="text-xs text-gray-500">
+          A push retriggers CI and the Reviewer agent. Choose what happens to a run still in
+          progress for the older commit. Queued pushes collapse to the newest one.
+        </p>
+      </div>
+      {rows.map(({ kind, label }) => (
+        <label key={kind} className="flex items-center justify-between gap-3 text-xs">
+          <span className="text-gray-300">{label}</span>
+          <select
+            value={value?.[kind] === 'cancel' ? 'cancel' : 'queue'}
+            disabled={saving}
+            onChange={(e) => onChange(kind, e.target.value)}
+            data-testid={`push-concurrency-${kind}`}
+            className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-gray-200 disabled:opacity-50"
+          >
+            {PUSH_CONCURRENCY_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 export default function CiRunsSection({ project, onProjectsChange, showToast }: any) {
   const [runs, setRuns] = useState<any>(null);
   const [stats, setStats] = useState<any>(undefined);
@@ -698,6 +743,19 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
     }
   };
 
+  const updatePushConcurrency = async (kind: string, mode: string) => {
+    if (!projectId) return;
+    setSavingToggle(true);
+    try {
+      await api.updateProject(projectId, { pushConcurrency: { [kind]: mode } });
+      if (onProjectsChange) onProjectsChange();
+    } catch (err: any) {
+      if (showToast) showToast(String(err?.message || err || 'Failed to update'), 'error');
+    } finally {
+      setSavingToggle(false);
+    }
+  };
+
   if (!projectId) return null;
 
   return (
@@ -729,6 +787,14 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
             />
           </button>
         </div>
+      )}
+
+      {hosted && (
+        <PushConcurrencySettings
+          value={project?.pushConcurrency}
+          onChange={updatePushConcurrency}
+          saving={savingToggle}
+        />
       )}
 
       <RunnerStats

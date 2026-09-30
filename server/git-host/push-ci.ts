@@ -26,6 +26,14 @@
  * Deliberate differences from a Finalize run: no reviewer, no
  * fix-dispatch loop, no push step — report-only. One run per
  * (project, sha) across BOTH triggers via the shared idempotency key.
+ *
+ * Concurrency: every branch is its own group (see push-concurrency.ts).
+ * Pushes are admitted one at a time per branch (`admitPush`): each reads the
+ * live head and runs every skip check, and joins only when it will actually
+ * build a new head. It then drops an older push still waiting in the group, and in
+ * `cancel` mode stops the group's running CI for a different head, which
+ * records `cancelled` / `superseded`. A head the group already has queued or
+ * running is a no-op.
  */
 
 import { execFile } from 'child_process';
@@ -39,6 +47,9 @@ import { gitHostRepoPath, hostedRepoDefaultBranch, hostedRepoExists } from './re
 import { loadCiConfigFromFile } from '../finalize/ci-config.js';
 import { runJobPhase } from '../finalize/job-runner.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
+import { createFinalizeRunSignal } from '../finalize/run-abort-registry.js';
+import type { CancelSignal } from '../finalize/fix-dispatch.js';
+import { resolvePushConcurrency } from './push-concurrency.js';
 
 const execFileP = promisify(execFile);
 
@@ -57,6 +68,8 @@ export interface PushCiDeps {
   runJobPhase?: typeof runJobPhase;
   /** Test seam — defaults to {@link mergeProjectSecretsSpawnEnv}. */
   mergeSecrets?: typeof mergeProjectSecretsSpawnEnv;
+  /** Test seam: awaited during admission, after the head sha is resolved. */
+  onAdmissionHead?: (headSha: string) => Promise<void>;
 }
 
 /**
@@ -79,19 +92,138 @@ export function setChecksPassedHook(fn: ChecksPassedHook | null): void {
   checksPassedHook = fn;
 }
 
-/** Per-project serialization so two rapid pushes don't race a clone dir. */
-const queues = new Map<string, Promise<void>>();
+/**
+ * One concurrency group per (project, branch). `generation` counts pushes so
+ * a queued item can tell it was superseded; `latestSha` is the head the
+ * newest push resolved to (queued or running); `active` is the running
+ * item's head and abort handle.
+ */
+interface CiGroup {
+  /** Serial admission lane: pushes are checked and admitted one at a time. */
+  admission: Promise<void>;
+  /** Run lane: admitted CI runs, one at a time. */
+  tail: Promise<void>;
+  generation: number;
+  latestSha: string | null;
+  active: { headSha: string; abort: () => void } | null;
+}
 
-function enqueue(projectId: string, work: () => Promise<void>): Promise<void> {
-  const prior = queues.get(projectId) ?? Promise.resolve();
-  const next = prior.then(work).catch((err: unknown) => {
-    console.error(
-      `[push-ci] unexpected failure for ${projectId}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  });
-  queues.set(projectId, next);
+const groups = new Map<string, CiGroup>();
+
+function ciGroupKey(projectId: string, branch: string): string {
+  return `${projectId}|${branch}`;
+}
+
+function getGroup(key: string): CiGroup {
+  let group = groups.get(key);
+  if (!group) {
+    group = {
+      admission: Promise.resolve(),
+      tail: Promise.resolve(),
+      generation: 0,
+      latestSha: null,
+      active: null,
+    };
+    groups.set(key, group);
+  }
+  return group;
+}
+
+/** What an admitted push builds; `null` from a preflight means "nothing to run". */
+interface AdmissionPlan {
+  headSha: string;
+  work: (signal: CancelSignal) => Promise<void>;
+}
+
+/**
+ * The only way a push enters its branch group.
+ *
+ * Every push's preflight (resolve the LIVE branch head, then every skip
+ * check) runs through the group's admission lane one at a time, and the
+ * supersede decision is made inside that same lane step. Because the head is
+ * read inside the lane, a later admission always sees a head at least as new
+ * as an earlier one, whatever order notifications arrived in or however long
+ * any check took. So no push can supersede or cancel work for a newer head,
+ * and a push that turns out to have nothing to run touches nothing.
+ *
+ * The admission lane never waits on CI runs, only on other preflights.
+ * Resolves once the admitted run (if any) finishes.
+ */
+function admitPush(
+  key: string,
+  mode: 'queue' | 'cancel',
+  preflight: () => Promise<AdmissionPlan | null>,
+): Promise<void> {
+  const g = getGroup(key);
+  let runDone: Promise<void> = Promise.resolve();
+  const admitted = g.admission
+    .then(async () => {
+      const plan = await preflight();
+      if (!plan) return;
+      runDone = enqueueInGroup(key, { supersede: true, mode, headSha: plan.headSha }, plan.work);
+    })
+    .catch((err: unknown) => {
+      console.error(
+        `[push-ci] admission failed for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  g.admission = admitted;
+  return admitted.then(() => runDone);
+}
+
+/**
+ * Serialize `work` for `headSha` inside its branch group's run lane.
+ *
+ * Pushes reach this only through {@link admitPush}, never directly: joining
+ * with `supersede` has side effects on other pushes, so it must happen in
+ * admission order and only for a push that will actually build `headSha`.
+ *
+ * `supersede` (a push): a head the group already has queued or running is a
+ * no-op. A new head bumps the generation so any older push still waiting
+ * skips itself, and in `cancel` mode aborts the running item unless it is
+ * already building that same head. A re-run passes `supersede: false`: it
+ * waits its turn without dropping anything, but a later push of a different
+ * head can still supersede or cancel it.
+ */
+function enqueueInGroup(
+  key: string,
+  opts: { supersede: boolean; mode: 'queue' | 'cancel'; headSha: string },
+  work: (signal: CancelSignal) => Promise<void>,
+): Promise<void> {
+  const g = getGroup(key);
+  if (opts.supersede) {
+    if (g.latestSha === opts.headSha) {
+      console.log(`[push-ci] ${key}: ${opts.headSha.slice(0, 8)} already queued or running`);
+      return g.tail;
+    }
+    g.generation += 1;
+    g.latestSha = opts.headSha;
+    if (opts.mode === 'cancel' && g.active && g.active.headSha !== opts.headSha) {
+      console.log(`[push-ci] ${key}: newer push cancels the in-progress run`);
+      g.active.abort();
+    }
+  }
+  const myGeneration = g.generation;
+  const next = g.tail
+    .then(async () => {
+      if (myGeneration !== g.generation) {
+        console.log(`[push-ci] ${key}: skipping a queued push superseded by a newer one`);
+        return;
+      }
+      const handle = { headSha: opts.headSha, ...createFinalizeRunSignal() };
+      g.active = handle;
+      try {
+        await work(handle.signal);
+      } finally {
+        if (g.active === handle) g.active = null;
+      }
+    })
+    .catch((err: unknown) => {
+      console.error(
+        `[push-ci] unexpected failure for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  g.tail = next;
   return next;
 }
 
@@ -134,6 +266,11 @@ async function revParse(bare: string, ref: string): Promise<string | null> {
   }
 }
 
+/** True when push/PR CI already recorded a run for this sha (either trigger). */
+function shaHasCiRun(stmts: Stmts, projectId: string, sha: string): boolean {
+  return Boolean(stmts.getFinalizeRunByIdempotencyKey.get(`git-push|${projectId}|${sha}`));
+}
+
 /** True when the sha was fully validated by Finalize (review + checks). */
 export function isShaFinalizeValidated(stmts: Stmts, projectId: string, sha: string): boolean {
   const row = stmts.getValidatedFinalizeRunForSha.get(projectId, sha) as { id: string } | undefined;
@@ -155,7 +292,10 @@ export function maybeRunPushCi(
   const dataDir = deps.dataDir ?? config.dataDir;
   if (!hostedRepoExists(project.id, dataDir)) return Promise.resolve();
 
-  return enqueue(project.id, async () => {
+  const mode = resolvePushConcurrency(project, 'ci');
+  return (async () => {
+    // Only the group key is resolved outside the admission lane. It is stable
+    // across pushes, so resolving it here cannot reorder anything.
     const defaultBranch = (await hostedRepoDefaultBranch(project.id, dataDir)) ?? 'main';
     for (const ref of updatedRefs) {
       if (!ref.startsWith('refs/heads/')) continue;
@@ -165,15 +305,31 @@ export function maybeRunPushCi(
       }
     }
     if (!updatedRefs.includes(`refs/heads/${defaultBranch}`)) return;
-    const bare = gitHostRepoPath(project.id, dataDir);
-    const headSha = await revParse(bare, `refs/heads/${defaultBranch}`);
-    if (!headSha) return; // branch vanished between notify and now
-    await runCiForSha(project, deps, dataDir, {
-      branch: defaultBranch,
-      headSha,
-      trigger: 'git_push',
-      skipWhenNoConfig: false,
+
+    await admitPush(ciGroupKey(project.id, defaultBranch), mode, async () => {
+      const bare = gitHostRepoPath(project.id, dataDir);
+      const headSha = await revParse(bare, `refs/heads/${defaultBranch}`);
+      if (!headSha) return null; // branch vanished between notify and now
+      await deps.onAdmissionHead?.(headSha);
+      if (shaHasCiRun(deps.stmts, project.id, headSha)) return null;
+      return {
+        headSha,
+        work: (signal) =>
+          runCiForSha(project, deps, dataDir, {
+            branch: defaultBranch,
+            headSha,
+            trigger: 'git_push',
+            skipWhenNoConfig: false,
+            signal,
+          }),
+      };
     });
+  })().catch((err: unknown) => {
+    console.error(
+      `[push-ci] unexpected failure for ${project.id}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   });
 }
 
@@ -192,7 +348,8 @@ export function maybeRunPrCi(
   const dataDir = deps.dataDir ?? config.dataDir;
   if (!hostedRepoExists(project.id, dataDir)) return Promise.resolve();
 
-  return enqueue(project.id, async () => {
+  const mode = resolvePushConcurrency(project, 'ci');
+  return (async () => {
     const defaultBranch = (await hostedRepoDefaultBranch(project.id, dataDir)) ?? 'main';
     if (pr.base_branch !== defaultBranch) {
       console.log(
@@ -201,40 +358,55 @@ export function maybeRunPrCi(
       return;
     }
 
-    const bare = gitHostRepoPath(project.id, dataDir);
-    const headSha = await revParse(bare, `refs/heads/${pr.head_branch}`);
-    if (!headSha) return; // head branch gone (merged + deleted)
+    await admitPush(ciGroupKey(project.id, pr.head_branch), mode, async () => {
+      const bare = gitHostRepoPath(project.id, dataDir);
+      const headSha = await revParse(bare, `refs/heads/${pr.head_branch}`);
+      if (!headSha) return null; // head branch gone (merged + deleted)
+      await deps.onAdmissionHead?.(headSha);
 
-    // The passthrough: a Finalize-validated head needs no PR-level CI —
-    // checks and review already passed for this exact commit.
-    if (isShaFinalizeValidated(deps.stmts, project.id, headSha)) {
-      console.log(
-        `[push-ci] pr#${pr.number} head ${headSha.slice(0, 8)} is Finalize-validated — skipping PR CI`,
-      );
-      return;
-    }
+      // The passthrough: a Finalize-validated head needs no PR-level CI —
+      // checks and review already passed for this exact commit.
+      if (isShaFinalizeValidated(deps.stmts, project.id, headSha)) {
+        console.log(
+          `[push-ci] pr#${pr.number} head ${headSha.slice(0, 8)} is Finalize-validated — skipping PR CI`,
+        );
+        return null;
+      }
+      if (shaHasCiRun(deps.stmts, project.id, headSha)) return null;
 
-    // Presence probe only. No ci.yaml at this sha means nothing is configured
-    // to run, so skip silently (unlike the opt-in default-branch trigger,
-    // which records a failure). A committed-but-invalid config is NOT skipped:
-    // it falls through so `runCiForSha` records `ci_config_invalid` with the
-    // parser's actionable message, because that IS a broken CI setup worth
-    // surfacing.
-    try {
-      await execFileP('git', ['-C', bare, 'show', `${headSha}:${CI_CONFIG_RELATIVE_PATH}`], {
-        timeout: 15_000,
-        maxBuffer: 1024 * 1024,
-      });
-    } catch {
-      return;
-    }
+      // Presence probe only. No ci.yaml at this sha means nothing is configured
+      // to run, so skip silently (unlike the opt-in default-branch trigger,
+      // which records a failure). A committed-but-invalid config is NOT skipped:
+      // it falls through so `runCiForSha` records `ci_config_invalid` with the
+      // parser's actionable message, because that IS a broken CI setup worth
+      // surfacing.
+      try {
+        await execFileP('git', ['-C', bare, 'show', `${headSha}:${CI_CONFIG_RELATIVE_PATH}`], {
+          timeout: 15_000,
+          maxBuffer: 1024 * 1024,
+        });
+      } catch {
+        return null;
+      }
 
-    await runCiForSha(project, deps, dataDir, {
-      branch: pr.head_branch,
-      headSha,
-      trigger: 'pr_push',
-      skipWhenNoConfig: true,
+      return {
+        headSha,
+        work: (signal) =>
+          runCiForSha(project, deps, dataDir, {
+            branch: pr.head_branch,
+            headSha,
+            trigger: 'pr_push',
+            skipWhenNoConfig: true,
+            signal,
+          }),
+      };
     });
+  })().catch((err: unknown) => {
+    console.error(
+      `[push-ci] unexpected failure for ${project.id}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   });
 }
 
@@ -277,7 +449,9 @@ export function rerunCiRun(
   if (!hostedRepoExists(project.id, dataDir)) return Promise.resolve();
   const trigger = original.trigger_source === 'git_push' ? 'git_push' : 'pr_push';
 
-  return enqueue(project.id, () =>
+  const key = ciGroupKey(project.id, original.branch);
+  const mode = resolvePushConcurrency(project, 'ci');
+  return enqueueInGroup(key, { supersede: false, mode, headSha: original.head_sha }, (signal) =>
     runCiForSha(project, deps, dataDir, {
       branch: original.branch,
       headSha: original.head_sha,
@@ -285,6 +459,7 @@ export function rerunCiRun(
       skipWhenNoConfig: false, // a re-run of a real run: failures surface
       idempotencyKey: `rerun|${uuidv4()}`,
       jobFilter: opts.jobId,
+      signal,
     }),
   );
 }
@@ -304,9 +479,12 @@ async function runCiForSha(
     idempotencyKey?: string;
     /** Run only this job from the config (per-job re-run). */
     jobFilter?: string;
+    /** Tripped when a newer push to the branch cancels this run. */
+    signal?: CancelSignal;
   },
 ): Promise<void> {
-  const { branch, headSha, trigger } = args;
+  const { branch, headSha, trigger, signal } = args;
+  if (signal?.aborted) return;
   const bare = gitHostRepoPath(project.id, dataDir);
 
   // One run per (project, sha) ACROSS triggers. UNIQUE(idempotency_key)
@@ -377,6 +555,18 @@ async function runCiForSha(
   // `git bundle` of HEAD to runners anyway.
   const workRoot = path.join(dataDir, 'push-ci');
   const workDir = path.join(workRoot, `${project.id}-${shortSha}-${runId.slice(0, 8)}`);
+  const cancelled = (): void => {
+    console.log(`[push-ci] run=${runId} cancelled: superseded by a newer push`);
+    deps.stmts.failFinalizeRun.run('cancelled', 'superseded', runId);
+    deps.broadcast({
+      type: 'finalize_run_phase_changed',
+      run_id: runId,
+      session_id: sessionId,
+      phase: null,
+      status: 'cancelled',
+      failure_reason: 'superseded',
+    });
+  };
   const fail = (reason: string, detail: string): void => {
     console.warn(`[push-ci] run=${runId} failed: ${reason} — ${detail}`);
     deps.stmts.failFinalizeRun.run('failed', reason, runId);
@@ -394,6 +584,10 @@ async function runCiForSha(
     mkdirSync(workRoot, { recursive: true });
     await execFileP('git', ['clone', '--quiet', bare, workDir], { timeout: CLONE_TIMEOUT_MS });
     await execFileP('git', ['-C', workDir, 'checkout', '--quiet', headSha], { timeout: 60_000 });
+    if (signal?.aborted) {
+      cancelled();
+      return;
+    }
 
     const parsed = await loadCiConfigFromFile(path.join(workDir, CI_CONFIG_RELATIVE_PATH));
     if (!parsed.ok) {
@@ -428,10 +622,13 @@ async function runCiForSha(
         headSha,
         env,
         projectId: project.id,
+        ...(signal ? { signal } : {}),
       },
     );
 
-    if (result.status === 'success') {
+    if (signal?.aborted) {
+      cancelled();
+    } else if (result.status === 'success') {
       deps.stmts.failFinalizeRun.run('succeeded', null, runId);
       deps.broadcast({
         type: 'finalize_run_phase_changed',
@@ -464,7 +661,8 @@ async function runCiForSha(
       fail(reason, result.infraErrorDetail ?? 'one or more jobs failed');
     }
   } catch (err: unknown) {
-    fail('infra_error', err instanceof Error ? err.message : String(err));
+    if (signal?.aborted) cancelled();
+    else fail('infra_error', err instanceof Error ? err.message : String(err));
   } finally {
     if (existsSync(workDir)) {
       try {
@@ -478,5 +676,5 @@ async function runCiForSha(
 
 /** Test seam: drop queued chains between tests. */
 export function __clearPushCiQueues(): void {
-  queues.clear();
+  groups.clear();
 }

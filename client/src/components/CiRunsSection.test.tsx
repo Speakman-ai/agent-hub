@@ -436,10 +436,26 @@ describe('CiRunsSection', () => {
     await waitFor(() => expect(onProjectsChange!).toHaveBeenCalled());
   });
 
+  it('push concurrency selects PATCH pushConcurrency per kind', async () => {
+    (api.updateProject as any).mockResolvedValue({});
+    render(<CiRunsSection project={{ ...hostedProject, pushConcurrency: { review: 'cancel' } }} />);
+    const ci = (await screen.findByTestId('push-concurrency-ci')) as HTMLSelectElement;
+    const review = screen.getByTestId('push-concurrency-review') as HTMLSelectElement;
+    expect(ci.value).toBe('queue');
+    expect(review.value).toBe('cancel');
+    fireEvent.change(ci, { target: { value: 'cancel' } });
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('proj-1', {
+        pushConcurrency: { ci: 'cancel' },
+      }),
+    );
+  });
+
   it('hides the toggle for GitHub-hosted projects but still shows history', async () => {
     render(<CiRunsSection project={{ id: 'proj-2', name: 'P2', gitHost: 'github' }} />);
     expect(await screen.findByTestId('ci-run-run-1')).toBeInTheDocument();
     expect(screen.queryByTestId('ci-on-push-toggle')).toBeNull();
+    expect(screen.queryByTestId('push-concurrency-settings')).toBeNull();
   });
 
   it('renders the empty state when there are no runs', async () => {

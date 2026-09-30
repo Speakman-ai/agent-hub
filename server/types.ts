@@ -3382,6 +3382,9 @@ export interface ProjectEmailLogo {
   updatedAt: string;
 }
 
+/** Push-retriggered work policy; see `Project.pushConcurrency`. */
+export type PushConcurrencyMode = 'queue' | 'cancel';
+
 export interface Project {
   id: string;
   name: string;
@@ -3452,6 +3455,15 @@ export interface Project {
    * `server/git-host/push-ci.ts` and the Runners settings section.
    */
   ciOnPush?: { enabled?: boolean };
+  /**
+   * What a new push to a branch does to CI / auto-review work still running
+   * (or waiting) for an older head of that same branch. `queue` (default)
+   * lets the running job finish and runs only the newest pending head after
+   * it; `cancel` stops the running job and starts on the new head
+   * immediately (GitHub Actions `cancel-in-progress`). See
+   * `server/git-host/push-concurrency.ts`.
+   */
+  pushConcurrency?: { ci?: PushConcurrencyMode; review?: PushConcurrencyMode };
   /**
    * Feature-request voting / approval system. When `enabled`, submitted
    * `feature_request` support tickets require an Admin to approve them before

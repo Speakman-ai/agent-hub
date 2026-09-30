@@ -628,3 +628,280 @@ describe('re-run (rerunCiRun)', () => {
     expect(latest[0].failure_reason).toBe('ci_config_invalid');
   });
 });
+
+/** Advance a hosted repo branch by one commit (as a smart-HTTP push would). */
+function pushNewCommit(project: Project, branch = 'main'): string {
+  const bare = gitHostRepoPath(project.id);
+  const work = path.join(os.tmpdir(), `pushci-advance-${uuidv4().slice(0, 8)}`);
+  execSync(`git clone --quiet --branch ${branch} ${bare} ${work}`, { stdio: 'pipe' });
+  git(work, 'config user.email "t@example.com"');
+  git(work, 'config user.name "T"');
+  writeFileSync(path.join(work, 'src.txt'), `change ${uuidv4()}\n`);
+  git(work, 'commit -am next');
+  // Fetch into the bare repo rather than pushing: same resulting ref move.
+  git(bare, `fetch --quiet ${work} +refs/heads/${branch}:refs/heads/${branch}`);
+  return git(bare, `rev-parse refs/heads/${branch}`);
+}
+
+type JobOpts = { headSha: string; signal?: { onAbort(fn: () => void): () => void } };
+
+describe('push concurrency (per-branch groups)', () => {
+  it('cancel: a newer push cancels the running CI and runs the new head', async () => {
+    const { project, headSha: first } = await seedHostedProject();
+    project.pushConcurrency = { ci: 'cancel' };
+    const started: string[] = [];
+    const runJobPhase = vi.fn((_deps: unknown, opts: JobOpts) => {
+      started.push(opts.headSha);
+      if (opts.headSha !== first) {
+        return Promise.resolve({
+          status: 'success' as const,
+          stepResults: [],
+          activeSecondsBilled: 1,
+        });
+      }
+      // The first run only ends when the newer push aborts it.
+      return new Promise((resolve) => {
+        opts.signal?.onAbort(() =>
+          resolve({ status: 'failure' as const, stepResults: [], activeSecondsBilled: 1 }),
+        );
+      });
+    });
+    const deps = {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: runJobPhase as never,
+      mergeSecrets: () => {},
+    };
+
+    const p1 = maybeRunPushCi(project, ['refs/heads/main'], deps);
+    await vi.waitFor(() => expect(started).toEqual([first]), { timeout: 10_000 });
+
+    const second = pushNewCommit(project);
+    const p2 = maybeRunPushCi(project, ['refs/heads/main'], deps);
+    await Promise.all([p1, p2]);
+
+    expect(runRowFor(project, first)).toMatchObject({
+      status: 'cancelled',
+      failure_reason: 'superseded',
+    });
+    expect(runRowFor(project, second)?.status).toBe('succeeded');
+  });
+
+  it('queue: the running CI finishes, then the newest push runs', async () => {
+    const { project, headSha: first } = await seedHostedProject();
+    const events: string[] = [];
+    let releaseFirst: () => void = () => {};
+    const runJobPhase = vi.fn((_deps: unknown, opts: JobOpts) => {
+      events.push(`start:${opts.headSha}`);
+      const done = { status: 'success' as const, stepResults: [], activeSecondsBilled: 1 };
+      if (opts.headSha !== first) return Promise.resolve(done);
+      return new Promise((resolve) => {
+        releaseFirst = () => {
+          events.push(`end:${first}`);
+          resolve(done);
+        };
+      });
+    });
+    const deps = {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: runJobPhase as never,
+      mergeSecrets: () => {},
+    };
+
+    const p1 = maybeRunPushCi(project, ['refs/heads/main'], deps);
+    await vi.waitFor(() => expect(events).toEqual([`start:${first}`]), { timeout: 10_000 });
+
+    pushNewCommit(project);
+    const p2 = maybeRunPushCi(project, ['refs/heads/main'], deps);
+    const third = pushNewCommit(project);
+    const p3 = maybeRunPushCi(project, ['refs/heads/main'], deps);
+    releaseFirst();
+    await Promise.all([p1, p2, p3]);
+
+    expect(events).toEqual([`start:${first}`, `end:${first}`, `start:${third}`]);
+    expect(runRowFor(project, first)?.status).toBe('succeeded');
+    expect(runRowFor(project, third)?.status).toBe('succeeded');
+  });
+
+  it('cancel: a push to an unrelated branch does not cancel running default-branch CI', async () => {
+    const { project, headSha: first } = await seedHostedProject();
+    project.pushConcurrency = { ci: 'cancel' };
+    let releaseFirst: () => void = () => {};
+    const runJobPhase = vi.fn(
+      (_deps: unknown, opts: JobOpts) =>
+        new Promise((resolve) => {
+          releaseFirst = () =>
+            resolve({ status: 'success' as const, stepResults: [], activeSecondsBilled: 1 });
+          opts.signal?.onAbort(() =>
+            resolve({ status: 'failure' as const, stepResults: [], activeSecondsBilled: 1 }),
+          );
+        }),
+    );
+    const deps = {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: runJobPhase as never,
+      mergeSecrets: () => {},
+    };
+
+    const p1 = maybeRunPushCi(project, ['refs/heads/main'], deps);
+    await vi.waitFor(() => expect(runJobPhase).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    await maybeRunPushCi(project, ['refs/heads/feature/unrelated'], deps);
+    releaseFirst();
+    await p1;
+
+    expect(runRowFor(project, first)?.status).toBe('succeeded');
+    expect(runJobPhase).toHaveBeenCalledOnce();
+  });
+
+  it('queue: a push to an unrelated branch does not drop a pending default-branch push', async () => {
+    const { project, headSha: first } = await seedHostedProject();
+    const started: string[] = [];
+    let releaseFirst: () => void = () => {};
+    const runJobPhase = vi.fn((_deps: unknown, opts: JobOpts) => {
+      started.push(opts.headSha);
+      const done = { status: 'success' as const, stepResults: [], activeSecondsBilled: 1 };
+      if (opts.headSha !== first) return Promise.resolve(done);
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve(done);
+      });
+    });
+    const deps = {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: runJobPhase as never,
+      mergeSecrets: () => {},
+    };
+
+    const p1 = maybeRunPushCi(project, ['refs/heads/main'], deps);
+    await vi.waitFor(() => expect(started).toEqual([first]), { timeout: 10_000 });
+    const second = pushNewCommit(project);
+    const p2 = maybeRunPushCi(project, ['refs/heads/main'], deps);
+    const p3 = maybeRunPushCi(project, ['refs/heads/feature/unrelated'], deps);
+    await p3;
+    releaseFirst();
+    await Promise.all([p1, p2]);
+
+    expect(started).toEqual([first, second]);
+    expect(runRowFor(project, second)?.status).toBe('succeeded');
+  });
+
+  it('cancel: overlapping notifications for the same head do not cancel its run', async () => {
+    const { project } = await seedHostedProject();
+    project.pushConcurrency = { ci: 'cancel' };
+    // Both notifications resolve the branch after it already moved to `latest`.
+    const latest = pushNewCommit(project);
+    let releaseRun: () => void = () => {};
+    const runJobPhase = vi.fn(
+      (_deps: unknown, opts: JobOpts) =>
+        new Promise((resolve) => {
+          releaseRun = () =>
+            resolve({ status: 'success' as const, stepResults: [], activeSecondsBilled: 1 });
+          opts.signal?.onAbort(() =>
+            resolve({ status: 'failure' as const, stepResults: [], activeSecondsBilled: 1 }),
+          );
+        }),
+    );
+    const deps = {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: runJobPhase as never,
+      mergeSecrets: () => {},
+    };
+
+    const p1 = maybeRunPushCi(project, ['refs/heads/main'], deps);
+    await vi.waitFor(() => expect(runJobPhase).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    const p2 = maybeRunPushCi(project, ['refs/heads/main'], deps);
+    await p2;
+    releaseRun();
+    await Promise.all([p1, p2]);
+
+    expect(runJobPhase).toHaveBeenCalledOnce();
+    expect(runRowFor(project, latest)?.status).toBe('succeeded');
+  });
+
+  it('cancel: a new PR head whose CI is skipped (no ci.yaml) does not cancel the running run', async () => {
+    const { project, headSha: first } = await seedHostedProject();
+    project.pushConcurrency = { ci: 'cancel' };
+    const bare = gitHostRepoPath(project.id);
+    git(bare, `branch feature/pr ${first}`);
+    let releaseRun: () => void = () => {};
+    const runJobPhase = vi.fn(
+      (_deps: unknown, opts: JobOpts) =>
+        new Promise((resolve) => {
+          releaseRun = () =>
+            resolve({ status: 'success' as const, stepResults: [], activeSecondsBilled: 1 });
+          opts.signal?.onAbort(() =>
+            resolve({ status: 'failure' as const, stepResults: [], activeSecondsBilled: 1 }),
+          );
+        }),
+    );
+    const deps = {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: runJobPhase as never,
+      mergeSecrets: () => {},
+    };
+    const pr = { number: 3, head_branch: 'feature/pr', base_branch: 'main' };
+
+    const p1 = maybeRunPrCi(project, pr, deps);
+    await vi.waitFor(() => expect(runJobPhase).toHaveBeenCalledOnce(), { timeout: 10_000 });
+
+    // Next head removes ci.yaml, so it has nothing to run.
+    const work = path.join(os.tmpdir(), `pushci-noci-${uuidv4().slice(0, 8)}`);
+    execSync(`git clone --quiet --branch feature/pr ${bare} ${work}`, { stdio: 'pipe' });
+    git(work, 'config user.email "t@example.com"');
+    git(work, 'config user.name "T"');
+    git(work, 'rm -q .agent-hub/ci.yaml');
+    git(work, 'commit -qm drop-ci');
+    git(bare, `fetch --quiet ${work} +refs/heads/feature/pr:refs/heads/feature/pr`);
+
+    await maybeRunPrCi(project, pr, deps);
+    releaseRun();
+    await p1;
+
+    expect(runRowFor(project, first)?.status).toBe('succeeded');
+  });
+
+  it('preserves push order when an older push is slow to admit (cancel and queue)', async () => {
+    for (const ci of ['cancel', 'queue'] as const) {
+      const { project } = await seedHostedProject();
+      project.pushConcurrency = { ci };
+      const b = pushNewCommit(project);
+      let releaseB: () => void = () => {};
+      const bHeld = new Promise<void>((resolve) => (releaseB = resolve));
+      const started: string[] = [];
+      const runJobPhase = vi.fn((_deps: unknown, opts: JobOpts) => {
+        started.push(opts.headSha);
+        return Promise.resolve({
+          status: 'success' as const,
+          stepResults: [],
+          activeSecondsBilled: 1,
+        });
+      });
+      const deps = {
+        stmts,
+        broadcast: () => {},
+        runJobPhase: runJobPhase as never,
+        mergeSecrets: () => {},
+        // B's notification resolves B, then stalls mid-admission.
+        onAdmissionHead: (sha: string) => (sha === b ? bHeld : Promise.resolve()),
+      };
+
+      const pB = maybeRunPushCi(project, ['refs/heads/main'], deps);
+      await new Promise((r) => setTimeout(r, 200)); // B is now parked in admission
+      const c = pushNewCommit(project);
+      const pC = maybeRunPushCi(project, ['refs/heads/main'], deps);
+      // C's notification cannot overtake B's admission.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(runJobPhase).not.toHaveBeenCalled();
+
+      releaseB();
+      await Promise.all([pB, pC]);
+
+      expect(started[started.length - 1]).toBe(c);
+      expect(runRowFor(project, c)?.status).toBe('succeeded');
+    }
+  });
+});

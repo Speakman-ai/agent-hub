@@ -15,6 +15,11 @@
  * (PR, head sha). The agent posts its verdict through the native review
  * endpoint with its own reviewer name, so verdict precedence and the
  * "Autofix from review" button work exactly as for human reviews.
+ *
+ * A push that lands while a review for the same PR is still running follows
+ * the project's `pushConcurrency.review` policy: `queue` (default) holds the
+ * newest head and reviews it once the running review ends; `cancel` stops the
+ * running reviewer and reviews the new head immediately.
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -33,12 +38,18 @@ import { resolveSessionCliSpawnEnv } from '../per-user-cli-spawn.js';
 import { setSessionOwner } from '../session-ownership.js';
 import { isKnownHubUserId } from './author-user.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
+import { resolvePushConcurrency } from '../git-host/push-concurrency.js';
 
 export interface AutoReviewDeps {
   stmts: RouteDeps['stmts'];
   config: RouteDeps['config'];
   broadcast: RouteDeps['broadcast'];
   handleChat: RouteDeps['handleChat'];
+  /**
+   * Stop a running reviewer session's turn. Needed for the `cancel` push
+   * concurrency policy; without it a cancel-mode push falls back to queueing.
+   */
+  cancelReviewSession?: (sessionId: string) => void;
 }
 
 /**
@@ -120,13 +131,78 @@ function isSupportedEngine(value: string): value is SupportedEngine {
 /** One dispatch per (project, pr, head sha) per process lifetime. */
 const dispatched = new Set<string>();
 
+/**
+ * Newest push waiting for the PR's running review to end (`queue` policy),
+ * keyed by `${projectId}#${prNumber}`. A newer push overwrites the entry, so
+ * only the latest head is reviewed next.
+ */
+interface QueuedReview {
+  project: Project;
+  pr: Pick<PullRequestRow, 'number' | 'head_branch' | 'status' | 'author'>;
+  deps: AutoReviewDeps;
+  opts: AutoReviewOpts;
+}
+const queuedReviews = new Map<string, QueuedReview>();
+
+/** Head sha each running review (by owning session) is reviewing, per PR. */
+const runningReviews = new Map<string, { sessionId: string; headSha: string }>();
+
+function prQueueKey(projectId: string, prNumber: number): string {
+  return `${projectId}#${prNumber}`;
+}
+
+/** Dispatch the review queued behind a finished one, if any. */
+function drainQueuedReview(projectId: string, prNumber: number): Promise<AutoReviewResult> | null {
+  const queueKey = prQueueKey(projectId, prNumber);
+  const next = queuedReviews.get(queueKey);
+  if (!next) return null;
+  queuedReviews.delete(queueKey);
+  console.log(`[auto-review] ${projectId} pr#${prNumber}: dispatching queued review`);
+  return maybeRunPrAutoReview(next.project, next.pr, next.deps, next.opts);
+}
+
 /** Test seam. */
 export function __clearAutoReviewDispatches(): void {
   dispatched.clear();
+  queuedReviews.clear();
+  runningReviews.clear();
+  reviewAdmission.clear();
 }
 
-/** See module header. Fire-and-forget safe; never throws. */
-export async function maybeRunPrAutoReview(
+/** Test seam: whether a review is queued behind the PR's running one. */
+export function __hasQueuedReview(projectId: string, prNumber: number): boolean {
+  return queuedReviews.has(prQueueKey(projectId, prNumber));
+}
+
+/** Per-PR admission lane; see {@link maybeRunPrAutoReview}. */
+const reviewAdmission = new Map<string, Promise<unknown>>();
+
+/**
+ * See module header. Fire-and-forget safe; never throws.
+ *
+ * Admissions for one PR run one at a time. Each reads the live head and then
+ * awaits slow checks (engine probes) before deciding to dispatch, queue, or
+ * cancel the running review; without the lane a stale push could finish its
+ * checks last and cancel or displace the review of a newer head.
+ */
+export function maybeRunPrAutoReview(
+  project: Project,
+  pr: Pick<PullRequestRow, 'number' | 'head_branch' | 'status' | 'author'>,
+  deps: AutoReviewDeps,
+  opts: AutoReviewOpts = {},
+): Promise<AutoReviewResult> {
+  const laneKey = prQueueKey(project.id, pr.number);
+  const prior = reviewAdmission.get(laneKey) ?? Promise.resolve();
+  const next = prior.then(() => admitPrAutoReview(project, pr, deps, opts));
+  const settled = next.catch(() => {});
+  reviewAdmission.set(laneKey, settled);
+  void settled.then(() => {
+    if (reviewAdmission.get(laneKey) === settled) reviewAdmission.delete(laneKey);
+  });
+  return next;
+}
+
+async function admitPrAutoReview(
   project: Project,
   pr: Pick<PullRequestRow, 'number' | 'head_branch' | 'status' | 'author'>,
   deps: AutoReviewDeps,
@@ -316,9 +392,70 @@ export async function maybeRunPrAutoReview(
       // changes===0 means either a review is genuinely in flight, or there is no
       // persisted PR row yet to claim. Distinguish so we only block on the former.
       const existing = deps.stmts.getPullRequestByNumber.get(project.id, pr.number) as
-        | { agent_review_requested_at: number | null }
+        | { agent_review_requested_at: number | null; agent_review_session_id: string | null }
         | undefined;
-      if (existing && existing.agent_review_requested_at != null) {
+      const policy = resolvePushConcurrency(project, 'review');
+      const running = existing?.agent_review_session_id ?? null;
+      const runningEntry = runningReviews.get(prQueueKey(project.id, pr.number));
+      if (
+        !manual &&
+        running &&
+        runningEntry?.sessionId === running &&
+        runningEntry.headSha === headSha
+      ) {
+        // The running review already covers this exact head: neither cancel
+        // it nor queue a duplicate.
+        return { dispatched: false, reason: 'already_in_flight' };
+      }
+      if (
+        existing &&
+        existing.agent_review_requested_at != null &&
+        !manual &&
+        policy === 'cancel' &&
+        running &&
+        deps.cancelReviewSession
+      ) {
+        // cancel-in-progress: stop the running reviewer, take over its claim.
+        console.log(
+          `[auto-review] ${project.id} pr#${pr.number}: newer push cancels running review ${running}`,
+        );
+        deps.cancelReviewSession(running);
+        deps.stmts.releasePullRequestAgentReviewBySession.run(
+          Date.now(),
+          project.id,
+          pr.number,
+          running,
+        );
+        const retakeNow = Date.now();
+        const retake = deps.stmts.claimPullRequestAgentReview.run(
+          retakeNow,
+          sessionId,
+          retakeNow,
+          project.id,
+          pr.number,
+          retakeNow - agentReviewClaimTtlMs(),
+        );
+        if (retake.changes === 1) {
+          claimedSessionId = sessionId;
+          deps.broadcast({
+            type: 'native_pr_update',
+            projectId: project.id,
+            prNumber: pr.number,
+            action: 'agent_review_cancelled',
+          });
+        }
+      }
+      if (!claimedSessionId && existing && existing.agent_review_requested_at != null && !manual) {
+        // queue (or cancel without a way to stop the running turn): hold the
+        // newest head and review it when the running review ends.
+        queuedReviews.set(prQueueKey(project.id, pr.number), { project, pr, deps, opts });
+        dispatched.delete(key);
+        console.log(
+          `[auto-review] ${project.id} pr#${pr.number}: review in flight — queued ${headSha.slice(0, 8)}`,
+        );
+        return { dispatched: false, reason: 'queued' };
+      }
+      if (!claimedSessionId && existing && existing.agent_review_requested_at != null) {
         // Another review is already in flight. Release the per-sha dedup key we
         // may have added so a later attempt can run once this one resolves.
         if (!manual) dispatched.delete(key);
@@ -377,7 +514,12 @@ export async function maybeRunPrAutoReview(
     // cleared+nulled the session) or a newer claim is left untouched. Wrapping in
     // Promise.resolve keeps a synchronous throw from handleChat propagating to the
     // outer catch (which also releases), while a returned promise settles here.
+    const runningKey = prQueueKey(project.id, pr.number);
+    runningReviews.set(runningKey, { sessionId, headSha });
     const releaseClaim = (): void => {
+      if (runningReviews.get(runningKey)?.sessionId === sessionId) {
+        runningReviews.delete(runningKey);
+      }
       const released = deps.stmts.releasePullRequestAgentReviewBySession.run(
         Date.now(),
         project.id,
@@ -392,6 +534,12 @@ export async function maybeRunPrAutoReview(
           action: 'agent_review_request_cleared',
         });
       }
+      // A push that arrived mid-review is reviewed now. Skip when a newer
+      // review already took the slot (cancel policy); it drains on its own end.
+      const current = deps.stmts.getPullRequestByNumber.get(project.id, pr.number) as
+        | { agent_review_session_id: string | null }
+        | undefined;
+      if (!current?.agent_review_session_id) void drainQueuedReview(project.id, pr.number);
     };
     void Promise.resolve(
       deps.handleChat(null, {
@@ -439,6 +587,10 @@ export async function maybeRunPrAutoReview(
     // stays marked under review forever. Session-scoped, so it only clears our
     // own claim.
     if (claimedSessionId) {
+      const runningKey = prQueueKey(project.id, pr.number);
+      if (runningReviews.get(runningKey)?.sessionId === claimedSessionId) {
+        runningReviews.delete(runningKey);
+      }
       try {
         deps.stmts.releasePullRequestAgentReviewBySession.run(
           Date.now(),
@@ -455,6 +607,7 @@ export async function maybeRunPrAutoReview(
       } catch {
         /* best-effort rollback */
       }
+      void drainQueuedReview(project.id, pr.number);
     }
     return { dispatched: false, reason: 'error' };
   }
