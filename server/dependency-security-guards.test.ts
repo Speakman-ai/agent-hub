@@ -565,6 +565,33 @@ describe('dependency security guards (high-severity advisory floors)', () => {
       advisory: 'GHSA-866g-f22w-33x8',
       only: ['server'],
     },
+
+    // --- 11-finding audit (axios; extract-zip & image-size contained) ---
+
+    // Seven advisories against axios, all first patched by 1.20.0:
+    //   GHSA-3pq3-5fj3-cg6v  HTTP/2 adapter bypasses DNS lookup / proxy controls
+    //   GHSA-c29m-xwm3-cm6r  ReDoS in the data: URL parser
+    //   GHSA-mghh-pgcx-3jjj  ReDoS in shouldBypassProxy via redirect Location
+    //   GHSA-542g-h47m-68v8  unhandled 'error' on HTTP/2 session init (DoS)
+    //   GHSA-x97p-jq2g-jp4f  prototype-pollution gadget in toFormData options
+    //   GHSA-9fr6-4gfg-395g  prototype-pollution gadget overriding HTTP method
+    //   GHSA-vh66-26gq-q6x8  prototype-pollution gadget in the fetch adapter
+    // Server-only, via @slack/bolt (`^1.12.0`) and @slack/web-api (`^1.13.5`);
+    // both ranges admit 1.20.0, so it re-resolves with no override.
+    {
+      pkg: 'axios',
+      min: '1.20.0',
+      advisory: [
+        'GHSA-3pq3-5fj3-cg6v',
+        'GHSA-c29m-xwm3-cm6r',
+        'GHSA-mghh-pgcx-3jjj',
+        'GHSA-542g-h47m-68v8',
+        'GHSA-x97p-jq2g-jp4f',
+        'GHSA-9fr6-4gfg-395g',
+        'GHSA-vh66-26gq-q6x8',
+      ],
+      only: ['server'],
+    },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
