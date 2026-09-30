@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  showSessionDiscardAction,
   isSessionConsultModeEnabled,
   isSessionWorktreeEnabled,
   isSessionWorkspaceReady,
@@ -599,5 +600,26 @@ describe('sessionDerivedState', () => {
         's-a',
       ]);
     });
+  });
+});
+
+describe('showSessionDiscardAction', () => {
+  const base = { isWorkflowProject: false, consultActive: false };
+
+  it('shows for a normal build session', () => {
+    expect(showSessionDiscardAction({ ...base, session: { id: 's1', name: 'Fix x' } })).toBe(true);
+  });
+
+  it('hides on workflow projects, Consult, autopilot, and Resolve-PR sessions', () => {
+    const session = { id: 's1', name: 'Fix x' };
+    expect(showSessionDiscardAction({ ...base, isWorkflowProject: true, session })).toBe(false);
+    expect(showSessionDiscardAction({ ...base, consultActive: true, session })).toBe(false);
+    expect(
+      showSessionDiscardAction({ ...base, session: { ...session, session_mode: 'autopilot' } }),
+    ).toBe(false);
+    expect(
+      showSessionDiscardAction({ ...base, session: { id: 's1', name: '[Resolve PR #12] Fix' } }),
+    ).toBe(false);
+    expect(showSessionDiscardAction({ ...base, session: null })).toBe(false);
   });
 });

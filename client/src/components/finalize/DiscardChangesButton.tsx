@@ -85,7 +85,7 @@ export default function DiscardChangesButton({
       ) : (
         <Trash2 size={compact ? 12 : 14} className="shrink-0" />
       )}
-      Discard
+      {variant === 'menu' ? 'Discard changes' : 'Discard'}
     </button>
   );
 }

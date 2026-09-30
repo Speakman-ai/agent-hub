@@ -59,6 +59,7 @@ import {
 } from './utils/sessionPreviewState';
 import { resolveSessionRightPaneFlags } from './utils/sessionRightPaneFlags';
 import FinalizeButton from './components/finalize/FinalizeButton';
+import SessionDiscardMenuItem from './components/finalize/SessionDiscardMenuItem';
 import type { DiscardResult } from './components/finalize/DiscardChangesButton';
 import { markSessionDiscarded, withoutChangesReady } from './utils/sessionDiscardState';
 import AutopilotPrCounter from './components/finalize/AutopilotPrCounter';
@@ -244,6 +245,7 @@ import {
   isSessionWorkspaceReady,
   isSessionWorktreeEnabled,
   shouldShowSessionChangesButton,
+  showSessionDiscardAction,
   shouldEnsureSessionWorkspaceOnOpen,
   isSessionComposerWorkspaceReady,
   shouldDisableSessionComposer,
@@ -7884,6 +7886,20 @@ export default function App({ initialView }: any = {}) {
                                   onError={(msg: any) => showToast(msg, 'error', 8000)}
                                 />
                               ) : null}
+                              {showSessionDiscardAction({
+                                isWorkflowProject: chatProjectIsWorkflow,
+                                consultActive: sessionConsultActive,
+                                session: activeSession,
+                              }) ? (
+                                <SessionDiscardMenuItem
+                                  sessionId={activeSessionId}
+                                  onDiscarded={({ sessionId, discardedAt }: DiscardResult) => {
+                                    applySessionDiscarded(sessionId, discardedAt);
+                                    showToast('Session changes discarded', 'success');
+                                  }}
+                                  onError={(msg: any) => showToast(msg, 'error', 8000)}
+                                />
+                              ) : null}
                             </SessionActionsMenu>
                             {!chatProjectIsWorkflow && !sessionConsultActive && (
                               <SessionBranchPicker
@@ -7933,14 +7949,6 @@ export default function App({ initialView }: any = {}) {
                                       isResolveSession={isResolvePrSessionTitle(
                                         activeSession?.name,
                                       )}
-                                      onDiscarded={
-                                        isResolvePrSessionTitle(activeSession?.name)
-                                          ? undefined
-                                          : ({ sessionId, discardedAt }: DiscardResult) => {
-                                              applySessionDiscarded(sessionId, discardedAt);
-                                              showToast('Session changes discarded', 'success');
-                                            }
-                                      }
                                     />
                                   ))}
                               </>

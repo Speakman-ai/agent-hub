@@ -1,3 +1,5 @@
+import { isResolvePrSessionTitle } from '@shared/utils/sessionTitlePr';
+
 /**
  * Derive UI flags from session rows returned by the API.
  *
@@ -42,6 +44,21 @@ export function shouldShowSessionChangesButton(args: {
   if (!args.consultActive) return true;
   // In Consult, only surface it when the session has a worktree to diff.
   return isSessionWorktreeEnabled(args.session);
+}
+
+/**
+ * Whether the session Actions menu offers Discard changes. Mirrors where the
+ * Finalize strip renders, minus Resolve-PR sessions: their PR is open, so the
+ * server always refuses with `pr_open`.
+ */
+export function showSessionDiscardAction(args: {
+  isWorkflowProject: boolean;
+  consultActive: boolean;
+  session: any;
+}) {
+  if (args.isWorkflowProject || args.consultActive) return false;
+  if (!args.session?.id || args.session.session_mode === 'autopilot') return false;
+  return !isResolvePrSessionTitle(args.session.name);
 }
 
 /** True when the session row already has a provisioned worktree path (preview-safe). */
