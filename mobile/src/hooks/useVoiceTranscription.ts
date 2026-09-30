@@ -1,9 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Audio } from 'expo-av';
+import {
+  acquireRecording,
+  finishRecording,
+  releaseRecording,
+  VoiceRecordingBusyError,
+  type VoiceOwner,
+} from '../utils/voiceAudioSession';
 import { applyTranscriptAtAnchor, contentTypeForRecordingUri } from '../utils/voiceTranscription';
 import { transcribeAudio } from '../utils/transcribeAudio';
+import { transformRange } from '@shared/utils/noteAttachments';
 /**
- * Voice-input hook for the chat composer. Records via expo-av, uploads to
+ * Voice-input hook for the chat composer and the notes editor. Records via expo-av, uploads to
  * /api/transcribe, and splices the transcript at the captured caret position.
  * Mirrors client/src/components/MessageInput.jsx voice transcription flow.
  */
@@ -14,24 +22,39 @@ export function useVoiceTranscription({
   disabled,
   isProcessing,
   onError,
+  sessionKey,
 }: any) {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const recordingRef = useRef<any>(null);
   const transcribeAnchorRef = useRef<any>(null);
+  // Callers that swap the edited buffer (notes) pass a key identifying it; a
+  // transcript recorded against one key is dropped if the key has changed.
+  const sessionKeyRef = useRef(sessionKey);
+  sessionKeyRef.current = sessionKey;
+  const startKeyRef = useRef<any>(undefined);
+  // Each dictation attempt (start → record → stop → upload) is one owner
+  // object. start(), cancel() and unmount replace it. Every async step
+  // re-checks `isLive(attempt)` after each await before touching React state,
+  // uploading, or delivering text. Native audio (recorder + iOS audio mode)
+  // is shared app-wide, so it only changes through voiceAudioSession, which
+  // serializes transitions and lets only the owning attempt reset the mode.
+  const attemptRef = useRef<VoiceOwner | null>(null);
   const mountedRef = useRef(true);
+  const isLive = useCallback(
+    (attempt: VoiceOwner) => mountedRef.current && attemptRef.current === attempt,
+    [],
+  );
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      const attempt = attemptRef.current;
+      attemptRef.current = null;
       const rec = recordingRef.current;
-      if (rec) {
-        rec.stopAndUnloadAsync().catch(() => {});
-        recordingRef.current = null;
-      }
-      // Reset iOS recording mode so a voice note doesn't leave global app
-      // audio routed/configured for recording after the composer unmounts.
-      Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => {});
+      recordingRef.current = null;
+      // An attempt still starting releases itself once it sees it's stale.
+      void releaseRecording(attempt, rec);
     };
   }, []);
   const reportError = useCallback(
@@ -44,6 +67,7 @@ export function useVoiceTranscription({
     (text: any) => {
       const anchor = transcribeAnchorRef.current;
       transcribeAnchorRef.current = null;
+      if (startKeyRef.current !== sessionKeyRef.current) return;
       setValue((prev: any) => {
         const { text: next, caret } = applyTranscriptAtAnchor(prev, text, anchor);
         cursorRef.current = caret;
@@ -52,105 +76,111 @@ export function useVoiceTranscription({
     },
     [setValue, cursorRef],
   );
-  // Restore playback audio mode after recording. Best-effort: failing to
-  // reset the iOS recording flag is non-fatal but would otherwise leave global
-  // audio routed for recording after a voice note.
-  const resetAudioMode = useCallback(async () => {
-    try {
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
-    } catch {
-      /* non-fatal */
-    }
-  }, []);
-  const teardownRecording = useCallback(async () => {
-    const rec = recordingRef.current;
-    recordingRef.current = null;
-    if (rec) {
-      try {
-        await rec.stopAndUnloadAsync();
-      } catch {
-        /* already stopped */
-      }
-    }
-    await resetAudioMode();
-    if (mountedRef.current) setIsRecording(false);
-  }, [resetAudioMode]);
-  const uploadRecording = useCallback(
-    async (uri: any) => {
-      if (!uri) {
-        reportError("Couldn't capture audio — try again.");
-        return;
-      }
-      setIsTranscribing(true);
-      try {
-        const contentType = contentTypeForRecordingUri(uri);
-        const { transcript } = await transcribeAudio(uri, contentType);
-        if (!mountedRef.current) return;
-        applyTranscript(transcript);
-      } catch (err: any) {
-        if (!mountedRef.current) return;
-        reportError(err?.message || 'Transcription failed. Tap mic to retry.');
-      } finally {
-        if (mountedRef.current) setIsTranscribing(false);
-      }
-    },
-    [applyTranscript, reportError],
-  );
   const startRecording = useCallback(async () => {
     if (isRecording || isTranscribing) return;
+    const attempt: VoiceOwner = {};
+    attemptRef.current = attempt;
     transcribeAnchorRef.current = cursorRef.current ?? value.length;
+    startKeyRef.current = sessionKeyRef.current;
     try {
       const permission = await Audio.requestPermissionsAsync();
+      if (!isLive(attempt)) return;
       if (permission.status !== 'granted') {
         reportError(
           'Microphone permission denied. Enable mic access in device settings, then tap the mic again.',
         );
         return;
       }
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY,
-      );
+      const recording = await acquireRecording(attempt, () => isLive(attempt));
+      if (!recording) return;
+      if (!isLive(attempt)) {
+        // Cancelled in the gap after the queue handed the recorder back.
+        void releaseRecording(attempt, recording);
+        return;
+      }
       recordingRef.current = recording;
       setIsRecording(true);
     } catch (err: any) {
-      await teardownRecording();
-      reportError(`Could not start microphone: ${err?.message || 'unknown error'}`);
+      if (!isLive(attempt)) return;
+      reportError(
+        err instanceof VoiceRecordingBusyError
+          ? err.message
+          : `Could not start microphone: ${err?.message || 'unknown error'}`,
+      );
     }
-  }, [isRecording, isTranscribing, value, cursorRef, reportError, teardownRecording]);
+  }, [isRecording, isTranscribing, value, cursorRef, isLive, reportError]);
   const stopRecording = useCallback(async () => {
+    const attempt = attemptRef.current;
     const rec = recordingRef.current;
-    if (!rec) {
-      await teardownRecording();
-      return;
-    }
     recordingRef.current = null;
     setIsRecording(false);
+    if (!attempt || !rec) return;
+    // Busy from the moment the user taps stop, through unload and upload, so
+    // the mic can't be re-armed while this attempt is still finishing.
+    setIsTranscribing(true);
     try {
-      await rec.stopAndUnloadAsync();
-      // Reset before the (network) upload so audio mode is restored even if
-      // transcription is slow or fails.
-      await resetAudioMode();
-      const uri = rec.getURI();
-      await uploadRecording(uri);
-    } catch (err: any) {
-      reportError(`Recording error: ${err?.message || 'unknown error'}`);
-      await teardownRecording();
+      let uri: string | null;
+      try {
+        uri = await finishRecording(attempt, rec);
+      } catch (err: any) {
+        if (isLive(attempt)) reportError(`Recording error: ${err?.message || 'unknown error'}`);
+        return;
+      }
+      if (!isLive(attempt)) return;
+      if (!uri) {
+        reportError("Couldn't capture audio — try again.");
+        return;
+      }
+      try {
+        const { transcript } = await transcribeAudio(uri, contentTypeForRecordingUri(uri));
+        if (!isLive(attempt)) return;
+        applyTranscript(transcript);
+      } catch (err: any) {
+        if (!isLive(attempt)) return;
+        reportError(err?.message || 'Transcription failed. Tap mic to retry.');
+      }
+    } finally {
+      // Only the live attempt owns the busy flag; cancel() already cleared it
+      // for a superseded one, and a newer attempt may have set it since.
+      if (isLive(attempt)) setIsTranscribing(false);
     }
-  }, [teardownRecording, uploadRecording, reportError, resetAudioMode]);
+  }, [isLive, applyTranscript, reportError]);
   const handleMicClick = useCallback(() => {
     if (isTranscribing) return;
     if (isRecording) stopRecording();
     else startRecording();
   }, [isRecording, isTranscribing, startRecording, stopRecording]);
+  // Drops the current attempt. UI state resets synchronously; the recorder is
+  // released through the shared queue, and any in-flight start/unload/upload
+  // for the dropped attempt finishes without side effects.
+  const cancel = useCallback(() => {
+    const attempt = attemptRef.current;
+    attemptRef.current = null;
+    transcribeAnchorRef.current = null;
+    const rec = recordingRef.current;
+    recordingRef.current = null;
+    setIsRecording(false);
+    setIsTranscribing(false);
+    if (rec) void releaseRecording(attempt, rec);
+  }, []);
+  // Keeps the captured dictation anchor aligned with edits made while the
+  // recording or upload is pending (callers that let the user keep typing).
+  const trackEdit = useCallback((prevText: string, nextText: string) => {
+    const anchor = transcribeAnchorRef.current;
+    if (typeof anchor !== 'number') return;
+    transcribeAnchorRef.current = transformRange(
+      { start: anchor, end: anchor },
+      prevText || '',
+      nextText || '',
+    ).start;
+  }, []);
   const micDisabled = (disabled && !isProcessing) || isTranscribing;
   return {
     isRecording,
     isTranscribing,
     micDisabled,
     handleMicClick,
+    cancel,
+    trackEdit,
   };
 }

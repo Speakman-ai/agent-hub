@@ -15,6 +15,18 @@ vi.mock('react-native', () => ({
   Platform: { OS: 'ios' },
   Modal: 'Modal',
   Image: 'Image',
+  ActivityIndicator: 'ActivityIndicator',
+}));
+vi.mock('../components/AppIcon', () => ({ default: 'AppIcon' }));
+vi.mock('../hooks/useVoiceTranscription', () => ({
+  useVoiceTranscription: () => ({
+    isRecording: false,
+    isTranscribing: false,
+    micDisabled: false,
+    handleMicClick: vi.fn(),
+    cancel: vi.fn(),
+    trackEdit: vi.fn(),
+  }),
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
 vi.mock('react-native-markdown-display', () => ({ default: 'Markdown' }));

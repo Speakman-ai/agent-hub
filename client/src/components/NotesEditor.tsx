@@ -28,8 +28,11 @@ import {
   Telescope,
   TicketPlus,
   ImagePlus,
+  Mic,
+  Square,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import { useVoiceRecorder, padTranscriptForInsert } from '../hooks/useVoiceRecorder';
 
 // Render markdown links/images so server-hosted `/uploads/...` assets resolve
 // against the same origin as the UI (remote mode / Vite dev proxy). Module-scope
@@ -264,6 +267,14 @@ export default function NotesEditor({ projectId }: any) {
   // Attachment upload state (paste / drop / toolbar button → markdown embed)
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
+  const [voiceError, setVoiceError] = useState('');
+  // Where a dictated transcript should land: the caret at the moment the mic
+  // was clicked, tagged with the edit-session it belongs to. The range is kept
+  // current by handleContentChange so typing during the upload doesn't
+  // misplace it.
+  const voiceAnchorRef = useRef<{ gen: number; range: { start: number; end: number } } | null>(
+    null,
+  );
   const fileInputRef = useRef<any>(null);
   const searchTimerRef = useRef<any>(null);
   const saveTimerRef = useRef<any>(null);
@@ -427,6 +438,7 @@ export default function NotesEditor({ projectId }: any) {
     // Persist whatever draft is currently open before abandoning it.
     flushCurrentDraft();
     draftGenRef.current += 1;
+    cancelVoice();
     creatingRef.current = true;
     editTitleRef.current = '';
     editContentRef.current = '';
@@ -448,6 +460,7 @@ export default function NotesEditor({ projectId }: any) {
   const handleEdit = () => {
     if (!selectedNote) return;
     draftGenRef.current += 1;
+    cancelVoice();
     creatingRef.current = false;
     editTitleRef.current = selectedNote.title || '';
     editContentRef.current = selectedNote.content || '';
@@ -469,6 +482,7 @@ export default function NotesEditor({ projectId }: any) {
       flushCurrentDraft();
     }
     draftGenRef.current += 1;
+    cancelVoice();
     dirtyRef.current = false;
     setEditing(false);
     setCreating(false);
@@ -613,6 +627,10 @@ export default function NotesEditor({ projectId }: any) {
       if (action === insertingActionRef.current) continue;
       action.range = transformRange(action.range, oldText, value || '');
     }
+    const voice = voiceAnchorRef.current;
+    if (voice && voice.gen === draftGenRef.current) {
+      voice.range = transformRange(voice.range, oldText, value || '');
+    }
     setEditContent(value);
     editContentRef.current = value;
     dirtyRef.current = true;
@@ -644,6 +662,36 @@ export default function NotesEditor({ projectId }: any) {
     }, 0);
     return cursor;
   };
+
+  const {
+    isRecording,
+    isTranscribing,
+    toggle: toggleVoice,
+    cancel: cancelVoice,
+  } = useVoiceRecorder({
+    onStart: () => {
+      setVoiceError('');
+      const ta = textareaRef.current;
+      const len = (editContentRef.current || '').length;
+      const at = ta && typeof ta.selectionStart === 'number' ? ta.selectionStart : len;
+      voiceAnchorRef.current = { gen: draftGenRef.current, range: { start: at, end: at } };
+    },
+    onTranscript: (transcript: string) => {
+      const anchor = voiceAnchorRef.current;
+      voiceAnchorRef.current = null;
+      // Dropped if the user left this note/edit-session mid-transcription.
+      if (!anchor || anchor.gen !== draftGenRef.current) return;
+      const at = anchor.range.start;
+      const snippet = padTranscriptForInsert(editContentRef.current || '', at, transcript);
+      if (snippet) insertSnippetAt(snippet, at, at);
+    },
+    onError: (msg: string) => setVoiceError(msg),
+  });
+
+  // Leaving the editor stops the mic; the button lives in the edit toolbar.
+  useEffect(() => {
+    if (!editing) cancelVoice();
+  }, [editing, cancelVoice]);
 
   // Upload one file and return its markdown snippet. Images go through
   // /api/upload (base64 data URL); other files through the binary
@@ -1000,6 +1048,7 @@ export default function NotesEditor({ projectId }: any) {
                   // a note typed within the debounce window would be lost.
                   flushCurrentDraft();
                   draftGenRef.current += 1;
+                  cancelVoice();
                   creatingRef.current = false;
                   dirtyRef.current = false;
                   setSelectedNoteId(note.id);
@@ -1076,6 +1125,13 @@ export default function NotesEditor({ projectId }: any) {
                   <span className="text-xs text-blue-400 animate-pulse">Uploading…</span>
                 )}
                 {uploadError && <span className="text-xs text-red-400">{uploadError}</span>}
+                {isRecording && (
+                  <span className="text-xs text-red-400 animate-pulse">Recording…</span>
+                )}
+                {isTranscribing && (
+                  <span className="text-xs text-blue-400 animate-pulse">Transcribing…</span>
+                )}
+                {voiceError && <span className="text-xs text-red-400">{voiceError}</span>}
               </div>
               <div className="flex items-center gap-1">
                 {/* Attach image / file — no `accept` filter so the toolbar can
@@ -1099,6 +1155,40 @@ export default function NotesEditor({ projectId }: any) {
                     <Loader2 size={14} className="animate-spin" />
                   ) : (
                     <ImagePlus size={14} />
+                  )}
+                </button>
+
+                {/* Voice input: record, transcribe, insert at the caret. */}
+                <button
+                  onClick={toggleVoice}
+                  disabled={isTranscribing}
+                  aria-pressed={isRecording}
+                  aria-label={
+                    isTranscribing
+                      ? 'Transcribing audio'
+                      : isRecording
+                        ? 'Stop recording'
+                        : 'Start voice input'
+                  }
+                  title={
+                    isTranscribing
+                      ? 'Transcribing...'
+                      : isRecording
+                        ? 'Stop recording'
+                        : 'Voice input (dictate into the note)'
+                  }
+                  className={`p-1.5 rounded transition-colors disabled:opacity-50 ${
+                    isRecording
+                      ? 'text-red-400 hover:text-red-300 animate-pulse'
+                      : 'text-gray-500 hover:text-gray-300'
+                  }`}
+                >
+                  {isTranscribing ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : isRecording ? (
+                    <Square size={14} fill="currentColor" />
+                  ) : (
+                    <Mic size={14} />
                   )}
                 </button>
 

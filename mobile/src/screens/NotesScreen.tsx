@@ -12,6 +12,7 @@ import {
   Platform,
   Modal,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Markdown from 'react-native-markdown-display';
@@ -20,6 +21,8 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { getServerBaseUrl } from '../utils/config';
 import { colors } from '../theme/colors';
+import AppIcon from '../components/AppIcon';
+import { useVoiceTranscription } from '../hooks/useVoiceTranscription';
 import { relativeTime } from '../utils/time';
 import { SidebarContext } from '../context/SidebarContext';
 import { listMarkdownSections, listMarkdownLineItems } from '@shared/utils/markdownSections';
@@ -184,12 +187,50 @@ export default function NotesScreen({ route }: any) {
   // Transformed on every content change (transformRange) so it survives edits
   // the user makes while the picker/upload awaits are pending.
   const pendingAttachRef = useRef<PendingAttach | null>(null);
+  // Caret offset for dictation, tracked alongside contentSelectionRef in the
+  // shape useVoiceTranscription expects.
+  const voiceCursorRef = useRef<number | null>(null);
+  const [voiceError, setVoiceError] = useState('');
+  // Transcripts route through the same edit path as typing so a pending
+  // attachment's anchor shifts around the inserted words.
+  const setEditContentTracked = useCallback((updater: any) => {
+    setEditContent((prev: any) => {
+      const base = prev || '';
+      const next = typeof updater === 'function' ? updater(base) : updater;
+      pendingAttachRef.current = nextPendingRangeOnEdit(pendingAttachRef.current, base, next);
+      return next;
+    });
+  }, []);
+  const {
+    isRecording,
+    isTranscribing,
+    micDisabled,
+    handleMicClick,
+    cancel: cancelVoice,
+    trackEdit: trackVoiceEdit,
+  } = useVoiceTranscription({
+    value: editContent,
+    setValue: setEditContentTracked,
+    cursorRef: voiceCursorRef,
+    disabled: false,
+    isProcessing: false,
+    sessionKey: editSessionRef.current,
+    onError: (msg: string) => setVoiceError(msg),
+  });
+  const handleVoicePress = () => {
+    if (!isRecording) setVoiceError('');
+    handleMicClick();
+  };
   const resetContentSelection = (content: string) => {
     const end = (content || '').length;
     contentSelectionRef.current = { start: end, end };
+    voiceCursorRef.current = end;
   };
   const bumpEditSession = () => {
     editSessionRef.current += 1;
+    // Dictation belongs to the buffer it started in, same as an attachment.
+    cancelVoice();
+    setVoiceError('');
     // A pending attachment belongs to the session that started it; once the
     // buffer identity changes its captured range is meaningless.
     pendingAttachRef.current = null;
@@ -198,6 +239,8 @@ export default function NotesScreen({ route }: any) {
   const handleEditContentChange = (next: string) => {
     setEditContent((prev: any) => {
       pendingAttachRef.current = nextPendingRangeOnEdit(pendingAttachRef.current, prev || '', next);
+      // Same for dictation started before this edit and still uploading.
+      trackVoiceEdit(prev || '', next);
       return next;
     });
   };
@@ -456,6 +499,7 @@ export default function NotesScreen({ route }: any) {
           snippet,
         });
         if (!applied) return prev;
+        trackVoiceEdit(prev || '', applied.text);
         contentSelectionRef.current = { start: applied.cursor, end: applied.cursor };
         pendingAttachRef.current = null;
         return applied.text;
@@ -624,20 +668,57 @@ export default function NotesScreen({ route }: any) {
 
             <View style={styles.contentLabelRow}>
               <Text style={styles.fieldLabel}>Content (Markdown)</Text>
-              <TouchableOpacity
-                onPress={handleAttachImage}
-                disabled={attaching}
-                style={styles.attachButton}
-              >
-                <Text style={styles.attachButtonText}>{attaching ? 'Uploading…' : '+ Image'}</Text>
-              </TouchableOpacity>
+              <View style={styles.contentActions}>
+                <TouchableOpacity
+                  onPress={handleAttachImage}
+                  disabled={attaching}
+                  style={styles.attachButton}
+                >
+                  <Text style={styles.attachButtonText}>
+                    {attaching ? 'Uploading…' : '+ Image'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={handleVoicePress}
+                  disabled={micDisabled}
+                  style={styles.attachButton}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    isTranscribing
+                      ? 'Transcribing voice input'
+                      : isRecording
+                        ? 'Stop recording'
+                        : 'Voice input'
+                  }
+                  accessibilityState={{ disabled: !!micDisabled, selected: !!isRecording }}
+                >
+                  {isTranscribing ? (
+                    <ActivityIndicator size={16} color={colors.gray500} />
+                  ) : (
+                    <AppIcon
+                      name={isRecording ? 'stop' : 'mic-outline'}
+                      size={16}
+                      color={isRecording ? colors.red400 : colors.blue600}
+                    />
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
+            {isRecording || isTranscribing || voiceError ? (
+              <Text
+                style={[styles.voiceStatus, voiceError ? { color: colors.red400 } : null]}
+                accessibilityLiveRegion="polite"
+              >
+                {voiceError || (isRecording ? 'Recording…' : 'Transcribing…')}
+              </Text>
+            ) : null}
             <TextInput
               style={styles.contentInput}
               value={editContent}
               onChangeText={handleEditContentChange}
               onSelectionChange={(e: any) => {
                 contentSelectionRef.current = e.nativeEvent.selection;
+                voiceCursorRef.current = e.nativeEvent.selection.start;
               }}
               placeholder="Write your note in markdown..."
               placeholderTextColor={colors.gray600}
@@ -863,6 +944,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  voiceStatus: { fontSize: 12, color: colors.gray400, marginBottom: 6 },
+  contentActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   attachButton: {
     paddingHorizontal: 10,
     paddingVertical: 4,

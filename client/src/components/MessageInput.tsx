@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { partitionAttachmentFiles } from '../utils/attachmentValidation';
-import { getAuthHeaders } from '../utils/connection';
+import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { formatShortcut, getPlatform } from '../utils/shortcuts';
 
 // Keep in sync with the `toggle-microphone` entry in utils/shortcuts.js.
@@ -16,43 +16,7 @@ const genId = () =>
         return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
       });
 
-// Ordered preference list for MediaRecorder mimeType. webm/opus first
-// (Chrome/Firefox/Edge); audio/mp4 for Safari which lacks webm support.
-// Each entry maps to a content-type the server's /api/transcribe endpoint
-// accepts (express.raw({ type: 'audio/*' })).
-const AUDIO_MIME_CANDIDATES = [
-  'audio/webm;codecs=opus',
-  'audio/webm',
-  'audio/mp4;codecs=mp4a.40.2', // AAC-LC in MP4 (Safari)
-  'audio/mp4',
-  'audio/ogg;codecs=opus',
-  'audio/ogg',
-];
-
-// Picks the best MediaRecorder mimeType supported by this browser, or null
-// if MediaRecorder itself is unavailable.
-export function pickAudioMimeType() {
-  if (typeof window === 'undefined' || typeof window.MediaRecorder === 'undefined') {
-    return null;
-  }
-  const MR = window.MediaRecorder;
-  if (typeof MR.isTypeSupported !== 'function') {
-    // Safari < 14 etc. Returning '' lets MediaRecorder choose its default.
-    return '';
-  }
-  for (const candidate of AUDIO_MIME_CANDIDATES) {
-    if (MR.isTypeSupported(candidate)) return candidate;
-  }
-  return '';
-}
-
-// Reduce a full MediaRecorder mimeType (e.g. "audio/webm;codecs=opus") to
-// the bare top-level/subtype the /api/transcribe endpoint accepts.
-export function baseAudioContentType(mimeType: any) {
-  if (!mimeType) return 'audio/webm';
-  const base = mimeType.split(';')[0].trim().toLowerCase();
-  return base || 'audio/webm';
-}
+export { pickAudioMimeType, baseAudioContentType } from '../hooks/useVoiceRecorder';
 
 function MessageInput(
   {
@@ -93,23 +57,10 @@ function MessageInput(
   const textareaRef = useRef<any>(null);
   const fileInputRef = useRef<any>(null);
 
-  // Voice transcription state.
-  // `isRecording` flips the mic button into stop-state and shows the live
-  // indicator. `isTranscribing` covers the "upload + wait for server" window
-  // — the button shows a spinner and is disabled. Splitting them keeps the
-  // UX legible (recording is user-cancellable; transcribing is not).
-  const [isRecording, setIsRecording] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const mediaRecorderRef = useRef<any>(null);
-  const audioChunksRef = useRef<any[]>([]);
-  const mediaStreamRef = useRef<any>(null);
   // Caret position captured the moment the user clicks the mic. The
   // transcribed text is spliced in at that location so the user can keep
   // typing during the upload without losing their insertion point.
   const transcribeAnchorRef = useRef<any>(null);
-  // AbortController for the in-flight /api/transcribe fetch. Aborted on
-  // draftKey change so a session-A upload can't land in session-B's composer.
-  const transcribeAbortRef = useRef<any>(null);
 
   // Slash-command autocomplete state
   const [slashQuery, setSlashQuery] = useState<any>(null); // null = closed, string = filter
@@ -150,50 +101,6 @@ function MessageInput(
       setImages([]);
     }
   }
-
-  // Cancel an in-flight recording on session switch — don't paste audio
-  // from session A's prompt into session B's composer. We clear the
-  // onstop / onerror handlers BEFORE calling stop() so the buffered
-  // chunks aren't uploaded to /api/transcribe for a session the user
-  // already navigated away from. We also abort any fetch that has
-  // already started (i.e. onstop already fired but the response hasn't
-  // arrived yet) so the transcript can't splice into the new session.
-  useEffect(() => {
-    return () => {
-      const rec = mediaRecorderRef.current;
-      if (rec) {
-        rec.onstop = null;
-        rec.onerror = null;
-        rec.ondataavailable = null;
-        if (rec.state !== 'inactive') {
-          try {
-            rec.stop();
-          } catch {
-            /* already stopped */
-          }
-        }
-      }
-      mediaRecorderRef.current = null;
-      const stream = mediaStreamRef.current;
-      if (stream) {
-        for (const track of stream.getTracks()) {
-          try {
-            track.stop();
-          } catch {
-            /* track already ended */
-          }
-        }
-      }
-      mediaStreamRef.current = null;
-      audioChunksRef.current = [];
-      // Abort any in-flight upload so the resolved transcript doesn't land
-      // in the wrong session's composer.
-      transcribeAbortRef.current?.abort();
-      transcribeAbortRef.current = null;
-      setIsRecording(false);
-      setIsTranscribing(false);
-    };
-  }, [draftKey]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -329,34 +236,6 @@ function MessageInput(
     transcribeAnchorRef.current = null;
   }, []);
 
-  // Hard-stops any in-flight recording and releases the mic. Safe to call
-  // from cleanup paths (unmount, draftKey switch, error fallthrough) — all
-  // refs are guarded.
-  const teardownRecording = useCallback(() => {
-    const rec = mediaRecorderRef.current;
-    if (rec && rec.state !== 'inactive') {
-      try {
-        rec.stop();
-      } catch {
-        /* already stopped */
-      }
-    }
-    mediaRecorderRef.current = null;
-    const stream = mediaStreamRef.current;
-    if (stream) {
-      for (const track of stream.getTracks()) {
-        try {
-          track.stop();
-        } catch {
-          /* track already ended */
-        }
-      }
-    }
-    mediaStreamRef.current = null;
-    audioChunksRef.current = [];
-    setIsRecording(false);
-  }, []);
-
   const reportTranscribeError = useCallback(
     (msg: any) => {
       if (typeof onFileError === 'function') onFileError(msg);
@@ -365,200 +244,23 @@ function MessageInput(
     [onFileError],
   );
 
-  // Uploads the audio blob to the server and inserts the resulting
-  // transcript at the anchor. The endpoint is express.raw({type:'audio/*'})
-  // — it wants the bare audio bytes with the correct Content-Type, NOT a
-  // multipart body. (Card AC mentions multipart; the server contract is
-  // raw and a multipart POST 415s. See card comment for rationale.)
-  const uploadForTranscription = useCallback(
-    async (blob: any, contentType: any) => {
-      const controller = new AbortController();
-      transcribeAbortRef.current = controller;
-      setIsTranscribing(true);
-      try {
-        const res = await fetch('/api/transcribe', {
-          method: 'POST',
-          headers: { 'Content-Type': contentType, ...getAuthHeaders() },
-          body: blob,
-          signal: controller.signal,
-        });
-        if (res.status === 501) {
-          let hint = '';
-          try {
-            hint = (await res.json())?.hint || '';
-          } catch {
-            /* non-JSON body */
-          }
-          reportTranscribeError(
-            hint ||
-              'Voice transcription not configured. Ask your admin to set the API key in Account settings.',
-          );
-          return;
-        }
-        if (res.status === 415) {
-          // Most common cause: the Gemini provider is selected but the browser
-          // recorded WebM/MP4, which Gemini can't read. Surface the server hint.
-          let hint = '';
-          try {
-            hint = (await res.json())?.hint || '';
-          } catch {
-            /* non-JSON body */
-          }
-          reportTranscribeError(
-            hint ||
-              "This audio format isn't supported by the selected transcription provider. Switch the provider in Settings → Account.",
-          );
-          return;
-        }
-        if (res.status === 413) {
-          reportTranscribeError('Recording is too long. Try a shorter clip.');
-          return;
-        }
-        if (!res.ok) {
-          let detail = '';
-          try {
-            const body = await res.json();
-            detail = body?.error || body?.detail || '';
-          } catch {
-            /* non-JSON error body */
-          }
-          reportTranscribeError(
-            `Transcription failed (HTTP ${res.status})${detail ? ': ' + detail : ''}. Tap mic to retry.`,
-          );
-          return;
-        }
-        const body = await res.json().catch(() => ({}));
-        if (typeof body?.transcript !== 'string' || !body.transcript.trim()) {
-          reportTranscribeError("Couldn't hear anything — try again.");
-          return;
-        }
-        insertTranscriptAtAnchor(body.transcript);
-      } catch (err: any) {
-        // AbortError means the session switched mid-upload — not a user-visible error.
-        if (err?.name === 'AbortError') return;
-        reportTranscribeError(
-          `Transcription failed: ${err?.message || 'network error'}. Tap mic to retry.`,
-        );
-      } finally {
-        transcribeAbortRef.current = null;
-        setIsTranscribing(false);
-      }
-    },
-    [reportTranscribeError, insertTranscriptAtAnchor],
-  );
-
-  const startRecording = useCallback(async () => {
-    if (isRecording || isTranscribing) return;
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      reportTranscribeError('Microphone is not available in this browser.');
-      return;
-    }
-    const mimeType = pickAudioMimeType();
-    if (mimeType === null) {
-      reportTranscribeError(
-        'Voice recording is not supported in this browser. Try Chrome, Edge, or Safari 14.1+.',
-      );
-      return;
-    }
-    // Capture caret BEFORE the permission prompt steals focus.
-    transcribeAnchorRef.current = textareaRef.current?.selectionStart ?? value.length;
-
-    let stream: any;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (err: any) {
-      const denied = err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError';
-      reportTranscribeError(
-        denied
-          ? 'Microphone permission denied. Enable mic access in your browser settings, then tap the mic again.'
-          : `Could not start microphone: ${err?.message || err?.name || 'unknown error'}`,
-      );
-      return;
-    }
-    mediaStreamRef.current = stream;
-
-    let recorder: any;
-    try {
-      recorder = mimeType
-        ? new window.MediaRecorder(stream, { mimeType })
-        : new window.MediaRecorder(stream);
-    } catch (err: any) {
-      reportTranscribeError(
-        `Could not start recording: ${err?.message || 'unsupported audio format'}`,
-      );
-      teardownRecording();
-      return;
-    }
-
-    audioChunksRef.current = [];
-    recorder.ondataavailable = (e: any) => {
-      if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
-    };
-    // When stop() fires (user click), assemble the blob and ship it. Errors
-    // and aborts both land here — we check chunk count before uploading.
-    recorder.onstop = async () => {
-      const chunks = audioChunksRef.current;
-      audioChunksRef.current = [];
-      // Release the mic immediately so the browser indicator goes away
-      // while the upload is in flight.
-      const stream = mediaStreamRef.current;
-      if (stream) {
-        for (const track of stream.getTracks()) {
-          try {
-            track.stop();
-          } catch {
-            /* noop */
-          }
-        }
-      }
-      mediaStreamRef.current = null;
-      mediaRecorderRef.current = null;
-      setIsRecording(false);
-      if (chunks.length === 0) {
-        reportTranscribeError("Couldn't capture audio — try again.");
-        return;
-      }
-      const effectiveType = recorder.mimeType || mimeType || 'audio/webm';
-      const blob = new Blob(chunks, { type: effectiveType });
-      await uploadForTranscription(blob, baseAudioContentType(effectiveType));
-    };
-    recorder.onerror = (e: any) => {
-      reportTranscribeError(`Recording error: ${e?.error?.message || 'unknown error'}`);
-      teardownRecording();
-    };
-
-    mediaRecorderRef.current = recorder;
-    recorder.start();
-    setIsRecording(true);
-  }, [
+  const {
     isRecording,
     isTranscribing,
-    value,
-    reportTranscribeError,
-    teardownRecording,
-    uploadForTranscription,
-  ]);
+    toggle: handleMicClick,
+    cancel: cancelVoice,
+  } = useVoiceRecorder({
+    onTranscript: insertTranscriptAtAnchor,
+    onError: reportTranscribeError,
+    // Capture caret BEFORE the permission prompt steals focus.
+    onStart: () => {
+      transcribeAnchorRef.current = textareaRef.current?.selectionStart ?? value.length;
+    },
+  });
 
-  const stopRecording = useCallback(() => {
-    const rec = mediaRecorderRef.current;
-    if (rec && rec.state !== 'inactive') {
-      try {
-        rec.stop(); // onstop handler picks up from here
-      } catch {
-        // If the recorder is already torn down, force-cleanup so the UI
-        // doesn't stay stuck in the recording state.
-        teardownRecording();
-      }
-    } else {
-      teardownRecording();
-    }
-  }, [teardownRecording]);
-
-  const handleMicClick = useCallback(() => {
-    if (isTranscribing) return;
-    if (isRecording) stopRecording();
-    else startRecording();
-  }, [isRecording, isTranscribing, startRecording, stopRecording]);
+  // Cancel an in-flight recording or upload on session switch so audio from
+  // session A's prompt can't land in session B's composer.
+  useEffect(() => cancelVoice, [draftKey, cancelVoice]);
 
   // The mic button is disabled when the composer is disabled (and not mid-stream)
   // or while a transcription upload is in flight. Mirror that exact condition so
@@ -583,13 +285,6 @@ function MessageInput(
     }),
     [micDisabled, handleMicClick, isRecording],
   );
-
-  // Cleanup on unmount — never leave the mic LED on.
-  useEffect(() => {
-    return () => {
-      teardownRecording();
-    };
-  }, [teardownRecording]);
 
   // Image helpers (unchanged)
 
