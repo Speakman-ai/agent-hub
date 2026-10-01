@@ -1443,7 +1443,7 @@ describe('<PullRequestsPage /> — Request Agent/Human Review buttons', () => {
     // second click cannot dispatch a duplicate while the review is pending.
     const latched = await screen.findByTestId('pr-request-agent-review-button');
     await waitFor(() => expect(latched).toBeDisabled());
-    expect(latched).toHaveTextContent(/agent review requested/i);
+    expect(latched).toHaveTextContent(/agent review in progress/i);
     fireEvent.click(latched as any);
     expect(api.requestNativePrReview).toHaveBeenCalledTimes(1);
   });
@@ -1485,7 +1485,7 @@ describe('<PullRequestsPage /> — Request Agent/Human Review buttons', () => {
 
     const btn = await screen.findByTestId('pr-request-agent-review-button');
     await waitFor(() => expect(btn).toBeDisabled());
-    expect(btn).toHaveTextContent(/agent review requested/i);
+    expect(btn).toHaveTextContent(/agent review in progress/i);
     expect(onToast).toHaveBeenCalledWith(
       expect.stringMatching(/already in progress/i),
       'success',
@@ -1507,9 +1507,33 @@ describe('<PullRequestsPage /> — Request Agent/Human Review buttons', () => {
     // durable server-side pending state — the requested state survives a remount.
     const btn = await screen.findByTestId('pr-request-agent-review-button');
     await waitFor(() => expect(btn).toBeDisabled());
-    expect(btn).toHaveTextContent(/agent review requested/i);
+    expect(btn).toHaveTextContent(/agent review in progress/i);
     fireEvent.click(btn as any);
     expect(api.requestNativePrReview).not.toHaveBeenCalled();
+    // The in-progress banner shows above the tabs.
+    expect(await screen.findByTestId('pr-agent-review-in-progress-banner')).toHaveTextContent(
+      /agent review in progress/i,
+    );
+  });
+
+  it('shows a Reviewing badge on list rows while an agent review is running', async () => {
+    (api.getProjectPulls as any).mockResolvedValue({
+      pulls: [
+        { ...prSummary, agent_review_requested: true, agent_review_started_at: null },
+        { ...prSummary, number: 124, title: 'Idle PR', agent_review_requested: false },
+      ],
+    });
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    const badge = await screen.findByTestId('pr-agent-review-in-progress-123');
+    expect(badge).toHaveTextContent('Reviewing');
+    expect(badge).toHaveAttribute('title', 'Agent review in progress');
+    expect(screen.queryByTestId('pr-agent-review-in-progress-124')).toBeNull();
+  });
+
+  it('hides the in-progress banner when no agent review is running', async () => {
+    await openNativeDetail();
+    await screen.findByTestId('pr-request-agent-review-button');
+    expect(screen.queryByTestId('pr-agent-review-in-progress-banner')).toBeNull();
   });
 
   it('Request Human Review flips the human flag only (kind=human)', async () => {

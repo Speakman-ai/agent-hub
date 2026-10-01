@@ -343,6 +343,9 @@ function summarize(
     review_requested_by: row.review_requested_by ?? null,
     agent_review_requested:
       row.agent_review_requested_at !== null && row.agent_review_requested_at !== undefined,
+    // Set when the Reviewer session is dispatched and cleared when its turn
+    // ends, so clients can show how long the review has been running.
+    agent_review_started_at: toIso(row.agent_review_requested_at ?? null),
     reverted: row.revert_sha !== null && row.revert_sha !== undefined,
     revert_sha: row.revert_sha ?? null,
     reverted_at: toIso(row.reverted_at ?? null),

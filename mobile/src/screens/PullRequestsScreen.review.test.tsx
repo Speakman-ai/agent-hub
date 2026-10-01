@@ -84,4 +84,34 @@ describe('private GitHub review on mobile', () => {
       tree!.unmount();
     });
   });
+
+  it('shows an in-progress banner while an agent review is running', async () => {
+    let tree: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <PrDetail
+          detail={{ ...detail, pr: { ...detail.pr, agent_review_requested: true } }}
+          projectId="p1"
+        />,
+      );
+    });
+    const banner = tree!.root.findByProps({ testID: 'pr-agent-review-in-progress-banner' });
+    expect(banner.props.accessibilityLabel).toBe('Agent review in progress');
+    await act(async () => {
+      tree!.unmount();
+    });
+  });
+
+  it('omits the banner when no agent review is running', async () => {
+    let tree: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(<PrDetail detail={detail} projectId="p1" />);
+    });
+    expect(
+      tree!.root.findAllByProps({ testID: 'pr-agent-review-in-progress-banner' }),
+    ).toHaveLength(0);
+    await act(async () => {
+      tree!.unmount();
+    });
+  });
 });

@@ -33,6 +33,7 @@ import { resolveAgentIdFromProject } from '../utils/projectAgents';
 import { isWorkflowProject } from '../utils/project-mode';
 import { prDetailCapabilities, canDismissReview } from '../utils/prReviewActions';
 import { prPreviewViewState } from '@shared/utils/prPreview';
+import { prAgentReviewProgress } from '@shared/utils/prAgentReview';
 import {
   appendPrPage,
   canLoadMore,
@@ -81,6 +82,7 @@ function PrListItem({
   const reviewB = reviewDecisionListBadge(pr.review_decision);
   const mBadge = mergeableBadge(pr.mergeable);
   const pipeB = mergePipelineListBadge(pr);
+  const agentReview = prAgentReviewProgress(pr);
   const resolveBusy = bulkResolving || resolvingThisRow;
   const resolveDisabled = !resolveAgentId || resolveBusy;
   return (
@@ -102,8 +104,21 @@ function PrListItem({
           </Text>
         </View>
         {diff ? <Text style={styles.diffText}>{diff}</Text> : null}
-        {(ciBadge || reviewB || mBadge.show || pipeB) && (
+        {(ciBadge || reviewB || mBadge.show || pipeB || agentReview) && (
           <View style={[styles.labelsRow, { marginTop: 8 }]}>
+            {agentReview ? (
+              <View
+                testID={`pr-agent-review-in-progress-${pr.number}`}
+                accessibilityRole="text"
+                accessibilityLabel={agentReview.detail}
+                style={[styles.badge, styles.agentReviewBadge]}
+              >
+                <ActivityIndicator size="small" color={colors.sky300} />
+                <Text style={[styles.badgeText, { color: colors.sky300 }]}>
+                  {agentReview.label}
+                </Text>
+              </View>
+            ) : null}
             {ciBadge ? <Badge label={ciBadge.label} color={ciBadge.color} bg={ciBadge.bg} /> : null}
             {reviewB ? <Badge label={reviewB.label} color={reviewB.color} bg={reviewB.bg} /> : null}
             {mBadge.show ? (
@@ -525,6 +540,7 @@ export function PrDetail({
   const reviewState = summarizeReviews(detail.reviews);
   const rBadge = reviewsBadge(reviewState);
   const mBadge = mergeableBadge(pr.mergeable);
+  const agentReview = prAgentReviewProgress(pr);
   const resolveDisabled = resolving || !canResolve;
   return (
     <ScrollView
@@ -602,6 +618,21 @@ export function PrDetail({
         </Text>
       )}
       <Text style={styles.diffText}>{diffSummary(pr)}</Text>
+
+      {agentReview ? (
+        <View
+          testID="pr-agent-review-in-progress-banner"
+          accessibilityRole="text"
+          accessibilityLabel={agentReview.detail}
+          style={styles.agentReviewBanner}
+        >
+          <ActivityIndicator size="small" color={colors.sky300} />
+          <Text style={styles.agentReviewBannerText}>
+            {agentReview.detail}. The verdict will appear in the conversation when the Reviewer
+            agent finishes.
+          </Text>
+        </View>
+      ) : null}
 
       {Array.isArray(pr.labels) && pr.labels.length > 0 && (
         <View style={styles.labelsRow}>
@@ -1641,6 +1672,24 @@ const styles = StyleSheet.create({
     backgroundColor: colors.gray800,
   },
   prActionButtonText: { color: colors.gray200, fontSize: 13, fontWeight: '600' },
+  agentReviewBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.sky500_15,
+  },
+  agentReviewBanner: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: colors.sky400,
+    borderRadius: 8,
+    padding: 10,
+    backgroundColor: colors.sky500_15,
+  },
+  agentReviewBannerText: { flex: 1, color: colors.sky300, fontSize: 13 },
   previewPanel: {
     marginTop: 12,
     borderWidth: 1,

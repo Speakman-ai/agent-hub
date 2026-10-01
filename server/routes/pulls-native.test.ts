@@ -655,8 +655,10 @@ describe('native PR review lifecycle', () => {
 
     let detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.pr.agent_review_requested).toBe(true);
+    expect(detail.body.pr.agent_review_started_at).toBe(new Date(now).toISOString());
     const list = await authedGet(`/api/projects/${id}/pulls`).expect(200);
     expect(list.body.pulls[0].agent_review_requested).toBe(true);
+    expect(list.body.pulls[0].agent_review_started_at).toBe(new Date(now).toISOString());
 
     // ATTACK: a normal JWT user replays the (broadcast) owning session id in the
     // header. Because they are neither the bound spawn session nor the global
@@ -710,6 +712,7 @@ describe('native PR review lifecycle', () => {
         .expect(201);
       detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
       expect(detail.body.pr.agent_review_requested).toBe(false);
+      expect(detail.body.pr.agent_review_started_at).toBeNull();
     } finally {
       config.apiKey = priorApiKey;
     }

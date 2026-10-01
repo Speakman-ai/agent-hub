@@ -47,6 +47,7 @@ import {
   prPreviewAvailable,
   prPreviewSessionLive,
 } from '@shared/utils/prPreview';
+import { prAgentReviewProgress } from '@shared/utils/prAgentReview';
 import GitHubRepoChrome from './github/GitHubRepoChrome';
 import { parsePrSearchQuery, prMatchesMerged, prMatchesTerms } from './github/prSearchQuery';
 
@@ -59,6 +60,25 @@ function Badge({ label, color, bg, title }: any) {
       className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${bg} ${color}`}
     >
       {label}
+    </span>
+  );
+}
+
+/** Pulsing chip shown while the Reviewer agent is working on a PR. */
+function AgentReviewInProgressBadge({ progress, testId }: any) {
+  return (
+    <span
+      role="status"
+      title={progress.detail}
+      aria-label={progress.detail}
+      data-testid={testId}
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-500/10 text-sky-300"
+    >
+      <span className="relative flex h-2 w-2" aria-hidden>
+        <span className="absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75 animate-ping" />
+        <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-400" />
+      </span>
+      {progress.label}
     </span>
   );
 }
@@ -158,6 +178,7 @@ function PrListItem({
   const reviewB = reviewDecisionListBadge(pr.review_decision);
   const mBadge = mergeableBadge(pr.mergeable);
   const pipeB = mergePipelineListBadge(pr);
+  const agentReview = prAgentReviewProgress(pr);
   const resolveBusy = bulkResolving || resolvingThisRow;
   const resolveDisabled = !resolveAgentId || resolveBusy;
   const mergeState = mergeButtonState(pr);
@@ -226,8 +247,14 @@ function PrListItem({
           <LinkedEpicChip epic={pr.linked_epic} onOpenEpic={onOpenEpic} prNumber={pr.number} />
         )}
         {diff && <div className="mt-1 text-xs text-gray-400 tabular-nums">{diff}</div>}
-        {(ciBadge || reviewB || mBadge.show || pipeB) && (
+        {(ciBadge || reviewB || mBadge.show || pipeB || agentReview) && (
           <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+            {agentReview && (
+              <AgentReviewInProgressBadge
+                progress={agentReview}
+                testId={`pr-agent-review-in-progress-${pr.number}`}
+              />
+            )}
             {ciBadge && <Badge label={ciBadge.label} color={ciBadge.color} bg={ciBadge.bg} />}
             {reviewB && <Badge label={reviewB.label} color={reviewB.color} bg={reviewB.bg} />}
             {mBadge.show && (
@@ -768,6 +795,11 @@ function PrDetail({
   // Durable server signal ORed with the optimistic local latch. Survives reloads,
   // remounts, and is visible to every client because it is derived server-side.
   const agentReviewPending = agentReviewRequested || Boolean(pr.agent_review_requested);
+  const agentReviewProgress =
+    prAgentReviewProgress(pr) ||
+    (agentReviewRequested && isOpen
+      ? { active: true, label: 'Reviewing', detail: 'Agent review in progress' }
+      : null);
 
   const toastErr = (err: any) => {
     if (onToast) onToast(String(err?.message || err || 'Request failed'), 'error', 6000);
@@ -1109,7 +1141,7 @@ function PrDetail({
               ) : (
                 <Bot size={14} />
               )}
-              {agentReviewPending ? 'Agent review requested' : 'Request Agent Review'}
+              {agentReviewPending ? 'Agent review in progress' : 'Request Agent Review'}
             </button>
           )}
           {isNative && isOpen && (
@@ -1261,6 +1293,20 @@ function PrDetail({
           </code>
         </span>
       </div>
+
+      {agentReviewProgress && (
+        <div
+          role="status"
+          data-testid="pr-agent-review-in-progress-banner"
+          className="mb-4 flex items-center gap-2 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-200"
+        >
+          <Loader2 size={14} className="animate-spin text-sky-300 flex-shrink-0" aria-hidden />
+          <span>
+            {agentReviewProgress.detail}. The verdict will appear in the conversation when the
+            Reviewer agent finishes.
+          </span>
+        </div>
+      )}
 
       <nav className="gh-underline-nav mb-4" aria-label="Pull request">
         {(
