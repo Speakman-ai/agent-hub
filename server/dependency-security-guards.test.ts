@@ -599,6 +599,14 @@ describe('dependency security guards (high-severity advisory floors)', () => {
       ],
       only: ['server'],
     },
+
+    // --- 5-finding audit (basic-ftp; extract-zip & image-size contained) ---
+
+    // Quadratic-time backtracking in the Unix directory-listing parser behind
+    // Client.list(). Vulnerable `<= 6.2.0`, no 5.x backport. Server-only, via
+    // stagehand -> puppeteer-core -> @puppeteer/browsers -> proxy-agent ->
+    // pac-proxy-agent -> get-uri (`^5.0.2`), so it is held by an override.
+    { pkg: 'basic-ftp', min: '6.2.1', advisory: 'GHSA-c475-qrg2-pj4r', only: ['server'] },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
@@ -1219,6 +1227,17 @@ describe('override-backed advisory floors', () => {
       // the override npm re-resolves back to 0.8.1, inside the vulnerable
       // `>=0.8.0 <0.8.3` range.
       parentRange: '0.8.1',
+    },
+    {
+      manifest: 'server',
+      pkg: 'basic-ftp',
+      min: '6.2.1',
+      advisory: 'GHSA-c475-qrg2-pj4r',
+      // get-uri 6.x (under pac-proxy-agent) declares `^5.0.2` and the fix only
+      // exists on 6.x. The 6.0 break (separate transfer hosts refused by
+      // default) is a hardening get-uri never relies on; it only calls
+      // access/lastMod/list/downloadTo/close, whose typings are unchanged.
+      parentRange: '^5.0.2',
     },
   ];
 

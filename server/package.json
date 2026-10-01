@@ -84,6 +84,7 @@
   "overrides": {
     "@ai-sdk/provider-utils": ">=3.0.28 <3.0.31",
     "@hono/node-server": "^2.0.12",
+    "basic-ftp": "^6.2.1",
     "fflate": "^0.8.3",
     "langsmith": "^0.6.3",
     "qs": "^6.16.0",
