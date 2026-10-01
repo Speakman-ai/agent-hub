@@ -55,7 +55,13 @@ import {
 import type { RunnerJobLossProbe } from '../finalize/runner-queue.js';
 import type { SpawnedStep, SpawnStepFn } from '../finalize/step-runner.js';
 import { defaultSpawnStep } from '../finalize/step-runner.js';
-import { isHostRunsOn, resolveRunsOnImage } from '../finalize/runner-images.js';
+import {
+  isHostRunsOn,
+  isMacosRunsOn,
+  macosRunnerMismatch,
+  resolveRunsOnImage,
+} from '../finalize/runner-images.js';
+import { getActiveOrgId } from '../orgs.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import { applyGithubSpawnCredentials } from '../spawn-github-credentials.js';
 import { hasAtLeastRole, parseRole } from '../roles.js';
@@ -911,6 +917,21 @@ function runStep(
 }
 
 /**
+ * Tenant for the remote runner queue. Native macOS agents are pinned to one org
+ * and only claim that org's jobs, so a deploy enqueued under the `'default'`
+ * fallback would never be claimed by one. Mirrors the Finalize orchestrator,
+ * which resolves the active org the same way.
+ */
+function resolveDeployOrgId(deps: DeployOrchestratorDeps): string {
+  if (deps.orgId) return deps.orgId;
+  try {
+    return getActiveOrgId();
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Execute (or resume) a deployment whose row + step rows already exist and whose
  * environment lock is already held by `deploymentId`. Runs steps in order,
  * persists state, broadcasts progress, records the live ref on success, and
@@ -985,7 +1006,11 @@ export async function runDeployment(
   // image like a typo'd label does, so we distinguish it explicitly: a genuine
   // `host` label proceeds; any OTHER null-image label is a config error.
   const runsOnHost = isHostRunsOn(envConfig.runsOn);
-  if (!image && !runsOnHost) {
+  // `runs-on: macos-*` has no container image either; it needs a native macOS
+  // runner (a macOS fleet agent, or the Hub host itself when the Hub is a Mac).
+  // Which one is decided after the backend is resolved below, same as Finalize.
+  const runsOnMacos = isMacosRunsOn(envConfig.runsOn);
+  if (!image && !runsOnHost && !runsOnMacos) {
     // Still pending here — mark error + release the lock before any `running`
     // transition, so a bad runs-on never strands the env lock.
     return fail(`unsupported runs-on: ${envConfig.runsOn}`);
@@ -1091,7 +1116,25 @@ export async function runDeployment(
       );
     }
 
-    if (runsOnHost) {
+    // Native macOS deploys follow the Finalize routing rule
+    // (server/finalize/job-runner.ts): the selected backend's native-platform
+    // capability decides whether macOS is available at all, and a backend that
+    // runs native jobs remotely dispatches to a macOS fleet agent. On the local
+    // backend the capability check already proved the Hub host is darwin, so the
+    // steps run in-process like `runs-on: host`.
+    let macosViaBackend = false;
+    if (runsOnMacos) {
+      backend = deps.runnerBackend ?? resolveRunnerBackend();
+      const mismatch = macosRunnerMismatch(
+        envConfig.runsOn,
+        backend.kind,
+        backend.nativeHostPlatforms ?? [process.platform],
+      );
+      if (mismatch) return fail(mismatch);
+      macosViaBackend = backend.runsNativeJobsRemotely === true;
+    }
+
+    if (runsOnHost || (runsOnMacos && !macosViaBackend)) {
       // Native-host deploy: run steps in-process on the Hub host, no container
       // and no runner acquire. `release()` is a no-op (nothing to tear down),
       // and `spawnStep` is the in-process bash spawner Finalize uses for host
@@ -1104,15 +1147,19 @@ export async function runDeployment(
         spawnStep: deps.hostSpawnStep ?? defaultSpawnStep,
         release: async () => {},
       };
-    } else if (image !== null) {
-      backend = deps.runnerBackend ?? resolveRunnerBackend();
+    } else if (image !== null || macosViaBackend) {
+      backend = backend ?? deps.runnerBackend ?? resolveRunnerBackend();
       runnerSpec = {
-        orgId: deps.orgId ?? '',
+        orgId: resolveDeployOrgId(deps),
         projectId,
         runId: deploymentId,
         jobId: environment,
         matrixKey: 'deploy',
-        image,
+        // Empty for a native macOS job; the agent runs the steps on its host.
+        image: image ?? '',
+        // The remote backend keys the runner class (and native execution) off
+        // this, so a macOS deploy only reaches a macOS agent.
+        runsOn: envConfig.runsOn,
         worktreePath,
         composeProjectName: deployComposeProjectName(deploymentId, environment),
         env: baseEnv,

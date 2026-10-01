@@ -669,6 +669,83 @@ environments:
   });
 });
 
+const MACOS_CONFIG = parseDeployConfig(`
+version: 1
+environments:
+  hexnode:
+    runs-on: macos-latest
+    steps:
+      - name: build
+        run: ./scripts/deploy-ios.sh
+`);
+
+describe('triggerDeployment — runs-on: macos-* (native macOS runner)', () => {
+  const trigger = (deps: DeployOrchestratorDeps) =>
+    triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'hexnode',
+        ref: 'sha-ios',
+        worktreePath: WORKTREE,
+        config: MACOS_CONFIG,
+      },
+      deps,
+    );
+
+  it('dispatches to a remote fleet that advertises darwin, with the macOS runs-on label', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+    const backend: RunnerBackend = {
+      ...fb.backend,
+      kind: 'remote',
+      nativeHostPlatforms: ['linux', 'darwin'],
+      runsNativeJobsRemotely: true,
+    };
+    const host = makeHostSpawner([]);
+    const dep = await trigger({
+      ...makeDeps(backend),
+      hostSpawnStep: host.spawnStep,
+      orgId: 'org-mac',
+    });
+
+    expect(dep.status).toBe('success');
+    expect(fb.acquireCalls).toHaveLength(1);
+    expect(fb.acquireCalls[0].runsOn).toBe('macos-latest');
+    expect(fb.acquireCalls[0].image).toBe('');
+    expect(fb.acquireCalls[0].orgId).toBe('org-mac');
+    expect(fb.spawnArgs.map((s) => s.run)).toEqual(['./scripts/deploy-ios.sh']);
+    expect(host.spawnArgs).toHaveLength(0);
+  });
+
+  it('runs in-process on a local backend whose host is darwin', async () => {
+    const fb = makeFakeBackend([]);
+    const backend: RunnerBackend = {
+      ...fb.backend,
+      kind: 'local',
+      nativeHostPlatforms: ['darwin'],
+    };
+    const host = makeHostSpawner([{ exitCode: 0 }]);
+    const dep = await trigger({ ...makeDeps(backend), hostSpawnStep: host.spawnStep });
+
+    expect(dep.status).toBe('success');
+    expect(fb.acquireCalls).toHaveLength(0);
+    expect(host.spawnArgs.map((s) => s.run)).toEqual(['./scripts/deploy-ios.sh']);
+  });
+
+  it('fails fast with a macOS-runner reason when the backend has no darwin host', async () => {
+    const fb = makeFakeBackend([]);
+    const backend: RunnerBackend = { ...fb.backend, kind: 'local', nativeHostPlatforms: ['linux'] };
+    const host = makeHostSpawner([]);
+    const dep = await trigger({ ...makeDeps(backend), hostSpawnStep: host.spawnStep });
+
+    expect(dep.status).toBe('error');
+    expect(dep.error).toContain('requires a macOS runner');
+    expect(dep.error).not.toContain('unsupported runs-on');
+    expect(fb.acquireCalls).toHaveLength(0);
+    expect(host.spawnArgs).toHaveLength(0);
+    expect(getDeploymentEnvironment(PROJECT, 'hexnode')!.active_deployment_id).toBeNull();
+  });
+});
+
 describe('triggerDeployment — runner acquire retry (transient fleet loss)', () => {
   const LOST_BEFORE_ATTACH =
     'runner-agent lost before attach for job production (abc): runner agent lost — ' +

@@ -148,7 +148,7 @@ export function macosRunnerMismatch(
   const available = nativeHostPlatforms.length > 0 ? nativeHostPlatforms.join(', ') : 'none';
   return (
     `runs-on: ${runsOn.trim()} requires a macOS runner, but the active '${backendKind}' ` +
-    `Finalize backend provides no macOS host (native platforms: ${available}). macOS/Xcode ` +
+    `runner backend provides no macOS host (native platforms: ${available}). macOS/Xcode ` +
     `cannot run in a Linux container. Run Agent Hub on a macOS host (local backend), or ` +
     `configure a macOS fleet runner, to build/test/deploy iOS apps.`
   );
