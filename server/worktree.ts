@@ -24,6 +24,8 @@ import {
 import path from 'path';
 import { homedir } from 'os';
 import { createRequire } from 'module';
+import { createHash } from 'crypto';
+import { parse as parseYaml } from 'yaml';
 import config from './config.js';
 import type { SessionRow } from './types.js';
 import {
@@ -1657,6 +1659,918 @@ function needsDependencyInstall(cloneDir: string): boolean {
   return !existsSync(eslintBin);
 }
 
+const JS_LOCKFILES = [
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'bun.lock',
+  'bun.lockb',
+];
+/**
+ * Project-level package-manager configuration. It changes what an install
+ * produces as much as the manifest does (`.npmrc` `omit=optional`,
+ * `.yarnrc.yml` `nodeLinker`, pnpm hooks), so it is an install input too.
+ */
+const JS_INSTALL_CONFIG_FILES = [
+  '.npmrc',
+  '.yarnrc',
+  '.yarnrc.yml',
+  'bunfig.toml',
+  '.pnpmfile.cjs',
+  'pnpm-workspace.yaml',
+];
+/**
+ * Install inputs: a change to any of these can mean node_modules is out of
+ * date. Every freshness check, fingerprint and mid-install snapshot reads
+ * this one list.
+ */
+const JS_INSTALL_INPUTS = ['package.json', ...JS_INSTALL_CONFIG_FILES, ...JS_LOCKFILES];
+/**
+ * Files the package managers write into the node_modules they populate. They
+ * are the only record of what an install actually covered: a root-only
+ * command never touches a sub-package's stamp.
+ */
+const JS_INSTALL_STAMPS = [
+  '.package-lock.json',
+  '.modules.yaml',
+  '.yarn-integrity',
+  '.yarn-state.yml',
+];
+/**
+ * An install writes the lockfile and its node_modules stamp within moments of
+ * each other, in an order that varies by package manager (npm can create or
+ * rewrite package-lock.json just after its hidden lockfile). Don't read that
+ * as drift.
+ */
+const INSTALL_STAMP_SLACK_MS = 5_000;
+const PACKAGE_DIR_SKIP = ['node_modules', '.git', 'dist', 'build', '.worktrees'];
+
+function mtimeMsOrNull(p: string): number | null {
+  try {
+    return statSync(p).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/** Directory levels the fallback walk descends when git can't list packages. */
+const PACKAGE_WALK_MAX_DEPTH = 4;
+
+function walkPackageDirs(dir: string, depth: number, out: string[]): void {
+  if (existsSync(path.join(dir, 'package.json'))) out.push(dir);
+  if (depth >= PACKAGE_WALK_MAX_DEPTH) return;
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    if (PACKAGE_DIR_SKIP.includes(entry.name)) continue;
+    walkPackageDirs(path.join(dir, entry.name), depth + 1, out);
+  }
+}
+
+/**
+ * Every package directory in the clone (root first), at any depth: the dirs
+ * of every `package.json` git would consider part of the tree (tracked, or
+ * untracked and not ignored), so workspaces like `packages/client` and a
+ * member not yet staged are covered while ignored/vendored trees are not.
+ * Falls back to a bounded walk when git can't answer.
+ */
+async function discoverPackageDirs(cloneDir: string): Promise<string[]> {
+  const dirs = new Set<string>([cloneDir]);
+  try {
+    // Tracked plus untracked-but-not-ignored: a workspace member created and
+    // not yet staged is still installed, while ignored trees stay out.
+    const out = await runGit(
+      [
+        'ls-files',
+        '-z',
+        '--cached',
+        '--others',
+        '--exclude-standard',
+        '--',
+        'package.json',
+        ':(glob)**/package.json',
+      ],
+      { cwd: cloneDir },
+    );
+    for (const rel of out.split('\0')) {
+      if (!rel || rel.split('/').includes('node_modules')) continue;
+      dirs.add(path.join(cloneDir, path.dirname(rel)));
+    }
+  } catch {
+    const walked: string[] = [];
+    walkPackageDirs(cloneDir, 0, walked);
+    for (const dir of walked) dirs.add(dir);
+  }
+  // Canonical order (root, then by relative path): git lists tracked files
+  // before untracked ones, so staging a file must not reorder anything
+  // derived from this list.
+  return [...dirs].sort((a, b) =>
+    a === cloneDir
+      ? -1
+      : b === cloneDir
+        ? 1
+        : path.relative(cloneDir, a) < path.relative(cloneDir, b)
+          ? -1
+          : 1,
+  );
+}
+
+/**
+ * Written into a package dir's node_modules by the Hub after an install it
+ * ran rewrote that dir's package-manager stamp: a hash of the package.json
+ * and lockfile that install consumed. Deleting node_modules deletes it.
+ */
+export const INSTALLED_INPUTS_RECORD = '.agent-hub-installed-inputs';
+
+/** Workspace globs a package dir declares (npm/yarn `workspaces`, pnpm-workspace.yaml). */
+function workspacePatterns(dir: string): string[] {
+  const patterns: string[] = [];
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8')) as {
+      workspaces?: unknown;
+    };
+    const ws = pkg.workspaces;
+    const list = Array.isArray(ws)
+      ? ws
+      : ws && typeof ws === 'object' && Array.isArray((ws as { packages?: unknown }).packages)
+        ? (ws as { packages: unknown[] }).packages
+        : [];
+    for (const p of list) if (typeof p === 'string') patterns.push(p);
+  } catch {
+    // no manifest or not JSON: no npm/yarn workspaces
+  }
+  try {
+    const doc = parseYaml(readFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'utf8')) as {
+      packages?: unknown;
+    } | null;
+    if (Array.isArray(doc?.packages)) {
+      for (const p of doc.packages) if (typeof p === 'string') patterns.push(p);
+    }
+  } catch {
+    // no pnpm workspace
+  }
+  return patterns;
+}
+
+/**
+ * Match a workspace glob the way package managers do (`**` also matches zero
+ * directories, so `packages/**\/*` includes `packages/client`), via Node's
+ * glob matcher. `./` prefixes and trailing slashes are cosmetic in
+ * workspace lists.
+ */
+function matchesWorkspaceGlob(rel: string, glob: string): boolean {
+  const pattern = glob.replace(/^(?:\.\/)+/, '').replace(/\/+$/, '');
+  return pattern.length > 0 && path.posix.matchesGlob(rel, pattern);
+}
+
+/**
+ * Package dirs installed as workspace members of `dir`. Package managers
+ * hoist members' dependencies into `dir/node_modules`, so a member usually
+ * has no node_modules of its own: its manifest is an input of `dir`'s
+ * install, not of a separate one.
+ */
+function workspaceMemberDirs(dir: string, packageDirs: string[]): string[] {
+  const patterns = workspacePatterns(dir);
+  if (patterns.length === 0) return [];
+  const include = patterns.filter((p) => !p.startsWith('!'));
+  const exclude = patterns.filter((p) => p.startsWith('!')).map((p) => p.slice(1));
+  return packageDirs.filter((candidate) => {
+    if (candidate === dir) return false;
+    const rel = path.relative(dir, candidate).split(path.sep).join('/');
+    if (!rel || rel.startsWith('..')) return false;
+    return (
+      include.some((g) => matchesWorkspaceGlob(rel, g)) &&
+      !exclude.some((g) => matchesWorkspaceGlob(rel, g))
+    );
+  });
+}
+
+/**
+ * Every file whose contents decide what `dir/node_modules` should hold, as
+ * `[key, absolutePath]`: the dir's own package.json, workspace file and
+ * lockfiles, plus the package.json of each workspace member it installs.
+ */
+function installInputFiles(dir: string, packageDirs: string[]): Array<[string, string]> {
+  const files: Array<[string, string]> = JS_INSTALL_INPUTS.map((f) => [f, path.join(dir, f)]);
+  for (const member of workspaceMemberDirs(dir, packageDirs)) {
+    const rel = path.relative(dir, member).split(path.sep).join('/');
+    files.push([`${rel}/package.json`, path.join(member, 'package.json')]);
+  }
+  return files;
+}
+
+/**
+ * Hash of what one package dir was (or would be) installed from: the install
+ * command plus the dir's input files, workspace members included. The
+ * command is an input like any file: `npm ci --omit=dev` and
+ * `npm ci --include=dev` produce different node_modules from the same
+ * lockfile.
+ */
+function dirInputsHash(dir: string, packageDirs: string[], installCmd: string): string {
+  const hash = createHash('sha256');
+  hash.update(`command\0${installCmd}\0`);
+  // Sorted by key so the hash depends only on which files exist and what
+  // they hold, never on the order they were discovered in.
+  const files = installInputFiles(dir, packageDirs).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  for (const [key, file] of files) {
+    let buf: Buffer;
+    try {
+      buf = readFileSync(file);
+    } catch {
+      continue;
+    }
+    hash.update(`${key}\0${buf.length}\0`);
+    hash.update(buf);
+  }
+  return hash.digest('hex');
+}
+
+type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
+
+/** Completion stamps each package manager writes into node_modules it populates. */
+const INSTALL_STAMPS_BY_MANAGER: Record<PackageManager, readonly string[]> = {
+  npm: ['.package-lock.json'],
+  pnpm: ['.modules.yaml'],
+  yarn: ['.yarn-integrity', '.yarn-state.yml'],
+  bun: [],
+};
+
+/** Subcommands that make each manager install into node_modules itself. */
+const INSTALL_VERBS: Record<PackageManager, ReadonlySet<string | undefined>> = {
+  npm: new Set(['ci', 'install', 'i', 'clean-install', 'install-clean', 'it', 'install-test']),
+  pnpm: new Set(['install', 'i']),
+  // Bare `yarn` installs.
+  yarn: new Set([undefined, 'install']),
+  bun: new Set(['install', 'i']),
+};
+
+/**
+ * The package manager that installs, when the command itself establishes
+ * it: some segment invokes a manager's own install verb (`npm ci`,
+ * `pnpm install`, bare `yarn`, `bun install`). A checkout can carry several
+ * lockfiles and only the installer that actually runs leaves its stamp, so
+ * guessing wrong makes a good install look broken on every open.
+ *
+ * Anything that only launches other code is null (unknown): `npm run
+ * install:all` may run pnpm, `npx`/`yarn <script>`/`make deps` could run
+ * anything, and a command installing with more than one manager has no
+ * single answer. Unknown installers accept any known stamp as completion
+ * evidence and are never called broken on stamps alone.
+ */
+export function packageManagerForCommand(installCmd: string): PackageManager | null {
+  const found = new Set<PackageManager>();
+  for (const segment of installCmd.split(/&&|\|\||[;|()\n]/)) {
+    const tokens = segment.trim().split(/\s+/).filter(Boolean);
+    // Leading `VAR=value` assignments are environment, not the program.
+    while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]!)) tokens.shift();
+    const program = tokens[0] ? path.posix.basename(tokens[0]) : undefined;
+    if (program !== 'npm' && program !== 'pnpm' && program !== 'yarn' && program !== 'bun') {
+      continue;
+    }
+    const subcommand = tokens.slice(1).find((t) => !t.startsWith('-'));
+    if (INSTALL_VERBS[program].has(subcommand)) found.add(program);
+  }
+  return found.size === 1 ? [...found][0]! : null;
+}
+
+/**
+ * The stamps that prove an install by this command completed: that
+ * manager's own, or any known stamp when the command names no manager.
+ */
+function completionStamps(installCmd: string): readonly string[] {
+  const manager = packageManagerForCommand(installCmd);
+  return manager ? INSTALL_STAMPS_BY_MANAGER[manager] : JS_INSTALL_STAMPS;
+}
+
+function installStampMs(dir: string, stamps: readonly string[]): number | null {
+  const present = stamps
+    .map((f) => mtimeMsOrNull(path.join(dir, 'node_modules', f)))
+    .filter((m): m is number => m !== null);
+  return present.length > 0 ? Math.max(...present) : null;
+}
+
+/**
+ * Identity of a package dir's completion stamps: inode, nanosecond mtime and
+ * size of each one present, or null when none is. Any rewrite (npm replaces
+ * its hidden lockfile) changes at least one of these; a stamp nobody touched
+ * keeps all of them.
+ */
+function stampIdentity(dir: string, stamps: readonly string[]): string | null {
+  const parts: string[] = [];
+  for (const f of stamps) {
+    try {
+      const st = statSync(path.join(dir, 'node_modules', f), { bigint: true });
+      parts.push(`${f}:${st.ino}:${st.mtimeNs}:${st.size}`);
+    } catch {
+      // not written by this manager
+    }
+  }
+  return parts.length > 0 ? parts.join('|') : null;
+}
+
+/**
+ * Evidence an install wrote into a dir's node_modules: its stamp identity,
+ * or for installers without stamps the identity (inode, nanosecond mtime) of
+ * the node_modules directory itself, which changes whenever entries are
+ * added, removed or replaced. Null when there is no node_modules.
+ */
+function installEvidence(dir: string, stamps: readonly string[]): string | null {
+  const stamp = stampIdentity(dir, stamps);
+  if (stamp !== null) return stamp;
+  try {
+    const st = statSync(path.join(dir, 'node_modules'), { bigint: true });
+    return `node_modules:${st.ino}:${st.mtimeNs}`;
+  } catch {
+    return null;
+  }
+}
+
+function snapshotInstallEvidence(
+  dirs: string[],
+  stamps: readonly string[],
+): Map<string, string | null> {
+  return new Map(dirs.map((dir) => [dir, installEvidence(dir, stamps)]));
+}
+
+/** Stamp identity of each package dir, captured right before an install runs. */
+function snapshotStampIdentities(
+  dirs: string[],
+  stamps: readonly string[],
+): Map<string, string | null> {
+  return new Map(dirs.map((dir) => [dir, stampIdentity(dir, stamps)]));
+}
+
+/**
+ * After a successful Hub install with no mid-install edits: record what each
+ * package dir was installed from, but only dirs with proof this install
+ * wrote their stamp: a stamp is present now and its identity differs from
+ * the snapshot taken right before the command ran. A dir with no snapshot,
+ * or whose stamp is unchanged, is left uncertified (no record, or its older
+ * record), so a sub-package the command never touched can't be marked
+ * current however close in time its last install was.
+ */
+function recordInstalledInputs(
+  dirs: string[],
+  stampsBefore: Map<string, string | null>,
+  installCmd: string,
+): void {
+  const stamps = completionStamps(installCmd);
+  for (const dir of dirs) {
+    if (!stampsBefore.has(dir)) continue;
+    const now = stampIdentity(dir, stamps);
+    if (now === null || now === stampsBefore.get(dir)) continue;
+    try {
+      writeFileSync(
+        path.join(dir, 'node_modules', INSTALLED_INPUTS_RECORD),
+        `${dirInputsHash(dir, dirs, installCmd)}\n`,
+        'utf8',
+      );
+    } catch {
+      // unwritable node_modules just falls back to the mtime check
+    }
+  }
+}
+
+/**
+ * True when `dir/node_modules` holds packages that match the dir's current
+ * package.json and lockfile under this install command.
+ *
+ * Dirs the Hub installed are compared against {@link INSTALLED_INPUTS_RECORD}
+ * by {@link dirInputsHash}: exact, however soon after the install an edit
+ * lands, and a changed command counts as drift. Other dirs (stamp-less
+ * installers, a preview `buildCommand`, an agent's own `npm i`) are stale
+ * when the command or their inputs differ from the last clean Hub install
+ * ({@link LAST_INSTALL}); past that they fall back to mtimes: an input newer
+ * than the package manager's stamp is drift, with a small allowance because
+ * npm writes package-lock.json just after its hidden lockfile.
+ */
+function nodeModulesCurrent(
+  cloneDir: string,
+  dir: string,
+  packageDirs: string[],
+  installCmd: string,
+  lastInstall: LastInstall | null,
+): boolean {
+  const stamps = completionStamps(installCmd);
+  const nm = path.join(dir, 'node_modules');
+  let entries: string[];
+  try {
+    entries = readdirSync(nm);
+  } catch {
+    return false;
+  }
+  if (entries.length === 0) return false;
+  let recorded: string | null = null;
+  try {
+    recorded = readFileSync(path.join(nm, INSTALLED_INPUTS_RECORD), 'utf8').trim();
+  } catch {
+    // not installed by the Hub
+  }
+  if (recorded !== null) return recorded === dirInputsHash(dir, packageDirs, installCmd);
+  if (lastInstall) {
+    if (lastInstall.command !== installCmd) return false;
+    const atLastInstall = lastInstall.inputs[path.relative(cloneDir, dir)];
+    if (
+      atLastInstall !== undefined &&
+      atLastInstall !== dirInputsHash(dir, packageDirs, installCmd)
+    ) {
+      return false;
+    }
+  }
+  const inputMtimes = installInputFiles(dir, packageDirs)
+    .map(([, file]) => mtimeMsOrNull(file))
+    .filter((m): m is number => m !== null);
+  if (inputMtimes.length === 0) return true;
+  const installedAt = installStampMs(dir, stamps) ?? mtimeMsOrNull(nm);
+  return installedAt !== null && Math.max(...inputMtimes) <= installedAt + INSTALL_STAMP_SLACK_MS;
+}
+
+/**
+ * True when the root has no usable install at all: node_modules missing or
+ * empty, or no completion stamp from the installer this command runs (an
+ * interrupted or half-deleted install). Only a fresh install can fix these,
+ * whatever ran before. Other lockfiles in the checkout are irrelevant: npm
+ * never writes Yarn's stamp. Managers without a stamp (bun) and commands
+ * that name no manager can't be judged this way and are not called broken
+ * on stamps alone.
+ */
+function rootDependenciesBroken(cloneDir: string, installCmd: string): boolean {
+  const nm = path.join(cloneDir, 'node_modules');
+  let entries: string[];
+  try {
+    entries = readdirSync(nm);
+  } catch {
+    return true;
+  }
+  if (entries.length === 0) return true;
+  const manager = packageManagerForCommand(installCmd);
+  if (!manager) return false;
+  const stamps = INSTALL_STAMPS_BY_MANAGER[manager];
+  return stamps.length > 0 && !stamps.some((f) => existsSync(path.join(nm, f)));
+}
+
+type DirDrift = { dir: string; reason: 'broken' | 'stale' };
+
+type DependencyState =
+  | { kind: 'current' }
+  /** No root package.json: not a JS tree this module can judge; always install. */
+  | { kind: 'unmanaged' }
+  /** These dirs need installing: broken (nothing usable) or stale (out of date). */
+  | { kind: 'drift'; dirs: DirDrift[] };
+
+/**
+ * Root: broken per {@link rootDependenciesBroken}, stale when installed but
+ * out of date or missing Husky's eslint. Every other package dir with its own
+ * node_modules is broken when that node_modules is empty and stale when out
+ * of date. (No stamp check for them: installers write stamps only at the
+ * root.) A dir whose node_modules is missing is broken only if the last
+ * clean Hub install left it populated ({@link INSTALLED_DIRS}); otherwise it
+ * is a package the install never covers and is left alone, since monorepo
+ * install scripts often skip some on purpose. Workspace members installed
+ * into their workspace root's node_modules are covered by that root, whose
+ * inputs include their manifests ({@link installInputFiles}).
+ */
+function dependencyState(
+  cloneDir: string,
+  packageDirs: string[],
+  installCmd: string,
+): DependencyState {
+  if (!existsSync(path.join(cloneDir, 'package.json'))) return { kind: 'unmanaged' };
+  const lastInstall = readLastInstall(cloneDir);
+  const installedDirs = readInstalledDirs(cloneDir);
+  const dirs: DirDrift[] = [];
+  if (rootDependenciesBroken(cloneDir, installCmd)) {
+    dirs.push({ dir: cloneDir, reason: 'broken' });
+  } else if (
+    needsDependencyInstall(cloneDir) ||
+    !nodeModulesCurrent(cloneDir, cloneDir, packageDirs, installCmd, lastInstall)
+  ) {
+    dirs.push({ dir: cloneDir, reason: 'stale' });
+  }
+  for (const dir of packageDirs) {
+    if (dir === cloneDir) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(path.join(dir, 'node_modules'));
+    } catch {
+      // Gone: broken if the last clean install had populated it, otherwise
+      // a package the install never covers.
+      if (installedDirs.has(path.relative(cloneDir, dir))) dirs.push({ dir, reason: 'broken' });
+      continue;
+    }
+    if (entries.length === 0) dirs.push({ dir, reason: 'broken' });
+    else if (!nodeModulesCurrent(cloneDir, dir, packageDirs, installCmd, lastInstall)) {
+      dirs.push({ dir, reason: 'stale' });
+    }
+  }
+  return dirs.length > 0 ? { kind: 'drift', dirs } : { kind: 'current' };
+}
+
+/** Canonical description of what a state says needs installing. */
+function stateSignature(cloneDir: string, state: DependencyState): string {
+  if (state.kind !== 'drift') return state.kind;
+  return state.dirs
+    .map(({ dir, reason }) => `${path.relative(cloneDir, dir) || '.'}:${reason}`)
+    .sort()
+    .join('|');
+}
+
+/**
+ * Content hash of every install input, keyed by clone-relative path. Content,
+ * not mtime: a timestamp can't tell an edit that landed mid-install from the
+ * installer's own write, and a rewrite with identical bytes is not a change.
+ */
+function installInputContents(cloneDir: string, packageDirs: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const dir of packageDirs) {
+    for (const f of JS_INSTALL_INPUTS) {
+      let buf: Buffer;
+      try {
+        buf = readFileSync(path.join(dir, f));
+      } catch {
+        continue;
+      }
+      out.set(
+        path.join(path.relative(cloneDir, dir), f),
+        createHash('sha256').update(buf).digest('hex'),
+      );
+    }
+  }
+  return out;
+}
+
+function contentsSignature(contents: Map<string, string>): string {
+  return [...contents]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, h]) => `${k}:${h}`)
+    .join('|');
+}
+
+/**
+ * Whether an install input changed while an install ran, so the install may
+ * have read the old contents. A lockfile that did not exist before is the
+ * installer's own output and doesn't count. A pre-existing lockfile the
+ * installer rewrote does count: the follow-up install then finds it
+ * consistent and leaves it byte-identical, so this converges after one extra
+ * run. Frozen installs (`npm ci`, `--frozen-lockfile`) never write it.
+ */
+function inputsChangedDuringInstall(
+  before: Map<string, string>,
+  after: Map<string, string>,
+): boolean {
+  for (const key of before.keys()) if (!after.has(key)) return true;
+  for (const [key, hash] of after) {
+    const prior = before.get(key);
+    if (prior === hash) continue;
+    if (prior === undefined && JS_LOCKFILES.includes(path.basename(key))) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Per-clone lock for everything that writes node_modules: provisioning from
+ * the project checkout and every install, background or awaited. The entry
+ * is set synchronously on acquire, so there is no gap between "nobody is
+ * installing" and "I am": two `npm ci`s over one tree delete each other's
+ * packages, and provisioning into a tree `npm ci` just emptied corrupts it.
+ */
+const dependencyLocks = new Map<string, Promise<void>>();
+/** A background setup that arrived while the lock was held; runs once it frees up. */
+const pendingBackgroundSetup = new Map<string, () => void>();
+/**
+ * Set while a clone's dependencies must be reinstalled no matter what the
+ * freshness checks say: an install failed, or its inputs kept changing
+ * under it. Lives in the git dir, so it survives a Hub restart and an
+ * `npm ci` that wipes node_modules (and the records in it), and never shows
+ * up in `git status`. Cleared only by an install that succeeds with inputs
+ * unchanged from start to finish.
+ */
+const INSTALL_RETRY_MARKER = 'agent-hub-dependency-install-retry';
+
+/**
+ * Where the Hub keeps per-clone install state: the git dir, so it survives
+ * Hub restarts and `npm ci` wiping node_modules and never shows in
+ * `git status` (a dotfile in the clone when there is no git dir).
+ */
+function installStatePath(cloneDir: string, name: string): string {
+  const gitDir = resolveGitDir(cloneDir);
+  return gitDir ? path.join(gitDir, name) : path.join(cloneDir, `.${name}`);
+}
+
+function installRetryMarkerPath(cloneDir: string): string {
+  return installStatePath(cloneDir, INSTALL_RETRY_MARKER);
+}
+
+/**
+ * The last Hub install that succeeded with stable inputs, for any installer:
+ * its command and each package dir's {@link dirInputsHash} at that moment.
+ * Per-dir records exist only where the installer leaves a stamp proving it
+ * wrote that dir; for the rest (bun, commands naming no manager, installs
+ * made outside the Hub) this is the content evidence that an input or the
+ * command changed since, which mtimes can't give when the edit lands right
+ * after the install. It can only make a dir stale, never certify one: a dir
+ * already stale at that install still matches its hash and falls through to
+ * its own evidence.
+ */
+const LAST_INSTALL = 'agent-hub-last-install.json';
+
+interface LastInstall {
+  command: string;
+  /** Clone-relative dir -> dirInputsHash at the last clean install. */
+  inputs: Record<string, string>;
+}
+
+/**
+ * Package dirs (clone-relative) that had a node_modules right after the last
+ * clean Hub install. It is the only evidence that tells a child whose
+ * node_modules was deleted since (broken, must reinstall) from an
+ * independent package the install never populates (leave alone).
+ */
+const INSTALLED_DIRS = 'agent-hub-installed-dirs';
+
+function readInstalledDirs(cloneDir: string): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(
+      readFileSync(installStatePath(cloneDir, INSTALLED_DIRS), 'utf8'),
+    );
+    return new Set(Array.isArray(parsed) ? parsed.filter((d) => typeof d === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeInstalledDirs(cloneDir: string, packageDirs: string[]): void {
+  const installed = packageDirs
+    .filter((dir) => existsSync(path.join(dir, 'node_modules')))
+    .map((dir) => path.relative(cloneDir, dir))
+    .sort();
+  try {
+    writeFileSync(
+      installStatePath(cloneDir, INSTALLED_DIRS),
+      `${JSON.stringify(installed)}\n`,
+      'utf8',
+    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[Workspace] Could not record installed package dirs in ${cloneDir}:`, message);
+  }
+}
+
+function readLastInstall(cloneDir: string): LastInstall | null {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(installStatePath(cloneDir, LAST_INSTALL), 'utf8'),
+    ) as Partial<LastInstall>;
+    if (typeof parsed.command !== 'string' || !parsed.inputs || typeof parsed.inputs !== 'object') {
+      return null;
+    }
+    return { command: parsed.command, inputs: parsed.inputs };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Update the last-install snapshot after a clean install. A dir's hash is
+ * replaced only when there is evidence this install wrote its node_modules
+ * ({@link installEvidence} changed). An untouched dir keeps its previous
+ * hash, so drift already known for it survives until something actually
+ * installs it; with no previous hash it gets none (no content signal).
+ */
+function writeLastInstall(
+  cloneDir: string,
+  installCmd: string,
+  packageDirs: string[],
+  evidenceBefore: Map<string, string | null>,
+): void {
+  const stamps = completionStamps(installCmd);
+  const previous = readLastInstall(cloneDir);
+  const inputs: Record<string, string> = {};
+  for (const dir of packageDirs) {
+    const rel = path.relative(cloneDir, dir);
+    const now = installEvidence(dir, stamps);
+    const touched = evidenceBefore.has(dir) && now !== null && now !== evidenceBefore.get(dir);
+    if (touched) inputs[rel] = dirInputsHash(dir, packageDirs, installCmd);
+    else if (previous?.inputs[rel] !== undefined) inputs[rel] = previous.inputs[rel];
+  }
+  try {
+    writeFileSync(
+      installStatePath(cloneDir, LAST_INSTALL),
+      `${JSON.stringify({ command: installCmd, inputs })}\n`,
+      'utf8',
+    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[Workspace] Could not record last install in ${cloneDir}:`, message);
+  }
+}
+
+function installRetryRequired(cloneDir: string): boolean {
+  return existsSync(installRetryMarkerPath(cloneDir));
+}
+
+function setInstallRetryRequired(cloneDir: string, required: boolean): void {
+  const marker = installRetryMarkerPath(cloneDir);
+  try {
+    if (required) writeFileSync(marker, `${new Date().toISOString()}\n`, 'utf8');
+    else rmSync(marker, { force: true });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[Workspace] Could not update install retry marker in ${cloneDir}:`, message);
+  }
+}
+
+/**
+ * Identity of an install situation for the no-repeat memo: the command, the
+ * input contents, and what the dependency state says still needs installing.
+ */
+function installAttemptKey(
+  installCmd: string,
+  contents: Map<string, string>,
+  stateSig: string,
+): string {
+  return `${installCmd}\0${contentsSignature(contents)}\0${stateSig}`;
+}
+
+/**
+ * Input contents after the last successful background install per clone.
+ * Keyed by {@link installAttemptKey}, including the state observed right
+ * after that success. When the clone is in exactly that situation again,
+ * rerunning can't change the outcome, e.g. a sub-package the command doesn't
+ * install. A different command, input or state, or a pending retry, runs.
+ */
+const lastSuccessfulInstallInputs = new Map<string, string>();
+/** Follow-up installs allowed for inputs that keep changing mid-install. */
+const MAX_INSTALL_FOLLOW_UPS = 2;
+
+function withDependencyLock<T>(cloneDir: string, fn: () => Promise<T>): Promise<T> {
+  const prev = dependencyLocks.get(cloneDir) ?? Promise.resolve();
+  const run = prev.then(fn);
+  const tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  dependencyLocks.set(cloneDir, tail);
+  void tail.then(() => {
+    if (dependencyLocks.get(cloneDir) !== tail) return;
+    dependencyLocks.delete(cloneDir);
+    const pending = pendingBackgroundSetup.get(cloneDir);
+    if (pending) {
+      pendingBackgroundSetup.delete(cloneDir);
+      pending();
+    }
+  });
+  return run;
+}
+
+/** Resolves once no dependency work is queued or running for this clone. */
+async function waitForDependencyLock(cloneDir: string): Promise<void> {
+  for (;;) {
+    const held = dependencyLocks.get(cloneDir);
+    if (!held) return;
+    await held;
+    // Let the release handler (and any pending setup it starts) run.
+    await Promise.resolve();
+  }
+}
+
+function runBackgroundInstallCommand(
+  installCmd: string,
+  cloneDir: string,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    exec(installCmd, { cwd: cloneDir, timeout: timeoutMs, env: installChildEnv }, (err) =>
+      err ? reject(err) : resolve(),
+    );
+  });
+}
+
+interface InstallOutcome {
+  /** The command exited 0. */
+  ok: boolean;
+  /** No install input (in any package dir, as rediscovered afterwards) changed while it ran. */
+  stable: boolean;
+  error?: unknown;
+}
+
+/**
+ * The one install protocol every Hub install follows, background or awaited.
+ * Caller holds the dependency lock.
+ *
+ * 1. Mark retry-required first, so a Hub exit mid-install (after the package
+ *    manager wrote its stamp but before the command returned) still forces a
+ *    reinstall on the next open.
+ * 2. Discover package dirs and snapshot their inputs, run the command, then
+ *    discover and snapshot again: a workspace member created mid-install
+ *    shows up as a changed input rather than being missed by both snapshots.
+ * 3. Only success with unchanged inputs records what was installed (for dirs
+ *    whose stamp identity this run changed) and clears the retry marker.
+ */
+async function installOnce(
+  cloneDir: string,
+  installCmd: string,
+  run: () => Promise<void>,
+): Promise<InstallOutcome> {
+  setInstallRetryRequired(cloneDir, true);
+  lastSuccessfulInstallInputs.delete(cloneDir);
+  const stamps = completionStamps(installCmd);
+  const beforeDirs = await discoverPackageDirs(cloneDir);
+  const before = installInputContents(cloneDir, beforeDirs);
+  const stampsBefore = snapshotStampIdentities(beforeDirs, stamps);
+  const evidenceBefore = snapshotInstallEvidence(beforeDirs, stamps);
+  let ok = true;
+  let error: unknown;
+  try {
+    await run();
+    console.log(`[Workspace] Install completed in ${cloneDir}`);
+  } catch (err: unknown) {
+    ok = false;
+    error = err;
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[Workspace] Install failed in clone ${cloneDir}:`, message);
+  }
+  const afterDirs = await discoverPackageDirs(cloneDir);
+  const after = installInputContents(cloneDir, afterDirs);
+  const stable = !inputsChangedDuringInstall(before, after);
+  if (ok && stable) {
+    recordInstalledInputs(afterDirs, stampsBefore, installCmd);
+    writeLastInstall(cloneDir, installCmd, afterDirs, evidenceBefore);
+    writeInstalledDirs(cloneDir, afterDirs);
+    setInstallRetryRequired(cloneDir, false);
+    // What was still left to install right after a clean success: the same
+    // situation later means rerunning can't help; any difference (a dir
+    // emptied or deleted since, a changed input or command) means it can.
+    const settled = dependencyState(cloneDir, afterDirs, installCmd);
+    lastSuccessfulInstallInputs.set(
+      cloneDir,
+      installAttemptKey(installCmd, after, stateSignature(cloneDir, settled)),
+    );
+  }
+  return { ok, stable, error };
+}
+
+/**
+ * Background install on session open; runs under the dependency lock.
+ *
+ * Every chat turn re-opens the session worktree. `npm ci` deletes
+ * node_modules before reinstalling, so re-running it on each turn pulls the
+ * dependencies out from under a running preview dev server and its next
+ * rebuild fails to resolve packages. So: skip while current, don't repeat a
+ * successful install for identical inputs unless the deps are broken, and
+ * reinstall right away when an input changed while the install ran.
+ */
+async function backgroundInstallLocked(
+  cloneDir: string,
+  installCmd: string,
+  timeoutMs: number,
+): Promise<void> {
+  const packageDirs = await discoverPackageDirs(cloneDir);
+  const retry = installRetryRequired(cloneDir);
+  const state = dependencyState(cloneDir, packageDirs, installCmd);
+  if (state.kind === 'current' && !retry) {
+    clearDependencyInstallFailureMarker(cloneDir);
+    return;
+  }
+  if (
+    state.kind === 'drift' &&
+    !retry &&
+    lastSuccessfulInstallInputs.get(cloneDir) ===
+      installAttemptKey(
+        installCmd,
+        installInputContents(cloneDir, packageDirs),
+        stateSignature(cloneDir, state),
+      )
+  ) {
+    console.warn(
+      `[Workspace] "${installCmd}" already succeeded here and left ` +
+        `${state.dirs.map((d) => `${path.relative(cloneDir, d.dir) || '.'} ${d.reason}`).join(', ')} ` +
+        `in ${cloneDir}; not rerunning until the command, an input or that state changes`,
+    );
+    return;
+  }
+  for (let run = 0; run <= MAX_INSTALL_FOLLOW_UPS; run++) {
+    console.log(`[Workspace] Running "${installCmd}" in clone ${cloneDir} (background)`);
+    const outcome = await installOnce(cloneDir, installCmd, () =>
+      runBackgroundInstallCommand(installCmd, cloneDir, timeoutMs),
+    );
+    if (outcome.stable) return;
+    console.log(`[Workspace] Install inputs changed during install in ${cloneDir}; reinstalling`);
+  }
+  console.warn(
+    `[Workspace] Install inputs kept changing in ${cloneDir}; next session open retries`,
+  );
+}
+
 /**
  * Locate THIS server's own compiled `node-pty` module dir so session-worktree
  * installs that can't build node-pty (host without a C toolchain) can heal it by
@@ -2040,6 +2954,53 @@ async function setupDependencies(
     return;
   }
 
+  if (options.awaitInstall) {
+    await withDependencyLock(cloneDir, () =>
+      provisionAndInstallLocked(sourceDir, cloneDir, installCommand, options, () => undefined),
+    );
+    return;
+  }
+  // A background setup while the lock is held is coalesced into one run after
+  // it frees up: the holder is already writing node_modules, so this open
+  // must neither wait minutes for it nor start a second install.
+  if (dependencyLocks.has(cloneDir)) {
+    pendingBackgroundSetup.set(cloneDir, () => {
+      void setupDependencies(sourceDir, cloneDir, installCommand, options).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[Workspace] Deferred dependency setup failed in ${cloneDir}:`, message);
+      });
+    });
+    return;
+  }
+  // Callers get node_modules provisioned before returning; the install
+  // itself keeps running (and holding the lock) in the background.
+  let provisioned!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    provisioned = resolve;
+  });
+  void withDependencyLock(cloneDir, () =>
+    provisionAndInstallLocked(sourceDir, cloneDir, installCommand, options, provisioned),
+  )
+    .catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[Workspace] Background dependency setup failed in ${cloneDir}:`, message);
+    })
+    .finally(provisioned);
+  await ready;
+}
+
+/**
+ * Link node_modules from the project checkout when present, then install.
+ * Caller holds the dependency lock. `onProvisioned` fires once node_modules
+ * provisioning is done, before any install starts.
+ */
+async function provisionAndInstallLocked(
+  sourceDir: string,
+  cloneDir: string,
+  installCommand: string | null,
+  options: SetupDependenciesOptions,
+  onProvisioned: () => void,
+): Promise<void> {
   const nodeModulesDirs: NodeModulesEntry[] = [];
 
   const rootNM = path.join(sourceDir, 'node_modules');
@@ -2108,6 +3069,7 @@ async function setupDependencies(
     }
   }
 
+  onProvisioned();
   const resolved = resolveInstallCommand(cloneDir, installCommand, options.preferInstallAllScript);
   if (!resolved) {
     return;
@@ -2129,37 +3091,28 @@ async function setupDependencies(
         `[Workspace] Session dependency install previously failed (${cloneDir}): ${prior}`,
       );
     }
-    try {
-      console.log(`[Workspace] Running "${installCmd}" in ${cloneDir} (awaiting completion)`);
+    console.log(`[Workspace] Running "${installCmd}" in ${cloneDir} (awaiting completion)`);
+    const outcome = await installOnce(cloneDir, installCmd, async () => {
       await execP(installCmd, {
         cwd: cloneDir,
         timeout: timeoutMs,
         maxBuffer: 32 * 1024 * 1024,
         env: installChildEnv,
       });
-      console.log(`[Workspace] Install completed in ${cloneDir}`);
-      clearDependencyInstallFailureMarker(cloneDir);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[Workspace] Install failed in clone ${cloneDir}:`, message);
+    });
+    if (!outcome.ok) {
+      const message =
+        outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
       writeDependencyInstallFailureMarker(cloneDir, message);
       throw new SessionDependencyInstallError(
         `[Workspace] Dependency install failed in ${cloneDir}: ${message}`,
       );
     }
+    clearDependencyInstallFailureMarker(cloneDir);
     return;
   }
 
-  console.log(
-    `[Workspace] No node_modules in source — running "${installCmd}" in clone (background)`,
-  );
-  exec(installCmd, { cwd: cloneDir, timeout: timeoutMs, env: installChildEnv }, (err) => {
-    if (err) {
-      console.warn(`[Workspace] Install failed in clone:`, err.message);
-    } else {
-      console.log(`[Workspace] Install completed in ${cloneDir}`);
-    }
-  });
+  await backgroundInstallLocked(cloneDir, installCmd, timeoutMs);
 }
 
 async function copyFallback(projectCwd: string, destDir: string): Promise<string> {
@@ -3922,6 +4875,10 @@ export async function cleanupStaleWorkspaces(
  * @internal
  */
 export const __test = {
+  discoverPackageDirs,
+  packageManagerForCommand,
+  resetBackgroundInstallMemo: (): void => lastSuccessfulInstallInputs.clear(),
+  waitForInFlightInstall: waitForDependencyLock,
   gitEnv,
   lsRemoteHasExactHead,
   SHORT_GIT_TIMEOUT_MS,
