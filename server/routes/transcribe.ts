@@ -23,14 +23,31 @@
  * • Graceful degradation: if the selected provider's API key is not configured
  *   the endpoint returns 501 so the client can fall back to on-device
  *   recognition (Web Speech API on web/Electron) without a hard error.
- * • Size limit: 25 MB (Whisper's documented max per request).
+ * • Size limits come from the providers, not from us. The body parser admits
+ *   up to the largest provider limit (xAI, 500 MB); a request routed to
+ *   Whisper is then held to Whisper's 25 MB. Clients split long recordings
+ *   into independent segments so neither limit is reached in practice.
  */
 
 import { Router, Request, Response } from 'express';
 import express from 'express';
 import type { RouteDeps, TranscriptionProvider } from '../types.js';
 
-const MAX_AUDIO_SIZE = 25 * 1024 * 1024; // 25 MB — Whisper per-request limit
+const MB = 1024 * 1024;
+// Documented per-request upload limits.
+// https://docs.x.ai/developers/model-capabilities/audio/speech-to-text
+export const XAI_MAX_AUDIO_BYTES = 500 * MB;
+// https://developers.openai.com/api/docs/guides/speech-to-text
+export const WHISPER_MAX_AUDIO_BYTES = 25 * MB;
+const MAX_UPLOAD_BYTES = Math.max(XAI_MAX_AUDIO_BYTES, WHISPER_MAX_AUDIO_BYTES);
+
+function tooLargeFor(res: Response, provider: string, limitBytes: number) {
+  return res.status(413).json({
+    error: `Audio exceeds the ${provider} upload limit of ${limitBytes / MB} MB`,
+    provider,
+    maxBytes: limitBytes,
+  });
+}
 
 // Content types the Whisper API accepts. We keep this narrow so callers can't
 // proxy arbitrary binaries through a public endpoint.
@@ -263,7 +280,7 @@ export default function createTranscribeRoutes(deps: RouteDeps): Router {
 
   router.post(
     '/api/transcribe',
-    express.raw({ type: 'audio/*', limit: MAX_AUDIO_SIZE + 1024 }),
+    express.raw({ type: 'audio/*', limit: MAX_UPLOAD_BYTES + 1024 }),
     async (req: Request, res: Response) => {
       try {
         // The host config setting is authoritative; we deliberately do NOT
@@ -290,10 +307,12 @@ export default function createTranscribeRoutes(deps: RouteDeps): Router {
         if (!Buffer.isBuffer(buf) || buf.length === 0) {
           return res.status(400).json({ error: 'Empty audio body' });
         }
-        if (buf.length > MAX_AUDIO_SIZE) {
-          return res.status(413).json({
-            error: `Audio too large. Max size: ${MAX_AUDIO_SIZE / 1024 / 1024}MB`,
-          });
+        if (buf.length > MAX_UPLOAD_BYTES) {
+          return tooLargeFor(
+            res,
+            provider === 'openai' ? 'OpenAI Whisper' : 'xAI',
+            MAX_UPLOAD_BYTES,
+          );
         }
 
         const language = (req.headers['x-language'] as string | undefined)?.slice(0, 8);
@@ -310,6 +329,9 @@ export default function createTranscribeRoutes(deps: RouteDeps): Router {
         if (provider === 'xai') {
           // Use xAI only when its key is set AND it documents this container.
           if (config.xaiApiKey && isXaiSupportedAudioType(contentType)) {
+            if (buf.length > XAI_MAX_AUDIO_BYTES) {
+              return tooLargeFor(res, 'xAI', XAI_MAX_AUDIO_BYTES);
+            }
             const transcript = await transcribeWithXai({
               apiKey: config.xaiApiKey,
               audio: buf,
@@ -329,6 +351,9 @@ export default function createTranscribeRoutes(deps: RouteDeps): Router {
           // response reports the provider actually used plus `fallbackFrom` so
           // callers can observe the substitution.
           if (config.openaiApiKey) {
+            if (buf.length > WHISPER_MAX_AUDIO_BYTES) {
+              return tooLargeFor(res, 'OpenAI Whisper', WHISPER_MAX_AUDIO_BYTES);
+            }
             const transcript = await transcribeWithWhisper({
               apiKey: config.openaiApiKey,
               audio: buf,
@@ -361,6 +386,9 @@ export default function createTranscribeRoutes(deps: RouteDeps): Router {
         }
 
         if (!config.openaiApiKey) return notConfigured('OpenAI');
+        if (buf.length > WHISPER_MAX_AUDIO_BYTES) {
+          return tooLargeFor(res, 'OpenAI Whisper', WHISPER_MAX_AUDIO_BYTES);
+        }
 
         const transcript = await transcribeWithWhisper({
           apiKey: config.openaiApiKey,

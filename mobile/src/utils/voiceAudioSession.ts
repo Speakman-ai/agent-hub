@@ -15,6 +15,21 @@ import { Audio } from 'expo-av';
 
 export type VoiceOwner = object;
 
+// Mono AAC at 32 kbps / 16 kHz: speech stays fully intelligible and an hour of
+// audio is ~14 MB instead of ~58 MB at the stereo 128 kbps HIGH_QUALITY preset.
+export const SPEECH_RECORDING_BITRATE = 32_000;
+
+export function speechRecordingOptions(): any {
+  const base = Audio.RecordingOptionsPresets.HIGH_QUALITY;
+  const speech = { sampleRate: 16_000, numberOfChannels: 1, bitRate: SPEECH_RECORDING_BITRATE };
+  return {
+    ...base,
+    android: { ...base.android, ...speech },
+    ios: { ...base.ios, ...speech },
+    web: { ...base.web, bitsPerSecond: SPEECH_RECORDING_BITRATE },
+  };
+}
+
 export class VoiceRecordingBusyError extends Error {
   constructor() {
     super('Another voice recording is in progress. Stop it first.');
@@ -67,9 +82,7 @@ export function acquireRecording(attempt: VoiceOwner, isLive: () => boolean): Pr
     let recording: any = null;
     try {
       await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      ({ recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY,
-      ));
+      ({ recording } = await Audio.Recording.createAsync(speechRecordingOptions()));
     } catch (err) {
       await unloadQuietly(recording);
       await resetIfOwner(attempt);

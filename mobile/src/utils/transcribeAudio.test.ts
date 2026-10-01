@@ -18,6 +18,17 @@ function makeFakeFileSystem({ status = 200, body = null }: any = {}) {
   };
 }
 describe('parseTranscribeUploadResult', () => {
+  it('surfaces the provider limit from a 413 body', () => {
+    const result = parseTranscribeUploadResult(
+      413,
+      JSON.stringify({ error: 'Audio exceeds the OpenAI Whisper upload limit of 25 MB' }),
+    );
+    expect(result).toEqual({
+      ok: false,
+      message: 'Audio exceeds the OpenAI Whisper upload limit of 25 MB.',
+    });
+  });
+
   it('returns transcript on success', () => {
     const result = parseTranscribeUploadResult(200, JSON.stringify({ transcript: ' hello ' }));
     expect(result).toEqual({ ok: true, transcript: ' hello ' });

@@ -9,6 +9,8 @@ import createTranscribeRoutes, {
   transcribeWithXai,
   isXaiSupportedAudioType,
   resolveTranscriptionProvider,
+  WHISPER_MAX_AUDIO_BYTES,
+  XAI_MAX_AUDIO_BYTES,
 } from './transcribe.js';
 import type { RouteDeps, AppConfig } from '../types.js';
 
@@ -431,6 +433,60 @@ describe('POST /api/transcribe — xAI provider (default)', () => {
     expect(res.status).toBe(501);
     expect(res.body.provider).toBe('xai');
     expect(res.body.hint).toMatch(/xAI/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/transcribe — upload limits follow the provider', () => {
+  const original = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = original;
+  });
+  const overWhisper = () => Buffer.alloc(WHISPER_MAX_AUDIO_BYTES + 1);
+
+  it('regression: admits audio above 25 MB when xAI serves the request', async () => {
+    const fetchSpy = vi.fn(async (_url: unknown) => jsonResponse({ text: 'long meeting' }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const app = makeApp(null, { xaiApiKey: 'xai-x' });
+    const res = await supertest(app)
+      .post('/api/transcribe')
+      .set('content-type', 'audio/mp4')
+      .send(overWhisper());
+
+    expect(res.status).toBe(200);
+    expect(res.body.provider).toBe('xai');
+    expect(XAI_MAX_AUDIO_BYTES).toBe(500 * 1024 * 1024);
+  });
+
+  it('returns 413 naming Whisper when the openai provider gets more than 25 MB', async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const app = makeApp('sk-openai', { transcriptionProvider: 'openai' });
+    const res = await supertest(app)
+      .post('/api/transcribe')
+      .set('content-type', 'audio/webm')
+      .send(overWhisper());
+
+    expect(res.status).toBe(413);
+    expect(res.body.provider).toBe('OpenAI Whisper');
+    expect(res.body.error).toMatch(/25 MB/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns 413 when an over-25 MB WebM would fall back from xAI to Whisper', async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const app = makeApp('sk-openai', { xaiApiKey: 'xai-x' });
+    const res = await supertest(app)
+      .post('/api/transcribe')
+      .set('content-type', 'audio/webm')
+      .send(overWhisper());
+
+    expect(res.status).toBe(413);
+    expect(res.body.provider).toBe('OpenAI Whisper');
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

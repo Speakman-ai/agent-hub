@@ -29,7 +29,12 @@ export function parseTranscribeUploadResult(status: any, bodyText: any) {
     };
   }
   if (status === 413) {
-    return { ok: false, message: 'Recording is too long. Try a shorter clip.' };
+    return {
+      ok: false,
+      message: body.error
+        ? `${body.error}.`
+        : "Recording exceeds the transcription provider's upload limit.",
+    };
   }
   if (status < 200 || status >= 300) {
     const detail = body.error || body.detail || '';

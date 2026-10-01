@@ -50,11 +50,98 @@ function stopTracks(stream: any) {
   }
 }
 
-async function readHint(res: any): Promise<string> {
+// Speech is fully intelligible at 32 kbps Opus/AAC; the browser default
+// (~128 kbps) only inflates uploads.
+export const RECORDING_BITS_PER_SECOND = 32_000;
+// Long recordings are cut into independent files of this length so every
+// upload stays far below any provider's per-request limit and transcription
+// of earlier segments overlaps with recording.
+export const SEGMENT_DURATION_MS = 10 * 60 * 1000;
+
+export type SegmentResult =
+  | { ok: true; transcript: string }
+  | { ok: false; message: string }
+  | { ok: false; aborted: true; message: '' };
+
+/** Joins per-segment transcripts in recording order. */
+export function joinSegmentTranscripts(parts: Array<string | null | undefined>): string {
+  return parts
+    .map((p) => (p || '').trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
+async function readJson(res: any): Promise<any> {
   try {
-    return (await res.json())?.hint || '';
+    return (await res.json()) ?? {};
   } catch {
-    return '';
+    return {};
+  }
+}
+
+/**
+ * POSTs one self-contained audio file to /api/transcribe and maps the
+ * response to a transcript or a user-facing message. The endpoint is
+ * express.raw({type:'audio/*'}): it wants the bare bytes with the correct
+ * Content-Type, not a multipart body.
+ */
+export async function transcribeSegment(
+  blob: Blob,
+  contentType: string,
+  signal: AbortSignal,
+): Promise<SegmentResult> {
+  try {
+    const res = await fetch('/api/transcribe', {
+      method: 'POST',
+      headers: { 'Content-Type': contentType, ...getAuthHeaders() },
+      body: blob,
+      signal,
+    });
+    if (res.status === 501) {
+      const body = await readJson(res);
+      return {
+        ok: false,
+        message:
+          body.hint ||
+          'Voice transcription not configured. Ask your admin to set the API key in Account settings.',
+      };
+    }
+    if (res.status === 415) {
+      const body = await readJson(res);
+      return {
+        ok: false,
+        message:
+          body.hint ||
+          "This audio format isn't supported by the selected transcription provider. Switch the provider in Settings → Account.",
+      };
+    }
+    if (res.status === 413) {
+      const body = await readJson(res);
+      return {
+        ok: false,
+        message: body.error
+          ? `${body.error}.`
+          : "Recording exceeds the transcription provider's upload limit.",
+      };
+    }
+    if (!res.ok) {
+      const body = await readJson(res);
+      const detail = body.error || body.detail || '';
+      return {
+        ok: false,
+        message: `Transcription failed (HTTP ${res.status})${detail ? ': ' + detail : ''}. Tap mic to retry.`,
+      };
+    }
+    const body = await readJson(res);
+    return { ok: true, transcript: typeof body.transcript === 'string' ? body.transcript : '' };
+  } catch (err: any) {
+    // AbortError means the caller cancelled mid-upload, not a user-visible error.
+    if (err?.name === 'AbortError' || signal.aborted)
+      return { ok: false, aborted: true, message: '' };
+    return {
+      ok: false,
+      message: `Transcription failed: ${err?.message || 'network error'}. Tap mic to retry.`,
+    };
   }
 }
 
@@ -70,20 +157,33 @@ export interface VoiceRecorderOptions {
   onStart?: () => void;
 }
 
+// One mic session from start() to stop()/cancel(). It owns a chain of
+// MediaRecorder segments over a single stream; each segment's result is a
+// promise slotted in recording order.
+interface Take {
+  stream: any;
+  mimeType: string;
+  recorder: any;
+  results: Promise<SegmentResult | null>[];
+  controller: AbortController;
+  timer: ReturnType<typeof setInterval> | null;
+  stopping: boolean;
+  finalizing: boolean;
+}
+
 /**
  * Record-then-transcribe voice input shared by the chat composer and the
- * notes editor. `isRecording` covers the live-mic window (user-cancellable);
- * `isTranscribing` covers upload + server wait (not cancellable by the user,
- * but `cancel()` aborts it so a caller switching context never receives a
- * stale transcript).
+ * notes editor. Recordings longer than SEGMENT_DURATION_MS are split into
+ * independent files that upload while recording continues; the joined
+ * transcript is delivered once after stop. `isRecording` covers the live-mic
+ * window; `isTranscribing` covers the wait for outstanding segments after
+ * stop. `cancel()` aborts everything so a caller switching context never
+ * receives a stale transcript.
  */
 export function useVoiceRecorder({ onTranscript, onError, onStart }: VoiceRecorderOptions) {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const mediaRecorderRef = useRef<any>(null);
-  const audioChunksRef = useRef<any[]>([]);
-  const mediaStreamRef = useRef<any>(null);
-  const transcribeAbortRef = useRef<any>(null);
+  const takeRef = useRef<Take | null>(null);
   // Bumped by cancel() and every start() so a start() still awaiting mic permission knows it was
   // abandoned and releases the stream instead of recording.
   const generationRef = useRef(0);
@@ -103,119 +203,159 @@ export function useVoiceRecorder({ onTranscript, onError, onStart }: VoiceRecord
     else if (typeof window !== 'undefined') console.warn('[transcribe]', msg);
   }, []);
 
-  // Hard-stops any in-flight recording and releases the mic. The recorder's
-  // onstop still fires, so this is the "stop and discard nothing" path used on
-  // errors; use cancel() to drop the audio instead.
-  const teardownRecording = useCallback(() => {
-    const rec = mediaRecorderRef.current;
-    if (rec && rec.state !== 'inactive') {
-      try {
-        rec.stop();
-      } catch {
-        /* already stopped */
-      }
-    }
-    mediaRecorderRef.current = null;
-    stopTracks(mediaStreamRef.current);
-    mediaStreamRef.current = null;
-    audioChunksRef.current = [];
-    setIsRecording(false);
-  }, []);
-
-  // Drops the recording and any in-flight upload without delivering a
-  // transcript. Handlers are cleared BEFORE stop() so buffered chunks are not
-  // uploaded, and the fetch is aborted so a late response can't land.
+  // Drops the recording and any in-flight uploads without delivering a
+  // transcript. Handlers are cleared BEFORE stop() so buffered audio is not
+  // uploaded, and the fetches are aborted so a late response can't land.
   const cancel = useCallback(() => {
     generationRef.current += 1;
-    const rec = mediaRecorderRef.current;
-    if (rec) {
-      rec.onstop = null;
-      rec.onerror = null;
-      rec.ondataavailable = null;
-      if (rec.state !== 'inactive') {
-        try {
-          rec.stop();
-        } catch {
-          /* already stopped */
+    const take = takeRef.current;
+    takeRef.current = null;
+    if (take) {
+      take.stopping = true;
+      if (take.timer) clearInterval(take.timer);
+      const rec = take.recorder;
+      if (rec) {
+        rec.onstop = null;
+        rec.onerror = null;
+        rec.ondataavailable = null;
+        if (rec.state !== 'inactive') {
+          try {
+            rec.stop();
+          } catch {
+            /* already stopped */
+          }
         }
       }
+      take.controller.abort();
+      stopTracks(take.stream);
     }
-    mediaRecorderRef.current = null;
-    stopTracks(mediaStreamRef.current);
-    mediaStreamRef.current = null;
-    audioChunksRef.current = [];
-    transcribeAbortRef.current?.abort();
-    transcribeAbortRef.current = null;
     setIsRecording(false);
     setIsTranscribing(false);
   }, []);
 
-  // The endpoint is express.raw({type:'audio/*'}): it wants the bare audio
-  // bytes with the correct Content-Type, not a multipart body.
-  const uploadForTranscription = useCallback(
-    async (blob: any, contentType: string) => {
-      const controller = new AbortController();
-      transcribeAbortRef.current = controller;
+  const finalize = useCallback(
+    async (take: Take) => {
+      if (take.finalizing) return;
+      take.finalizing = true;
       setIsTranscribing(true);
-      try {
-        const res = await fetch('/api/transcribe', {
-          method: 'POST',
-          headers: { 'Content-Type': contentType, ...getAuthHeaders() },
-          body: blob,
-          signal: controller.signal,
-        });
-        if (res.status === 501) {
-          reportError(
-            (await readHint(res)) ||
-              'Voice transcription not configured. Ask your admin to set the API key in Account settings.',
-          );
-          return;
-        }
-        if (res.status === 415) {
-          // Most common cause: the Gemini provider is selected but the browser
-          // recorded WebM/MP4, which Gemini can't read. Surface the server hint.
-          reportError(
-            (await readHint(res)) ||
-              "This audio format isn't supported by the selected transcription provider. Switch the provider in Settings → Account.",
-          );
-          return;
-        }
-        if (res.status === 413) {
-          reportError('Recording is too long. Try a shorter clip.');
-          return;
-        }
-        if (!res.ok) {
-          let detail = '';
-          try {
-            const body = await res.json();
-            detail = body?.error || body?.detail || '';
-          } catch {
-            /* non-JSON error body */
-          }
-          reportError(
-            `Transcription failed (HTTP ${res.status})${detail ? ': ' + detail : ''}. Tap mic to retry.`,
-          );
-          return;
-        }
-        const body = await res.json().catch(() => ({}));
-        if (controller.signal.aborted) return;
-        if (typeof body?.transcript !== 'string' || !body.transcript.trim()) {
-          reportError("Couldn't hear anything — try again.");
-          return;
-        }
-        onTranscriptRef.current(body.transcript);
-      } catch (err: any) {
-        // AbortError means the caller cancelled mid-upload, not a user-visible error.
-        if (err?.name === 'AbortError') return;
-        reportError(`Transcription failed: ${err?.message || 'network error'}. Tap mic to retry.`);
-      } finally {
-        if (transcribeAbortRef.current === controller) {
-          transcribeAbortRef.current = null;
-          setIsTranscribing(false);
-        }
+      const results = await Promise.all(take.results);
+      if (takeRef.current !== take) return; // cancelled or superseded
+      takeRef.current = null;
+      setIsTranscribing(false);
+      const captured = results.filter((r): r is SegmentResult => r !== null);
+      if (captured.length === 0) {
+        reportError("Couldn't capture audio — try again.");
+        return;
+      }
+      const transcript = joinSegmentTranscripts(captured.map((r) => (r.ok ? r.transcript : null)));
+      const failure = captured.find((r) => !r.ok && r.message);
+      if (transcript) onTranscriptRef.current(transcript);
+      if (failure && !failure.ok) {
+        reportError(
+          transcript
+            ? `Part of the recording couldn't be transcribed: ${failure.message}`
+            : failure.message,
+        );
+      } else if (!transcript) {
+        reportError("Couldn't hear anything — try again.");
       }
     },
     [reportError],
+  );
+
+  // Stops the current segment; its onstop finalizes the take. Audio captured
+  // so far is still transcribed.
+  const stopTake = useCallback(
+    (take: Take) => {
+      if (take.stopping) return;
+      take.stopping = true;
+      if (take.timer) clearInterval(take.timer);
+      take.timer = null;
+      const rec = take.recorder;
+      if (rec && rec.state !== 'inactive') {
+        try {
+          rec.stop();
+          return;
+        } catch {
+          /* fall through to manual finalize */
+        }
+      }
+      stopTracks(take.stream);
+      setIsRecording(false);
+      void finalize(take);
+    },
+    [finalize],
+  );
+
+  // Starts a new segment recorder on the take's stream. The returned recorder
+  // becomes take.recorder; its result slot is reserved once start() succeeds
+  // (a throwing start must not leave a slot nothing will settle) so segments
+  // stay in order even if uploads finish out of order.
+  const startSegment = useCallback(
+    (take: Take) => {
+      const opts: any = { audioBitsPerSecond: RECORDING_BITS_PER_SECOND };
+      if (take.mimeType) opts.mimeType = take.mimeType;
+      const recorder = new window.MediaRecorder(take.stream, opts);
+      const chunks: Blob[] = [];
+      let settle!: (r: Promise<SegmentResult> | null) => void;
+      recorder.ondataavailable = (e: any) => {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+      };
+      recorder.onstop = () => {
+        if (chunks.length === 0) settle(null);
+        else {
+          const effectiveType = recorder.mimeType || take.mimeType || 'audio/webm';
+          const blob = new Blob(chunks, { type: effectiveType });
+          settle(
+            transcribeSegment(blob, baseAudioContentType(effectiveType), take.controller.signal),
+          );
+        }
+        // Retired segments (rotated out) never end the take. The current one
+        // does, whether the user stopped or the browser ended it on its own
+        // (e.g. the mic was unplugged and every track ended).
+        if (take.recorder === recorder) {
+          take.stopping = true;
+          if (take.timer) clearInterval(take.timer);
+          take.timer = null;
+          // Release the mic right away so the browser indicator goes off
+          // while the remaining uploads finish.
+          stopTracks(take.stream);
+          setIsRecording(false);
+          void finalize(take);
+        }
+      };
+      recorder.onerror = (e: any) => {
+        reportError(`Recording error: ${e?.error?.message || 'unknown error'}`);
+        stopTake(take);
+      };
+      recorder.start();
+      take.results.push(new Promise((resolve) => (settle = resolve)));
+      take.recorder = recorder;
+      return recorder;
+    },
+    [finalize, reportError, stopTake],
+  );
+
+  // Hands off to a fresh segment before stopping the old one, so the two
+  // overlap by a few milliseconds instead of dropping audio between them.
+  const rotate = useCallback(
+    (take: Take) => {
+      if (take.stopping || takeRef.current !== take) return;
+      const old = take.recorder;
+      try {
+        startSegment(take);
+      } catch (err: any) {
+        reportError(`Could not continue recording: ${err?.message || 'unknown error'}`);
+        stopTake(take);
+        return;
+      }
+      try {
+        old?.stop();
+      } catch {
+        /* already stopped */
+      }
+    },
+    [startSegment, reportError, stopTake],
   );
 
   const start = useCallback(async () => {
@@ -252,66 +392,37 @@ export function useVoiceRecorder({ onTranscript, onError, onStart }: VoiceRecord
       stopTracks(stream);
       return;
     }
-    mediaStreamRef.current = stream;
 
-    let recorder: any;
+    const take: Take = {
+      stream,
+      mimeType,
+      recorder: null,
+      results: [],
+      controller: new AbortController(),
+      timer: null,
+      stopping: false,
+      finalizing: false,
+    };
     try {
-      recorder = mimeType
-        ? new window.MediaRecorder(stream, { mimeType })
-        : new window.MediaRecorder(stream);
+      startSegment(take);
     } catch (err: any) {
       reportError(`Could not start recording: ${err?.message || 'unsupported audio format'}`);
-      teardownRecording();
+      stopTracks(stream);
       return;
     }
-
-    audioChunksRef.current = [];
-    recorder.ondataavailable = (e: any) => {
-      if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
-    };
-    // When stop() fires, assemble the blob and ship it. Errors land here too,
-    // so check the chunk count before uploading.
-    recorder.onstop = async () => {
-      const chunks = audioChunksRef.current;
-      audioChunksRef.current = [];
-      // Release the mic immediately so the browser indicator goes away while
-      // the upload is in flight.
-      stopTracks(mediaStreamRef.current);
-      mediaStreamRef.current = null;
-      mediaRecorderRef.current = null;
-      setIsRecording(false);
-      if (chunks.length === 0) {
-        reportError("Couldn't capture audio — try again.");
-        return;
-      }
-      const effectiveType = recorder.mimeType || mimeType || 'audio/webm';
-      const blob = new Blob(chunks, { type: effectiveType });
-      await uploadForTranscription(blob, baseAudioContentType(effectiveType));
-    };
-    recorder.onerror = (e: any) => {
-      reportError(`Recording error: ${e?.error?.message || 'unknown error'}`);
-      teardownRecording();
-    };
-
-    mediaRecorderRef.current = recorder;
-    recorder.start();
+    takeRef.current = take;
+    take.timer = setInterval(() => rotate(take), SEGMENT_DURATION_MS);
     setIsRecording(true);
-  }, [isRecording, isTranscribing, reportError, teardownRecording, uploadForTranscription]);
+  }, [isRecording, isTranscribing, reportError, startSegment, rotate]);
 
   const stop = useCallback(() => {
-    const rec = mediaRecorderRef.current;
-    if (rec && rec.state !== 'inactive') {
-      try {
-        rec.stop(); // onstop handler picks up from here
-      } catch {
-        // If the recorder is already torn down, force-cleanup so the UI
-        // doesn't stay stuck in the recording state.
-        teardownRecording();
-      }
-    } else {
-      teardownRecording();
+    const take = takeRef.current;
+    if (!take) {
+      setIsRecording(false);
+      return;
     }
-  }, [teardownRecording]);
+    stopTake(take);
+  }, [stopTake]);
 
   const toggle = useCallback(() => {
     if (isTranscribing) return;

@@ -62,3 +62,16 @@ describe('voiceAudioSession ownership', () => {
     await session.releaseRecording(b, recB);
   });
 });
+
+describe('voiceAudioSession recording options', () => {
+  it('records mono speech-quality audio at 32 kbps', async () => {
+    audio.createAsync.mockImplementation(async () => ({ recording: fakeRecording() }));
+    const owner = {};
+    const rec = await session.acquireRecording(owner, () => true);
+    const opts = audio.createAsync.mock.calls.at(-1)?.[0];
+    for (const platform of ['android', 'ios'] as const) {
+      expect(opts[platform]).toMatchObject({ bitRate: 32_000, numberOfChannels: 1 });
+    }
+    await session.releaseRecording(owner, rec);
+  });
+});
