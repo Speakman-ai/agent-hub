@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import AuthGate from './components/AuthGate';
 import ConnectFirstScreen from './components/ConnectFirstScreen';
+import { NoteRecordingProvider } from './components/NoteRecordingProvider';
 import { initSessionReplay } from './utils/sessionReplay';
 import './index.css';
 
@@ -18,7 +19,9 @@ if (rootEl) {
     <React.StrictMode>
       <AuthGate>
         <ConnectFirstScreen>
-          <App />
+          <NoteRecordingProvider>
+            <App />
+          </NoteRecordingProvider>
         </ConnectFirstScreen>
       </AuthGate>
     </React.StrictMode>,

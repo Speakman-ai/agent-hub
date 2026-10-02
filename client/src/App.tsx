@@ -110,6 +110,7 @@ import DeploymentsPage from './components/DeploymentsPage';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
 import NotesEditor from './components/NotesEditor';
+import NoteRecordingWidget from './components/NoteRecordingWidget';
 import PullRequestsPage from './components/PullRequestsPage';
 import RepositoryPage from './components/RepositoryPage';
 import { isHubHostedProject } from './components/github/githubRepoIdentity';
@@ -8335,6 +8336,14 @@ export default function App({ initialView }: any = {}) {
             />
           </div>
         )}
+
+        {/* A notes voice take that outlived the Notes page. */}
+        <NoteRecordingWidget
+          onOpenNotes={(projectId: string) => {
+            setNotesProjectId(projectId);
+            setCurrentView('notes');
+          }}
+        />
 
         {/* Toast notifications */}
         {toasts.length > 0 && (

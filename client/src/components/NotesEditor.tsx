@@ -35,8 +35,14 @@ import {
   Users,
 } from 'lucide-react';
 import { api } from '../utils/api';
-import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
-import { buildVoiceNoteMarkdown, padBlockForInsert } from '@shared/utils/voiceNoteMarkdown';
+import { padBlockForInsert } from '@shared/utils/voiceNoteMarkdown';
+import {
+  NoteRecordingProvider,
+  useNoteRecording,
+  type NoteRecordingContextValue,
+  type NoteRecordingEditor,
+  type NoteRecordingEditorRef,
+} from './NoteRecordingProvider';
 import { describeNoteVisibility } from '@shared/utils/noteVisibility';
 
 // Render markdown links/images so server-hosted `/uploads/...` assets resolve
@@ -281,12 +287,43 @@ export function deriveNoteTitle(title: string, content: string): string {
   return 'Untitled';
 }
 
-export default function NotesEditor({ projectId }: any) {
+// The app mounts NoteRecordingProvider above the router so a take outlives
+// this page. Rendered on its own (tests, embeds) the editor brings its own.
+export default function NotesEditor(props: any) {
+  const recording = useNoteRecording();
+  if (recording) return <NotesEditorBody {...props} recording={recording} />;
+  return (
+    <NoteRecordingProvider>
+      <NotesEditorWithLocalRecorder {...props} />
+    </NoteRecordingProvider>
+  );
+}
+
+function NotesEditorWithLocalRecorder(props: any) {
+  const recording = useNoteRecording() as NoteRecordingContextValue;
+  return <NotesEditorBody {...props} recording={recording} />;
+}
+
+function NotesEditorBody({
+  projectId,
+  recording,
+}: {
+  projectId: any;
+  recording: NoteRecordingContextValue;
+}) {
   const [notes, setNotes] = useState<any[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<any>(null);
   const [selectedNote, setSelectedNote] = useState<any>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditingState] = useState(false);
+  // Authoritative editing flag. The recording provider reads it outside React
+  // renders (inside its delivery queue), so it must change in the same tick
+  // as the buffer refs, not on the next render.
+  const editingRef = useRef(false);
+  const setEditing = (value: boolean) => {
+    editingRef.current = value;
+    setEditingState(value);
+  };
   const [creating, setCreating] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editContent, setEditContent] = useState('');
@@ -310,15 +347,15 @@ export default function NotesEditor({ projectId }: any) {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const [voiceError, setVoiceError] = useState('');
-  const [summarizing, setSummarizing] = useState(false);
-  const summaryAbortRef = useRef<AbortController | null>(null);
   // Where a dictated transcript should land: the caret at the moment the mic
   // was clicked, tagged with the edit-session it belongs to. The range is kept
   // current by handleContentChange so typing during the upload doesn't
   // misplace it.
-  const voiceAnchorRef = useRef<{ gen: number; range: { start: number; end: number } } | null>(
-    null,
-  );
+  const voiceAnchorRef = useRef<{
+    gen: number;
+    range: { start: number; end: number };
+    noteId: string | null;
+  } | null>(null);
   const fileInputRef = useRef<any>(null);
   const searchTimerRef = useRef<any>(null);
   const saveTimerRef = useRef<any>(null);
@@ -342,6 +379,20 @@ export default function NotesEditor({ projectId }: any) {
   // save is already in flight.
   const writeQueueRef = useRef<any[]>([]);
   const drainingRef = useRef(false);
+  const notifyNoteSaved = recording.notifyNoteSaved;
+  // The write the drain loop is awaiting, so pending-write queries include it.
+  const inflightWriteRef = useRef<any>(null);
+  // The running drain loop, so an unmount can wait for queued writes.
+  const drainPromiseRef = useRef<Promise<void> | null>(null);
+  // Resolves once the write queue is empty and no drain is running. Loops
+  // because a drain can finish while another write is enqueued behind it.
+  const waitForWritesToSettle = async (): Promise<void> => {
+    let seen: Promise<void> | null = null;
+    while (drainPromiseRef.current && drainPromiseRef.current !== seen) {
+      seen = drainPromiseRef.current;
+      await seen;
+    }
+  };
   const createdIdByGenRef = useRef<Map<number, string>>(new Map());
   // Generations whose create has already been dispatched (in flight or done).
   // Once a gen is here its note exists (or soon will), so an empty trailing
@@ -374,6 +425,12 @@ export default function NotesEditor({ projectId }: any) {
   >([]);
   const attachBusyRef = useRef(false);
   const insertingActionRef = useRef<any>(null);
+  const voiceEditorRef: NoteRecordingEditorRef = useRef(null as unknown as NoteRecordingEditor);
+  // The saved id of the draft being edited, or null while a new note is unsaved.
+  const currentNoteId = (): string | null =>
+    creatingRef.current
+      ? (createdIdByGenRef.current.get(draftGenRef.current) ?? null)
+      : (selectedNoteIdRef.current ?? null);
   // Mirror volatile in-flight flags into refs so the memoized markdown
   // components (below) can read the live value for `disabled` without being
   // rebuilt on every scoping/ticketing toggle (which would remount the preview).
@@ -509,19 +566,57 @@ export default function NotesEditor({ projectId }: any) {
     setTimeout(() => textareaRef.current?.focus(), 100);
   };
 
+  // Bumped per Edit click so a superseded fresh-load never opens the editor.
+  const editRequestRef = useRef(0);
+  // Cleared on unmount so queued work started by this editor stops there.
+  const mountedRef = useRef(true);
+
+  // Loading a note into the editor is ordered with every other writer of
+  // notes: it runs in the provider's queue, which first waits for all editor
+  // saves (including ones from an editor that already unmounted) and also runs
+  // delivery of a finished recording. So the load sees every write before it,
+  // and a recording delivered after it goes into this buffer. The direct path
+  // is only taken when nothing could be writing.
   const handleEdit = () => {
     if (!selectedNote) return;
+    if (!recording.target && !recording.writesOutstanding(selectedNote.id)) {
+      enterEdit(selectedNote);
+      return;
+    }
+    const noteId = selectedNote.id;
+    const request = ++editRequestRef.current;
+    const gen = draftGenRef.current;
+    const stillWanted = () =>
+      mountedRef.current &&
+      editRequestRef.current === request &&
+      draftGenRef.current === gen &&
+      selectedNoteIdRef.current === noteId;
+    void recording
+      .serialize(async () => {
+        if (!stillWanted()) return;
+        const fresh = await api.getNote(projectId, noteId);
+        if (!stillWanted()) return;
+        setSelectedNote(fresh);
+        enterEdit(fresh);
+      }, noteId)
+      .catch((err: any) => console.error('Failed to load note for editing:', err));
+  };
+
+  const enterEdit = (note: any) => {
     draftGenRef.current += 1;
     cancelVoice();
     creatingRef.current = false;
-    editTitleRef.current = selectedNote.title || '';
-    editContentRef.current = selectedNote.content || '';
+    editTitleRef.current = note.title || '';
+    editContentRef.current = note.content || '';
     dirtyRef.current = false;
     setEditing(true);
     setCreating(false);
-    setEditTitle(selectedNote.title);
-    setEditContent(selectedNote.content || '');
+    setEditTitle(note.title);
+    setEditContent(note.content || '');
     setPreviewMode('edit');
+    // Coming back to the note a take records into takes ownership of it, so
+    // switching notes or closing the editor cancels it as for a take started here.
+    recording.adopt(voiceEditorRef, projectId, note.id);
     setTimeout(() => textareaRef.current?.focus(), 100);
   };
 
@@ -559,12 +654,14 @@ export default function NotesEditor({ projectId }: any) {
           snap = { ...snap, kind: 'update', noteId: createdIdByGenRef.current.get(snap.gen) };
         }
         const title = deriveNoteTitle(snap.rawTitle, snap.content);
+        inflightWriteRef.current = snap;
         try {
           if (snap.kind === 'create') {
             if (!snap.rawTitle.trim() && !snap.content.trim()) continue;
             createDispatchedGensRef.current.add(snap.gen);
             const note = await api.createNote(projectId, { title, content: snap.content });
             createdIdByGenRef.current.set(snap.gen, note.id);
+            notifyNoteSaved(projectId, note);
             // Only adopt the created note as the active selection if the user
             // has not moved on; otherwise it is persisted without hijacking nav.
             if (snap.gen === draftGenRef.current) {
@@ -596,6 +693,9 @@ export default function NotesEditor({ projectId }: any) {
               content: snap.content,
             });
             if (snap.gen === draftGenRef.current) setSelectedNote(note);
+            // Keeps other editors' cached copy current, so an Edit that runs
+            // after this save landed never opens stale content.
+            notifyNoteSaved(projectId, note);
             fetchNotes(searchQuery);
           }
         } catch (err: any) {
@@ -603,10 +703,11 @@ export default function NotesEditor({ projectId }: any) {
         }
       }
     } finally {
+      inflightWriteRef.current = null;
       drainingRef.current = false;
       setSaving(false);
     }
-  }, [projectId, searchQuery, fetchNotes]);
+  }, [projectId, searchQuery, fetchNotes, notifyNoteSaved]);
 
   // Capture a self-contained snapshot of the current buffer and enqueue it.
   // Writes for the same draft (generation) coalesce to the latest buffer;
@@ -639,7 +740,7 @@ export default function NotesEditor({ projectId }: any) {
     } else {
       q.push(snap);
     }
-    void drainWrites();
+    if (!drainingRef.current) drainPromiseRef.current = drainWrites();
   }, [drainWrites]);
 
   const scheduleAutoSave = useCallback(() => {
@@ -686,14 +787,14 @@ export default function NotesEditor({ projectId }: any) {
     setEditContent(value);
     editContentRef.current = value;
     dirtyRef.current = true;
-    if (editing) scheduleAutoSave();
+    if (editingRef.current) scheduleAutoSave();
   };
 
   const handleTitleChange = (value: any) => {
     setEditTitle(value);
     editTitleRef.current = value;
     dirtyRef.current = true;
-    if (editing) scheduleAutoSave();
+    if (editingRef.current) scheduleAutoSave();
   };
 
   // Insert a markdown snippet into the content buffer at a fixed offset
@@ -715,76 +816,119 @@ export default function NotesEditor({ projectId }: any) {
     return cursor;
   };
 
+  const { isRecording, isTranscribing, summarizing } = recording;
   const {
-    isRecording,
-    isTranscribing,
-    toggle: toggleRecorder,
-    cancel: cancelRecorder,
-  } = useVoiceRecorder({
+    owns: ownsRecording,
+    cancel: cancelRecording,
+    register: registerRecordingEditor,
+  } = recording;
+  // One definition of "the take is here": this editor owns it, either because
+  // it started it or because it opened the note the take records into.
+  const takeHere = recording.owns(voiceEditorRef);
+  // A take running for a note this editor isn't showing; the floating widget
+  // controls it, so the toolbar mic stays out of its way.
+  const otherTakeBusy =
+    !takeHere && (isRecording || isTranscribing || summarizing || recording.saving);
+  const showRecording = takeHere && isRecording;
+  const showTranscribing = takeHere && isTranscribing;
+  const showSummarizing = takeHere && summarizing;
+
+  // Read live by the provider, so it always reaches this render's state.
+  voiceEditorRef.current = {
     onStart: () => {
       setVoiceError('');
       const ta = textareaRef.current;
       const len = (editContentRef.current || '').length;
       const at = ta && typeof ta.selectionStart === 'number' ? ta.selectionStart : len;
-      voiceAnchorRef.current = { gen: draftGenRef.current, range: { start: at, end: at } };
+      voiceAnchorRef.current = {
+        gen: draftGenRef.current,
+        range: { start: at, end: at },
+        noteId: currentNoteId(),
+      };
     },
-    // The anchor stays live through the summary call so handleContentChange
-    // keeps shifting it while the user types.
-    onTranscript: (transcript: string) => {
+    // The anchor is kept current by handleContentChange through the
+    // transcription and summary calls, so typing meanwhile doesn't misplace it.
+    insertAtAnchor: (block: string) => {
       const anchor = voiceAnchorRef.current;
-      if (!anchor || anchor.gen !== draftGenRef.current) {
-        voiceAnchorRef.current = null;
-        return;
-      }
-      void summarizeAndInsert(transcript, anchor);
+      voiceAnchorRef.current = null;
+      if (!anchor || anchor.gen !== draftGenRef.current) return false;
+      const at = anchor.range.start;
+      const snippet = padBlockForInsert(editContentRef.current || '', at, block);
+      if (snippet) insertSnippetAt(snippet, at, at);
+      return true;
     },
+    editingNote: () => {
+      const noteId = editingRef.current ? currentNoteId() : null;
+      return noteId ? { projectId, noteId } : null;
+    },
+    appendBlock: (block: string) => {
+      const text = editContentRef.current || '';
+      const snippet = padBlockForInsert(text, text.length, block);
+      if (snippet) insertSnippetAt(snippet, text.length, text.length);
+    },
+    noteSaved: (savedProjectId: string, note: any) => {
+      if (savedProjectId !== projectId || !note?.id) return;
+      if (selectedNoteIdRef.current === note.id) setSelectedNote(note);
+    },
+    hasPendingWrites: () => drainingRef.current || writeQueueRef.current.length > 0,
+    pendingWriteNoteIds: () => {
+      const snaps = [inflightWriteRef.current, ...writeQueueRef.current].filter(Boolean);
+      return snaps
+        .map((snap: any) =>
+          snap.kind === 'update' ? snap.noteId : createdIdByGenRef.current.get(snap.gen),
+        )
+        .filter((id: any): id is string => typeof id === 'string');
+    },
+    writesSettled: waitForWritesToSettle,
     onError: (msg: string) => setVoiceError(msg),
-  });
-
-  const summarizeAndInsert = async (
-    transcript: string,
-    anchor: { gen: number; range: { start: number; end: number } },
-  ) => {
-    const controller = new AbortController();
-    summaryAbortRef.current = controller;
-    setSummarizing(true);
-    let summary = '';
-    try {
-      summary = (await api.summarizeVoiceTranscript(transcript, { signal: controller.signal }))
-        .summary;
-    } catch (err: any) {
-      if (controller.signal.aborted) return;
-      setVoiceError(
-        `Couldn't summarize the recording (${err?.message || 'unknown error'}). Kept the transcript.`,
-      );
-    } finally {
-      if (summaryAbortRef.current === controller) {
-        summaryAbortRef.current = null;
-        setSummarizing(false);
-      }
-    }
-    if (controller.signal.aborted) return;
-    voiceAnchorRef.current = null;
-    // Dropped if the user left this note/edit-session mid-summary.
-    if (anchor.gen !== draftGenRef.current) return;
-    const at = anchor.range.start;
-    const block = buildVoiceNoteMarkdown({ summary, transcript });
-    const snippet = padBlockForInsert(editContentRef.current || '', at, block);
-    if (snippet) insertSnippetAt(snippet, at, at);
   };
 
+  useEffect(() => registerRecordingEditor(voiceEditorRef), [registerRecordingEditor]);
+
+  // Only touches a take this editor owns: a take that kept recording after the
+  // user left the page must survive the editor mounting again.
   const cancelVoice = useCallback(() => {
-    cancelRecorder();
-    summaryAbortRef.current?.abort();
-    summaryAbortRef.current = null;
+    if (ownsRecording(voiceEditorRef)) cancelRecording();
     voiceAnchorRef.current = null;
-    setSummarizing(false);
-  }, [cancelRecorder]);
+  }, [ownsRecording, cancelRecording]);
 
   const toggleVoice = () => {
-    if (summarizing) return;
-    toggleRecorder();
+    if (otherTakeBusy || isTranscribing || summarizing || recording.saving) return;
+    if (isRecording) {
+      recording.stop();
+      return;
+    }
+    recording.start(
+      {
+        projectId,
+        noteId: currentNoteId(),
+        title: deriveNoteTitle(editTitleRef.current, editContentRef.current),
+      },
+      voiceEditorRef,
+    );
   };
+
+  // Leaving the page keeps recording: flush the draft so the note exists, then
+  // hand the take to the provider. It delivers to whichever editor has the
+  // note open by then, or appends through the API.
+  const unmountRef = useRef<() => void>(() => {});
+  unmountRef.current = () => {
+    mountedRef.current = false;
+    flushCurrentDraft();
+    const anchor = recording.owns(voiceEditorRef) ? voiceAnchorRef.current : null;
+    const gen = anchor?.gen ?? draftGenRef.current;
+    const knownId = anchor?.noteId ?? null;
+    // Every editor reports its outstanding saves, owner or not: a voice
+    // append must not read a note one of them is still writing.
+    const writesSettled = waitForWritesToSettle().then(
+      () => knownId ?? createdIdByGenRef.current.get(gen) ?? null,
+    );
+    recording.release(voiceEditorRef, writesSettled);
+  };
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => unmountRef.current();
+  }, []);
 
   // Leaving the editor stops the mic; the button lives in the edit toolbar.
   useEffect(() => {
@@ -1262,13 +1406,13 @@ export default function NotesEditor({ projectId }: any) {
                   <span className="text-xs text-blue-400 animate-pulse">Uploading…</span>
                 )}
                 {uploadError && <span className="text-xs text-red-400">{uploadError}</span>}
-                {isRecording && (
+                {showRecording && (
                   <span className="text-xs text-red-400 animate-pulse">Recording…</span>
                 )}
-                {isTranscribing && (
+                {showTranscribing && (
                   <span className="text-xs text-blue-400 animate-pulse">Transcribing…</span>
                 )}
-                {summarizing && (
+                {showSummarizing && (
                   <span className="text-xs text-blue-400 animate-pulse">Summarizing…</span>
                 )}
                 {voiceError && <span className="text-xs text-red-400">{voiceError}</span>}
@@ -1301,35 +1445,39 @@ export default function NotesEditor({ projectId }: any) {
                 {/* Voice input: record, transcribe, summarize, insert at the caret. */}
                 <button
                   onClick={toggleVoice}
-                  disabled={isTranscribing || summarizing}
-                  aria-pressed={isRecording}
+                  disabled={otherTakeBusy || showTranscribing || showSummarizing}
+                  aria-pressed={showRecording}
                   aria-label={
-                    isTranscribing
-                      ? 'Transcribing audio'
-                      : summarizing
-                        ? 'Summarizing recording'
-                        : isRecording
-                          ? 'Stop recording'
-                          : 'Start voice input'
+                    otherTakeBusy
+                      ? 'Recording into another note'
+                      : showTranscribing
+                        ? 'Transcribing audio'
+                        : showSummarizing
+                          ? 'Summarizing recording'
+                          : showRecording
+                            ? 'Stop recording'
+                            : 'Start voice input'
                   }
                   title={
-                    isTranscribing
-                      ? 'Transcribing...'
-                      : summarizing
-                        ? 'Summarizing...'
-                        : isRecording
-                          ? 'Stop recording'
-                          : 'Voice input (dictate into the note)'
+                    otherTakeBusy
+                      ? 'Another note is recording. Stop it from the recording widget.'
+                      : showTranscribing
+                        ? 'Transcribing...'
+                        : showSummarizing
+                          ? 'Summarizing...'
+                          : showRecording
+                            ? 'Stop recording'
+                            : 'Voice input (dictate into the note)'
                   }
                   className={`p-1.5 rounded transition-colors disabled:opacity-50 ${
-                    isRecording
+                    showRecording
                       ? 'text-red-400 hover:text-red-300 animate-pulse'
                       : 'text-gray-500 hover:text-gray-300'
                   }`}
                 >
-                  {isTranscribing || summarizing ? (
+                  {showTranscribing || showSummarizing ? (
                     <Loader2 size={14} className="animate-spin" />
-                  ) : isRecording ? (
+                  ) : showRecording ? (
                     <Square size={14} fill="currentColor" />
                   ) : (
                     <Mic size={14} />
