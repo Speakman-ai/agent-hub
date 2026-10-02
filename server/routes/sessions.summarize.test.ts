@@ -40,7 +40,7 @@ describe('buildSummarizeSpawnArgs — cursor-agent', () => {
     expect(args).toContain('--force');
   });
 
-  it('wires --print, --model, and --system-prompt for cursor-agent', () => {
+  it('wires --print and --model for cursor-agent', () => {
     const { args } = buildSummarizeSpawnArgs(
       { engine: 'cursor-agent', model: 'gpt-5' },
       fakeConfig,
@@ -48,8 +48,16 @@ describe('buildSummarizeSpawnArgs — cursor-agent', () => {
     expect(args).toContain('--print');
     expect(args).toContain('--model');
     expect(args[args.indexOf('--model') + 1]).toBe('gpt-5');
-    expect(args).toContain('--system-prompt');
-    expect(args[args.indexOf('--system-prompt') + 1]).toBe(SUMMARIZE_SYSTEM_PROMPT);
+  });
+
+  // cursor-agent 2026.10.01 reads `--system-prompt <value>` as a file path
+  // relative to cwd, so passing the prompt text inline failed with
+  // "--system-prompt file not found: <cwd>/You are a concise summarizer...".
+  it('does not pass --system-prompt; the system prompt rides in the body', () => {
+    const { args } = buildSummarizeSpawnArgs({ engine: 'cursor-agent' }, fakeConfig);
+    expect(args).not.toContain('--system-prompt');
+    expect(args).not.toContain(SUMMARIZE_SYSTEM_PROMPT);
+    expect(args[args.length - 1]).toBe('');
   });
 
   it('falls back to the engine default when no model is supplied', () => {

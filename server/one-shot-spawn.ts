@@ -94,8 +94,8 @@ export function buildOneShotSpawnArgs(
   if (engine === 'cursor-agent') {
     const args = ['--print', '--force', ...cursorSandboxArgs(cfg.cursorSandboxBypass)];
     if (trimmedModel) args.push('--model', trimmedModel);
-    if (systemPrompt) args.push('--system-prompt', systemPrompt);
-    args.push(prompt);
+    // cursor-agent's hidden `--system-prompt` takes a file path, not text.
+    args.push(systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt);
     return { bin: cfg.cursorBin, args };
   }
 

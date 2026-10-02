@@ -322,6 +322,8 @@ export function buildSummarizeSpawnArgs(
   const userPromptPlaceholder = '';
 
   if (engine === 'cursor-agent') {
+    // cursor-agent's hidden `--system-prompt` takes a file path, not text, so
+    // the caller concatenates the system prompt into the placeholder body.
     return {
       bin: CURSOR_BIN,
       args: [
@@ -330,8 +332,6 @@ export function buildSummarizeSpawnArgs(
         ...cursorSandboxArgs(config.cursorSandboxBypass),
         '--model',
         model || DEFAULT_MODEL,
-        '--system-prompt',
-        systemPrompt,
         userPromptPlaceholder,
       ],
     };
@@ -404,14 +404,19 @@ export function summarizeTranscript(
     const built = buildSummarizeSpawnArgs({ engine, model }, config);
     const bin = built.bin;
     let args: string[];
-    if (engine === 'gemini-cli' || engine === 'codex-cli' || engine === 'grok-cli') {
-      // These engines have no --system-prompt; replace the placeholder with
-      // the concatenated system + user body.
+    if (
+      engine === 'cursor-agent' ||
+      engine === 'gemini-cli' ||
+      engine === 'codex-cli' ||
+      engine === 'grok-cli'
+    ) {
+      // These engines take no inline system prompt; replace the placeholder
+      // with the concatenated system + user body.
       const combined = `${systemPrompt}\n\n${userPrompt}`;
       args = built.args.map((a) => (a === '' ? combined : a));
     } else {
-      // claude-code / cursor-agent: replace the placeholder with userPrompt;
-      // the system prompt is already wired via --system-prompt above.
+      // claude-code: replace the placeholder with userPrompt; the system
+      // prompt is already wired via --system-prompt above.
       args = built.args.map((a) => (a === '' ? userPrompt : a));
     }
 

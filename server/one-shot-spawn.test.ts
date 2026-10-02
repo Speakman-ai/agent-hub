@@ -87,13 +87,15 @@ describe('buildOneShotSpawnArgs — cursor-agent', () => {
     expect(out.args[out.args.length - 1]).toBe('do it');
   });
 
-  it('passes --system-prompt when supplied', () => {
+  // cursor-agent 2026.10.01 reads `--system-prompt <value>` as a file path,
+  // so inline text fails with "--system-prompt file not found".
+  it('concatenates the system prompt into the body instead of --system-prompt', () => {
     const out = buildOneShotSpawnArgs(
       { engine: 'cursor-agent', model: 'auto', prompt: 'p', systemPrompt: 's' },
       CFG,
     );
-    expect(out.args).toContain('--system-prompt');
-    expect(out.args).toContain('s');
+    expect(out.args).not.toContain('--system-prompt');
+    expect(out.args[out.args.length - 1]).toBe('s\n\np');
   });
 });
 
