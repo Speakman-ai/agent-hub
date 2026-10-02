@@ -85,7 +85,8 @@ export function buildCreateAgentPayload(form: any) {
 export function buildUpdateAgentPayload(original: any, edit: any) {
   const payload: Record<string, any> = {};
   if (!original || !edit) return payload;
-  for (const field of ['name', 'engine', 'systemPrompt']) {
+  // Engine is a per-user pick (engine override), never written to the agent row.
+  for (const field of ['name', 'systemPrompt']) {
     const next = edit[field];
     if (next !== undefined && next !== (original[field] ?? '')) {
       payload[field] = next;

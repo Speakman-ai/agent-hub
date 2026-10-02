@@ -942,7 +942,7 @@ describe('AgentConfigSection — per-user override saves are race-safe', () => {
   });
 });
 
-describe('AgentConfigSection — shared engine change reconciles per-user model override', () => {
+describe('AgentConfigSection — per-user engine/model only', () => {
   beforeEach(() => {
     (api.getConfig as any).mockResolvedValue({ claudeBin: '/bin/claude', _file: {} });
     (api.get as any).mockResolvedValue({});
@@ -982,45 +982,36 @@ describe('AgentConfigSection — shared engine change reconciles per-user model 
     );
   }
 
-  it('clears a per-user model override made stale by saving a new shared engine', async () => {
-    // Pinned model is valid for claude-code but not codex-cli.
-    (api.getMyAgentModelOverrides as any).mockResolvedValue({
-      agentModelOverrides: { 'agent-a': 'claude-sonnet-4-6' },
-    });
-    (api.updateAgent as any).mockResolvedValue({ ...agent, engine: 'codex-cli' });
-
-    const { findByText, getByTestId } = renderSection();
+  it('has no shared engine field; engine and model are per-user picks', async () => {
+    (api.getMyAgentModelOverrides as any).mockResolvedValue({ agentModelOverrides: {} });
+    const { findByText, queryByTestId, queryByText, getByTestId } = renderSection();
     fireEvent.click(await findByText('Agent A' as any));
-    fireEvent.change(getByTestId('agent-shared-engine' as any), { target: { value: 'codex-cli' } });
-    fireEvent.click(await findByText('Save' as any));
-
-    await waitFor(() => expect(api.updateAgent).toHaveBeenCalled());
-    expect((api.updateAgent as any).mock.calls[0][1].engine).toBe('codex-cli');
-    await waitFor(() => expect(api.deleteMyAgentModelOverride).toHaveBeenCalledWith('agent-a'));
+    expect(queryByTestId('agent-shared-engine' as any)).toBeNull();
+    expect(queryByText(/Engine \(shared\)/ as any)).toBeNull();
+    expect(queryByText('Only for me' as any)).toBeNull();
+    expect(getByTestId('per-user-engine-select' as any)).toHaveValue('claude-code');
   });
 
-  it('keeps a per-user model override still valid for the new shared engine', async () => {
-    // Pinned model is valid for BOTH engines → must survive the engine change.
-    (api.getModelConfig as any).mockResolvedValue({
-      defaultModel: 'shared-default',
-      engineDefaultModels: { 'claude-code': 'shared-default', 'codex-cli': 'shared-default' },
-      engineValidModels: {
-        'claude-code': ['shared-default', 'shared-b'],
-        'codex-cli': ['shared-default', 'shared-c'],
-      },
+  it('saves an engine pick as a per-user override, never on the agent row', async () => {
+    (api.getMyAgentModelOverrides as any).mockResolvedValue({ agentModelOverrides: {} });
+    (api.putMyAgentEngineOverride as any).mockResolvedValue({
+      agentEngineOverrides: { 'agent-a': { engine: 'codex-cli' } },
     });
-    (api.getMyAgentModelOverrides as any).mockResolvedValue({
-      agentModelOverrides: { 'agent-a': 'shared-default' },
-    });
-    (api.updateAgent as any).mockResolvedValue({ ...agent, engine: 'codex-cli' });
+    (api.updateAgent as any).mockResolvedValue({ ...agent, name: 'Renamed' });
 
-    const { findByText, getByTestId } = renderSection();
+    const { findByText, getByTestId, getByDisplayValue } = renderSection();
     fireEvent.click(await findByText('Agent A' as any));
-    fireEvent.change(getByTestId('agent-shared-engine' as any), { target: { value: 'codex-cli' } });
-    fireEvent.click(await findByText('Save' as any));
+    fireEvent.change(getByTestId('per-user-engine-select' as any), {
+      target: { value: 'codex-cli' },
+    });
+    await waitFor(() =>
+      expect(api.putMyAgentEngineOverride).toHaveBeenCalledWith('agent-a', { engine: 'codex-cli' }),
+    );
 
+    fireEvent.change(getByDisplayValue('Agent A' as any), { target: { value: 'Renamed' } });
+    fireEvent.click(await findByText('Save' as any));
     await waitFor(() => expect(api.updateAgent).toHaveBeenCalled());
-    expect(api.deleteMyAgentModelOverride).not.toHaveBeenCalled();
+    expect((api.updateAgent as any).mock.calls[0][1]).not.toHaveProperty('engine');
   });
 });
 

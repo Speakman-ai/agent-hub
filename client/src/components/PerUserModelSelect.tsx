@@ -23,7 +23,7 @@ export default function PerUserModelSelect({
   saved = false,
   disabled = false,
   className = '',
-  label = 'Model (only for me)',
+  label = 'Model',
   selectClassName,
 }: any) {
   const models = useMemo(

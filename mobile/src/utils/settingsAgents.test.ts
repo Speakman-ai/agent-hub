@@ -128,6 +128,9 @@ describe('buildUpdateAgentPayload', () => {
     });
     expect(buildUpdateAgentPayload(original, { model: 'gpt-5.5' })).toEqual({});
   });
+  it('never writes engine to the agent row (engine is a per-user pick)', () => {
+    expect(buildUpdateAgentPayload(original, { name: 'Old', engine: 'codex-cli' })).toEqual({});
+  });
   it('returns empty object when nothing changed or args missing', () => {
     expect(buildUpdateAgentPayload(original, { name: 'Old' })).toEqual({});
     expect(buildUpdateAgentPayload(null, { name: 'x' })).toEqual({});

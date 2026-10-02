@@ -21,7 +21,6 @@ import AuthUpgradeBanner from './AuthUpgradeBanner';
 import GlobalSkillsSection from './GlobalSkillsSection';
 import PerUserModelSelect from './PerUserModelSelect';
 import PerUserEngineSelect from './PerUserEngineSelect';
-import { effectiveEngine, modelOverrideIsStale } from '../utils/perUserModelOverride';
 import { orderServerLogsNewestFirst } from '../utils/serverLogs';
 import ProjectSecretsEditor from './ProjectSecretsEditor';
 import GitHostSettingsSection from './GitHostSettingsSection';
@@ -3854,21 +3853,12 @@ export function AgentConfigSection({
         lastActivity: _lastActivity,
         lastMessage: _lastMessage,
         model: _model,
+        // Engine is chosen per user (engine override), never written to the agent row.
+        engine: _engine,
         ...payload
       } = data;
       const updated = await api.updateAgent(agentId, payload);
       setAgents((prev: any) => prev.map((a: any) => (a.id === agentId ? { ...a, ...updated } : a)));
-      // Reconcile a per-user model override the new shared engine made stale.
-      // Only relevant when the user has no per-user engine override shadowing
-      // the shared one (otherwise the effective engine — and thus the valid
-      // models — is unchanged). Clears the override so persisted state matches
-      // the "Default" the model picker now shows.
-      if (payload.engine !== undefined) {
-        const eff = effectiveEngine(engineOverrides[agentId], updated?.engine ?? payload.engine);
-        if (modelOverrideIsStale(modelOverrides[agentId], modelConfig, eff)) {
-          await saveModelOverride(agentId, '');
-        }
-      }
       setEdits((prev: any) => {
         const n = { ...prev };
         delete n[agentId];
@@ -3969,7 +3959,7 @@ export function AgentConfigSection({
         <div className="bg-gray-800/80 rounded-xl p-4 mb-4 space-y-3 border border-gray-700/50">
           <p className="text-xs text-gray-400">
             Switch every agent at once for your own sessions only (for example when moving off a
-            provider or subscription). Does not change shared agent settings for other users.
+            provider or subscription). Only affects your own sessions.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
             <div>
@@ -4270,58 +4260,36 @@ export function AgentConfigSection({
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className={labelClass}>Name</label>
-                      <input
-                        value={edit.name || ''}
-                        onChange={(e: any) => setEdit(agent.id, 'name', e.target.value)}
-                        className={inputClass}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelClass}>Engine (shared)</label>
-                      <select
-                        value={edit.engine || 'claude-code'}
-                        onChange={(e: any) => setEdit(agent.id, 'engine', e.target.value)}
-                        className={inputClass}
-                        data-testid="agent-shared-engine"
-                      >
-                        {engineChoices.map((e: any) => (
-                          <option key={e} value={e}>
-                            {e}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                  <div>
+                    <label className={labelClass}>Name</label>
+                    <input
+                      value={edit.name || ''}
+                      onChange={(e: any) => setEdit(agent.id, 'name', e.target.value)}
+                      className={inputClass}
+                    />
                   </div>
 
-                  {/* Per-user picks — these change only the current user's own
-                      sessions for this agent, never the shared row above. */}
-                  <div className="rounded-lg border border-indigo-900/40 bg-indigo-950/20 p-3">
-                    <h5 className="mb-2 text-xs font-medium text-indigo-200">Only for me</h5>
-                    <div className="grid grid-cols-2 gap-3">
-                      <PerUserEngineSelect
-                        agentEngine={edit.engine || agent.engine || 'claude-code'}
-                        modelConfig={modelConfig}
-                        value={engineOverrides[agent.id] || ''}
-                        onSelect={(eng: any) => saveEngineOverride(agent.id, eng)}
-                        saving={!!engineOverrideSaving[agent.id]}
-                        saved={!!engineOverrideSaved[agent.id]}
-                        selectClassName={inputClass}
-                      />
-                      <PerUserModelSelect
-                        engine={
-                          engineOverrides[agent.id] || edit.engine || agent.engine || 'claude-code'
-                        }
-                        modelConfig={modelConfig}
-                        value={modelOverrides[agent.id] || ''}
-                        onSelect={(m: any) => saveModelOverride(agent.id, m)}
-                        saving={!!modelOverrideSaving[agent.id]}
-                        saved={!!modelOverrideSaved[agent.id]}
-                        selectClassName={inputClass}
-                      />
-                    </div>
+                  {/* Engine + model are per-user: they only change the current
+                      user's own sessions for this agent. */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <PerUserEngineSelect
+                      agentEngine={agent.engine || 'claude-code'}
+                      modelConfig={modelConfig}
+                      value={engineOverrides[agent.id] || ''}
+                      onSelect={(eng: any) => saveEngineOverride(agent.id, eng)}
+                      saving={!!engineOverrideSaving[agent.id]}
+                      saved={!!engineOverrideSaved[agent.id]}
+                      selectClassName={inputClass}
+                    />
+                    <PerUserModelSelect
+                      engine={engineOverrides[agent.id] || agent.engine || 'claude-code'}
+                      modelConfig={modelConfig}
+                      value={modelOverrides[agent.id] || ''}
+                      onSelect={(m: any) => saveModelOverride(agent.id, m)}
+                      saving={!!modelOverrideSaving[agent.id]}
+                      saved={!!modelOverrideSaved[agent.id]}
+                      selectClassName={inputClass}
+                    />
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">

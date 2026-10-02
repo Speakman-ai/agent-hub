@@ -85,7 +85,7 @@ function DevToggle({ value, onChange, locked = false, lockedOn = false, fallback
     </>
   );
 }
-function SharedEnginePicker({ modelConfig, engine, onEngine, label = 'Engine (shared)' }: any) {
+function EnginePicker({ modelConfig, engine, onEngine, label = 'Engine' }: any) {
   const engines = settingsEngineChoices(modelConfig);
   if (engines.length === 0) return null;
   return (
@@ -95,7 +95,6 @@ function SharedEnginePicker({ modelConfig, engine, onEngine, label = 'Engine (sh
     </>
   );
 }
-const SHARED_ENGINE_PICK = '__shared__';
 function PerUserEngineModelPickers({
   modelConfig,
   sharedEngine,
@@ -111,25 +110,17 @@ function PerUserEngineModelPickers({
   const defaultModel = settingsDefaultModelForEngine(modelConfig, effectiveEngine);
   const selectedModelChip = settingsSelectedModelChip(modelOverride, models);
   return (
-    <View style={styles.onlyForMeBox}>
-      <Text style={styles.onlyForMeTitle}>Only for me</Text>
+    <>
       {engines.length > 0 && (
         <>
-          <Text style={styles.fieldLabel}>Engine (only for me)</Text>
-          <ChipRow
-            options={[SHARED_ENGINE_PICK, ...engines]}
-            selected={engineOverride ? engineOverride : SHARED_ENGINE_PICK}
-            onSelect={(eng: any) => onEngineOverride(eng === SHARED_ENGINE_PICK ? '' : eng)}
-            labelFor={(eng: any) =>
-              eng === SHARED_ENGINE_PICK ? `Shared (${sharedEngine || 'claude-code'})` : eng
-            }
-          />
+          <Text style={styles.fieldLabel}>Engine</Text>
+          <ChipRow options={engines} selected={effectiveEngine} onSelect={onEngineOverride} />
         </>
       )}
       {models.length > 0 && (
         <>
           <Text style={styles.fieldLabel}>
-            Model (only for me)
+            Model
             {overrideSaving ? ' · saving…' : ''}
           </Text>
           <ChipRow
@@ -138,14 +129,14 @@ function PerUserEngineModelPickers({
             onSelect={(chip: any) => onModelOverride(settingsResolveModelChip(chip))}
             labelFor={(m: any) =>
               m === PER_USER_DEFAULT_MODEL
-                ? `Default (${defaultModel || 'shared'})`
+                ? `Default (${defaultModel || 'engine default'})`
                 : m.replace(/^claude-/, '').replace(/^gpt-/, '')
             }
           />
         </>
       )}
-      <Text style={styles.onlyForMeHint}>Only changes engine/model for your sessions.</Text>
-    </View>
+      <Text style={styles.perUserHint}>Only changes your sessions.</Text>
+    </>
   );
 }
 function BulkEngineModelPickers({ modelConfig, engine, model, onEngine, onModel }: any) {
@@ -414,15 +405,6 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
     setSaving(true);
     try {
       await api.updateAgent(agent.id, payload);
-      // Reconcile a per-user model override the new shared engine made stale.
-      // Only relevant when no per-user engine override shadows the shared one
-      // (otherwise the effective engine, and the valid models, are unchanged).
-      if (payload.engine !== undefined) {
-        const effEngine = settingsEffectiveEngine(engineOverrides[agent.id] || '', payload.engine);
-        if (settingsModelOverrideIsStale(modelOverrides[agent.id] || '', effEngine, modelConfig)) {
-          await saveModelOverride(agent.id, '');
-        }
-      }
       setExpanded(null);
       await load();
     } catch (err: any) {
@@ -590,11 +572,10 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
               />
             </>
           )}
-          <SharedEnginePicker
+          <EnginePicker
             modelConfig={modelConfig}
             engine={newForm.engine}
             onEngine={(engine: any) => setNewForm({ ...newForm, engine })}
-            label="Engine (shared default)"
           />
           <Text style={styles.fieldLabel}>System prompt (optional)</Text>
           <TextInput
@@ -669,22 +650,13 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
                         style={styles.formInput}
                         placeholderTextColor={colors.gray500}
                       />
-                      <SharedEnginePicker
-                        modelConfig={modelConfig}
-                        engine={editForm.engine}
-                        onEngine={(engine: any) => setEditForm({ ...editForm, engine })}
-                      />
                       <PerUserEngineModelPickers
                         modelConfig={modelConfig}
-                        sharedEngine={editForm.engine || agent.engine || 'claude-code'}
+                        sharedEngine={agent.engine || 'claude-code'}
                         engineOverride={engineOverrides[agent.id] || ''}
                         modelOverride={modelOverrides[agent.id] || ''}
                         onEngineOverride={(engine: any) =>
-                          saveEngineOverride(
-                            agent.id,
-                            engine,
-                            editForm.engine || agent.engine || 'claude-code',
-                          )
+                          saveEngineOverride(agent.id, engine, agent.engine || 'claude-code')
                         }
                         onModelOverride={(model: any) => saveModelOverride(agent.id, model)}
                         overrideSaving={!!overrideSaving[agent.id]}
@@ -887,21 +859,7 @@ const styles = StyleSheet.create({
     color: colors.gray500,
     marginTop: 2,
   },
-  onlyForMeBox: {
-    marginTop: 8,
-    padding: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(99, 102, 241, 0.35)',
-    backgroundColor: 'rgba(49, 46, 129, 0.2)',
-  },
-  onlyForMeTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.indigo400,
-    marginBottom: 4,
-  },
-  onlyForMeHint: {
+  perUserHint: {
     fontSize: 10,
     color: colors.gray500,
     marginTop: 6,
