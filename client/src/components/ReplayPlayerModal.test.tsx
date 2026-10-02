@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import ReplayPlayerModal from './ReplayPlayerModal';
 import { api } from '../utils/api';
 
@@ -14,6 +14,7 @@ import { api } from '../utils/api';
     getSessionSegments: vi.fn(),
     getSessionSegmentEvents: vi.fn(),
     setReplayRetention: vi.fn(),
+    setSessionRetention: vi.fn(),
   },
 }));
 
@@ -70,6 +71,7 @@ describe('ReplayPlayerModal', () => {
         Promise.resolve({ events: [{ type: 2, timestamp: 1 }], segmentId: segId }),
       );
     (api.setReplayRetention as any).mockReset();
+    (api.setSessionRetention as any).mockReset();
   });
 
   it('loads the player from an isolated data: URL with the correct sandbox + CSP', () => {
@@ -217,7 +219,7 @@ describe('ReplayPlayerModal', () => {
       (api.getReplay as any).mockResolvedValue({
         defaultPageSize: 500,
         eventCount: 0,
-        retainedUntil: '2027-09-10 09:00:00',
+        retainedUntil: '2099-09-10 09:00:00',
       });
       render(<ReplayPlayerModal replayId="abc123" onClose={() => {}} />);
       const btn = await screen.findByTestId('replay-retention-toggle');
@@ -231,7 +233,7 @@ describe('ReplayPlayerModal', () => {
         eventCount: 0,
         retainedUntil: null,
       });
-      (api.setReplayRetention as any).mockResolvedValue({ retainedUntil: '2027-09-10 09:00:00' });
+      (api.setReplayRetention as any).mockResolvedValue({ retainedUntil: '2099-09-10 09:00:00' });
       render(<ReplayPlayerModal replayId="abc123" onClose={() => {}} />);
       const btn = await screen.findByTestId('replay-retention-toggle');
       await waitFor(() => expect(btn).toHaveAttribute('aria-checked', 'false'));
@@ -242,9 +244,169 @@ describe('ReplayPlayerModal', () => {
       await waitFor(() => expect(btn).toHaveAttribute('aria-checked', 'true'));
     });
 
-    it('is not offered for a segmented session (no session_replays row)', () => {
+    it("reads a segmented session's Keep state from the manifest", async () => {
+      (api.getSessionSegments as any).mockResolvedValue({
+        ...twoViewManifest(),
+        retainedUntil: '2099-09-10 09:00:00',
+      });
       render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
-      expect(screen.queryByTestId('replay-retention-toggle')).not.toBeInTheDocument();
+      fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+      const btn = await screen.findByTestId('replay-retention-toggle');
+      await waitFor(() => expect(btn).toHaveAttribute('aria-checked', 'true'));
+    });
+
+    it('keeps a segmented session via setSessionRetention', async () => {
+      (api.getSessionSegments as any).mockResolvedValue({
+        ...twoViewManifest(),
+        retainedUntil: null,
+      });
+      (api.setSessionRetention as any).mockResolvedValue({
+        sessionId: 'sess-1',
+        retainedUntil: '2099-09-10 09:00:00',
+      });
+      render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
+      fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+      const btn = await screen.findByTestId('replay-retention-toggle');
+      await waitFor(() => expect(api.getSessionSegments).toHaveBeenCalled());
+
+      fireEvent.click(btn as any);
+
+      await waitFor(() => expect(api.setSessionRetention).toHaveBeenCalledWith('sess-1', true));
+      await waitFor(() => expect(btn).toHaveAttribute('aria-checked', 'true'));
+      expect(api.setReplayRetention).not.toHaveBeenCalled();
+    });
+
+    it('offers Retry Keep (extend: true) when reopening a session whose Keep is incomplete', async () => {
+      (api.getSessionSegments as any).mockResolvedValue({
+        ...twoViewManifest(),
+        retainedUntil: '2099-09-10 09:00:00',
+        relocationPending: true,
+      });
+      (api.setSessionRetention as any).mockResolvedValue({
+        sessionId: 'sess-1',
+        retainedUntil: '2099-09-10 09:00:00',
+        relocationPending: false,
+      });
+      render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
+      fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+      const btn = await screen.findByTestId('replay-retention-toggle');
+      await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'pending'));
+      expect(btn).toHaveTextContent('Retry Keep');
+      expect(btn).toHaveAttribute('aria-checked', 'false');
+
+      fireEvent.click(btn as any);
+
+      await waitFor(() => expect(api.setSessionRetention).toHaveBeenCalledWith('sess-1', true));
+      await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'kept'));
+    });
+
+    it('shows Retry Keep after a partial failure instead of Kept', async () => {
+      (api.getSessionSegments as any)
+        .mockResolvedValueOnce({ ...twoViewManifest(), retainedUntil: null })
+        .mockResolvedValue({
+          ...twoViewManifest(),
+          retainedUntil: '2099-09-10 09:00:00',
+          relocationPending: true,
+        });
+      (api.setSessionRetention as any).mockRejectedValue(new Error('could not be moved'));
+      render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
+      fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+      const btn = await screen.findByTestId('replay-retention-toggle');
+      await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'off'));
+
+      fireEvent.click(btn as any);
+
+      await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'pending'));
+      expect(screen.getByTestId('replay-retention-error')).toHaveTextContent('could not be moved');
+    });
+
+    it('treats a lapsed Keep as off and renews it with extend: true', async () => {
+      (api.getSessionSegments as any).mockResolvedValue({
+        ...twoViewManifest(),
+        retainedUntil: '2020-01-01 00:00:00',
+      });
+      (api.setSessionRetention as any).mockResolvedValue({
+        sessionId: 'sess-1',
+        retainedUntil: '2099-01-01 00:00:00',
+        relocationPending: false,
+      });
+      render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
+      fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+      const btn = await screen.findByTestId('replay-retention-toggle');
+      await waitFor(() => expect(api.getSessionSegments).toHaveBeenCalled());
+      expect(btn).toHaveAttribute('data-keep-state', 'off');
+
+      fireEvent.click(btn as any);
+
+      await waitFor(() => expect(api.setSessionRetention).toHaveBeenCalledWith('sess-1', true));
+      await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'kept'));
+    });
+
+    it('renews a Keep that lapsed while the player sat open, without another render', async () => {
+      const start = Date.UTC(2026, 9, 2, 12, 0, 0);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(start);
+      try {
+        (api.getSessionSegments as any).mockResolvedValue({
+          ...twoViewManifest(),
+          retainedUntil: '2026-10-02 12:01:00',
+        });
+        (api.setSessionRetention as any).mockResolvedValue({
+          sessionId: 'sess-1',
+          retainedUntil: '2027-10-02 12:05:00',
+          relocationPending: false,
+        });
+        render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
+        fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+        const btn = await screen.findByTestId('replay-retention-toggle');
+        await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'kept'));
+        // Let streaming finish so no stray re-render refreshes the state for us.
+        await waitFor(() => expect(api.getSessionSegmentEvents).toHaveBeenCalledTimes(3));
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 50));
+        });
+        expect(btn).toHaveAttribute('data-keep-state', 'kept');
+
+        // The clock crosses retainedUntil; nothing re-renders the component.
+        vi.setSystemTime(start + 5 * 60_000);
+        fireEvent.click(btn as any);
+
+        await waitFor(() => expect(api.setSessionRetention).toHaveBeenCalledTimes(1));
+        expect(api.setSessionRetention).toHaveBeenCalledWith('sess-1', true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('flips the label to Keep on its own when the Keep lapses', async () => {
+      const soon = new Date(Date.now() + 1500).toISOString().slice(0, 19).replace('T', ' ');
+      (api.getSessionSegments as any).mockResolvedValue({
+        ...twoViewManifest(),
+        retainedUntil: soon,
+      });
+      render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
+      fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+      const btn = await screen.findByTestId('replay-retention-toggle');
+      await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'kept'));
+      await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'off'), {
+        timeout: 3000,
+      });
+    });
+
+    it('shows the server error when Keep fails', async () => {
+      (api.getSessionSegments as any).mockResolvedValue({
+        ...twoViewManifest(),
+        retainedUntil: null,
+      });
+      (api.setSessionRetention as any).mockRejectedValue(new Error('could not be moved'));
+      render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
+      const btn = await screen.findByTestId('replay-retention-toggle');
+
+      fireEvent.click(btn as any);
+
+      expect(await screen.findByTestId('replay-retention-error')).toHaveTextContent(
+        'could not be moved',
+      );
     });
   });
 });

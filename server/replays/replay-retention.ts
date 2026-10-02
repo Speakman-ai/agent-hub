@@ -93,3 +93,21 @@ export function computeRetainedUntil(
 ): number {
   return addMonthsUtc(enabledAtMs, clampExtendedRetentionMonths(months));
 }
+
+/**
+ * The Keep state to show a caller. A stored `retained_until` that has already
+ * passed no longer protects anything (the sweepers only skip future instants),
+ * so it is reported as not kept: otherwise a player would show "Kept" and its
+ * toggle would send `extend: false` instead of renewing. Both timestamps are
+ * SQLite-UTC text, which collates correctly as a string.
+ */
+export function activeRetention(
+  retainedUntil: string | null | undefined,
+  retentionFlaggedAt: string | null | undefined,
+  nowMs: number = Date.now(),
+): { retainedUntil: string | null; retentionFlaggedAt: string | null } {
+  if (typeof retainedUntil !== 'string' || retainedUntil <= toSqliteUtc(nowMs)) {
+    return { retainedUntil: null, retentionFlaggedAt: null };
+  }
+  return { retainedUntil, retentionFlaggedAt: retentionFlaggedAt ?? null };
+}

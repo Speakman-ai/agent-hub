@@ -3148,6 +3148,13 @@ export const api = {
   // startTs, endTs, eventCount, byteSize, eventsUrl }] }).
   getSessionSegments: (sessionId: any) =>
     fetchJSON(`/replays/sessions/${encodeURIComponent(sessionId)}/segments`),
+  // Keep / un-Keep a segmented session for extended retention. Returns
+  // { sessionId, retainedUntil, retentionFlaggedAt }.
+  setSessionRetention: (sessionId: any, extend: boolean) =>
+    fetchJSON(`/replays/sessions/${encodeURIComponent(sessionId)}/retention`, {
+      method: 'POST',
+      body: JSON.stringify({ extend }),
+    }),
   // One segment's decoded rrweb events, the player concatenates client-side.
   // Returns { sessionId, segmentId, viewId, indexInView, hasFullSnapshot,
   // events, eventCount }.

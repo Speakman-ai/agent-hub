@@ -24,7 +24,7 @@ import type {
   ReplayPlaylistItemRow,
   SessionReplayRow,
 } from '../types.js';
-import { computeRetainedUntil, toSqliteUtc } from './replay-retention.js';
+import { activeRetention, computeRetainedUntil, toSqliteUtc } from './replay-retention.js';
 
 /** Client-facing playlist shape (camelCase). */
 export interface PlaylistView {
@@ -57,6 +57,17 @@ export interface PlaylistItemView {
   eventsUrl: string;
 }
 
+function playlistRetentionView(
+  row: Pick<ReplayPlaylistRow, 'extended_retention' | 'retained_until' | 'retention_flagged_at'>,
+  nowMs: number = Date.now(),
+): { extendedRetention: boolean; retainedUntil: string | null; retentionFlaggedAt: string | null } {
+  const active =
+    row.extended_retention === 1
+      ? activeRetention(row.retained_until, row.retention_flagged_at, nowMs)
+      : { retainedUntil: null, retentionFlaggedAt: null };
+  return { extendedRetention: active.retainedUntil !== null, ...active };
+}
+
 /** Map a playlist row (optionally carrying an `item_count`) to its client view. */
 export function toPlaylistView(
   row: ReplayPlaylistRow | ReplayPlaylistWithCountRow,
@@ -72,9 +83,8 @@ export function toPlaylistView(
     name: row.name,
     description: row.description ?? null,
     itemCount: count,
-    extendedRetention: row.extended_retention === 1,
-    retainedUntil: row.retained_until ?? null,
-    retentionFlaggedAt: row.retention_flagged_at ?? null,
+    // A lapsed playlist Keep protects nothing, so it is reported as not kept.
+    ...playlistRetentionView(row),
     createdAt: row.created_at,
     createdBy: row.created_by ?? null,
     updatedAt: row.updated_at,
@@ -93,8 +103,7 @@ export function toPlaylistItemView(row: ReplayPlaylistItemRow): PlaylistItemView
     size: row.size,
     supportTicketId: row.support_ticket_id,
     cardId: row.card_id,
-    retainedUntil: row.retained_until ?? null,
-    retentionFlaggedAt: row.retention_flagged_at ?? null,
+    ...activeRetention(row.retained_until, row.retention_flagged_at),
     eventsUrl: `/api/replays/${row.replay_id}/events`,
   };
 }
@@ -184,12 +193,22 @@ export function addPlaylistItem(
       -1) + 1;
   const inserted = deps.stmts.insertReplayPlaylistItem.run(playlist.id, replayId, nextPos)
     .changes as number;
-  if (inserted > 0 && playlist.extended_retention === 1 && playlist.retained_until) {
-    deps.stmts.flagSessionReplayRetention.run(
-      playlist.retained_until,
-      playlist.retention_flagged_at ?? playlist.retained_until,
-      replayId,
-    );
+  // Only an active playlist Keep extends a new member, and never to an earlier
+  // instant than the member's own Keep (a lapsed playlist would otherwise stamp a
+  // past date over it and drop its protection).
+  const playlistUntil = playlistRetentionView(playlist).retainedUntil;
+  if (inserted > 0 && playlistUntil) {
+    const member = deps.stmts.getSessionReplay.get(replayId) as
+      | { retained_until: string | null }
+      | undefined;
+    const memberUntil = activeRetention(member?.retained_until, null).retainedUntil;
+    if (!memberUntil || memberUntil < playlistUntil) {
+      deps.stmts.flagSessionReplayRetention.run(
+        playlistUntil,
+        playlist.retention_flagged_at ?? playlistUntil,
+        replayId,
+      );
+    }
   }
   return inserted > 0;
 }

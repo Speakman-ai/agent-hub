@@ -13038,7 +13038,7 @@ components:
         retainedUntil:
           type: string
           nullable: true
-          description: "Extended-retention flag: absolute instant this capture is retained until (SQLite-UTC), or null when on the default window. When in the future the retention sweeper skips the row."
+          description: "Extended-retention flag: absolute instant this capture is retained until (SQLite-UTC), or null when on the default window. A lapsed flag is reported as null (it no longer protects the capture), together with `retentionFlaggedAt`."
         retentionFlaggedAt:
           type: string
           nullable: true
@@ -13215,6 +13215,17 @@ components:
         durationMs:
           type: number
           description: Span from the earliest segment start to the latest segment end (ms).
+        retainedUntil:
+          type: string
+          nullable: true
+          description: Keep (extended retention) instant, `YYYY-MM-DD HH:MM:SS` UTC, or null on the default window. A lapsed Keep is reported as null.
+        retentionFlaggedAt:
+          type: string
+          nullable: true
+          description: When Keep was enabled, or null.
+        relocationPending:
+          type: boolean
+          description: "Kept, but some S3 segments are still under the expiring `rum/` prefix. Keeping again (`extend: true`) retries the move."
         segments:
           type: array
           items:
@@ -13263,6 +13274,9 @@ components:
         - projectId
         - segmentCount
         - durationMs
+        - retainedUntil
+        - retentionFlaggedAt
+        - relocationPending
         - segments
       description: Segmented-capture playback manifest for a session.
     SegmentEvents:
@@ -13304,6 +13318,27 @@ components:
         - events
         - eventCount
       description: One segment’s decoded rrweb events, for client-side concat.
+    SessionRetention:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        retainedUntil:
+          type: string
+          nullable: true
+          description: Keep instant, `YYYY-MM-DD HH:MM:SS` UTC, or null when cleared or lapsed.
+        retentionFlaggedAt:
+          type: string
+          nullable: true
+        relocationPending:
+          type: boolean
+          description: "Kept, but some S3 segments are still under the expiring `rum/` prefix; retry with `extend: true`."
+      required:
+        - sessionId
+        - retainedUntil
+        - retentionFlaggedAt
+        - relocationPending
+      description: Extended-retention state of a segmented session.
     RumClientErrorResponse:
       type: object
       properties:
@@ -43118,6 +43153,72 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
+  /api/replays/sessions/{sessionId}/retention:
+    post:
+      tags:
+        - Bug Reports
+      summary: Keep / un-Keep a segmented session (authenticated)
+      description: "Extended retention for a segmented (continuous) session, matching `POST /api/replays/{id}/retention` for monolithic captures. `{ extend: true }` sets `retainedUntil` = now + the project’s extension window (`replay.extendedRetentionMonths`, clamped [1,15] months, default 15); the retention sweeper skips the session until then. On S3 storage the session’s segment objects also move from `rum/` to `rum-retained/`, outside the bucket lifecycle rules, and segments recorded after Keep land there directly. If some objects fail to move the call returns 502 with the flag still set; repeating it retries only the remaining objects. `{ extend: false }` clears the flag so the session rejoins the default sweep. Same authorization as the segment manifest; unauthorized access is masked as 404."
+      parameters:
+        - schema:
+            type: string
+            description: Client-minted RUM session id.
+          required: true
+          description: Client-minted RUM session id.
+          name: sessionId
+          in: path
+      requestBody:
+        description: Whether to keep (flag) or clear the session’s extended retention.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                extend:
+                  type: boolean
+                  description: true to keep for extended retention; false to clear.
+              required:
+                - extend
+              description: Extended-retention flag toggle.
+      responses:
+        "200":
+          description: Updated retention state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRetention"
+        "400":
+          description: "Body is not { extend: boolean }."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "404":
+          description: No segments for that session id, or the caller is not authorized to manage them.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "409":
+          description: The session has segments but no session index row to flag (for example, it just expired).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "502":
+          description: "Kept, but some segment objects could not be moved (`relocationPending: true`); retry with `extend: true`."
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SessionRetention"
+                  - type: object
+                    properties:
+                      error:
+                        type: string
+                    required:
+                      - error
+                description: Extended-retention state of a segmented session.
   /api/replays/sessions/{sessionId}/segments/{segmentId}/events:
     get:
       tags:

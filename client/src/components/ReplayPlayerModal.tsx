@@ -7,6 +7,7 @@ import playerJs from '../../node_modules/rrweb-player/dist/rrweb-player.umd.min.
 import playerCss from 'rrweb-player/dist/style.css?raw';
 import { api } from '../utils/api';
 import { formatReplayDuration } from '../utils/replayFormat';
+import { keepStateAt, keepRefreshDelayMs } from '@shared/utils/replayKeep';
 import {
   REPLAY_CHANNEL,
   buildReplayPlayerDataUrl,
@@ -72,15 +73,32 @@ export default function ReplayPlayerModal({
   // View chapter markers (session mode only) — one per view in playback order,
   // each carrying the ms offset a `goto` seeks to on the stitched timeline.
   const [views, setViews] = useState<any[]>([]);
-  // Extended-retention flag for a monolithic capture (has a session_replays row).
-  // `retainedUntil` is the absolute keep-until instant, or null when on the
-  // default window; `flagBusy` guards the toggle in flight.
+  // Extended-retention (Keep) flag. `retainedUntil` is the absolute keep-until
+  // instant, or null when on the default window; `flagBusy` guards the toggle in
+  // flight. A monolithic capture loads it from its metadata row; a segmented
+  // session reads it off the playback manifest.
   const [retainedUntil, setRetainedUntil] = useState<string | null>(null);
+  // Kept, but some segments are still on expiring storage (a Keep whose move
+  // partly failed). The button then retries the Keep instead of removing it.
+  const [relocationPending, setRelocationPending] = useState(false);
   const [flagBusy, setFlagBusy] = useState(false);
+  const [flagError, setFlagError] = useState<string | null>(null);
+  const canKeep = Boolean(replayId) || sessionMode;
+  // Re-render when the Keep lapses so the button flips to "Keep" on its own.
+  const [expiryTick, setExpiryTick] = useState(0);
+  useEffect(() => {
+    const delay = keepRefreshDelayMs(retainedUntil, Date.now());
+    if (delay === null) return undefined;
+    const timer = setTimeout(() => setExpiryTick((n) => n + 1), delay);
+    return () => clearTimeout(timer);
+  }, [retainedUntil, expiryTick]);
+  const keepState = keepStateAt(retainedUntil, relocationPending, Date.now());
 
-  // Load the flag state for a monolithic capture (best-effort; the player still
-  // works if this fails). Segmented session playback has no session_replays row,
-  // so retention flagging is not offered there.
+  const applySessionRetention = (view: any) => {
+    setRetainedUntil(view?.retainedUntil ?? null);
+    setRelocationPending(Boolean(view?.relocationPending));
+  };
+
   useEffect(() => {
     if (!replayId) return;
     let cancelled = false;
@@ -98,10 +116,18 @@ export default function ReplayPlayerModal({
   }, [replayId]);
 
   const toggleRetention = async () => {
-    if (!replayId || flagBusy) return;
-    const next = !retainedUntil;
+    if (!canKeep || flagBusy) return;
+    // Decide from the clock at click time: the rendered state may be stale if the
+    // Keep lapsed while the player sat open. 'pending' retries the Keep; only a
+    // fully kept capture toggles off.
+    const next = keepStateAt(retainedUntil, relocationPending, Date.now()) !== 'kept';
     setFlagBusy(true);
+    setFlagError(null);
     try {
+      if (!replayId) {
+        applySessionRetention(await api.setSessionRetention(sessionId, next));
+        return;
+      }
       const updated = await api.setReplayRetention(replayId, next);
       // Prefer the server's echoed `retainedUntil`. The fallback (used only if
       // the response omitted it) is a truthiness sentinel for the Kept/Keep
@@ -109,8 +135,17 @@ export default function ReplayPlayerModal({
       // the server stores/returns rather than ISO-8601 with T/Z/millis.
       const nowSqliteUtc = new Date().toISOString().slice(0, 19).replace('T', ' ');
       setRetainedUntil(updated?.retainedUntil ?? (next ? nowSqliteUtc : null));
-    } catch {
-      /* leave the prior state; the button re-enables for a retry */
+    } catch (err: any) {
+      setFlagError(err?.message || 'Could not update retention');
+      // A failed session Keep may still have set the flag (partial move), so
+      // re-read the server's view rather than guessing.
+      if (!replayId) {
+        try {
+          applySessionRetention(await api.getSessionSegments(sessionId));
+        } catch {
+          /* keep the prior state; the button re-enables for a retry */
+        }
+      }
     } finally {
       setFlagBusy(false);
     }
@@ -144,7 +179,11 @@ export default function ReplayPlayerModal({
     const streamSession = async () => {
       let loaded = 0;
       const { eventCount } = await streamSessionSegments({
-        getManifest: (id: string) => api.getSessionSegments(id),
+        getManifest: async (id: string) => {
+          const manifest = await api.getSessionSegments(id);
+          if (!cancelled) applySessionRetention(manifest);
+          return manifest;
+        },
         getSegmentEvents: (id: string, segId: string) => api.getSessionSegmentEvents(id, segId),
         sessionId,
         signal: controller.signal,
@@ -297,37 +336,51 @@ export default function ReplayPlayerModal({
           <Film size={15} className="text-blue-400 flex-shrink-0" />
           <span className="text-sm font-medium text-gray-200 truncate">{title}</span>
           <span className="text-[11px] text-gray-500 ml-2">{statusLabel}</span>
-          {replayId && (
+          {flagError && (
+            <span
+              className="ml-auto text-[11px] text-red-400 truncate max-w-xs"
+              title={flagError}
+              data-testid="replay-retention-error"
+            >
+              {flagError}
+            </span>
+          )}
+          {canKeep && (
             <button
               onClick={toggleRetention}
               disabled={flagBusy}
-              className={`ml-auto flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-md transition-colors disabled:opacity-50 ${
-                retainedUntil
+              className={`${flagError ? '' : 'ml-auto'} flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-md transition-colors disabled:opacity-50 ${
+                keepState === 'kept'
                   ? 'text-amber-300 bg-amber-500/10 hover:bg-amber-500/20'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                  : keepState === 'pending'
+                    ? 'text-red-300 bg-red-500/10 hover:bg-red-500/20'
+                    : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
               }`}
               title={
-                retainedUntil
+                keepState === 'kept'
                   ? 'Kept for extended retention — click to remove'
-                  : 'Keep this session (extended retention, up to 15 months)'
+                  : keepState === 'pending'
+                    ? 'Kept, but some of this recording is still on expiring storage. Click to retry.'
+                    : 'Keep this session (extended retention, up to 15 months)'
               }
               role="switch"
-              aria-checked={Boolean(retainedUntil)}
+              aria-checked={keepState === 'kept'}
               aria-label="Toggle extended retention for this session"
               data-testid="replay-retention-toggle"
+              data-keep-state={keepState}
             >
               {flagBusy ? (
                 <Loader2 size={12} className="animate-spin" />
               ) : (
-                <Star size={12} className={retainedUntil ? 'fill-amber-300' : ''} />
+                <Star size={12} className={keepState === 'kept' ? 'fill-amber-300' : ''} />
               )}
-              {retainedUntil ? 'Kept' : 'Keep'}
+              {keepState === 'kept' ? 'Kept' : keepState === 'pending' ? 'Retry Keep' : 'Keep'}
             </button>
           )}
           <button
             onClick={onClose}
             className={`text-gray-500 hover:text-gray-200 transition-colors ${
-              replayId ? '' : 'ml-auto'
+              canKeep ? '' : 'ml-auto'
             }`}
             title="Close (Esc)"
             data-testid="replay-player-close"

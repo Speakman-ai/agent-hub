@@ -14,7 +14,12 @@ import { existsSync, mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { initDb, getDb, getStmts } from '../db.js';
-import { getRumEventsDb, RUM_EVENTS_DB_FILENAME, RUM_EVENTS_SCHEMA } from './rum-events-db.js';
+import {
+  getRumEventsDb,
+  healRumEventsColumns,
+  RUM_EVENTS_DB_FILENAME,
+  RUM_EVENTS_SCHEMA,
+} from './rum-events-db.js';
 
 function primaryHasTable(name: string): boolean {
   return (
@@ -349,5 +354,27 @@ describe('rum-events-db — dedicated ingest file', () => {
     } finally {
       rmSync(legacyDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('healRumEventsColumns', () => {
+  it('adds the Keep columns to a rum_sessions table created before they existed', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE rum_sessions (session_id TEXT PRIMARY KEY, project_id TEXT)`);
+    db.prepare(`INSERT INTO rum_sessions (session_id) VALUES ('old')`).run();
+
+    healRumEventsColumns(db);
+    healRumEventsColumns(db); // idempotent
+
+    const cols = (
+      db.prepare(`SELECT name FROM pragma_table_info('rum_sessions')`).all() as Array<{
+        name: string;
+      }>
+    ).map((c) => c.name);
+    expect(cols).toEqual(expect.arrayContaining(['retained_until', 'retention_flagged_at']));
+    expect(db.prepare(`SELECT retained_until FROM rum_sessions`).get()).toEqual({
+      retained_until: null,
+    });
+    db.close();
   });
 });

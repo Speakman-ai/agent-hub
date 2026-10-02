@@ -605,6 +605,13 @@ export const api = {
     fetchJSON(
       `/replays/sessions/${encodeURIComponent(sessionId)}/segments/${encodeURIComponent(segmentId)}/events`,
     ),
+  // Keep / un-Keep a segmented session for extended retention. Returns
+  // { sessionId, retainedUntil, retentionFlaggedAt }.
+  setSessionRetention: (sessionId: any, extend: boolean) =>
+    fetchJSON(`/replays/sessions/${encodeURIComponent(sessionId)}/retention`, {
+      method: 'POST',
+      body: JSON.stringify({ extend }),
+    }),
   // Monolithic capture metadata (defaultPageSize, eventCount, retainedUntil, …)
   // — advisory input to the in-app WebView player's progress line.
   getReplay: (replayId: any) => fetchJSON(`/replays/${encodeURIComponent(replayId)}`),

@@ -20,7 +20,7 @@
  * same way.
  */
 import { v4 as uuidv4 } from 'uuid';
-import type { AppConfig, RumSegmentRow, Stmts } from '../types.js';
+import type { AppConfig, RumSegmentRow, RumSessionRow, Stmts } from '../types.js';
 import { getArtifactStore, getArtifactStoreForLocation } from '../artifacts/artifact-store.js';
 import {
   encodeReplayBlob,
@@ -37,6 +37,8 @@ import {
 import type { SessionEnrichment } from './rum-enrichment.js';
 import { getRumEventsDbIfPresent } from './rum-events-db.js';
 import { isWalUnderPressure, WalPressureError } from '../db-checkpoint.js';
+import { activeRetention } from './replay-retention.js';
+import { withSessionLock } from './session-lock.js';
 
 const SEGMENT_CONTENT_TYPE = 'application/gzip';
 
@@ -94,6 +96,52 @@ export function buildSegmentKey(input: {
   const mm = pad2(d.getUTCMonth() + 1);
   const dd = pad2(d.getUTCDate());
   return `rum/${project}/${yyyy}/${mm}/${dd}/${session}/${view}/${idx}.json.gz`;
+}
+
+/**
+ * Prefix for segment objects of a session someone chose to Keep. It sits outside
+ * `rum/` on purpose: the S3 lifecycle rules expire everything under `rum/`, and S3
+ * always applies the shortest matching expiration, so a kept session's bytes have
+ * to live somewhere no rule matches. The app sweeper owns deleting them once the
+ * Keep lapses.
+ */
+export const RUM_RETAINED_STORAGE_PREFIX = 'rum-retained/';
+
+const RUM_PREFIX = 'rum/';
+
+/** True when a segment object lives under the kept (non-lifecycle) prefix. */
+export function isRetainedSegmentKey(key: string): boolean {
+  return key.startsWith(RUM_RETAINED_STORAGE_PREFIX);
+}
+
+/** Map a `rum/...` segment key to its kept location (`rum-retained/...`),
+ *  keeping the rest of the path. Idempotent on an already-kept key. Pure. */
+export function toRetainedSegmentKey(key: string): string {
+  if (isRetainedSegmentKey(key)) return key;
+  const rest = key.startsWith(RUM_PREFIX) ? key.slice(RUM_PREFIX.length) : key;
+  return `${RUM_RETAINED_STORAGE_PREFIX}${rest}`;
+}
+
+/** Whether a session row carries a Keep flag that hasn't lapsed at `nowMs`. */
+export function isSessionRetained(
+  row: Pick<RumSessionRow, 'retained_until'> | null | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  return activeRetention(row?.retained_until, null, nowMs).retainedUntil !== null;
+}
+
+/**
+ * A kept session still has S3 segments under the expiring `rum/` prefix: its Keep
+ * didn't finish moving them, so lifecycle can still delete those bytes. Local
+ * segments never move (no lifecycle on disk) and don't count.
+ */
+export function isRelocationPending(
+  session: Pick<RumSessionRow, 'retained_until'> | null | undefined,
+  segments: Pick<RumSegmentRow, 'storage_kind' | 'storage_key'>[],
+  nowMs: number = Date.now(),
+): boolean {
+  if (!isSessionRetained(session, nowMs)) return false;
+  return segments.some((s) => s.storage_kind === 's3' && !isRetainedSegmentKey(s.storage_key));
 }
 
 /** Earliest/latest event timestamps in a segment (epoch ms). 0/0 when empty. */
@@ -168,7 +216,6 @@ export async function appendSegment(
   deps: SegmentStoreDeps,
   input: AppendSegmentInput,
 ): Promise<RumSegmentRow> {
-  const { stmts, config } = deps;
   // WAL-pressure backpressure: if rum.db has grown past its hard limit and cannot
   // be checkpointed, reject the ingest (mapped to 503 by the route) so segment
   // writes stop appending to — and growing — the WAL until it drains.
@@ -176,6 +223,16 @@ export async function appendSegment(
   if (rumDb && isWalUnderPressure(rumDb)) {
     throw new WalPressureError('rum.db');
   }
+  // Held through the upload and row publish, so a concurrent Keep either sees
+  // this segment already stored or sets the flag before its key is chosen.
+  return withSessionLock(input.sessionId, () => appendSegmentLocked(deps, input));
+}
+
+async function appendSegmentLocked(
+  deps: SegmentStoreDeps,
+  input: AppendSegmentInput,
+): Promise<RumSegmentRow> {
+  const { stmts, config } = deps;
   const indexInView = Math.max(0, Math.floor(input.indexInView));
   const hasFullSnapshot = input.events.some((e) => e.type === RRWEB_FULL_SNAPSHOT);
 
@@ -190,13 +247,17 @@ export async function appendSegment(
 
   const store = getArtifactStore(config);
   const projectId = input.projectId ?? null;
-  const key = buildSegmentKey({
+  const baseKey = buildSegmentKey({
     projectId,
     sessionId: input.sessionId,
     viewId: input.viewId,
     indexInView,
     startTs: start,
   });
+  // A session kept while still recording writes its new segments straight to
+  // the kept prefix, so they aren't left behind for the lifecycle rule.
+  const sessionRow = stmts.getRumSession.get(input.sessionId) as RumSessionRow | undefined;
+  const key = isSessionRetained(sessionRow) ? toRetainedSegmentKey(baseKey) : baseKey;
   const storageBucket = store.kind === 's3' ? config.artifactsBucket : null;
   const storageRegion = store.kind === 's3' ? config.artifactsBucketRegion : null;
 
@@ -301,6 +362,13 @@ export interface SessionSegmentManifest {
   segmentCount: number;
   /** Span between the earliest segment start and latest segment end, in ms. */
   durationMs: number;
+  /** Keep (extended retention) instant, SQLite-UTC, or null on the default window. */
+  retainedUntil: string | null;
+  /** When Keep was enabled, or null. */
+  retentionFlaggedAt: string | null;
+  /** Kept, but some S3 segments are still under the expiring `rum/` prefix
+   *  (a Keep whose move partly failed). Keeping again retries the move. */
+  relocationPending: boolean;
   segments: SegmentManifestEntry[];
 }
 
@@ -315,6 +383,7 @@ export interface SessionSegmentManifest {
 export function buildSessionSegmentManifest(
   sessionId: string,
   segments: RumSegmentRow[],
+  session?: Pick<RumSessionRow, 'retained_until' | 'retention_flagged_at'> | null,
 ): SessionSegmentManifest {
   let minStart = Infinity;
   let maxEnd = -Infinity;
@@ -343,6 +412,8 @@ export function buildSessionSegmentManifest(
     projectId: segments[0]?.project_id ?? null,
     segmentCount: segments.length,
     durationMs,
+    ...activeRetention(session?.retained_until, session?.retention_flagged_at),
+    relocationPending: isRelocationPending(session, segments),
     segments: entries,
   };
 }
@@ -390,6 +461,15 @@ export async function deleteSessionSegments(
   deps: SegmentStoreDeps,
   sessionId: string,
 ): Promise<void> {
+  // Under the session lock so an in-flight append can't publish a segment after
+  // the listing below and leave it orphaned.
+  return withSessionLock(sessionId, () => deleteSessionSegmentsLocked(deps, sessionId));
+}
+
+async function deleteSessionSegmentsLocked(
+  deps: SegmentStoreDeps,
+  sessionId: string,
+): Promise<void> {
   const segments = listSessionSegments(deps.stmts, sessionId);
   for (const seg of segments) {
     try {
@@ -403,4 +483,101 @@ export async function deleteSessionSegments(
   // Drop the session-grain rollup row alongside its segments so a deleted
   // session leaves no orphan dashboard entry.
   deps.stmts.deleteRumSession.run(sessionId);
+}
+
+export interface SetSessionRetentionResult {
+  /** False when the session has no index row (never rolled up, or just expired). */
+  found: boolean;
+  /** Segments moved to the kept prefix by this call. */
+  moved: number;
+  /** Segments left at their old key; calling Keep again retries them. */
+  failed: number;
+}
+
+/**
+ * Keep (`retainedUntil` set) or un-Keep (`null`) a segmented session. Runs under
+ * the session lock: an append can't be mid-upload to the expiring prefix, and
+ * the retention sweep can't be mid-delete, while the flag changes and the
+ * existing objects move. If the sweep already expired the session, the row is
+ * gone and this reports `found: false` instead of a Keep that has no data.
+ */
+export async function setSessionRetention(
+  deps: SegmentStoreDeps,
+  sessionId: string,
+  retention: { retainedUntil: string; flaggedAt: string } | null,
+  log?: (msg: string) => void,
+): Promise<SetSessionRetentionResult> {
+  return withSessionLock(sessionId, async () => {
+    if (!deps.stmts.getRumSession.get(sessionId)) return { found: false, moved: 0, failed: 0 };
+    if (!retention) {
+      deps.stmts.clearRumSessionRetention.run(sessionId);
+      return { found: true, moved: 0, failed: 0 };
+    }
+    deps.stmts.flagRumSessionRetention.run(retention.retainedUntil, retention.flaggedAt, sessionId);
+    const { moved, failed } = await relocateSessionSegmentsForRetention(deps, sessionId, log);
+    return { found: true, moved, failed };
+  });
+}
+
+export interface RelocateSegmentsResult {
+  /** Segments whose object was copied to the kept prefix this call. */
+  moved: number;
+  /** Segments that couldn't be moved (left at their old key; retry is safe). */
+  failed: number;
+}
+
+/**
+ * Move a kept session's S3 segment objects from `rum/` to the kept prefix so the
+ * bucket lifecycle rule can't expire them. Per segment: copy the bytes, repoint
+ * the manifest row, then delete the old object (best-effort: a leftover old copy
+ * still expires under the lifecycle rule). Already-kept segments are skipped, so
+ * calling it again only retries what failed. Local segments stay put: there is no
+ * lifecycle on disk, and the sweeper already skips kept sessions.
+ */
+export async function relocateSessionSegmentsForRetention(
+  deps: SegmentStoreDeps,
+  sessionId: string,
+  log: (msg: string) => void = (msg) => console.warn(msg),
+): Promise<RelocateSegmentsResult> {
+  let moved = 0;
+  let failed = 0;
+  for (const seg of listSessionSegments(deps.stmts, sessionId)) {
+    if (seg.storage_kind !== 's3' || isRetainedSegmentKey(seg.storage_key)) continue;
+    const newKey = toRetainedSegmentKey(seg.storage_key);
+    try {
+      const store = getArtifactStoreForLocation(seg, deps.config);
+      const bytes = await store.getBuffer(seg.storage_key);
+      await store.put(newKey, bytes, SEGMENT_CONTENT_TYPE);
+      try {
+        deps.stmts.updateRumSegmentStorageKey.run(newKey, seg.id);
+      } catch (err) {
+        // The row still points at the old key, so nothing would ever find or
+        // expire the copy under the kept prefix. Remove it before reporting.
+        try {
+          await store.delete(newKey);
+        } catch (cleanupErr) {
+          log(
+            `[Replays] could not remove unreferenced kept copy ${newKey}: ${
+              cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+            }`,
+          );
+        }
+        throw err;
+      }
+      moved += 1;
+      try {
+        await store.delete(seg.storage_key);
+      } catch {
+        /* the old copy is still under rum/, so lifecycle expires it */
+      }
+    } catch (err) {
+      failed += 1;
+      log(
+        `[Replays] failed to move segment ${seg.id} to the kept prefix: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+  return { moved, failed };
 }

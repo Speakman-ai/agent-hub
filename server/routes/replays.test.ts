@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
+import { S3ArtifactStore } from '../artifacts/artifact-store-s3.js';
 import express from 'express';
 import type { Express } from 'express';
 import supertest from 'supertest';
@@ -119,7 +120,9 @@ function makeReplayStmts(): Stmts {
       os TEXT,
       geo_country TEXT,
       first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      retained_until TEXT,
+      retention_flagged_at TEXT
     );
     CREATE INDEX idx_rum_sessions_project
       ON rum_sessions(project_id, started_at DESC);
@@ -184,6 +187,14 @@ function makeReplayStmts(): Stmts {
         LIMIT ?`,
     ),
     deleteRumSession: db.prepare('DELETE FROM rum_sessions WHERE session_id = ?'),
+    flagRumSessionRetention: db.prepare(
+      `UPDATE rum_sessions SET retained_until = ?, retention_flagged_at = ? WHERE session_id = ?`,
+    ),
+    clearRumSessionRetention: db.prepare(
+      `UPDATE rum_sessions SET retained_until = NULL, retention_flagged_at = NULL
+        WHERE session_id = ?`,
+    ),
+    updateRumSegmentStorageKey: db.prepare(`UPDATE rum_segments SET storage_key = ? WHERE id = ?`),
     updateSessionReplayStats: db.prepare(
       `UPDATE session_replays
           SET duration_ms = ?, event_count = ?, size = ?, uncompressed_size = ?, meta = ?
@@ -936,6 +947,14 @@ describe('POST /api/replays/:id/retention (extended-retention flag)', () => {
     );
   }
 
+  it('reports a lapsed flag as not kept on the metadata read', async () => {
+    seedRow('r-lapsed', 'tenant-x');
+    stmts.flagSessionReplayRetention.run('2020-01-01 00:00:00', '2019-01-01 00:00:00', 'r-lapsed');
+    const res = await supertest(app).get('/api/replays/r-lapsed').expect(200);
+    expect(res.body.retainedUntil).toBeNull();
+    expect(res.body.retentionFlaggedAt).toBeNull();
+  });
+
   it('flags a capture for extended retention (clock starts now, window bounded)', async () => {
     seedRow('r-flag', 'tenant-x');
     const before = Date.now();
@@ -1181,6 +1200,259 @@ describe('GET /api/replays/sessions/:sessionId/segments (segmented playback)', (
       } catch {
         /* noop */
       }
+    }
+  });
+});
+
+describe('POST /api/replays/sessions/:sessionId/retention (Keep a segmented session)', () => {
+  const TENANT = {
+    id: 'tenant-k',
+    replay: { extendedRetentionMonths: 6 },
+  } as unknown as Project;
+  let app: Express;
+  let serverDir: string;
+  let stmts: Stmts;
+  let config: AppConfig;
+
+  beforeEach(() => {
+    _resetRateLimit();
+    const base = makeApp({ projects: [TENANT] });
+    ({ serverDir, stmts, config } = base);
+    app = express();
+    app.use(express.json());
+    app.use(base.app);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(serverDir, { recursive: true, force: true });
+  });
+
+  async function seed(sessionId: string, projectId: string | null = 'tenant-k') {
+    await appendSegment(
+      { stmts, config },
+      {
+        sessionId,
+        viewId: 'v',
+        indexInView: 0,
+        projectId,
+        events: [{ ...SNAPSHOT, timestamp: 1000 }],
+      },
+    );
+  }
+
+  it('keeps a session for the tenant window and reports it on the manifest', async () => {
+    await seed('k1');
+    const before = Date.now();
+    const res = await supertest(app)
+      .post('/api/replays/sessions/k1/retention')
+      .send({ extend: true })
+      .expect(200);
+
+    expect(res.body.sessionId).toBe('k1');
+    const until = Date.parse(`${res.body.retainedUntil.replace(' ', 'T')}Z`);
+    // ~6 months out (tenant window), not the 15-month default.
+    expect(until - before).toBeGreaterThan(170 * 86_400_000);
+    expect(until - before).toBeLessThan(190 * 86_400_000);
+    expect(res.body.retentionFlaggedAt).toBeTruthy();
+
+    const manifest = await supertest(app).get('/api/replays/sessions/k1/segments').expect(200);
+    expect(manifest.body.retainedUntil).toBe(res.body.retainedUntil);
+  });
+
+  it('reports a lapsed Keep as not kept, and keeping again renews it', async () => {
+    await seed('k-lapsed');
+    stmts.flagRumSessionRetention.run('2020-01-01 00:00:00', '2019-01-01 00:00:00', 'k-lapsed');
+
+    const manifest = await supertest(app)
+      .get('/api/replays/sessions/k-lapsed/segments')
+      .expect(200);
+    expect(manifest.body.retainedUntil).toBeNull();
+    expect(manifest.body.retentionFlaggedAt).toBeNull();
+    expect(manifest.body.relocationPending).toBe(false);
+
+    const renewed = await supertest(app)
+      .post('/api/replays/sessions/k-lapsed/retention')
+      .send({ extend: true })
+      .expect(200);
+    expect(Date.parse(`${renewed.body.retainedUntil.replace(' ', 'T')}Z`)).toBeGreaterThan(
+      Date.now(),
+    );
+  });
+
+  it('clears the Keep flag', async () => {
+    await seed('k2');
+    await supertest(app).post('/api/replays/sessions/k2/retention').send({ extend: true });
+    const res = await supertest(app)
+      .post('/api/replays/sessions/k2/retention')
+      .send({ extend: false })
+      .expect(200);
+    expect(res.body.retainedUntil).toBeNull();
+    expect(res.body.retentionFlaggedAt).toBeNull();
+  });
+
+  it('moves S3 segment objects off the lifecycle prefix', async () => {
+    stmts.insertRumSession.run(
+      'k3',
+      'tenant-k',
+      1000,
+      1500,
+      500,
+      1,
+      0,
+      0,
+      0,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    );
+    stmts.insertRumSegment.run(
+      'k3-0',
+      'k3',
+      'v',
+      'tenant-k',
+      0,
+      1,
+      1000,
+      1500,
+      1,
+      10,
+      's3',
+      'rum/tenant-k/2026/01/01/k3/v/0.json.gz',
+      'bucket',
+      'us-east-1',
+    );
+    vi.spyOn(S3ArtifactStore.prototype, 'getBuffer').mockResolvedValue(Buffer.from('x'));
+    const put = vi.spyOn(S3ArtifactStore.prototype, 'put').mockResolvedValue(undefined);
+    vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+
+    await supertest(app)
+      .post('/api/replays/sessions/k3/retention')
+      .send({ extend: true })
+      .expect(200);
+
+    expect(put).toHaveBeenCalledWith(
+      'rum-retained/tenant-k/2026/01/01/k3/v/0.json.gz',
+      expect.any(Buffer),
+      'application/gzip',
+    );
+  });
+
+  it('returns 502 with the flag still set when a segment cannot be moved', async () => {
+    stmts.insertRumSession.run(
+      'k4',
+      'tenant-k',
+      1000,
+      1500,
+      500,
+      1,
+      0,
+      0,
+      0,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    );
+    stmts.insertRumSegment.run(
+      'k4-0',
+      'k4',
+      'v',
+      'tenant-k',
+      0,
+      1,
+      1000,
+      1500,
+      1,
+      10,
+      's3',
+      'rum/tenant-k/2026/01/01/k4/v/0.json.gz',
+      'bucket',
+      'us-east-1',
+    );
+    vi.spyOn(S3ArtifactStore.prototype, 'getBuffer').mockRejectedValue(new Error('NoSuchKey'));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await supertest(app)
+      .post('/api/replays/sessions/k4/retention')
+      .send({ extend: true })
+      .expect(502);
+    expect(res.body.retainedUntil).toBeTruthy();
+    expect(res.body.relocationPending).toBe(true);
+
+    // Reopening the player shows the Keep as incomplete, not fully kept.
+    const reopened = await supertest(app).get('/api/replays/sessions/k4/segments').expect(200);
+    expect(reopened.body.retainedUntil).toBeTruthy();
+    expect(reopened.body.relocationPending).toBe(true);
+
+    // Retrying the Keep once S3 recovers finishes the move.
+    vi.spyOn(S3ArtifactStore.prototype, 'getBuffer').mockResolvedValue(Buffer.from('x'));
+    vi.spyOn(S3ArtifactStore.prototype, 'put').mockResolvedValue(undefined);
+    vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+    const retried = await supertest(app)
+      .post('/api/replays/sessions/k4/retention')
+      .send({ extend: true })
+      .expect(200);
+    expect(retried.body.relocationPending).toBe(false);
+    const after = await supertest(app).get('/api/replays/sessions/k4/segments').expect(200);
+    expect(after.body.relocationPending).toBe(false);
+  });
+
+  it('rejects a malformed body and 404s an unknown session', async () => {
+    await seed('k5');
+    await supertest(app)
+      .post('/api/replays/sessions/k5/retention')
+      .send({ extend: 'y' })
+      .expect(400);
+    await supertest(app)
+      .post('/api/replays/sessions/nope/retention')
+      .send({ extend: true })
+      .expect(404);
+  });
+
+  it('masks a session the caller cannot view as 404', async () => {
+    const project = {
+      id: 'proj-x',
+      visibility: 'private',
+      memberUserIds: [],
+    } as unknown as Project;
+    const scoped = makeApp({
+      projects: [project],
+      stampAuth: { authUserId: 'outsider', authRole: 'User' },
+    });
+    const wrapped = express();
+    wrapped.use(express.json());
+    wrapped.use(scoped.app);
+    try {
+      await appendSegment(
+        { stmts: scoped.stmts, config: scoped.config },
+        {
+          sessionId: 'k-priv',
+          viewId: 'v',
+          indexInView: 0,
+          projectId: 'proj-x',
+          events: [{ ...SNAPSHOT, timestamp: 1000 }],
+        },
+      );
+      await supertest(wrapped)
+        .post('/api/replays/sessions/k-priv/retention')
+        .send({ extend: true })
+        .expect(404);
+      expect(
+        (scoped.stmts.getRumSession.get('k-priv') as { retained_until: string | null })
+          .retained_until,
+      ).toBeNull();
+    } finally {
+      rmSync(scoped.serverDir, { recursive: true, force: true });
     }
   });
 });

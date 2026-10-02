@@ -27,6 +27,7 @@ import {
 } from '../utils/replayFormat';
 import ReplayWebViewPlayer from '../components/ReplayWebViewPlayer';
 import { ReplayPlaylistsView, AddToPlaylistModal } from '../components/ReplayPlaylistsView';
+import { keepStateAt, keepRefreshDelayMs } from '@shared/utils/replayKeep';
 import {
   TIME_RANGES,
   DEFAULT_RANGE_ID,
@@ -76,7 +77,7 @@ export async function unlinkReplayCapture({ api: apiClient, projectId, replayId,
 }
 
 // Extended-retention flag
-// Flag / unflag a monolithic capture for extended retention (up to 15 months;
+// Flag / unflag a capture or segmented session for extended retention (up to 15 months;
 // the clock starts now). Returns the new `retainedUntil` — the server's echoed
 // value, or a SQLite-UTC (`YYYY-MM-DD HH:MM:SS`) truthiness sentinel matching
 // what the server stores when the response omitted it (null when unflagging).
@@ -85,39 +86,84 @@ export async function unlinkReplayCapture({ api: apiClient, projectId, replayId,
 export async function setReplayRetentionFlag({
   api: apiClient,
   replayId,
+  sessionId,
   extend,
   nowIso,
 }: any): Promise<string | null> {
-  const updated = await apiClient.setReplayRetention(replayId, extend);
+  const updated = replayId
+    ? await apiClient.setReplayRetention(replayId, extend)
+    : await apiClient.setSessionRetention(sessionId, extend);
   const stamp = (nowIso || new Date().toISOString()).slice(0, 19).replace('T', ' ');
   return updated?.retainedUntil ?? (extend ? stamp : null);
+}
+
+// Keep / un-Keep a segmented session. On failure the server may still have set
+// the flag (a partial move), so the state is re-read from the manifest and the
+// error is returned for display instead of being swallowed.
+export async function setSessionKeep({ api: apiClient, sessionId, extend }: any): Promise<{
+  retainedUntil: string | null;
+  relocationPending: boolean;
+  error: string | null;
+}> {
+  try {
+    const view = await apiClient.setSessionRetention(sessionId, extend);
+    return {
+      retainedUntil: view?.retainedUntil ?? null,
+      relocationPending: Boolean(view?.relocationPending),
+      error: null,
+    };
+  } catch (err: any) {
+    const error = err?.message || 'Could not update retention';
+    const manifest = await apiClient.getSessionSegments(sessionId);
+    return {
+      retainedUntil: manifest?.retainedUntil ?? null,
+      relocationPending: Boolean(manifest?.relocationPending),
+      error,
+    };
+  }
 }
 
 // Session player
 // Full-screen in-app rrweb player. Embeds ReplayWebViewPlayer, which streams the
 // session's segments (or a monolithic capture's paginated events) into an
 // opaque-origin WebView and renders playback + view-chapter seek. For a
-// monolithic capture (a `session_replays` row) the footer also exposes the
-// Keep control that flags the capture for extended retention. Segmented session
-// playback has no `session_replays` row, so retention flagging is not offered
-// there. The web-app handoff stays as a secondary action.
+// footer also exposes the Keep control that flags the capture (monolithic) or
+// session (segmented) for extended retention. The web-app handoff stays as a
+// secondary action.
 export function ReplayPlayerModal({ target, projectId, onClose }: any) {
-  // Only monolithic captures (mode 'replay') carry a session_replays row that
-  // can be retention-flagged. Segmented sessions expose no Keep control.
   const replayId = target?.mode === 'replay' ? target?.replayId : null;
+  const sessionId = target?.mode === 'session' ? target?.sessionId : null;
+  const canKeep = Boolean(replayId || sessionId);
   const [retainedUntil, setRetainedUntil] = useState<string | null>(null);
+  const [relocationPending, setRelocationPending] = useState(false);
+  const [flagError, setFlagError] = useState<string | null>(null);
   const [flagBusy, setFlagBusy] = useState(false);
+  // Re-render when the Keep lapses so the button flips to "Keep" on its own.
+  const [expiryTick, setExpiryTick] = useState(0);
+  useEffect(() => {
+    const delay = keepRefreshDelayMs(retainedUntil, Date.now());
+    if (delay === null) return undefined;
+    const timer = setTimeout(() => setExpiryTick((n) => n + 1), delay);
+    return () => clearTimeout(timer);
+  }, [retainedUntil, expiryTick]);
+  const keepState = keepStateAt(retainedUntil, relocationPending, Date.now());
 
   useEffect(() => {
-    if (!replayId) {
+    if (!replayId && !sessionId) {
       setRetainedUntil(null);
+      setRelocationPending(false);
       return;
     }
     let cancelled = false;
     void (async () => {
       try {
-        const meta = await api.getReplay(replayId);
-        if (!cancelled) setRetainedUntil(meta?.retainedUntil ?? null);
+        const meta = replayId
+          ? await api.getReplay(replayId)
+          : await api.getSessionSegments(sessionId);
+        if (!cancelled) {
+          setRetainedUntil(meta?.retainedUntil ?? null);
+          setRelocationPending(Boolean(meta?.relocationPending));
+        }
       } catch {
         /* metadata is best-effort; the player still works */
       }
@@ -125,16 +171,27 @@ export function ReplayPlayerModal({ target, projectId, onClose }: any) {
     return () => {
       cancelled = true;
     };
-  }, [replayId]);
+  }, [replayId, sessionId]);
 
   const toggleKeep = async () => {
-    if (!replayId || flagBusy) return;
+    if (!canKeep || flagBusy) return;
     setFlagBusy(true);
+    setFlagError(null);
+    // Decide from the clock at tap time: the rendered state may be stale if the
+    // Keep lapsed while the player sat open. 'pending' retries the Keep; only a
+    // fully kept capture toggles off.
+    const extend = keepStateAt(retainedUntil, relocationPending, Date.now()) !== 'kept';
     try {
-      const next = await setReplayRetentionFlag({ api, replayId, extend: !retainedUntil });
-      setRetainedUntil(next);
-    } catch {
-      /* leave the prior state; the button re-enables for a retry */
+      if (sessionId) {
+        const result = await setSessionKeep({ api, sessionId, extend });
+        setRetainedUntil(result.retainedUntil);
+        setRelocationPending(result.relocationPending);
+        setFlagError(result.error);
+        return;
+      }
+      setRetainedUntil(await setReplayRetentionFlag({ api, replayId, extend }));
+    } catch (err: any) {
+      setFlagError(err?.message || 'Could not update retention');
     } finally {
       setFlagBusy(false);
     }
@@ -142,7 +199,8 @@ export function ReplayPlayerModal({ target, projectId, onClose }: any) {
 
   if (!target) return null;
   const webUrl = buildWebReplaysUrl(projectId);
-  const kept = Boolean(retainedUntil);
+  const kept = keepState === 'kept';
+  const pending = keepState === 'pending';
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.playerBackdrop}>
@@ -173,7 +231,7 @@ export function ReplayPlayerModal({ target, projectId, onClose }: any) {
             target={{ mode: target.mode, sessionId: target.sessionId, replayId: target.replayId }}
           />
           <View style={styles.playerFooter}>
-            {replayId ? (
+            {canKeep ? (
               <TouchableOpacity
                 testID="replay-retention-toggle"
                 accessibilityRole="switch"
@@ -185,13 +243,25 @@ export function ReplayPlayerModal({ target, projectId, onClose }: any) {
                   styles.playerFooterBtn,
                   styles.keepBtn,
                   kept && styles.keepBtnActive,
+                  pending && styles.keepBtnPending,
                   flagBusy && styles.keepBtnBusy,
                 ]}
               >
-                <Text style={[styles.playerFooterText, kept && styles.keepTextActive]}>
-                  {kept ? '★ Kept' : '☆ Keep'}
+                <Text
+                  style={[
+                    styles.playerFooterText,
+                    kept && styles.keepTextActive,
+                    pending && styles.keepTextPending,
+                  ]}
+                >
+                  {kept ? '★ Kept' : pending ? '↻ Retry Keep' : '☆ Keep'}
                 </Text>
               </TouchableOpacity>
+            ) : null}
+            {flagError ? (
+              <Text testID="replay-retention-error" style={styles.keepError} numberOfLines={2}>
+                {flagError}
+              </Text>
             ) : null}
             {webUrl ? (
               <TouchableOpacity
@@ -1085,4 +1155,7 @@ const styles = StyleSheet.create({
   keepBtnActive: { borderColor: colors.amber400, backgroundColor: colors.gray800 },
   keepBtnBusy: { opacity: 0.5 },
   keepTextActive: { color: colors.amber400, fontWeight: '600' },
+  keepBtnPending: { borderColor: colors.red400, backgroundColor: colors.gray800 },
+  keepTextPending: { color: colors.red400, fontWeight: '600' },
+  keepError: { color: colors.red400, fontSize: 11, flexShrink: 1, marginHorizontal: 8 },
 });

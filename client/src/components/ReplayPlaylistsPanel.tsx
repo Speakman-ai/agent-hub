@@ -14,6 +14,7 @@ import {
 import { api } from '../utils/api';
 import ReplayPlayerModal from './ReplayPlayerModal';
 import { formatReplayDuration, formatBytes } from '../utils/replayFormat';
+import { isPlaylistKept } from '@shared/utils/replayKeep';
 
 // Replay playlists ("Playlists" tab of ReplaysDashboardPage). Named,
 // project-scoped groups of saved captures (server/routes/replay-playlists.ts).
@@ -112,8 +113,10 @@ function ReplayPlaylistsList({
 
   const toggleKeep = async (pl: any) => {
     try {
-      await api.setReplayPlaylistRetention(projectId, pl.id, !pl.extendedRetention);
-      notify(pl.extendedRetention ? 'Extended retention cleared' : 'Playlist kept', 'success');
+      // Decide from the clock at click time; a Keep can lapse while the view is open.
+      const kept = isPlaylistKept(pl, Date.now());
+      await api.setReplayPlaylistRetention(projectId, pl.id, !kept);
+      notify(kept ? 'Extended retention cleared' : 'Playlist kept', 'success');
       reload();
     } catch (e: any) {
       notify(e?.message || 'Failed to update retention', 'error');
@@ -175,7 +178,7 @@ function ReplayPlaylistsList({
                 <span className="text-xs text-gray-500 shrink-0">
                   {pl.itemCount} capture{pl.itemCount === 1 ? '' : 's'}
                 </span>
-                {pl.extendedRetention && (
+                {isPlaylistKept(pl, Date.now()) && (
                   <span
                     className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0"
                     title={pl.retainedUntil ? `Kept until ${absDate(pl.retainedUntil)}` : 'Kept'}
@@ -189,18 +192,18 @@ function ReplayPlaylistsList({
                 type="button"
                 onClick={() => toggleKeep(pl)}
                 className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs border ${
-                  pl.extendedRetention
+                  isPlaylistKept(pl, Date.now())
                     ? 'text-amber-200 border-amber-500/40 hover:bg-amber-500/10'
                     : 'text-gray-300 border-gray-700 hover:bg-gray-800'
                 }`}
                 title={
-                  pl.extendedRetention
+                  isPlaylistKept(pl, Date.now())
                     ? 'Clear extended retention for this playlist'
                     : 'Keep this playlist (extended retention)'
                 }
               >
                 <Star size={12} />
-                {pl.extendedRetention ? 'Kept' : 'Keep'}
+                {isPlaylistKept(pl, Date.now()) ? 'Kept' : 'Keep'}
               </button>
               <button
                 type="button"
@@ -262,11 +265,10 @@ function PlaylistDetail({ projectId, playlistId, onBack, onNotify }: any) {
   const toggleKeep = async () => {
     if (!playlist) return;
     try {
-      await api.setReplayPlaylistRetention(projectId, playlistId, !playlist.extendedRetention);
-      onNotify?.(
-        playlist.extendedRetention ? 'Extended retention cleared' : 'Playlist kept',
-        'success',
-      );
+      // Decide from the clock at click time; a Keep can lapse while the view is open.
+      const kept = isPlaylistKept(playlist, Date.now());
+      await api.setReplayPlaylistRetention(projectId, playlistId, !kept);
+      onNotify?.(kept ? 'Extended retention cleared' : 'Playlist kept', 'success');
       load();
     } catch (e: any) {
       onNotify?.(e?.message || 'Failed to update retention', 'error');
@@ -299,7 +301,7 @@ function PlaylistDetail({ projectId, playlistId, onBack, onNotify }: any) {
         {playlist && (
           <>
             <h2 className="text-sm font-semibold text-gray-100 truncate">{playlist.name}</h2>
-            {playlist.extendedRetention && (
+            {isPlaylistKept(playlist, Date.now()) && (
               <span
                 className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/30"
                 title={
@@ -324,13 +326,13 @@ function PlaylistDetail({ projectId, playlistId, onBack, onNotify }: any) {
                 type="button"
                 onClick={toggleKeep}
                 className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs border ${
-                  playlist.extendedRetention
+                  isPlaylistKept(playlist, Date.now())
                     ? 'text-amber-200 border-amber-500/40 hover:bg-amber-500/10'
                     : 'text-gray-300 border-gray-700 hover:bg-gray-800'
                 }`}
               >
                 <Star size={12} />
-                {playlist.extendedRetention ? 'Kept' : 'Keep'}
+                {isPlaylistKept(playlist, Date.now()) ? 'Kept' : 'Keep'}
               </button>
             </div>
           </>

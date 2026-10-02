@@ -4175,20 +4175,24 @@ function initDb(dataDir: string): void {
     // objects past expiry, so reaping it can never drop an index row whose bytes
     // still live. Oldest-first so a bounded batch chips at the longest-lived
     // backlog each sweep.
+    // Kept sessions (a future `retained_until`) are skipped until the flag lapses.
+    // Params: (cutoff, now, limit).
     getExpiredRumSessions: rumEventsDb.prepare(
       `SELECT * FROM rum_sessions
         WHERE updated_at < ?
+          AND (retained_until IS NULL OR retained_until <= ?)
         ORDER BY updated_at ASC
         LIMIT ?`,
     ),
     // Per-project variant for a tenant with a BASE retention override: the tighter
     // per-tenant cutoff is applied to just this project's sessions, with its own
     // per-sweep budget so one heavy tenant can't stall another's window. Params:
-    // (cutoff, projectId, limit).
+    // (cutoff, projectId, now, limit).
     getExpiredRumSessionsByProject: rumEventsDb.prepare(
       `SELECT * FROM rum_sessions
         WHERE updated_at < ?
           AND project_id = ?
+          AND (retained_until IS NULL OR retained_until <= ?)
         ORDER BY updated_at ASC
         LIMIT ?`,
     ),
@@ -4198,8 +4202,25 @@ function initDb(dataDir: string): void {
     // segment and bump `updated_at` in between. Guarding the delete on the cutoff
     // keeps a now-active session (and its fresh, un-reclaimed segment) instead of
     // dropping the row out from under it.
+    // Also re-asserts the Keep flag, so a session kept mid-sweep survives.
+    // Params: (sessionId, cutoff, now).
     deleteExpiredRumSession: rumEventsDb.prepare(
-      `DELETE FROM rum_sessions WHERE session_id = ? AND updated_at < ?`,
+      `DELETE FROM rum_sessions
+        WHERE session_id = ? AND updated_at < ?
+          AND (retained_until IS NULL OR retained_until <= ?)`,
+    ),
+    // Keep / un-Keep a segmented session. Params (flag): (retained_until,
+    // retention_flagged_at, session_id).
+    flagRumSessionRetention: rumEventsDb.prepare(
+      `UPDATE rum_sessions SET retained_until = ?, retention_flagged_at = ? WHERE session_id = ?`,
+    ),
+    clearRumSessionRetention: rumEventsDb.prepare(
+      `UPDATE rum_sessions SET retained_until = NULL, retention_flagged_at = NULL
+        WHERE session_id = ?`,
+    ),
+    // Repoint a segment at its relocated object. Params: (storage_key, id).
+    updateRumSegmentStorageKey: rumEventsDb.prepare(
+      `UPDATE rum_segments SET storage_key = ? WHERE id = ?`,
     ),
     // Orphan-segment reconciliation: rum_segments rows whose session-grain row is
     // already gone (a best-effort rollup that threw during ingest, or a partial

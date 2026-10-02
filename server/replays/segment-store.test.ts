@@ -14,18 +14,36 @@ import {
   deleteSessionSegments,
   buildSessionSegmentManifest,
   SegmentNeedsSnapshotError,
+  toRetainedSegmentKey,
+  isRetainedSegmentKey,
+  isSessionRetained,
+  relocateSessionSegmentsForRetention,
+  setSessionRetention,
+  isRelocationPending,
   type SegmentStoreDeps,
 } from './segment-store.js';
+import { toSqliteUtc } from './replay-retention.js';
+import { S3ArtifactStore } from '../artifacts/artifact-store-s3.js';
+import {
+  expireRumSession,
+  expireOrphanSegment,
+  sessionStillExpired,
+} from './rum-segment-retention-sweeper.js';
 import { storeReplay, readReplayEventsPage, type ReplayEvent } from './replay-store.js';
 import { getRumSession } from './rum-session-store.js';
 import { LocalArtifactStore, resetArtifactStoreCache } from '../artifacts/artifact-store.js';
-import { initRumEventsDb, closeRumEventsDb, rumEventsCheckpointLabel } from './rum-events-db.js';
+import {
+  initRumEventsDb,
+  closeRumEventsDb,
+  rumEventsCheckpointLabel,
+  RUM_EVENTS_SCHEMA,
+} from './rum-events-db.js';
 import {
   __setWalPressureForTests,
   clearCheckpointRegistry,
   WalPressureError,
 } from '../db-checkpoint.js';
-import type { AppConfig, Stmts } from '../types.js';
+import type { AppConfig, RumSegmentRow, Stmts } from '../types.js';
 
 const SNAPSHOT: ReplayEvent = { type: 2, timestamp: 1000, data: { node: {} } };
 
@@ -645,5 +663,420 @@ describe('segment-store (append-only backend)', () => {
 
     await deleteSessionSegments(deps, 'sess');
     expect(getRumSession(deps.stmts, 'sess')).toBeNull();
+  });
+});
+
+describe('segment-store Keep (extended retention)', () => {
+  let dataDir: string;
+  let deps: SegmentStoreDeps;
+  let db: Database.Database;
+
+  beforeEach(() => {
+    dataDir = path.join(os.tmpdir(), `agent-hub-seg-keep-${process.pid}-${Math.random()}`);
+    mkdirSync(dataDir, { recursive: true });
+    resetArtifactStoreCache();
+    db = new Database(':memory:');
+    db.exec(RUM_EVENTS_SCHEMA);
+    const stmts = {
+      insertRumSegment: db.prepare(
+        `INSERT INTO rum_segments
+           (id, session_id, view_id, project_id, index_in_view, has_full_snapshot,
+            start_ts, end_ts, event_count, byte_size,
+            storage_kind, storage_key, storage_bucket, storage_region)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ),
+      getRumSegment: db.prepare('SELECT * FROM rum_segments WHERE id = ?'),
+      listRumSegmentsBySession: db.prepare(
+        `SELECT * FROM rum_segments WHERE session_id = ?
+          ORDER BY start_ts ASC, index_in_view ASC, id ASC`,
+      ),
+      deleteRumSegment: db.prepare('DELETE FROM rum_segments WHERE id = ?'),
+      insertRumSession: db.prepare(
+        `INSERT INTO rum_sessions
+           (session_id, project_id, started_at, ended_at, time_spent,
+            view_count, action_count, error_count, frustration_count,
+            usr_id, usr_email, usr_name, usr_attributes,
+            device_type, browser, os, geo_country)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ),
+      getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
+      updateRumSessionRollup: db.prepare(
+        `UPDATE rum_sessions
+            SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
+                view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
+                usr_id = ?, usr_email = ?, usr_name = ?, usr_attributes = ?,
+                device_type = ?, browser = ?, os = ?, geo_country = ?,
+                updated_at = datetime('now')
+          WHERE session_id = ?`,
+      ),
+      flagRumSessionRetention: db.prepare(
+        `UPDATE rum_sessions SET retained_until = ?, retention_flagged_at = ? WHERE session_id = ?`,
+      ),
+      updateRumSegmentStorageKey: db.prepare(
+        `UPDATE rum_segments SET storage_key = ? WHERE id = ?`,
+      ),
+      clearRumSessionRetention: db.prepare(
+        `UPDATE rum_sessions SET retained_until = NULL, retention_flagged_at = NULL
+          WHERE session_id = ?`,
+      ),
+      deleteExpiredRumSession: db.prepare(
+        `DELETE FROM rum_sessions
+          WHERE session_id = ? AND updated_at < ?
+            AND (retained_until IS NULL OR retained_until <= ?)`,
+      ),
+    } as unknown as Stmts;
+    deps = { stmts, config: { dataDir } as unknown as AppConfig };
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  function keep(sessionId: string, untilMs: number) {
+    deps.stmts.flagRumSessionRetention.run(
+      toSqliteUtc(untilMs),
+      toSqliteUtc(Date.now()),
+      sessionId,
+    );
+  }
+
+  function seedS3Segment(id: string, sessionId: string, key: string, index = 0) {
+    deps.stmts.insertRumSegment.run(
+      id,
+      sessionId,
+      'v0',
+      'proj',
+      index,
+      1,
+      1000,
+      1500,
+      1,
+      10,
+      's3',
+      key,
+      'bucket',
+      'us-east-1',
+    );
+  }
+
+  it('maps rum/ keys to the kept prefix and leaves kept keys alone', () => {
+    expect(toRetainedSegmentKey('rum/p/2026/01/01/s/v/0.json.gz')).toBe(
+      'rum-retained/p/2026/01/01/s/v/0.json.gz',
+    );
+    expect(toRetainedSegmentKey('rum-retained/p/x.json.gz')).toBe('rum-retained/p/x.json.gz');
+    expect(isRetainedSegmentKey('rum-retained/p/x.json.gz')).toBe(true);
+    expect(isRetainedSegmentKey('rum/p/x.json.gz')).toBe(false);
+  });
+
+  it('isSessionRetained is true only while retained_until is in the future', () => {
+    const now = Date.UTC(2026, 9, 2, 12);
+    expect(isSessionRetained({ retained_until: toSqliteUtc(now + 1000) }, now)).toBe(true);
+    expect(isSessionRetained({ retained_until: toSqliteUtc(now - 1000) }, now)).toBe(false);
+    expect(isSessionRetained({ retained_until: null }, now)).toBe(false);
+    expect(isSessionRetained(null, now)).toBe(false);
+  });
+
+  it('writes segments of a kept session under the kept prefix', async () => {
+    const first = await appendSegment(deps, {
+      sessionId: 's',
+      viewId: 'v',
+      indexInView: 0,
+      projectId: 'proj',
+      events: [SNAPSHOT],
+    });
+    expect(first.storage_key.startsWith('rum/')).toBe(true);
+
+    keep('s', Date.now() + 60_000);
+    const second = await appendSegment(deps, {
+      sessionId: 's',
+      viewId: 'v',
+      indexInView: 1,
+      projectId: 'proj',
+      events: [{ type: 3, timestamp: 2000 }],
+    });
+    expect(second.storage_key.startsWith('rum-retained/proj/')).toBe(true);
+    expect((await readSegment(deps, second)).events).toHaveLength(1);
+  });
+
+  it('moves S3 segments to the kept prefix and repoints the rows', async () => {
+    seedS3Segment('a', 's', 'rum/proj/2026/01/01/s/v0/0.json.gz');
+    seedS3Segment('b', 's', 'rum-retained/proj/2026/01/01/s/v0/1.json.gz', 1);
+    const get = vi
+      .spyOn(S3ArtifactStore.prototype, 'getBuffer')
+      .mockResolvedValue(Buffer.from('bytes'));
+    const put = vi.spyOn(S3ArtifactStore.prototype, 'put').mockResolvedValue(undefined);
+    const del = vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+
+    const result = await relocateSessionSegmentsForRetention(deps, 's');
+
+    expect(result).toEqual({ moved: 1, failed: 0 });
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(put).toHaveBeenCalledWith(
+      'rum-retained/proj/2026/01/01/s/v0/0.json.gz',
+      expect.any(Buffer),
+      'application/gzip',
+    );
+    expect(del).toHaveBeenCalledWith('rum/proj/2026/01/01/s/v0/0.json.gz');
+    expect((deps.stmts.getRumSegment.get('a') as RumSegmentRow).storage_key).toBe(
+      'rum-retained/proj/2026/01/01/s/v0/0.json.gz',
+    );
+  });
+
+  it('removes the kept copy when repointing the row fails, so nothing is left unreferenced', async () => {
+    seedS3Segment('a', 's', 'rum/proj/2026/01/01/s/v0/0.json.gz');
+    vi.spyOn(S3ArtifactStore.prototype, 'getBuffer').mockResolvedValue(Buffer.from('bytes'));
+    const put = vi.spyOn(S3ArtifactStore.prototype, 'put').mockResolvedValue(undefined);
+    const del = vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+    deps.stmts.updateRumSegmentStorageKey = {
+      run: () => {
+        throw new Error('SQLITE_FULL');
+      },
+    } as unknown as Stmts['updateRumSegmentStorageKey'];
+
+    const result = await relocateSessionSegmentsForRetention(deps, 's', () => {});
+
+    expect(result).toEqual({ moved: 0, failed: 1 });
+    expect(put).toHaveBeenCalledWith(
+      'rum-retained/proj/2026/01/01/s/v0/0.json.gz',
+      expect.any(Buffer),
+      'application/gzip',
+    );
+    // Only the orphaned kept copy is deleted; the original stays as the live object.
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(del).toHaveBeenCalledWith('rum-retained/proj/2026/01/01/s/v0/0.json.gz');
+    expect((deps.stmts.getRumSegment.get('a') as RumSegmentRow).storage_key).toBe(
+      'rum/proj/2026/01/01/s/v0/0.json.gz',
+    );
+  });
+
+  it('leaves a segment at its old key when the copy fails, so a retry can move it', async () => {
+    seedS3Segment('a', 's', 'rum/proj/2026/01/01/s/v0/0.json.gz');
+    vi.spyOn(S3ArtifactStore.prototype, 'getBuffer').mockResolvedValue(Buffer.from('bytes'));
+    vi.spyOn(S3ArtifactStore.prototype, 'put').mockRejectedValue(new Error('AccessDenied'));
+    const del = vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+
+    const result = await relocateSessionSegmentsForRetention(deps, 's', () => {});
+
+    expect(result).toEqual({ moved: 0, failed: 1 });
+    expect(del).not.toHaveBeenCalled();
+    expect((deps.stmts.getRumSegment.get('a') as RumSegmentRow).storage_key).toBe(
+      'rum/proj/2026/01/01/s/v0/0.json.gz',
+    );
+  });
+
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  const KEEP = {
+    retainedUntil: toSqliteUtc(Date.now() + 86_400_000),
+    flaggedAt: toSqliteUtc(Date.now()),
+  };
+
+  it('a Keep that arrives while the sweeper is deleting bytes does not succeed over them', async () => {
+    const row = await appendSegment(deps, {
+      sessionId: 'sweep',
+      viewId: 'v',
+      indexInView: 0,
+      projectId: 'proj',
+      events: [SNAPSHOT],
+    });
+    db.prepare(`UPDATE rum_sessions SET updated_at = '2000-01-01 00:00:00'`).run();
+    const gate = deferred();
+    const realDelete = LocalArtifactStore.prototype.delete;
+    const del = vi.spyOn(LocalArtifactStore.prototype, 'delete').mockImplementation(async function (
+      this: LocalArtifactStore,
+      key: string,
+    ) {
+      await gate.promise;
+      return realDelete.call(this, key);
+    });
+
+    const expiring = expireRumSession(deps, 'sweep', '2001-01-01 00:00:00');
+    await vi.waitFor(() => expect(del).toHaveBeenCalled());
+    const keeping = setSessionRetention(deps, 'sweep', KEEP);
+    gate.resolve();
+
+    expect(await expiring).toEqual({ segmentsDeleted: 1, sessionDeleted: true });
+    expect(await keeping).toEqual({ found: false, moved: 0, failed: 0 });
+    expect(deps.stmts.getRumSession.get('sweep')).toBeUndefined();
+    expect(deps.stmts.getRumSegment.get(row.id)).toBeUndefined();
+  });
+
+  it('a segment still uploading when Keep runs ends up under the kept prefix', async () => {
+    deps.config = {
+      dataDir,
+      artifactsBucket: 'bucket',
+      artifactsBucketRegion: 'us-east-1',
+    } as unknown as AppConfig;
+    deps.stmts.insertRumSession.run(
+      'live',
+      'proj',
+      null,
+      null,
+      0,
+      0,
+      0,
+      0,
+      0,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    );
+    // In-memory bucket: an object only exists once its upload finishes.
+    const objects = new Map<string, Buffer>();
+    const gate = deferred();
+    let first = true;
+    const put = vi
+      .spyOn(S3ArtifactStore.prototype, 'put')
+      .mockImplementation(async (key: string, body: Buffer) => {
+        if (first) {
+          first = false;
+          await gate.promise;
+        }
+        objects.set(key, body);
+      });
+    vi.spyOn(S3ArtifactStore.prototype, 'getBuffer').mockImplementation(async (key: string) => {
+      const body = objects.get(key);
+      if (!body) throw new Error(`NoSuchKey: ${key}`);
+      return body;
+    });
+    vi.spyOn(S3ArtifactStore.prototype, 'delete').mockImplementation(async (key: string) => {
+      objects.delete(key);
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const appending = appendSegment(deps, {
+      sessionId: 'live',
+      viewId: 'v',
+      indexInView: 0,
+      projectId: 'proj',
+      events: [SNAPSHOT],
+    });
+    await vi.waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    const keeping = setSessionRetention(deps, 'live', KEEP);
+    gate.resolve();
+
+    const appended = await appending;
+    expect(await keeping).toEqual({ found: true, moved: 1, failed: 0 });
+    const final = deps.stmts.getRumSegment.get(appended.id) as RumSegmentRow;
+    expect(final.storage_key.startsWith('rum-retained/proj/')).toBe(true);
+    expect([...objects.keys()]).toEqual([final.storage_key]);
+  });
+
+  it('a sweep queued behind an in-flight append re-checks expiry and deletes nothing', async () => {
+    const old = await appendSegment(deps, {
+      sessionId: 'revived',
+      viewId: 'v',
+      indexInView: 0,
+      projectId: 'proj',
+      events: [SNAPSHOT],
+    });
+    db.prepare(`UPDATE rum_sessions SET updated_at = '2000-01-01 00:00:00'`).run();
+    const gate = deferred();
+    const realPut = LocalArtifactStore.prototype.put;
+    const put = vi.spyOn(LocalArtifactStore.prototype, 'put').mockImplementation(async function (
+      this: LocalArtifactStore,
+      key: string,
+      body: Buffer,
+      type: string,
+    ) {
+      await gate.promise;
+      return realPut.call(this, key, body, type);
+    });
+    const del = vi.spyOn(LocalArtifactStore.prototype, 'delete');
+
+    const appending = appendSegment(deps, {
+      sessionId: 'revived',
+      viewId: 'v',
+      indexInView: 1,
+      projectId: 'proj',
+      events: [{ type: 3, timestamp: 2000 }],
+    });
+    await vi.waitFor(() => expect(put).toHaveBeenCalled());
+    // The sweep picked this session while it looked expired, before the append landed.
+    const expiring = expireRumSession(deps, 'revived', '2001-01-01 00:00:00');
+    gate.resolve();
+
+    const fresh = await appending;
+    expect(await expiring).toEqual({ segmentsDeleted: 0, sessionDeleted: false });
+    expect(del).not.toHaveBeenCalled();
+    expect(deps.stmts.getRumSegment.get(old.id)).toBeTruthy();
+    expect(deps.stmts.getRumSegment.get(fresh.id)).toBeTruthy();
+    expect(deps.stmts.getRumSession.get('revived')).toBeTruthy();
+  });
+
+  it('sessionStillExpired requires the row, the cutoff, and no live Keep', () => {
+    const now = Date.UTC(2026, 9, 2);
+    const cutoff = '2026-09-01 00:00:00';
+    const old = { updated_at: '2026-08-01 00:00:00', retained_until: null };
+    expect(sessionStillExpired(old, cutoff, now)).toBe(true);
+    expect(sessionStillExpired(undefined, cutoff, now)).toBe(false);
+    expect(sessionStillExpired({ ...old, updated_at: '2026-09-15 00:00:00' }, cutoff, now)).toBe(
+      false,
+    );
+    expect(
+      sessionStillExpired({ ...old, retained_until: toSqliteUtc(now + 1000) }, cutoff, now),
+    ).toBe(false);
+  });
+
+  it('leaves an orphan segment alone once its session row exists again', async () => {
+    seedS3Segment('orph', 'back', 'rum/proj/2026/01/01/back/v0/0.json.gz');
+    deps.stmts.insertRumSession.run(
+      'back',
+      'proj',
+      null,
+      null,
+      0,
+      0,
+      0,
+      0,
+      0,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    );
+    const del = vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+    const orphan = deps.stmts.getRumSegment.get('orph') as RumSegmentRow;
+
+    expect(await expireOrphanSegment(deps, orphan, false)).toBe(false);
+    expect(del).not.toHaveBeenCalled();
+    expect(deps.stmts.getRumSegment.get('orph')).toBeTruthy();
+  });
+
+  it('flags relocation as pending while a kept session has S3 segments under rum/', () => {
+    const now = Date.UTC(2026, 9, 2);
+    const kept = { retained_until: toSqliteUtc(now + 1000) };
+    const onRum = { storage_kind: 's3', storage_key: 'rum/p/x.json.gz' };
+    const moved = { storage_kind: 's3', storage_key: 'rum-retained/p/x.json.gz' };
+    const local = { storage_kind: 'local', storage_key: 'rum/p/y.json.gz' };
+    expect(isRelocationPending(kept, [moved, onRum], now)).toBe(true);
+    expect(isRelocationPending(kept, [moved, local], now)).toBe(false);
+    expect(isRelocationPending({ retained_until: null }, [onRum], now)).toBe(false);
+  });
+
+  it('manifest reports the Keep state', () => {
+    const manifest = buildSessionSegmentManifest('s', [], {
+      retained_until: '2027-01-01 00:00:00',
+      retention_flagged_at: '2026-10-01 00:00:00',
+    });
+    expect(manifest.retainedUntil).toBe('2027-01-01 00:00:00');
+    expect(manifest.retentionFlaggedAt).toBe('2026-10-01 00:00:00');
+    expect(manifest.relocationPending).toBe(false);
+    expect(buildSessionSegmentManifest('s', []).retainedUntil).toBeNull();
   });
 });

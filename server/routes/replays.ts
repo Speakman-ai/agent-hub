@@ -6,7 +6,7 @@ import { mkdirSync } from 'fs';
 import { writeFile, rm } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import type { Project, RouteDeps, SessionReplayRow } from '../types.js';
-import type { RumSegmentRow } from '../types.js';
+import type { RumSegmentRow, RumSessionRow } from '../types.js';
 import {
   storeReplay,
   readReplayEventsPage,
@@ -25,6 +25,8 @@ import {
   readSegment,
   appendSegment,
   SegmentNeedsSnapshotError,
+  setSessionRetention,
+  isRelocationPending,
 } from '../replays/segment-store.js';
 import { computeEnrichment } from '../replays/rum-enrichment.js';
 import { readAllReplayEvents } from '../replays/replay-context-loader.js';
@@ -36,7 +38,7 @@ import { canViewProject, type VisibilityCaller } from '../project-visibility.js'
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { verifyRumToken } from '../rum-clients-store.js';
 import { resolveReplayPolicy, resolveIngestQuota } from '../replays/replay-config.js';
-import { computeRetainedUntil, toSqliteUtc } from '../replays/replay-retention.js';
+import { activeRetention, computeRetainedUntil, toSqliteUtc } from '../replays/replay-retention.js';
 import { resolveUploadsDir } from '../uploads-dir.js';
 
 /**
@@ -1037,7 +1039,62 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
   router.get('/api/replays/sessions/:sessionId/segments', (req: Request, res: Response) => {
     const segments = loadAuthorizedSessionSegments(req, res);
     if (!segments) return; // 404 already sent
-    return res.json(buildSessionSegmentManifest(String(req.params.sessionId), segments));
+    const sessionId = String(req.params.sessionId);
+    const session = stmts.getRumSession.get(sessionId) as RumSessionRow | undefined;
+    return res.json(buildSessionSegmentManifest(sessionId, segments, session));
+  });
+
+  // Keep / un-Keep a segmented session
+  // The segmented counterpart of `POST /api/replays/:id/retention`, with the same
+  // view == manage authorization. Flagging alone only protects the index rows: S3
+  // applies the shortest matching lifecycle expiration, so a per-session rule
+  // can't outlive the `rum/` rule. The segment objects therefore move to the kept
+  // prefix, which no lifecycle rule matches. `setSessionRetention` does this
+  // under the per-session lock shared with append and the retention sweep.
+  router.post('/api/replays/sessions/:sessionId/retention', async (req: Request, res: Response) => {
+    const segments = loadAuthorizedSessionSegments(req, res);
+    if (!segments) return; // 404 already sent
+    const sessionId = String(req.params.sessionId);
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.extend !== 'boolean') {
+      return res.status(400).json({ error: 'Body must be { extend: boolean }' });
+    }
+    let retention: { retainedUntil: string; flaggedAt: string } | null = null;
+    if (body.extend) {
+      const projectId = segments[0]!.project_id;
+      const nowMs = Date.now();
+      retention = {
+        retainedUntil: toSqliteUtc(
+          computeRetainedUntil(
+            nowMs,
+            (projectId ? findProject(projectId) : null)?.replay?.extendedRetentionMonths,
+          ),
+        ),
+        flaggedAt: toSqliteUtc(nowMs),
+      };
+    }
+
+    const result = await setSessionRetention({ stmts, config }, sessionId, retention);
+    if (!result.found) {
+      return res
+        .status(409)
+        .json({ error: 'Session has no index row (it may have just expired); cannot flag it' });
+    }
+
+    const row = stmts.getRumSession.get(sessionId) as RumSessionRow | undefined;
+    const view = {
+      sessionId,
+      ...activeRetention(row?.retained_until, row?.retention_flagged_at),
+      relocationPending: isRelocationPending(row, listSessionSegments(stmts, sessionId)),
+    };
+    if (result.failed > 0) {
+      return res.status(502).json({
+        error: `Kept, but ${result.failed} segment(s) could not be moved off expiring storage. Press Keep again to retry.`,
+        ...view,
+      });
+    }
+    return res.json(view);
   });
 
   // Read: one segment's decoded events
@@ -1177,8 +1234,7 @@ function toReplayView(row: SessionReplayRow): ReplayView {
     uncompressedSize: row.uncompressed_size,
     supportTicketId: row.support_ticket_id,
     cardId: row.card_id,
-    retainedUntil: row.retained_until ?? null,
-    retentionFlaggedAt: row.retention_flagged_at ?? null,
+    ...activeRetention(row.retained_until, row.retention_flagged_at),
     meta,
     eventsUrl: `/api/replays/${row.id}/events`,
     defaultPageSize: DEFAULT_EVENTS_PAGE,

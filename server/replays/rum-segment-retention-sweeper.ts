@@ -41,8 +41,9 @@
  */
 
 import { getArtifactStoreForLocation } from '../artifacts/artifact-store.js';
-import { listSessionSegments } from './segment-store.js';
+import { listSessionSegments, isRetainedSegmentKey, isSessionRetained } from './segment-store.js';
 import { toSqliteUtc } from './replay-retention.js';
+import { withSessionLock } from './session-lock.js';
 import { RETENTION_SWEEP_INTERVAL_MS, DEFAULT_MAX_PER_SWEEP } from './replay-retention-sweeper.js';
 import type { ProjectRetentionOverride } from './replay-config.js';
 import type { AppConfig, RumSegmentRow, RumSessionRow, Stmts } from '../types.js';
@@ -125,7 +126,9 @@ async function reclaimSegmentBytes(
     return;
   }
   if (seg.storage_kind === 's3') {
-    if (lifecycleProvisioned) return;
+    // Kept-prefix objects sit outside every lifecycle rule, so only the app
+    // ever deletes them.
+    if (lifecycleProvisioned && !isRetainedSegmentKey(seg.storage_key)) return;
     await getArtifactStoreForLocation(seg, config).delete(seg.storage_key);
     return;
   }
@@ -148,36 +151,75 @@ export interface ExpireRumSessionResult {
  * rows for the next sweep rather than stranding an object. Throws if any byte
  * delete fails.
  *
- * Concurrency: byte reclamation is the only `await` (it yields the event loop), so
- * a late ingest for this same session can append a NEW segment and bump
- * `updated_at` while we reclaim. Two guards make that safe:
- *   1. We delete ONLY the segment ids we actually listed+reclaimed — never the
- *      newly-appended one, whose bytes we never touched.
- *   2. The session row delete is conditional on `updated_at < cutoff`, so a
- *      refreshed (now-active) session is KEPT rather than dropped out from under
- *      its fresh segment.
- * Everything after the reclamation loop is fully SYNCHRONOUS (no `await`), so no
- * concurrent append can interleave between the row deletes in the single-process
- * Hub — the same assumption `rum-session-store.ts` relies on.
+ * Concurrency: the sweep picks candidates OUTSIDE the session lock, so by the
+ * time it holds the lock an append may have refreshed the session or a Keep may
+ * have flagged it. Every decision is therefore re-made from a fresh read under
+ * the lock (`sessionStillExpired`), and the reclaim + row deletes all happen
+ * while holding it, so nothing that appends, keeps, or deletes this session can
+ * interleave with the destructive work.
  */
 export async function expireRumSession(
   deps: { stmts: Stmts; config: AppConfig },
   sessionId: string,
   cutoff: string,
   lifecycleProvisioned: boolean = false,
+  nowMs: number = Date.now(),
 ): Promise<ExpireRumSessionResult> {
-  const segments = listSessionSegments(deps.stmts, sessionId);
-  for (const seg of segments) {
-    await reclaimSegmentBytes(deps.config, seg, lifecycleProvisioned);
-  }
-  // --- synchronous from here (no await) ---
-  let segmentsDeleted = 0;
-  for (const seg of segments) {
-    segmentsDeleted += deps.stmts.deleteRumSegment.run(seg.id).changes as number;
-  }
-  const sessionDeleted =
-    (deps.stmts.deleteExpiredRumSession.run(sessionId, cutoff).changes as number) > 0;
-  return { segmentsDeleted, sessionDeleted };
+  return withSessionLock(sessionId, async () => {
+    const session = deps.stmts.getRumSession.get(sessionId) as RumSessionRow | undefined;
+    if (!sessionStillExpired(session, cutoff, nowMs)) {
+      return { segmentsDeleted: 0, sessionDeleted: false };
+    }
+    const segments = listSessionSegments(deps.stmts, sessionId);
+    for (const seg of segments) {
+      await reclaimSegmentBytes(deps.config, seg, lifecycleProvisioned);
+    }
+    let segmentsDeleted = 0;
+    for (const seg of segments) {
+      segmentsDeleted += deps.stmts.deleteRumSegment.run(seg.id).changes as number;
+    }
+    const sessionDeleted =
+      (deps.stmts.deleteExpiredRumSession.run(sessionId, cutoff, toSqliteUtc(nowMs))
+        .changes as number) > 0;
+    return { segmentsDeleted, sessionDeleted };
+  });
+}
+
+/**
+ * Whether a session row (freshly read under the session lock) is still eligible
+ * to expire: it exists, its newest activity is older than `cutoff`, and no Keep
+ * is in force. The candidate queries apply the same conditions, but they ran
+ * before the lock was taken.
+ */
+export function sessionStillExpired(
+  session: Pick<RumSessionRow, 'updated_at' | 'retained_until'> | null | undefined,
+  cutoff: string,
+  nowMs: number,
+): boolean {
+  if (!session) return false;
+  if (!(session.updated_at < cutoff)) return false;
+  return !isSessionRetained(session, nowMs);
+}
+
+/**
+ * Expire one orphan segment (its session row was gone when the sweep picked it).
+ * Re-checked under the session lock: if an append has since recreated the
+ * session row, the segment belongs to a live session again and is left alone.
+ * Returns whether the row was deleted. Throws if the byte delete fails.
+ */
+export async function expireOrphanSegment(
+  deps: { stmts: Stmts; config: AppConfig },
+  seg: RumSegmentRow,
+  lifecycleProvisioned: boolean,
+): Promise<boolean> {
+  return withSessionLock(seg.session_id, async () => {
+    if (deps.stmts.getRumSession.get(seg.session_id)) return false;
+    const current = deps.stmts.getRumSegment.get(seg.id) as RumSegmentRow | undefined;
+    if (!current) return false;
+    await reclaimSegmentBytes(deps.config, current, lifecycleProvisioned);
+    deps.stmts.deleteRumSegment.run(current.id);
+    return true;
+  });
 }
 
 /**
@@ -204,6 +246,7 @@ export async function runRumSegmentRetentionSweep(
   }
 
   const nowMs = now();
+  const nowSqlite = toSqliteUtc(nowMs);
   const cap = Math.max(1, Math.trunc(maxPerSweep));
 
   let sessionsDeleted = 0;
@@ -224,6 +267,7 @@ export async function runRumSegmentRetentionSweep(
           row.session_id,
           cutoff,
           provisioned,
+          nowMs,
         );
         segmentsDeleted += outcome.segmentsDeleted;
         // A session refreshed by a mid-sweep ingest is intentionally kept; only
@@ -241,9 +285,7 @@ export async function runRumSegmentRetentionSweep(
   const reapOrphans = async (orphans: RumSegmentRow[], provisioned: boolean): Promise<void> => {
     for (const seg of orphans) {
       try {
-        await reclaimSegmentBytes(config, seg, provisioned);
-        stmts.deleteRumSegment.run(seg.id);
-        segmentsDeleted += 1;
+        if (await expireOrphanSegment({ stmts, config }, seg, provisioned)) segmentsDeleted += 1;
       } catch (err) {
         failed += 1;
         log(`[rum-retention] failed to expire orphan segment ${seg.id}: ${(err as Error).message}`);
@@ -262,7 +304,12 @@ export async function runRumSegmentRetentionSweep(
     const cutoff = toSqliteUtc(nowMs - o.retentionDays * MS_PER_DAY);
     const projectProvisioned = deps.isProjectLifecycleProvisioned?.(o.projectId) ?? false;
     await reapSessions(
-      stmts.getExpiredRumSessionsByProject.all(cutoff, o.projectId, cap) as RumSessionRow[],
+      stmts.getExpiredRumSessionsByProject.all(
+        cutoff,
+        o.projectId,
+        nowSqlite,
+        cap,
+      ) as RumSessionRow[],
       cutoff,
       projectProvisioned,
     );
@@ -279,7 +326,7 @@ export async function runRumSegmentRetentionSweep(
     const globalProvisioned = deps.isLifecycleProvisioned?.() ?? false;
     globalCutoff = toSqliteUtc(nowMs - globalDays * MS_PER_DAY);
     await reapSessions(
-      stmts.getExpiredRumSessions.all(globalCutoff, cap) as RumSessionRow[],
+      stmts.getExpiredRumSessions.all(globalCutoff, nowSqlite, cap) as RumSessionRow[],
       globalCutoff,
       globalProvisioned,
     );

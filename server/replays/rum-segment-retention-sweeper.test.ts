@@ -11,6 +11,7 @@ import {
   expireRumSession,
 } from './rum-segment-retention-sweeper.js';
 import { toSqliteUtc } from './replay-retention.js';
+import { RUM_EVENTS_SCHEMA } from './rum-events-db.js';
 import { resetArtifactStoreCache } from '../artifacts/artifact-store.js';
 import { S3ArtifactStore } from '../artifacts/artifact-store-s3.js';
 import type { AppConfig, RumSegmentRow, Stmts } from '../types.js';
@@ -25,50 +26,7 @@ const SNAPSHOT_EVENTS: ReplayEvent[] = [
 ];
 
 function makeStmts(database: Database.Database): Stmts {
-  database.exec(`
-    CREATE TABLE rum_segments (
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      view_id TEXT NOT NULL,
-      project_id TEXT,
-      index_in_view INTEGER NOT NULL,
-      has_full_snapshot INTEGER NOT NULL DEFAULT 0,
-      start_ts INTEGER NOT NULL DEFAULT 0,
-      end_ts INTEGER NOT NULL DEFAULT 0,
-      event_count INTEGER NOT NULL DEFAULT 0,
-      byte_size INTEGER NOT NULL DEFAULT 0,
-      storage_kind TEXT NOT NULL,
-      storage_key TEXT NOT NULL,
-      storage_bucket TEXT,
-      storage_region TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE UNIQUE INDEX idx_rum_segments_slot
-      ON rum_segments(session_id, view_id, index_in_view);
-    CREATE INDEX idx_rum_segments_session
-      ON rum_segments(session_id, start_ts, index_in_view);
-    CREATE TABLE rum_sessions (
-      session_id TEXT PRIMARY KEY,
-      project_id TEXT,
-      started_at INTEGER,
-      ended_at INTEGER,
-      time_spent INTEGER NOT NULL DEFAULT 0,
-      view_count INTEGER NOT NULL DEFAULT 0,
-      action_count INTEGER NOT NULL DEFAULT 0,
-      error_count INTEGER NOT NULL DEFAULT 0,
-      frustration_count INTEGER NOT NULL DEFAULT 0,
-      usr_id TEXT,
-      usr_email TEXT,
-      usr_name TEXT,
-      usr_attributes TEXT,
-      device_type TEXT,
-      browser TEXT,
-      os TEXT,
-      geo_country TEXT,
-      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
+  database.exec(RUM_EVENTS_SCHEMA);
   return {
     insertRumSegment: database.prepare(
       `INSERT INTO rum_segments
@@ -107,6 +65,7 @@ function makeStmts(database: Database.Database): Stmts {
     getExpiredRumSessions: database.prepare(
       `SELECT * FROM rum_sessions
         WHERE updated_at < ?
+          AND (retained_until IS NULL OR retained_until <= ?)
         ORDER BY updated_at ASC
         LIMIT ?`,
     ),
@@ -114,11 +73,20 @@ function makeStmts(database: Database.Database): Stmts {
       `SELECT * FROM rum_sessions
         WHERE updated_at < ?
           AND project_id = ?
+          AND (retained_until IS NULL OR retained_until <= ?)
         ORDER BY updated_at ASC
         LIMIT ?`,
     ),
     deleteExpiredRumSession: database.prepare(
-      `DELETE FROM rum_sessions WHERE session_id = ? AND updated_at < ?`,
+      `DELETE FROM rum_sessions
+        WHERE session_id = ? AND updated_at < ?
+          AND (retained_until IS NULL OR retained_until <= ?)`,
+    ),
+    flagRumSessionRetention: database.prepare(
+      `UPDATE rum_sessions SET retained_until = ?, retention_flagged_at = ? WHERE session_id = ?`,
+    ),
+    updateRumSegmentStorageKey: database.prepare(
+      `UPDATE rum_segments SET storage_key = ? WHERE id = ?`,
     ),
     getExpiredOrphanRumSegments: database.prepare(
       `SELECT s.* FROM rum_segments s
@@ -311,6 +279,66 @@ describe('runRumSegmentRetentionSweep', () => {
       expect(result).toMatchObject({ enabled: true, sessionsDeleted: 1, segmentsDeleted: 1 });
       expect(stmts.getRumSession.get('s3-orphan-risk')).toBeUndefined();
       expect(s3DeleteSpy).toHaveBeenCalledWith('rum/proj/2026/05/01/s3-orphan-risk/v0/0.json.gz');
+    } finally {
+      s3DeleteSpy.mockRestore();
+    }
+  });
+
+  it('skips a kept session until its retained_until passes', async () => {
+    const seg = await seedLocalSession({ sessionId: 's-kept', ageDays: 90 });
+    stmts.flagRumSessionRetention.run(
+      toSqliteUtc(Date.now() + 30 * MS_PER_DAY),
+      toSqliteUtc(Date.now()),
+      's-kept',
+    );
+
+    const result = await runRumSegmentRetentionSweep({ stmts, config });
+
+    expect(result).toMatchObject({ sessionsDeleted: 0, segmentsDeleted: 0 });
+    expect(stmts.getRumSession.get('s-kept')).toBeTruthy();
+    expect(stmts.getRumSegment.get(seg.id)).toBeTruthy();
+    expect(existsSync(blobPath(seg))).toBe(true);
+  });
+
+  it('skips a kept session in a per-tenant pass too', async () => {
+    config = { dataDir, replayRetentionDays: 0 } as unknown as AppConfig;
+    await seedLocalSession({ sessionId: 's-kept-t', ageDays: 20, projectId: 'tight' });
+    stmts.flagRumSessionRetention.run(
+      toSqliteUtc(Date.now() + MS_PER_DAY),
+      toSqliteUtc(Date.now()),
+      's-kept-t',
+    );
+
+    const result = await runRumSegmentRetentionSweep({
+      stmts,
+      config,
+      getRetentionOverrides: () => [{ projectId: 'tight', retentionDays: 7 }],
+    });
+
+    expect(result.sessionsDeleted).toBe(0);
+    expect(stmts.getRumSession.get('s-kept-t')).toBeTruthy();
+  });
+
+  it('deletes kept-prefix S3 bytes itself once the Keep lapses, even with lifecycle provisioned', async () => {
+    seedS3Session('s3-was-kept');
+    const keptKey = 'rum-retained/proj/2026/05/01/s3-was-kept/v0/0.json.gz';
+    stmts.updateRumSegmentStorageKey.run(keptKey, 's3-was-kept-seg0');
+    stmts.flagRumSessionRetention.run(
+      toSqliteUtc(Date.now() - MS_PER_DAY),
+      toSqliteUtc(Date.now() - 400 * MS_PER_DAY),
+      's3-was-kept',
+    );
+    const s3DeleteSpy = vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+    try {
+      const result = await runRumSegmentRetentionSweep({
+        stmts,
+        config,
+        isLifecycleProvisioned: () => true,
+      });
+
+      expect(result).toMatchObject({ sessionsDeleted: 1, segmentsDeleted: 1 });
+      // No lifecycle rule matches rum-retained/, so the sweeper must delete it.
+      expect(s3DeleteSpy).toHaveBeenCalledWith(keptKey);
     } finally {
       s3DeleteSpy.mockRestore();
     }

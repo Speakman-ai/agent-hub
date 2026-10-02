@@ -70,7 +70,7 @@ const ReplayMetadataResponse = registerComponent(
       cardId: z.string().nullable(),
       retainedUntil: z.string().nullable().openapi({
         description:
-          'Extended-retention flag: absolute instant this capture is retained until (SQLite-UTC), or null when on the default window. When in the future the retention sweeper skips the row.',
+          'Extended-retention flag: absolute instant this capture is retained until (SQLite-UTC), or null when on the default window. A lapsed flag is reported as null (it no longer protects the capture), together with `retentionFlaggedAt`.',
       }),
       retentionFlaggedAt: z.string().nullable().openapi({
         description:
@@ -568,6 +568,18 @@ const SessionSegmentManifestResponse = registerComponent(
       durationMs: z.number().openapi({
         description: 'Span from the earliest segment start to the latest segment end (ms).',
       }),
+      retainedUntil: z.string().nullable().openapi({
+        description:
+          'Keep (extended retention) instant, `YYYY-MM-DD HH:MM:SS` UTC, or null on the default window. A lapsed Keep is reported as null.',
+      }),
+      retentionFlaggedAt: z
+        .string()
+        .nullable()
+        .openapi({ description: 'When Keep was enabled, or null.' }),
+      relocationPending: z.boolean().openapi({
+        description:
+          'Kept, but some S3 segments are still under the expiring `rum/` prefix. Keeping again (`extend: true`) retries the move.',
+      }),
       segments: z.array(SegmentManifestEntrySchema).openapi({
         description: 'Segments in playback order (chronological, then index within a view).',
       }),
@@ -620,6 +632,65 @@ registerPath({
     404: errorResponse(
       'No segments for that session id, or the caller is not authorized to read them.',
     ),
+  },
+});
+
+const SessionRetentionResponse = registerComponent(
+  'SessionRetention',
+  z
+    .object({
+      sessionId: z.string(),
+      retainedUntil: z.string().nullable().openapi({
+        description: 'Keep instant, `YYYY-MM-DD HH:MM:SS` UTC, or null when cleared or lapsed.',
+      }),
+      retentionFlaggedAt: z.string().nullable(),
+      relocationPending: z.boolean().openapi({
+        description:
+          'Kept, but some S3 segments are still under the expiring `rum/` prefix; retry with `extend: true`.',
+      }),
+    })
+    .openapi({ description: 'Extended-retention state of a segmented session.' }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/replays/sessions/{sessionId}/retention',
+  tags: ['Bug Reports'],
+  summary: 'Keep / un-Keep a segmented session (authenticated)',
+  description:
+    'Extended retention for a segmented (continuous) session, matching `POST /api/replays/{id}/retention` for monolithic captures. `{ extend: true }` sets `retainedUntil` = now + the project’s extension window (`replay.extendedRetentionMonths`, clamped [1,15] months, default 15); the retention sweeper skips the session until then. On S3 storage the session’s segment objects also move from `rum/` to `rum-retained/`, outside the bucket lifecycle rules, and segments recorded after Keep land there directly. If some objects fail to move the call returns 502 with the flag still set; repeating it retries only the remaining objects. `{ extend: false }` clears the flag so the session rejoins the default sweep. Same authorization as the segment manifest; unauthorized access is masked as 404.',
+  request: {
+    ...sessionIdParam,
+    body: {
+      description: 'Whether to keep (flag) or clear the session’s extended retention.',
+      content: jsonContent(
+        z
+          .object({
+            extend: z
+              .boolean()
+              .openapi({ description: 'true to keep for extended retention; false to clear.' }),
+          })
+          .openapi({ description: 'Extended-retention flag toggle.' }),
+      ),
+    },
+  },
+  responses: {
+    200: {
+      description: 'Updated retention state.',
+      content: jsonContent(SessionRetentionResponse),
+    },
+    400: errorResponse('Body is not { extend: boolean }.'),
+    404: errorResponse(
+      'No segments for that session id, or the caller is not authorized to manage them.',
+    ),
+    409: errorResponse(
+      'The session has segments but no session index row to flag (for example, it just expired).',
+    ),
+    502: {
+      description:
+        'Kept, but some segment objects could not be moved (`relocationPending: true`); retry with `extend: true`.',
+      content: jsonContent(SessionRetentionResponse.extend({ error: z.string() })),
+    },
   },
 });
 

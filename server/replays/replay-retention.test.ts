@@ -7,6 +7,7 @@ import {
   addMonthsUtc,
   computeRetainedUntil,
   toSqliteUtc,
+  activeRetention,
 } from './replay-retention.js';
 
 describe('clampExtendedRetentionMonths', () => {
@@ -82,5 +83,21 @@ describe('computeRetainedUntil', () => {
     // composition end-to-end so the persisted `retained_until` format is locked.
     const enabledAt = Date.UTC(2026, 5, 10, 9, 0, 0);
     expect(toSqliteUtc(computeRetainedUntil(enabledAt, 15))).toBe('2027-09-10 09:00:00');
+  });
+});
+
+describe('activeRetention', () => {
+  const now = Date.UTC(2026, 9, 2, 12, 0, 0);
+  it('passes a future Keep through', () => {
+    expect(activeRetention('2027-01-01 00:00:00', '2026-10-01 00:00:00', now)).toEqual({
+      retainedUntil: '2027-01-01 00:00:00',
+      retentionFlaggedAt: '2026-10-01 00:00:00',
+    });
+  });
+  it('reports a lapsed or exactly-expiring Keep as not kept', () => {
+    const off = { retainedUntil: null, retentionFlaggedAt: null };
+    expect(activeRetention('2026-10-01 00:00:00', '2025-07-01 00:00:00', now)).toEqual(off);
+    expect(activeRetention(toSqliteUtc(now), '2025-07-01 00:00:00', now)).toEqual(off);
+    expect(activeRetention(null, null, now)).toEqual(off);
   });
 });

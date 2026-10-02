@@ -453,6 +453,11 @@ export interface RumSessionRow {
   first_seen_at: string;
   /** Wall-clock of the most recent rollup update, `datetime('now')` UTC string. */
   updated_at: string;
+  /** Extended-retention (Keep) instant, SQLite-UTC; the sweeper skips the
+   *  session until it passes. NULL = default retention window. */
+  retained_until?: string | null;
+  /** When Keep was enabled, or NULL. */
+  retention_flagged_at?: string | null;
 }
 
 /**
@@ -2093,6 +2098,9 @@ export interface Stmts {
    *  BASE retention override. Params: (cutoff, projectId, limit). */
   getExpiredRumSessionsByProject: Stmt;
   deleteExpiredRumSession: Stmt;
+  flagRumSessionRetention: Stmt;
+  clearRumSessionRetention: Stmt;
+  updateRumSegmentStorageKey: Stmt;
   getExpiredOrphanRumSegments: Stmt;
   /** Per-project variant of {@link getExpiredOrphanRumSegments} for a tenant with
    *  a BASE retention override. Params: (cutoff, projectId, limit). */

@@ -100,7 +100,12 @@ export const RUM_EVENTS_SCHEMA = `
     os TEXT,
     geo_country TEXT,
     first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    -- Extended-retention flag (Keep). While retained_until is in the future the
+    -- retention sweeper skips the session; its S3 segment objects are moved
+    -- under the retained prefix so the rum/ lifecycle rule can't expire them.
+    retained_until TEXT,
+    retention_flagged_at TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_rum_sessions_project
     ON rum_sessions(project_id, started_at DESC);
@@ -213,9 +218,30 @@ export function initRumEventsDb(dir: string): Database.Database {
   // primary-DB requests (see server/db-checkpoint.ts).
   registerCheckpointDb(db, rumEventsCheckpointLabel(dir));
   db.exec(RUM_EVENTS_SCHEMA);
+  healRumEventsColumns(db);
   registry.set(dbPath, db);
   current = db;
   return db;
+}
+
+/** Columns added after `rum_sessions` first shipped. `CREATE TABLE IF NOT
+ *  EXISTS` won't add them to an existing file, so ALTER them in when missing. */
+const RUM_SESSIONS_ADDED_COLUMNS: ReadonlyArray<[string, string]> = [
+  ['retained_until', 'TEXT'],
+  ['retention_flagged_at', 'TEXT'],
+];
+
+export function healRumEventsColumns(db: Database.Database): void {
+  const have = new Set(
+    (
+      db.prepare(`SELECT name FROM pragma_table_info('rum_sessions')`).all() as Array<{
+        name: string;
+      }>
+    ).map((c) => c.name),
+  );
+  for (const [name, type] of RUM_SESSIONS_ADDED_COLUMNS) {
+    if (!have.has(name)) db.exec(`ALTER TABLE rum_sessions ADD COLUMN ${name} ${type}`);
+  }
 }
 
 /**

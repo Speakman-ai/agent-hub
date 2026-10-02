@@ -52,7 +52,9 @@ import ReplaysScreen, {
   buildWebReplaysUrl,
   unlinkReplayCapture,
   setReplayRetentionFlag,
+  setSessionKeep,
 } from './ReplaysScreen';
+import { keepStateAt } from '@shared/utils/replayKeep';
 
 const SESSION = {
   sessionId: 's-1',
@@ -212,25 +214,25 @@ describe('ReplayPlayerModal', () => {
     expect(html).toContain('Keep');
   });
 
-  it('hides the Keep control for a segmented session (no session_replays row)', () => {
+  it('offers the Keep control for a segmented session too', () => {
     const html = renderToStaticMarkup(
       <ReplayPlayerModal
         target={{ mode: 'session', sessionId: 's-1', title: 'ada@example.com', meta: [] }}
         projectId="p1"
       />,
     );
-    expect(html).not.toContain('Keep');
+    expect(html).toContain('Keep');
   });
 });
 
 describe('setReplayRetentionFlag', () => {
   it('flags the capture and returns the server-echoed retainedUntil', async () => {
     const apiClient = {
-      setReplayRetention: vi.fn().mockResolvedValue({ retainedUntil: '2027-09-10 09:00:00' }),
+      setReplayRetention: vi.fn().mockResolvedValue({ retainedUntil: '2099-09-10 09:00:00' }),
     };
     const next = await setReplayRetentionFlag({ api: apiClient, replayId: 'r-1', extend: true });
     expect(apiClient.setReplayRetention).toHaveBeenCalledWith('r-1', true);
-    expect(next).toBe('2027-09-10 09:00:00');
+    expect(next).toBe('2099-09-10 09:00:00');
   });
 
   it('falls back to a SQLite-UTC stamp when the response omits retainedUntil', async () => {
@@ -244,11 +246,73 @@ describe('setReplayRetentionFlag', () => {
     expect(next).toBe('2026-07-08 12:34:56');
   });
 
+  it('keeps a segmented session through setSessionRetention', async () => {
+    const apiClient = {
+      setReplayRetention: vi.fn(),
+      setSessionRetention: vi.fn().mockResolvedValue({ retainedUntil: '2099-09-10 09:00:00' }),
+    };
+    const next = await setReplayRetentionFlag({
+      api: apiClient,
+      replayId: null,
+      sessionId: 's-1',
+      extend: true,
+    });
+    expect(apiClient.setSessionRetention).toHaveBeenCalledWith('s-1', true);
+    expect(apiClient.setReplayRetention).not.toHaveBeenCalled();
+    expect(next).toBe('2099-09-10 09:00:00');
+  });
+
   it('returns null when unflagging (extend false)', async () => {
     const apiClient = { setReplayRetention: vi.fn().mockResolvedValue({}) };
     const next = await setReplayRetentionFlag({ api: apiClient, replayId: 'r-1', extend: false });
     expect(apiClient.setReplayRetention).toHaveBeenCalledWith('r-1', false);
     expect(next).toBeNull();
+  });
+});
+
+describe('segmented-session Keep', () => {
+  it('derives the button state, treating an incomplete move as pending', () => {
+    expect(keepStateAt(null, false, Date.now())).toBe('off');
+    expect(keepStateAt('2099-01-01 00:00:00', false, Date.now())).toBe('kept');
+    expect(keepStateAt('2099-01-01 00:00:00', true, Date.now())).toBe('pending');
+  });
+
+  it('treats a lapsed Keep as off so the button renews it', () => {
+    const now = Date.UTC(2026, 9, 2);
+    expect(keepStateAt('2026-10-01 00:00:00', false, now)).toBe('off');
+    expect(keepStateAt('2026-10-01 00:00:00', true, now)).toBe('off');
+    expect(keepStateAt('2026-10-03 00:00:00', false, now)).toBe('kept');
+  });
+
+  it('returns the server view on success', async () => {
+    const apiClient = {
+      setSessionRetention: vi
+        .fn()
+        .mockResolvedValue({ retainedUntil: '2099-01-01 00:00:00', relocationPending: false }),
+      getSessionSegments: vi.fn(),
+    };
+    expect(await setSessionKeep({ api: apiClient, sessionId: 's-1', extend: true })).toEqual({
+      retainedUntil: '2099-01-01 00:00:00',
+      relocationPending: false,
+      error: null,
+    });
+    expect(apiClient.getSessionSegments).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a failed Keep and re-reads the incomplete state for a retry', async () => {
+    const apiClient = {
+      setSessionRetention: vi.fn().mockRejectedValue(new Error('could not be moved')),
+      getSessionSegments: vi
+        .fn()
+        .mockResolvedValue({ retainedUntil: '2099-01-01 00:00:00', relocationPending: true }),
+    };
+    const result = await setSessionKeep({ api: apiClient, sessionId: 's-1', extend: true });
+    expect(result).toEqual({
+      retainedUntil: '2099-01-01 00:00:00',
+      relocationPending: true,
+      error: 'could not be moved',
+    });
+    expect(keepStateAt(result.retainedUntil, result.relocationPending, Date.now())).toBe('pending');
   });
 });
 

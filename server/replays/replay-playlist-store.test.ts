@@ -57,13 +57,32 @@ describe('toPlaylistView', () => {
     const flagged: ReplayPlaylistRow = {
       ...basePlaylist,
       extended_retention: 1,
-      retained_until: '2027-10-08 10:00:00',
+      retained_until: '2099-10-08 10:00:00',
       retention_flagged_at: '2026-07-08 10:00:00',
     };
     const view = toPlaylistView(flagged, 1);
     expect(view.extendedRetention).toBe(true);
-    expect(view.retainedUntil).toBe('2027-10-08 10:00:00');
+    expect(view.retainedUntil).toBe('2099-10-08 10:00:00');
     expect(view.retentionFlaggedAt).toBe('2026-07-08 10:00:00');
+  });
+});
+
+describe('lapsed playlist Keep', () => {
+  it('reports a lapsed playlist Keep as not kept', () => {
+    const view = toPlaylistView(
+      {
+        ...basePlaylist,
+        extended_retention: 1,
+        retained_until: '2020-01-01 00:00:00',
+        retention_flagged_at: '2019-01-01 00:00:00',
+      },
+      1,
+    );
+    expect(view).toMatchObject({
+      extendedRetention: false,
+      retainedUntil: null,
+      retentionFlaggedAt: null,
+    });
   });
 });
 
@@ -82,7 +101,7 @@ describe('toPlaylistItemView', () => {
       size: 1234,
       support_ticket_id: 'tkt-1',
       card_id: null,
-      retained_until: '2027-10-08 10:00:00',
+      retained_until: '2099-10-08 10:00:00',
       retention_flagged_at: '2026-07-08 10:00:00',
     } as unknown as ReplayPlaylistItemRow;
     const view = toPlaylistItemView(item);
@@ -96,7 +115,7 @@ describe('toPlaylistItemView', () => {
       size: 1234,
       supportTicketId: 'tkt-1',
       cardId: null,
-      retainedUntil: '2027-10-08 10:00:00',
+      retainedUntil: '2099-10-08 10:00:00',
       eventsUrl: '/api/replays/rep-9/events',
     });
   });
@@ -223,6 +242,10 @@ describe('itemCount consistency + orphan cleanup', () => {
       deleteReplayPlaylistItemsByReplay: db.prepare(
         'DELETE FROM replay_playlist_items WHERE replay_id = ?',
       ),
+      getSessionReplay: db.prepare('SELECT * FROM session_replays WHERE id = ?'),
+      flagSessionReplayRetention: db.prepare(
+        `UPDATE session_replays SET retained_until = ?, retention_flagged_at = ? WHERE id = ?`,
+      ),
     } as unknown as Stmts;
     return { stmts, db };
   }
@@ -230,6 +253,57 @@ describe('itemCount consistency + orphan cleanup', () => {
   function insertReplay(db: Database.Database, id: string, projectId: string): void {
     db.prepare('INSERT INTO session_replays (id, project_id) VALUES (?, ?)').run(id, projectId);
   }
+
+  function keptPlaylist(db: Database.Database, deps: { stmts: Stmts }, until: string) {
+    const playlist = createPlaylist(deps, {
+      projectId: 'proj-1',
+      name: 'Kept',
+      description: null,
+      createdBy: null,
+    });
+    db.prepare(
+      `UPDATE replay_playlists SET extended_retention = 1, retained_until = ?,
+         retention_flagged_at = '2019-01-01 00:00:00' WHERE id = ?`,
+    ).run(until, playlist.id);
+    return deps.stmts.getReplayPlaylist.get(playlist.id) as ReplayPlaylistRow;
+  }
+
+  function memberUntil(db: Database.Database, id: string): string | null {
+    return (
+      db.prepare('SELECT retained_until FROM session_replays WHERE id = ?').get(id) as {
+        retained_until: string | null;
+      }
+    ).retained_until;
+  }
+
+  it('adding to a lapsed kept playlist leaves the member Keep untouched', () => {
+    const { stmts, db } = makeStmts();
+    const deps = { stmts };
+    insertReplay(db, 'rep-own', 'proj-1');
+    db.prepare(`UPDATE session_replays SET retained_until = '2099-01-01 00:00:00'`).run();
+    const playlist = keptPlaylist(db, deps, '2020-01-01 00:00:00');
+
+    addPlaylistItem(deps, playlist, 'rep-own');
+
+    expect(memberUntil(db, 'rep-own')).toBe('2099-01-01 00:00:00');
+  });
+
+  it('an active playlist Keep extends a member but never shortens its own Keep', () => {
+    const { stmts, db } = makeStmts();
+    const deps = { stmts };
+    insertReplay(db, 'rep-plain', 'proj-1');
+    insertReplay(db, 'rep-longer', 'proj-1');
+    db.prepare(
+      `UPDATE session_replays SET retained_until = '2099-06-01 00:00:00' WHERE id = 'rep-longer'`,
+    ).run();
+    const playlist = keptPlaylist(db, deps, '2099-01-01 00:00:00');
+
+    addPlaylistItem(deps, playlist, 'rep-plain');
+    addPlaylistItem(deps, playlist, 'rep-longer');
+
+    expect(memberUntil(db, 'rep-plain')).toBe('2099-01-01 00:00:00');
+    expect(memberUntil(db, 'rep-longer')).toBe('2099-06-01 00:00:00');
+  });
 
   it('LIST and GET itemCounts agree after a member capture is hard-deleted', () => {
     const { stmts, db } = makeStmts();

@@ -14,6 +14,7 @@ import {
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { formatReplayDuration, formatBytes, formatCaptureDate } from '../utils/replayFormat';
+import { isPlaylistKept } from '@shared/utils/replayKeep';
 
 // Mobile Replay Playlists — parity port of the web ReplayPlaylistsPanel
 // (client/src/components/ReplayPlaylistsPanel.tsx). Named, project-scoped
@@ -65,8 +66,10 @@ export function ReplayPlaylistsView({ projectId, onWatch, onNotify }: any) {
 
   const toggleKeep = async (pl: any) => {
     try {
-      await api.setReplayPlaylistRetention(projectId, pl.id, !pl.extendedRetention);
-      notify(pl.extendedRetention ? 'Extended retention cleared' : 'Playlist kept', 'success');
+      // Decide from the clock at click time; a Keep can lapse while the view is open.
+      const kept = isPlaylistKept(pl, Date.now());
+      await api.setReplayPlaylistRetention(projectId, pl.id, !kept);
+      notify(kept ? 'Extended retention cleared' : 'Playlist kept', 'success');
       load();
     } catch (e: any) {
       notify(e?.message || 'Failed to update retention', 'error');
@@ -146,7 +149,7 @@ export function ReplayPlaylistsView({ projectId, onWatch, onNotify }: any) {
                 <Text style={styles.cardTitle} numberOfLines={1}>
                   {pl.name}
                 </Text>
-                {pl.extendedRetention ? (
+                {isPlaylistKept(pl, Date.now()) ? (
                   <Text style={[styles.chip, styles.chipKept]}>★ Kept</Text>
                 ) : null}
               </TouchableOpacity>
@@ -157,10 +160,15 @@ export function ReplayPlaylistsView({ projectId, onWatch, onNotify }: any) {
                 <TouchableOpacity
                   testID="playlist-keep"
                   onPress={() => toggleKeep(pl)}
-                  style={[styles.actionBtn, pl.extendedRetention && styles.actionBtnKept]}
+                  style={[styles.actionBtn, isPlaylistKept(pl, Date.now()) && styles.actionBtnKept]}
                 >
-                  <Text style={[styles.actionText, pl.extendedRetention && styles.actionTextKept]}>
-                    {pl.extendedRetention ? '★ Kept' : '☆ Keep'}
+                  <Text
+                    style={[
+                      styles.actionText,
+                      isPlaylistKept(pl, Date.now()) && styles.actionTextKept,
+                    ]}
+                  >
+                    {isPlaylistKept(pl, Date.now()) ? '★ Kept' : '☆ Keep'}
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => remove(pl)} style={styles.actionBtn}>
@@ -218,11 +226,10 @@ function PlaylistDetail({ projectId, playlistId, onBack, onWatch, onNotify }: an
   const toggleKeep = async () => {
     if (!playlist) return;
     try {
-      await api.setReplayPlaylistRetention(projectId, playlistId, !playlist.extendedRetention);
-      onNotify?.(
-        playlist.extendedRetention ? 'Extended retention cleared' : 'Playlist kept',
-        'success',
-      );
+      // Decide from the clock at click time; a Keep can lapse while the view is open.
+      const kept = isPlaylistKept(playlist, Date.now());
+      await api.setReplayPlaylistRetention(projectId, playlistId, !kept);
+      onNotify?.(kept ? 'Extended retention cleared' : 'Playlist kept', 'success');
       load();
     } catch (e: any) {
       onNotify?.(e?.message || 'Failed to update retention', 'error');
@@ -266,10 +273,15 @@ function PlaylistDetail({ projectId, playlistId, onBack, onWatch, onNotify }: an
             </TouchableOpacity>
             <TouchableOpacity
               onPress={toggleKeep}
-              style={[styles.pill, playlist.extendedRetention && styles.pillKept]}
+              style={[styles.pill, isPlaylistKept(playlist, Date.now()) && styles.pillKept]}
             >
-              <Text style={[styles.pillText, playlist.extendedRetention && styles.actionTextKept]}>
-                {playlist.extendedRetention ? '★ Kept' : '☆ Keep'}
+              <Text
+                style={[
+                  styles.pillText,
+                  isPlaylistKept(playlist, Date.now()) && styles.actionTextKept,
+                ]}
+              >
+                {isPlaylistKept(playlist, Date.now()) ? '★ Kept' : '☆ Keep'}
               </Text>
             </TouchableOpacity>
           </>
