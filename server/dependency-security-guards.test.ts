@@ -1334,6 +1334,24 @@ describe('unpatched advisories (containment guards)', () => {
       // at build time and never runs inside the shipped app.
       why: 'the only patched line is image-size 2.x, which no longer accepts a file path, and metro@0.83 (pinned by Expo SDK 54, range `^1.0.2`) passes one; the clean escape is an Expo SDK bump that brings metro >= 0.87.1, which drops image-size',
     },
+    // RSA PKCS#1 v1.5 verification accepts extra nested DigestAlgorithm
+    // elements (signature forgery). Vulnerable `<= 1.4.0`; 1.4.0 is the newest
+    // node-forge release and `first_patched_version` is null.
+    //
+    // Reached only through @expo/cli -> @expo/code-signing-certificates, which
+    // the dev server uses to generate keys and sign manifests for Expo Go. Its
+    // `verify` calls check material it just produced itself (self-signed cert,
+    // CSR, sign-then-verify), not attacker-supplied signatures, and none of it
+    // ships in the app bundle. Even the newest @expo/cli (57.x) and
+    // code-signing-certificates (0.0.7) still depend on node-forge `^1.4.0`.
+    {
+      workspace: 'mobile',
+      pkg: 'node-forge',
+      advisory: ['GHSA-86w9-cpqp-85rv'],
+      vulnerableRange: '<= 1.4.0',
+      dependents: ['@expo/cli', '@expo/code-signing-certificates'],
+      why: 'no node-forge release fixes it and no Expo CLI release drops it; the only consumer is the local dev-server manifest signer, which verifies only signatures it generated itself',
+    },
   ];
 
   for (const { workspace, pkg, advisory, vulnerableRange, dependents, flags, why } of CONTAINED) {
