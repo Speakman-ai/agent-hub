@@ -1352,6 +1352,46 @@ describe('unpatched advisories (containment guards)', () => {
       dependents: ['@expo/cli', '@expo/code-signing-certificates'],
       why: 'no node-forge release fixes it and no Expo CLI release drops it; the only consumer is the local dev-server manifest signer, which verifies only signatures it generated itself',
     },
+    // Stack exhaustion on deeply nested brace patterns. Vulnerable `<= 3.0.3`;
+    // 3.0.3 is the newest braces release and `first_patched_version` is null.
+    // The input is a glob pattern, and every pattern reaching braces comes from
+    // build config committed to this repo, never from a request.
+    {
+      workspace: 'client',
+      pkg: 'braces',
+      advisory: ['GHSA-vfj7-8cjw-p6xm'],
+      vulnerableRange: '<= 3.0.3',
+      dependents: ['chokidar', 'micromatch'],
+      // tailwindcss / fast-glob content scanning at build time.
+      flags: { dev: true },
+      why: 'no braces release fixes it; it only expands the Tailwind content globs from the client build config, and the copy is dev-only',
+    },
+    {
+      workspace: 'mobile',
+      pkg: 'braces',
+      advisory: ['GHSA-vfj7-8cjw-p6xm'],
+      vulnerableRange: '<= 3.0.3',
+      // micromatch is reached through metro-file-map, jest-haste-map and
+      // patch-package: bundler, test and install tooling, none of which ships in
+      // the app bundle. Not flagged dev because expo declares metro as a runtime
+      // dependency.
+      dependents: ['micromatch'],
+      why: 'no braces release fixes it; micromatch only matches the watcher/ignore globs from metro, jest and patch-package config committed to this repo',
+    },
+    // max-stale handling can serve a cached response across users. Vulnerable
+    // `<= 4.2.0`; 4.2.0 is the newest release and `first_patched_version` is
+    // null. Reached only through electron-builder's @electron/get -> got ->
+    // cacheable-request, which downloads Electron release archives at package
+    // time: one user, public artifacts, no shared cache.
+    {
+      workspace: 'root',
+      pkg: 'http-cache-semantics',
+      advisory: ['GHSA-ch52-4w7c-c8xp'],
+      vulnerableRange: '<= 4.2.0',
+      dependents: ['cacheable-request'],
+      flags: { dev: true },
+      why: 'no http-cache-semantics release fixes it; the only consumer caches public Electron downloads for a single packaging user, so there is no second user to leak a response to',
+    },
   ];
 
   for (const { workspace, pkg, advisory, vulnerableRange, dependents, flags, why } of CONTAINED) {
