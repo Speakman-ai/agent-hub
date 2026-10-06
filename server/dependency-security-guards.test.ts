@@ -607,6 +607,25 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // stagehand -> puppeteer-core -> @puppeteer/browsers -> proxy-agent ->
     // pac-proxy-agent -> get-uri (`^5.0.2`), so it is held by an override.
     { pkg: 'basic-ftp', min: '6.2.1', advisory: 'GHSA-c475-qrg2-pj4r', only: ['server'] },
+
+    // --- 22-finding audit (proxy-addr, compression, source-map-js, fast-copy) ---
+    // Every one re-resolves inside its parents' declared ranges, so no override
+    // holds them up: a lockfile regeneration is the only way back down.
+
+    // IP spoofing: an IPv4-mapped IPv6 peer (`::ffff:a.b.c.d`) was matched
+    // against an IPv4 trust subnet, so `req.ip` could be forged through
+    // X-Forwarded-For. Express's `trust proxy` (set to 'loopback' in index.ts)
+    // runs on it, and the per-IP auth rate limiters read `req.ip`.
+    { pkg: 'proxy-addr', min: '2.0.8', advisory: 'GHSA-jqcg-44mw-7w3h', only: ['server'] },
+    // Memory leak on premature response close. Mobile only, via @expo/cli's
+    // dev server (`^1.7.4`).
+    { pkg: 'compression', min: '1.8.2', advisory: 'GHSA-vc2v-76pw-4v95', only: ['mobile'] },
+    // Event-loop DoS through indexed source-map section offsets. postcss and
+    // css-tree consume it (`^1.2.1`) in every workspace.
+    { pkg: 'source-map-js', min: '1.2.2', advisory: 'GHSA-68fv-2mgg-jv7q' },
+    // Stack exhaustion copying deeply nested values. Server only, via
+    // pino-pretty (`^4.0.0`).
+    { pkg: 'fast-copy', min: '4.1.0', advisory: 'GHSA-jggr-w7fw-pc2j', only: ['server'] },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
@@ -1180,6 +1199,64 @@ describe('nanoid terminates on a zero-size custom generator (GHSA-2v37-7h3g-55p8
  * above catch that only after someone re-resolves; these catch the intent
  * being removed.
  */
+describe('proxy-addr keeps IPv4-mapped peers out of non-mapped IPv6 trust subnets (GHSA-jqcg-44mw-7w3h)', () => {
+  /**
+   * 2.0.7 converted an IPv4 (or `::ffff:`-mapped) peer to its mapped IPv6 form
+   * and matched it against any IPv6 trust subnet, so `::/64` -- which covers
+   * the all-zero prefix of `::ffff:a.b.c.d` -- trusted every IPv4 client and
+   * let it forge `req.ip` through X-Forwarded-For. 2.0.8 only lets an IPv6
+   * subnet span IPv4 when its prefix covers the `::ffff:` marker (>= /96).
+   *
+   * Same on-disk-matches-lock rule as the nanoid guard above.
+   */
+  const require_ = createRequire(import.meta.url);
+  const copies: Array<{ workspace: string; key: string; dir: string; version: string }> = [];
+  for (const { name, lock } of LOCKFILES) {
+    const root = dirname(join(here, lock));
+    for (const [key, meta] of Object.entries(lockPackages(lock))) {
+      if (packageNameOf(key) !== 'proxy-addr' || !meta.version) continue;
+      const manifest = join(root, key, 'package.json');
+      if (!existsSync(manifest)) continue;
+      const installed = (JSON.parse(readFileSync(manifest, 'utf8')) as { version?: string })
+        .version;
+      if (installed !== meta.version) continue;
+      copies.push({ workspace: name, key, dir: join(root, key), version: meta.version });
+    }
+  }
+
+  if (copies.length === 0) {
+    it.skip('no proxy-addr copy is installed at its lockfile version (run npm ci --include=dev)', () => {});
+  }
+
+  for (const { workspace, key, dir, version } of copies) {
+    it(`${workspace}: ${key}@${version} ignores X-Forwarded-For from a mapped peer under ::/64`, () => {
+      const proxyaddr = require_(dir) as {
+        (req: unknown, trust: string): string;
+        compile(trust: string): (addr: string, i: number) => boolean;
+      };
+      const req = {
+        socket: { remoteAddress: '::ffff:10.0.0.1' },
+        headers: { 'x-forwarded-for': '6.6.6.6' },
+      };
+
+      expect(proxyaddr.compile('::/64')('10.0.0.1', 0)).toBe(false);
+      expect(proxyaddr(req, '::/64')).toBe('::ffff:10.0.0.1');
+      // The topology index.ts actually runs: a mapped loopback nginx hop must
+      // still be trusted, or every client collapses onto one rate-limit bucket.
+      expect(proxyaddr.compile('loopback')('::ffff:127.0.0.1', 0)).toBe(true);
+      expect(
+        proxyaddr(
+          {
+            socket: { remoteAddress: '::ffff:127.0.0.1' },
+            headers: { 'x-forwarded-for': '6.6.6.6' },
+          },
+          'loopback',
+        ),
+      ).toBe('6.6.6.6');
+    });
+  }
+});
+
 describe('override-backed advisory floors', () => {
   const OVERRIDE_FLOORS: Array<{
     manifest: (typeof LOCKFILES)[number]['name'];
@@ -1391,6 +1468,66 @@ describe('unpatched advisories (containment guards)', () => {
       dependents: ['cacheable-request'],
       flags: { dev: true },
       why: 'no http-cache-semantics release fixes it; the only consumer caches public Electron downloads for a single packaging user, so there is no second user to leak a response to',
+    },
+    // DoS through an unbounded precision specifier (`%.999999999f`). Vulnerable
+    // through 1.1.3, the newest release; `first_patched_version` is null. The
+    // precision lives in the *format string*, and every consumer here passes
+    // format strings hardcoded in its own source, never request data.
+    {
+      workspace: 'server',
+      pkg: 'sprintf-js',
+      advisory: ['GHSA-hp3w-g68c-fv3c'],
+      vulnerableRange: '<= 1.1.3',
+      // argparse 1.x (via js-yaml 3 and mammoth's CLI) formats its own help and
+      // error messages with it.
+      dependents: ['argparse'],
+      why: 'no sprintf-js release fixes it; argparse 1.x only formats its own hardcoded help/error templates, so no caller-controlled format string reaches it',
+    },
+    {
+      workspace: 'mobile',
+      pkg: 'sprintf-js',
+      advisory: ['GHSA-hp3w-g68c-fv3c'],
+      vulnerableRange: '<= 1.1.3',
+      dependents: ['argparse'],
+      why: 'no sprintf-js release fixes it; argparse 1.x (via the js-yaml 3 that jest coverage config loading uses) only formats its own hardcoded templates',
+    },
+    {
+      workspace: 'root',
+      pkg: 'sprintf-js',
+      advisory: ['GHSA-hp3w-g68c-fv3c'],
+      vulnerableRange: '<= 1.1.3',
+      // electron-builder -> @electron/get -> global-agent -> roarr logger.
+      dependents: ['roarr'],
+      flags: { dev: true, optional: true },
+      why: 'no sprintf-js release fixes it; the roarr logger formats its own log templates during Electron packaging, and the copy is dev-only and optional',
+    },
+    // Quadratic flat-selector parsing (CPU exhaustion). Patched only on the 7.x
+    // line (7.1.6); 6.1.4 is the newest 6.x and gets no backport. Every parent
+    // pins 6.x: tailwindcss 3 (`^6.1.2`), postcss-nested 6 (`^6.1.1`), and
+    // @tailwindcss/typography at exactly 6.0.10 even in its newest release.
+    // An override across a major on all three is not a change to make
+    // unreviewed. The selectors it parses are this repo's own CSS at build time.
+    {
+      workspace: 'client',
+      pkg: 'postcss-selector-parser',
+      advisory: ['GHSA-rj75-hqrm-r3gf'],
+      vulnerableRange: '< 7.1.6',
+      dependents: ['@tailwindcss/typography', 'postcss-nested', 'tailwindcss'],
+      flags: { dev: true },
+      why: 'the fix exists only on 7.x and every parent (tailwindcss 3, postcss-nested 6, @tailwindcss/typography which pins 6.0.10 exactly) declares 6.x; the escape is a Tailwind 4 migration. Input is first-party CSS at build time and the copy is dev-only',
+    },
+    // Low severity: an *existing* prototype pollution elsewhere can bypass
+    // KaTeX's `trust` restrictions. Patched in 0.18.2, but mermaid (even 12.1,
+    // the newest) declares `^0.16.47`, so reaching it needs an override across
+    // two minor-as-major 0.x lines under mermaid's math rendering. Not
+    // exploitable on its own: it requires a separate pollution primitive.
+    {
+      workspace: 'client',
+      pkg: 'katex',
+      advisory: ['GHSA-238p-pmpm-9mq7'],
+      vulnerableRange: '< 0.18.2',
+      dependents: ['mermaid'],
+      why: 'the fix is on katex 0.18 and every mermaid release still declares ^0.16.x; the advisory is low severity and needs a pre-existing prototype pollution to matter, so forcing 0.18 under mermaid is the riskier change',
     },
   ];
 
