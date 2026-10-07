@@ -1,5 +1,7 @@
-import { readFileSync } from 'fs';
-import { resolve, dirname } from 'path';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { tmpdir } from 'os';
+import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { describe, it, expect } from 'vitest';
 
@@ -338,6 +340,70 @@ describe('agent-hub-user-data.tftpl', () => {
       const net = gc.indexOf('/usr/local/bin/agenthub-network-reap.sh');
       expect(pre).toBeGreaterThanOrEqual(0);
       expect(net).toBeGreaterThan(pre);
+    });
+
+    // Stock pools cap the host at 31 user networks; hand-made agent networks
+    // (`st-*-net`) are outside the scoped reaper, so previews failed with
+    // "could not find an available, non-overlapping IPv4 address pool".
+    describe('docker default-address-pools', () => {
+      const script = () => {
+        const start = rendered.indexOf("<<'DAEMONJSON'");
+        expect(start).toBeGreaterThanOrEqual(0);
+        const body = rendered.slice(rendered.indexOf('\n', start) + 1);
+        return body.slice(0, body.indexOf('\nDAEMONJSON'));
+      };
+
+      it('widens pools to /24s outside the VPC 10/8 range and restarts docker only on change', () => {
+        expect(rendered).toMatch(/python3 - <<'DAEMONJSON' && systemctl restart docker \|\| true/);
+        expect(script()).toContain("{'base': '172.16.0.0/12', 'size': 24}");
+        expect(script()).toContain("{'base': '192.168.0.0/16', 'size': 24}");
+        expect(script()).not.toMatch(/'10\./);
+      });
+
+      it('is rendered for the docker-bootstrap path too, but not PM2', () => {
+        const docker = renderTemplate(tpl, {
+          ...RENDER_VARS_BASE,
+          use_ecr_pull: false,
+          use_docker_bootstrap: true,
+        });
+        expect(docker).toContain("<<'DAEMONJSON'");
+        const pm2 = renderTemplate(tpl, {
+          ...RENDER_VARS_BASE,
+          use_ecr_pull: false,
+          use_pm2_bootstrap: true,
+        });
+        expect(pm2).not.toContain("<<'DAEMONJSON'");
+      });
+
+      const hasPython = spawnSync('python3', ['--version']).status === 0;
+      it.skipIf(!hasPython)(
+        'merges into an existing daemon.json and never replaces set pools',
+        () => {
+          const dir = mkdtempSync(join(tmpdir(), 'daemon-json-'));
+          const path = join(dir, 'daemon.json');
+          const run = () =>
+            spawnSync('python3', ['-'], {
+              input: script().replace('/etc/docker/daemon.json', path),
+            }).status;
+          try {
+            writeFileSync(path, JSON.stringify({ 'log-driver': 'json-file' }));
+            expect(run()).toBe(0);
+            const merged = JSON.parse(readFileSync(path, 'utf8'));
+            expect(merged['log-driver']).toBe('json-file');
+            expect(merged['default-address-pools']).toHaveLength(2);
+
+            // Second run is a no-op with non-zero status, so docker is not restarted.
+            expect(run()).not.toBe(0);
+
+            const custom = [{ base: '100.64.0.0/10', size: 24 }];
+            writeFileSync(path, JSON.stringify({ 'default-address-pools': custom }));
+            expect(run()).not.toBe(0);
+            expect(JSON.parse(readFileSync(path, 'utf8'))['default-address-pools']).toEqual(custom);
+          } finally {
+            rmSync(dir, { recursive: true, force: true });
+          }
+        },
+      );
     });
 
     it('does not install host nginx, certbot, or the dns-route53 plugin (PR-env removal)', () => {

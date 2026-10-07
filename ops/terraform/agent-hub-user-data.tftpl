@@ -91,6 +91,33 @@ $PKG_INSTALL docker.io docker-compose-plugin 2>/dev/null \
 systemctl enable --now docker
 %{ endif }
 
+%{ if use_ecr_pull || use_docker_bootstrap }
+# Docker's stock default-address-pools hand out only 31 networks (172.17-31/16
+# plus 192.168/16 in /20s). Session previews, Finalize stacks, and the networks
+# agents create by hand share that budget, so once 31 exist every new compose
+# network fails with "could not find an available, non-overlapping IPv4
+# address pool". Carving the same private ranges into /24s gives ~4300 pools.
+# 10/8 is left alone so pools can never overlap the VPC CIDR. Existing
+# daemon.json keys are preserved; an operator-set pool list is never replaced.
+mkdir -p /etc/docker
+python3 - <<'DAEMONJSON' && systemctl restart docker || true
+import json, os, sys
+path = '/etc/docker/daemon.json'
+cfg = {}
+if os.path.exists(path):
+    with open(path) as f:
+        cfg = json.load(f)
+if cfg.get('default-address-pools'):
+    sys.exit(1)
+cfg['default-address-pools'] = [
+    {'base': '172.16.0.0/12', 'size': 24},
+    {'base': '192.168.0.0/16', 'size': 24},
+]
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+DAEMONJSON
+%{ endif }
+
 %{ if use_pm2_bootstrap }
 $PKG_INSTALL build-essential python3 2>/dev/null \
   || $PKG_INSTALL gcc-c++ make python3
