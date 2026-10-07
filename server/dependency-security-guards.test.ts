@@ -626,6 +626,27 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // Stack exhaustion copying deeply nested values. Server only, via
     // pino-pretty (`^4.0.0`).
     { pkg: 'fast-copy', min: '4.1.0', advisory: 'GHSA-jggr-w7fw-pc2j', only: ['server'] },
+
+    // --- 17-finding audit (shell-quote, MCP SDK; the rest contained below) ---
+
+    // quote() command injection via a line terminator in a token after a
+    // `{ comment }` token. Root (concurrently, `^1.8.1`, dev) and mobile
+    // (react-devtools-core, `^1.6.1`) both re-resolve in range.
+    {
+      pkg: 'shell-quote',
+      min: '1.11.0',
+      advisory: 'GHSA-pqg4-j6r4-53mv',
+      only: ['root', 'mobile'],
+    },
+    // OAuth client could send credentials to an authorization server chosen by
+    // the MCP server. Server only, via stagehand (`^1.17.2`) and @google/genai
+    // (`^1.25.2`), both in range.
+    {
+      pkg: '@modelcontextprotocol/sdk',
+      min: '1.31.0',
+      advisory: 'GHSA-6qxp-vccf-f47h',
+      only: ['server'],
+    },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
@@ -1281,9 +1302,9 @@ describe('override-backed advisory floors', () => {
       pkg: '@hono/node-server',
       min: '2.0.5',
       advisory: 'GHSA-frvp-7c67-39w9',
-      // @modelcontextprotocol/sdk declares `^1.19.9` and has no release that
-      // accepts 2.x, so without the override npm resolves a vulnerable 1.x.
-      parentRange: '^1.19.9',
+      // @modelcontextprotocol/sdk declares `^1.19.9 || ^2.0.5` (>= 1.31), which
+      // still admits a vulnerable 1.x; the override keeps the 2.x floor explicit.
+      parentRange: '^1.19.9 || ^2.0.5',
     },
     {
       manifest: 'server',
