@@ -16,6 +16,8 @@ import {
   closeRunnerJobLogsDb,
 } from './finalize/runner-logs-db.js';
 import { USER_TODOS_SCHEMA } from './user-todos-schema.js';
+import { widenInListCheck } from './sqlite-widen-check.js';
+import { TODO_SOURCE_TYPES } from './source-provenance.js';
 import { ORG_TODOS_SCHEMA } from './org-todos-schema.js';
 import { PROJECT_MEMBERS_SCHEMA } from './project-members-schema.js';
 
@@ -244,6 +246,13 @@ export function initOrgsDb(): void {
       orgsDb.exec(`ALTER TABLE user_todos ADD COLUMN ${col.name} ${col.ddl}`);
     }
   }
+  // The source_type CHECK lives in the original CREATE body, so installs that
+  // predate a provenance value need a rebuild to accept it.
+  widenInListCheck(orgsDb, {
+    table: 'user_todos',
+    column: 'source_type',
+    values: TODO_SOURCE_TYPES,
+  });
   // Backfill the polymorphic link from the deprecated linked_card_id column:
   // any row promoted to a card before the polymorphic link existed becomes
   // {linked_type:'card', linked_id:<linked_card_id>}. Idempotent — the

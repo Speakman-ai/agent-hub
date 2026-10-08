@@ -3,6 +3,7 @@ import {
   AlertCircle,
   Bot,
   CheckCircle2,
+  ListTodo,
   CornerDownRight,
   ExternalLink,
   Loader2,
@@ -19,6 +20,7 @@ import { api } from '../utils/api';
 import type { SessionWire } from '@shared/types';
 import { buildChatSessionSeed } from '@shared/utils/sessionSeed';
 import { buildChatCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
+import { buildChatTodoDraft, type CaptureTodoDraft } from '@shared/utils/captureTodo';
 import StartSessionModal from './StartSessionModal';
 import CaptureToTicketModal from './CaptureToTicketModal';
 import { formatDateTime } from '../utils/time';
@@ -130,12 +132,30 @@ const EMPTY_COMPOSER: Composer = {
   error: null,
 };
 
+type TodoCapture = { status: 'saving' | 'added' } | { status: 'error'; error: string };
+
 /** Build the "Ticket" card draft for one message. Exported for unit tests. */
 export function buildTicketDraftForMessage(
   space: ChatSpace | null,
   target: ChatMessage,
 ): CaptureCardDraft {
   return buildChatCardDraft({
+    messageName: target.name,
+    spaceName: target.spaceName || space?.name || null,
+    threadName: target.threadName,
+    spaceLabel: space ? chatSpaceLabel(space) : null,
+    sender: chatSenderLabel(target.sender),
+    text: target.text,
+    deepLink: chatSpaceDeepLink(space),
+  });
+}
+
+/** Build the "Add to todos" draft for one message. Exported for unit tests. */
+export function buildTodoDraftForMessage(
+  space: ChatSpace | null,
+  target: ChatMessage,
+): CaptureTodoDraft {
+  return buildChatTodoDraft({
     messageName: target.name,
     spaceName: target.spaceName || space?.name || null,
     threadName: target.threadName,
@@ -224,6 +244,10 @@ export default function GoogleChatPage({
   const checkingDispatchRef = useRef(false);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
+  // "Add to todos" progress per message name. Kept for the life of the page so
+  // a captured message keeps showing "Added" when the user switches back.
+  const [todoCaptures, setTodoCaptures] = useState<Record<string, TodoCapture>>({});
+  const todoCapturingRef = useRef<Set<string>>(new Set());
   const bottomRef = useRef<HTMLDivElement | null>(null);
   // Every async result below is written to the space (or spaces list) that
   // issued it, never to "whatever is selected now". Message loads and sends
@@ -256,6 +280,24 @@ export default function GoogleChatPage({
   const autoSendWriteRef = useRef(false);
   const composer = (selectedId && composers[selectedId]) || EMPTY_COMPOSER;
   const { text: draft, replyTo, sending, error: sendError } = composer;
+
+  const addMessageToTodos = async (message: ChatMessage) => {
+    const key = message.name;
+    if (!key || todoCapturingRef.current.has(key)) return;
+    todoCapturingRef.current.add(key);
+    setTodoCaptures((prev) => ({ ...prev, [key]: { status: 'saving' } }));
+    try {
+      await api.createTodo(buildTodoDraftForMessage(selectedSpace, message));
+      setTodoCaptures((prev) => ({ ...prev, [key]: { status: 'added' } }));
+    } catch (err: any) {
+      setTodoCaptures((prev) => ({
+        ...prev,
+        [key]: { status: 'error', error: err?.message || 'Failed to add to todos' },
+      }));
+    } finally {
+      todoCapturingRef.current.delete(key);
+    }
+  };
 
   const updateView = useCallback((spaceId: string, fn: (v: SpaceView) => SpaceView) => {
     setViews((all) => ({ ...all, [spaceId]: fn(all[spaceId] || EMPTY_VIEW) }));
@@ -1018,6 +1060,40 @@ export default function GoogleChatPage({
                               <Ticket size={13} />
                               Ticket
                             </button>
+                            {(() => {
+                              const capture = message.name ? todoCaptures[message.name] : undefined;
+                              const added = capture?.status === 'added';
+                              const saving = capture?.status === 'saving';
+                              return (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => void addMessageToTodos(message)}
+                                    disabled={added || saving}
+                                    title={
+                                      added
+                                        ? 'Added to your todos'
+                                        : 'Add this message to your personal todos'
+                                    }
+                                    className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-60"
+                                  >
+                                    {saving ? (
+                                      <Loader2 size={13} className="animate-spin" />
+                                    ) : added ? (
+                                      <CheckCircle2 size={13} className="text-green-400" />
+                                    ) : (
+                                      <ListTodo size={13} />
+                                    )}
+                                    {added ? 'Added to todos' : 'Add to todos'}
+                                  </button>
+                                  {capture?.status === 'error' && (
+                                    <span role="alert" className="self-center text-xs text-red-300">
+                                      {capture.error}
+                                    </span>
+                                  )}
+                                </>
+                              );
+                            })()}
                             {canSend &&
                               selectedSpace?.supportsThreadReplies &&
                               message.threadName && (

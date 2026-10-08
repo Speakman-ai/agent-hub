@@ -16,6 +16,7 @@ vi.mock('../utils/api', () => ({
     approveGoogleChatDraft: vi.fn(),
     editGoogleChatDraft: vi.fn(),
     discardGoogleChatDraft: vi.fn(),
+    createTodo: vi.fn(),
   },
 }));
 
@@ -404,7 +405,50 @@ describe('GoogleChatPage', () => {
     expect(draft.description).toContain('Customer: Acme');
     expect(draft.description).toContain('Source: https://chat.google.com/room/AAA');
     expect(draft.source).toEqual({
-      sourceType: 'manual',
+      sourceType: 'chat',
+      sourceId: 'spaces/AAA/messages/M9',
+      sourceMeta: {
+        kind: 'google-chat',
+        messageName: 'spaces/AAA/messages/M9',
+        spaceName: 'spaces/AAA',
+        threadName: 'spaces/AAA/threads/T1',
+        from: 'Dana',
+        deepLink: 'https://chat.google.com/room/AAA',
+      },
+    });
+  });
+
+  it('adds a message to todos with its chat provenance', async () => {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE] });
+    mockApi.listGoogleChatMessages.mockResolvedValue({
+      messages: [
+        msg({
+          name: 'spaces/AAA/messages/M9',
+          text: 'Invoice 1042 shows the wrong total\nCustomer: Acme',
+          sender: { name: 'users/1', displayName: 'Dana', type: 'HUMAN' },
+        }),
+      ],
+    });
+    mockApi.createTodo.mockRejectedValueOnce(new Error('offline')).mockResolvedValue({});
+
+    render(<GoogleChatPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add to todos' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('offline');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add to todos' }));
+    const added = await screen.findByRole('button', { name: 'Added to todos' });
+    expect((added as HTMLButtonElement).disabled).toBe(true);
+    expect(mockApi.createTodo).toHaveBeenCalledTimes(2);
+    expect(mockApi.createTodo).toHaveBeenLastCalledWith({
+      title: 'Invoice 1042 shows the wrong total',
+      notes: 'From Dana in Acme support\n\nInvoice 1042 shows the wrong total\nCustomer: Acme',
+      sourceType: 'chat',
       sourceId: 'spaces/AAA/messages/M9',
       sourceMeta: {
         kind: 'google-chat',

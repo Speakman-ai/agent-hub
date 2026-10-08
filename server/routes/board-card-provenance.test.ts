@@ -75,6 +75,21 @@ describe('POST /board/cards — capture provenance', () => {
     expect(card.source_meta).toBeNull();
   });
 
+  it('accepts a Google Chat source ref', async () => {
+    const res = await post({
+      title: 'Provenance: from chat',
+      columnId,
+      source: {
+        sourceType: 'chat',
+        sourceId: 'spaces/A/messages/M',
+        sourceMeta: { kind: 'google-chat' },
+      },
+    }).expect(200);
+    const card = res.body as SerializedCard;
+    expect(card.source_type).toBe('chat');
+    expect(card.source_meta).toEqual({ kind: 'google-chat' });
+  });
+
   it('leaves provenance null when no source ref is supplied', async () => {
     const res = await post({ title: 'Provenance: none', columnId }).expect(200);
     const card = res.body as SerializedCard;

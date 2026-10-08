@@ -1889,6 +1889,7 @@ components:
             - manual
             - email
             - calendar
+            - chat
             - todo
             - log_issue
             - null
@@ -10816,6 +10817,7 @@ components:
             - manual
             - email
             - calendar
+            - chat
         sourceId:
           type: string
           nullable: true
@@ -20720,6 +20722,7 @@ paths:
                         - manual
                         - email
                         - calendar
+                        - chat
                         - todo
                         - log_issue
                     sourceId:
@@ -37631,6 +37634,7 @@ paths:
                     - manual
                     - email
                     - calendar
+                    - chat
                 sourceId:
                   type: string
                   nullable: true

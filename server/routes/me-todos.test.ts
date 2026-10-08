@@ -121,6 +121,19 @@ describe('POST /api/me/todos', () => {
       .expect(400);
   });
 
+  it('stores a Google Chat capture with its provenance', async () => {
+    const sourceMeta = { kind: 'google-chat', deepLink: 'https://chat.google.com/room/A' };
+    const res = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'From chat', sourceType: 'chat', sourceId: 'spaces/A/messages/M', sourceMeta })
+      .expect(201);
+    expect(res.body.todo).toMatchObject({
+      sourceType: 'chat',
+      sourceId: 'spaces/A/messages/M',
+      sourceMeta,
+    });
+  });
+
   it('creates with priority and a do-date window', async () => {
     const res = await request(mount(userA))
       .post('/api/me/todos')

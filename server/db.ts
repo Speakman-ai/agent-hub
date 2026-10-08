@@ -45,6 +45,8 @@ import { installStatsCompletionTimestamps } from './stats-completion.js';
 import type { Stmts } from './types.js';
 import { configureDbInstrumentation, instrumentStmts } from './db-instrumentation.js';
 import { reconcileSchema } from './schema-reconcile.js';
+import { widenInListCheck } from './sqlite-widen-check.js';
+import { CARD_SOURCE_TYPES } from './source-provenance.js';
 import { initRumEventsDb, migrateLegacyRumEventsFromPrimary } from './replays/rum-events-db.js';
 
 let db: Database.Database | undefined;
@@ -710,7 +712,7 @@ function initDb(dataDir: string): void {
       -- with user_todos so a card can be traced back to the Gmail message /
       -- Calendar event / todo it was captured from. NULL for cards created
       -- without a tracked origin. source_meta is a JSON deep-link blob.
-      source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo','log_issue')),
+      source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo','log_issue','chat')),
       source_id TEXT,
       source_meta TEXT,
       created_by TEXT,
@@ -2816,7 +2818,7 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT source_type FROM kanban_cards LIMIT 1').get();
   } catch {
     db.exec(
-      "ALTER TABLE kanban_cards ADD COLUMN source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo','log_issue'))",
+      "ALTER TABLE kanban_cards ADD COLUMN source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo','log_issue','chat'))",
     );
   }
   try {
@@ -3941,6 +3943,20 @@ function initDb(dataDir: string): void {
       );
     }
   }
+
+  // Widen kanban_cards.source_type for installs whose table predates newer
+  // provenance values (the CHECK lives on an ALTER-added column, so neither the
+  // CREATE body nor the reconciler can change it). Runs after the reconciler so
+  // the rebuild copies every column this install has.
+  widenInListCheck(db, { table: 'kanban_cards', column: 'source_type', values: CARD_SOURCE_TYPES });
+  // Chat captures were stamped `manual` before `chat` existed; their meta
+  // carries `kind: google-chat`. Idempotent.
+  db.prepare(
+    `UPDATE kanban_cards SET source_type = 'chat'
+      WHERE source_type = 'manual'
+        AND json_valid(source_meta)
+        AND json_extract(source_meta, '$.kind') = 'google-chat'`,
+  ).run();
 
   // One-time cutover: move any legacy in-primary `rum_segments` / `rum_sessions`
   // rows into this org's dedicated `rum.db`, then drop each legacy table ONLY

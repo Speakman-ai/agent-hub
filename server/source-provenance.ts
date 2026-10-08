@@ -13,6 +13,7 @@
  *       - `manual`   hand-created, no external origin
  *       - `email`    captured from a Gmail message
  *       - `calendar` captured from a Calendar event
+ *       - `chat`     captured from a Google Chat message
  *       - `todo`     (cards only) promoted from a personal todo
  *       - `log_issue` (cards only) created from a grouped application error
  *     A todo can never originate from another todo, so the todo surface uses the
@@ -25,11 +26,18 @@
  */
 
 /** Provenance sources a kanban card may carry. Superset of the todo sources. */
-export const CARD_SOURCE_TYPES = ['manual', 'email', 'calendar', 'todo', 'log_issue'] as const;
+export const CARD_SOURCE_TYPES = [
+  'manual',
+  'email',
+  'calendar',
+  'chat',
+  'todo',
+  'log_issue',
+] as const;
 export type CardSourceType = (typeof CARD_SOURCE_TYPES)[number];
 
 /** Provenance sources a personal todo may carry (never `todo`). */
-export const TODO_SOURCE_TYPES = ['manual', 'email', 'calendar'] as const;
+export const TODO_SOURCE_TYPES = ['manual', 'email', 'calendar', 'chat'] as const;
 export type TodoSourceType = (typeof TODO_SOURCE_TYPES)[number];
 
 /** The capture-provenance triple in its parsed (API) form. */

@@ -33,7 +33,7 @@ import { recomputeEpicState } from '../epic-state.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { userCanReadSession } from '../session-ownership.js';
-import { parseSourceMeta, serializeSourceMeta } from '../source-provenance.js';
+import { parseSourceMeta, serializeSourceMeta, TODO_SOURCE_TYPES } from '../source-provenance.js';
 import type {
   KanbanBoardRow,
   KanbanCardRow,
@@ -84,7 +84,7 @@ function parseLinkType(v: unknown): TodoLinkType | null {
 }
 
 function parseSourceType(v: unknown): TodoSourceType | null {
-  return v === 'manual' || v === 'email' || v === 'calendar' ? v : null;
+  return (TODO_SOURCE_TYPES as readonly unknown[]).includes(v) ? (v as TodoSourceType) : null;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -321,7 +321,7 @@ export default function createMeTodosRoutes(deps: RouteDeps): Router {
     if (body.sourceType !== undefined) {
       const parsed = parseSourceType(body.sourceType);
       if (!parsed) {
-        bad(res, 400, 'sourceType must be "manual", "email", or "calendar"');
+        bad(res, 400, `sourceType must be one of: ${TODO_SOURCE_TYPES.join(', ')}`);
         return;
       }
       sourceType = parsed;

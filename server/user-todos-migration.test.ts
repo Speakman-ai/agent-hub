@@ -124,4 +124,35 @@ describe('user_todos additive migration', () => {
     expect(todo.linkedId).toBe('card-42');
     expect(todo.linkedCardId).toBe('card-42');
   });
+
+  it('widens the source_type CHECK so chat captures can be stored', () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    const db = getOrgsDb();
+    db.exec('DROP TABLE user_todos');
+    db.exec(LEGACY_USER_TODOS_SCHEMA);
+    db.exec('CREATE INDEX idx_user_todos_user_position ON user_todos(user_id, position)');
+    const insertChat = () =>
+      getOrgsDb()
+        .prepare(
+          `INSERT INTO user_todos (id, user_id, title, position, source_type)
+           VALUES (?, ?, 'chat todo', 1, 'chat')`,
+        )
+        .run('todo-chat', user.id);
+    expect(insertChat).toThrow(/CHECK/);
+    db.prepare(
+      `INSERT INTO user_todos (id, user_id, title, position, source_type, source_id)
+       VALUES ('todo-mail', ?, 'mail todo', 0, 'email', 'm1')`,
+    ).run(user.id);
+
+    initOrgsDb();
+
+    expect(insertChat).not.toThrow();
+    expect(getTodo(user.id, 'todo-chat')!.sourceType).toBe('chat');
+    expect(getTodo(user.id, 'todo-mail')!.sourceId).toBe('m1');
+    const indexes = getOrgsDb()
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'user_todos'")
+      .all() as { name: string }[];
+    expect(indexes.map((i) => i.name)).toContain('idx_user_todos_user_position');
+    expect(getOrgsDb().pragma('foreign_keys', { simple: true })).toBe(1);
+  });
 });

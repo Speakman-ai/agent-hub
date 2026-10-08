@@ -6,7 +6,7 @@
 import type { CalendarEventLike } from './calendarEvents.js';
 
 /** Origin subset of todo source types. */
-export type CaptureSourceType = 'email' | 'calendar';
+export type CaptureSourceType = 'email' | 'calendar' | 'chat';
 
 /** Create-todo body: title plus provenance triple. */
 export interface CaptureTodoDraft {
@@ -103,6 +103,77 @@ export function buildCalendarTodoDraft(event: CalendarEventLike): CaptureTodoDra
   };
 }
 
+/** A Google Chat message as loaded by the Chat pane, narrowed to what capture needs. */
+export interface ChatCaptureInput {
+  /** Message resource name, e.g. `spaces/AAA/messages/BBB`. */
+  messageName?: string | null;
+  spaceName?: string | null;
+  threadName?: string | null;
+  spaceLabel?: string | null;
+  sender?: string | null;
+  text?: string | null;
+  /** Reopen URL for the space; must be a google.com URL or it is dropped. */
+  deepLink?: string | null;
+}
+
+const MAX_CHAT_BODY = 8_000;
+
+/** Fields a Chat capture shares between the todo and card drafts. */
+export interface ChatCaptureParts {
+  title: string;
+  /** "From <sender> in <space>", or empty. */
+  header: string;
+  /** Message text, clamped to MAX_CHAT_BODY. */
+  body: string;
+  deepLink: string | null;
+  sourceId: string | null;
+  sourceMeta: Record<string, unknown>;
+}
+
+/** Title is the message's first line, else "Chat request in <space>". */
+export function chatCaptureParts(input: ChatCaptureInput): ChatCaptureParts {
+  const text = clean(input.text);
+  const spaceLabel = clean(input.spaceLabel);
+  const sender = clean(input.sender);
+  const messageName = clean(input.messageName) || null;
+  const deepLink = safeCaptureDeepLink(input.deepLink);
+
+  const fallback = spaceLabel ? `Chat request in ${spaceLabel}` : 'Chat request';
+  const header = [sender && `From ${sender}`, spaceLabel && `in ${spaceLabel}`]
+    .filter(Boolean)
+    .join(' ');
+  const body = text.length > MAX_CHAT_BODY ? `${text.slice(0, MAX_CHAT_BODY - 1)}…` : text;
+
+  const sourceMeta: Record<string, unknown> = { kind: 'google-chat' };
+  if (messageName) sourceMeta.messageName = messageName;
+  if (clean(input.spaceName)) sourceMeta.spaceName = clean(input.spaceName);
+  if (clean(input.threadName)) sourceMeta.threadName = clean(input.threadName);
+  if (sender) sourceMeta.from = sender;
+  if (deepLink) sourceMeta.deepLink = deepLink;
+
+  return {
+    title: clampTitle(text.split('\n')[0], fallback),
+    header,
+    body,
+    deepLink,
+    sourceId: messageName,
+    sourceMeta,
+  };
+}
+
+/** Chat message → todo draft. Notes carry the sender line and the message text. */
+export function buildChatTodoDraft(input: ChatCaptureInput): CaptureTodoDraft {
+  const parts = chatCaptureParts(input);
+  const notes = [parts.header, parts.body].filter(Boolean).join('\n\n');
+  return {
+    title: parts.title,
+    ...(notes ? { notes } : {}),
+    sourceType: 'chat',
+    sourceId: parts.sourceId,
+    sourceMeta: parts.sourceMeta,
+  };
+}
+
 /**
  * Only `https://*.google.com` / `google.com`. `source_meta` is attacker-influenced
  * and is handed to `<a href>` / `Linking.openURL`.
@@ -129,6 +200,8 @@ export function todoOriginLabel(todo: TodoOriginLike): string | null {
       return 'From email';
     case 'calendar':
       return 'From calendar';
+    case 'chat':
+      return 'From Google Chat';
     default:
       return null;
   }

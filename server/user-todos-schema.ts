@@ -25,7 +25,8 @@
  *     (`COALESCE(MAX(position), -1) + 1` scoped to the owner).
  *   - source_type / source_id / source_meta: capture provenance (spec
  *     CAPTURE-PROVENANCE). `source_type` is `manual` for hand-created todos,
- *     `email` / `calendar` when captured from the Google Workspace surfaces.
+ *     `email` / `calendar` / `chat` when captured from the Google Workspace
+ *     surfaces.
  *     `source_meta` is a JSON blob preserving a deep link back to the original
  *     Gmail message / Calendar event so the dashboard can reopen it.
  *   - linked_type / linked_id / linked_project_id: the polymorphic link to an
@@ -57,7 +58,7 @@ export const USER_TODOS_SCHEMA = `
     do_end_at         TEXT,
     due_at            TEXT,
     position          INTEGER NOT NULL DEFAULT 0,
-    source_type       TEXT NOT NULL DEFAULT 'manual' CHECK(source_type IN ('manual','email','calendar')),
+    source_type       TEXT NOT NULL DEFAULT 'manual' CHECK(source_type IN ('manual','email','calendar','chat')),
     source_id         TEXT,
     source_meta       TEXT,
     linked_type       TEXT CHECK(linked_type IN ('card','epic','session')),
