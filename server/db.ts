@@ -400,6 +400,101 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_google_chat_session_posts_session
       ON google_chat_session_posts(session_id, space_name, created_at);
 
+    -- Workspace Events API subscription per Hub user (target
+    -- //chat.googleapis.com/spaces/-, i.e. every space the user is in). Events
+    -- arrive by Pub/Sub push carrying the subscription name, which maps them
+    -- back to the user. authority is the Google user (users/{id}) that
+    -- authorized it, used to skip the user's own messages.
+    CREATE TABLE IF NOT EXISTS google_chat_event_subscriptions (
+      user_id TEXT PRIMARY KEY,
+      subscription_name TEXT UNIQUE,
+      authority TEXT,
+      state TEXT NOT NULL,
+      expire_time TEXT,
+      suspension_reason TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    -- Unread Chat messages per Hub user, one row per message so Pub/Sub's
+    -- at-least-once redelivery can't double count.
+    CREATE TABLE IF NOT EXISTS google_chat_unread_messages (
+      user_id TEXT NOT NULL,
+      message_name TEXT NOT NULL,
+      space_name TEXT NOT NULL,
+      create_time TEXT NOT NULL,
+      PRIMARY KEY (user_id, message_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_google_chat_unread_messages_space
+      ON google_chat_unread_messages(user_id, space_name);
+
+    -- Read marker per (user, space): events for messages created at or before
+    -- read_through are not unread (late redelivery after the user read them).
+    CREATE TABLE IF NOT EXISTS google_chat_space_reads (
+      user_id TEXT NOT NULL,
+      space_name TEXT NOT NULL,
+      read_through TEXT NOT NULL,
+      PRIMARY KEY (user_id, space_name)
+    );
+
+    -- Every Workspace subscription name a Hub user has owned. Routing a push
+    -- uses this, not just the current row: Pub/Sub can deliver a message
+    -- event after its subscription expired or was replaced (no ordering, 7-day
+    -- retention), and it still belongs to that user. retired_at is set when
+    -- the name stops being current; retired rows are pruned after the
+    -- retention window, and all of a user's rows go when access is lost.
+    CREATE TABLE IF NOT EXISTS google_chat_subscription_owners (
+      subscription_name TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      authority TEXT,
+      retired_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_google_chat_subscription_owners_user
+      ON google_chat_subscription_owners(user_id);
+
+    -- Push deliveries for a Workspace subscription the Hub hasn't registered
+    -- yet. Google can deliver as soon as a subscription exists, before the
+    -- create operation returns and its name is saved; these are replayed
+    -- when it is. Unclaimed rows are pruned after an hour and capped.
+    CREATE TABLE IF NOT EXISTS google_chat_unrouted_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subscription_name TEXT NOT NULL,
+      envelope TEXT NOT NULL,
+      received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_google_chat_unrouted_events_name
+      ON google_chat_unrouted_events(subscription_name, id);
+
+    -- Messages deleted in Chat, per user. Pub/Sub doesn't order deliveries, so
+    -- a created event can arrive after (or be redelivered after) the deleted
+    -- one; this marker keeps it from becoming a phantom unread. Pruned once
+    -- older than Pub/Sub's retention window.
+    CREATE TABLE IF NOT EXISTS google_chat_deleted_messages (
+      user_id TEXT NOT NULL,
+      message_name TEXT NOT NULL,
+      deleted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      PRIMARY KEY (user_id, message_name)
+    );
+
+    -- Per-user sequence for Google Chat push state. Every change to a user's
+    -- unread counts or subscription takes the next number, and every payload
+    -- about that state (WebSocket events, HTTP responses, snapshots) carries
+    -- one, so clients order them by number instead of arrival. Never deleted,
+    -- so numbers never repeat.
+    CREATE TABLE IF NOT EXISTS google_chat_user_seq (
+      user_id TEXT PRIMARY KEY,
+      seq INTEGER NOT NULL
+    );
+
+    -- Sequence number of the last change to each (user, space) unread state.
+    CREATE TABLE IF NOT EXISTS google_chat_unread_versions (
+      user_id TEXT NOT NULL,
+      space_name TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      PRIMARY KEY (user_id, space_name)
+    );
+
     -- artifacts: per-session documents an agent generated (PDFs, scripts,
     -- reports, …). The bytes live in object storage (S3 or a local dir; see
     -- server/artifacts/artifact-store.ts); this table is the metadata index

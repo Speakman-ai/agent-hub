@@ -328,6 +328,58 @@ If a step fails with one of the setup error codes above, follow its link. For
 anything else, capture the proxy's `code` and `error` from the browser network
 tab or the wrapper's stderr.
 
+### Push updates and unread counts (optional)
+
+Without this the Chat pane polls the open conversation every 30s and has no
+unread counts. With it, each user gets a Google Workspace Events API
+subscription to new, edited, and deleted messages in every space they belong
+to; Google publishes the events to a Pub/Sub topic, and Pub/Sub pushes them to
+the Hub. The pane updates as messages arrive or change, and unread counts show
+per conversation and on the Hub **Chat** tab. While push is up the pane still
+re-reads the open conversation every 5 minutes, in case a delivery was lost.
+No extra OAuth scope is needed: `chat.messages.readonly` covers message events.
+
+In the same Cloud project as the OAuth client:
+
+1. Enable the **Google Workspace Events API** and the **Cloud Pub/Sub API**.
+2. Create a topic, e.g. `projects/<project>/topics/agent-hub-chat-events`.
+3. Grant `chat-api-push@system.gserviceaccount.com` **Pub/Sub Publisher** on
+   the topic, the account Google documents for Chat apps that use the Chat
+   API directly. If subscribing still fails with `INVALID_PUBSUB_TOPIC` or a
+   permission error (the user sees it as the subscription's `lastError`), also
+   grant the service account shown on the Chat API **Configuration** page.
+4. Create a service account for push authentication (e.g.
+   `agent-hub-chat-push@<project>.iam.gserviceaccount.com`). No roles needed.
+5. Create a **push** subscription on the topic:
+   - Endpoint: `https://<hub>/api/google/chat/events/push`
+   - **Enable authentication**, service account from step 4, audience left
+     empty (it defaults to the endpoint URL).
+   - Leave payload unwrapping **off**: the Hub reads the CloudEvents
+     attributes from the push envelope.
+6. Add to `~/.agent-hub/data/config.json` and restart:
+
+   ```json
+   "googleChatEvents": {
+     "pubsubTopic": "projects/<project>/topics/agent-hub-chat-events",
+     "pushServiceAccountEmail": "agent-hub-chat-push@<project>.iam.gserviceaccount.com"
+   }
+   ```
+
+   `pushAudience` defaults to `<publicUrl>/api/google/chat/events/push`; set it
+   when `publicUrl` is unset or differs from the endpoint. Env equivalents:
+   `AGENT_HUB_GOOGLE_CHAT_PUBSUB_TOPIC`,
+   `AGENT_HUB_GOOGLE_CHAT_PUSH_SERVICE_ACCOUNT`,
+   `AGENT_HUB_GOOGLE_CHAT_PUSH_AUDIENCE`. An incomplete or non-https setting
+   disables push and the pane keeps polling.
+
+The Hub creates a user's subscription the first time they open the app with
+Chat read access. Subscriptions that include message data expire after 4
+hours; the Hub renews them every 15 minutes once less than 90 minutes remain,
+recreates expired ones, and retries suspended ones hourly. Push requests that
+fail OIDC verification (wrong signer, audience, or service account) get `401`.
+If the Workspace Events API is off, users see *"The Google Workspace Events API
+is turned off for this Hub's Google Cloud project"* and the pane keeps polling.
+
 ## Reference
 
 - `server/google-oauth-config.ts` — `resolveGoogleOAuthConfig()` (credential resolution)

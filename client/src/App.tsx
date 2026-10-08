@@ -95,6 +95,7 @@ import SupportOverviewPage from './components/SupportOverviewPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
 import GoogleChatPage from './components/GoogleChatPage';
+import { totalUnread, useGoogleChatPush, useGoogleChatPushBootstrap } from './utils/googleChatPush';
 import TodosPage from './components/TodosPage';
 import PersonalDashboard from './components/PersonalDashboard';
 import DailySummaryPage from './components/DailySummaryPage';
@@ -3378,6 +3379,15 @@ export default function App({ initialView }: any = {}) {
           window.dispatchEvent(new CustomEvent('org_todo_update', { detail: data }));
           break;
 
+        // Google Chat push (Workspace Events API). The server sends these only
+        // to the user whose Google account they belong to. Bridged so the
+        // unread store and the open Chat pane react without a WS dependency.
+        case 'google_chat_message':
+        case 'google_chat_unread':
+        case 'google_chat_events_status':
+          window.dispatchEvent(new CustomEvent(data.type, { detail: data }));
+          break;
+
         // GitHub mirror sync status (server/git-host/mirror.ts +
         // reconcile.ts). Bridged to a window CustomEvent so
         // <GitHostMirrorStatusBanner /> refreshes the moment the background
@@ -3818,6 +3828,8 @@ export default function App({ initialView }: any = {}) {
   // Reconcile streamed-only state (e.g. the finalize run in `useFinalizeRun`)
   // after a mid-session WS drop by fanning out `agenthub:ws_reconnected`.
   useWsReconnectBroadcast(connected);
+  useGoogleChatPushBootstrap(connected);
+  const googleChatPush = useGoogleChatPush();
 
   const handleCancel = useCallback(() => {
     if (activeSessionId) {
@@ -7179,6 +7191,7 @@ export default function App({ initialView }: any = {}) {
                     />
                   }
                   assistant={hubAssistantChat}
+                  paneBadges={{ chat: totalUnread(googleChatPush.unread) }}
                 />
               ) : currentView === 'deployments' && deploymentsProjectId ? (
                 <DeploymentsPage

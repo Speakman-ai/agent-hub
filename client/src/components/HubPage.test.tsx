@@ -98,4 +98,14 @@ describe('HubPage', () => {
     );
     expect(screen.getByText('hub-clear-slot')).toBeInTheDocument();
   });
+
+  it('shows an unread badge on the Chat tab only when there is something unread', () => {
+    const { rerender } = render(
+      <HubPage pane="today" onPaneChange={vi.fn()} {...panes} paneBadges={{ chat: 120 }} />,
+    );
+    expect(screen.getByTestId('hub-pane-chat-badge').textContent).toBe('99+');
+    expect(screen.queryByTestId('hub-pane-mail-badge')).toBeNull();
+    rerender(<HubPage pane="today" onPaneChange={vi.fn()} {...panes} paneBadges={{ chat: 0 }} />);
+    expect(screen.queryByTestId('hub-pane-chat-badge')).toBeNull();
+  });
 });

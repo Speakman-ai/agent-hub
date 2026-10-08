@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
+  bumpSpaceActivity,
+  newestCreateTime,
   applyLinksResult,
   dispatchWarningFor,
   LINKS_UNKNOWN_WARNING,
@@ -302,5 +304,36 @@ describe('link read ordering', () => {
     expect(dispatchWarningFor({ links: [l], seq: 1, failed: false }, l.messageName)).toContain(
       '"First"',
     );
+  });
+});
+
+describe('push helpers', () => {
+  const spaces = [
+    { id: 'A', lastActiveTime: '2026-10-08T10:00:00Z' },
+    { id: 'B', lastActiveTime: '2026-10-08T09:00:00Z' },
+  ];
+
+  it('moves a conversation with a newer message to the top', () => {
+    const r = bumpSpaceActivity(spaces, 'B', '2026-10-08T10:00:00.000001Z');
+    expect(r.known).toBe(true);
+    expect(r.spaces.map((s) => s.id)).toEqual(['B', 'A']);
+  });
+
+  it('returns the same list for an older event and flags unknown spaces', () => {
+    expect(bumpSpaceActivity(spaces, 'A', '2026-10-08T09:30:00Z').spaces).toBe(spaces);
+    expect(bumpSpaceActivity(spaces, 'Z', '2026-10-08T11:00:00Z')).toEqual({
+      spaces,
+      known: false,
+    });
+  });
+
+  it('finds the newest create time at full precision', () => {
+    expect(
+      newestCreateTime([
+        { createTime: '2026-10-08T10:00:00.1Z' },
+        { createTime: '2026-10-08T10:00:00.100001Z' },
+        { createTime: null },
+      ] as any),
+    ).toBe('2026-10-08T10:00:00.100001Z');
   });
 });

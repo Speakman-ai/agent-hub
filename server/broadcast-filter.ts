@@ -79,6 +79,11 @@ const SESSION_OWNER_ONLY_EVENT_TYPES = new Set([
   'sidebar_opened',
   'sidebar_closed',
 ]);
+const GOOGLE_CHAT_USER_EVENT_TYPES = new Set([
+  'google_chat_message',
+  'google_chat_unread',
+  'google_chat_events_status',
+]);
 const SESSION_READ_SCOPED_EVENT_TYPES = new Set(['session-event', 'session-progress']);
 
 /**
@@ -162,6 +167,15 @@ export function shouldDeliverBroadcast(
       typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
     if (!owner) return true;
     return stamp.userId === owner;
+  }
+
+  // 3b-chat. Google Chat push events belong to one Hub user's Google account,
+  //    with no admin override. Unlike todos, a missing owner denies: these
+  //    are never meant to fan out.
+  if (typeof data.type === 'string' && GOOGLE_CHAT_USER_EVENT_TYPES.has(data.type)) {
+    const owner =
+      typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
+    return !!owner && stamp.userId === owner;
   }
 
   // 3b-note. Private project notes go only to their owner, with no Owner-role

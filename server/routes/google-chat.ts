@@ -664,7 +664,7 @@ function bad(res: Response, status: number, error: string, code?: string, extra 
   res.status(status).json({ error, ...(code && { code }), ...extra });
 }
 
-function requireChatAccess(
+export function requireChatAccess(
   req: Request,
   res: Response,
   deps: RouteDeps,
@@ -887,7 +887,7 @@ export function extractGoogleError(err: unknown): MappedChatError {
   return { status: 502, code: 'google_chat_upstream_failed', error: firstLine };
 }
 
-function sendGoogleError(res: Response, err: unknown): Response {
+export function sendGoogleError(res: Response, err: unknown): Response {
   const mapped = extractGoogleError(err);
   return res.status(mapped.status).json({
     error: mapped.error,

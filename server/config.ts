@@ -23,6 +23,7 @@ import { ensureSpawnCredsForSession } from './spawn-creds-mint.js';
 import { resolvePersonalOAuthConfig } from './personal-oauth-config.js';
 import { resolveGithubAppConfig } from './github-app-config.js';
 import { resolveGoogleOAuthConfig } from './google-oauth-config.js';
+import { resolveGoogleChatEventsConfig } from './google-chat-events-config.js';
 import { normalizeSmtpConfig } from './smtp-config.js';
 import { coerceSessionEnvAdapterMode } from './session-env/sysbox-capability.js';
 import { CODEX_DEFAULT_MODEL } from './codex-model-capability.js';
@@ -512,6 +513,12 @@ const config: AppConfig = {
   // Server-global Google OAuth app credentials for the per-user "Connect
   // Google" flow. Null when unset. See server/google-oauth-config.ts.
   googleOAuth: resolveGoogleOAuthConfig(fileConfig),
+  // Google Chat push via the Workspace Events API. Null = Chat pane polls.
+  // See server/google-chat-events-config.ts.
+  googleChatEvents: resolveGoogleChatEventsConfig(
+    fileConfig,
+    resolve('AGENT_HUB_PUBLIC_URL', 'publicUrl', null),
+  ),
 
   // Auth
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),

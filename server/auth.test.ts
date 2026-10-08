@@ -69,7 +69,8 @@ function resetPhase3Mocks(): void {
 }
 
 const { default: config } = await import('./config.js');
-const { authMiddleware, authenticateWs, authenticateWsDetailed } = await import('./auth.js');
+const { authMiddleware, authenticateWs, authenticateWsDetailed, isPublicPath } =
+  await import('./auth.js');
 const { signJwt } = await import('./jwt.js');
 
 interface MockReqOverrides {
@@ -161,6 +162,13 @@ describe('authMiddleware (API key)', () => {
     );
     expect(next).toHaveBeenCalledOnce();
     expect(res.statusCode).toBeNull();
+  });
+
+  it('lets Pub/Sub reach the Chat push endpoint, and only that Chat path', () => {
+    // The route verifies Google's OIDC token itself; Pub/Sub has no Hub token.
+    expect(isPublicPath('/api/google/chat/events/push', 'POST')).toBe(true);
+    expect(isPublicPath('/api/google/chat/events/subscription', 'POST')).toBe(false);
+    expect(isPublicPath('/api/google/chat/unread', 'GET')).toBe(false);
   });
 
   it('does NOT treat the retired support-request intake path as public', () => {

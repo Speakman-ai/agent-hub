@@ -3872,6 +3872,18 @@ export interface GoogleOAuthConfig {
 }
 
 /**
+ * Push delivery for Google Chat via the Workspace Events API. Google publishes
+ * each user's message events to `pubsubTopic`; a Pub/Sub push subscription
+ * forwards them to `pushAudience` with an OIDC token minted for
+ * `pushServiceAccountEmail`. See server/google-chat-events-config.ts.
+ */
+export interface GoogleChatEventsConfig {
+  pubsubTopic: string;
+  pushAudience: string;
+  pushServiceAccountEmail: string;
+}
+
+/**
  * Voice-transcription providers selectable for `/api/transcribe`. `'xai'` (the
  * default) uses the xAI Grok speech-to-text endpoint (`/v1/stt`); `'openai'`
  * uses OpenAI Whisper.
@@ -3973,6 +3985,11 @@ export interface AppConfig {
    * returns 503.
    */
   googleOAuth: GoogleOAuthConfig | null;
+  /**
+   * Google Chat push (Workspace Events API → Pub/Sub → Hub). Null = not set
+   * up; the Chat pane falls back to polling.
+   */
+  googleChatEvents: GoogleChatEventsConfig | null;
   apiKey: string | null;
   /**
    * First-party SMTP email delivery configuration. Stored in

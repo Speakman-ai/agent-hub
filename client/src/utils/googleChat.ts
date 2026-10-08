@@ -130,6 +130,26 @@ export function spaceIdFromThreadName(threadName: string | null | undefined): st
 }
 
 /** Most recently active first; spaces with no activity sink to the bottom. */
+/**
+ * A push event says `spaceId` got a message at `createTime`: move it up the
+ * list. Returns the same array when nothing changes, and `known: false` when
+ * the space isn't listed yet (a new DM), so the caller can reload the list.
+ */
+export function bumpSpaceActivity<T extends Pick<ChatSpace, 'id' | 'lastActiveTime'>>(
+  spaces: T[],
+  spaceId: string,
+  createTime: string | null | undefined,
+): { spaces: T[]; known: boolean } {
+  const index = spaces.findIndex((s) => s.id === spaceId);
+  if (index < 0) return { spaces, known: false };
+  if (!createTime || compareRfc3339(createTime, spaces[index].lastActiveTime) <= 0) {
+    return { spaces, known: true };
+  }
+  const next = spaces.slice();
+  next[index] = { ...spaces[index], lastActiveTime: createTime };
+  return { spaces: sortSpacesByActivity(next), known: true };
+}
+
 export function sortSpacesByActivity<T extends Pick<ChatSpace, 'lastActiveTime'>>(
   spaces: T[],
 ): T[] {
@@ -140,6 +160,16 @@ function byName(messages: ChatMessage[]): Map<string, ChatMessage> {
   const map = new Map<string, ChatMessage>();
   for (const m of messages) map.set(m.name || `${m.createTime}:${m.text}`, m);
   return map;
+}
+
+/** createTime of the newest message with one, or null for an empty history. */
+export function newestCreateTime(messages: ChatMessage[]): string | null {
+  let newest: string | null = null;
+  for (const m of messages) {
+    if (!m.createTime || !isRfc3339(m.createTime)) continue;
+    if (newest === null || compareRfc3339(m.createTime, newest) > 0) newest = m.createTime;
+  }
+  return newest;
 }
 
 /** createTime of the oldest message with one, or null for an empty history. */

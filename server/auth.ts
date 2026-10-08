@@ -57,6 +57,10 @@ const PUBLIC_PATHS: readonly string[] = [
   // Google OAuth callback has the same cross-origin redirect shape as GitHub:
   // no Hub bearer token is present, and the route validates the signed state.
   '/api/auth/google/callback',
+  // Google Cloud Pub/Sub push for Chat events. Pub/Sub can't send a Hub
+  // token; the route verifies Google's OIDC token for the configured service
+  // account and audience instead.
+  '/api/google/chat/events/push',
 ];
 
 /**

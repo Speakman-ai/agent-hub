@@ -1173,6 +1173,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  // Chat push (Workspace Events API) and per-user unread state.
+  ensureGoogleChatSubscription: () =>
+    fetchJSON('/google/chat/events/subscription', { method: 'POST' }),
+  listGoogleChatUnread: () => fetchJSON('/google/chat/unread'),
+  markGoogleChatSpaceRead: (spaceId: string, readThrough?: string | null) =>
+    fetchJSON(`/google/chat/spaces/${encodeURIComponent(spaceId)}/read`, {
+      method: 'POST',
+      body: JSON.stringify(readThrough ? { readThrough } : {}),
+    }),
   listGoogleChatMessageLinks: (spaceId: string) =>
     fetchJSON(`/google/chat/spaces/${encodeURIComponent(spaceId)}/message-links`),
   createGoogleChatMessageLink: (

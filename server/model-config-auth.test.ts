@@ -42,6 +42,7 @@ function makeConfig(): AppConfig {
     personalOAuth: null,
     githubApp: null,
     googleOAuth: null,
+    googleChatEvents: null,
     apiKey: null,
     openaiApiKey: null,
     geminiApiKey: null,

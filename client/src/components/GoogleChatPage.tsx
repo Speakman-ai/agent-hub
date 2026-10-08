@@ -37,9 +37,11 @@ import {
   chatSpaceLabel,
   chatSeedContext,
   sortSpacesByActivity,
+  bumpSpaceActivity,
   filterSpaces,
   reconcileRange,
   oldestCreateTime,
+  newestCreateTime,
   uniqueMessages,
   mergeOlderPage,
   type ChatMessage,
@@ -57,13 +59,24 @@ import { isSubmitEnter } from '../utils/keyboard';
 import { placeDrafts, useChatDrafts, type ChatDraft } from '../utils/googleChatDrafts';
 import GoogleChatDraftCard from './GoogleChatDraftCard';
 import { DraftsLoadError } from './GoogleChatDraftsPanel';
+import {
+  chatPushStore,
+  formatUnreadCount,
+  spaceIdFromName,
+  useGoogleChatPush,
+} from '../utils/googleChatPush';
 
 type GoogleStatus = NonNullable<GoogleStatusLike>;
 
-// New customer messages should show up without a manual refresh while the
-// pane is open. Polling is the simple path; push via the Workspace Events API
-// would remove it.
+// With Chat push active (Workspace Events API), the open space refreshes when
+// the server relays a created, updated, or deleted message. Polling is the
+// fallback for Hubs without push, or while push is down (socket closed,
+// subscription suspended or expired). Push still keeps a slow re-read: Pub/Sub
+// can drop a delivery, and nothing else would ever correct the view.
 const POLL_MS = 30_000;
+const PUSH_RECONCILE_MS = 5 * 60_000;
+// Bursts of events (a busy thread) collapse into one re-read.
+const PUSH_REFRESH_DEBOUNCE_MS = 300;
 const MESSAGE_PAGE = 50;
 const SPACE_PAGE = 1000;
 // Google caps a page at 1000 spaces; 20 pages is far past any real account and
@@ -262,6 +275,9 @@ export default function GoogleChatPage({
   const loadingOlderRef = useRef<Set<string>>(new Set());
 
   const selectedSpace = spaces.find((s) => s.id === selectedId) ?? null;
+  const push = useGoogleChatPush();
+  // Derived in the store from connectivity, subscription state, and expiry.
+  const pushActive = push.pushActive;
   // Every capability gate and enable action below derives from this one value.
   const consent = chatConsent(status);
   const { canRead, canSend } = consent;
@@ -342,6 +358,9 @@ export default function GoogleChatPage({
       if (!isCurrent()) return;
       setStatus(nextStatus);
       if (nextStatus.connected && chatConsent(nextStatus).canRead) {
+        // Access may have been granted after the app started; subscribe now
+        // rather than waiting for a reload. No-op once subscribed.
+        void chatPushStore().start();
         const list: ChatSpace[] = [];
         let pageToken: string | undefined;
         for (let page = 0; page < MAX_SPACE_PAGES; page++) {
@@ -590,13 +609,95 @@ export default function GoogleChatPage({
     if (!selectedId) return;
     loadMessages(selectedId);
     loadLinks(selectedId);
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
-      loadMessages(selectedId);
-      loadLinks(selectedId);
-    }, POLL_MS);
-    return () => window.clearInterval(timer);
   }, [selectedId, loadMessages, loadLinks]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const timer = window.setInterval(
+      () => {
+        if (document.visibilityState !== 'visible') return;
+        loadMessages(selectedId);
+        loadLinks(selectedId);
+      },
+      pushActive ? PUSH_RECONCILE_MS : POLL_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, [selectedId, pushActive, loadMessages, loadLinks]);
+
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  const spacesRef = useRef(spaces);
+  spacesRef.current = spaces;
+
+  // Push: any message change (new, edited, deleted) re-reads the open space.
+  // A new message also moves its conversation up the list, and one in a space
+  // we haven't listed (a new DM) reloads the list.
+  useEffect(() => {
+    let refreshTimer: number | null = null;
+    let reloadTimer: number | null = null;
+    const refreshOpen = () => {
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        const open = selectedIdRef.current;
+        if (!open) return;
+        loadMessages(open);
+        loadLinks(open);
+      }, PUSH_REFRESH_DEBOUNCE_MS);
+    };
+    const onMessage = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      const spaceId = spaceIdFromName(detail?.spaceName);
+      if (!spaceId) return;
+      if (spaceId === selectedIdRef.current) refreshOpen();
+      if ((detail?.kind ?? 'created') !== 'created') return;
+      // Membership decides whether to reload the list; the ref is enough for
+      // that (a reload is cheap and debounced).
+      if (!spacesRef.current.some((sp) => sp.id === spaceId)) {
+        if (reloadTimer === null) {
+          reloadTimer = window.setTimeout(() => {
+            reloadTimer = null;
+            loadSpaces();
+          }, PUSH_REFRESH_DEBOUNCE_MS);
+        }
+        return;
+      }
+      // The bump itself must compose: several events can land before React
+      // renders, so each applies to the latest list, not the rendered one.
+      const createTime = detail?.createTime;
+      setSpaces((prev) => bumpSpaceActivity(prev, spaceId, createTime).spaces);
+    };
+    window.addEventListener('google_chat_message', onMessage);
+    // Events sent while the socket was down are not replayed.
+    window.addEventListener('agenthub:ws_reconnected', refreshOpen);
+    return () => {
+      window.removeEventListener('google_chat_message', onMessage);
+      window.removeEventListener('agenthub:ws_reconnected', refreshOpen);
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      if (reloadTimer !== null) window.clearTimeout(reloadTimer);
+    };
+  }, [loadMessages, loadLinks, loadSpaces]);
+
+  // Reading the open space clears its unread count, up to the newest message
+  // actually loaded (a message that arrived after the last read stays unread
+  // until the refresh shows it).
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === 'undefined' || document.visibilityState === 'visible',
+  );
+  useEffect(() => {
+    const onVisibility = () => setPageVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+  // Report what the user has seen whenever the newest loaded message moves
+  // forward, badge or not: a message shown before its push event arrives
+  // must not count as unread when the event lands. The store sends a
+  // boundary once and owns retries.
+  const newestLoadedTime = newestCreateTime(view.messages);
+  useEffect(() => {
+    if (!selectedId || !view.loaded || !pageVisible || !newestLoadedTime) return;
+    void chatPushStore().markRead(selectedId, newestLoadedTime);
+  }, [selectedId, newestLoadedTime, view.loaded, pageVisible]);
 
   // Follow the newest message, not the list length: prepending an older page
   // must not yank the view to the bottom.
@@ -897,7 +998,24 @@ export default function GoogleChatPage({
                     : 'text-gray-300 hover:bg-gray-800/50'
                 }`}
               >
-                {chatSpaceLabel(space)}
+                <span className="flex items-center gap-2">
+                  <span
+                    className={`min-w-0 flex-1 truncate ${
+                      push.unread[`spaces/${space.id}`] ? 'font-semibold text-white' : ''
+                    }`}
+                  >
+                    {chatSpaceLabel(space)}
+                  </span>
+                  {!!push.unread[`spaces/${space.id}`] && (
+                    <span
+                      data-testid={`chat-space-unread-${space.id}`}
+                      aria-label={`${push.unread[`spaces/${space.id}`].count} unread`}
+                      className="shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
+                    >
+                      {formatUnreadCount(push.unread[`spaces/${space.id}`].count)}
+                    </span>
+                  )}
+                </span>
               </button>
             ))}
           </nav>

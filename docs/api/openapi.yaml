@@ -6815,6 +6815,75 @@ components:
           description: When true, Chat messages posted from an agent session go out immediately. When false (the default) they are held as drafts for approval.
       required:
         - autoSendAgentReplies
+    GoogleChatEventsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+      required:
+        - error
+    GoogleChatEventSubscription:
+      type: object
+      properties:
+        state:
+          type: string
+          enum:
+            - ACTIVE
+            - SUSPENDED
+            - EXPIRED
+            - ERROR
+        expireTime:
+          type: string
+          nullable: true
+        suspensionReason:
+          type: string
+          nullable: true
+          description: Google ErrorType that suspended the subscription, e.g. USER_SCOPE_REVOKED.
+        lastError:
+          type: string
+          nullable: true
+      required:
+        - state
+        - expireTime
+        - suspensionReason
+        - lastError
+    GoogleChatPushStatus:
+      type: object
+      properties:
+        configured:
+          type: boolean
+          description: False when the server has no Pub/Sub topic set up; the pane polls instead.
+        subscription:
+          allOf:
+            - $ref: "#/components/schemas/GoogleChatEventSubscription"
+            - nullable: true
+        version:
+          type: integer
+          description: The user's push-state sequence number as of this response. WebSocket status events carry one too; apply whichever is newer.
+      required:
+        - configured
+        - subscription
+        - version
+    GoogleChatSpaceUnread:
+      type: object
+      properties:
+        spaceName:
+          type: string
+        count:
+          type: integer
+        lastMessageTime:
+          type: string
+          nullable: true
+        version:
+          type: integer
+          description: The user's unread version when this space last changed. Every unread payload (WebSocket events, this response, the list) carries one; apply only versions newer than the one held.
+      required:
+        - spaceName
+        - count
+        - lastMessageTime
+        - version
     GoogleDriveErrorResponse:
       type: object
       properties:
@@ -32324,6 +32393,187 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/events/push:
+    post:
+      tags:
+        - Google
+      summary: Pub/Sub push intake for Google Workspace Events (Chat messages)
+      description: Called by Google Cloud Pub/Sub, not by clients. Requires the OIDC bearer token Pub/Sub mints for the configured push service account and audience. Events for unknown subscriptions and malformed payloads are acknowledged and dropped.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: object
+                  properties:
+                    attributes:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    data:
+                      type: string
+                    messageId:
+                      type: string
+                  additionalProperties:
+                    nullable: true
+                subscription:
+                  type: string
+              required:
+                - message
+      responses:
+        "204":
+          description: Acknowledged.
+        "401":
+          description: Missing or invalid push token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatEventsErrorResponse"
+        "503":
+          description: Chat push is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatEventsErrorResponse"
+  /api/google/chat/events/status:
+    get:
+      tags:
+        - Google
+      summary: The calling user's Google Chat push subscription
+      responses:
+        "200":
+          description: Push status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatPushStatus"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatEventsErrorResponse"
+  /api/google/chat/events/subscription:
+    post:
+      tags:
+        - Google
+      summary: Create or renew the calling user’s Google Chat push subscription
+      description: Idempotent. Subscribes the user to message created, updated, and deleted events in every Chat space they belong to (Workspace Events API, user auth) and renews it when it is close to expiry. Reads the current state from Google at most once a minute per user (so a missed suspension is found on reconnect), otherwise answers from the stored state.
+      responses:
+        "200":
+          description: Subscription is active (or its current state).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatPushStatus"
+        "401":
+          description: Not authenticated, or Google not connected / must be reconnected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatEventsErrorResponse"
+        "403":
+          description: Chat read scope not granted, or Google refused the subscription.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatEventsErrorResponse"
+        "429":
+          description: Google rate limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatEventsErrorResponse"
+        "502":
+          description: Google request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatEventsErrorResponse"
+        "503":
+          description: Chat push or Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatEventsErrorResponse"
+  /api/google/chat/unread:
+    get:
+      tags:
+        - Google
+      summary: Unread Google Chat messages per space for the calling user
+      responses:
+        "200":
+          description: Spaces with unread messages, most recent first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  spaces:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleChatSpaceUnread"
+                  total:
+                    type: integer
+                  version:
+                    type: integer
+                    description: Latest unread version for the user. The list reflects every change up to it; spaces absent from it have no unread messages as of this version.
+                required:
+                  - spaces
+                  - total
+                  - version
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatEventsErrorResponse"
+  /api/google/chat/spaces/{spaceId}/read:
+    post:
+      tags:
+        - Google
+      summary: Mark a Google Chat space read for the calling user
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                readThrough:
+                  type: string
+                  description: Create time of the newest message the user has seen (inclusive). Omit to clear every unread message in the space.
+              additionalProperties: false
+      responses:
+        "200":
+          description: Remaining unread state for the space.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatSpaceUnread"
+        "400":
+          description: Invalid space id or body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatEventsErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatEventsErrorResponse"
   /api/google/drive/files:
     get:
       tags:

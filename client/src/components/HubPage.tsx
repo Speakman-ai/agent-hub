@@ -11,6 +11,7 @@ import {
   ScrollText,
 } from 'lucide-react';
 import BrandLogo from './BrandLogo';
+import { formatUnreadCount } from '../utils/googleChatPush';
 import {
   DEFAULT_HUB_PANE,
   HUB_WORKSPACE_PANES,
@@ -51,6 +52,8 @@ export interface HubPageProps {
   onMobileTabChange?: (tab: 'assistant' | HubWorkspacePane) => void;
   /** Clear (and similar) controls on the assistant column header. */
   assistantActions?: ReactNode;
+  /** Unread counts shown on pane tabs (e.g. Google Chat). Zero hides the badge. */
+  paneBadges?: Partial<Record<HubWorkspacePane, number>>;
 }
 
 function workspaceBody(
@@ -103,6 +106,7 @@ export default function HubPage({
   mobileTab = 'today',
   onMobileTabChange,
   assistantActions,
+  paneBadges,
 }: HubPageProps) {
   const active = parseHubPane(pane);
   const workspace = workspaceBody(active, {
@@ -167,6 +171,15 @@ export default function HubPage({
                 >
                   <Icon size={13} />
                   {meta.label}
+                  {!!paneBadges?.[id] && (
+                    <span
+                      data-testid={`${meta.testId}-badge`}
+                      aria-label={`${paneBadges[id]} unread`}
+                      className="ml-0.5 min-w-[1.1rem] rounded-full bg-blue-600 px-1 text-center text-[10px] font-semibold leading-4 text-white"
+                    >
+                      {formatUnreadCount(paneBadges[id] as number)}
+                    </span>
+                  )}
                 </button>
               );
             })}

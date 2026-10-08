@@ -17,6 +17,9 @@ vi.mock('../utils/api', () => ({
     editGoogleChatDraft: vi.fn(),
     discardGoogleChatDraft: vi.fn(),
     createTodo: vi.fn(),
+    ensureGoogleChatSubscription: vi.fn(),
+    listGoogleChatUnread: vi.fn(),
+    markGoogleChatSpaceRead: vi.fn(),
   },
 }));
 
@@ -40,6 +43,7 @@ import GoogleChatPage, { LINKS_UNKNOWN_WARNING } from './GoogleChatPage';
 import { api } from '../utils/api';
 import { CHAT_SURFACE_SCOPES } from '../utils/googleSurface';
 import { compareRfc3339 } from '@shared/utils/rfc3339';
+import { chatPushStore, resetChatPushStore } from '../utils/googleChatPush';
 
 const mockApi = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -78,6 +82,7 @@ beforeEach(() => {
   for (const fn of Object.values(mockApi)) fn.mockReset();
   mockApi.listGoogleChatDrafts.mockResolvedValue({ drafts: [] });
   mockApi.getGoogleChatSettings.mockResolvedValue({ autoSendAgentReplies: false });
+  resetChatPushStore();
   startSessionProps.last = null;
   ticketProps.last = null;
 });
@@ -647,11 +652,14 @@ describe('GoogleChatPage', () => {
     render(<GoogleChatPage />);
 
     const box = await screen.findByPlaceholderText('Message Acme support');
+    // The push store reads status too; count only reads caused by the send.
+    await waitFor(() => expect(mockApi.ensureGoogleChatSubscription).toHaveBeenCalled());
+    const readsBefore = mockApi.getGoogleStatus.mock.calls.length;
     fireEvent.change(box, { target: { value: 'hello' } });
     fireEvent.keyDown(box, { key: 'Enter' });
 
     expect(await screen.findByRole('button', { name: /Enable sending/i })).toBeInTheDocument();
-    expect(mockApi.getGoogleStatus).toHaveBeenCalledTimes(2);
+    expect(mockApi.getGoogleStatus).toHaveBeenCalledTimes(readsBefore + 1);
   });
 
   it('Enter that confirms an IME composition does not send; plain Enter does', async () => {
@@ -1273,5 +1281,397 @@ describe('GoogleChatPage message links', () => {
     await waitFor(() =>
       expect(String(startSessionProps.last?.warning)).toContain('already sent to "Reset staging"'),
     );
+  });
+});
+
+describe('GoogleChatPage push updates', () => {
+  const OTHER = {
+    ...SPACE,
+    name: 'spaces/BBB',
+    id: 'BBB',
+    displayName: 'Globex',
+    lastActiveTime: '2026-10-08T09:00:00Z',
+  };
+
+  const ACTIVE = {
+    state: 'ACTIVE',
+    expireTime: '2099-01-01T00:00:00Z',
+    suspensionReason: null,
+    lastError: null,
+  };
+
+  /**
+   * `push`: the server reports an ACTIVE subscription. Unless `fresh`, the
+   * store already knows it before the pane renders (an earlier bootstrap).
+   */
+  function setup(opts: {
+    push: boolean;
+    fresh?: boolean;
+    unread?: Array<Record<string, unknown>>;
+  }) {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      email: 'me@acme.com',
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.ensureGoogleChatSubscription.mockResolvedValue({
+      configured: opts.push,
+      subscription: opts.push ? ACTIVE : null,
+      version: 1,
+    });
+    mockApi.listGoogleChatUnread.mockResolvedValue({ spaces: opts.unread ?? [], version: 10 });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE, OTHER], nextPageToken: null });
+    mockApi.listGoogleChatMessages.mockResolvedValue({
+      messages: [
+        msg({
+          name: 'spaces/AAA/messages/M2',
+          id: 'M2',
+          text: 'latest',
+          createTime: '2026-10-08T10:05:00Z',
+        }),
+      ],
+      nextPageToken: null,
+    });
+    mockApi.listGoogleChatMessageLinks.mockResolvedValue({ links: [] });
+    mockApi.markGoogleChatSpaceRead.mockImplementation(async (spaceId: string) => ({
+      spaceName: `spaces/${spaceId}`,
+      count: 0,
+      lastMessageTime: null,
+      version: 11,
+    }));
+    chatPushStore().setConnected(true);
+    if (opts.push && !opts.fresh) {
+      chatPushStore().applyEvent({
+        type: 'google_chat_events_status',
+        subscription: ACTIVE,
+        version: 1,
+      });
+    }
+    for (const u of opts.unread ?? []) {
+      chatPushStore().applyEvent({ type: 'google_chat_unread', ...u });
+    }
+  }
+
+  const pushMessage = (
+    spaceName: string,
+    createTime = '2026-10-08T10:06:00Z',
+    kind: 'created' | 'updated' | 'deleted' = 'created',
+  ) =>
+    window.dispatchEvent(
+      new CustomEvent('google_chat_message', {
+        detail: {
+          type: 'google_chat_message',
+          kind,
+          spaceName,
+          messageName: `${spaceName}/messages/new`,
+          createTime,
+        },
+      }),
+    );
+
+  it('only re-reads slowly while push is active, and re-reads the open space on a new message', async () => {
+    setup({ push: true });
+    const intervals = vi.spyOn(window, 'setInterval');
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+    expect(intervals.mock.calls.some(([, ms]) => ms === 30_000)).toBe(false);
+    // Push can drop an event; a slow re-read still corrects the view.
+    expect(intervals.mock.calls.some(([, ms]) => ms === 5 * 60_000)).toBe(true);
+    const before = mockApi.listGoogleChatMessages.mock.calls.length;
+
+    pushMessage('spaces/AAA');
+    await waitFor(() =>
+      expect(mockApi.listGoogleChatMessages.mock.calls.length).toBeGreaterThan(before),
+    );
+    // A refresh re-reads the loaded range, not the first page.
+    expect(mockApi.listGoogleChatMessages.mock.calls.at(-1)?.[1]).toMatchObject({
+      since: '2026-10-08T10:05:00Z',
+    });
+    intervals.mockRestore();
+  });
+
+  it('subscribes once Chat read access shows up in the pane', async () => {
+    setup({ push: true, fresh: true });
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+    await waitFor(() => expect(mockApi.ensureGoogleChatSubscription).toHaveBeenCalledTimes(1));
+  });
+
+  it('resumes polling when the socket drops after push was set up', async () => {
+    setup({ push: true });
+    const intervals = vi.spyOn(window, 'setInterval');
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+    expect(intervals.mock.calls.some(([, ms]) => ms === 30_000)).toBe(false);
+    act(() => chatPushStore().setConnected(false));
+    await waitFor(() => expect(intervals.mock.calls.some(([, ms]) => ms === 30_000)).toBe(true));
+    intervals.mockRestore();
+  });
+
+  it('keeps polling when push is not active', async () => {
+    setup({ push: false });
+    const intervals = vi.spyOn(window, 'setInterval');
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+    expect(intervals.mock.calls.some(([, ms]) => ms === 30_000)).toBe(true);
+    intervals.mockRestore();
+  });
+
+  it('moves a conversation with a new message to the top and leaves the open one alone', async () => {
+    setup({ push: true });
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+    const before = mockApi.listGoogleChatMessages.mock.calls.length;
+    pushMessage('spaces/BBB', '2026-10-08T11:00:00Z');
+    await waitFor(() => {
+      const ids = screen.getAllByTestId(/^chat-space-[A-Z]+$/).map((el) => el.dataset.testid);
+      expect(ids).toEqual(['chat-space-BBB', 'chat-space-AAA']);
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(mockApi.listGoogleChatMessages.mock.calls.length).toBe(before);
+  });
+
+  it('reloads the list for a message in a conversation it has not seen', async () => {
+    setup({ push: true });
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+    const before = mockApi.listGoogleChatSpaces.mock.calls.length;
+    pushMessage('spaces/NEWDM');
+    await waitFor(() =>
+      expect(mockApi.listGoogleChatSpaces.mock.calls.length).toBeGreaterThan(before),
+    );
+  });
+
+  it('shows unread counts per conversation and marks the open one read up to what loaded', async () => {
+    setup({
+      push: true,
+      unread: [
+        { spaceName: 'spaces/BBB', count: 3, lastMessageTime: '2026-10-08T09:00:00Z', version: 9 },
+        { spaceName: 'spaces/AAA', count: 1, lastMessageTime: '2026-10-08T10:05:00Z', version: 10 },
+      ],
+    });
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+
+    expect(screen.getByTestId('chat-space-unread-BBB').textContent).toBe('3');
+    await waitFor(() =>
+      expect(mockApi.markGoogleChatSpaceRead).toHaveBeenCalledWith('AAA', '2026-10-08T10:05:00Z'),
+    );
+    await waitFor(() => expect(screen.queryByTestId('chat-space-unread-AAA')).toBeNull());
+    expect(mockApi.markGoogleChatSpaceRead).not.toHaveBeenCalledWith('BBB', expect.anything());
+  });
+
+  it.each(['updated', 'deleted'] as const)(
+    'refreshes the open space when a message is %s, with no new message after it',
+    async (kind) => {
+      setup({ push: true });
+      render(<GoogleChatPage />);
+      await screen.findByText('latest');
+      const before = mockApi.listGoogleChatMessages.mock.calls.length;
+      mockApi.listGoogleChatMessages.mockResolvedValue({
+        messages: [
+          msg({
+            name: 'spaces/AAA/messages/M2',
+            id: 'M2',
+            text: kind === 'updated' ? 'latest (edited)' : null,
+            deleted: kind === 'deleted',
+            createTime: '2026-10-08T10:05:00Z',
+          }),
+        ],
+        nextPageToken: null,
+      });
+      pushMessage('spaces/AAA', '2026-10-08T10:05:00Z', kind);
+      await waitFor(() =>
+        expect(mockApi.listGoogleChatMessages.mock.calls.length).toBeGreaterThan(before),
+      );
+      if (kind === 'updated') await screen.findByText('latest (edited)');
+      else await waitFor(() => expect(screen.queryByText('latest')).toBeNull());
+    },
+  );
+
+  it('does not reorder or reload the list for an edit elsewhere', async () => {
+    setup({ push: true });
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+    const spacesBefore = mockApi.listGoogleChatSpaces.mock.calls.length;
+    pushMessage('spaces/BBB', '2026-10-08T11:00:00Z', 'updated');
+    pushMessage('spaces/UNKNOWN', '2026-10-08T11:00:00Z', 'deleted');
+    await new Promise((r) => setTimeout(r, 400));
+    const ids = screen.getAllByTestId(/^chat-space-[A-Z]+$/).map((el) => el.dataset.testid);
+    expect(ids).toEqual(['chat-space-AAA', 'chat-space-BBB']);
+    expect(mockApi.listGoogleChatSpaces.mock.calls.length).toBe(spacesBefore);
+  });
+
+  it('stops re-sending a mark-read that keeps failing', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      setup({
+        push: true,
+        unread: [
+          {
+            spaceName: 'spaces/AAA',
+            count: 1,
+            lastMessageTime: '2026-10-08T10:05:00Z',
+            version: 10,
+          },
+        ],
+      });
+      mockApi.markGoogleChatSpaceRead.mockImplementation(
+        () => new Promise((_, reject) => setTimeout(() => reject(new Error('500')), 50)),
+      );
+      render(<GoogleChatPage />);
+      await screen.findByText('latest');
+      // Small steps so React renders and re-runs effects between them, as a
+      // browser would.
+      for (let i = 0; i < 300; i++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1_000);
+        });
+      }
+      expect(mockApi.markGoogleChatSpaceRead).toHaveBeenCalledTimes(3);
+      // The badge reflects the server, which still has the message unread.
+      expect(screen.getByTestId('chat-space-unread-AAA').textContent).toBe('1');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries an exhausted mark-read after a reconnect, with no other change', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      setup({
+        push: true,
+        unread: [
+          {
+            spaceName: 'spaces/AAA',
+            count: 1,
+            lastMessageTime: '2026-10-08T10:05:00Z',
+            version: 10,
+          },
+        ],
+      });
+      mockApi.markGoogleChatSpaceRead.mockRejectedValue(new Error('offline'));
+      render(<GoogleChatPage />);
+      await screen.findByText('latest');
+      for (let i = 0; i < 30; i++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1_000);
+        });
+      }
+      expect(mockApi.markGoogleChatSpaceRead).toHaveBeenCalledTimes(3);
+      expect(screen.getByTestId('chat-space-unread-AAA').textContent).toBe('1');
+
+      // Connectivity comes back; nothing the pane watches changes.
+      mockApi.markGoogleChatSpaceRead.mockResolvedValue({
+        spaceName: 'spaces/AAA',
+        count: 0,
+        lastMessageTime: null,
+        version: 11,
+      });
+      await act(async () => {
+        chatPushStore().setConnected(false);
+        chatPushStore().setConnected(true);
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      await waitFor(() => expect(screen.queryByTestId('chat-space-unread-AAA')).toBeNull());
+      expect(mockApi.markGoogleChatSpaceRead).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resubscribes when Chat access comes back after the server cleared it', async () => {
+    setup({ push: true, fresh: true });
+    const first = render(<GoogleChatPage />);
+    await screen.findByText('latest');
+    await waitFor(() => expect(mockApi.ensureGoogleChatSubscription).toHaveBeenCalledTimes(1));
+
+    // Revoked: maintenance cleanup broadcasts that the subscription is gone.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('google_chat_events_status', {
+          detail: { type: 'google_chat_events_status', subscription: null, version: 50 },
+        }),
+      );
+    });
+    first.unmount();
+
+    // Regranted: the pane loads again and sees Chat read access. No reconnect.
+    mockApi.ensureGoogleChatSubscription.mockResolvedValue({
+      configured: true,
+      subscription: ACTIVE,
+      version: 51,
+    });
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+    await waitFor(() => expect(mockApi.ensureGoogleChatSubscription).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(chatPushStore().getState().pushActive).toBe(true));
+  });
+
+  it('records what was viewed even before any unread event, then switching away keeps it', async () => {
+    // No badge anywhere: the message is on screen before its push event.
+    setup({ push: true });
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+    await waitFor(() =>
+      expect(mockApi.markGoogleChatSpaceRead).toHaveBeenCalledWith('AAA', '2026-10-08T10:05:00Z'),
+    );
+
+    fireEvent.click(screen.getByTestId('chat-space-BBB'));
+    // The late event for the viewed message arrives; the server, holding the
+    // read marker, reports nothing unread for AAA.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('google_chat_message', {
+          detail: {
+            type: 'google_chat_message',
+            kind: 'created',
+            spaceName: 'spaces/AAA',
+            messageName: 'spaces/AAA/messages/M2',
+            createTime: '2026-10-08T10:05:00Z',
+            unread: { count: 0, lastMessageTime: null, version: 12 },
+          },
+        }),
+      );
+    });
+    expect(screen.queryByTestId('chat-space-unread-AAA')).toBeNull();
+    // The boundary was sent once, not re-sent on the switch.
+    expect(mockApi.markGoogleChatSpaceRead.mock.calls.filter(([id]) => id === 'AAA')).toHaveLength(
+      1,
+    );
+  });
+
+  it('keeps every activity update from a burst of events delivered before a render', async () => {
+    const THIRD = {
+      ...SPACE,
+      name: 'spaces/CCC',
+      id: 'CCC',
+      displayName: 'Initech',
+      lastActiveTime: '2026-10-08T08:00:00Z',
+    };
+    setup({ push: true });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({
+      spaces: [SPACE, OTHER, THIRD],
+      nextPageToken: null,
+    });
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+
+    const created = (spaceName: string, createTime: string) =>
+      new CustomEvent('google_chat_message', {
+        detail: { type: 'google_chat_message', kind: 'created', spaceName, createTime },
+      });
+    // One synchronous burst: no render happens between these.
+    act(() => {
+      window.dispatchEvent(created('spaces/BBB', '2026-10-08T11:00:00Z'));
+      window.dispatchEvent(created('spaces/CCC', '2026-10-08T12:00:00Z'));
+      window.dispatchEvent(created('spaces/BBB', '2026-10-08T11:30:00Z'));
+      // Older than what BBB just got: must not move it back.
+      window.dispatchEvent(created('spaces/BBB', '2026-10-08T10:30:00Z'));
+    });
+    const ids = screen.getAllByTestId(/^chat-space-[A-Z]+$/).map((el) => el.dataset.testid);
+    expect(ids).toEqual(['chat-space-CCC', 'chat-space-BBB', 'chat-space-AAA']);
+    expect(mockApi.listGoogleChatSpaces).toHaveBeenCalledTimes(1);
   });
 });

@@ -283,6 +283,8 @@ import createGoogleGmailRoutes from './routes/google-gmail.js';
 import createGoogleSheetsRoutes from './routes/google-sheets.js';
 import createGoogleDriveRoutes from './routes/google-drive.js';
 import createGoogleChatRoutes from './routes/google-chat.js';
+import createGoogleChatEventsRoutes from './routes/google-chat-events.js';
+import { startChatSubscriptionMaintenance } from './google-chat-events.js';
 import type { AddressInfo } from 'net';
 import { setActualPort } from './server-port.js';
 
@@ -2225,6 +2227,7 @@ app.use(createGoogleGmailRoutes(routeDeps));
 app.use(createGoogleSheetsRoutes(routeDeps));
 app.use(createGoogleDriveRoutes(routeDeps));
 app.use(createGoogleChatRoutes(routeDeps));
+app.use(createGoogleChatEventsRoutes(routeDeps));
 
 const server = createServer(app);
 const drainingLock = new Set<string>();
@@ -2950,6 +2953,10 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     }
 
     initIosBuildEngine({ stmts: stmts!, broadcast });
+
+    // Renew Google Chat push subscriptions before their 4h expiry. No-op when
+    // googleChatEvents is not configured.
+    startChatSubscriptionMaintenance({ config, broadcast });
 
     resumeOrphanedSessions(sessionsToResume);
   });
