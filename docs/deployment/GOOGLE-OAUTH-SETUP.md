@@ -317,9 +317,12 @@ After the three Chat steps above, as a Workspace user linked to the Hub:
 3. Messages load newest page first. `google-chat.sh sender-stats` reports
    `newestFirst: true` for every space it samples.
 4. **Reply in thread** lands in the thread in Google Chat.
-5. **Send to agent** opens a seeded session, and the agent's
+5. **Send to agent** opens a seeded session. The agent's
    `google-chat.sh send <space> --text … --thread spaces/X/threads/Y` reply
-   appears in Google Chat.
+   shows as a draft in the session and under the message in the Chat pane.
+   **Approve and send** posts it to Google Chat. Agent replies post directly
+   only when **Auto-send agent replies** is on in the Chat pane header (off by
+   default, per user).
 
 If a step fails with one of the setup error codes above, follow its link. For
 anything else, capture the proxy's `code` and `error` from the browser network

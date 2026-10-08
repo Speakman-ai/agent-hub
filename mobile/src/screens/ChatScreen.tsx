@@ -28,6 +28,7 @@ import ChangesReadyBox from '../components/ChangesReadyBox';
 import FinalizeBar from '../components/FinalizeBar';
 import SessionDesignFilesPanel from '../components/SessionDesignFilesPanel';
 import SessionArtifactsPanel from '../components/SessionArtifactsPanel';
+import SessionChatDraftsPanel from '../components/SessionChatDraftsPanel';
 import SessionTimelinePanel from '../components/SessionTimelinePanel';
 import MobileTerminalPane from '../components/MobileTerminalPane';
 import MobileBrowserPane from '../components/MobileBrowserPane';
@@ -459,6 +460,9 @@ export default function ChatScreen({
           presentedArtifact={presentedArtifactBySession?.[activeSessionId] || null}
           onPresentedArtifact={acknowledgePresentedArtifact}
         />
+      ) : null}
+      {activeSessionId && !hubSession ? (
+        <SessionChatDraftsPanel sessionId={activeSessionId} />
       ) : null}
       {activeSessionId && !hubSession ? (
         <SessionAgentsPanel

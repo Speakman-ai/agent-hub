@@ -34,6 +34,7 @@ import SessionTimelineSidebar, {
 import { TIMELINE_ANCHOR_NAVIGATE_EVENT } from '@shared/utils/sessionTimeline';
 import SessionPreviewPane from './components/SessionPreviewPane';
 import BackgroundShellsPanel from './components/BackgroundShellsPanel';
+import GoogleChatDraftsPanel from './components/GoogleChatDraftsPanel';
 import SessionDesignPane from './components/SessionDesignPane';
 import SessionDesignModePane from './components/SessionDesignModePane';
 import SessionScopingModePane from './components/SessionScopingModePane';
@@ -3364,6 +3365,11 @@ export default function App({ initialView }: any = {}) {
         // the WS connection directly.
         case 'user_todo_update':
           window.dispatchEvent(new CustomEvent('user_todo_update', { detail: data }));
+          break;
+        // Agent-written Google Chat reply draft changed. Owner-only on the
+        // server; bridged so the session panel and the Chat pane both update.
+        case 'google_chat_draft_update':
+          window.dispatchEvent(new CustomEvent('google_chat_draft_update', { detail: data }));
           break;
         // Shared org-todo change: bridge to a window CustomEvent so the org
         // section of <TodosPage /> refetches without subscribing to the WS
@@ -7588,6 +7594,11 @@ export default function App({ initialView }: any = {}) {
                                         />
                                       </div>
                                     )}
+                                  {activeSessionId && (
+                                    <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto empty:hidden">
+                                      <GoogleChatDraftsPanel sessionId={activeSessionId} />
+                                    </div>
+                                  )}
                                   {/* Streaming assistant turn — always render via
                                     SessionTail (Cursor-style thin stripe). The legacy
                                     heavy grey cross-agent bubble was removed from web:

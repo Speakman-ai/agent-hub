@@ -217,12 +217,15 @@ describe('Google Chat proxy routes', () => {
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({ id: 'NEW', threadReply: true, text: 'On it' });
-    expect(googleMock.messages.create).toHaveBeenCalledWith({
-      parent: 'spaces/AAA',
-      messageReplyOption: 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD',
-      requestBody: { text: 'On it', thread: { name: 'spaces/AAA/threads/T1' } },
-    });
-    expect(googleMock.spaces.get).toHaveBeenCalledWith({ name: 'spaces/AAA' });
+    expect(googleMock.messages.create).toHaveBeenCalledWith(
+      {
+        parent: 'spaces/AAA',
+        messageReplyOption: 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD',
+        requestBody: { text: 'On it', thread: { name: 'spaces/AAA/threads/T1' } },
+      },
+      { timeout: 30_000 },
+    );
+    expect(googleMock.spaces.get).toHaveBeenCalledWith({ name: 'spaces/AAA' }, { timeout: 30_000 });
   });
 
   it.each([
@@ -244,10 +247,13 @@ describe('Google Chat proxy routes', () => {
         .send({ text: 'On it', threadName: 'spaces/AAA/threads/T1' });
 
       expect(res.status).toBe(201);
-      expect(googleMock.messages.create).toHaveBeenCalledWith({
-        parent: 'spaces/AAA',
-        requestBody: { text: 'On it' },
-      });
+      expect(googleMock.messages.create).toHaveBeenCalledWith(
+        {
+          parent: 'spaces/AAA',
+          requestBody: { text: 'On it' },
+        },
+        { timeout: 30_000 },
+      );
     },
   );
 

@@ -9,7 +9,9 @@
 # <space> is a space id (AAAA) or resource name (spaces/AAAA). Messages list
 # newest first unless --asc. `send` with --thread replies in that thread when
 # the space supports thread replies (supportsThreadReplies in `spaces`); in DMs,
-# group chats, and unthreaded spaces it posts an ordinary message.
+# group chats, and unthreaded spaces it posts an ordinary message. From an agent
+# session, `send` saves the reply as a draft awaiting the session owner's
+# approval (unless they turned on auto-send) and says so on stderr.
 # sender-stats samples the newest M messages (default 100) in each of the N most
 # recently active spaces (default 20) and prints JSON: how many messages lack
 # sender.displayName, by sender type and space type, and whether each space's
@@ -22,7 +24,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/_common.sh"
 
 usage() {
-  sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 space_id() {
@@ -95,7 +97,13 @@ cmd_send() {
   local body
   body="$(jq -n --arg t "$text" '{text:$t}')"
   [[ -n "$thread" ]] && body="$(jq --arg v "$thread" '. + {threadName:$v}' <<<"$body")"
-  google_api POST "/api/google/chat/spaces/${id}/messages" -d "$body"
+  local out
+  out="$(google_api POST "/api/google/chat/spaces/${id}/messages" -d "$body")"
+  printf '%s\n' "$out"
+  if [[ "$(jq -r '.status // empty' <<<"$out" 2>/dev/null || true)" == "pending_approval" ]]; then
+    echo "google-chat: NOT SENT YET. The reply is saved as draft $(jq -r '.draft.id' <<<"$out") and is awaiting approval." >&2
+    echo "google-chat: the session owner approves, edits, or discards it in Agent Hub. Do not resend it." >&2
+  fi
 }
 
 cmd_sender_stats() {

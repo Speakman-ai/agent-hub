@@ -155,8 +155,9 @@ export function shouldDeliverBroadcast(
   //    override. Todos are a private capture primitive (spec TODO-MODEL),
   //    so even an org Owner must not receive another user's todo updates.
   //    A missing ownerUserId falls back to legacy fan-out rather than
-  //    silently dropping the event.
-  if (data.type === 'user_todo_update') {
+  //    silently dropping the event. Google Chat reply drafts carry message
+  //    text sent under the owner's Google identity, so they get the same rule.
+  if (data.type === 'user_todo_update' || data.type === 'google_chat_draft_update') {
     const owner =
       typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
     if (!owner) return true;

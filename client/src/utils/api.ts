@@ -1183,6 +1183,34 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  // Agent-written Chat replies held for the owner's approval.
+  listGoogleChatDrafts: ({ sessionId, spaceId }: { sessionId?: string; spaceId?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (sessionId) params.set('sessionId', sessionId);
+    if (spaceId) params.set('spaceId', spaceId);
+    const qs = params.toString();
+    return fetchJSON(`/google/chat/drafts${qs ? `?${qs}` : ''}`);
+  },
+  // Each action names the draft revision the user reviewed; the server refuses
+  // it (409 google_chat_draft_changed) if the text changed since.
+  editGoogleChatDraft: (draftId: string, revision: number, text: string) =>
+    fetchJSON(`/google/chat/drafts/${encodeURIComponent(draftId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ text, revision }),
+    }),
+  approveGoogleChatDraft: (draftId: string, revision: number, text?: string) =>
+    fetchJSON(`/google/chat/drafts/${encodeURIComponent(draftId)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(text === undefined ? { revision } : { revision, text }),
+    }),
+  discardGoogleChatDraft: (draftId: string, revision: number) =>
+    fetchJSON(`/google/chat/drafts/${encodeURIComponent(draftId)}/discard`, {
+      method: 'POST',
+      body: JSON.stringify({ revision }),
+    }),
+  getGoogleChatSettings: () => fetchJSON('/google/chat/settings'),
+  setGoogleChatSettings: (data: { autoSendAgentReplies: boolean }) =>
+    fetchJSON('/google/chat/settings', { method: 'PUT', body: JSON.stringify(data) }),
   // Drive proxy (user-scoped, drive.file only). Lists and creates
   // app-accessible Drive / Docs files. Tokens stay server-side.
   listGoogleDriveFiles: ({

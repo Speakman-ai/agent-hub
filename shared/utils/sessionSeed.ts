@@ -143,9 +143,9 @@ export function buildChatSessionSeed(input: ChatSessionSeedInput): string {
   if (spaceName) {
     lines.push(
       '',
-      `When you are done, draft a reply to the requester and show it to me. Post it in that ${
+      `When you are done, post a reply to the requester in that ${
         threadName ? 'thread (pass --thread)' : 'conversation'
-      } with \`google-chat.sh send\` from the google skill only after I approve it, because it goes out under my name.`,
+      } with \`google-chat.sh send\` from the google skill. It goes out under my name, so it is saved as a draft for me to approve, edit, or discard in Agent Hub. Tell me when it is waiting, and do not resend it.`,
     );
   }
   return lines.join('\n');

@@ -52,6 +52,9 @@ import {
   chatSetupHelpLink,
 } from '../utils/googleChat';
 import { isSubmitEnter } from '../utils/keyboard';
+import { placeDrafts, useChatDrafts, type ChatDraft } from '../utils/googleChatDrafts';
+import GoogleChatDraftCard from './GoogleChatDraftCard';
+import { DraftsLoadError } from './GoogleChatDraftsPanel';
 
 type GoogleStatus = NonNullable<GoogleStatusLike>;
 
@@ -242,6 +245,15 @@ export default function GoogleChatPage({
   const view = (selectedId && views[selectedId]) || EMPTY_VIEW;
   const messageLinks = linksByMessage((selectedId && links[selectedId]?.links) || []);
   const messages = view.messages;
+  const chatDrafts = useChatDrafts({ spaceId: selectedId ?? undefined }, canRead);
+  const placedDrafts = placeDrafts(messages, chatDrafts.drafts);
+  const [autoSend, setAutoSend] = useState<boolean | null>(null);
+  const [autoSendError, setAutoSendError] = useState<string | null>(null);
+  // One settings write at a time, so the server always ends on the user's last
+  // choice. The checkbox is disabled while a write is in flight; the ref also
+  // blocks a second change that lands before the re-render.
+  const [autoSendSaving, setAutoSendSaving] = useState(false);
+  const autoSendWriteRef = useRef(false);
   const composer = (selectedId && composers[selectedId]) || EMPTY_COMPOSER;
   const { text: draft, replyTo, sending, error: sendError } = composer;
 
@@ -480,6 +492,59 @@ export default function GoogleChatPage({
   }, [loadSpaces]);
 
   useEffect(() => {
+    if (!canRead) return;
+    let cancelled = false;
+    api
+      .getGoogleChatSettings()
+      .then((body: { autoSendAgentReplies?: boolean }) => {
+        // A write the user started meanwhile is newer than this read.
+        if (!cancelled && !autoSendWriteRef.current) setAutoSend(!!body?.autoSendAgentReplies);
+      })
+      .catch(() => {
+        if (!cancelled && !autoSendWriteRef.current) setAutoSend(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canRead]);
+
+  const toggleAutoSend = async (next: boolean) => {
+    if (autoSendWriteRef.current) return;
+    autoSendWriteRef.current = true;
+    setAutoSendSaving(true);
+    setAutoSendError(null);
+    const previous = autoSend;
+    setAutoSend(next);
+    try {
+      const body = await api.setGoogleChatSettings({ autoSendAgentReplies: next });
+      setAutoSend(!!body?.autoSendAgentReplies);
+    } catch (err: any) {
+      setAutoSend(previous);
+      setAutoSendError(err?.message || 'Could not save the setting');
+    } finally {
+      autoSendWriteRef.current = false;
+      setAutoSendSaving(false);
+    }
+  };
+
+  const renderDraft = (draft: ChatDraft, context: string | null) => (
+    <GoogleChatDraftCard
+      key={draft.id}
+      draft={draft}
+      context={context}
+      onChanged={(updated) => {
+        if (updated) chatDrafts.applyLocal(updated);
+        else chatDrafts.reload();
+        if (updated?.status === 'sent' && selectedId) {
+          loadMessages(selectedId);
+          // The approved reply flips its message's chip to "Agent replied".
+          void loadLinks(selectedId);
+        }
+      }}
+    />
+  );
+
+  useEffect(() => {
     if (!selectedId) return;
     loadMessages(selectedId);
     loadLinks(selectedId);
@@ -659,21 +724,40 @@ export default function GoogleChatPage({
           <MessagesSquare size={16} className="text-blue-300" />
           <h2 className="text-lg font-semibold text-white">Google Chat</h2>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            loadSpaces();
-            if (selectedId) {
-              loadMessages(selectedId);
-              void loadLinks(selectedId);
-            }
-          }}
-          disabled={spacesLoading}
-          className="inline-flex items-center gap-2 rounded border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50"
-        >
-          <RefreshCw size={14} className={spacesLoading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          {autoSend !== null && (
+            <label
+              className="inline-flex items-center gap-2 text-xs text-gray-400"
+              title="When off, replies an agent posts from a session wait here and in the session for your approval. They go out under your name."
+            >
+              <input
+                type="checkbox"
+                checked={autoSend}
+                disabled={autoSendSaving}
+                onChange={(e) => toggleAutoSend(e.target.checked)}
+                data-testid="chat-auto-send-toggle"
+              />
+              Auto-send agent replies
+              {autoSendError && <span className="text-red-300">{autoSendError}</span>}
+            </label>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              loadSpaces();
+              if (selectedId) {
+                loadMessages(selectedId);
+                void loadLinks(selectedId);
+              }
+              chatDrafts.reload();
+            }}
+            disabled={spacesLoading}
+            className="inline-flex items-center gap-2 rounded border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={spacesLoading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -948,10 +1032,28 @@ export default function GoogleChatPage({
                               )}
                           </div>
                         )}
+                        {message.name &&
+                          placedDrafts.byMessage.get(message.name)?.map((d) => (
+                            <div key={d.id} className="mt-2">
+                              {renderDraft(d, 'reply in this thread')}
+                            </div>
+                          ))}
                       </li>
                     ))}
                   </ul>
                 </>
+              )}
+              {chatDrafts.error && (
+                <div className="mt-3">
+                  <DraftsLoadError error={chatDrafts.error} onRetry={chatDrafts.reload} />
+                </div>
+              )}
+              {placedDrafts.unplaced.length > 0 && (
+                <div className="mt-3 space-y-2" data-testid="chat-unplaced-drafts">
+                  {placedDrafts.unplaced.map((d) =>
+                    renderDraft(d, d.threadName ? 'thread reply' : null),
+                  )}
+                </div>
               )}
               <div ref={bottomRef} />
             </div>

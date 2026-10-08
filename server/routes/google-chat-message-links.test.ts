@@ -30,6 +30,13 @@ vi.mock('googleapis', () => ({
   google: { auth: { OAuth2: googleMock.OAuth2 }, chat: googleMock.chat },
 }));
 vi.mock('../google-connections-store.js', () => connectionStoreMock);
+// These tests cover what happens once a session's reply actually posts, so the
+// owner has auto-send on. The approval path is covered in
+// google-chat-drafts.test.ts.
+vi.mock('../google-chat-drafts-store.js', () => ({
+  getChatSettings: () => ({ autoSendAgentReplies: true }),
+  OPEN_DRAFT_STATUSES: ['pending', 'sending', 'unconfirmed'],
+}));
 
 const { getDb } = await import('../db.js');
 const { default: createGoogleChatRoutes, clearChatSpaceAccessCache } =

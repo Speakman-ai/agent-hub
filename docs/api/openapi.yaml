@@ -6757,6 +6757,63 @@ components:
         - createdAt
         - repliedAt
         - replyMessageName
+    GoogleChatDraft:
+      type: object
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        spaceId:
+          type: string
+        threadName:
+          type: string
+          nullable: true
+        text:
+          type: string
+        revision:
+          type: integer
+          description: Bumped on every text change. Approve, edit, and discard must name it.
+        status:
+          type: string
+          enum:
+            - pending
+            - sending
+            - unconfirmed
+            - sent
+            - discarded
+          description: "`unconfirmed`: Google never confirmed the last send, so it may have posted. Approving again repeats the identical request (same Google requestId and text) and posts at most once; the text cannot be edited."
+        error:
+          type: string
+          nullable: true
+          description: Last send failure, if any.
+        sentMessageName:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - sessionId
+        - spaceId
+        - threadName
+        - text
+        - revision
+        - status
+        - error
+        - sentMessageName
+        - createdAt
+        - updatedAt
+    GoogleChatSettings:
+      type: object
+      properties:
+        autoSendAgentReplies:
+          type: boolean
+          description: When true, Chat messages posted from an agent session go out immediately. When false (the default) they are held as drafts for approval.
+      required:
+        - autoSendAgentReplies
     GoogleDriveErrorResponse:
       type: object
       properties:
@@ -31642,6 +31699,7 @@ paths:
       tags:
         - Google
       summary: Post a Google Chat message (optionally as a thread reply) as the calling user
+      description: A post from an agent session (spawn key or X-Agent-Hub-Session-Id) is held as a pending draft for the session owner to approve, unless the owner turned on autoSendAgentReplies. Posts without a session context send immediately.
       parameters:
         - schema:
             type: string
@@ -31674,6 +31732,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleChatMessage"
+        "202":
+          description: Agent reply held for approval; nothing was posted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - pending_approval
+                  message:
+                    type: string
+                  draft:
+                    $ref: "#/components/schemas/GoogleChatDraft"
+                required:
+                  - status
+                  - message
+                  - draft
         "400":
           description: Invalid body or space id.
           content:
@@ -31890,6 +31967,356 @@ paths:
                 $ref: "#/components/schemas/GoogleChatErrorResponse"
         "503":
           description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/drafts:
+    get:
+      tags:
+        - Google
+      summary: List the calling user's agent-written Chat reply drafts
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: false
+          name: sessionId
+          in: query
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: false
+          name: spaceId
+          in: query
+        - schema:
+            type: string
+            enum:
+              - pending
+              - sending
+              - unconfirmed
+              - sent
+              - discarded
+            description: "Defaults to every open status: `pending`, `sending`, and `unconfirmed`."
+          required: false
+          description: "Defaults to every open status: `pending`, `sending`, and `unconfirmed`."
+          name: status
+          in: query
+      responses:
+        "200":
+          description: Drafts, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  drafts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleChatDraft"
+                  asOf:
+                    type: string
+                    description: Server time the list was read. Draft updates with an older updatedAt are already reflected in it.
+                required:
+                  - drafts
+                  - asOf
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/drafts/{draftId}:
+    patch:
+      tags:
+        - Google
+      summary: Edit the text of a pending Chat reply draft
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[0-9a-f-]{36}$/i
+          required: true
+          name: draftId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 4096
+                revision:
+                  type: integer
+                  minimum: 1
+                  description: The draft revision the user reviewed (GoogleChatDraft.revision). Refused with 409 `google_chat_draft_changed` if the draft's text changed since, so nothing is acted on unseen.
+              required:
+                - text
+                - revision
+              additionalProperties: false
+      responses:
+        "200":
+          description: The updated draft.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  draft:
+                    $ref: "#/components/schemas/GoogleChatDraft"
+                required:
+                  - draft
+        "400":
+          description: Invalid body or draft id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Called from an agent session. Only the session owner can approve, edit, or discard drafts and change Chat settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Draft not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "409":
+          description: Draft is no longer pending, or its text changed since the given revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/drafts/{draftId}/approve:
+    post:
+      tags:
+        - Google
+      summary: Approve a pending Chat reply draft and post it as the calling user
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[0-9a-f-]{36}$/i
+          required: true
+          name: draftId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                  description: The draft revision the user reviewed (GoogleChatDraft.revision). Refused with 409 `google_chat_draft_changed` if the draft's text changed since, so nothing is acted on unseen.
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 4096
+                  description: Send this text instead of the stored draft text (edit and approve in one step).
+              required:
+                - revision
+              additionalProperties: false
+      responses:
+        "200":
+          description: Posted. Returns the sent draft and the created message.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  draft:
+                    $ref: "#/components/schemas/GoogleChatDraft"
+                  message:
+                    $ref: "#/components/schemas/GoogleChatMessage"
+                required:
+                  - draft
+                  - message
+        "400":
+          description: Invalid body or draft id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Called from an agent session, or a required Chat scope is missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Draft not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "409":
+          description: Draft is no longer pending, or it is unconfirmed and the request tried to change its text.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/drafts/{draftId}/discard:
+    post:
+      tags:
+        - Google
+      summary: Discard a pending Chat reply draft without posting it
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[0-9a-f-]{36}$/i
+          required: true
+          name: draftId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                  description: The draft revision the user reviewed (GoogleChatDraft.revision). Refused with 409 `google_chat_draft_changed` if the draft's text changed since, so nothing is acted on unseen.
+              required:
+                - revision
+              additionalProperties: false
+      responses:
+        "200":
+          description: The discarded draft. Pending and unconfirmed drafts can be discarded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  draft:
+                    $ref: "#/components/schemas/GoogleChatDraft"
+                required:
+                  - draft
+        "400":
+          description: Invalid draft id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Called from an agent session. Only the session owner can approve, edit, or discard drafts and change Chat settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Draft not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "409":
+          description: Draft is no longer pending, or its text changed since the given revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/settings:
+    get:
+      tags:
+        - Google
+      summary: Read the calling user's Google Chat settings
+      responses:
+        "200":
+          description: Current settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatSettings"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+    put:
+      tags:
+        - Google
+      summary: Update the calling user's Google Chat settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoogleChatSettings"
+      responses:
+        "200":
+          description: Saved settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatSettings"
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Called from an agent session. Only the session owner can approve, edit, or discard drafts and change Chat settings.
           content:
             application/json:
               schema:

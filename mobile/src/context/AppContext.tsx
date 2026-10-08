@@ -216,6 +216,9 @@ export function AppProvider({ children }: any) {
   // bump a timestamp so an effect keyed on it re-runs. Shape:
   //   { action: 'created'|'updated'|'deleted'|'reordered'|'promoted', bump }
   const [lastUserTodoEvent, setLastUserTodoEvent] = useState<any>(null);
+  // Last `google_chat_draft_update` WS event (owner-only on the server):
+  // { draft, bump }. Drives the session's agent-reply approval panel.
+  const [lastGoogleChatDraftEvent, setLastGoogleChatDraftEvent] = useState<any>(null);
   // Last `org_todo_update` WS event — the shared-org counterpart of
   // `lastUserTodoEvent`. Drives live refetches of the org Todos section without
   // a poll. Shape: { orgId, action, bump }.
@@ -860,6 +863,9 @@ export function AppProvider({ children }: any) {
           break;
         case 'native_pr_update':
           if (data.projectId) refreshOpenPullCountRef.current?.(data.projectId);
+          break;
+        case 'google_chat_draft_update':
+          setLastGoogleChatDraftEvent({ draft: data.draft ?? null, bump: Date.now() });
           break;
         case 'user_todo_update':
           // The server already filters this to the owner's connections, so
@@ -2651,6 +2657,7 @@ export function AppProvider({ children }: any) {
     lastInfraHealthEvent,
     // Cross-project personal todos (live refetch signal)
     lastUserTodoEvent,
+    lastGoogleChatDraftEvent,
     // Shared org todos (live refetch signal)
     lastOrgTodoEvent,
     // Threads

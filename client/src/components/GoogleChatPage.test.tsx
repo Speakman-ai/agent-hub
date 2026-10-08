@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
 vi.mock('../utils/api', () => ({
   api: {
@@ -10,6 +10,12 @@ vi.mock('../utils/api', () => ({
     startGoogleOAuth: vi.fn(),
     listGoogleChatMessageLinks: vi.fn(),
     createGoogleChatMessageLink: vi.fn(),
+    listGoogleChatDrafts: vi.fn(),
+    getGoogleChatSettings: vi.fn(),
+    setGoogleChatSettings: vi.fn(),
+    approveGoogleChatDraft: vi.fn(),
+    editGoogleChatDraft: vi.fn(),
+    discardGoogleChatDraft: vi.fn(),
   },
 }));
 
@@ -69,6 +75,8 @@ function msg(overrides: Record<string, unknown>) {
 
 beforeEach(() => {
   for (const fn of Object.values(mockApi)) fn.mockReset();
+  mockApi.listGoogleChatDrafts.mockResolvedValue({ drafts: [] });
+  mockApi.getGoogleChatSettings.mockResolvedValue({ autoSendAgentReplies: false });
   startSessionProps.last = null;
   ticketProps.last = null;
 });
@@ -138,6 +146,142 @@ describe('GoogleChatPage', () => {
     expect(startSessionProps.last?.contextLabel).toBe(
       'Chat: Please reset the staging DB for tenant 42',
     );
+  });
+
+  it('shows an agent draft under its thread message and approves it', async () => {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE] });
+    mockApi.listGoogleChatMessages.mockResolvedValue({
+      messages: [msg({ text: 'Can you help?' })],
+    });
+    const draft = {
+      id: 'd-1',
+      sessionId: 's-1',
+      spaceId: 'AAA',
+      threadName: 'spaces/AAA/threads/T1',
+      text: 'Done, staging is reset.',
+      revision: 3,
+      status: 'pending',
+      error: null,
+      sentMessageName: null,
+      createdAt: '2026-10-08T10:01:00Z',
+      updatedAt: '2026-10-08T10:01:00Z',
+    };
+    mockApi.listGoogleChatDrafts.mockResolvedValue({ drafts: [draft] });
+    mockApi.approveGoogleChatDraft.mockResolvedValue({ draft: { ...draft, status: 'sent' } });
+
+    render(<GoogleChatPage />);
+
+    const card = await screen.findByTestId('chat-draft-d-1');
+    expect(card.closest('li')?.textContent).toContain('Can you help?');
+    expect(card.textContent).toContain('awaiting your approval');
+    expect(mockApi.listGoogleChatDrafts).toHaveBeenCalledWith({
+      sessionId: undefined,
+      spaceId: 'AAA',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Approve and send/i }));
+    await waitFor(() =>
+      expect(mockApi.approveGoogleChatDraft).toHaveBeenCalledWith('d-1', 3, undefined),
+    );
+    await waitFor(() => expect(screen.queryByTestId('chat-draft-d-1')).toBeNull());
+  });
+
+  it('saves the auto-send setting from the toggle', async () => {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE] });
+    mockApi.listGoogleChatMessages.mockResolvedValue({ messages: [] });
+    mockApi.setGoogleChatSettings.mockResolvedValue({ autoSendAgentReplies: true });
+
+    render(<GoogleChatPage />);
+
+    const toggle = (await screen.findByTestId('chat-auto-send-toggle')) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(mockApi.setGoogleChatSettings).toHaveBeenCalledWith({ autoSendAgentReplies: true }),
+    );
+    await waitFor(() => expect(toggle.checked).toBe(true));
+  });
+
+  it('keeps showing an error after a failed draft load and Refresh recovers it', async () => {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE] });
+    mockApi.listGoogleChatMessages.mockResolvedValue({ messages: [] });
+    mockApi.listGoogleChatDrafts
+      .mockReset()
+      .mockRejectedValueOnce(new Error('Network down'))
+      .mockResolvedValue({
+        drafts: [
+          {
+            id: 'd-9',
+            sessionId: 's-1',
+            spaceId: 'AAA',
+            threadName: null,
+            text: 'Recovered draft',
+            revision: 1,
+            status: 'pending',
+            error: null,
+            sentMessageName: null,
+            createdAt: '2026-10-08T10:01:00Z',
+            updatedAt: '2026-10-08T10:01:00Z',
+          },
+        ],
+      });
+
+    render(<GoogleChatPage />);
+    expect((await screen.findByTestId('chat-drafts-load-error')).textContent).toContain(
+      'Network down',
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));
+    expect(await screen.findByTestId('chat-draft-d-9')).toBeTruthy();
+    expect(screen.queryByTestId('chat-drafts-load-error')).toBeNull();
+  });
+
+  it('saves one auto-send change at a time so the last choice wins', async () => {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE] });
+    mockApi.listGoogleChatMessages.mockResolvedValue({ messages: [] });
+    let finishEnable!: (v: unknown) => void;
+    mockApi.setGoogleChatSettings
+      .mockReturnValueOnce(new Promise((r) => (finishEnable = r)))
+      .mockResolvedValueOnce({ autoSendAgentReplies: false });
+
+    render(<GoogleChatPage />);
+    const toggle = (await screen.findByTestId('chat-auto-send-toggle')) as HTMLInputElement;
+
+    fireEvent.click(toggle); // enable: request in flight
+    expect(toggle.disabled).toBe(true);
+    fireEvent.click(toggle); // a quick second click must not start an overlapping write
+    expect(mockApi.setGoogleChatSettings).toHaveBeenCalledTimes(1);
+
+    await act(async () => finishEnable({ autoSendAgentReplies: true }));
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(toggle.checked).toBe(true);
+
+    fireEvent.click(toggle); // disable, now that the first write finished
+    await waitFor(() => expect(mockApi.setGoogleChatSettings).toHaveBeenCalledTimes(2));
+    expect(mockApi.setGoogleChatSettings.mock.calls.map((c) => c[0])).toEqual([
+      { autoSendAgentReplies: true },
+      { autoSendAgentReplies: false },
+    ]);
+    await waitFor(() => expect(toggle.checked).toBe(false));
   });
 
   it('replies in the selected thread through the proxy', async () => {
@@ -812,7 +956,7 @@ describe('GoogleChatPage', () => {
     expect(seed).not.toContain('(thread ');
     expect(seed).toContain('Earlier in the conversation:');
     expect(seed).toContain(': hi');
-    expect(seed).toContain('Post it in that conversation');
+    expect(seed).toContain('post a reply to the requester in that conversation');
   });
 
   it('shows distinct labels for several unnamed conversations and finds them by participant', async () => {

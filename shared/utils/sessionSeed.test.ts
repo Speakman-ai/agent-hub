@@ -84,7 +84,8 @@ describe('buildChatSessionSeed', () => {
     expect(seed).not.toContain('more detail');
     expect(seed).toContain('Please reset staging');
     expect(seed).toContain('google-chat.sh send');
-    expect(seed).toContain('only after I approve');
+    expect(seed).toContain('saved as a draft for me to approve');
+    expect(seed).not.toContain('only after I approve');
   });
 
   it('omits the chat reference and reply hint without a space name', () => {
@@ -102,7 +103,7 @@ describe('buildChatSessionSeed', () => {
     });
     expect(seed).toContain('**Chat reference:** spaces/DM\n');
     expect(seed).toContain('Earlier in the conversation:');
-    expect(seed).toContain('Post it in that conversation');
+    expect(seed).toContain('post a reply to the requester in that conversation');
     expect(seed).not.toContain('--thread');
   });
 });

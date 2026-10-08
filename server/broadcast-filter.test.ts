@@ -377,3 +377,13 @@ describe('shouldDeliverSessionScopedBroadcast', () => {
     ).toBe(false);
   });
 });
+
+describe('google_chat_draft_update', () => {
+  const data = { type: 'google_chat_draft_update', ownerUserId: 'u1', sessionId: 's1' };
+
+  it('goes only to the draft owner, with no Owner-role override', () => {
+    const deps = makeDeps();
+    expect(shouldDeliverBroadcast(data, { userId: 'u1', role: 'User' }, deps)).toBe(true);
+    expect(shouldDeliverBroadcast(data, { userId: 'u2', role: 'Owner' }, deps)).toBe(false);
+  });
+});

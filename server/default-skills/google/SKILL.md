@@ -121,12 +121,16 @@ shape and response examples.
 - A session seeded from the Chat pane carries a `**Chat reference:**` line
   with the space name, plus the thread name when the space keeps replies in
   threads (`supportsThreadReplies`). DMs and group chats have no thread
-  reference; `--thread` is ignored there. When the task is done, draft the reply and
-  show it to the user first. Post it with `google-chat.sh send <space> --thread
-  <thread>` only after they approve: it goes out under their name. Posting
-  through the wrapper from this session flips the message's "Sent to agent"
-  chip in the Chat pane to "Agent replied", so post the reply from the session
-  the message was sent to.
+  reference; `--thread` is ignored there. When the task is done, post the reply
+  with `google-chat.sh send <space> --thread <thread>`. From a session it is
+  **not sent**: the Hub saves it as a draft (exit 0, `"status":
+  "pending_approval"`, a notice on stderr) because it goes out under the
+  owner's name. The owner approves, edits, or discards it in Agent Hub. Tell
+  them the draft is waiting and do not resend it. Only an owner who turned on
+  auto-send in the Chat pane gets agent replies posted immediately (`201`).
+  When the reply posts, the message's "Sent to agent" chip in the Chat pane
+  flips to "Agent replied", so post the reply from the session the message was
+  sent to.
 - Writes (create event, send mail, Chat messages, modify labels, append/update cells) act on
   the owner's real account. Confirm intent for anything user-visible (an email
   going out, an invite, a destructive overwrite) unless the user already said

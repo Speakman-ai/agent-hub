@@ -9,6 +9,21 @@ import {
 import { resolveChatParticipants } from '../google-chat-participants.js';
 import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
 import {
+  claimChatDraftForSend,
+  createChatDraft,
+  discardChatDraft,
+  getChatDraft,
+  getChatSettings,
+  listChatDrafts,
+  markChatDraftSent,
+  markChatDraftUnconfirmed,
+  releaseChatDraftAfterRejection,
+  OPEN_DRAFT_STATUSES,
+  setChatSettings,
+  updateChatDraftText,
+  type GoogleChatDraft,
+} from '../google-chat-drafts-store.js';
+import {
   createChatMessageLink,
   listChatMessageLinks,
   recordSessionChatPost,
@@ -43,6 +58,12 @@ import { compareRfc3339, isRfc3339, shiftRfc3339 } from '../../shared/utils/rfc3
  *   - listing spaces gates on `chat.spaces.readonly` (sensitive);
  *   - reading messages gates on `chat.messages.readonly` (restricted);
  *   - posting gates on `chat.messages.create` (sensitive).
+ *
+ * Agent replies: a post made from an agent session goes out under the session
+ * owner's own Google identity, so by default it is held as a draft until that
+ * user approves it (Approve / Edit / Discard under /api/google/chat/drafts).
+ * The owner can opt into auto-send in /api/google/chat/settings. Only a human
+ * caller (no session context) can approve, edit, or change that setting.
  */
 
 const ErrorResponse = registerComponent(
@@ -210,6 +231,71 @@ const CreateMessageLinkBodySchema = z
   })
   .strict();
 
+const ChatDraftSchema = registerComponent(
+  'GoogleChatDraft',
+  z.object({
+    id: z.string(),
+    sessionId: z.string(),
+    spaceId: z.string(),
+    threadName: z.string().nullable(),
+    text: z.string(),
+    revision: z.number().int().openapi({
+      description: 'Bumped on every text change. Approve, edit, and discard must name it.',
+    }),
+    status: z.enum(['pending', 'sending', 'unconfirmed', 'sent', 'discarded']).openapi({
+      description:
+        '`unconfirmed`: Google never confirmed the last send, so it may have posted. Approving again repeats the identical request (same Google requestId and text) and posts at most once; the text cannot be edited.',
+    }),
+    error: z.string().nullable().openapi({ description: 'Last send failure, if any.' }),
+    sentMessageName: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  }),
+);
+
+const ChatSettingsSchema = registerComponent(
+  'GoogleChatSettings',
+  z.object({
+    autoSendAgentReplies: z.boolean().openapi({
+      description:
+        'When true, Chat messages posted from an agent session go out immediately. When false (the default) they are held as drafts for approval.',
+    }),
+  }),
+);
+
+const DRAFT_ID_RE = /^[0-9a-f-]{36}$/i;
+
+const DraftParamsSchema = z.object({
+  draftId: z.string().regex(DRAFT_ID_RE, 'invalid draft id'),
+});
+
+const ListDraftsQuerySchema = z.object({
+  sessionId: z.string().min(1).max(200).optional(),
+  spaceId: z.string().regex(SPACE_ID_RE, 'invalid space id').optional(),
+  status: z.enum(['pending', 'sending', 'unconfirmed', 'sent', 'discarded']).optional().openapi({
+    description: 'Defaults to every open status: `pending`, `sending`, and `unconfirmed`.',
+  }),
+});
+
+const DraftRevisionSchema = z.number().int().min(1).openapi({
+  description:
+    "The draft revision the user reviewed (GoogleChatDraft.revision). Refused with 409 `google_chat_draft_changed` if the draft's text changed since, so nothing is acted on unseen.",
+});
+
+const EditDraftBodySchema = z
+  .object({ text: SendMessageBodySchema.shape.text, revision: DraftRevisionSchema })
+  .strict();
+const DiscardDraftBodySchema = z.object({ revision: DraftRevisionSchema }).strict();
+const ApproveDraftBodySchema = z
+  .object({
+    revision: DraftRevisionSchema,
+    text: SendMessageBodySchema.shape.text.optional().openapi({
+      description:
+        'Send this text instead of the stored draft text (edit and approve in one step).',
+    }),
+  })
+  .strict();
+
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
 });
@@ -276,12 +362,24 @@ registerPath({
   path: '/api/google/chat/spaces/{spaceId}/messages',
   tags: ['Google'],
   summary: 'Post a Google Chat message (optionally as a thread reply) as the calling user',
+  description:
+    'A post from an agent session (spawn key or X-Agent-Hub-Session-Id) is held as a pending draft for the session owner to approve, unless the owner turned on autoSendAgentReplies. Posts without a session context send immediately.',
   request: {
     params: SpaceParamsSchema,
     body: { content: jsonContent(SendMessageBodySchema), required: true },
   },
   responses: {
     201: { description: 'The created message.', content: jsonContent(ChatMessageSchema) },
+    202: {
+      description: 'Agent reply held for approval; nothing was posted.',
+      content: jsonContent(
+        z.object({
+          status: z.literal('pending_approval'),
+          message: z.string(),
+          draft: ChatDraftSchema,
+        }),
+      ),
+    },
     400: errorResponse('Invalid body or space id.'),
     403: errorResponse('Required Chat send scope has not been granted.'),
     404: errorResponse('Space not found.'),
@@ -340,6 +438,125 @@ registerPath({
     ),
     404: errorResponse('Session not found, or message not found for the caller.'),
     ...commonErrors,
+  },
+});
+
+const humanOnly = errorResponse(
+  'Called from an agent session. Only the session owner can approve, edit, or discard drafts and change Chat settings.',
+);
+const draftResponse = (description: string) => ({
+  description,
+  content: jsonContent(z.object({ draft: ChatDraftSchema })),
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/google/chat/drafts',
+  tags: ['Google'],
+  summary: "List the calling user's agent-written Chat reply drafts",
+  request: { query: ListDraftsQuerySchema },
+  responses: {
+    200: {
+      description: 'Drafts, oldest first.',
+      content: jsonContent(
+        z.object({
+          drafts: z.array(ChatDraftSchema),
+          asOf: z.string().openapi({
+            description:
+              'Server time the list was read. Draft updates with an older updatedAt are already reflected in it.',
+          }),
+        }),
+      ),
+    },
+    400: errorResponse('Invalid query.'),
+    401: errorResponse('Not authenticated.'),
+  },
+});
+
+registerPath({
+  method: 'patch',
+  path: '/api/google/chat/drafts/{draftId}',
+  tags: ['Google'],
+  summary: 'Edit the text of a pending Chat reply draft',
+  request: {
+    params: DraftParamsSchema,
+    body: { content: jsonContent(EditDraftBodySchema), required: true },
+  },
+  responses: {
+    200: draftResponse('The updated draft.'),
+    400: errorResponse('Invalid body or draft id.'),
+    401: errorResponse('Not authenticated.'),
+    403: humanOnly,
+    404: errorResponse('Draft not found.'),
+    409: errorResponse('Draft is no longer pending, or its text changed since the given revision.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/google/chat/drafts/{draftId}/approve',
+  tags: ['Google'],
+  summary: 'Approve a pending Chat reply draft and post it as the calling user',
+  request: {
+    params: DraftParamsSchema,
+    body: { content: jsonContent(ApproveDraftBodySchema), required: true },
+  },
+  responses: {
+    200: {
+      description: 'Posted. Returns the sent draft and the created message.',
+      content: jsonContent(z.object({ draft: ChatDraftSchema, message: ChatMessageSchema })),
+    },
+    400: errorResponse('Invalid body or draft id.'),
+    403: errorResponse('Called from an agent session, or a required Chat scope is missing.'),
+    404: errorResponse('Draft not found.'),
+    409: errorResponse(
+      'Draft is no longer pending, or it is unconfirmed and the request tried to change its text.',
+    ),
+    ...commonErrors,
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/google/chat/drafts/{draftId}/discard',
+  tags: ['Google'],
+  summary: 'Discard a pending Chat reply draft without posting it',
+  request: {
+    params: DraftParamsSchema,
+    body: { content: jsonContent(DiscardDraftBodySchema), required: true },
+  },
+  responses: {
+    200: draftResponse('The discarded draft. Pending and unconfirmed drafts can be discarded.'),
+    400: errorResponse('Invalid draft id.'),
+    401: errorResponse('Not authenticated.'),
+    403: humanOnly,
+    404: errorResponse('Draft not found.'),
+    409: errorResponse('Draft is no longer pending, or its text changed since the given revision.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/google/chat/settings',
+  tags: ['Google'],
+  summary: "Read the calling user's Google Chat settings",
+  responses: {
+    200: { description: 'Current settings.', content: jsonContent(ChatSettingsSchema) },
+    401: errorResponse('Not authenticated.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/google/chat/settings',
+  tags: ['Google'],
+  summary: "Update the calling user's Google Chat settings",
+  request: { body: { content: jsonContent(ChatSettingsSchema), required: true } },
+  responses: {
+    200: { description: 'Saved settings.', content: jsonContent(ChatSettingsSchema) },
+    400: errorResponse('Invalid body.'),
+    401: errorResponse('Not authenticated.'),
+    403: humanOnly,
   },
 });
 
@@ -497,19 +714,6 @@ async function resolveChatToken(
     return null;
   }
   return token;
-}
-
-/**
- * The Hub session a proxy call acts for, with the same precedence as
- * `resolveGoogleConnectionUserId`: the server-bound spawn key wins over the
- * raw header, so a spawn can't claim another session's links.
- */
-function actingSessionId(req: Request): string | null {
-  const authed = req as AuthenticatedRequest;
-  const bound = authed.authSpawnSessionId?.trim();
-  if (bound) return bound;
-  const header = req.get(AGENT_HUB_SESSION_ID_HEADER)?.trim();
-  return header || null;
 }
 
 // Links are shared across Hub users, so each read proves the caller can read
@@ -692,6 +896,141 @@ function sendGoogleError(res: Response, err: unknown): Response {
   });
 }
 
+/**
+ * The agent session a request comes from, or null for a human caller. A
+ * server-minted spawn key binds the session; break-glass callers (the global
+ * key) name it in the session header, which every agent wrapper sends. The web,
+ * mobile, and desktop clients never send that header.
+ */
+export function agentSessionIdFromRequest(req: Request): string | null {
+  const bound = (req as AuthenticatedRequest).authSpawnSessionId?.trim();
+  if (bound) return bound;
+  const header = req.get(AGENT_HUB_SESSION_ID_HEADER)?.trim();
+  return header || null;
+}
+
+function refuseAgentCaller(req: Request, res: Response): boolean {
+  if (!agentSessionIdFromRequest(req)) return false;
+  bad(
+    res,
+    403,
+    'Only the session owner can do this. Ask them to approve the reply in Agent Hub.',
+    'google_chat_human_approval_required',
+  );
+  return true;
+}
+
+function publicDraft(draft: GoogleChatDraft) {
+  const {
+    userId: _userId,
+    requestId: _requestId,
+    requestReplyThread: _requestReplyThread,
+    ...rest
+  } = draft;
+  return rest;
+}
+
+function broadcastDraft(deps: RouteDeps, draft: GoogleChatDraft | null): void {
+  if (!draft) return;
+  deps.broadcast?.({
+    type: 'google_chat_draft_update',
+    ownerUserId: draft.userId,
+    sessionId: draft.sessionId,
+    draft: publicDraft(draft),
+  });
+}
+
+/**
+ * Bound every send-path call so an attempt always ends (sent, refused, or
+ * unconfirmed) instead of holding a draft in `sending` indefinitely.
+ */
+export const CHAT_CALL_TIMEOUT_MS = 30_000;
+
+/**
+ * The thread a reply goes in, or null to post to the conversation. DMs, group
+ * chats, and unthreaded spaces don't support reply options, so a thread there
+ * is dropped.
+ */
+async function resolveReplyThread(
+  chat: chat_v1.Chat,
+  spaceId: string,
+  threadName: string | null | undefined,
+): Promise<string | null> {
+  if (!threadName) return null;
+  const space = await chat.spaces.get(
+    { name: `spaces/${spaceId}` },
+    { timeout: CHAT_CALL_TIMEOUT_MS },
+  );
+  return supportsThreadReplies(space.data) ? threadName : null;
+}
+
+/**
+ * Create the message. `requestId` makes the call idempotent: Google creates at
+ * most one message for identical requests that share it.
+ */
+async function createChatMessage(
+  chat: chat_v1.Chat,
+  spaceId: string,
+  text: string,
+  replyThread: string | null,
+  requestId?: string,
+): Promise<chat_v1.Schema$Message> {
+  const result = await chat.spaces.messages.create(
+    {
+      parent: `spaces/${spaceId}`,
+      ...(requestId ? { requestId } : {}),
+      ...(replyThread ? { messageReplyOption: 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD' } : {}),
+      requestBody: {
+        text,
+        ...(replyThread ? { thread: { name: replyThread } } : {}),
+      },
+    },
+    { timeout: CHAT_CALL_TIMEOUT_MS },
+  );
+  return result.data;
+}
+
+/**
+ * True when Google answered the create call with a client error, which means
+ * it refused the request and created nothing. No response, a timeout, or a
+ * 5xx leaves the outcome unknown.
+ */
+export function isDefinitiveRejection(err: unknown): boolean {
+  const status = (err as GoogleErrorShape)?.response?.status;
+  return typeof status === 'number' && status >= 400 && status < 500 && status !== 408;
+}
+
+const UNCONFIRMED_SEND_ERROR =
+  'Google did not confirm the send, so it may have posted. Check the conversation. Retry repeats the same request and posts at most once; to change the text, discard this draft.';
+
+/**
+ * Mark the session's link to the Chat message it was answering as replied.
+ * Called once a reply from that session has actually posted: directly under
+ * auto-send, or when the owner approves its draft.
+ */
+function recordAgentReply(
+  sessionId: string,
+  spaceId: string,
+  sent: ReturnType<typeof shapeMessage>,
+): void {
+  try {
+    recordSessionChatPost({
+      sessionId,
+      spaceName: `spaces/${spaceId}`,
+      threadName: sent.threadName,
+      replyMessageName: sent.name,
+    });
+  } catch (err: unknown) {
+    // The message is already posted; a bookkeeping failure must not turn
+    // that into an error the agent (or the approver) would retry.
+    console.warn(
+      `[google-chat] Failed to record Chat post for session ${sessionId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
 export default function createGoogleChatRoutes(deps: RouteDeps): Router {
   const router = Router();
 
@@ -852,46 +1191,36 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
         { requiredScopes: [CHAT_SPACES_READONLY_SCOPE] },
       );
     }
+    // An agent's reply goes out under the owner's name: hold it for approval
+    // unless the owner opted into auto-send. Scope checks above still apply, so
+    // a draft is only created when approving it can actually post.
+    const agentSessionId = agentSessionIdFromRequest(req);
+    if (agentSessionId && !getChatSettings(uid).autoSendAgentReplies) {
+      const draft = createChatDraft({
+        userId: uid,
+        sessionId: agentSessionId,
+        spaceId,
+        threadName: threadName ?? null,
+        text: body.data.text,
+      });
+      broadcastDraft(deps, draft);
+      return res.status(202).json({
+        status: 'pending_approval',
+        message:
+          'Not sent yet. The reply is saved as a draft and is awaiting approval from the session owner in Agent Hub.',
+        draft: publicDraft(draft),
+      });
+    }
+
     const token = await resolveChatToken(uid, deps, res);
     if (!token) return;
 
     try {
       const chat = createChatClient(token);
-      let replyThread: string | null = null;
-      if (threadName) {
-        const space = await chat.spaces.get({ name: `spaces/${spaceId}` });
-        // DMs, group chats, and unthreaded spaces don't support reply options;
-        // send those as an ordinary message instead of taking the unsupported path.
-        if (supportsThreadReplies(space.data)) replyThread = threadName;
-      }
-      const result = await chat.spaces.messages.create({
-        parent: `spaces/${spaceId}`,
-        ...(replyThread ? { messageReplyOption: 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD' } : {}),
-        requestBody: {
-          text: body.data.text,
-          ...(replyThread ? { thread: { name: replyThread } } : {}),
-        },
-      });
-      const sent = shapeMessage(result.data);
-      const sessionId = actingSessionId(req);
-      if (sessionId) {
-        try {
-          recordSessionChatPost({
-            sessionId,
-            spaceName: `spaces/${spaceId}`,
-            threadName: sent.threadName,
-            replyMessageName: sent.name,
-          });
-        } catch (err: unknown) {
-          // The message is already posted; a bookkeeping failure must not turn
-          // that into an error the agent would retry.
-          console.warn(
-            `[google-chat] Failed to record Chat post for session ${sessionId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
-      }
+      const replyThread = await resolveReplyThread(chat, spaceId, threadName);
+      const message = await createChatMessage(chat, spaceId, body.data.text, replyThread);
+      const sent = shapeMessage(message);
+      if (agentSessionId) recordAgentReply(agentSessionId, spaceId, sent);
       return res.status(201).json(sent);
     } catch (err: unknown) {
       return sendGoogleError(res, err);
@@ -993,6 +1322,212 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
         .json({ link: result.link, existing: result.existing });
     },
   );
+
+  const requireUser = (req: Request, res: Response): string | null => {
+    const uid = resolveGoogleConnectionUserId(req, deps.stmts);
+    if (!uid) bad(res, 401, 'Authentication required', 'authentication_required');
+    return uid;
+  };
+
+  const parseDraftId = (req: Request, res: Response): string | null => {
+    const params = DraftParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      bad(res, 400, params.error.issues[0]?.message || 'Invalid draft id', 'invalid_request');
+      return null;
+    }
+    return params.data.draftId;
+  };
+
+  const notPending = (res: Response, draft: GoogleChatDraft | null) =>
+    draft
+      ? bad(res, 409, `Draft is already ${draft.status}`, 'google_chat_draft_not_pending', {
+          draft: publicDraft(draft),
+        })
+      : bad(res, 404, 'Draft not found', 'google_chat_draft_not_found');
+
+  /** Answer a refused draft action, returning the current draft so the client can re-review. */
+  const refuseAction = (
+    res: Response,
+    result: { reason: string; draft: GoogleChatDraft | null },
+  ) => {
+    if (result.reason === 'revision_mismatch' && result.draft) {
+      return bad(
+        res,
+        409,
+        'This draft changed since you reviewed it. Review the current text and try again.',
+        'google_chat_draft_changed',
+        { draft: publicDraft(result.draft) },
+      );
+    }
+    return notPending(res, result.draft);
+  };
+
+  router.get('/api/google/chat/drafts', (req: Request, res: Response) => {
+    const query = ListDraftsQuerySchema.safeParse(req.query);
+    if (!query.success) {
+      return bad(res, 400, query.error.issues[0]?.message || 'Invalid query', 'invalid_request');
+    }
+    const uid = requireUser(req, res);
+    if (!uid) return;
+    // Read the clock before the query: any write stamped earlier has finished.
+    const asOf = new Date().toISOString();
+    const drafts = listChatDrafts(uid, {
+      sessionId: query.data.sessionId,
+      spaceId: query.data.spaceId,
+      status: query.data.status ?? OPEN_DRAFT_STATUSES,
+    });
+    return res.json({ drafts: drafts.map(publicDraft), asOf });
+  });
+
+  router.patch('/api/google/chat/drafts/:draftId', (req: Request, res: Response) => {
+    const draftId = parseDraftId(req, res);
+    if (!draftId) return;
+    const body = EditDraftBodySchema.safeParse(req.body);
+    if (!body.success) {
+      return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
+    }
+    if (refuseAgentCaller(req, res)) return;
+    const uid = requireUser(req, res);
+    if (!uid) return;
+    const result = updateChatDraftText(draftId, uid, body.data.text, body.data.revision);
+    if (!result.ok) return refuseAction(res, result);
+    broadcastDraft(deps, result.draft);
+    return res.json({ draft: publicDraft(result.draft) });
+  });
+
+  router.post('/api/google/chat/drafts/:draftId/discard', (req: Request, res: Response) => {
+    const draftId = parseDraftId(req, res);
+    if (!draftId) return;
+    const body = DiscardDraftBodySchema.safeParse(req.body);
+    if (!body.success) {
+      return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
+    }
+    if (refuseAgentCaller(req, res)) return;
+    const uid = requireUser(req, res);
+    if (!uid) return;
+    const result = discardChatDraft(draftId, uid, body.data.revision);
+    if (!result.ok) return refuseAction(res, result);
+    broadcastDraft(deps, result.draft);
+    return res.json({ draft: publicDraft(result.draft) });
+  });
+
+  router.post('/api/google/chat/drafts/:draftId/approve', async (req: Request, res: Response) => {
+    const draftId = parseDraftId(req, res);
+    if (!draftId) return;
+    const body = ApproveDraftBodySchema.safeParse(req.body);
+    if (!body.success) {
+      return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
+    }
+    if (refuseAgentCaller(req, res)) return;
+    const uid = requireChatAccess(
+      req,
+      res,
+      deps,
+      hasChatMessagesCreateScope,
+      [CHAT_MESSAGES_CREATE_SCOPE],
+      'google_chat_send_scope_required',
+    );
+    if (!uid) return;
+    const existing = getChatDraft(draftId, uid);
+    if (!existing || (existing.status !== 'pending' && existing.status !== 'unconfirmed')) {
+      return notPending(res, existing);
+    }
+    // Fail fast before any Google call; the claim re-checks atomically.
+    if (existing.revision !== body.data.revision) {
+      return refuseAction(res, { reason: 'revision_mismatch', draft: existing });
+    }
+    if (
+      existing.threadName &&
+      !hasChatSpacesReadScope(getGoogleConnectionStatus(uid).grantedScopes)
+    ) {
+      return bad(
+        res,
+        403,
+        'Replying in a thread needs access to read the space',
+        'google_chat_scope_required',
+        { requiredScopes: [CHAT_SPACES_READONLY_SCOPE] },
+      );
+    }
+    const token = await resolveChatToken(uid, deps, res);
+    if (!token) return;
+    const chat = createChatClient(token);
+
+    // A fresh attempt resolves its reply thread before claiming, so the claim
+    // stores the complete request in one write. A retry reuses the stored one.
+    let replyThread: string | null | undefined;
+    if (existing.status === 'pending') {
+      try {
+        replyThread = await resolveReplyThread(chat, existing.spaceId, existing.threadName);
+      } catch (err: unknown) {
+        return sendGoogleError(res, err);
+      }
+    }
+
+    const claim = claimChatDraftForSend(draftId, uid, {
+      expectedRevision: body.data.revision,
+      text: body.data.text,
+      replyThread,
+    });
+    if (!claim.ok) {
+      if (claim.reason === 'text_changed') {
+        return bad(
+          res,
+          409,
+          'This draft may already have posted, so its text cannot change. Retry it as is, or discard it.',
+          'google_chat_draft_unconfirmed',
+          { draft: claim.draft && publicDraft(claim.draft) },
+        );
+      }
+      // Changed between the read above and the claim: an edit from another
+      // tab, another approval, a discard, or a recovered abandoned send.
+      return refuseAction(res, claim);
+    }
+    const { draft: claimed, attempt } = claim;
+    broadcastDraft(deps, claimed);
+
+    try {
+      const message = await createChatMessage(
+        chat,
+        claimed.spaceId,
+        claimed.text,
+        claimed.requestReplyThread,
+        attempt.requestId,
+      );
+      const sent = markChatDraftSent(attempt, message.name ?? null);
+      broadcastDraft(deps, sent);
+      const shaped = shapeMessage(message);
+      recordAgentReply(claimed.sessionId, claimed.spaceId, shaped);
+      return res.json({ draft: sent && publicDraft(sent), message: shaped });
+    } catch (err: unknown) {
+      // A refusal of a fresh attempt posted nothing. Anything else, and any
+      // failure of a retry (an earlier attempt may have posted), stays
+      // unconfirmed with the same request so the next try is idempotent.
+      const updated =
+        !claim.retry && isDefinitiveRejection(err)
+          ? releaseChatDraftAfterRejection(attempt, extractGoogleError(err).error)
+          : markChatDraftUnconfirmed(attempt, UNCONFIRMED_SEND_ERROR);
+      broadcastDraft(deps, updated);
+      return sendGoogleError(res, err);
+    }
+  });
+
+  router.get('/api/google/chat/settings', (req: Request, res: Response) => {
+    const uid = requireUser(req, res);
+    if (!uid) return;
+    return res.json(getChatSettings(uid));
+  });
+
+  router.put('/api/google/chat/settings', (req: Request, res: Response) => {
+    const body = ChatSettingsSchema.strict().safeParse(req.body);
+    if (!body.success) {
+      return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
+    }
+    // An agent must never be able to switch off its own approval gate.
+    if (refuseAgentCaller(req, res)) return;
+    const uid = requireUser(req, res);
+    if (!uid) return;
+    return res.json(setChatSettings(uid, body.data));
+  });
 
   return router;
 }

@@ -504,6 +504,26 @@ describe('google-chat.sh', () => {
     });
   });
 
+  it('send says the reply is awaiting approval when the proxy holds it as a draft', () => {
+    const r = run(CHAT, ['send', 'AAA', '--text', 'Done.'], {
+      status: '202',
+      body: '{"status":"pending_approval","message":"Not sent yet.","draft":{"id":"d-1","status":"pending"}}',
+    });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).draft.id).toBe('d-1');
+    expect(r.stderr).toContain('NOT SENT YET');
+    expect(r.stderr).toContain('draft d-1 and is awaiting approval');
+  });
+
+  it('send prints no approval notice when the message was posted', () => {
+    const r = run(CHAT, ['send', 'AAA', '--text', 'Done.'], {
+      status: '201',
+      body: '{"name":"spaces/AAA/messages/M","text":"Done."}',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toContain('awaiting approval');
+  });
+
   it('rejects a space id with path characters before calling the proxy', () => {
     const r = run(CHAT, ['messages', '../users']);
     expect(r.status).toBe(2);
