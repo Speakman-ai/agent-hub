@@ -1766,6 +1766,22 @@ export const api = {
    * deep-link to another user's session that the owner-only list omits.
    */
   getSession: (sessionId: string) => fetchJSON<SessionWire>(`/sessions/${sessionId}`),
+  /** The session's live SideBar (hidden Consult-mode fork), or null. */
+  getSessionSidebar: (sessionId: string) =>
+    fetchJSON<{ session: SessionWire | null; running?: boolean }>(`/sessions/${sessionId}/sidebar`),
+  /**
+   * Open a fresh SideBar (archives the previous one). With `content`, the
+   * first question starts at once; follow-ups go over the WebSocket.
+   */
+  openSessionSidebar: (sessionId: string, content?: string) =>
+    fetchJSON<{ session: SessionWire; forked: boolean; closedSessionIds: string[] }>(
+      `/sessions/${sessionId}/sidebar`,
+      { method: 'POST', body: JSON.stringify(content ? { content } : {}) },
+    ),
+  closeSessionSidebar: (sessionId: string) =>
+    fetchJSON<{ ok: true; closedSessionIds: string[] }>(`/sessions/${sessionId}/sidebar`, {
+      method: 'DELETE',
+    }),
   createSession: (
     agentId: string,
     name?: string,

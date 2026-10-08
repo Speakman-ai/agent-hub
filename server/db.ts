@@ -3091,6 +3091,31 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN discarded_at TEXT DEFAULT NULL');
   }
 
+  // SideBar: a hidden consult-mode child session forked from a parent so the
+  // user can ask side questions without touching the parent's transcript.
+  // `fork_from_engine_session_id` is the parent's Claude Code session id; the
+  // child's first turn resumes it with `--fork-session`.
+  try {
+    db.prepare('SELECT sidebar_parent_id FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN sidebar_parent_id TEXT DEFAULT NULL');
+  }
+  try {
+    db.prepare('SELECT fork_from_engine_session_id FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN fork_from_engine_session_id TEXT DEFAULT NULL');
+  }
+  // Per-parent creation order of SideBars, so clients can tell a newer one
+  // from a stale response about an older one (ids are random UUIDs).
+  try {
+    db.prepare('SELECT sidebar_seq FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN sidebar_seq INTEGER DEFAULT NULL');
+  }
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_sessions_sidebar_parent ON sessions(sidebar_parent_id) WHERE sidebar_parent_id IS NOT NULL',
+  );
+
   try {
     db.prepare('SELECT card_kind FROM kanban_cards LIMIT 1').get();
   } catch {
@@ -4750,7 +4775,7 @@ function initDb(dataDir: string): void {
     // paths (WebSocket, checkpoint lookups, active-process cleanup) legitimately
     // need to look up a row regardless of archive status.
     getSessions: db.prepare(
-      'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC',
+      'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL AND sidebar_parent_id IS NULL ORDER BY updated_at DESC',
     ),
     getSession: db.prepare('SELECT * FROM sessions WHERE id = ?'),
     // Candidate sessions behind a native PR's head branch
@@ -4769,6 +4794,7 @@ function initDb(dataDir: string): void {
     getRecentLiveSessions: db.prepare(
       `SELECT * FROM sessions
        WHERE deleted_at IS NULL
+         AND sidebar_parent_id IS NULL
          AND updated_at >= datetime('now', '-7 days')
        ORDER BY updated_at DESC
        LIMIT 200`,
@@ -4821,6 +4847,7 @@ function initDb(dataDir: string): void {
       `SELECT * FROM sessions
        WHERE agent_id = ?
          AND deleted_at IS NOT NULL
+         AND sidebar_parent_id IS NULL
          AND deleted_at >= datetime('now', '-1 day')
        ORDER BY deleted_at DESC`,
     ),
@@ -4924,6 +4951,25 @@ function initDb(dataDir: string): void {
     ),
     updateSessionReactLoop: db.prepare(
       "UPDATE sessions SET react_loop_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    // Live SideBar child for a parent session (at most one by contract).
+    getLiveSidebarSession: db.prepare(
+      'SELECT * FROM sessions WHERE sidebar_parent_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1',
+    ),
+    getLiveSidebarSessions: db.prepare(
+      'SELECT * FROM sessions WHERE sidebar_parent_id = ? AND deleted_at IS NULL',
+    ),
+    // Binds: parentId, forkFrom, parentId (seq scope), id.
+    markSessionAsSidebar: db.prepare(
+      `UPDATE sessions
+          SET sidebar_parent_id = ?,
+              fork_from_engine_session_id = ?,
+              sidebar_seq = (SELECT COALESCE(MAX(sidebar_seq), 0) + 1 FROM sessions WHERE sidebar_parent_id = ?),
+              updated_at = datetime('now')
+        WHERE id = ?`,
+    ),
+    clearSessionForkSource: db.prepare(
+      'UPDATE sessions SET fork_from_engine_session_id = NULL WHERE id = ?',
     ),
     updateSessionMode: db.prepare(
       "UPDATE sessions SET session_mode = ?, updated_at = datetime('now') WHERE id = ?",

@@ -19,20 +19,35 @@ export function buildConsultModePreamble(args: {
   project: Pick<Project, 'id' | 'name' | 'mode'>;
   /** Whether the host browser ReAct tool is enabled for this session's agent. */
   browserToolsEnabled?: boolean;
+  /** The session is a SideBar beside a main session, not a standalone chat. */
+  sidebar?: boolean;
 }): string {
-  const { project, browserToolsEnabled = true } = args;
+  const { project, browserToolsEnabled = true, sidebar = false } = args;
   const workflow = project.mode === 'workflow';
-  const shipNote = workflow
-    ? 'This is a **workflow** project — there is no Finalize Code Changes flow or session PR automation.'
-    : 'This is a **dev** project, but **this session is in Consult mode** — no code edits, git ship, or Finalize here. Switch to a **Build** mode when you are ready to change code and run Finalize.';
+  const shipNote = sidebar
+    ? 'No code edits, git ship, or Finalize here.'
+    : workflow
+      ? 'This is a **workflow** project — there is no Finalize Code Changes flow or session PR automation.'
+      : 'This is a **dev** project, but **this session is in Consult mode** — no code edits, git ship, or Finalize here. Switch to a **Build** mode when you are ready to change code and run Finalize.';
   const browserLine = browserToolsEnabled
     ? 'The `browser` ReAct tool (host Chromium: `navigate`, `click`, `type`, `extract`, `screenshot`, `read_page`, …) **is available in this session** — use it to open URLs, scrape pages, read live content, or fill forms when a question needs the web. Do not claim you lack web access.'
     : 'Host browser tools are turned **off** for this agent, so omit `tool: browser` from ReAct blocks — `web` search and `wiki` retrieval still work.';
+  const sidebarLines = sidebar
+    ? [
+        '',
+        '### SideBar',
+        '',
+        '- This is a **SideBar**: a side conversation forked from the main session the user is working in. The main session keeps running on its own and never sees this conversation.',
+        "- Answer the user's side questions directly and briefly. The main session's working tree is your cwd, so you can read the code it is changing.",
+        '- Do not ask the user to switch this SideBar to Build. Code changes belong in the main session; tell the user what to ask for there.',
+      ]
+    : [];
   return [
     '## Consult mode',
     '',
     `You are in **Consult** mode for project **${project.name}** (\`${project.id}\`).`,
     shipNote,
+    ...sidebarLines,
     '',
     '### Your job',
     '',
@@ -62,9 +77,11 @@ export function buildConsultModePreamble(args: {
     '',
     '### When code changes are actually needed',
     '',
-    workflow
-      ? 'Explain the gap and recommend a **dev** project or a workflow run — Consult is Hub-only.'
-      : 'Tell the user to switch this session to **Build** (or a higher automation level) before editing code or running Finalize.',
+    sidebar
+      ? 'Explain what the change would be and tell the user to ask for it in the main session.'
+      : workflow
+        ? 'Explain the gap and recommend a **dev** project or a workflow run — Consult is Hub-only.'
+        : 'Tell the user to switch this session to **Build** (or a higher automation level) before editing code or running Finalize.',
     '',
   ].join('\n');
 }

@@ -31,7 +31,14 @@ import SessionArtifactsPanel from '../components/SessionArtifactsPanel';
 import SessionTimelinePanel from '../components/SessionTimelinePanel';
 import MobileTerminalPane from '../components/MobileTerminalPane';
 import MobileBrowserPane from '../components/MobileBrowserPane';
-import { ChevronDown, Globe, History, SquareTerminal } from 'lucide-react-native';
+import {
+  ChevronDown,
+  Globe,
+  History,
+  MessageCircleQuestion,
+  SquareTerminal,
+} from 'lucide-react-native';
+import SessionSideBarSheet from '../components/SessionSideBarSheet';
 import { useFinalizeRunPoll } from '../hooks/useFinalizeRunPoll';
 import { useSessionCommittable } from '../hooks/useSessionCommittable';
 import { isWorkflowProject } from '../utils/project-mode';
@@ -119,6 +126,7 @@ export default function ChatScreen({
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
+  const [showSideBar, setShowSideBar] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const [showHubModelPicker, setShowHubModelPicker] = useState(false);
@@ -519,6 +527,19 @@ export default function ChatScreen({
                   {showBrowser ? 'Hide agent browser' : 'Agent browser'}
                 </Text>
               </TouchableOpacity>
+              <TouchableOpacity
+                testID="toggle-mobile-sidebar"
+                accessibilityRole="button"
+                accessibilityState={{ expanded: showSideBar }}
+                onPress={() => setShowSideBar(true)}
+                style={[styles.actionRow, showSideBar && styles.actionRowActive]}
+              >
+                <MessageCircleQuestion
+                  size={14}
+                  color={showSideBar ? colors.amber400 : colors.gray300}
+                />
+                <Text style={styles.terminalToggleText}>SideBar</Text>
+              </TouchableOpacity>
             </View>
           ) : null}
           {showTimeline ? (
@@ -547,6 +568,13 @@ export default function ChatScreen({
           {showBrowser ? (
             <MobileBrowserPane sessionId={activeSessionId} onClose={() => setShowBrowser(false)} />
           ) : null}
+          <SessionSideBarSheet
+            visible={showSideBar}
+            onClose={() => setShowSideBar(false)}
+            parentSessionId={activeSessionId}
+            agentId={activeSession?.agent_id ?? activeAgent?.id}
+            agentName={activeAgent?.name}
+          />
         </>
       ) : null}
       {pendingChanges && !workflowProject ? (

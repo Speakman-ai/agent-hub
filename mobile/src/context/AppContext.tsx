@@ -66,6 +66,11 @@ import {
 import { shouldAutoPresentArtifact } from '@shared/utils/artifactView';
 import { appendImportEvent } from '@shared/utils/projectImportWizard';
 import { addKanbanRefreshProject, createRefreshScheduler } from '@shared/utils/kanbanRefresh';
+import { isSidebarWsEvent } from '@shared/utils/sessionSidebar';
+
+// Mobile relies on the server's `sidebarParentId` tag and the lifecycle
+// events rather than tracking SideBar ids itself.
+const NO_REGISTERED_SIDEBAR_IDS: ReadonlySet<string> = new Set();
 const useAiSignInGuide = createUseAiSignInGuide({ useCallback, useEffect, useRef, useState });
 
 async function loadAiSignInStatus(server: string, signal: AbortSignal) {
@@ -342,6 +347,15 @@ export function AppProvider({ children }: any) {
       initialBuildListenersRef.current.delete(cb);
     };
   }, []);
+  // SideBar panel subscribers. Every WS event about a SideBar session (server
+  // tags them with `sidebarParentId`) goes here instead of the main chat.
+  const sideBarListenersRef = useRef<Set<(data: any) => void>>(new Set());
+  const subscribeSideBarEvents = useCallback((cb: (data: any) => void) => {
+    sideBarListenersRef.current.add(cb);
+    return () => {
+      sideBarListenersRef.current.delete(cb);
+    };
+  }, []);
   // Keep the latest sessions list reachable from the notification listener
   // without re-running the subscription on every sessions change.
   const sessionsRef = useRef<any>([]);
@@ -399,6 +413,17 @@ export function AppProvider({ children }: any) {
   // WebSocket handler
   const handleWsMessage = useCallback(
     (data: any) => {
+      // SideBar turns stay in the SideBar: no banner, no main-chat streaming.
+      if (isSidebarWsEvent(data, NO_REGISTERED_SIDEBAR_IDS)) {
+        sideBarListenersRef.current.forEach((cb) => {
+          try {
+            cb(data);
+          } catch {
+            /* a listener throwing must not wedge the WS handler */
+          }
+        });
+        return;
+      }
       // Fan out to the in-app banner first so every mapped type gets a
       // notification regardless of which switch-case it takes below.
       presentForegroundFor(data);
@@ -2652,6 +2677,7 @@ export function AppProvider({ children }: any) {
     // ref is mounted so the notification-tap listener can open screens.
     registerNavigator,
     subscribeInitialBuild,
+    subscribeSideBarEvents,
   };
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

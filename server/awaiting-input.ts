@@ -1,6 +1,7 @@
 import type { ActiveTaskRow, BroadcastFn, MessageRow, SessionRow, Stmts } from './types.js';
 import { findUnansweredAskIds } from '../shared/utils/awaitingInput.js';
 import { getSessionOwner } from './session-ownership.js';
+import { isSidebarSession } from './session-sidebar.js';
 
 export interface AwaitingInputItem {
   sessionId: string;
@@ -119,6 +120,9 @@ export function broadcastAwaitingInputForSession(
     const ownerUserId = getOwner(sessionId);
     const state = getSessionAwaitingInputState(sessionId, stmts);
     if (state) {
+      // A SideBar is answered in its panel next to the main chat; a phone push
+      // would deep-link to a session no list shows.
+      const sideBar = isSidebarSession(stmts.getSession.get(sessionId) as SessionRow | undefined);
       broadcast({
         type: 'awaiting_input',
         sessionId,
@@ -127,6 +131,7 @@ export function broadcastAwaitingInputForSession(
         askIds: state.askIds,
         ownerUserId,
         waiting: true,
+        ...(sideBar ? { suppressPush: true } : {}),
       });
     } else {
       const sess = stmts.getSession.get(sessionId) as SessionRow | undefined;

@@ -43,6 +43,12 @@ export interface SessionRow {
   changes_ready: string | null;
   /** ISO timestamp set when the session's worktree changes were discarded. */
   discarded_at?: string | null;
+  /** Set on a SideBar child: the parent session it was forked from. */
+  sidebar_parent_id?: string | null;
+  /** Claude Code session id the SideBar's first turn forks (`--fork-session`). */
+  fork_from_engine_session_id?: string | null;
+  /** Per-parent SideBar creation order (1, 2, …). */
+  sidebar_seq?: number | null;
   /**
    * ISO timestamp of the first worktree mutation detected during this session
    * (mutating tool_use + `git status --porcelain`). NULL / absent = no tracked edits yet.
@@ -2229,6 +2235,10 @@ export interface Stmts {
   updateSessionAskMode: Stmt;
   updateSessionReactLoop: Stmt;
   updateSessionMode: Stmt;
+  getLiveSidebarSession: Stmt;
+  getLiveSidebarSessions: Stmt;
+  markSessionAsSidebar: Stmt;
+  clearSessionForkSource: Stmt;
   updateSessionAutopilotConfig: Stmt;
   casSessionAutopilotConfig: Stmt<[string, string, string | null]>;
   updateSessionReasoningEffort: Stmt;

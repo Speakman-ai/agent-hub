@@ -73,7 +73,12 @@ export interface BroadcastFilterDeps {
  * timeline use the broader read predicate so Reviewer and shared-cron
  * sessions stay live for every org member who can already GET the thread.
  */
-const SESSION_OWNER_ONLY_EVENT_TYPES = new Set(['background_shell_update', 'background_shell_log']);
+const SESSION_OWNER_ONLY_EVENT_TYPES = new Set([
+  'background_shell_update',
+  'background_shell_log',
+  'sidebar_opened',
+  'sidebar_closed',
+]);
 const SESSION_READ_SCOPED_EVENT_TYPES = new Set(['session-event', 'session-progress']);
 
 /**

@@ -161,6 +161,12 @@ import type { BrowserSessionOptions } from './browser.js';
 import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
+import {
+  claudeSidebarForkArgs,
+  isSidebarSession,
+  sidebarSpawnCwd,
+  buildSidebarSeedContext,
+} from './session-sidebar.js';
 import { buildHubModePreamble } from './hub-mode-prompt.js';
 import { isSessionRecoveryBlockingChat } from './session-recovery.js';
 import { buildAutopilotModePreamble, parseAutopilotSessionConfig } from './session-autopilot.js';
@@ -464,6 +470,12 @@ interface InternalChatMessage extends ChatMessage {
   _spawnCwd?: string;
   /** One-shot retry after Claude "No conversation found" on `--resume`. */
   _noConversationRetry?: number;
+  /**
+   * Set with `_skipUserMessagePersist` when re-driving the original message:
+   * the id it was already stored under, so the retry neither stores it again
+   * nor feeds it back to a fresh CLI session as prior history.
+   */
+  _persistedUserMsgId?: string;
   /**
    * Count of auto-retries already performed after a transient engine/API
    * error ended a turn (e.g. "API Error: The socket connection was closed
@@ -2839,6 +2851,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           ...(promoted ? { message: promoted } : {}),
         });
         reportUserMessagePersisted(true);
+      } else if (msg._skipUserMessagePersist && msg._persistedUserMsgId) {
+        userMsgId = msg._persistedUserMsgId;
       } else if (!isAutoContinuation && !msg._skipUserMessagePersist) {
         userMsgId = uuidv4();
         stmts.addMessage.run(
@@ -2873,6 +2887,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const priorMessages = (stmts.getMessages.all(sessionId) as MessageRow[]).filter((m) =>
         userMsgId ? m.id !== userMsgId : true,
       );
+      // Re-drives of this same message (error retries) reuse its stored row.
+      const redriveUserMsgId = userMsgId ?? undefined;
       const isFirstMessage = priorMessages.length === 0;
 
       // Only genuine user turns may drive the auto-title; synthetic/auto turns
@@ -3303,6 +3319,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         const consultPreamble = buildConsultModePreamble({
           project: project as Project,
           browserToolsEnabled: effectiveBrowserToolsEnabled(agent, project),
+          sidebar: isSidebarSession(session),
         });
         enrichedPrompt = `${consultPreamble}\n\n${enrichedPrompt}`;
       }
@@ -3453,6 +3470,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           : null;
       if (pinnedSpawnCwd) {
         effectiveCwd = pinnedSpawnCwd;
+      } else if (isSidebarSession(session)) {
+        // SideBar shares the parent's checkout; it never gets a worktree.
+        const parentRow = stmts.getSession.get(session!.sidebar_parent_id) as
+          | SessionRow
+          | undefined;
+        effectiveCwd = sidebarSpawnCwd(parentRow, project.cwd);
       } else if (
         sessionUsesWorktree(session!) &&
         getProjectMode(project as Project) !== 'workflow' &&
@@ -4002,14 +4025,23 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // Hub rules into `-p` — but kept as the seam for any future file-backed
       // engine env.)
       let extraChildEnv: Record<string, string> | null = null;
+      // A SideBar runs in its parent's checkout but owns none of it: no commit
+      // reminder, no hook config written into the parent's tree.
+      const sidebarTurn = isSidebarSession(session);
+      const cwdIsOwnWorktree = effectiveCwd !== project.cwd && !sidebarTurn;
+      // First Claude turn of a SideBar forks the parent's CLI conversation.
+      const sidebarForkFrom =
+        engine === 'claude-code' && sidebarTurn && isNewEngineSession
+          ? session!.fork_from_engine_session_id?.trim() || null
+          : null;
       const cliAccess = resolveCliWorkspaceAccess({
         session: session!,
         workflowProject: isWorkflowProject(project as Project),
-        hasWorktree: effectiveCwd !== project.cwd,
+        hasWorktree: cwdIsOwnWorktree,
       });
       const readOnlyCliSession = cliAccess.readOnly;
       const committable = shouldPinLocalCommitReminder({
-        hasWorktree: effectiveCwd !== project.cwd,
+        hasWorktree: cwdIsOwnWorktree,
         askMode: readOnlyCliSession,
       });
       if (engine === 'cursor-agent') {
@@ -4269,7 +4301,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           // to it for skills outside the bundled list (see claude-cli-args.ts).
           ...disableNativeSkillToolArgs({ codeMutationTools: cliAccess.blockCodeMutationTools }),
         ];
-        if (isNewEngineSession) {
+        if (sidebarForkFrom) {
+          args.push(...claudeSidebarForkArgs(sidebarForkFrom, sessionId));
+        } else if (isNewEngineSession) {
           args.push('--session-id', sessionId);
         } else {
           args.push('--resume', engineSessionId!);
@@ -4318,9 +4352,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // writer ran for every claude-code spawn, not just the worktree /
         // agent-hooks cases below.
         removeStaleMcpConfigFile(effectiveCwd);
-        const isWorktree = effectiveCwd !== project.cwd;
+        const isWorktree = cwdIsOwnWorktree;
         const hasAgentHooks = agent.hooks && Object.keys(agent.hooks).length > 0;
-        if (isWorktree || hasAgentHooks) {
+        if (!sidebarTurn && (isWorktree || hasAgentHooks)) {
           try {
             writeHooksConfig(effectiveCwd, sessionId, {
               agentHooks: agent.hooks,
@@ -5337,6 +5371,49 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             }
           }
 
+          // SideBar fork could not find the parent's conversation (it ran in a
+          // different cwd/HOME, or its JSONL is gone). Drop the fork and retry
+          // once with the parent's transcript as a seed instead.
+          if (sidebarForkFrom) {
+            const missing =
+              detectNoConversationFoundError(errorOutput) ||
+              detectNoConversationFoundError(streamErrorMessage) ||
+              detectNoConversationFoundError(errorMsg);
+            if (missing && (msg._noConversationRetry ?? 0) < 1) {
+              try {
+                S.clearSessionForkSource.run(sessionId);
+                const parentId = session!.sidebar_parent_id!;
+                S.updateSessionPendingSkillContext.run(
+                  buildSidebarSeedContext(S.getMessages.all(parentId) as MessageRow[], {
+                    agentName: agent.name,
+                  }),
+                  sessionId,
+                );
+              } catch (err: unknown) {
+                const message = err instanceof Error ? err.message : String(err);
+                console.warn('[chat] SideBar fork fallback failed to seed transcript:', message);
+              }
+              console.warn(
+                `[chat] SideBar fork of ${sidebarForkFrom} not found for session ${sessionId}; retrying with transcript seed`,
+              );
+              setImmediate(() => {
+                void handleChat(null, {
+                  ...msg,
+                  _noConversationRetry: 1,
+                  _spawnCwd: effectiveCwd,
+                  // Same question, already stored: do not store or replay it twice.
+                  _skipUserMessagePersist: true,
+                  ...(redriveUserMsgId ? { _persistedUserMsgId: redriveUserMsgId } : {}),
+                } as InternalChatMessage).catch((err: unknown) => {
+                  const message = err instanceof Error ? err.message : String(err);
+                  console.error('[chat] SideBar fork fallback retry failed:', message);
+                  drainQueue(sessionId);
+                });
+              });
+              return;
+            }
+          }
+
           // Self-heal "No conversation found with session ID" — usually a cwd
           // mismatch between turns (worktree vs project checkout) or a resume
           // attempt before Claude finished writing the JSONL. Clear the engine
@@ -5367,6 +5444,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     ...msg,
                     _noConversationRetry: noConvRetries + 1,
                     _spawnCwd: effectiveCwd,
+                    // Same question, already stored: do not store or replay it twice.
+                    _skipUserMessagePersist: true,
+                    ...(redriveUserMsgId ? { _persistedUserMsgId: redriveUserMsgId } : {}),
                   } as InternalChatMessage).catch((err: unknown) => {
                     const message = err instanceof Error ? err.message : String(err);
                     console.error('[auto-continuation] No-conversation retry failed:', message);
@@ -5418,6 +5498,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   // retry writes the user's text into the transcript a second
                   // time and re-broadcasts it.
                   _skipUserMessagePersist: true,
+                  ...(redriveUserMsgId ? { _persistedUserMsgId: redriveUserMsgId } : {}),
                 } as InternalChatMessage).catch((err: unknown) => {
                   const message = err instanceof Error ? err.message : String(err);
                   console.error('[turn-error-retry] Retry dispatch failed:', message);
@@ -5459,6 +5540,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   // suppressing the duplicate user-message persist/broadcast
                   // that handleChat performs for every non-continuation turn.
                   _skipUserMessagePersist: true,
+                  ...(redriveUserMsgId ? { _persistedUserMsgId: redriveUserMsgId } : {}),
                 } as InternalChatMessage).catch((err: unknown) => {
                   const message = err instanceof Error ? err.message : String(err);
                   console.error('[engine-failover] Failover dispatch failed:', message);
@@ -6753,12 +6835,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           if (worktreeClaude) {
             await new Promise<void>((resolve) => setTimeout(resolve, 1200));
           }
-          await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent, {
-            allowFinalizeAutoStart,
-          }).catch((err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error('[auto-commit] Unexpected error:', message);
-          });
+          // The cwd is the parent's worktree; committing from here would ship
+          // the parent's work under the SideBar's session.
+          if (!sidebarTurn) {
+            await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent, {
+              allowFinalizeAutoStart,
+            }).catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error('[auto-commit] Unexpected error:', message);
+            });
+          }
           if (autonomousProjects.size > 0) {
             setTimeout(() => tryAutonomousDispatch(), 2000);
           }

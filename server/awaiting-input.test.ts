@@ -210,6 +210,29 @@ describe('broadcastAwaitingInputForSession', () => {
     expect(payload.askIds).toEqual(['ask-1']);
   });
 
+  it('suppresses push for a SideBar session waiting on a picker', () => {
+    const stmts = makeStmts({
+      session: makeSessionRow({ sidebar_parent_id: 'parent-1' }),
+      messages: [makeMessage('assistant', `Sure.${ASK_BODY}`)],
+    });
+    const broadcast = vi.fn();
+    broadcastAwaitingInputForSession(SESSION_ID, stmts, broadcast);
+    const payload = broadcast.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.waiting).toBe(true);
+    expect(payload.suppressPush).toBe(true);
+  });
+
+  it('leaves push on for a normal session', () => {
+    const stmts = makeStmts({
+      session: makeSessionRow(),
+      messages: [makeMessage('assistant', `Sure.${ASK_BODY}`)],
+    });
+    const broadcast = vi.fn();
+    broadcastAwaitingInputForSession(SESSION_ID, stmts, broadcast);
+    const payload = broadcast.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.suppressPush).toBeUndefined();
+  });
+
   it('emits waiting:false with empty askIds when the session is no longer waiting', () => {
     const stmts = makeStmts({
       session: makeSessionRow(),

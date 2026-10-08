@@ -18,6 +18,7 @@ import {
 import { handleBroadcastForPush } from './push.js';
 import { resolveProjectIdFromEvent } from './event-project-resolver.js';
 import { shouldDeliverBroadcast } from './broadcast-filter.js';
+import { createSidebarBroadcastTagger } from './session-sidebar.js';
 import { buildBackgroundShellSnapshot } from './background-shells/background-shell-snapshot.js';
 import type { WebSocketDeps, BroadcastFn, MessageQueueRow } from './types.js';
 import { buildActiveTasksSnapshotLenient } from './active-tasks.js';
@@ -433,7 +434,15 @@ export default function createWebSocket(
   const findProjectLocal = (projectId: string) =>
     getProjects().find((p) => p.id === projectId) ?? null;
 
-  function broadcast(data: Record<string, unknown>): void {
+  const tagSidebarBroadcast = createSidebarBroadcastTagger((sessionId) => {
+    const row = stmts?.getSession.get(sessionId) as
+      | { sidebar_parent_id?: string | null }
+      | undefined;
+    return row?.sidebar_parent_id ?? null;
+  });
+
+  function broadcast(rawData: Record<string, unknown>): void {
+    const data = tagSidebarBroadcast(rawData);
     const msg = JSON.stringify(data);
     if (data.suppressWebSocket !== true) {
       wss.clients.forEach((client: WsClient) => {
@@ -462,6 +471,9 @@ export default function createWebSocket(
     // events go only to the session owner's devices
     // (`filterTokensForSessionOwner`); unowned sessions keep the shared
     // fan-out.
+    // A SideBar is answered in its panel; a phone push would deep-link to a
+    // session no list shows.
+    if (typeof data.sidebarParentId === 'string') return;
     void handleBroadcastForPush(data).catch((err: unknown) => {
       console.error('[push] broadcast handler failed:', (err as Error).message);
     });

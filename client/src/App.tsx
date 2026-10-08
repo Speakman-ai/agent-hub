@@ -42,6 +42,7 @@ const SessionChangesPane = lazy(() => import('./components/SessionChangesPane'))
 const SessionArtifactsPane = lazy(() => import('./components/SessionArtifactsPane'));
 const SessionTerminalPane = lazy(() => import('./components/SessionTerminalPane'));
 const SessionBrowserPane = lazy(() => import('./components/SessionBrowserPane'));
+const SessionSideBarPane = lazy(() => import('./components/SessionSideBarPane'));
 import { RunInTerminalProvider } from './components/RunInTerminalContext';
 import { sendCommandToTerminal } from './utils/terminalCommandBus';
 import LinkDesignModal from './components/LinkDesignModal';
@@ -209,8 +210,10 @@ import {
   PanelLeftOpen,
   History,
   Globe,
+  MessageCircleQuestion,
 } from 'lucide-react';
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarCollapse';
+import { SIDEBAR_WS_EVENT, isSidebarWsEvent } from '@shared/utils/sessionSidebar';
 import {
   migrateFromLegacy,
   fetchOrgs,
@@ -481,6 +484,29 @@ export default function App({ initialView }: any = {}) {
   // requests, which a single functional updater cannot do.
   const browserPaneOpenBySessionRef = useRef(browserPaneOpenBySession);
   browserPaneOpenBySessionRef.current = browserPaneOpenBySession;
+  /** Per-session SideBar panel (side questions on a hidden Consult fork). It is
+   * its own column, not part of the exclusive right-pane slot. */
+  const [sideBarPaneOpenBySession, setSideBarPaneOpenBySession] = useState<Record<string, boolean>>(
+    {},
+  );
+  // Hidden SideBar child session ids. WS events for these go to the SideBar
+  // panel instead of the main chat (no streaming into the transcript, no
+  // "session finished" toasts for a session that is not in the list).
+  const sideBarSessionIdsRef = useRef<Set<string>>(new Set());
+  const sideBarByParentRef = useRef<Record<string, string>>({});
+  const handleSideBarSessionChange = useCallback(
+    (parentSessionId: string, sideBarSessionId: string | null) => {
+      const prev = sideBarByParentRef.current[parentSessionId];
+      if (prev) sideBarSessionIdsRef.current.delete(prev);
+      if (sideBarSessionId) {
+        sideBarByParentRef.current[parentSessionId] = sideBarSessionId;
+        sideBarSessionIdsRef.current.add(sideBarSessionId);
+      } else {
+        delete sideBarByParentRef.current[parentSessionId];
+      }
+    },
+    [],
+  );
   /** Per-session changed-file count, lifted from the diff pane to badge the
    * "Changes" toolbar button. */
   const [diffFileCountBySession, setDiffFileCountBySession] = useState<Record<string, any>>({});
@@ -1889,6 +1915,20 @@ export default function App({ initialView }: any = {}) {
       const forActiveSession = data.sessionId && data.sessionId === activeSessionIdRef.current;
       // 'message' events use message.session_id rather than top-level sessionId.
       const msgForActiveSession = data.message?.session_id === activeSessionIdRef.current;
+
+      if (isSidebarWsEvent(data, sideBarSessionIdsRef.current)) {
+        // Register before the panel adopts it: the first turn's `thinking`
+        // can arrive ahead of the POST response.
+        if (data.type === 'sidebar_opened' && typeof data.session?.id === 'string') {
+          sideBarSessionIdsRef.current.add(data.session.id);
+        }
+        const taggedId = typeof data.sessionId === 'string' ? data.sessionId : null;
+        if (taggedId && typeof data.sidebarParentId === 'string') {
+          sideBarSessionIdsRef.current.add(taggedId);
+        }
+        window.dispatchEvent(new CustomEvent(SIDEBAR_WS_EVENT, { detail: data }));
+        return;
+      }
 
       switch (data.type) {
         case 'active-tasks-snapshot': {
@@ -7865,6 +7905,21 @@ export default function App({ initialView }: any = {}) {
                                     }
                                   },
                                 },
+                                {
+                                  id: 'sidebar',
+                                  testId: 'toggle-sidebar-pane',
+                                  label: 'SideBar',
+                                  icon: MessageCircleQuestion,
+                                  title:
+                                    'Ask side questions on a fork of this session without adding to it',
+                                  pressed: !!sideBarPaneOpenBySession[activeSessionId],
+                                  onSelect: () => {
+                                    setSideBarPaneOpenBySession((prev) => ({
+                                      ...prev,
+                                      [activeSessionId]: !prev[activeSessionId],
+                                    }));
+                                  },
+                                },
                               ]}
                             >
                               {!chatProjectIsWorkflow && (
@@ -8030,6 +8085,25 @@ export default function App({ initialView }: any = {}) {
                         />
                       </div>
                     </div>
+                    {activeSessionId && sideBarPaneOpenBySession[activeSessionId] && (
+                      <Suspense fallback={null}>
+                        <SessionSideBarPane
+                          key={activeSessionId}
+                          parentSessionId={activeSessionId}
+                          agentId={sessionOwnerAgentId}
+                          agentName={chatAgent?.name}
+                          connected={connected}
+                          send={send}
+                          onSidebarSessionChange={handleSideBarSessionChange}
+                          onClose={() =>
+                            setSideBarPaneOpenBySession((prev) => ({
+                              ...prev,
+                              [activeSessionId]: false,
+                            }))
+                          }
+                        />
+                      </Suspense>
+                    )}
                     {showSessionPreviewPane && (
                       <SessionPreviewPane
                         sessionId={activeSessionId}

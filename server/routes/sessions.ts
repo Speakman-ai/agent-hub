@@ -53,6 +53,7 @@ import { isTruncatedPayload, rehydrateTruncatedEvent } from '../session-events-s
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { appendCodexShellEnvironmentPolicyArgs } from '../codex-exec-sandbox.js';
 import { markSessionTermination } from '../process-termination.js';
+import { closeSidebars } from '../session-sidebar.js';
 import { clearEphemeralBackgroundBash } from '../ephemeral-background-bash.js';
 import { getDb } from '../db.js';
 import { readAll } from '../db-async/read-facade.js';
@@ -803,6 +804,19 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
    * 404 unless the caller is the org owner. That keeps the frontend
    * thread read-only for everyone except automation.
    */
+  // Archiving a session also archives its SideBar so the hidden child does not
+  // outlive the conversation it was forked from.
+  const closeSidebarsBestEffort = (parentId: string): void => {
+    try {
+      closeSidebars({ stmts, parentId, activeProcesses });
+    } catch (err: unknown) {
+      console.warn(
+        `[sessions] failed to archive SideBar of ${parentId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  };
+
   router.use('/api/sessions/:sessionId', (req, res, next) => {
     const sid = (req.params as { sessionId?: string }).sessionId;
     if (!sid || sid === 'cron') return next();
@@ -1473,6 +1487,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
       syncSessionCardBestEffort(session.id, 'closed');
       stmts.softDeleteSession.run(session.id);
+      closeSidebarsBestEffort(session.id);
       archivedIds.push(session.id);
       try {
         deps.broadcast({ type: 'session_deleted', sessionId: session.id });
@@ -1522,6 +1537,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
       syncSessionCardBestEffort(session.id, 'closed');
       stmts.softDeleteSession.run(session.id);
+      closeSidebarsBestEffort(session.id);
       archivedIds.push(session.id);
       try {
         deps.broadcast({ type: 'session_deleted', sessionId: session.id });
@@ -1572,6 +1588,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
       syncSessionCardBestEffort(session.id, 'closed');
       stmts.softDeleteSession.run(session.id);
+      closeSidebarsBestEffort(session.id);
       archivedIds.push(session.id);
       try {
         deps.broadcast({ type: 'session_deleted', sessionId: session.id });
@@ -1630,6 +1647,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
     syncSessionCardBestEffort(sessionId, 'closed');
     stmts.softDeleteSession.run(sessionId);
+    closeSidebarsBestEffort(sessionId);
 
     // Broadcast `session_deleted` for cross-tab sync — the client treats
     // archive identically to a hard delete on the live list.

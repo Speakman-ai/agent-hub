@@ -75,6 +75,19 @@ export const api = {
   getAgents: () => fetchJSON('/agents'),
   getSessions: (agentId: any) => fetchJSON(`/agents/${agentId}/sessions`),
   getSession: (sessionId: any) => fetchJSON(`/sessions/${sessionId}`),
+  // SideBar: one side conversation per session on a hidden Consult-mode fork.
+  getSessionSidebar: (sessionId: string): Promise<{ session: any | null; running?: boolean }> =>
+    fetchJSON(`/sessions/${sessionId}/sidebar`),
+  openSessionSidebar: (
+    sessionId: string,
+    content?: string,
+  ): Promise<{ session: any; forked: boolean; closedSessionIds: string[] }> =>
+    fetchJSON(`/sessions/${sessionId}/sidebar`, {
+      method: 'POST',
+      body: JSON.stringify(content ? { content } : {}),
+    }),
+  closeSessionSidebar: (sessionId: string) =>
+    fetchJSON(`/sessions/${sessionId}/sidebar`, { method: 'DELETE' }),
   getSessionCredentialRequest: (sessionId: any, requestId: any) =>
     fetchJSON(`/sessions/${sessionId}/credential-requests/${encodeURIComponent(requestId)}`),
   submitSessionCredentialRequest: (sessionId: any, requestId: any, body: any) =>
