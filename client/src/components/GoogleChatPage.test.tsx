@@ -8,6 +8,8 @@ vi.mock('../utils/api', () => ({
     listGoogleChatMessages: vi.fn(),
     sendGoogleChatMessage: vi.fn(),
     startGoogleOAuth: vi.fn(),
+    listGoogleChatMessageLinks: vi.fn(),
+    createGoogleChatMessageLink: vi.fn(),
   },
 }));
 
@@ -27,7 +29,7 @@ vi.mock('./CaptureToTicketModal', () => ({
   },
 }));
 
-import GoogleChatPage from './GoogleChatPage';
+import GoogleChatPage, { LINKS_UNKNOWN_WARNING } from './GoogleChatPage';
 import { api } from '../utils/api';
 import { CHAT_SURFACE_SCOPES } from '../utils/googleSurface';
 import { compareRfc3339 } from '@shared/utils/rfc3339';
@@ -912,5 +914,176 @@ describe('GoogleChatPage', () => {
       'https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat',
     );
     expect(link).toHaveTextContent('Open the Chat API configuration page');
+  });
+});
+
+describe('GoogleChatPage message links', () => {
+  function link(overrides: Record<string, unknown>) {
+    return {
+      id: 'L1',
+      messageName: 'spaces/AAA/messages/M1',
+      spaceName: 'spaces/AAA',
+      threadName: 'spaces/AAA/threads/T1',
+      sessionId: 'sess-1',
+      sessionName: 'Reset staging',
+      agentId: 'agent-a',
+      userId: 'user-1',
+      createdAt: '2026-10-08T10:01:00.000Z',
+      repliedAt: null,
+      replyMessageName: null,
+      ...overrides,
+    };
+  }
+
+  function setup(links: unknown[]) {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      email: 'me@acme.com',
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE], nextPageToken: null });
+    mockApi.listGoogleChatMessages.mockResolvedValue({
+      messages: [
+        msg({
+          name: 'spaces/AAA/messages/M2',
+          id: 'M2',
+          text: 'Unrelated question',
+          createTime: '2026-10-08T10:05:00Z',
+        }),
+        msg({ name: 'spaces/AAA/messages/M1', id: 'M1', text: 'Reset the staging DB' }),
+      ],
+      nextPageToken: null,
+    });
+    mockApi.listGoogleChatMessageLinks.mockResolvedValue({ links });
+  }
+
+  it('shows a chip that opens the linked session', async () => {
+    setup([link({})]);
+    const onOpenSession = vi.fn();
+    render(<GoogleChatPage onOpenSession={onOpenSession} />);
+
+    const chip = await screen.findByTestId('chat-link-chip');
+    expect(mockApi.listGoogleChatMessageLinks).toHaveBeenCalledWith('AAA');
+    expect(chip.textContent).toContain('Sent to agent');
+    expect(screen.getAllByTestId('chat-link-chip')).toHaveLength(1);
+    fireEvent.click(chip);
+    expect(onOpenSession).toHaveBeenCalledWith({ sessionId: 'sess-1', agentId: 'agent-a' });
+  });
+
+  it('switches the chip to Agent replied once the session posted back', async () => {
+    setup([link({ repliedAt: '2026-10-08T10:09:00.000Z' })]);
+    render(<GoogleChatPage />);
+    expect((await screen.findByTestId('chat-link-chip')).textContent).toContain('Agent replied');
+  });
+
+  it('warns before sending an already-dispatched message and links the new session', async () => {
+    setup([link({})]);
+    mockApi.createGoogleChatMessageLink.mockResolvedValue({ link: link({}), existing: [] });
+    const onSessionStarted = vi.fn();
+    render(<GoogleChatPage onSessionStarted={onSessionStarted} />);
+    await screen.findByTestId('chat-link-chip');
+
+    // Oldest first: M1 (linked) is the first message.
+    fireEvent.click(screen.getAllByRole('button', { name: /Send to agent/i })[0]);
+    await screen.findByTestId('start-session-modal');
+    expect(String(startSessionProps.last?.warning)).toContain('already sent to "Reset staging"');
+
+    const onStarted = startSessionProps.last?.onStarted as (s: unknown) => void;
+    onStarted({ id: 'sess-2', agent_id: 'agent-b' });
+    await waitFor(() =>
+      expect(mockApi.createGoogleChatMessageLink).toHaveBeenCalledWith('AAA', {
+        messageName: 'spaces/AAA/messages/M1',
+        threadName: 'spaces/AAA/threads/T1',
+        sessionId: 'sess-2',
+      }),
+    );
+    expect(onSessionStarted).toHaveBeenCalledWith({ id: 'sess-2', agent_id: 'agent-b' });
+  });
+
+  it('sends an undispatched message without a warning', async () => {
+    setup([link({})]);
+    render(<GoogleChatPage />);
+    await screen.findByTestId('chat-link-chip');
+    fireEvent.click(screen.getAllByRole('button', { name: /Send to agent/i })[1]);
+    await screen.findByTestId('start-session-modal');
+    expect(startSessionProps.last?.warning).toBeNull();
+  });
+
+  it('waits for existing links before opening Send to agent when messages load first', async () => {
+    setup([]);
+    // The pane's own link load hangs; messages are already on screen.
+    let resolvePaneLoad: (v: unknown) => void = () => {};
+    mockApi.listGoogleChatMessageLinks.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolvePaneLoad = resolve;
+      }),
+    );
+    let resolveClickLoad: (v: unknown) => void = () => {};
+    mockApi.listGoogleChatMessageLinks.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveClickLoad = resolve;
+      }),
+    );
+    render(<GoogleChatPage />);
+    await screen.findByText('Reset the staging DB');
+    expect(screen.queryByTestId('chat-link-chip')).toBeNull();
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Send to agent/i })[0]);
+    // No dialog until the links are known, and no double dispatch meanwhile.
+    expect(screen.queryByTestId('start-session-modal')).toBeNull();
+    for (const b of screen.getAllByRole('button', { name: /Send to agent/i })) {
+      expect(b).toBeDisabled();
+    }
+
+    resolveClickLoad({ links: [link({})] });
+    await screen.findByTestId('start-session-modal');
+    expect(String(startSessionProps.last?.warning)).toContain('already sent to "Reset staging"');
+
+    // The older pane read finishes last with a stale empty snapshot; it must
+    // not wipe the newer result.
+    resolvePaneLoad({ links: [] });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(String(startSessionProps.last?.warning)).toContain('already sent to "Reset staging"');
+    expect(screen.getByTestId('chat-link-chip')).toBeInTheDocument();
+  });
+
+  it('warns that links are unknown when the pre-dispatch check fails after an empty load', async () => {
+    setup([]);
+    render(<GoogleChatPage />);
+    await screen.findByText('Reset the staging DB');
+    await waitFor(() => expect(mockApi.listGoogleChatMessageLinks).toHaveBeenCalledTimes(1));
+    // Meanwhile someone else dispatched it, and the re-check fails.
+    mockApi.listGoogleChatMessageLinks.mockRejectedValue(new Error('offline'));
+    fireEvent.click(screen.getAllByRole('button', { name: /Send to agent/i })[0]);
+    await screen.findByTestId('start-session-modal');
+    expect(startSessionProps.last?.warning).toBe(LINKS_UNKNOWN_WARNING);
+  });
+
+  it('warns that links are unknown when they cannot be read', async () => {
+    setup([]);
+    mockApi.listGoogleChatMessageLinks.mockRejectedValue(new Error('boom'));
+    render(<GoogleChatPage />);
+    await screen.findByText('Reset the staging DB');
+    fireEvent.click(screen.getAllByRole('button', { name: /Send to agent/i })[0]);
+    await screen.findByTestId('start-session-modal');
+    expect(startSessionProps.last?.warning).toBe(LINKS_UNKNOWN_WARNING);
+  });
+
+  it('updates the dialog warning when links arrive while it is open', async () => {
+    setup([]);
+    mockApi.listGoogleChatMessageLinks.mockRejectedValue(new Error('boom'));
+    render(<GoogleChatPage />);
+    await screen.findByText('Reset the staging DB');
+    fireEvent.click(screen.getAllByRole('button', { name: /Send to agent/i })[0]);
+    await screen.findByTestId('start-session-modal');
+    expect(startSessionProps.last?.warning).toBe(LINKS_UNKNOWN_WARNING);
+
+    // A later successful read (the poll) replaces the unknown state.
+    mockApi.listGoogleChatMessageLinks.mockResolvedValue({ links: [link({})] });
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/i }));
+    await waitFor(() =>
+      expect(String(startSessionProps.last?.warning)).toContain('already sent to "Reset staging"'),
+    );
   });
 });

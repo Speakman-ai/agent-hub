@@ -9,6 +9,14 @@ import {
 import { resolveChatParticipants } from '../google-chat-participants.js';
 import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
 import {
+  createChatMessageLink,
+  listChatMessageLinks,
+  recordSessionChatPost,
+  sessionExists,
+} from '../google-chat-message-links-store.js';
+import { AGENT_HUB_SESSION_ID_HEADER } from '../kanban-caller-session.js';
+import type { AuthenticatedRequest } from '../auth.js';
+import {
   CHAT_MESSAGES_CREATE_SCOPE,
   CHAT_MESSAGES_READONLY_SCOPE,
   CHAT_SPACES_READONLY_SCOPE,
@@ -168,6 +176,40 @@ const SendMessageBodySchema = z
   })
   .strict();
 
+const MESSAGE_NAME_RE = /^spaces\/([A-Za-z0-9_-]{1,128})\/messages\/[A-Za-z0-9_.-]{1,256}$/;
+
+const ChatMessageLinkSchema = registerComponent(
+  'GoogleChatMessageLink',
+  z.object({
+    id: z.string(),
+    messageName: z.string(),
+    spaceName: z.string(),
+    threadName: z.string().nullable().openapi({
+      description:
+        'Set only when the space keeps replies in threads; the link is marked replied when its session posts in this thread. Null links are marked by any post from the session into the space.',
+    }),
+    sessionId: z.string(),
+    sessionName: z.string().nullable(),
+    agentId: z.string().nullable(),
+    userId: z.string().nullable().openapi({ description: 'Hub user who sent it to the agent.' }),
+    createdAt: z.string(),
+    repliedAt: z.string().nullable().openapi({
+      description: 'When the session first posted back through the Chat proxy, else null.',
+    }),
+    replyMessageName: z.string().nullable(),
+  }),
+);
+
+const CreateMessageLinkBodySchema = z
+  .object({
+    messageName: z.string().regex(MESSAGE_NAME_RE, 'invalid message name').openapi({
+      description: 'Chat message resource name, `spaces/{space}/messages/{message}`.',
+    }),
+    threadName: z.string().regex(THREAD_NAME_RE, 'invalid thread name').nullable().optional(),
+    sessionId: z.string().trim().min(1).max(128),
+  })
+  .strict();
+
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
 });
@@ -243,6 +285,60 @@ registerPath({
     400: errorResponse('Invalid body or space id.'),
     403: errorResponse('Required Chat send scope has not been granted.'),
     404: errorResponse('Space not found.'),
+    ...commonErrors,
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/google/chat/spaces/{spaceId}/message-links',
+  tags: ['Google'],
+  summary: 'List which messages in a Google Chat space were sent to an agent session',
+  description:
+    'Links from every Hub user are returned, so an operator can see a message another operator already handed to an agent. The caller must be able to read the space through their own Google account.',
+  request: { params: SpaceParamsSchema },
+  responses: {
+    200: {
+      description: 'Links for the space, oldest first.',
+      content: jsonContent(z.object({ links: z.array(ChatMessageLinkSchema) })),
+    },
+    400: errorResponse('Invalid space id.'),
+    403: errorResponse(
+      'Required Chat read scope has not been granted, or the caller cannot read the space.',
+    ),
+    404: errorResponse('Space not found for the caller.'),
+    ...commonErrors,
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/google/chat/spaces/{spaceId}/message-links',
+  tags: ['Google'],
+  summary: 'Record that a Google Chat message was sent to an agent session',
+  request: {
+    params: SpaceParamsSchema,
+    body: { content: jsonContent(CreateMessageLinkBodySchema), required: true },
+  },
+  responses: {
+    200: {
+      description: 'The message was already linked to this session; nothing changed.',
+      content: jsonContent(
+        z.object({ link: ChatMessageLinkSchema, existing: z.array(ChatMessageLinkSchema) }),
+      ),
+    },
+    201: {
+      description:
+        'The link was created. `existing` lists links to other sessions that were already on the message.',
+      content: jsonContent(
+        z.object({ link: ChatMessageLinkSchema, existing: z.array(ChatMessageLinkSchema) }),
+      ),
+    },
+    400: errorResponse('Invalid body or space id, or the message is not in the space.'),
+    403: errorResponse(
+      'Required Chat read scope has not been granted, or the caller cannot read the message.',
+    ),
+    404: errorResponse('Session not found, or message not found for the caller.'),
     ...commonErrors,
   },
 });
@@ -401,6 +497,47 @@ async function resolveChatToken(
     return null;
   }
   return token;
+}
+
+/**
+ * The Hub session a proxy call acts for, with the same precedence as
+ * `resolveGoogleConnectionUserId`: the server-bound spawn key wins over the
+ * raw header, so a spawn can't claim another session's links.
+ */
+function actingSessionId(req: Request): string | null {
+  const authed = req as AuthenticatedRequest;
+  const bound = authed.authSpawnSessionId?.trim();
+  if (bound) return bound;
+  const header = req.get(AGENT_HUB_SESSION_ID_HEADER)?.trim();
+  return header || null;
+}
+
+// Links are shared across Hub users, so each read proves the caller can read
+// the space through Google first. A confirmed (user, space) pair is trusted
+// for a few minutes so the pane's 30s poll doesn't double its Chat API reads.
+const SPACE_ACCESS_TTL_MS = 5 * 60 * 1000;
+const MAX_SPACE_ACCESS_ENTRIES = 5000;
+const spaceAccessCache = new Map<string, number>();
+
+export function clearChatSpaceAccessCache(): void {
+  spaceAccessCache.clear();
+}
+
+/**
+ * Throws the Google error when the caller can't read messages in the space
+ * (not a member, space doesn't exist), which `sendGoogleError` maps to 403/404.
+ */
+async function assertCanReadSpace(
+  chat: chat_v1.Chat,
+  userId: string,
+  spaceName: string,
+): Promise<void> {
+  const key = `${userId}\u0000${spaceName}`;
+  const until = spaceAccessCache.get(key);
+  if (until && until > Date.now()) return;
+  await chat.spaces.messages.list({ parent: spaceName, pageSize: 1 });
+  if (spaceAccessCache.size >= MAX_SPACE_ACCESS_ENTRIES) spaceAccessCache.clear();
+  spaceAccessCache.set(key, Date.now() + SPACE_ACCESS_TTL_MS);
 }
 
 function createChatClient(accessToken: string): chat_v1.Chat {
@@ -735,11 +872,127 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
           ...(replyThread ? { thread: { name: replyThread } } : {}),
         },
       });
-      return res.status(201).json(shapeMessage(result.data));
+      const sent = shapeMessage(result.data);
+      const sessionId = actingSessionId(req);
+      if (sessionId) {
+        try {
+          recordSessionChatPost({
+            sessionId,
+            spaceName: `spaces/${spaceId}`,
+            threadName: sent.threadName,
+            replyMessageName: sent.name,
+          });
+        } catch (err: unknown) {
+          // The message is already posted; a bookkeeping failure must not turn
+          // that into an error the agent would retry.
+          console.warn(
+            `[google-chat] Failed to record Chat post for session ${sessionId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+      return res.status(201).json(sent);
     } catch (err: unknown) {
       return sendGoogleError(res, err);
     }
   });
+
+  router.get(
+    '/api/google/chat/spaces/:spaceId/message-links',
+    async (req: Request, res: Response) => {
+      const params = SpaceParamsSchema.safeParse(req.params);
+      if (!params.success) {
+        return bad(
+          res,
+          400,
+          params.error.issues[0]?.message || 'Invalid space id',
+          'invalid_request',
+        );
+      }
+      const uid = requireChatAccess(
+        req,
+        res,
+        deps,
+        hasChatMessagesReadScope,
+        [CHAT_MESSAGES_READONLY_SCOPE],
+        'google_chat_scope_required',
+      );
+      if (!uid) return;
+      const token = await resolveChatToken(uid, deps, res);
+      if (!token) return;
+      const spaceName = `spaces/${params.data.spaceId}`;
+      try {
+        await assertCanReadSpace(createChatClient(token), uid, spaceName);
+      } catch (err: unknown) {
+        return sendGoogleError(res, err);
+      }
+      return res.json({ links: listChatMessageLinks(spaceName) });
+    },
+  );
+
+  router.post(
+    '/api/google/chat/spaces/:spaceId/message-links',
+    async (req: Request, res: Response) => {
+      const params = SpaceParamsSchema.safeParse(req.params);
+      if (!params.success) {
+        return bad(
+          res,
+          400,
+          params.error.issues[0]?.message || 'Invalid space id',
+          'invalid_request',
+        );
+      }
+      const body = CreateMessageLinkBodySchema.safeParse(req.body);
+      if (!body.success) {
+        return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
+      }
+      const spaceId = params.data.spaceId;
+      const { messageName, sessionId } = body.data;
+      const threadName = body.data.threadName ?? null;
+      if (MESSAGE_NAME_RE.exec(messageName)?.[1] !== spaceId) {
+        return bad(res, 400, 'messageName must belong to the requested space', 'invalid_request');
+      }
+      if (threadName && THREAD_NAME_RE.exec(threadName)?.[1] !== spaceId) {
+        return bad(res, 400, 'threadName must belong to the requested space', 'invalid_request');
+      }
+      const uid = requireChatAccess(
+        req,
+        res,
+        deps,
+        hasChatMessagesReadScope,
+        [CHAT_MESSAGES_READONLY_SCOPE],
+        'google_chat_scope_required',
+      );
+      if (!uid) return;
+      const token = await resolveChatToken(uid, deps, res);
+      if (!token) return;
+      // The caller must be able to read the message itself; this also rules
+      // out links to messages that don't exist.
+      let source: chat_v1.Schema$Message;
+      try {
+        source = (await createChatClient(token).spaces.messages.get({ name: messageName })).data;
+      } catch (err: unknown) {
+        return sendGoogleError(res, err);
+      }
+      if (threadName && source.thread?.name && source.thread.name !== threadName) {
+        return bad(res, 400, 'threadName does not match the message thread', 'invalid_request');
+      }
+      if (!sessionExists(sessionId)) {
+        return bad(res, 404, 'Session not found', 'session_not_found');
+      }
+      const result = createChatMessageLink({
+        messageName,
+        spaceName: `spaces/${spaceId}`,
+        threadName,
+        sessionId,
+        userId: uid,
+      });
+      return res
+        .status(result.created ? 201 : 200)
+        .json({ link: result.link, existing: result.existing });
+    },
+  );
 
   return router;
 }

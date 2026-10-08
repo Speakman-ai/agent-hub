@@ -237,3 +237,96 @@ export function chatSetupHelpLink(
   if (!label || !SAFE_HELP_LINK.test(url)) return null;
   return { label, url };
 }
+
+/** A Chat message handed to an agent session; mirrors GoogleChatMessageLink. */
+export type ChatMessageLink = {
+  id: string;
+  messageName: string;
+  spaceName: string;
+  threadName: string | null;
+  sessionId: string;
+  sessionName: string | null;
+  agentId: string | null;
+  userId: string | null;
+  createdAt: string;
+  repliedAt: string | null;
+  replyMessageName: string | null;
+};
+
+/** Links keyed by message resource name, oldest first per message. */
+export function linksByMessage(links: ChatMessageLink[]): Map<string, ChatMessageLink[]> {
+  const out = new Map<string, ChatMessageLink[]>();
+  for (const link of links) {
+    const list = out.get(link.messageName);
+    if (list) list.push(link);
+    else out.set(link.messageName, [link]);
+  }
+  for (const list of out.values()) list.sort((a, b) => compareRfc3339(a.createdAt, b.createdAt));
+  return out;
+}
+
+/**
+ * The status chip for a message: "Agent replied" as soon as any of its
+ * sessions posted back, pointing at the newest replying session; otherwise
+ * "Sent to agent", pointing at the newest session it was sent to.
+ */
+export function chatLinkChip(
+  links: ChatMessageLink[] | undefined,
+): { label: 'Agent replied' | 'Sent to agent'; link: ChatMessageLink; count: number } | null {
+  if (!links?.length) return null;
+  const replied = links.filter((l) => l.repliedAt);
+  if (replied.length) {
+    return { label: 'Agent replied', link: replied[replied.length - 1], count: links.length };
+  }
+  return { label: 'Sent to agent', link: links[links.length - 1], count: links.length };
+}
+
+/** Warning shown before sending an already-dispatched message to another agent. */
+export function sendToAgentWarning(links: ChatMessageLink[] | undefined): string | null {
+  if (!links?.length) return null;
+  const names = links.map((l) => `"${l.sessionName || 'Untitled session'}"`);
+  const shown = names.slice(0, 2).join(', ');
+  const more = names.length > 2 ? ` and ${names.length - 2} more` : '';
+  const replied = links.some((l) => l.repliedAt) ? ' An agent has already replied.' : '';
+  return `This message was already sent to ${shown}${more}.${replied} Starting another session dispatches it again.`;
+}
+
+export const LINKS_UNKNOWN_WARNING =
+  'Could not check whether this message was already sent to an agent. Starting a session may dispatch it twice.';
+
+/**
+ * A space's links as of its newest completed read. `links` keeps the last
+ * successful result for the chips (null until one succeeds); `failed` says
+ * the newest completed read failed, so `links` may be out of date.
+ */
+export type SpaceLinks = {
+  links: ChatMessageLink[] | null;
+  /** Request number of the newest read applied; older responses are dropped. */
+  seq: number;
+  failed: boolean;
+};
+
+/**
+ * Fold one read's outcome (`null` = failed) into the space's state. Reads
+ * are numbered when issued; a response older than the newest one already
+ * applied is ignored, so a slow poll can't overwrite a fresher result.
+ */
+export function applyLinksResult(
+  current: SpaceLinks | undefined,
+  seq: number,
+  result: ChatMessageLink[] | null,
+): SpaceLinks {
+  if (current && seq <= current.seq) return current;
+  return result
+    ? { links: result, seq, failed: false }
+    : { links: current?.links ?? null, seq, failed: true };
+}
+
+/** Send to agent warning: uncertain unless the newest read succeeded. */
+export function dispatchWarningFor(
+  state: SpaceLinks | undefined,
+  messageName: string,
+): string | null {
+  if (!state || state.failed || !state.links) return LINKS_UNKNOWN_WARNING;
+  return sendToAgentWarning(linksByMessage(state.links).get(messageName));
+}

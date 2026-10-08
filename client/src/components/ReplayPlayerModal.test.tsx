@@ -379,18 +379,31 @@ describe('ReplayPlayerModal', () => {
     });
 
     it('flips the label to Keep on its own when the Keep lapses', async () => {
-      const soon = new Date(Date.now() + 1500).toISOString().slice(0, 19).replace('T', ' ');
-      (api.getSessionSegments as any).mockResolvedValue({
-        ...twoViewManifest(),
-        retainedUntil: soon,
+      // Fake clock and timers (advancing with real time so waitFor still
+      // polls): the Keep lapses only when the test says so, not when a slow
+      // runner happens to take longer than the retention window to render.
+      const start = Date.UTC(2026, 9, 2, 12, 0, 0);
+      vi.useFakeTimers({
+        toFake: ['Date', 'setTimeout', 'clearTimeout'],
+        shouldAdvanceTime: true,
       });
-      render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
-      fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
-      const btn = await screen.findByTestId('replay-retention-toggle');
-      await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'kept'));
-      await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'off'), {
-        timeout: 3000,
-      });
+      vi.setSystemTime(start);
+      try {
+        (api.getSessionSegments as any).mockResolvedValue({
+          ...twoViewManifest(),
+          retainedUntil: '2026-10-02 12:01:00',
+        });
+        render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
+        fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+        const btn = await screen.findByTestId('replay-retention-toggle');
+        await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'kept'));
+        await act(async () => {
+          vi.advanceTimersByTime(61_000);
+        });
+        await waitFor(() => expect(btn).toHaveAttribute('data-keep-state', 'off'));
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('shows the server error when Keep fails', async () => {

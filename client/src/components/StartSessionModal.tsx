@@ -16,6 +16,7 @@ export default function StartSessionModal({
   contextLabel,
   seedMessage,
   defaultName,
+  warning,
   onClose,
   onStarted,
 }: {
@@ -25,6 +26,8 @@ export default function StartSessionModal({
   seedMessage: string;
   /** Suggested session name. */
   defaultName?: string;
+  /** Shown above the form, e.g. when the source was already sent to an agent. */
+  warning?: string | null;
   onClose: () => void;
   onStarted: (session: SessionWire) => void;
 }) {
@@ -130,6 +133,16 @@ export default function StartSessionModal({
             <div className="flex items-start gap-2 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
               <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
               {error}
+            </div>
+          )}
+
+          {warning && (
+            <div
+              className="flex items-start gap-2 rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200"
+              data-testid="start-session-warning"
+            >
+              <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+              {warning}
             </div>
           )}
 

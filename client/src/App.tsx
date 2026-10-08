@@ -7157,6 +7157,9 @@ export default function App({ initialView }: any = {}) {
                     <GoogleChatPage
                       onOpenAccountSettings={() => setCurrentView('settings:account')}
                       onSessionStarted={handleOpenCreatedSession}
+                      onOpenSession={({ sessionId, agentId }) =>
+                        focusAgentSession(agentId, sessionId)
+                      }
                     />
                   }
                   support={

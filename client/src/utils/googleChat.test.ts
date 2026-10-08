@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
+  applyLinksResult,
+  dispatchWarningFor,
+  LINKS_UNKNOWN_WARNING,
+  chatLinkChip,
+  linksByMessage,
+  sendToAgentWarning,
   chatSetupHelpLink,
   chatSenderLabel,
   chatSpaceDeepLink,
@@ -203,5 +209,98 @@ describe('googleChat helpers', () => {
       chatSetupHelpLink({ code: 'google_chat_forbidden', helpUrl: 'https://support.google.com/x' }),
     ).toBeNull();
     expect(chatSetupHelpLink(null)).toBeNull();
+  });
+});
+
+describe('message link helpers', () => {
+  const base = {
+    id: 'L',
+    messageName: 'spaces/A/messages/M',
+    spaceName: 'spaces/A',
+    threadName: null,
+    sessionId: 's1',
+    sessionName: 'First',
+    agentId: 'a',
+    userId: 'u',
+    createdAt: '2026-10-08T10:00:00.000Z',
+    repliedAt: null,
+    replyMessageName: null,
+  };
+
+  it('groups links by message, oldest first', () => {
+    const grouped = linksByMessage([
+      { ...base, id: 'L2', sessionId: 's2', createdAt: '2026-10-08T11:00:00.000Z' },
+      { ...base, id: 'L1' },
+      { ...base, id: 'L3', messageName: 'spaces/A/messages/OTHER' },
+    ]);
+    expect(grouped.get('spaces/A/messages/M')?.map((l) => l.id)).toEqual(['L1', 'L2']);
+    expect(grouped.get('spaces/A/messages/OTHER')).toHaveLength(1);
+  });
+
+  it('prefers a replied session for the chip, else the newest', () => {
+    expect(chatLinkChip(undefined)).toBeNull();
+    const second = { ...base, id: 'L2', sessionId: 's2' };
+    expect(chatLinkChip([base, second])).toMatchObject({
+      label: 'Sent to agent',
+      link: { sessionId: 's2' },
+      count: 2,
+    });
+    expect(
+      chatLinkChip([{ ...base, repliedAt: '2026-10-08T10:05:00.000Z' }, second]),
+    ).toMatchObject({ label: 'Agent replied', link: { sessionId: 's1' } });
+  });
+
+  it('builds a warning only when the message already has a session', () => {
+    expect(sendToAgentWarning([])).toBeNull();
+    expect(sendToAgentWarning([base])).toBe(
+      'This message was already sent to "First". Starting another session dispatches it again.',
+    );
+    const many = sendToAgentWarning([
+      { ...base, repliedAt: 'x' },
+      { ...base, sessionName: null },
+      { ...base, sessionName: 'Third' },
+    ]);
+    expect(many).toContain('"First", "Untitled session" and 1 more.');
+    expect(many).toContain('An agent has already replied.');
+  });
+});
+
+describe('link read ordering', () => {
+  const l = {
+    id: 'L',
+    messageName: 'spaces/A/messages/M',
+    spaceName: 'spaces/A',
+    threadName: null,
+    sessionId: 's1',
+    sessionName: 'First',
+    agentId: 'a',
+    userId: 'u',
+    createdAt: '2026-10-08T10:00:00.000Z',
+    repliedAt: null,
+    replyMessageName: null,
+  };
+
+  it('drops a response older than the newest one applied', () => {
+    const newer = applyLinksResult(undefined, 2, [l]);
+    expect(applyLinksResult(newer, 1, [])).toBe(newer);
+    expect(applyLinksResult(newer, 1, null)).toBe(newer);
+  });
+
+  it('keeps the last good links for chips but flags a newer failed read', () => {
+    const ok = applyLinksResult(undefined, 1, []);
+    const failed = applyLinksResult(ok, 2, null);
+    expect(failed).toEqual({ links: [], seq: 2, failed: true });
+    expect(applyLinksResult(failed, 3, [l])).toEqual({ links: [l], seq: 3, failed: false });
+  });
+
+  it('warns about uncertainty unless the newest read succeeded', () => {
+    expect(dispatchWarningFor(undefined, l.messageName)).toBe(LINKS_UNKNOWN_WARNING);
+    expect(dispatchWarningFor({ links: [], seq: 2, failed: true }, l.messageName)).toBe(
+      LINKS_UNKNOWN_WARNING,
+    );
+    expect(dispatchWarningFor({ links: [], seq: 1, failed: false }, l.messageName)).toBeNull();
+    expect(dispatchWarningFor({ links: [l], seq: 1, failed: false }, l.messageName)).toContain(
+      '"First"',
+    );
   });
 });

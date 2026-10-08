@@ -362,6 +362,42 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_session_credential_requests_session
       ON session_credential_requests(session_id, updated_at);
 
+    -- Google Chat message handed to an agent session ("Send to agent"). One
+    -- row per (message, session); replied_at is stamped the first time that
+    -- session posts back into the linked thread through the Chat proxy.
+    CREATE TABLE IF NOT EXISTS google_chat_message_links (
+      id TEXT PRIMARY KEY,
+      message_name TEXT NOT NULL,
+      space_name TEXT NOT NULL,
+      thread_name TEXT,
+      session_id TEXT NOT NULL,
+      user_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      replied_at TEXT,
+      reply_message_name TEXT,
+      UNIQUE(message_name, session_id),
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_google_chat_message_links_space
+      ON google_chat_message_links(space_name, created_at);
+    CREATE INDEX IF NOT EXISTS idx_google_chat_message_links_session
+      ON google_chat_message_links(session_id);
+
+    -- Chat messages a session posted through the proxy. Kept so a link created
+    -- after the session already replied (the link is written once the session
+    -- exists, and the agent can answer first) is still stamped replied.
+    CREATE TABLE IF NOT EXISTS google_chat_session_posts (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      space_name TEXT NOT NULL,
+      thread_name TEXT,
+      message_name TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_google_chat_session_posts_session
+      ON google_chat_session_posts(session_id, space_name, created_at);
+
     -- artifacts: per-session documents an agent generated (PDFs, scripts,
     -- reports, …). The bytes live in object storage (S3 or a local dir; see
     -- server/artifacts/artifact-store.ts); this table is the metadata index

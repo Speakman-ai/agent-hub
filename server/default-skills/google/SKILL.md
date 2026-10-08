@@ -123,7 +123,10 @@ shape and response examples.
   threads (`supportsThreadReplies`). DMs and group chats have no thread
   reference; `--thread` is ignored there. When the task is done, draft the reply and
   show it to the user first. Post it with `google-chat.sh send <space> --thread
-  <thread>` only after they approve: it goes out under their name.
+  <thread>` only after they approve: it goes out under their name. Posting
+  through the wrapper from this session flips the message's "Sent to agent"
+  chip in the Chat pane to "Agent replied", so post the reply from the session
+  the message was sent to.
 - Writes (create event, send mail, Chat messages, modify labels, append/update cells) act on
   the owner's real account. Confirm intent for anything user-visible (an email
   going out, an invite, a destructive overwrite) unless the user already said

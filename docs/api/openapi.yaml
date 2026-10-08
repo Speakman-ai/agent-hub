@@ -6711,6 +6711,52 @@ components:
         - deleted
         - attachmentCount
         - sender
+    GoogleChatMessageLink:
+      type: object
+      properties:
+        id:
+          type: string
+        messageName:
+          type: string
+        spaceName:
+          type: string
+        threadName:
+          type: string
+          nullable: true
+          description: Set only when the space keeps replies in threads; the link is marked replied when its session posts in this thread. Null links are marked by any post from the session into the space.
+        sessionId:
+          type: string
+        sessionName:
+          type: string
+          nullable: true
+        agentId:
+          type: string
+          nullable: true
+        userId:
+          type: string
+          nullable: true
+          description: Hub user who sent it to the agent.
+        createdAt:
+          type: string
+        repliedAt:
+          type: string
+          nullable: true
+          description: When the session first posted back through the Chat proxy, else null.
+        replyMessageName:
+          type: string
+          nullable: true
+      required:
+        - id
+        - messageName
+        - spaceName
+        - threadName
+        - sessionId
+        - sessionName
+        - agentId
+        - userId
+        - createdAt
+        - repliedAt
+        - replyMessageName
     GoogleDriveErrorResponse:
       type: object
       properties:
@@ -31648,6 +31694,184 @@ paths:
                 $ref: "#/components/schemas/GoogleChatErrorResponse"
         "404":
           description: Space not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/spaces/{spaceId}/message-links:
+    get:
+      tags:
+        - Google
+      summary: List which messages in a Google Chat space were sent to an agent session
+      description: Links from every Hub user are returned, so an operator can see a message another operator already handed to an agent. The caller must be able to read the space through their own Google account.
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+      responses:
+        "200":
+          description: Links for the space, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  links:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleChatMessageLink"
+                required:
+                  - links
+        "400":
+          description: Invalid space id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Required Chat read scope has not been granted, or the caller cannot read the space.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Space not found for the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+    post:
+      tags:
+        - Google
+      summary: Record that a Google Chat message was sent to an agent session
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                messageName:
+                  type: string
+                  pattern: ^spaces\/([A-Za-z0-9_-]{1,128})\/messages\/[A-Za-z0-9_.-]{1,256}$
+                  description: Chat message resource name, `spaces/{space}/messages/{message}`.
+                threadName:
+                  type: string
+                  nullable: true
+                  pattern: ^spaces\/([A-Za-z0-9_-]{1,128})\/threads\/[A-Za-z0-9_.-]{1,256}$
+                sessionId:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+              required:
+                - messageName
+                - sessionId
+              additionalProperties: false
+      responses:
+        "200":
+          description: The message was already linked to this session; nothing changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  link:
+                    $ref: "#/components/schemas/GoogleChatMessageLink"
+                  existing:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleChatMessageLink"
+                required:
+                  - link
+                  - existing
+        "201":
+          description: The link was created. `existing` lists links to other sessions that were already on the message.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  link:
+                    $ref: "#/components/schemas/GoogleChatMessageLink"
+                  existing:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleChatMessageLink"
+                required:
+                  - link
+                  - existing
+        "400":
+          description: Invalid body or space id, or the message is not in the space.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Required Chat read scope has not been granted, or the caller cannot read the message.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Session not found, or message not found for the caller.
           content:
             application/json:
               schema:

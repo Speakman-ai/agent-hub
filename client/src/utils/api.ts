@@ -1173,6 +1173,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  listGoogleChatMessageLinks: (spaceId: string) =>
+    fetchJSON(`/google/chat/spaces/${encodeURIComponent(spaceId)}/message-links`),
+  createGoogleChatMessageLink: (
+    spaceId: string,
+    data: { messageName: string; threadName?: string | null; sessionId: string },
+  ) =>
+    fetchJSON(`/google/chat/spaces/${encodeURIComponent(spaceId)}/message-links`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   // Drive proxy (user-scoped, drive.file only). Lists and creates
   // app-accessible Drive / Docs files. Tokens stay server-side.
   listGoogleDriveFiles: ({

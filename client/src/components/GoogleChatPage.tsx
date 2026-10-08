@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
+  Bot,
+  CheckCircle2,
   CornerDownRight,
   ExternalLink,
   Loader2,
@@ -39,7 +41,14 @@ import {
   uniqueMessages,
   mergeOlderPage,
   type ChatMessage,
+  type ChatMessageLink,
   type ChatSpace,
+  chatLinkChip,
+  linksByMessage,
+  applyLinksResult,
+  dispatchWarningFor,
+  LINKS_UNKNOWN_WARNING,
+  type SpaceLinks,
   chatSetupHelpLink,
 } from '../utils/googleChat';
 import { isSubmitEnter } from '../utils/keyboard';
@@ -164,12 +173,26 @@ export function buildSeedForMessage(
   };
 }
 
+/** "Send to agent" in progress: the seed plus the message it should be linked to. */
+type PendingDispatch = {
+  label: string;
+  seed: string;
+  spaceId: string;
+  messageName: string;
+  /** Only for spaces that keep replies in threads, matching the seed. */
+  threadName: string | null;
+};
+
+export { LINKS_UNKNOWN_WARNING };
+
 export default function GoogleChatPage({
   onOpenAccountSettings,
   onSessionStarted,
+  onOpenSession,
 }: {
   onOpenAccountSettings?: () => void;
   onSessionStarted?: (session: SessionWire) => void;
+  onOpenSession?: (target: { sessionId: string; agentId: string }) => void;
 }) {
   const [status, setStatus] = useState<GoogleStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -186,7 +209,17 @@ export default function GoogleChatPage({
   const viewsRef = useRef(views);
   viewsRef.current = views;
   const [composers, setComposers] = useState<Record<string, Composer>>({});
-  const [sessionSeed, setSessionSeed] = useState<{ label: string; seed: string } | null>(null);
+  const [dispatch, setDispatch] = useState<PendingDispatch | null>(null);
+  // Message → session links per space, shared across operators. A space
+  // missing from the map has never been read, which is "unknown", not "none".
+  const [links, setLinks] = useState<Record<string, SpaceLinks>>({});
+  // Link reads are numbered per space when issued so responses apply in
+  // issue order (see applyLinksResult), like the message loads below.
+  const linksSeqRef = useRef<Record<string, number>>({});
+  // The message whose links are being re-read before Send to agent opens.
+  const [checkingDispatch, setCheckingDispatch] = useState<string | null>(null);
+  const checkingDispatchRef = useRef(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   // Every async result below is written to the space (or spaces list) that
@@ -207,6 +240,7 @@ export default function GoogleChatPage({
   const { canRead, canSend } = consent;
 
   const view = (selectedId && views[selectedId]) || EMPTY_VIEW;
+  const messageLinks = linksByMessage((selectedId && links[selectedId]?.links) || []);
   const messages = view.messages;
   const composer = (selectedId && composers[selectedId]) || EMPTY_COMPOSER;
   const { text: draft, replyTo, sending, error: sendError } = composer;
@@ -421,6 +455,26 @@ export default function GoogleChatPage({
     [patchView, updateView, refreshStatus],
   );
 
+  /**
+   * Read the space's links. Failures are recorded too: the chips keep the
+   * last good links, but Send to agent treats them as unverified.
+   */
+  const loadLinks = useCallback(async (spaceId: string): Promise<void> => {
+    const seq = (linksSeqRef.current[spaceId] || 0) + 1;
+    linksSeqRef.current[spaceId] = seq;
+    let result: ChatMessageLink[] | null = null;
+    try {
+      const body = await api.listGoogleChatMessageLinks(spaceId);
+      if (Array.isArray(body?.links)) result = body.links as ChatMessageLink[];
+    } catch {
+      result = null;
+    }
+    setLinks((all) => {
+      const next = applyLinksResult(all[spaceId], seq, result);
+      return next === all[spaceId] ? all : { ...all, [spaceId]: next };
+    });
+  }, []);
+
   useEffect(() => {
     loadSpaces();
   }, [loadSpaces]);
@@ -428,11 +482,14 @@ export default function GoogleChatPage({
   useEffect(() => {
     if (!selectedId) return;
     loadMessages(selectedId);
+    loadLinks(selectedId);
     const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') loadMessages(selectedId);
+      if (document.visibilityState !== 'visible') return;
+      loadMessages(selectedId);
+      loadLinks(selectedId);
     }, POLL_MS);
     return () => window.clearInterval(timer);
-  }, [selectedId, loadMessages]);
+  }, [selectedId, loadMessages, loadLinks]);
 
   // Follow the newest message, not the list length: prepending an older page
   // must not yank the view to the bottom.
@@ -505,6 +562,56 @@ export default function GoogleChatPage({
     }
   };
 
+  /**
+   * Re-read the space's links before opening the dialog, so a duplicate
+   * dispatch is warned about even when the pane's own link load hasn't
+   * finished (or failed). The warning itself is derived at render time from
+   * the latest links, so a poll landing while the dialog is open updates it.
+   */
+  const openSendToAgent = async (message: ChatMessage) => {
+    if (!selectedId || !message.name || checkingDispatchRef.current) return;
+    const spaceId = selectedId;
+    const target: PendingDispatch = {
+      ...buildSeedForMessage(selectedSpace, messages, message),
+      spaceId,
+      messageName: message.name,
+      threadName: selectedSpace?.supportsThreadReplies ? message.threadName : null,
+    };
+    checkingDispatchRef.current = true;
+    setCheckingDispatch(message.name);
+    setLinkError(null);
+    try {
+      await loadLinks(spaceId);
+    } finally {
+      checkingDispatchRef.current = false;
+      setCheckingDispatch(null);
+    }
+    setDispatch(target);
+  };
+
+  const dispatchWarning = dispatch
+    ? dispatchWarningFor(links[dispatch.spaceId], dispatch.messageName)
+    : null;
+
+  const linkDispatchedSession = async (target: PendingDispatch, session: SessionWire) => {
+    try {
+      await api.createGoogleChatMessageLink(target.spaceId, {
+        messageName: target.messageName,
+        threadName: target.threadName,
+        sessionId: session.id,
+      });
+    } catch (err: any) {
+      // The session already exists; say the message isn't marked rather than
+      // pretending the dispatch failed.
+      setLinkError(
+        `Session started, but the message could not be marked as sent: ${
+          err?.message || 'unknown error'
+        }`,
+      );
+    }
+    loadLinks(target.spaceId);
+  };
+
   const connected = !!status?.connected;
   const configured = status?.serverConfigured !== false;
 
@@ -556,7 +663,10 @@ export default function GoogleChatPage({
           type="button"
           onClick={() => {
             loadSpaces();
-            if (selectedId) loadMessages(selectedId);
+            if (selectedId) {
+              loadMessages(selectedId);
+              void loadLinks(selectedId);
+            }
           }}
           disabled={spacesLoading}
           className="inline-flex items-center gap-2 rounded border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50"
@@ -687,6 +797,12 @@ export default function GoogleChatPage({
             )}
 
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {linkError && (
+                <div className="mb-3 flex items-center gap-2 text-xs text-amber-300">
+                  <AlertCircle size={14} className="flex-shrink-0" />
+                  {linkError}
+                </div>
+              )}
               {view.error && view.loaded && (
                 <div className="mb-3 flex items-center gap-2 text-xs text-amber-300">
                   <AlertCircle size={14} className="flex-shrink-0" />
@@ -738,11 +854,44 @@ export default function GoogleChatPage({
                             {message.threadReply && <CornerDownRight size={12} />}
                             {chatSenderLabel(message.sender)}
                           </span>
-                          {message.createTime && (
-                            <span className="flex-shrink-0">
-                              {formatDateTime(message.createTime)}
-                            </span>
-                          )}
+                          <span className="flex flex-shrink-0 items-center gap-2">
+                            {(() => {
+                              const chip = chatLinkChip(
+                                message.name ? messageLinks.get(message.name) : undefined,
+                              );
+                              if (!chip) return null;
+                              const replied = chip.label === 'Agent replied';
+                              const session = chip.link.sessionName || 'Untitled session';
+                              const extra = chip.count > 1 ? ` (+${chip.count - 1})` : '';
+                              return (
+                                <button
+                                  type="button"
+                                  data-testid="chat-link-chip"
+                                  disabled={!onOpenSession || !chip.link.agentId}
+                                  onClick={() =>
+                                    chip.link.agentId &&
+                                    onOpenSession?.({
+                                      sessionId: chip.link.sessionId,
+                                      agentId: chip.link.agentId,
+                                    })
+                                  }
+                                  title={`Open session: ${session}`}
+                                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium disabled:cursor-default ${
+                                    replied
+                                      ? 'border-green-500/40 bg-green-500/10 text-green-300 hover:bg-green-500/20'
+                                      : 'border-blue-500/40 bg-blue-500/10 text-blue-200 hover:bg-blue-500/20'
+                                  }`}
+                                >
+                                  {replied ? <CheckCircle2 size={11} /> : <Bot size={11} />}
+                                  {chip.label}
+                                  {extra}
+                                </button>
+                              );
+                            })()}
+                            {message.createTime && (
+                              <span>{formatDateTime(message.createTime)}</span>
+                            )}
+                          </span>
                         </div>
                         <p className="mt-1 whitespace-pre-wrap break-words text-sm text-gray-200">
                           {message.deleted ? (
@@ -762,15 +911,16 @@ export default function GoogleChatPage({
                           <div className="mt-2 flex flex-wrap gap-2">
                             <button
                               type="button"
-                              onClick={() =>
-                                setSessionSeed(
-                                  buildSeedForMessage(selectedSpace, messages, message),
-                                )
-                              }
+                              onClick={() => void openSendToAgent(message)}
+                              disabled={checkingDispatch !== null}
                               title="Start an agent session with this message as the task"
-                              className="inline-flex items-center gap-1 rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-xs text-blue-200 hover:bg-blue-500/20"
+                              className="inline-flex items-center gap-1 rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-xs text-blue-200 hover:bg-blue-500/20 disabled:opacity-50"
                             >
-                              <MessageSquarePlus size={13} />
+                              {checkingDispatch === message.name ? (
+                                <Loader2 size={13} className="animate-spin" />
+                              ) : (
+                                <MessageSquarePlus size={13} />
+                              )}
                               Send to agent
                             </button>
                             <button
@@ -879,13 +1029,17 @@ export default function GoogleChatPage({
       {ticketDraft && (
         <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
       )}
-      {sessionSeed && (
+      {dispatch && (
         <StartSessionModal
-          contextLabel={sessionSeed.label}
-          seedMessage={sessionSeed.seed}
-          defaultName={sessionSeed.label}
-          onClose={() => setSessionSeed(null)}
-          onStarted={(session) => onSessionStarted?.(session)}
+          contextLabel={dispatch.label}
+          seedMessage={dispatch.seed}
+          defaultName={dispatch.label}
+          warning={dispatchWarning}
+          onClose={() => setDispatch(null)}
+          onStarted={(session) => {
+            void linkDispatchedSession(dispatch, session);
+            onSessionStarted?.(session);
+          }}
         />
       )}
     </div>
