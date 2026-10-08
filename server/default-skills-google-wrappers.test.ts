@@ -17,6 +17,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { afterAll, beforeAll, beforeEach, describe, it, expect } from 'vitest';
+import { compareRfc3339 } from '../shared/utils/rfc3339.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.join(__dirname, 'default-skills', 'google');
@@ -85,7 +86,12 @@ beforeAll(() => {
     '  printf "%s" "${CURL_STATUS:-000}"',
     '  exit "${CURL_EXIT}"',
     'fi',
-    '[[ -n "$outfile" ]] && printf "%s" "${CURL_BODY:-{\\}}" > "$outfile"',
+    '# CURL_BODY_FILE serves bodies too large for an env var (128 KiB cap on Linux).',
+    'if [[ -n "${CURL_BODY_FILE:-}" ]]; then',
+    '  [[ -n "$outfile" ]] && cat "$CURL_BODY_FILE" > "$outfile"',
+    'else',
+    '  [[ -n "$outfile" ]] && printf "%s" "${CURL_BODY:-{\\}}" > "$outfile"',
+    'fi',
     'printf "%s" "${CURL_STATUS:-200}"',
     'exit 0',
   ].join('\n');
@@ -108,6 +114,8 @@ interface RunOpts {
   body?: string;
   /** Non-zero → the curl stub simulates a transport failure with this exit code. */
   curlExit?: string;
+  /** Serve the response body from this file instead of the CURL_BODY env var. */
+  bodyFile?: string;
 }
 
 function run(script: string, args: string[], opts: RunOpts = {}) {
@@ -124,6 +132,7 @@ function run(script: string, args: string[], opts: RunOpts = {}) {
       CURL_STATUS: opts.status ?? '200',
       CURL_BODY: opts.body ?? '{"ok":true}',
       ...(opts.curlExit ? { CURL_EXIT: opts.curlExit } : {}),
+      ...(opts.bodyFile ? { CURL_BODY_FILE: opts.bodyFile } : {}),
     },
   });
   const log = existsSync(curlLog) ? readFileSync(curlLog, 'utf-8') : '';
@@ -244,6 +253,17 @@ describe('google-mail.sh', () => {
     expect(body.to).toEqual(['x@example.com', 'y@example.com']);
     expect(body.subject).toBe('Hi there');
     expect(body.text).toBe('Body line.');
+  });
+
+  it('send streams a request body larger than the 128 KiB argument limit through a file', () => {
+    // Each quote and newline doubles when JSON-escaped: a 100 KiB argument
+    // becomes a ~200 KiB request body.
+    const html = '"\n'.repeat(50 * 1024);
+    const r = run(MAIL, ['send', '--to', 'x@example.com', '--subject', 'Big', '--html', html]);
+    expect(r.stderr).not.toMatch(/Argument list too long/);
+    expect(r.status).toBe(0);
+    expect(r.log).toContain('DATA_SOURCE=file');
+    expect((requestBody(r.log) as any).html).toBe(html);
   });
 
   it('send without a body part exits 2', () => {
@@ -503,6 +523,222 @@ describe('google-chat.sh', () => {
     });
     expect(r.status).toBe(3);
     expect(r.stderr).toContain('Google Chat access has not been granted');
+  });
+
+  it('sender-stats samples each space and reports the missing displayName rate', () => {
+    // The curl stub answers every request with this body, so it doubles as the
+    // spaces page and each space's messages page.
+    const body = JSON.stringify({
+      spaces: [
+        { id: 'AAA', spaceType: 'SPACE' },
+        { id: 'BBB', spaceType: 'DIRECT_MESSAGE' },
+        { id: null, spaceType: 'SPACE' },
+      ],
+      messages: [
+        {
+          createTime: '2026-10-08T10:00:03Z',
+          deleted: false,
+          sender: { type: 'HUMAN', displayName: 'Ana' },
+        },
+        {
+          createTime: '2026-10-08T10:00:02Z',
+          deleted: false,
+          sender: { type: 'HUMAN', displayName: null },
+        },
+        {
+          createTime: '2026-10-08T10:00:01Z',
+          deleted: false,
+          sender: { type: 'BOT', displayName: '' },
+        },
+        { createTime: '2026-10-08T10:00:00Z', deleted: true, sender: null },
+      ],
+    });
+    const r = run(CHAT, ['sender-stats', '--spaces', '5', '--max', '50'], { body });
+    expect(r.status).toBe(0);
+    const urls = readFileSync(curlLog, 'utf-8')
+      .split('\n')
+      .filter((l) => l.startsWith('URL='));
+    expect(urls).toEqual([
+      'URL=http://hub.test/api/google/chat/spaces?pageSize=5',
+      'URL=http://hub.test/api/google/chat/spaces/AAA/messages?pageSize=50',
+      'URL=http://hub.test/api/google/chat/spaces/BBB/messages?pageSize=50',
+    ]);
+    const stats = JSON.parse(r.stdout);
+    expect(stats.spacesSampled).toBe(2);
+    expect(stats.total).toEqual({ messages: 6, missingDisplayName: 4, rate: 0.667 });
+    expect(stats.bySenderType.HUMAN).toEqual({ messages: 4, missingDisplayName: 2, rate: 0.5 });
+    expect(stats.bySenderType.BOT).toEqual({ messages: 2, missingDisplayName: 2, rate: 1 });
+    expect(stats.bySpaceType.DIRECT_MESSAGE.messages).toBe(3);
+    expect(stats.spaces[0]).toEqual({
+      space: 'AAA',
+      spaceType: 'SPACE',
+      messages: 3,
+      newestFirst: true,
+    });
+  });
+
+  it('sender-stats flags a page that came back oldest first', () => {
+    const body = JSON.stringify({
+      spaces: [{ id: 'AAA', spaceType: 'SPACE' }],
+      messages: [
+        { createTime: '2026-10-08T10:00:00Z', sender: { type: 'HUMAN', displayName: 'Ana' } },
+        { createTime: '2026-10-08T10:00:05Z', sender: { type: 'HUMAN', displayName: 'Bo' } },
+      ],
+    });
+    const r = run(CHAT, ['sender-stats'], { body });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout).spaces[0].newestFirst).toBe(false);
+  });
+
+  it('sender-stats compares createTime chronologically, not as strings', () => {
+    const stats = (times: string[]) => {
+      const body = JSON.stringify({
+        spaces: [{ id: 'AAA', spaceType: 'SPACE' }],
+        messages: times.map((createTime) => ({
+          createTime,
+          sender: { type: 'HUMAN', displayName: 'Ana' },
+        })),
+      });
+      const r = run(CHAT, ['sender-stats'], { body });
+      expect(r.status).toBe(0);
+      return JSON.parse(r.stdout).spaces[0].newestFirst;
+    };
+    // Mixed fractional precision: "Z" sorts after "." as a string.
+    expect(stats(['2026-10-08T10:00:00.100Z', '2026-10-08T10:00:00Z'])).toBe(true);
+    expect(stats(['2026-10-08T10:00:00Z', '2026-10-08T10:00:00.100Z'])).toBe(false);
+    // Sub-millisecond digits and offsets: 11:00:00+01:00 is 10:00:00Z.
+    expect(stats(['2026-10-08T10:00:00.000000200Z', '2026-10-08T11:00:00.0000001+01:00'])).toBe(
+      true,
+    );
+    expect(stats(['2026-10-08T09:00:00-02:00', '2026-10-08T10:59:59Z'])).toBe(true);
+    expect(stats(['2026-10-08T10:00:00Z', 'yesterday'])).toBeNull();
+  });
+
+  it('sender-stats reports ordering as unverifiable when createTime is missing', () => {
+    const newestFirst = (messages: Array<Record<string, unknown>>) => {
+      const body = JSON.stringify({ spaces: [{ id: 'AAA', spaceType: 'SPACE' }], messages });
+      const r = run(CHAT, ['sender-stats'], { body });
+      expect(r.status).toBe(0);
+      return JSON.parse(r.stdout).spaces[0].newestFirst;
+    };
+    const sender = { type: 'HUMAN', displayName: 'Ana' };
+    // Every message lacks a timestamp.
+    expect(newestFirst([{ sender }, { createTime: null, sender }])).toBeNull();
+    // Valid timestamps mixed with missing or non-string ones.
+    expect(
+      newestFirst([
+        { createTime: '2026-10-08T10:00:01Z', sender },
+        { sender },
+        { createTime: '2026-10-08T10:00:00Z', sender },
+      ]),
+    ).toBeNull();
+    expect(
+      newestFirst([
+        { createTime: '2026-10-08T10:00:01Z', sender },
+        { createTime: 12345, sender },
+      ]),
+    ).toBeNull();
+    // An empty page has no order to check.
+    expect(newestFirst([])).toBeNull();
+  });
+
+  it('usage prints the whole header, including the jq requirement', () => {
+    const r = run(CHAT, ['--help']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('sender-stats [--spaces N] [--max M]');
+    expect(r.stdout).toContain('send and sender-stats need `jq`');
+  });
+
+  it('sender-stats handles a messages page larger than the 128 KiB argument limit', () => {
+    const messages = Array.from({ length: 100 }, (_, i) => ({
+      createTime: `2026-10-08T10:${String(59 - (i % 60)).padStart(2, '0')}:00.${String(999 - i).padStart(3, '0')}Z`,
+      text: 'x'.repeat(2048),
+      sender: { type: 'HUMAN', displayName: i % 4 === 0 ? null : 'Ana' },
+    }));
+    // Sort newest first so the page is a valid descending one.
+    messages.sort((a, b) => (a.createTime < b.createTime ? 1 : -1));
+    const bodyFile = path.join(stubDir, 'big-page.json');
+    writeFileSync(
+      bodyFile,
+      JSON.stringify({ spaces: [{ id: 'AAA', spaceType: 'SPACE' }], messages }),
+    );
+    expect(readFileSync(bodyFile).length).toBeGreaterThan(128 * 1024);
+
+    const r = run(CHAT, ['sender-stats'], { bodyFile });
+    expect(r.stderr).not.toMatch(/Argument list too long/);
+    expect(r.status).toBe(0);
+    const stats = JSON.parse(r.stdout);
+    expect(stats.total).toEqual({ messages: 100, missingDisplayName: 25, rate: 0.25 });
+    expect(stats.spaces[0].newestFirst).toBe(true);
+  });
+
+  it('sender-stats reports impossible dates as unverifiable instead of aborting', () => {
+    const newestFirst = (createTimes: string[]) => {
+      const body = JSON.stringify({
+        spaces: [{ id: 'AAA', spaceType: 'SPACE' }],
+        messages: createTimes.map((createTime) => ({
+          createTime,
+          sender: { type: 'HUMAN', displayName: 'Ana' },
+        })),
+      });
+      const r = run(CHAT, ['sender-stats'], { body });
+      expect(r.stderr).toBe('');
+      expect(r.status).toBe(0);
+      return JSON.parse(r.stdout).spaces[0].newestFirst;
+    };
+    for (const bad of [
+      '2026-13-08T10:00:00Z',
+      '2026-02-30T00:00:00Z',
+      '2026-04-31T00:00:00Z',
+      '2026-10-08T24:00:00Z',
+      '2026-10-08T23:59:60Z',
+      '2026-10-08T10:00:00+24:00',
+    ]) {
+      expect(newestFirst(['2027-01-01T00:00:00Z', bad]), bad).toBeNull();
+    }
+    expect(newestFirst(['2024-02-29T00:00:01Z', '2024-02-29T00:00:00Z'])).toBe(true);
+  });
+
+  it('sender-stats orders timestamps exactly like the shared RFC 3339 helper', () => {
+    const offsets = ['Z', '+05:30', '-08:00', '+23:59', '-23:59', '+00:00'];
+    const times: string[] = [];
+    for (const year of [1, 1899, 1969, 1970, 2000, 2024, 2100, 9999]) {
+      for (let month = 1; month <= 12; month += 1) {
+        const offset = offsets[(year + month) % offsets.length];
+        const pad = (n: number, w = 2) => String(n).padStart(w, '0');
+        times.push(
+          `${pad(year, 4)}-${pad(month)}-${pad(((month * 7) % 28) + 1)}T0${month % 10}:30:00.${pad(month, 3)}${offset}`,
+        );
+      }
+    }
+    const desc = [...times].sort((a, b) => compareRfc3339(b, a));
+    const page = (createTimes: string[]) =>
+      JSON.stringify({
+        spaces: [{ id: 'AAA', spaceType: 'SPACE' }],
+        messages: createTimes.map((createTime) => ({ createTime, sender: { type: 'HUMAN' } })),
+      });
+    const ordered = run(CHAT, ['sender-stats'], { body: page(desc) });
+    expect(JSON.parse(ordered.stdout).spaces[0].newestFirst).toBe(true);
+    const reversed = run(CHAT, ['sender-stats'], { body: page([...desc].reverse()) });
+    expect(JSON.parse(reversed.stdout).spaces[0].newestFirst).toBe(false);
+  });
+
+  it('sender-stats rejects a non-numeric --max before calling the proxy', () => {
+    const r = run(CHAT, ['sender-stats', '--max', 'lots']);
+    expect(r.status).toBe(2);
+    expect(existsSync(curlLog)).toBe(false);
+  });
+
+  it('relays Chat setup errors with the fix-it link', () => {
+    const r = run(CHAT, ['spaces'], {
+      status: '403',
+      body: '{"error":"The Google Chat API is turned off.","code":"google_chat_api_disabled","helpUrl":"https://console.cloud.google.com/apis/library/chat.googleapis.com"}',
+    });
+    expect(r.status).toBe(3);
+    expect(r.stderr).toContain('Google Chat is not set up: The Google Chat API is turned off.');
+    expect(r.stderr).toContain(
+      'fix it here: https://console.cloud.google.com/apis/library/chat.googleapis.com',
+    );
   });
 });
 

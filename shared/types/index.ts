@@ -14,4 +14,6 @@ export interface ApiErrorBody {
   message?: string;
   /** Stable, machine-readable error code (e.g. `no_active_org_membership`). */
   code?: string;
+  /** Where the user can fix a setup error (e.g. a Google Cloud console page). */
+  helpUrl?: string;
 }

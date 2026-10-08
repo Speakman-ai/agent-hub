@@ -215,3 +215,25 @@ export function chatSeedContext(
     ),
   ).slice(-limit);
 }
+
+/** Proxy error codes for Google-side setup problems the operator can't fix in the pane. */
+const CHAT_SETUP_HELP: Record<string, string> = {
+  google_chat_workspace_required: 'About Google Workspace accounts',
+  google_chat_api_disabled: 'Enable the Chat API in Google Cloud',
+  google_chat_app_not_configured: 'Open the Chat API configuration page',
+};
+
+const SAFE_HELP_LINK = /^https:\/\/(console\.cloud|console\.developers|support)\.google\.com\//i;
+
+/**
+ * The fix-it link for a Chat setup error (personal account, Chat API off, no
+ * Chat app configured), or null for any other error or an unexpected URL.
+ */
+export function chatSetupHelpLink(
+  err: { code?: string; helpUrl?: string } | null | undefined,
+): { label: string; url: string } | null {
+  const label = err?.code ? CHAT_SETUP_HELP[err.code] : undefined;
+  const url = (err?.helpUrl || '').trim();
+  if (!label || !SAFE_HELP_LINK.test(url)) return null;
+  return { label, url };
+}

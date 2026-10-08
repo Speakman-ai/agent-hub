@@ -6598,6 +6598,9 @@ components:
           type: array
           items:
             type: string
+        helpUrl:
+          type: string
+          description: Where to fix a setup problem (Cloud console page or Google sign-in), for the setup error codes google_chat_workspace_required, google_chat_api_disabled, and google_chat_app_not_configured.
       required:
         - error
     GoogleChatUser:

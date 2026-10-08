@@ -8,18 +8,52 @@
  * nanoseconds since the epoch instead.
  */
 
-const RFC3339 = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/i;
+const RFC3339 =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|([+-])(\d{2}):(\d{2}))$/i;
 
-/** Nanoseconds since the epoch, or null when `ts` is not an RFC 3339 timestamp. */
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isLeapYear(y: number): boolean {
+  return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+}
+
+/** Days since 1970-01-01 for a proleptic Gregorian date (Hinnant's days_from_civil). */
+function daysFromCivil(year: number, month: number, day: number): number {
+  const y = month <= 2 ? year - 1 : year;
+  const era = Math.floor(y / 400);
+  const yoe = y - era * 400;
+  const doy = Math.floor((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5) + day - 1;
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
+}
+
+/**
+ * Nanoseconds since the epoch, or null when `ts` is not a valid RFC 3339
+ * timestamp. Every field is range-checked (no Feb 30, no 24:00, no leap
+ * second, offsets within ±23:59) and the instant is computed arithmetically:
+ * `Date.parse` would roll an impossible date into a different, real one.
+ * `server/default-skills/google/scripts/google-chat.sh` mirrors these rules.
+ */
 export function rfc3339ToNanos(ts: string | null | undefined): bigint | null {
   if (!ts) return null;
   const match = RFC3339.exec(ts.trim());
   if (!match) return null;
-  const [, base, fraction = '', zone] = match;
-  // Whole seconds are exact in Date; only the fraction needs care.
-  const secondsMs = Date.parse(`${base}${zone.toUpperCase() === 'Z' ? 'Z' : zone}`);
-  if (!Number.isFinite(secondsMs)) return null;
-  return BigInt(secondsMs) * 1_000_000n + BigInt(fraction.padEnd(9, '0'));
+  const [, ys, mos, ds, hs, mis, ss, fraction = '', zone, sign, ohs, oms] = match;
+  const [year, month, day, hour, minute, second] = [ys, mos, ds, hs, mis, ss].map(Number);
+  if (month < 1 || month > 12) return null;
+  const monthDays = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
+  if (day < 1 || day > monthDays) return null;
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  let offsetSeconds = 0;
+  if (zone.toUpperCase() !== 'Z') {
+    const oh = Number(ohs);
+    const om = Number(oms);
+    if (oh > 23 || om > 59) return null;
+    offsetSeconds = (sign === '-' ? -1 : 1) * (oh * 3600 + om * 60);
+  }
+  const seconds =
+    daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offsetSeconds;
+  return BigInt(seconds) * 1_000_000_000n + BigInt(fraction.padEnd(9, '0'));
 }
 
 /** Format nanoseconds as UTC RFC 3339 with all nine fractional digits. */

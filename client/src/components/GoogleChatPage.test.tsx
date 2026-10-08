@@ -893,4 +893,24 @@ describe('GoogleChatPage', () => {
       'https://www.googleapis.com/auth/chat.memberships.readonly',
     ]);
   });
+  it('shows the setup fix-it link when the Chat app is not configured', async () => {
+    connectedAll();
+    mockApi.listGoogleChatSpaces.mockRejectedValue(
+      Object.assign(new Error('The Google Chat API is on, but no Chat app is configured.'), {
+        status: 403,
+        code: 'google_chat_app_not_configured',
+        helpUrl: 'https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat',
+      }),
+    );
+
+    render(<GoogleChatPage />);
+
+    expect(await screen.findByText(/no Chat app is configured/)).toBeInTheDocument();
+    const link = screen.getByTestId('google-chat-setup-help');
+    expect(link).toHaveAttribute(
+      'href',
+      'https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat',
+    );
+    expect(link).toHaveTextContent('Open the Chat API configuration page');
+  });
 });

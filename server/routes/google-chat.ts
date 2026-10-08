@@ -43,6 +43,10 @@ const ErrorResponse = registerComponent(
     error: z.string(),
     code: z.string().optional(),
     requiredScopes: z.array(z.string()).optional(),
+    helpUrl: z.string().optional().openapi({
+      description:
+        'Where to fix a setup problem (Cloud console page or Google sign-in), for the setup error codes google_chat_workspace_required, google_chat_api_disabled, and google_chat_app_not_configured.',
+    }),
   }),
 );
 
@@ -243,16 +247,104 @@ registerPath({
   },
 });
 
+interface GoogleErrorDetail {
+  '@type'?: string;
+  reason?: string;
+  metadata?: Record<string, string>;
+}
+
 interface GoogleErrorShape {
   response?: {
     status?: number;
     data?: {
-      error?: string | { message?: string; status?: string; errors?: Array<{ reason?: string }> };
+      error?:
+        | string
+        | {
+            message?: string;
+            status?: string;
+            errors?: Array<{ reason?: string }>;
+            details?: GoogleErrorDetail[];
+          };
       message?: string;
     };
   };
+  errors?: Array<{ reason?: string }>;
   code?: number | string;
   message?: string;
+}
+
+interface MappedChatError {
+  status: number;
+  error: string;
+  code: string;
+  helpUrl?: string;
+}
+
+const CHAT_API_LIBRARY_URL = 'https://console.cloud.google.com/apis/library/chat.googleapis.com';
+const CHAT_APP_CONFIG_URL =
+  'https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat';
+const WORKSPACE_HELP_URL = 'https://support.google.com/chat/answer/7655820';
+
+/**
+ * Recognize the three setup failures a Chat call hits before any data is
+ * involved, and replace Google's text with copy that says who fixes it and
+ * where. Google reports them inconsistently:
+ *   - personal account: "Google Chat API is only available to Google Workspace users";
+ *   - API off in the OAuth client's project: 403 with reason SERVICE_DISABLED
+ *     (ErrorInfo detail) or accessNotConfigured (legacy `errors[]`), text
+ *     "... has not been used in project N before or it is disabled";
+ *   - API on but no Chat app configured: 404 "Google Chat app not found. To
+ *     create a Chat app, you must turn on the Chat API and configure the app
+ *     in the Google Cloud console." (a plain 404 would read as a missing space).
+ * https://developers.google.com/workspace/chat/troubleshoot-chat-apps
+ */
+export function classifyChatSetupError(err: unknown, message: string): MappedChatError | null {
+  const e = err as GoogleErrorShape;
+  const dataError = e.response?.data?.error;
+  const details = typeof dataError === 'object' ? (dataError.details ?? []) : [];
+  const reasons = [
+    ...details.map((d) => d.reason),
+    ...(typeof dataError === 'object' ? (dataError.errors ?? []).map((r) => r.reason) : []),
+    ...(e.errors ?? []).map((r) => r.reason),
+  ].filter((r): r is string => !!r);
+
+  if (/only available to Google Workspace|Workspace users|consumer account/i.test(message)) {
+    return {
+      status: 403,
+      code: 'google_chat_workspace_required',
+      error:
+        'Google Chat only works with Google Workspace accounts, and the connected Google account is a personal one. Reconnect with a work account in Settings → Account → Google.',
+      helpUrl: WORKSPACE_HELP_URL,
+    };
+  }
+  if (/Chat app not found/i.test(message)) {
+    return {
+      status: 403,
+      code: 'google_chat_app_not_configured',
+      error:
+        "The Google Chat API is on, but no Chat app is configured for this Hub's Google Cloud project. A Hub admin must open the Chat API Configuration page and save an app name, avatar URL, and description.",
+      helpUrl: CHAT_APP_CONFIG_URL,
+    };
+  }
+  if (
+    reasons.some((r) => r === 'SERVICE_DISABLED' || r === 'accessNotConfigured') ||
+    /has not been used in project|API has not been enabled|chat\.googleapis\.com[^\n]*disabled/i.test(
+      message,
+    )
+  ) {
+    const activation = details.find((d) => d.metadata?.activationUrl)?.metadata?.activationUrl;
+    return {
+      status: 403,
+      code: 'google_chat_api_disabled',
+      error:
+        "The Google Chat API is turned off for this Hub's Google Cloud project. A Hub admin must enable it (APIs & Services → Library → Google Chat API) and configure a Chat app.",
+      helpUrl:
+        activation && /^https:\/\/console\.(cloud|developers)\.google\.com\//.test(activation)
+          ? activation
+          : CHAT_API_LIBRARY_URL,
+    };
+  }
+  return null;
 }
 
 function bad(res: Response, status: number, error: string, code?: string, extra = {}): void {
@@ -393,7 +485,7 @@ export function sortSpacesByActivity<T extends { lastActiveTime: string | null }
   return [...spaces].sort((a, b) => compareRfc3339(b.lastActiveTime, a.lastActiveTime));
 }
 
-function extractGoogleError(err: unknown): { status: number; error: string; code: string } {
+export function extractGoogleError(err: unknown): MappedChatError {
   const e = err as GoogleErrorShape;
   const rawStatus =
     typeof e.response?.status === 'number'
@@ -411,6 +503,9 @@ function extractGoogleError(err: unknown): { status: number; error: string; code
     e.message ||
     'Google Chat request failed';
   const firstLine = message.split('\n')[0];
+
+  const setup = classifyChatSetupError(err, message);
+  if (setup) return setup;
 
   if (status === 401) {
     return {
@@ -453,7 +548,11 @@ function extractGoogleError(err: unknown): { status: number; error: string; code
 
 function sendGoogleError(res: Response, err: unknown): Response {
   const mapped = extractGoogleError(err);
-  return res.status(mapped.status).json({ error: mapped.error, code: mapped.code });
+  return res.status(mapped.status).json({
+    error: mapped.error,
+    code: mapped.code,
+    ...(mapped.helpUrl ? { helpUrl: mapped.helpUrl } : {}),
+  });
 }
 
 export default function createGoogleChatRoutes(deps: RouteDeps): Router {

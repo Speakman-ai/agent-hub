@@ -38,6 +38,7 @@ vi.mock('../google-connections-store.js', () => connectionStoreMock);
 const mod = await import('./google-chat.js');
 const { clearChatParticipantCache } = await import('../google-chat-participants.js');
 const createGoogleChatRoutes = mod.default;
+const { extractGoogleError } = mod;
 
 function buildDeps(): RouteDeps {
   return {
@@ -321,14 +322,14 @@ describe('Google Chat proxy routes', () => {
     googleMock.spaces.list.mockRejectedValueOnce({
       response: {
         status: 403,
-        data: { error: { message: 'Google Chat app not found. To create a Chat app...' } },
+        data: { error: { message: 'The caller does not have permission\nmore detail' } },
       },
     });
     const forbidden = await request(makeApp()).get('/api/google/chat/spaces');
     expect(forbidden.status).toBe(403);
     expect(forbidden.body).toEqual({
       code: 'google_chat_forbidden',
-      error: 'Google Chat app not found. To create a Chat app...',
+      error: 'The caller does not have permission',
     });
 
     googleMock.spaces.list.mockRejectedValueOnce({
@@ -336,6 +337,109 @@ describe('Google Chat proxy routes', () => {
     });
     const limited = await request(makeApp()).get('/api/google/chat/spaces');
     expect(limited.status).toBe(429);
+  });
+
+  // Google's responses for the three setup failures, as documented in
+  // https://developers.google.com/workspace/chat/troubleshoot-chat-apps and
+  // the googleapis ErrorInfo shape.
+  it('maps a missing Chat app (Google 404) to a setup error, not "resource not found"', async () => {
+    googleMock.spaces.list.mockRejectedValueOnce({
+      response: {
+        status: 404,
+        data: {
+          error: {
+            code: 404,
+            status: 'NOT_FOUND',
+            message:
+              'Google Chat app not found. To create a Chat app, you must turn on the Chat API and configure the app in the Google Cloud console.',
+          },
+        },
+      },
+    });
+    const res = await request(makeApp()).get('/api/google/chat/spaces');
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('google_chat_app_not_configured');
+    expect(res.body.error).toMatch(/no Chat app is configured/);
+    expect(res.body.helpUrl).toBe(
+      'https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat',
+    );
+  });
+
+  it('maps SERVICE_DISABLED to an enable-the-API error carrying the activation URL', async () => {
+    const activationUrl =
+      'https://console.developers.google.com/apis/api/chat.googleapis.com/overview?project=123';
+    googleMock.messages.list.mockRejectedValueOnce({
+      response: {
+        status: 403,
+        data: {
+          error: {
+            code: 403,
+            status: 'PERMISSION_DENIED',
+            message: `Google Chat API has not been used in project 123 before or it is disabled. Enable it by visiting ${activationUrl} then retry.`,
+            details: [
+              {
+                '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+                reason: 'SERVICE_DISABLED',
+                metadata: { service: 'chat.googleapis.com', activationUrl },
+              },
+            ],
+          },
+        },
+      },
+    });
+    const res = await request(makeApp()).get('/api/google/chat/spaces/AAA/messages');
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ code: 'google_chat_api_disabled', helpUrl: activationUrl });
+    expect(res.body.error).toMatch(/turned off/);
+  });
+
+  it('recognizes the legacy accessNotConfigured reason and ignores non-console activation URLs', () => {
+    const mapped = extractGoogleError({
+      response: {
+        status: 403,
+        data: {
+          error: {
+            message: 'Access Not Configured.',
+            errors: [{ reason: 'accessNotConfigured' }],
+            details: [
+              { reason: 'SERVICE_DISABLED', metadata: { activationUrl: 'https://evil.example/x' } },
+            ],
+          },
+        },
+      },
+    });
+    expect(mapped.code).toBe('google_chat_api_disabled');
+    expect(mapped.helpUrl).toBe(
+      'https://console.cloud.google.com/apis/library/chat.googleapis.com',
+    );
+  });
+
+  it('maps a personal (consumer) account to a Workspace-required error on send', async () => {
+    googleMock.messages.create.mockRejectedValueOnce({
+      response: {
+        status: 403,
+        data: {
+          error: { message: 'Google Chat API is only available to Google Workspace users.' },
+        },
+      },
+    });
+    const res = await request(makeApp())
+      .post('/api/google/chat/spaces/AAA/messages')
+      .send({ text: 'hi' });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('google_chat_workspace_required');
+    expect(res.body.error).toMatch(/Reconnect with a work account/);
+  });
+
+  it('does not mistake a Workspace admin turning Chat off for the API being disabled', () => {
+    const mapped = extractGoogleError({
+      response: {
+        status: 403,
+        data: { error: { message: 'Google Chat is disabled for this user.' } },
+      },
+    });
+    expect(mapped.code).toBe('google_chat_forbidden');
+    expect(mapped.helpUrl).toBeUndefined();
   });
 
   it('re-reads a time range with since/until and returns deletions as content-free tombstones', async () => {
@@ -377,6 +481,11 @@ describe('Google Chat proxy routes', () => {
       '/api/google/chat/spaces/AAA/messages?until=2026-10-08T10:00:00',
     );
     expect(noZone.status).toBe(400);
+    // Impossible dates must not roll over into a real instant (Feb 30 -> Mar 2).
+    const feb30 = await request(makeApp()).get(
+      '/api/google/chat/spaces/AAA/messages?since=2026-02-30T00:00:00Z',
+    );
+    expect(feb30.status).toBe(400);
     expect(googleMock.messages.list).not.toHaveBeenCalled();
   });
 

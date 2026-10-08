@@ -444,9 +444,11 @@ async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): 
     const error = new Error(errorDetail(errBody, res.status)) as Error & {
       status?: number;
       code?: string;
+      helpUrl?: string;
     };
     error.status = res.status;
     if (typeof errBody?.code === 'string') error.code = errBody.code;
+    if (typeof errBody?.helpUrl === 'string') error.helpUrl = errBody.helpUrl;
     throw error;
   }
   clearRecentReloadMarker();

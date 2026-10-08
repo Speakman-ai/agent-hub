@@ -78,6 +78,8 @@ APIs & Services → **Library** → enable each of:
 - **Gmail API**
 - **Google Sheets API**
 - **Google Drive API**
+- **Google Chat API** (only if you use the Google Chat pane; see
+  [Google Chat](#google-chat-optional-workspace-only) for the extra Chat app step)
 
 (People API is not required — identity comes from the OpenID `id_token`.)
 
@@ -259,6 +261,70 @@ missing/partial or the server didn't reload config. If consent fails with
 `redirect_uri_mismatch`, the Authorized redirect URI does not byte-match
 `<publicUrl>/api/auth/google/callback`.
 
+## Google Chat (optional, Workspace only)
+
+The Google Chat pane and `google-chat.sh` call the Chat API **as the linked
+user**. Google adds three requirements on top of Steps 1–9:
+
+1. **Enable the Chat API** in the same Cloud project as the OAuth client
+   (APIs & Services → Library → **Google Chat API**). Without it every Chat call
+   fails with `SERVICE_DISABLED`; the pane shows *"The Google Chat API is turned
+   off for this Hub's Google Cloud project"* with a link to enable it.
+2. **Configure a Chat app**, even though the Hub never acts as a bot. Open
+   APIs & Services → Google Chat API → **Configuration**
+   (`https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat`),
+   fill in **App name**, **Avatar URL**, and **Description**, and save. Leave
+   interactive features off. Without this Google answers `404 Google Chat app
+   not found`; the pane shows *"no Chat app is configured"* with a link to this
+   page.
+3. **Workspace accounts only.** The Chat API rejects personal `@gmail.com`
+   accounts (*"Google Chat API is only available to Google Workspace users"*).
+   The pane tells the user to reconnect with a work account.
+
+### Chat scopes
+
+| Scope | Tier | Used for | Constant |
+| --- | --- | --- | --- |
+| `.../auth/chat.spaces.readonly` | sensitive | list spaces, check threading before a reply | `CHAT_SPACES_READONLY_SCOPE` |
+| `.../auth/chat.messages.readonly` | **restricted** | read messages | `CHAT_MESSAGES_READONLY_SCOPE` |
+| `.../auth/chat.messages.create` | sensitive | send / reply | `CHAT_MESSAGES_CREATE_SCOPE` |
+| `.../auth/chat.memberships.readonly` | sensitive | participant names for unnamed DMs (optional) | `CHAT_MEMBERSHIPS_READONLY_SCOPE` |
+
+`chat.messages.readonly` is the only **restricted** scope the Hub requests, and
+there is no non-restricted way to read Chat messages. That changes the
+consent-screen choice from Step 3:
+
+- **Internal** user type (every user is in one Workspace org that owns the Cloud
+  project): restricted scopes need no verification and no CASA assessment. This
+  is the recommended setup for a single-company Hub that uses Chat.
+- **External**, Testing status: works for listed test users without
+  verification, but refresh tokens expire after 7 days.
+- **External**, Published: restricted-scope verification plus an annual CASA
+  security assessment, because message data passes through the Hub server. Only
+  take this path if the Hub serves several Workspace orgs.
+
+A Workspace admin can also block third-party access to Chat data under
+Admin console → Security → API controls; if consent fails for one org only,
+check there and mark the Hub's OAuth client as trusted.
+
+### Checking a new Chat setup
+
+After the three Chat steps above, as a Workspace user linked to the Hub:
+
+1. Chat pane → **Enable Chat** consents to all four Chat scopes.
+2. The space list shows spaces, group chats, and DMs (unnamed DMs show
+   participant names).
+3. Messages load newest page first. `google-chat.sh sender-stats` reports
+   `newestFirst: true` for every space it samples.
+4. **Reply in thread** lands in the thread in Google Chat.
+5. **Send to agent** opens a seeded session, and the agent's
+   `google-chat.sh send <space> --text … --thread spaces/X/threads/Y` reply
+   appears in Google Chat.
+
+If a step fails with one of the setup error codes above, follow its link. For
+anything else, capture the proxy's `code` and `error` from the browser network
+tab or the wrapper's stderr.
+
 ## Reference
 
 - `server/google-oauth-config.ts` — `resolveGoogleOAuthConfig()` (credential resolution)
@@ -267,4 +333,6 @@ missing/partial or the server didn't reload config. If consent fails with
 - `server/google-scopes.ts` — scope constants + per-surface grant predicates
 - Google docs: [OAuth 2.0 scopes](https://developers.google.com/identity/protocols/oauth2/scopes),
   [Consent screen verification](https://support.google.com/cloud/answer/13463073),
-  [Restricted-scope / CASA requirements](https://support.google.com/cloud/answer/9110914)
+  [Restricted-scope / CASA requirements](https://support.google.com/cloud/answer/9110914),
+  [Chat API user auth](https://developers.google.com/workspace/chat/authenticate-authorize-chat-user),
+  [Configure the Chat API](https://developers.google.com/workspace/chat/configure-chat-api)

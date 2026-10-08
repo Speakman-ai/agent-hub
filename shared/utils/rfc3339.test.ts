@@ -28,4 +28,39 @@ describe('rfc3339', () => {
     expect(compareRfc3339(null, '2026-10-08T10:00:00Z')).toBe(-1);
     expect(compareRfc3339(null, undefined)).toBe(0);
   });
+
+  it('rejects impossible calendar values that Date.parse would roll forward', () => {
+    for (const ts of [
+      '2026-02-30T00:00:00Z',
+      '2026-02-29T00:00:00Z',
+      '2100-02-29T00:00:00Z',
+      '2026-04-31T00:00:00Z',
+      '2026-13-08T10:00:00Z',
+      '2026-00-08T10:00:00Z',
+      '2026-10-00T10:00:00Z',
+      '2026-10-08T24:00:00Z',
+      '2026-10-08T23:60:00Z',
+      '2026-10-08T23:59:60Z',
+      '2026-10-08T10:00:00+24:00',
+      '2026-10-08T10:00:00-23:60',
+    ]) {
+      expect(rfc3339ToNanos(ts), ts).toBeNull();
+      expect(isRfc3339(ts), ts).toBe(false);
+    }
+    expect(rfc3339ToNanos('2024-02-29T00:00:00Z')).not.toBeNull();
+    expect(rfc3339ToNanos('2000-02-29T00:00:00Z')).not.toBeNull();
+  });
+
+  it('matches Date for valid timestamps across years, months, and offsets', () => {
+    const offsets = ['Z', '+00:00', '+05:30', '-08:00', '+23:59', '-23:59'];
+    for (const year of [1, 1600, 1899, 1969, 1970, 2000, 2024, 2026, 2100, 9999]) {
+      for (let month = 1; month <= 12; month++) {
+        for (const day of [1, 15, 28]) {
+          const offset = offsets[(year + month + day) % offsets.length];
+          const ts = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T13:47:09${offset}`;
+          expect(rfc3339ToNanos(ts), ts).toBe(BigInt(Date.parse(ts)) * 1_000_000n);
+        }
+      }
+    }
+  });
 });

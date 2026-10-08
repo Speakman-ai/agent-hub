@@ -40,6 +40,7 @@ import {
   mergeOlderPage,
   type ChatMessage,
   type ChatSpace,
+  chatSetupHelpLink,
 } from '../utils/googleChat';
 import { isSubmitEnter } from '../utils/keyboard';
 
@@ -173,6 +174,7 @@ export default function GoogleChatPage({
   const [status, setStatus] = useState<GoogleStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorHelp, setErrorHelp] = useState<{ label: string; url: string } | null>(null);
   const [oauthBusy, setOauthBusy] = useState(false);
   const [spaces, setSpaces] = useState<ChatSpace[]>([]);
   const [spacesLoading, setSpacesLoading] = useState(false);
@@ -245,6 +247,7 @@ export default function GoogleChatPage({
     const seq = ++spacesSeqRef.current;
     const isCurrent = () => seq === spacesSeqRef.current;
     setError(null);
+    setErrorHelp(null);
     setSpacesLoading(true);
     try {
       const nextStatus = await api.getGoogleStatus();
@@ -271,6 +274,7 @@ export default function GoogleChatPage({
     } catch (err: any) {
       if (!isCurrent()) return;
       setError(err.message || 'Failed to load Google Chat');
+      setErrorHelp(chatSetupHelpLink(err));
       setSpaces([]);
     } finally {
       if (isCurrent()) {
@@ -440,6 +444,7 @@ export default function GoogleChatPage({
   const startOAuth = async (scopes: string[]) => {
     setOauthBusy(true);
     setError(null);
+    setErrorHelp(null);
     try {
       const returnTo = window.location.pathname + window.location.search + window.location.hash;
       const body = await api.startGoogleOAuth({ returnTo, scopes });
@@ -564,7 +569,21 @@ export default function GoogleChatPage({
       {error && (
         <div className="m-4 flex items-start gap-2 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
           <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
-          {error}
+          <div className="min-w-0">
+            <div>{error}</div>
+            {errorHelp && (
+              <a
+                href={errorHelp.url}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="google-chat-setup-help"
+                className="mt-1 inline-flex items-center gap-1 text-red-100 underline hover:text-white"
+              >
+                <ExternalLink size={12} />
+                {errorHelp.label}
+              </a>
+            )}
+          </div>
         </div>
       )}
 

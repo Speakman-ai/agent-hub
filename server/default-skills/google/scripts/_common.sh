@@ -112,6 +112,14 @@ _google_explain_error() {
       echo "google: ${surface} access has not been granted for the session owner." >&2
       echo "google: enable it under Settings → Account → Google (incremental consent)." >&2
       ;;
+    google_chat_workspace_required | google_chat_api_disabled | google_chat_app_not_configured)
+      # Google-side setup the agent cannot fix: relay the proxy's copy and link
+      # so the human knows who acts and where.
+      echo "google: Google Chat is not set up: $(gq error "$body")" >&2
+      local help_url
+      help_url="$(gq helpUrl "$body")"
+      [[ -n "$help_url" ]] && echo "google: fix it here: ${help_url}" >&2
+      ;;
     *)
       echo "google: request failed (HTTP ${http_code})." >&2
       if [[ -n "$body" ]]; then
@@ -147,6 +155,29 @@ google_api() {
   # per-user identity). Harmless when a per-user/spawn key already identifies us.
   [[ -n "${AGENT_HUB_SESSION_ID:-}" ]] && headers+=(-H "X-Agent-Hub-Session-Id: $AGENT_HUB_SESSION_ID")
 
+  # Inline request bodies go to curl through a file, never as an argument: a
+  # JSON body can pass the OS per-argument limit (128 KiB on Linux) once quotes
+  # and newlines are escaped. `-d @file` bodies are passed through untouched.
+  local req_file="" curl_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -d | --data | --data-raw)
+        if [[ "$1" != "--data-raw" && "${2:-}" == @* ]]; then
+          curl_args+=("$1" "$2")
+        else
+          [[ -n "$req_file" ]] || req_file="$(mktemp)"
+          printf '%s' "${2:-}" >"$req_file"
+          curl_args+=(--data-binary "@$req_file")
+        fi
+        shift 2
+        ;;
+      *)
+        curl_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
   local body_file http_code curl_rc=0
   body_file="$(mktemp)"
   # Capture curl's EXIT CODE separately from the %{http_code} it writes to
@@ -161,11 +192,12 @@ google_api() {
       -o "$body_file" \
       -w '%{http_code}' \
       "${AGENT_HUB_URL}${path}" \
-      "$@" 2>/dev/null
+      ${curl_args[@]+"${curl_args[@]}"} 2>/dev/null
   )" || curl_rc=$?
   local body
   body="$(cat "$body_file" 2>/dev/null || true)"
   rm -f "$body_file"
+  [[ -n "$req_file" ]] && rm -f "$req_file"
 
   # A non-zero curl exit is a transport failure (connection refused, DNS,
   # timeout, TLS…); curl reports `000` for %{http_code} in that case. We never

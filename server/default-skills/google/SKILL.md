@@ -73,6 +73,7 @@ scripts/google-mail.sh modify  <messageId> [--add-label ID]… [--remove-label I
 scripts/google-chat.sh spaces   [--max N]
 scripts/google-chat.sh messages <space> [--thread NAME] [--max N] [--asc]
 scripts/google-chat.sh send     <space> --text "…" [--thread NAME]
+scripts/google-chat.sh sender-stats [--spaces N] [--max M]   # missing sender-name rate + order check (JSON)
 
 # Sheets
 scripts/google-sheets.sh get    <spreadsheetId>

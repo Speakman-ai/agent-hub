@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  chatSetupHelpLink,
   chatSenderLabel,
   chatSpaceDeepLink,
   chatSpaceLabel,
@@ -176,5 +177,31 @@ describe('googleChat helpers', () => {
     // "Zed" is past the three names shown in the label, but still searchable.
     expect(filterSpaces(spaces, 'zed').map((s) => s.id)).toEqual(['G1']);
     expect(filterSpaces(spaces, 'd9').map((s) => s.id)).toEqual(['D9']);
+  });
+
+  it('chatSetupHelpLink labels setup errors and refuses non-Google URLs', () => {
+    expect(
+      chatSetupHelpLink({
+        code: 'google_chat_api_disabled',
+        helpUrl:
+          'https://console.developers.google.com/apis/api/chat.googleapis.com/overview?project=1',
+      }),
+    ).toEqual({
+      label: 'Enable the Chat API in Google Cloud',
+      url: 'https://console.developers.google.com/apis/api/chat.googleapis.com/overview?project=1',
+    });
+    expect(
+      chatSetupHelpLink({
+        code: 'google_chat_workspace_required',
+        helpUrl: 'https://support.google.com/chat/answer/7655820',
+      })?.label,
+    ).toBe('About Google Workspace accounts');
+    expect(
+      chatSetupHelpLink({ code: 'google_chat_api_disabled', helpUrl: 'https://evil.example/' }),
+    ).toBeNull();
+    expect(
+      chatSetupHelpLink({ code: 'google_chat_forbidden', helpUrl: 'https://support.google.com/x' }),
+    ).toBeNull();
+    expect(chatSetupHelpLink(null)).toBeNull();
   });
 });
