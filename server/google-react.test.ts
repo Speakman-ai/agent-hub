@@ -5,12 +5,14 @@ const googleMock = vi.hoisted(() => {
   const gmailThreadsList = vi.fn();
   const gmailThreadsGet = vi.fn();
   const sheetsValuesGet = vi.fn();
+  const chatMessagesList = vi.fn();
   const setCredentials = vi.fn();
   return {
     calendarEventsList,
     gmailThreadsList,
     gmailThreadsGet,
     sheetsValuesGet,
+    chatMessagesList,
     setCredentials,
     google: {
       auth: {
@@ -23,6 +25,7 @@ const googleMock = vi.hoisted(() => {
         users: { threads: { list: gmailThreadsList, get: gmailThreadsGet } },
       })),
       sheets: vi.fn(() => ({ spreadsheets: { values: { get: sheetsValuesGet } } })),
+      chat: vi.fn(() => ({ spaces: { messages: { list: chatMessagesList } } })),
     },
   };
 });
@@ -43,6 +46,7 @@ const ALL_READ_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/chat.messages.readonly',
 ];
 
 function connected(grantedScopes: string[] = ALL_READ_SCOPES) {
@@ -220,5 +224,100 @@ describe('runGoogleReadAction', () => {
     expect(res.markdown).toBe('');
     expect(res.errorMarkdown).toContain('Google Calendar not enabled');
     expect(res.failed).toBeFalsy();
+  });
+
+  describe('chat surface', () => {
+    const CTX = { ownerUserId: 'owner-1', oauthConfig: OAUTH };
+
+    it('reads recent messages newest-first and renders them oldest-first', async () => {
+      googleMock.chatMessagesList.mockResolvedValue({
+        data: {
+          messages: [
+            {
+              createTime: '2026-10-08T10:05:00Z',
+              text: 'Second',
+              sender: { name: 'users/222', type: 'HUMAN' },
+              attachment: [{}],
+            },
+            {
+              createTime: '2026-10-08T10:00:00Z',
+              text: 'First',
+              sender: { name: 'users/111', displayName: 'Ana', type: 'HUMAN' },
+            },
+          ],
+        },
+      });
+      const res = await runGoogleReadAction(
+        { surface: 'chat', spaceId: 'spaces/AAAA', max: 5 },
+        CTX,
+      );
+      expect(googleMock.chatMessagesList).toHaveBeenCalledWith({
+        parent: 'spaces/AAAA',
+        pageSize: 5,
+        orderBy: 'createTime desc',
+      });
+      expect(res.errorMarkdown).toBeUndefined();
+      expect(res.markdown).toContain('## Google Chat spaces/AAAA');
+      expect(res.markdown.indexOf('Ana: First')).toBeLessThan(
+        res.markdown.indexOf('User 222: Second'),
+      );
+      expect(res.markdown).toContain('[1 attachment(s)]');
+    });
+
+    it('filters by thread and an inclusive from bound', async () => {
+      googleMock.chatMessagesList.mockResolvedValue({ data: {} });
+      const res = await runGoogleReadAction(
+        { surface: 'chat', spaceId: 'AAAA', threadId: 'T1', from: '2026-10-08T10:00:00Z' },
+        CTX,
+      );
+      const call = googleMock.chatMessagesList.mock.calls[0][0];
+      expect(call.pageSize).toBe(20);
+      expect(call.filter).toContain('thread.name = spaces/AAAA/threads/T1');
+      expect(call.filter).toMatch(/createTime > "2026-10-08T09:59:59\.999999999Z"/);
+      expect(res.markdown).toContain('No messages since 2026-10-08T10:00:00Z');
+    });
+
+    it('rejects a thread from another space without calling googleapis', async () => {
+      const res = await runGoogleReadAction(
+        { surface: 'chat', spaceId: 'AAAA', threadId: 'spaces/BBBB/threads/T1' },
+        CTX,
+      );
+      expect(res.errorMarkdown).toContain('threadId');
+      expect(res.failed).toBeFalsy();
+      expect(googleMock.chatMessagesList).not.toHaveBeenCalled();
+    });
+
+    it('requires a valid spaceId (recoverable, no path smuggling)', async () => {
+      for (const spaceId of [undefined, 'spaces/../x', 'AA/BB']) {
+        const res = await runGoogleReadAction({ surface: 'chat', spaceId }, CTX);
+        expect(res.errorMarkdown).toContain('spaceId');
+        expect(res.failed).toBeFalsy();
+      }
+      expect(googleMock.chatMessagesList).not.toHaveBeenCalled();
+    });
+
+    it('missing the chat messages scope → recoverable enable note, no token fetch', async () => {
+      storeMock.getGoogleConnectionStatus.mockReturnValue(
+        connected([
+          'https://www.googleapis.com/auth/chat.spaces.readonly',
+          'https://www.googleapis.com/auth/gmail.modify',
+        ]),
+      );
+      const res = await runGoogleReadAction({ surface: 'chat', spaceId: 'AAAA' }, CTX);
+      expect(res.errorMarkdown).toContain('Google Chat not enabled');
+      expect(res.failed).toBeFalsy();
+      expect(storeMock.getActiveAccessToken).not.toHaveBeenCalled();
+      expect(googleMock.chatMessagesList).not.toHaveBeenCalled();
+    });
+
+    it('accepts the broader chat.messages scope', async () => {
+      storeMock.getGoogleConnectionStatus.mockReturnValue(
+        connected(['https://www.googleapis.com/auth/chat.messages']),
+      );
+      googleMock.chatMessagesList.mockResolvedValue({ data: { messages: [] } });
+      const res = await runGoogleReadAction({ surface: 'chat', spaceId: 'AAAA' }, CTX);
+      expect(res.errorMarkdown).toBeUndefined();
+      expect(res.markdown).toContain('No messages.');
+    });
   });
 });

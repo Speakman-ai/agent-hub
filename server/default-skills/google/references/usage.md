@@ -86,7 +86,8 @@ It is **read-only** and scoped to the session owner; writes stay on the wrappers
   {"tool":"google","surface":"calendar","from":"2026-06-30T00:00:00Z","to":"2026-07-01T00:00:00Z","max":10},
   {"tool":"google","surface":"gmail","q":"is:unread","max":10},
   {"tool":"google","surface":"gmail","threadId":"<id>"},
-  {"tool":"google","surface":"sheets","spreadsheetId":"<id>","range":"Sheet1!A1:C10"}
+  {"tool":"google","surface":"sheets","spreadsheetId":"<id>","range":"Sheet1!A1:C10"},
+  {"tool":"google","surface":"chat","spaceId":"spaces/<id>","max":20}
 ]}
 </agenthub:react>
 ```
@@ -96,6 +97,10 @@ Fields by surface:
 - `calendar` — `from` + `to` (required, RFC3339), optional `q`, `max`, `calendarId`.
 - `gmail` — optional `q`, `max`; or `threadId` to read one thread's headers.
 - `sheets` — `spreadsheetId` + `range` (both required).
+- `chat` — `spaceId` (required, `spaces/<id>` or the bare id; list spaces with
+  `google-chat.sh spaces`), optional `max` (default 20, cap 50), `threadId`
+  (thread id or `spaces/<id>/threads/<thread>`), and `from` (RFC 3339, inclusive).
+  Returns the most recent messages, oldest first. Needs `chat.messages.readonly`.
 
 The host injects a compact markdown summary into the next turn. When the owner
 has no connection (or a surface scope is missing), the host injects a

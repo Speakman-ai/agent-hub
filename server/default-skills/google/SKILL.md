@@ -104,7 +104,7 @@ retry blindly.
 ## Inline context (ReAct)
 
 For a quick read inside a turn without shelling out, emit a `google` ReAct
-action (read-only — calendar/gmail/sheets):
+action (read-only: calendar, gmail, sheets, or chat for a space's recent messages):
 
 ```
 <agenthub:react>

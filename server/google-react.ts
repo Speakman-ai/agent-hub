@@ -1,5 +1,5 @@
 /**
- * Host-mediated `google` ReAct read action — inline calendar / gmail / sheets
+ * Host-mediated `google` ReAct read action — inline calendar / gmail / sheets / chat
  * context for a session, scoped to the SESSION OWNER's linked Google account.
  *
  * This is the read-only sibling of the `google` skill wrappers. The wrappers
@@ -12,9 +12,20 @@
 import { google } from 'googleapis';
 import { getActiveAccessToken, getGoogleConnectionStatus } from './google-connections-store.js';
 import type { GoogleOAuthCredentials } from './google-oauth.js';
-import { hasCalendarReadScope, hasGmailReadScope, hasSheetsReadScope } from './google-scopes.js';
+import {
+  hasCalendarReadScope,
+  hasChatMessagesReadScope,
+  hasGmailReadScope,
+  hasSheetsReadScope,
+} from './google-scopes.js';
+import { isRfc3339, shiftRfc3339 } from '../shared/utils/rfc3339.js';
 
-export type GoogleReactSurface = 'calendar' | 'gmail' | 'sheets';
+export const GOOGLE_REACT_SURFACES = ['calendar', 'gmail', 'sheets', 'chat'] as const;
+export type GoogleReactSurface = (typeof GOOGLE_REACT_SURFACES)[number];
+
+export function isGoogleReactSurface(value: string): value is GoogleReactSurface {
+  return (GOOGLE_REACT_SURFACES as readonly string[]).includes(value);
+}
 
 export interface GoogleReactAction {
   surface: GoogleReactSurface;
@@ -26,6 +37,8 @@ export interface GoogleReactAction {
   spreadsheetId?: string;
   range?: string;
   calendarId?: string;
+  /** chat — `spaces/AAAA` or the bare space id. */
+  spaceId?: string;
 }
 
 export interface GoogleReactContext {
@@ -60,6 +73,7 @@ const SURFACE_LABEL: Record<GoogleReactSurface, string> = {
   calendar: 'Google Calendar',
   gmail: 'Gmail',
   sheets: 'Google Sheets',
+  chat: 'Google Chat',
 };
 
 /**
@@ -79,6 +93,7 @@ const READ_SCOPE_GATE: Record<GoogleReactSurface, (scopes: string[]) => boolean>
   calendar: hasCalendarReadScope,
   gmail: hasGmailReadScope,
   sheets: hasSheetsReadScope,
+  chat: hasChatMessagesReadScope,
 };
 
 /**
@@ -165,6 +180,8 @@ export async function runGoogleReadAction(
         return await readGmail(action, token);
       case 'sheets':
         return await readSheets(action, token);
+      case 'chat':
+        return await readChat(action, token);
       default:
         return {
           markdown: '',
@@ -285,6 +302,75 @@ async function readSheets(action: GoogleReactAction, token: string): Promise<Goo
   return {
     markdown: `## Google Sheet ${spreadsheetId} — ${action.range}\n\`\`\`\n${rendered}\n\`\`\`${more}`,
   };
+}
+
+// Same alphabets as the proxy: keeps `/` or `..` out of the resource name.
+const CHAT_SPACE_RE = /^(?:spaces\/)?([A-Za-z0-9_-]{1,128})$/;
+const CHAT_THREAD_RE = /^(?:spaces\/([A-Za-z0-9_-]{1,128})\/threads\/)?([A-Za-z0-9_.-]{1,256})$/;
+
+const CHAT_USAGE =
+  '`{"tool":"google","surface":"chat","spaceId":"spaces/AAAA","max":20}` ' +
+  '(optional `threadId`, and `from` as an RFC 3339 lower bound). ' +
+  'List spaces with `google-chat.sh spaces`.';
+
+async function readChat(action: GoogleReactAction, token: string): Promise<GoogleReactResult> {
+  const spaceId = CHAT_SPACE_RE.exec(action.spaceId?.trim() ?? '')?.[1];
+  if (!spaceId) {
+    return {
+      markdown: '',
+      errorMarkdown: `## Google Chat read error\nProvide a valid \`spaceId\`, e.g. ${CHAT_USAGE}`,
+    };
+  }
+  const filters: string[] = [];
+  const thread = action.threadId?.trim();
+  if (thread) {
+    const m = CHAT_THREAD_RE.exec(thread);
+    if (!m || (m[1] && m[1] !== spaceId)) {
+      return {
+        markdown: '',
+        errorMarkdown:
+          '## Google Chat read error\n`threadId` must be a thread id or ' +
+          '`spaces/{space}/threads/{thread}` in the requested space.',
+      };
+    }
+    filters.push(`thread.name = spaces/${spaceId}/threads/${m[2]}`);
+  }
+  if (action.from) {
+    if (!isRfc3339(action.from)) {
+      return {
+        markdown: '',
+        errorMarkdown:
+          '## Google Chat read error\n`from` must be an RFC 3339 timestamp with a zone, ' +
+          'e.g. `2026-10-08T10:00:00Z`.',
+      };
+    }
+    // Chat only supports strict `>`; widen by 1ns so `from` is inclusive.
+    filters.push(`createTime > "${shiftRfc3339(action.from, -1n)}"`);
+  }
+
+  const chat = google.chat({ version: 'v1', auth: authClient(token) });
+  const result = await chat.spaces.messages.list({
+    parent: `spaces/${spaceId}`,
+    pageSize: clampMax(action.max, 20, 50),
+    orderBy: 'createTime desc',
+    ...(filters.length ? { filter: filters.join(' AND ') } : {}),
+  });
+  // Fetched newest-first so `max` keeps the most recent; render oldest-first.
+  const messages = [...(result.data.messages ?? [])].reverse();
+  const heading = `## Google Chat spaces/${spaceId}${thread ? ` (thread ${thread})` : ''}`;
+  if (messages.length === 0) {
+    return { markdown: `${heading}\nNo messages${action.from ? ` since ${action.from}` : ''}.` };
+  }
+  const lines = messages.map((m) => {
+    const senderId = m.sender?.name?.split('/').pop();
+    const who =
+      m.sender?.displayName?.trim() ||
+      (m.sender?.type === 'BOT' ? 'App' : senderId ? `User ${senderId}` : 'Unknown sender');
+    const body = truncate(m.text ?? m.fallbackText, 300) || '(no text)';
+    const attachments = m.attachment?.length ? ` [${m.attachment.length} attachment(s)]` : '';
+    return `- **${m.createTime ?? '(no time)'}** ${truncate(who, 60)}: ${body}${attachments}`;
+  });
+  return { markdown: `${heading}\n${lines.join('\n')}` };
 }
 
 function clampMax(value: number | undefined, fallback: number, hardMax: number): number {

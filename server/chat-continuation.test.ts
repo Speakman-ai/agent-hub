@@ -364,6 +364,20 @@ describe('ReAct block parse', () => {
     });
   });
 
+  it('parses a google chat read action', () => {
+    const payload = JSON.stringify({
+      actions: [{ tool: 'google', surface: 'chat', spaceId: 'spaces/AAAA', max: 10 }],
+    });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    if ('error' in parsed) throw new Error(parsed.detail);
+    expect(parsed.actions[0]).toMatchObject({
+      tool: 'google',
+      surface: 'chat',
+      spaceId: 'spaces/AAAA',
+      max: 10,
+    });
+  });
+
   it('rejects a google action with an unknown surface', () => {
     const payload = JSON.stringify({ actions: [{ tool: 'google', surface: 'drive' }] });
     const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);

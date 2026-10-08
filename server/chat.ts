@@ -75,7 +75,11 @@ import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
 import { maybeArchiveWikiDocSession } from './wiki-doc-session.js';
 import { getActiveAccessToken } from './github-connections-store.js';
-import { runGoogleReadAction } from './google-react.js';
+import {
+  isGoogleReactSurface,
+  runGoogleReadAction,
+  type GoogleReactSurface,
+} from './google-react.js';
 import {
   resolveOAuthAppCredentials,
   applyGithubSpawnCredentials,
@@ -758,6 +762,7 @@ interface ReActAction {
   spreadsheetId?: string;
   range?: string;
   calendarId?: string;
+  spaceId?: string;
 }
 
 interface ParsedReAct {
@@ -1871,10 +1876,10 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
     }
     if (a.tool === 'google') {
       const surface = typeof a.surface === 'string' ? a.surface.trim().toLowerCase() : '';
-      if (surface !== 'calendar' && surface !== 'gmail' && surface !== 'sheets') {
+      if (!isGoogleReactSurface(surface)) {
         return {
           error: 'malformed',
-          detail: 'google action requires surface as "calendar", "gmail", or "sheets"',
+          detail: 'google action requires surface as "calendar", "gmail", "sheets", or "chat"',
         };
       }
       const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
@@ -1891,6 +1896,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
         spreadsheetId: str(a.spreadsheetId),
         range: str(a.range),
         calendarId: str(a.calendarId),
+        spaceId: str(a.spaceId),
       });
       continue;
     }
@@ -5988,7 +5994,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 const surface = action.surface || '';
                 const googleRes = await runGoogleReadAction(
                   {
-                    surface: surface as 'calendar' | 'gmail' | 'sheets',
+                    surface: surface as GoogleReactSurface,
                     from: action.from,
                     to: action.to,
                     q: action.query,
@@ -5997,6 +6003,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     spreadsheetId: action.spreadsheetId,
                     range: action.range,
                     calendarId: action.calendarId,
+                    spaceId: action.spaceId,
                   },
                   {
                     ownerUserId: session!.owner_user_id ?? null,
