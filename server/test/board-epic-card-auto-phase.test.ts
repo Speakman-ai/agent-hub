@@ -9,8 +9,8 @@ import { getRequest, createProject, createCard } from './helpers.js';
 // flowchart (grouped by phase_id) and the autonomous phase runner
 // (dispatches by phase_id) never picks it up. So whenever a card gets an
 // epic without an explicit phase, the API auto-resolves the epic's phase —
-// using the first existing phase by position, or materializing a default
-// "Phase 1" when the epic has none.
+// using the epic's current phase (never one the epic already moved past), or
+// materializing a default "Phase 1" when the epic has none.
 //   - POST /board/cards            — epicId without phaseId
 //   - PUT  /board/cards/:id         — epicId set without phaseId; epic swap
 //   - POST /board/cards/:id/epic    — link resolves a phase, unlink clears it
@@ -95,6 +95,69 @@ describe('POST /board/cards — auto-phase on epic link', () => {
     const card = await createCard(projectId, { title: 'no-epic-no-phase' });
     expect((card as { epic_id: string | null }).epic_id).toBeNull();
     expect((card as { phase_id: string | null }).phase_id).toBeNull();
+  });
+});
+
+describe('epic-linked cards never land in a past phase', () => {
+  async function moveTo(cardId: string, columnName: string): Promise<void> {
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const column = (board.body as { columns: Array<{ id: string; name: string }> }).columns.find(
+      (c) => c.name === columnName,
+    );
+    await request
+      .post(`/api/projects/${projectId}/board/cards/${cardId}/move`)
+      .send({ columnId: column!.id, position: 0 })
+      .expect(200);
+  }
+
+  // Phase A is finished and phase B has a card in flight: the epic is on B.
+  async function epicPastPhaseA(): Promise<{ epicId: string; phaseA: string; phaseB: string }> {
+    const tag = Math.random().toString(36).slice(2);
+    const epicId = await createEpic(`Sequential ${tag}`);
+    const phaseA = await createPhase(epicId, 'Phase A');
+    const phaseB = await createPhase(epicId, 'Phase B');
+    await createPhase(epicId, 'Phase C');
+    const a = await createCard(projectId, { title: `a-done ${tag}`, epicId, phaseId: phaseA });
+    await moveTo(a.id as string, 'Done');
+    const b = await createCard(projectId, { title: `b-wip ${tag}`, epicId, phaseId: phaseB });
+    await moveTo(b.id as string, 'In Progress');
+    return { epicId, phaseA, phaseB };
+  }
+
+  it('POST with only epicId joins the current phase, not the finished first one', async () => {
+    const { epicId, phaseB } = await epicPastPhaseA();
+    const card = await createCard(projectId, { title: `late-follow-up ${Math.random()}`, epicId });
+    expect((card as { phase_id: string }).phase_id).toBe(phaseB);
+  });
+
+  it('POST with an explicit past phaseId is redirected to the current phase', async () => {
+    const { epicId, phaseA, phaseB } = await epicPastPhaseA();
+    const card = await createCard(projectId, {
+      title: `late-explicit ${Math.random()}`,
+      epicId,
+      phaseId: phaseA,
+    });
+    expect((card as { phase_id: string }).phase_id).toBe(phaseB);
+  });
+
+  it('POST with an explicit upcoming phaseId is kept', async () => {
+    const epicId = await createEpic(`Upcoming ${Math.random()}`);
+    const phaseA = await createPhase(epicId, 'Phase A');
+    const phaseB = await createPhase(epicId, 'Phase B');
+    const a = await createCard(projectId, { title: 'a-wip', epicId, phaseId: phaseA });
+    await moveTo(a.id as string, 'In Progress');
+    const card = await createCard(projectId, { title: 'next-phase', epicId, phaseId: phaseB });
+    expect((card as { phase_id: string }).phase_id).toBe(phaseB);
+  });
+
+  it('linking an existing card to the epic joins the current phase', async () => {
+    const { epicId, phaseB } = await epicPastPhaseA();
+    const card = await createCard(projectId, { title: `link-late ${Math.random()}` });
+    const res = await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id as string}/epic`)
+      .send({ epicId })
+      .expect(200);
+    expect((res.body as { phase_id: string }).phase_id).toBe(phaseB);
   });
 });
 

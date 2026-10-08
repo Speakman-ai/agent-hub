@@ -22,7 +22,12 @@ import type {
   SessionReplayRow,
   SupportTicketRow,
 } from '../types.js';
-import { findCycle, loadBlockersForCards, isSystemLockedColumnName } from '../kanban-blockers.js';
+import {
+  findCycle,
+  loadBlockersForCards,
+  isSystemLockedColumnName,
+  isColumnNotStarted,
+} from '../kanban-blockers.js';
 import {
   blocksPrematureDoneMove,
   PREMATURE_DONE_ERROR,
@@ -218,17 +223,53 @@ function defaultPhaseAutonomousModel(): string | null {
 }
 
 /**
+ * Index of the phase an epic is currently on: the last phase (by position) that
+ * has started, i.e. is running autonomously or holds a card that has left the
+ * backlog (in flight, Done, or Cancelled). 0 when nothing has started yet.
+ * Phases before this index are past: the sequential runner already moved on, so
+ * a live card landing in one makes `findIncompletePredecessor` halt every later
+ * phase, and nothing restarts the past phase. That stalls the epic.
+ */
+function currentPhaseIndex(stmts: Stmts, boardId: string, phases: KanbanPhaseRow[]): number {
+  const columns = stmts.getKanbanColumns.all(boardId) as KanbanColumnRow[];
+  const names = new Map(columns.map((c) => [c.id, c.name]));
+  let current = 0;
+  phases.forEach((phase, index) => {
+    if (phase.autonomous_running) {
+      current = index;
+      return;
+    }
+    const cards = stmts.getKanbanCardsByPhase.all(phase.id) as KanbanCardRow[];
+    if (cards.some((c) => !isColumnNotStarted(names.get(c.column_id)))) current = index;
+  });
+  return current;
+}
+
+/**
+ * Redirect a requested phase to the epic's current phase when it is a past
+ * phase. Returns the requested id unchanged when it is current or upcoming.
+ */
+function clampPhaseToCurrent(stmts: Stmts, boardId: string, phase: KanbanPhaseRow): string {
+  const phases = stmts.getKanbanPhasesByEpic.all(phase.epic_id) as KanbanPhaseRow[];
+  const index = phases.findIndex((p) => p.id === phase.id);
+  const current = currentPhaseIndex(stmts, boardId, phases);
+  return index >= 0 && index < current ? phases[current].id : phase.id;
+}
+
+/**
  * Resolve the phase a card should join when it's linked to an epic but no phase
  * was supplied. Scoping requires every epic-linked ticket to live in a phase:
  * an unphased epic card is invisible in the phase flowchart (grouped by
  * `phase_id`) and the autonomous phase runner (which dispatches by `phase_id`)
- * never picks it up. Returns the epic's first phase by position, materializing a
- * default phase when the epic has none so we never leave an epic phase-less.
+ * never picks it up. Returns the epic's current phase (never a past one, see
+ * `currentPhaseIndex`), materializing a default phase when the epic has none so
+ * we never leave an epic phase-less.
  */
 function resolvePhaseForEpicLink(stmts: Stmts, boardId: string, epicId: string): string {
   const phases = stmts.getKanbanPhasesByEpic.all(epicId) as KanbanPhaseRow[];
   if (phases.length > 0) {
-    return [...phases].sort((a, b) => a.position - b.position)[0].id;
+    const ordered = [...phases].sort((a, b) => a.position - b.position);
+    return ordered[currentPhaseIndex(stmts, boardId, ordered)].id;
   }
   // No phases yet — create the default one the scoping contract mandates
   // ("never leave an epic with zero phases") and drop the ticket into it.
@@ -1158,7 +1199,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           error: 'phaseId belongs to a different epic than the supplied epicId',
         });
       }
-      resolvedPhaseId = String(bodyPhaseId);
+      // A new card may not reopen a phase the epic already moved past.
+      resolvedPhaseId = clampPhaseToCurrent(stmts, board.id, phase);
       resolvedEpicId = String(phase.epic_id);
     } else if (hasBodyEpic) {
       const epic = stmts.getKanbanEpic.get(bodyEpicId) as KanbanEpicRow | undefined;
