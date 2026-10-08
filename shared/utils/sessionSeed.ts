@@ -82,3 +82,71 @@ export function buildTodoSessionSeed(input: TodoSessionSeedInput): string {
   }
   return lines.join('\n');
 }
+
+/** A Google Chat message as loaded by the pane, narrowed to what a seed needs. */
+export interface ChatSessionSeedInput {
+  /** Human label for the space (display name, or "Direct message"). */
+  spaceLabel?: string | null;
+  /** Chat resource name, e.g. `spaces/AAAA`. */
+  spaceName?: string | null;
+  /** Thread resource name, e.g. `spaces/AAAA/threads/BBBB`. */
+  threadName?: string | null;
+  sender?: string | null;
+  createTime?: string | null;
+  text?: string | null;
+  /** Earlier messages in the same thread, oldest first, for context. */
+  context?: Array<{ sender?: string | null; text?: string | null }>;
+  /** A safe reopen URL (space URI); callers pass the validated value. */
+  deepLink?: string | null;
+}
+
+const MAX_CHAT_CONTEXT = 10;
+
+/**
+ * Build the opening user message for a session seeded from a Google Chat
+ * message. Includes the space/thread resource names so the agent can reply in
+ * the same thread with the google skill's chat wrapper.
+ */
+export function buildChatSessionSeed(input: ChatSessionSeedInput): string {
+  const spaceLabel = clean(input.spaceLabel);
+  const spaceName = clean(input.spaceName);
+  const threadName = clean(input.threadName);
+  const sender = clean(input.sender);
+  const createTime = clean(input.createTime);
+  const deepLink = clean(input.deepLink);
+  const text = clampBody(clean(input.text));
+
+  const lines: string[] = ["Here's a Google Chat request I'd like you to work on.", ''];
+  if (spaceLabel) lines.push(`**Space:** ${spaceLabel}`);
+  if (sender) lines.push(`**From:** ${sender}`);
+  if (createTime) lines.push(`**Sent:** ${createTime}`);
+  if (deepLink) lines.push(`**Link:** ${deepLink}`);
+  if (spaceName) {
+    const ref = threadName ? `${spaceName} (thread ${threadName})` : spaceName;
+    lines.push(`**Chat reference:** ${ref}`);
+  }
+
+  const context = (input.context ?? [])
+    .map((m) => ({ sender: clean(m.sender), text: clean(m.text) }))
+    .filter((m) => m.text)
+    .slice(-MAX_CHAT_CONTEXT);
+  if (context.length) {
+    lines.push('', threadName ? 'Earlier in the thread:' : 'Earlier in the conversation:');
+    for (const m of context) {
+      const firstLine = m.text.split('\n')[0];
+      const short = firstLine.length > 300 ? `${firstLine.slice(0, 299)}…` : firstLine;
+      lines.push(`> ${m.sender || 'Someone'}: ${short}`);
+    }
+  }
+
+  lines.push('', text || '(no text)');
+  if (spaceName) {
+    lines.push(
+      '',
+      `When you are done, draft a reply to the requester and show it to me. Post it in that ${
+        threadName ? 'thread (pass --thread)' : 'conversation'
+      } with \`google-chat.sh send\` from the google skill only after I approve it, because it goes out under my name.`,
+    );
+  }
+  return lines.join('\n');
+}

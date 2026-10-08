@@ -438,7 +438,16 @@ async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): 
       if (getJwt()) clearToken();
       window.location.reload();
     }
-    throw new Error(errorDetail(errBody, res.status));
+    // Keep the server's machine-readable code and the HTTP status on the
+    // error so callers can branch (e.g. a missing-scope 403) without parsing
+    // the message text.
+    const error = new Error(errorDetail(errBody, res.status)) as Error & {
+      status?: number;
+      code?: string;
+    };
+    error.status = res.status;
+    if (typeof errBody?.code === 'string') error.code = errBody.code;
+    throw error;
   }
   clearRecentReloadMarker();
   return res.json() as Promise<T>;
@@ -1116,6 +1125,52 @@ export const api = {
   },
   sendGoogleGmailMessage: (data: any) =>
     fetchJSON('/google/gmail/messages', { method: 'POST', body: JSON.stringify(data) }),
+  // Google Chat proxy (user-scoped). Tokens stay server-side.
+  listGoogleChatSpaces: ({
+    pageSize,
+    pageToken,
+  }: { pageSize?: number; pageToken?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (pageSize) params.set('pageSize', String(pageSize));
+    if (pageToken) params.set('pageToken', pageToken);
+    const qs = params.toString();
+    return fetchJSON(`/google/chat/spaces${qs ? `?${qs}` : ''}`);
+  },
+  listGoogleChatMessages: (
+    spaceId: string,
+    {
+      pageSize,
+      pageToken,
+      order,
+      threadName,
+      since,
+      until,
+    }: {
+      pageSize?: number;
+      pageToken?: string;
+      order?: 'asc' | 'desc';
+      threadName?: string;
+      since?: string;
+      until?: string;
+    } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (pageSize) params.set('pageSize', String(pageSize));
+    if (pageToken) params.set('pageToken', pageToken);
+    if (order) params.set('order', order);
+    if (threadName) params.set('threadName', threadName);
+    if (since) params.set('since', since);
+    if (until) params.set('until', until);
+    const qs = params.toString();
+    return fetchJSON(
+      `/google/chat/spaces/${encodeURIComponent(spaceId)}/messages${qs ? `?${qs}` : ''}`,
+    );
+  },
+  sendGoogleChatMessage: (spaceId: string, data: { text: string; threadName?: string }) =>
+    fetchJSON(`/google/chat/spaces/${encodeURIComponent(spaceId)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   // Drive proxy (user-scoped, drive.file only). Lists and creates
   // app-accessible Drive / Docs files. Tokens stay server-side.
   listGoogleDriveFiles: ({

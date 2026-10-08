@@ -89,6 +89,15 @@ function HubBody({
       return <CalendarScreen navigation={navigation} />;
     case 'mail':
       return <GmailScreen navigation={navigation} />;
+    case 'chat':
+      // Web-only for now; a hub pane synced from the web client can still land here.
+      return (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <Text style={{ color: colors.gray400, textAlign: 'center' }}>
+            Google Chat is available in the web app.
+          </Text>
+        </View>
+      );
     case 'support':
       return <SupportOverviewScreen />;
     default: {

@@ -6,6 +6,7 @@ import { getServerBase } from '../utils/connection';
 import { exportDesignPdf } from '../utils/exportDesignPdf';
 import { modelOverrideIsStale } from '../utils/perUserModelOverride';
 import { api } from '../utils/api';
+import { isSubmitEnter } from '../utils/keyboard';
 
 /**
  * DesignView — split-pane Claude Design workspace:
@@ -582,7 +583,7 @@ function DesignChat({ design, messages, streaming, thinking, processing, send }:
   };
 
   const handleKeyDown = (e: any) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (isSubmitEnter(e)) {
       e.preventDefault();
       handleSend();
     }

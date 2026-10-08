@@ -6587,6 +6587,127 @@ components:
         - etag
         - recurringEventId
         - hangoutLink
+    GoogleChatErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        requiredScopes:
+          type: array
+          items:
+            type: string
+      required:
+        - error
+    GoogleChatUser:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+        displayName:
+          type: string
+          nullable: true
+        type:
+          type: string
+          nullable: true
+      required:
+        - name
+        - displayName
+        - type
+    GoogleChatSpace:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+        id:
+          type: string
+          nullable: true
+        displayName:
+          type: string
+          nullable: true
+        spaceType:
+          type: string
+          nullable: true
+        singleUserBotDm:
+          type: boolean
+        spaceThreadingState:
+          type: string
+          nullable: true
+        supportsThreadReplies:
+          type: boolean
+          description: True only for named spaces with threaded (or topic-grouped) messages. DMs, group chats, and unthreaded spaces cannot take in-thread replies; a threadName sent to them is ignored.
+        lastActiveTime:
+          type: string
+          nullable: true
+        spaceUri:
+          type: string
+          nullable: true
+        participants:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: "For DMs and group chats without a display name: the other human members, by name, excluding the caller. Null when not resolved (no chat.memberships.readonly grant, lookup budget reached, or lookup failed)."
+      required:
+        - name
+        - id
+        - displayName
+        - spaceType
+        - singleUserBotDm
+        - spaceThreadingState
+        - supportsThreadReplies
+        - lastActiveTime
+        - spaceUri
+        - participants
+    GoogleChatMessage:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+        id:
+          type: string
+          nullable: true
+        spaceName:
+          type: string
+          nullable: true
+        threadName:
+          type: string
+          nullable: true
+        threadReply:
+          type: boolean
+        text:
+          type: string
+          nullable: true
+        createTime:
+          type: string
+          nullable: true
+        lastUpdateTime:
+          type: string
+          nullable: true
+        deleted:
+          type: boolean
+        attachmentCount:
+          type: number
+        sender:
+          allOf:
+            - $ref: "#/components/schemas/GoogleChatUser"
+            - nullable: true
+      required:
+        - name
+        - id
+        - spaceName
+        - threadName
+        - threadReply
+        - text
+        - createTime
+        - lastUpdateTime
+        - deleted
+        - attachmentCount
+        - sender
     GoogleDriveErrorResponse:
       type: object
       properties:
@@ -31161,6 +31282,272 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+  /api/google/chat/spaces:
+    get:
+      tags:
+        - Google
+      summary: List Google Chat spaces, group chats, and DMs the calling user belongs to
+      parameters:
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+          required: false
+          name: pageSize
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: pageToken
+          in: query
+      responses:
+        "200":
+          description: Spaces, most recently active first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  spaces:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleChatSpace"
+                  nextPageToken:
+                    type: string
+                    nullable: true
+                required:
+                  - spaces
+                  - nextPageToken
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Required Chat scope has not been granted, or Chat API access was denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/spaces/{spaceId}/messages:
+    get:
+      tags:
+        - Google
+      summary: List messages in a Google Chat space for the calling user
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+          required: false
+          name: pageSize
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: pageToken
+          in: query
+        - schema:
+            type: string
+            enum:
+              - asc
+              - desc
+            description: Sort by create time. Defaults to `desc` (newest first).
+          required: false
+          description: Sort by create time. Defaults to `desc` (newest first).
+          name: order
+          in: query
+        - schema:
+            type: string
+            pattern: ^spaces\/([A-Za-z0-9_-]{1,128})\/threads\/[A-Za-z0-9_.-]{1,256}$
+            description: Restrict to one thread, formatted `spaces/{space}/threads/{thread}`.
+          required: false
+          description: Restrict to one thread, formatted `spaces/{space}/threads/{thread}`.
+          name: threadName
+          in: query
+        - schema:
+            type: string
+            description: Only messages created at or after this RFC 3339 time (inclusive, full precision). Used to re-read a loaded range so edits and deletions are picked up.
+          required: false
+          description: Only messages created at or after this RFC 3339 time (inclusive, full precision). Used to re-read a loaded range so edits and deletions are picked up.
+          name: since
+          in: query
+        - schema:
+            type: string
+            description: Only messages created at or before this RFC 3339 time (inclusive, full precision). Anchors an older-history query; continue it with pageToken and unchanged parameters so messages sharing the boundary timestamp are not skipped.
+          required: false
+          description: Only messages created at or before this RFC 3339 time (inclusive, full precision). Anchors an older-history query; continue it with pageToken and unchanged parameters so messages sharing the boundary timestamp are not skipped.
+          name: until
+          in: query
+      responses:
+        "200":
+          description: Shaped messages in the requested order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleChatMessage"
+                  nextPageToken:
+                    type: string
+                    nullable: true
+                required:
+                  - messages
+                  - nextPageToken
+        "400":
+          description: Invalid space id or query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Required Chat scope has not been granted, or Chat API access was denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Space not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+    post:
+      tags:
+        - Google
+      summary: Post a Google Chat message (optionally as a thread reply) as the calling user
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 4096
+                threadName:
+                  type: string
+                  pattern: ^spaces\/([A-Za-z0-9_-]{1,128})\/threads\/[A-Za-z0-9_.-]{1,256}$
+                  description: Reply in this thread (`spaces/{space}/threads/{thread}`). Honored only when the space supports thread replies (see GoogleChatSpace.supportsThreadReplies); otherwise the message is sent as an ordinary message. Requires the spaces read scope.
+              required:
+                - text
+              additionalProperties: false
+      responses:
+        "201":
+          description: The created message.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatMessage"
+        "400":
+          description: Invalid body or space id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Required Chat send scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Space not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
   /api/google/drive/files:
     get:
       tags:

@@ -49,4 +49,19 @@ describe('api Gmail helpers', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({ to: ['a@x.com'], subject: 'Hi', text: 'Body' });
   });
+
+  it('exposes the server error code and status on a failed request', async () => {
+    fetchSpy.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: 'scope', code: 'google_chat_send_scope_required' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+    await expect(api.sendGoogleChatMessage('AAA', { text: 'hi' })).rejects.toMatchObject({
+      status: 403,
+      code: 'google_chat_send_scope_required',
+    });
+  });
 });

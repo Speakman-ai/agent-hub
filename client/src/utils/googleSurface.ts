@@ -125,3 +125,90 @@ export function hasSheetsWriteScope(status: GoogleStatusLike): boolean {
 export function hasDriveFileScope(status: GoogleStatusLike): boolean {
   return hasGoogleScope(status, DRIVE_FILE_SCOPE);
 }
+
+// Google Chat scopes. The pane lists spaces (`chat.spaces.readonly`, sensitive),
+// reads messages (`chat.messages.readonly`, restricted like every Gmail read
+// scope), and posts replies (`chat.messages.create`, sensitive). The broader
+// `chat.spaces` / `chat.messages` scopes satisfy the predicates for accounts
+// that granted them elsewhere. Mirrors the server gates in google-scopes.ts.
+export const CHAT_SPACES_READONLY_SCOPE = 'https://www.googleapis.com/auth/chat.spaces.readonly';
+export const CHAT_SPACES_SCOPE = 'https://www.googleapis.com/auth/chat.spaces';
+export const CHAT_MESSAGES_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/chat.messages.readonly';
+export const CHAT_MESSAGES_CREATE_SCOPE = 'https://www.googleapis.com/auth/chat.messages.create';
+export const CHAT_MESSAGES_SCOPE = 'https://www.googleapis.com/auth/chat.messages';
+
+// Optional: who is in a DM or group chat, which have no display name.
+export const CHAT_MEMBERSHIPS_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/chat.memberships.readonly';
+export const CHAT_MEMBERSHIPS_SCOPE = 'https://www.googleapis.com/auth/chat.memberships';
+
+export const CHAT_SURFACE_SCOPES = [
+  CHAT_SPACES_READONLY_SCOPE,
+  CHAT_MESSAGES_READONLY_SCOPE,
+  CHAT_MESSAGES_CREATE_SCOPE,
+  CHAT_MEMBERSHIPS_READONLY_SCOPE,
+];
+
+/** True when the account can list spaces AND read their messages. */
+export function hasChatReadScope(status: GoogleStatusLike): boolean {
+  const spaces =
+    hasGoogleScope(status, CHAT_SPACES_READONLY_SCOPE) || hasGoogleScope(status, CHAT_SPACES_SCOPE);
+  const messages =
+    hasGoogleScope(status, CHAT_MESSAGES_READONLY_SCOPE) ||
+    hasGoogleScope(status, CHAT_MESSAGES_SCOPE);
+  return spaces && messages;
+}
+
+export type ChatConsent = {
+  canRead: boolean;
+  canSend: boolean;
+  /** Scopes to request to unlock reading (empty when reading already works). */
+  missingRead: string[];
+  /** Scopes to request to unlock sending (empty when sending already works). */
+  missingSend: string[];
+  /** Scopes to request to name DMs and group chats by participant. */
+  missingNames: string[];
+};
+
+/**
+ * Single source of truth for which Chat capabilities the account has and which
+ * scopes would unlock the rest. Every enable affordance in the Chat pane is
+ * driven from this, so a partial grant can never leave a capability with no
+ * way to request it.
+ */
+export function chatConsent(status: GoogleStatusLike): ChatConsent {
+  const hasSpaces =
+    hasGoogleScope(status, CHAT_SPACES_READONLY_SCOPE) || hasGoogleScope(status, CHAT_SPACES_SCOPE);
+  const hasMessagesRead =
+    hasGoogleScope(status, CHAT_MESSAGES_READONLY_SCOPE) ||
+    hasGoogleScope(status, CHAT_MESSAGES_SCOPE);
+  const canSend = hasChatSendScope(status);
+  const missingRead = [
+    ...(hasSpaces ? [] : [CHAT_SPACES_READONLY_SCOPE]),
+    ...(hasMessagesRead ? [] : [CHAT_MESSAGES_READONLY_SCOPE]),
+  ];
+  return {
+    canRead: missingRead.length === 0,
+    canSend,
+    missingRead,
+    missingSend: canSend ? [] : [CHAT_MESSAGES_CREATE_SCOPE],
+    missingNames:
+      hasGoogleScope(status, CHAT_MEMBERSHIPS_READONLY_SCOPE) ||
+      hasGoogleScope(status, CHAT_MEMBERSHIPS_SCOPE)
+        ? []
+        : [CHAT_MEMBERSHIPS_READONLY_SCOPE],
+  };
+}
+
+/** Proxy error codes meaning a Chat scope is missing or was revoked. */
+export const CHAT_READ_SCOPE_ERROR = 'google_chat_scope_required';
+export const CHAT_SEND_SCOPE_ERROR = 'google_chat_send_scope_required';
+
+/** True when the account can post Chat messages. */
+export function hasChatSendScope(status: GoogleStatusLike): boolean {
+  return (
+    hasGoogleScope(status, CHAT_MESSAGES_CREATE_SCOPE) ||
+    hasGoogleScope(status, CHAT_MESSAGES_SCOPE)
+  );
+}

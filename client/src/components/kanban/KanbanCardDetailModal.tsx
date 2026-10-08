@@ -17,6 +17,7 @@ import type { KanbanCardDetailState } from '../../hooks/useKanbanCardDetail';
 
 import EpicLeadUserField from '../EpicLeadUserField';
 import type { AssignableUser } from '../../utils/kanbanUserFilter';
+import { isImeComposing } from '../../utils/keyboard';
 
 const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
 
@@ -461,10 +462,22 @@ export default function KanbanCardDetailModal({
                             );
                           })()}
                         <button
-                          onClick={() => {
+                          onClick={async () => {
+                            if (!onNavigateToSession) return;
+                            const sessionId = selectedCard.session_id;
                             const agent = agents.find((a: any) => a.name === selectedCard.assignee);
-                            if (agent && onNavigateToSession) {
-                              onNavigateToSession(agent.id, selectedCard.session_id);
+                            if (agent) {
+                              onNavigateToSession(agent.id, sessionId);
+                              return;
+                            }
+                            // Cards linked to a session at creation time carry no
+                            // assignee, so resolve the agent from the session itself.
+                            try {
+                              const session = await api.getSession(sessionId);
+                              if (session?.agent_id)
+                                onNavigateToSession(session.agent_id, sessionId);
+                            } catch (err: any) {
+                              console.error('Failed to open linked session:', err);
                             }
                           }}
                           className="w-full text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors"
@@ -1054,7 +1067,7 @@ export default function KanbanCardDetailModal({
                     value={newComment}
                     onChange={(e: any) => setNewComment(e.target.value)}
                     onKeyDown={(e: any) => {
-                      if (e.key === 'Enter') handleAddComment();
+                      if (e.key === 'Enter' && !isImeComposing(e)) handleAddComment();
                     }}
                     placeholder="Add a comment..."
                     className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"

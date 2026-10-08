@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHand
 import { partitionAttachmentFiles } from '../utils/attachmentValidation';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { formatShortcut, getPlatform } from '../utils/shortcuts';
+import { isImeComposing } from '../utils/keyboard';
 
 // Keep in sync with the `toggle-microphone` entry in utils/shortcuts.js.
 const MIC_TOGGLE_BINDING = 'Mod+Alt+M';
@@ -473,6 +474,9 @@ function MessageInput(
   };
 
   const handleKeyDown = (e: any) => {
+    // During IME composition Enter, arrows, and Escape belong to the IME: they
+    // must not send, pick an autocomplete row, or cancel.
+    if (isImeComposing(e)) return;
     if (mentionQuery !== null && mentionAgents.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();

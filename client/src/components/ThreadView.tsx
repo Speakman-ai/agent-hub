@@ -4,6 +4,7 @@ import { api } from '../utils/api';
 import { isRetiredHeartbeatThread } from '@shared/utils/retiredHeartbeatThread';
 import { MarkdownContent } from './MarkdownRenderer';
 import ForwardSessionModal from './ForwardSessionModal';
+import { isSubmitEnter } from '../utils/keyboard';
 
 /**
  * Classify an entry for rendering. Daemon-written rows ('system') render
@@ -154,7 +155,7 @@ function ThreadViewInner(
 
   const handleComposerKeyDown = (e: any) => {
     // Enter to send, Shift+Enter for newline (chat convention).
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (isSubmitEnter(e)) {
       e.preventDefault();
       handleSend();
     }

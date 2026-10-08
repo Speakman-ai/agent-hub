@@ -31,6 +31,7 @@ import WikiConsultedChip from './WikiConsultedChip';
 import FinalizeTerminalBlock from './finalize/blocks/FinalizeTerminalBlock';
 import FinalizeReviewNoticeBlock from './finalize/blocks/FinalizeReviewNoticeBlock';
 import FinalizeFixDispatchBlock from './finalize/blocks/FinalizeFixDispatchBlock';
+import { isImeComposing, isSubmitEnter } from '../utils/keyboard';
 
 function ImageLightbox({ src, alt, onClose }: any) {
   return (
@@ -621,7 +622,8 @@ function ChatMessage({
               value={editValue}
               onChange={(e: any) => setEditValue(e.target.value)}
               onKeyDown={(e: any) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
+                if (isImeComposing(e)) return;
+                if (isSubmitEnter(e)) {
                   e.preventDefault();
                   if (editValue.trim() && editValue !== message.content) {
                     onEditQueued(message.id, editValue.trim());

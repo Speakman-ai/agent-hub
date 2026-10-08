@@ -7,6 +7,7 @@ import {
   LifeBuoy,
   ListTodo,
   Mail,
+  MessagesSquare,
   ScrollText,
 } from 'lucide-react';
 import BrandLogo from './BrandLogo';
@@ -27,6 +28,7 @@ const PANE_META: Record<
   todos: { label: 'Todos', icon: ListTodo, testId: 'hub-pane-todos' },
   calendar: { label: 'Calendar', icon: CalendarDays, testId: 'hub-pane-calendar' },
   mail: { label: 'Mail', icon: Mail, testId: 'hub-pane-mail' },
+  chat: { label: 'Chat', icon: MessagesSquare, testId: 'hub-pane-chat' },
   support: { label: 'Support', icon: LifeBuoy, testId: 'hub-pane-support' },
 };
 
@@ -41,6 +43,7 @@ export interface HubPageProps {
   todos: ReactNode;
   calendar: ReactNode;
   mail: ReactNode;
+  chat: ReactNode;
   support: ReactNode;
   /** When true, show the Assistant tab in the pane strip (narrow viewports). */
   mobileAssistantTab?: boolean;
@@ -54,7 +57,7 @@ function workspaceBody(
   active: HubWorkspacePane,
   panes: Pick<
     HubPageProps,
-    'today' | 'summary' | 'org' | 'todos' | 'calendar' | 'mail' | 'support'
+    'today' | 'summary' | 'org' | 'todos' | 'calendar' | 'mail' | 'chat' | 'support'
   >,
 ): ReactNode {
   switch (active) {
@@ -70,6 +73,8 @@ function workspaceBody(
       return panes.calendar;
     case 'mail':
       return panes.mail;
+    case 'chat':
+      return panes.chat;
     case 'support':
       return panes.support;
     default: {
@@ -92,6 +97,7 @@ export default function HubPage({
   todos,
   calendar,
   mail,
+  chat,
   support,
   mobileAssistantTab = false,
   mobileTab = 'today',
@@ -106,6 +112,7 @@ export default function HubPage({
     todos,
     calendar,
     mail,
+    chat,
     support,
   });
 

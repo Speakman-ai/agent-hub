@@ -1,13 +1,14 @@
 ---
 name: google
 description: >-
-  Read and write the SESSION OWNER's Google Workspace (Calendar, Gmail, Sheets,
-  Drive, Docs)
+  Read and write the SESSION OWNER's Google Workspace (Calendar, Gmail, Chat,
+  Sheets, Drive, Docs)
   through Agent Hub's server-side proxy. The Hub holds the OAuth tokens
   (encrypted at rest) and scopes every call to the user who linked their Google
   account, so wrappers never touch a Google access token. TRIGGER when the user
   asks to read/list/search/create calendar events, read/search/send/label Gmail
-  threads or messages, read/append/update Google Sheets values, or save/link
+  threads or messages, list Google Chat spaces/messages or reply in a Chat
+  thread, read/append/update Google Sheets values, or save/link
   files in Google Drive or Google Docs for the
   account linked in Settings → Account → Google. Also trigger on "my calendar",
   "my agenda", "my inbox", "email <person>", "add to the spreadsheet" when an
@@ -22,8 +23,8 @@ keep-coding-instructions: true
 
 # Google Workspace
 
-Read and act on the **session owner's** Google Calendar, Gmail, Sheets, Drive,
-and Docs via the Hub proxy under `/api/google/*`. The connection is
+Read and act on the **session owner's** Google Calendar, Gmail, Chat, Sheets,
+Drive, and Docs via the Hub proxy under `/api/google/*`. The connection is
 per-Hub-user and lives in **Settings → Account → Google**. All calls run
 server-side: the Hub fetches a fresh access token for the owner, calls Google,
 and returns shaped JSON. **Agents never receive a Google token.**
@@ -35,6 +36,11 @@ Only **non-sensitive + sensitive** scopes, requested incrementally per surface:
 - **Calendar** — read/create/update events (`calendar.events`).
 - **Gmail** — read threads, send mail, add/remove labels (`gmail.modify` +
   `gmail.send`). No permanent delete, no `gmail.readonly`.
+- **Chat** — list spaces/DMs, read messages, post or reply in a thread
+  (`chat.spaces.readonly`, `chat.messages.readonly`, `chat.messages.create`,
+  plus optional `chat.memberships.readonly`, which names unnamed DMs and group
+  chats by their `participants` in `google-chat.sh spaces`).
+  Google Workspace accounts only.
 - **Sheets** — read and write values (`spreadsheets`).
 - **Drive / Docs** — list/get app-accessible files and save new files
   (`drive.file`). Docs creation uses Drive upload conversion to
@@ -62,6 +68,11 @@ scripts/google-mail.sh threads [--q "is:unread"] [--label INBOX]… [--max N] [-
 scripts/google-mail.sh thread  <threadId> [--format full|metadata|minimal]
 scripts/google-mail.sh send    --to a@x.com… [--cc …] [--bcc …] --subject "…" (--text "…" | --html "…") [--thread <id>]
 scripts/google-mail.sh modify  <messageId> [--add-label ID]… [--remove-label ID]…
+
+# Chat (<space> is AAAA or spaces/AAAA; --thread takes spaces/AAAA/threads/BBBB)
+scripts/google-chat.sh spaces   [--max N]
+scripts/google-chat.sh messages <space> [--thread NAME] [--max N] [--asc]
+scripts/google-chat.sh send     <space> --text "…" [--thread NAME]
 
 # Sheets
 scripts/google-sheets.sh get    <spreadsheetId>
@@ -106,7 +117,13 @@ shape and response examples.
 ## Guardrails
 
 - Never print or log a Google access token — the proxy never returns one.
-- Writes (create event, send mail, modify labels, append/update cells) act on
+- A session seeded from the Chat pane carries a `**Chat reference:**` line
+  with the space name, plus the thread name when the space keeps replies in
+  threads (`supportsThreadReplies`). DMs and group chats have no thread
+  reference; `--thread` is ignored there. When the task is done, draft the reply and
+  show it to the user first. Post it with `google-chat.sh send <space> --thread
+  <thread>` only after they approve: it goes out under their name.
+- Writes (create event, send mail, Chat messages, modify labels, append/update cells) act on
   the owner's real account. Confirm intent for anything user-visible (an email
   going out, an invite, a destructive overwrite) unless the user already said
   "go ahead".

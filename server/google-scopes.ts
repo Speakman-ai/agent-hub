@@ -66,3 +66,37 @@ export function hasSheetsWriteScope(scopes: string[]): boolean {
   // Only the full `spreadsheets` scope can mutate; readonly cannot.
   return scopes.includes(SHEETS_SCOPE);
 }
+
+// Google Chat. Listing spaces needs `chat.spaces.readonly` (sensitive); reading
+// messages needs `chat.messages.readonly` (restricted, same tier as every Gmail
+// read scope); posting needs `chat.messages.create` (sensitive). The broader
+// `chat.spaces` / `chat.messages` scopes also satisfy these gates for accounts
+// that granted them, but the surface never requests them.
+export const CHAT_SPACES_READONLY_SCOPE = 'https://www.googleapis.com/auth/chat.spaces.readonly';
+export const CHAT_SPACES_SCOPE = 'https://www.googleapis.com/auth/chat.spaces';
+export const CHAT_MESSAGES_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/chat.messages.readonly';
+export const CHAT_MESSAGES_CREATE_SCOPE = 'https://www.googleapis.com/auth/chat.messages.create';
+export const CHAT_MESSAGES_SCOPE = 'https://www.googleapis.com/auth/chat.messages';
+// Optional: participant names for DMs and group chats, which have no display name.
+export const CHAT_MEMBERSHIPS_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/chat.memberships.readonly';
+export const CHAT_MEMBERSHIPS_SCOPE = 'https://www.googleapis.com/auth/chat.memberships';
+
+export function hasChatMembershipsReadScope(scopes: string[]): boolean {
+  return (
+    scopes.includes(CHAT_MEMBERSHIPS_READONLY_SCOPE) || scopes.includes(CHAT_MEMBERSHIPS_SCOPE)
+  );
+}
+
+export function hasChatSpacesReadScope(scopes: string[]): boolean {
+  return scopes.includes(CHAT_SPACES_READONLY_SCOPE) || scopes.includes(CHAT_SPACES_SCOPE);
+}
+
+export function hasChatMessagesReadScope(scopes: string[]): boolean {
+  return scopes.includes(CHAT_MESSAGES_READONLY_SCOPE) || scopes.includes(CHAT_MESSAGES_SCOPE);
+}
+
+export function hasChatMessagesCreateScope(scopes: string[]): boolean {
+  return scopes.includes(CHAT_MESSAGES_CREATE_SCOPE) || scopes.includes(CHAT_MESSAGES_SCOPE);
+}

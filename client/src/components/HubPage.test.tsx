@@ -10,6 +10,7 @@ const panes = {
   todos: <span>todos-body</span>,
   calendar: <span>calendar-body</span>,
   mail: <span>mail-body</span>,
+  chat: <span>chat-body</span>,
   support: <span>support-body</span>,
 };
 
@@ -27,6 +28,7 @@ describe('HubPage', () => {
         todos={<div>todos-body</div>}
         calendar={<div>calendar-body</div>}
         mail={<div>mail-body</div>}
+        chat={<div>chat-body</div>}
         support={<div>support-body</div>}
       />,
     );
@@ -59,6 +61,10 @@ describe('HubPage', () => {
     const { rerender } = render(<HubPage pane="mail" onPaneChange={() => undefined} {...panes} />);
     expect(screen.getByText('mail-body')).toBeInTheDocument();
     expect(screen.queryByText('today-body')).not.toBeInTheDocument();
+
+    rerender(<HubPage pane="chat" onPaneChange={() => undefined} {...panes} />);
+    expect(screen.getByText('chat-body')).toBeInTheDocument();
+    expect(screen.getByTestId('hub-pane-chat')).toHaveTextContent('Chat');
 
     rerender(<HubPage pane="todos" onPaneChange={() => undefined} {...panes} />);
     expect(screen.getByText('todos-body')).toBeInTheDocument();

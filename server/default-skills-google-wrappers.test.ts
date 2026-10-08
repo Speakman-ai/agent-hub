@@ -27,6 +27,7 @@ const CAL = path.join(SCRIPTS, 'google-cal.sh');
 const MAIL = path.join(SCRIPTS, 'google-mail.sh');
 const SHEETS = path.join(SCRIPTS, 'google-sheets.sh');
 const DRIVE = path.join(SCRIPTS, 'google-drive.sh');
+const CHAT = path.join(SCRIPTS, 'google-chat.sh');
 
 let stubDir = '';
 let curlLog = '';
@@ -443,6 +444,65 @@ describe('google-drive.sh', () => {
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('uploads are limited');
     expect(r.log).toBe('');
+  });
+});
+
+describe('google-chat.sh', () => {
+  it('spaces → GET /chat/spaces with page size', () => {
+    const r = run(CHAT, ['spaces', '--max', '20']);
+    expect(r.status).toBe(0);
+    expect(r.log).toContain('METHOD=GET');
+    expect(r.log).toContain('URL=http://hub.test/api/google/chat/spaces?');
+    expect(queryParams(r.log).get('pageSize')).toBe('20');
+    expect(r.log).toContain('X-Agent-Hub-Session-Id: sess-owner-1');
+  });
+
+  it('messages accepts a spaces/ resource name and forwards thread + order', () => {
+    const r = run(CHAT, ['messages', 'spaces/AAA', '--thread', 'spaces/AAA/threads/T1', '--asc']);
+    expect(r.status).toBe(0);
+    expect(r.log).toContain('URL=http://hub.test/api/google/chat/spaces/AAA/messages?');
+    const qp = queryParams(r.log);
+    expect(qp.get('threadName')).toBe('spaces/AAA/threads/T1');
+    expect(qp.get('order')).toBe('asc');
+  });
+
+  it('send → POST a thread reply with text', () => {
+    const r = run(CHAT, [
+      'send',
+      'AAA',
+      '--text',
+      'Done, staging is reset.',
+      '--thread',
+      'spaces/AAA/threads/T1',
+    ]);
+    expect(r.status).toBe(0);
+    expect(r.log).toContain('METHOD=POST');
+    expect(r.log).toContain('URL=http://hub.test/api/google/chat/spaces/AAA/messages');
+    expect(requestBody(r.log)).toEqual({
+      text: 'Done, staging is reset.',
+      threadName: 'spaces/AAA/threads/T1',
+    });
+  });
+
+  it('rejects a space id with path characters before calling the proxy', () => {
+    const r = run(CHAT, ['messages', '../users']);
+    expect(r.status).toBe(2);
+    expect(r.log).toBe('');
+  });
+
+  it('send without --text exits 2', () => {
+    const r = run(CHAT, ['send', 'AAA']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('--text is required');
+  });
+
+  it('explains a missing Chat scope', () => {
+    const r = run(CHAT, ['spaces'], {
+      status: '403',
+      body: '{"error":"scope","code":"google_chat_scope_required"}',
+    });
+    expect(r.status).toBe(3);
+    expect(r.stderr).toContain('Google Chat access has not been granted');
   });
 });
 

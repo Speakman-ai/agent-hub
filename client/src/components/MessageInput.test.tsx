@@ -79,6 +79,23 @@ describe('MessageInput mid-stream behavior', () => {
     expect(screen.getByRole('button', { name: /queue message/i })).toBeInTheDocument();
   });
 
+  it('does not send on Enter that confirms an IME composition', () => {
+    const onSend = vi.fn();
+    render(<MessageInput {...baseProps} onSend={onSend} isProcessing={false} />);
+
+    const textarea = screen.getByRole('textbox');
+    fireEvent.change(textarea, { target: { value: 'にほんご' } } as any);
+    // Chrome/Firefox: keydown during composition carries isComposing.
+    fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true } as any);
+    // Safari: confirming keydown arrives with keyCode 229.
+    fireEvent.keyDown(textarea, { key: 'Enter', keyCode: 229 } as any);
+    expect(onSend).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(textarea, { key: 'Enter' } as any);
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect((onSend as any).mock.calls[0][0]).toBe('にほんご');
+  });
+
   it('when not processing, Enter sends normally (interrupt=false)', () => {
     const onSend = vi.fn();
     render(<MessageInput {...baseProps} onSend={onSend} isProcessing={false} />);

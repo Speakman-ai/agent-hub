@@ -17,7 +17,8 @@ export type { CaptureSourceType, GmailCaptureInput };
 
 /** Capture triple stamped on a card by board create. */
 export interface CaptureCardSource {
-  sourceType: CaptureSourceType;
+  // `manual` carries sources with no dedicated provenance type yet (Google Chat).
+  sourceType: CaptureSourceType | 'manual';
   sourceId: string | null;
   sourceMeta: Record<string, unknown>;
 }
@@ -92,4 +93,60 @@ const DIRECT_CAPTURE_SOURCE_TYPES = new Set(['email', 'calendar']);
 export function cardOriginDeepLink(card: CardOriginLike): string | null {
   if (!card.source_type || !DIRECT_CAPTURE_SOURCE_TYPES.has(card.source_type)) return null;
   return safeCaptureDeepLink(card.source_meta?.deepLink);
+}
+
+/** A Google Chat message as loaded by the Chat pane, narrowed to what a card needs. */
+export interface ChatCaptureInput {
+  /** Message resource name, e.g. `spaces/AAA/messages/BBB`. */
+  messageName?: string | null;
+  spaceName?: string | null;
+  threadName?: string | null;
+  spaceLabel?: string | null;
+  sender?: string | null;
+  text?: string | null;
+  /** Reopen URL for the space; must be a google.com URL or it is dropped. */
+  deepLink?: string | null;
+}
+
+const MAX_CHAT_CARD_TITLE = 140;
+const MAX_CHAT_CARD_BODY = 8_000;
+
+/**
+ * Chat message → card draft. Chat has no card source type of its own yet, so
+ * the card is stamped `manual` with the message name as `sourceId` and the
+ * space link in `sourceMeta` and the description.
+ */
+export function buildChatCardDraft(input: ChatCaptureInput): CaptureCardDraft {
+  const text = (input.text || '').trim();
+  const firstLine = text.split('\n')[0].trim().replace(/\s+/g, ' ');
+  const spaceLabel = (input.spaceLabel || '').trim();
+  const sender = (input.sender || '').trim();
+  const messageName = (input.messageName || '').trim() || null;
+  const deepLink = safeCaptureDeepLink(input.deepLink);
+
+  const fallback = spaceLabel ? `Chat request in ${spaceLabel}` : 'Chat request';
+  const title =
+    firstLine.length > MAX_CHAT_CARD_TITLE
+      ? `${firstLine.slice(0, MAX_CHAT_CARD_TITLE - 1)}…`
+      : firstLine || fallback;
+
+  const header = [sender && `From ${sender}`, spaceLabel && `in ${spaceLabel}`]
+    .filter(Boolean)
+    .join(' ');
+  const body =
+    text.length > MAX_CHAT_CARD_BODY ? `${text.slice(0, MAX_CHAT_CARD_BODY - 1)}…` : text;
+  const parts = [header, body, deepLink && `Source: ${deepLink}`].filter(Boolean) as string[];
+
+  const sourceMeta: Record<string, unknown> = { kind: 'google-chat' };
+  if (messageName) sourceMeta.messageName = messageName;
+  if (input.spaceName) sourceMeta.spaceName = input.spaceName;
+  if (input.threadName) sourceMeta.threadName = input.threadName;
+  if (sender) sourceMeta.from = sender;
+  if (deepLink) sourceMeta.deepLink = deepLink;
+
+  return {
+    title,
+    ...(parts.length ? { description: parts.join('\n\n') } : {}),
+    source: { sourceType: 'manual', sourceId: messageName, sourceMeta },
+  };
 }

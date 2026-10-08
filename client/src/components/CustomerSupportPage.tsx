@@ -31,6 +31,7 @@ import ReplayPlayerModal from './ReplayPlayerModal';
 import VotingScaffolderModal from './VotingScaffolderModal';
 import { parseReplayIdFromRef } from '../utils/replayPlayer';
 import { MarkdownContent } from './MarkdownRenderer';
+import { isImeComposing } from '../utils/keyboard';
 
 function relativeTime(ts: any) {
   if (!ts) return '';
@@ -396,6 +397,7 @@ function StatusSelect({ projectId, ticket, stretched = false, onUpdated }: any) 
           value={reasonDraft}
           onChange={(e: any) => setReasonDraft(e.target.value)}
           onKeyDown={(e: any) => {
+            if (isImeComposing(e)) return;
             if (e.key === 'Enter') submit();
             if (e.key === 'Escape') setReasonDraft(null);
           }}

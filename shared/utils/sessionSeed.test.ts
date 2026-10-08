@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildEmailSessionSeed, buildTodoSessionSeed } from './sessionSeed';
+import { buildChatSessionSeed, buildEmailSessionSeed, buildTodoSessionSeed } from './sessionSeed';
 
 describe('buildEmailSessionSeed', () => {
   it('includes subject, headers, link, and prefers full body over snippet', () => {
@@ -63,5 +63,46 @@ describe('buildTodoSessionSeed', () => {
     const seed = buildTodoSessionSeed({ title: 'x', originLabel: 'From calendar' });
     expect(seed).toContain('**Origin:** From calendar');
     expect(seed).not.toContain(' — ');
+  });
+});
+
+describe('buildChatSessionSeed', () => {
+  it('includes space, sender, chat reference, context, and the reply instruction', () => {
+    const seed = buildChatSessionSeed({
+      spaceLabel: 'Acme support',
+      spaceName: 'spaces/AAA',
+      threadName: 'spaces/AAA/threads/T1',
+      sender: 'Dana',
+      text: 'Please reset staging',
+      context: [{ sender: 'Dana', text: 'Staging is down\nmore detail' }, { text: '   ' }],
+      deepLink: 'https://chat.google.com/room/AAA',
+    });
+    expect(seed).toContain('**Space:** Acme support');
+    expect(seed).toContain('**From:** Dana');
+    expect(seed).toContain('**Chat reference:** spaces/AAA (thread spaces/AAA/threads/T1)');
+    expect(seed).toContain('> Dana: Staging is down');
+    expect(seed).not.toContain('more detail');
+    expect(seed).toContain('Please reset staging');
+    expect(seed).toContain('google-chat.sh send');
+    expect(seed).toContain('only after I approve');
+  });
+
+  it('omits the chat reference and reply hint without a space name', () => {
+    const seed = buildChatSessionSeed({ text: '' });
+    expect(seed).toContain('(no text)');
+    expect(seed).not.toContain('Chat reference');
+    expect(seed).not.toContain('google-chat.sh');
+  });
+
+  it('points a non-threaded conversation reply at the conversation, not a thread', () => {
+    const seed = buildChatSessionSeed({
+      spaceName: 'spaces/DM',
+      text: 'invoice wrong',
+      context: [{ sender: 'Dana', text: 'hi' }],
+    });
+    expect(seed).toContain('**Chat reference:** spaces/DM\n');
+    expect(seed).toContain('Earlier in the conversation:');
+    expect(seed).toContain('Post it in that conversation');
+    expect(seed).not.toContain('--thread');
   });
 });

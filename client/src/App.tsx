@@ -92,6 +92,7 @@ import CustomerSupportPage from './components/CustomerSupportPage';
 import SupportOverviewPage from './components/SupportOverviewPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
+import GoogleChatPage from './components/GoogleChatPage';
 import TodosPage from './components/TodosPage';
 import PersonalDashboard from './components/PersonalDashboard';
 import DailySummaryPage from './components/DailySummaryPage';
@@ -7108,6 +7109,12 @@ export default function App({ initialView }: any = {}) {
                   }
                   mail={
                     <GmailPage
+                      onOpenAccountSettings={() => setCurrentView('settings:account')}
+                      onSessionStarted={handleOpenCreatedSession}
+                    />
+                  }
+                  chat={
+                    <GoogleChatPage
                       onOpenAccountSettings={() => setCurrentView('settings:account')}
                       onSessionStarted={handleOpenCreatedSession}
                     />

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/_common.sh — shared helpers for the `google` skill wrappers
-# (google-cal.sh, google-mail.sh, google-sheets.sh).
+# (google-cal.sh, google-mail.sh, google-sheets.sh, google-drive.sh, google-chat.sh).
 #
 # Source, don't exec:
 #
@@ -99,13 +99,15 @@ _google_explain_error() {
       ;;
     google_calendar_scope_required | google_gmail_scope_required | \
       google_gmail_send_scope_required | google_sheets_scope_required | \
-      google_sheets_write_scope_required | google_drive_scope_required)
+      google_sheets_write_scope_required | google_drive_scope_required | \
+      google_chat_scope_required | google_chat_send_scope_required)
       local surface="this Google surface"
       case "$code" in
         google_calendar_*) surface="Google Calendar" ;;
         google_gmail_*) surface="Gmail" ;;
         google_sheets_*) surface="Google Sheets" ;;
         google_drive_*) surface="Google Drive" ;;
+        google_chat_*) surface="Google Chat" ;;
       esac
       echo "google: ${surface} access has not been granted for the session owner." >&2
       echo "google: enable it under Settings → Account → Google (incremental consent)." >&2

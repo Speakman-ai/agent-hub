@@ -281,6 +281,7 @@ import createGoogleCalendarRoutes from './routes/google-calendar.js';
 import createGoogleGmailRoutes from './routes/google-gmail.js';
 import createGoogleSheetsRoutes from './routes/google-sheets.js';
 import createGoogleDriveRoutes from './routes/google-drive.js';
+import createGoogleChatRoutes from './routes/google-chat.js';
 import type { AddressInfo } from 'net';
 import { setActualPort } from './server-port.js';
 
@@ -2221,6 +2222,7 @@ app.use(createGoogleCalendarRoutes(routeDeps));
 app.use(createGoogleGmailRoutes(routeDeps));
 app.use(createGoogleSheetsRoutes(routeDeps));
 app.use(createGoogleDriveRoutes(routeDeps));
+app.use(createGoogleChatRoutes(routeDeps));
 
 const server = createServer(app);
 const drainingLock = new Set<string>();

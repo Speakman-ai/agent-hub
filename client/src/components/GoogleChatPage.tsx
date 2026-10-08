@@ -1,0 +1,874 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  CornerDownRight,
+  ExternalLink,
+  Loader2,
+  MessageSquarePlus,
+  MessagesSquare,
+  Paperclip,
+  RefreshCw,
+  Reply,
+  Send,
+  Ticket,
+  X,
+} from 'lucide-react';
+import { api } from '../utils/api';
+import type { SessionWire } from '@shared/types';
+import { buildChatSessionSeed } from '@shared/utils/sessionSeed';
+import { buildChatCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
+import StartSessionModal from './StartSessionModal';
+import CaptureToTicketModal from './CaptureToTicketModal';
+import { formatDateTime } from '../utils/time';
+import {
+  CHAT_READ_SCOPE_ERROR,
+  CHAT_SEND_SCOPE_ERROR,
+  CHAT_SURFACE_SCOPES,
+  chatConsent,
+  type GoogleStatusLike,
+} from '../utils/googleSurface';
+import {
+  chatSenderLabel,
+  chatSpaceDeepLink,
+  chatSpaceLabel,
+  chatSeedContext,
+  sortSpacesByActivity,
+  filterSpaces,
+  reconcileRange,
+  oldestCreateTime,
+  uniqueMessages,
+  mergeOlderPage,
+  type ChatMessage,
+  type ChatSpace,
+} from '../utils/googleChat';
+import { isSubmitEnter } from '../utils/keyboard';
+
+type GoogleStatus = NonNullable<GoogleStatusLike>;
+
+// New customer messages should show up without a manual refresh while the
+// pane is open. Polling is the simple path; push via the Workspace Events API
+// would remove it.
+const POLL_MS = 30_000;
+const MESSAGE_PAGE = 50;
+const SPACE_PAGE = 1000;
+// Google caps a page at 1000 spaces; 20 pages is far past any real account and
+// keeps a misbehaving token from looping forever.
+const MAX_SPACE_PAGES = 20;
+// A refresh re-reads the whole loaded range; past 5 x 1000 messages it keeps
+// the newest slice instead.
+const REFRESH_PAGE = 1000;
+const MAX_REFRESH_PAGES = 5;
+
+type SpaceView = {
+  /**
+   * Loaded history, oldest first. It always covers one contiguous time range
+   * from its oldest message to now, and every refresh re-reads that whole
+   * range, so edits and deletions anywhere in it are picked up.
+   */
+  messages: ChatMessage[];
+  loaded: boolean;
+  loading: boolean;
+  error: string | null;
+  /** False once the start of the space has been reached. */
+  hasOlder: boolean;
+  /**
+   * The in-progress older-history query. It is anchored once at the oldest
+   * loaded message (inclusive) and then continued with Google's page token,
+   * parameters unchanged, so messages sharing the boundary timestamp are all
+   * returned instead of being skipped by a fresh strict-before query per page.
+   */
+  older: { until: string; pageToken: string | null } | null;
+  /**
+   * Bumped every time the history is replaced wholesale (first load, capped
+   * refresh). Older-page responses are tied to the generation they were
+   * requested in and dropped if it changed, however many replacements
+   * happened in between.
+   */
+  generation: number;
+  loadingOlder: boolean;
+  olderError: string | null;
+};
+
+type Composer = {
+  text: string;
+  replyTo: ChatMessage | null;
+  /** Bumped on every user edit and on submit; see `send`. */
+  rev: number;
+  sending: boolean;
+  error: string | null;
+};
+
+const EMPTY_VIEW: SpaceView = {
+  messages: [],
+  loaded: false,
+  loading: false,
+  error: null,
+  hasOlder: false,
+  older: null,
+  generation: 0,
+  loadingOlder: false,
+  olderError: null,
+};
+const EMPTY_COMPOSER: Composer = {
+  text: '',
+  replyTo: null,
+  rev: 0,
+  sending: false,
+  error: null,
+};
+
+/** Build the "Ticket" card draft for one message. Exported for unit tests. */
+export function buildTicketDraftForMessage(
+  space: ChatSpace | null,
+  target: ChatMessage,
+): CaptureCardDraft {
+  return buildChatCardDraft({
+    messageName: target.name,
+    spaceName: target.spaceName || space?.name || null,
+    threadName: target.threadName,
+    spaceLabel: space ? chatSpaceLabel(space) : null,
+    sender: chatSenderLabel(target.sender),
+    text: target.text,
+    deepLink: chatSpaceDeepLink(space),
+  });
+}
+
+/** Build the "Start session" seed for one message. Exported for unit tests. */
+export function buildSeedForMessage(
+  space: ChatSpace | null,
+  messages: ChatMessage[],
+  target: ChatMessage,
+): { label: string; seed: string } {
+  const spaceLabel = space ? chatSpaceLabel(space) : null;
+  const threaded = !!space?.supportsThreadReplies;
+  const firstLine = (target.text || '').split('\n')[0].trim();
+  const short = firstLine.length > 60 ? `${firstLine.slice(0, 59)}…` : firstLine;
+  return {
+    label: `Chat: ${short || spaceLabel || 'message'}`,
+    seed: buildChatSessionSeed({
+      spaceLabel,
+      spaceName: target.spaceName || space?.name || null,
+      // Only spaces that keep replies in threads get a thread reference; a
+      // DM or group chat reply goes to the conversation.
+      threadName: threaded ? target.threadName : null,
+      sender: chatSenderLabel(target.sender),
+      createTime: target.createTime ? formatDateTime(target.createTime) : null,
+      text: target.text,
+      context: chatSeedContext(messages, target, threaded).map((m) => ({
+        sender: chatSenderLabel(m.sender),
+        text: m.text,
+      })),
+      deepLink: chatSpaceDeepLink(space),
+    }),
+  };
+}
+
+export default function GoogleChatPage({
+  onOpenAccountSettings,
+  onSessionStarted,
+}: {
+  onOpenAccountSettings?: () => void;
+  onSessionStarted?: (session: SessionWire) => void;
+}) {
+  const [status, setStatus] = useState<GoogleStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [oauthBusy, setOauthBusy] = useState(false);
+  const [spaces, setSpaces] = useState<ChatSpace[]>([]);
+  const [spacesLoading, setSpacesLoading] = useState(false);
+  const [spaceFilter, setSpaceFilter] = useState('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [views, setViews] = useState<Record<string, SpaceView>>({});
+  // Loaders read the range bounds from here at call time, not from a stale
+  // render closure.
+  const viewsRef = useRef(views);
+  viewsRef.current = views;
+  const [composers, setComposers] = useState<Record<string, Composer>>({});
+  const [sessionSeed, setSessionSeed] = useState<{ label: string; seed: string } | null>(null);
+  const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  // Every async result below is written to the space (or spaces list) that
+  // issued it, never to "whatever is selected now". Message loads and sends
+  // for space A therefore cannot touch B's list, spinner, or composer, no
+  // matter how switching, polling, and post-send refreshes interleave.
+  const messageSeqRef = useRef<Record<string, number>>({});
+  const spacesSeqRef = useRef(0);
+  // Enter submits via requestSubmit(), which bypasses the disabled Send
+  // button, so in-flight sends are tracked synchronously, per space.
+  const sendingRef = useRef<Set<string>>(new Set());
+  // Same reason for older-page loads: a double click lands before re-render.
+  const loadingOlderRef = useRef<Set<string>>(new Set());
+
+  const selectedSpace = spaces.find((s) => s.id === selectedId) ?? null;
+  // Every capability gate and enable action below derives from this one value.
+  const consent = chatConsent(status);
+  const { canRead, canSend } = consent;
+
+  const view = (selectedId && views[selectedId]) || EMPTY_VIEW;
+  const messages = view.messages;
+  const composer = (selectedId && composers[selectedId]) || EMPTY_COMPOSER;
+  const { text: draft, replyTo, sending, error: sendError } = composer;
+
+  const updateView = useCallback((spaceId: string, fn: (v: SpaceView) => SpaceView) => {
+    setViews((all) => ({ ...all, [spaceId]: fn(all[spaceId] || EMPTY_VIEW) }));
+  }, []);
+
+  const patchView = useCallback(
+    (spaceId: string, patch: Partial<SpaceView>) =>
+      updateView(spaceId, (v) => ({ ...v, ...patch })),
+    [updateView],
+  );
+
+  const updateComposer = useCallback((spaceId: string, fn: (c: Composer) => Composer) => {
+    setComposers((all) => ({ ...all, [spaceId]: fn(all[spaceId] || EMPTY_COMPOSER) }));
+  }, []);
+
+  /** User edits bump `rev` so async send completions can tell they happened. */
+  const editComposer = (patch: Partial<Composer>) => {
+    if (!selectedId) return;
+    updateComposer(selectedId, (c) => ({ ...c, ...patch, rev: c.rev + 1 }));
+  };
+
+  // The proxy's scope gate reads the same stored grant as /google/status, so a
+  // `*_scope_required` response means the grant changed since we loaded (for
+  // example, consent was edited in another tab). Re-read it and let `consent`
+  // re-derive the enable actions instead of showing a dead-end error.
+  const refreshStatus = useCallback(async () => {
+    try {
+      setStatus(await api.getGoogleStatus());
+    } catch {
+      /* keep the current status; the original error is already shown */
+    }
+  }, []);
+
+  const loadSpaces = useCallback(async () => {
+    const seq = ++spacesSeqRef.current;
+    const isCurrent = () => seq === spacesSeqRef.current;
+    setError(null);
+    setSpacesLoading(true);
+    try {
+      const nextStatus = await api.getGoogleStatus();
+      if (!isCurrent()) return;
+      setStatus(nextStatus);
+      if (nextStatus.connected && chatConsent(nextStatus).canRead) {
+        const list: ChatSpace[] = [];
+        let pageToken: string | undefined;
+        for (let page = 0; page < MAX_SPACE_PAGES; page++) {
+          const body = await api.listGoogleChatSpaces({ pageSize: SPACE_PAGE, pageToken });
+          if (!isCurrent()) return;
+          list.push(...(body.spaces || []).filter((s: ChatSpace) => s.id));
+          pageToken = body.nextPageToken || undefined;
+          if (!pageToken) break;
+        }
+        const sorted = sortSpacesByActivity(list);
+        setSpaces(sorted);
+        setSelectedId((current) =>
+          current && sorted.some((s) => s.id === current) ? current : (sorted[0]?.id ?? null),
+        );
+      } else {
+        setSpaces([]);
+      }
+    } catch (err: any) {
+      if (!isCurrent()) return;
+      setError(err.message || 'Failed to load Google Chat');
+      setSpaces([]);
+    } finally {
+      if (isCurrent()) {
+        setLoading(false);
+        setSpacesLoading(false);
+      }
+    }
+  }, []);
+
+  /**
+   * First load: the newest page. Later loads (poll, Refresh, after a send)
+   * re-read everything created since the oldest loaded message. The proxy
+   * returns deletions as tombstones, so the response is authoritative for that
+   * range and replaces it; nothing loaded can silently go stale.
+   */
+  const loadMessages = useCallback(
+    async (spaceId: string) => {
+      const seq = (messageSeqRef.current[spaceId] || 0) + 1;
+      messageSeqRef.current[spaceId] = seq;
+      const isCurrent = () => messageSeqRef.current[spaceId] === seq;
+      const since = oldestCreateTime(viewsRef.current[spaceId]?.messages ?? []);
+      patchView(spaceId, { loading: true });
+      try {
+        if (!since) {
+          const body = await api.listGoogleChatMessages(spaceId, {
+            pageSize: MESSAGE_PAGE,
+            order: 'desc',
+          });
+          if (!isCurrent()) return;
+          updateView(spaceId, (v) => ({
+            ...v,
+            messages: uniqueMessages((body.messages || []) as ChatMessage[]),
+            hasOlder: !!body.nextPageToken,
+            older: null,
+            generation: v.generation + 1,
+            loaded: true,
+            loading: false,
+            error: null,
+          }));
+          return;
+        }
+
+        const fresh: ChatMessage[] = [];
+        let pageToken: string | undefined;
+        let complete = false;
+        for (let page = 0; page < MAX_REFRESH_PAGES; page++) {
+          const body = await api.listGoogleChatMessages(spaceId, {
+            pageSize: REFRESH_PAGE,
+            order: 'desc',
+            since,
+            ...(pageToken ? { pageToken } : {}),
+          });
+          if (!isCurrent()) return;
+          fresh.push(...((body.messages || []) as ChatMessage[]));
+          pageToken = body.nextPageToken || undefined;
+          if (!pageToken) {
+            complete = true;
+            break;
+          }
+        }
+        updateView(spaceId, (v) =>
+          complete
+            ? {
+                ...v,
+                messages: reconcileRange(v.messages, fresh, since),
+                loaded: true,
+                loading: false,
+                error: null,
+              }
+            : // The loaded range outgrew what a refresh re-reads: keep the
+              // newest slice we did read and page back from there.
+              {
+                ...v,
+                messages: uniqueMessages(fresh),
+                hasOlder: true,
+                older: null,
+                generation: v.generation + 1,
+                loaded: true,
+                loading: false,
+                error: null,
+              },
+        );
+      } catch (err: any) {
+        if (!isCurrent()) return;
+        patchView(spaceId, { loading: false, error: err.message || 'Failed to load messages' });
+        if (err?.code === CHAT_READ_SCOPE_ERROR) refreshStatus();
+      }
+    },
+    [patchView, updateView, refreshStatus],
+  );
+
+  /**
+   * Page back through history with one anchored query: `until` is fixed at the
+   * oldest loaded message the first time (inclusive), and later pages continue
+   * it with Google's page token. Boundary ties overlap loaded messages and are
+   * de-duplicated by name.
+   */
+  const loadOlder = useCallback(
+    async (spaceId: string) => {
+      const current = viewsRef.current[spaceId];
+      if (!current?.hasOlder || loadingOlderRef.current.has(spaceId)) return;
+      const anchor = oldestCreateTime(current.messages);
+      const cursor = current.older ?? (anchor ? { until: anchor, pageToken: null } : null);
+      if (!cursor) return;
+      const generation = current.generation;
+      loadingOlderRef.current.add(spaceId);
+      patchView(spaceId, { loadingOlder: true, olderError: null });
+      try {
+        const body = await api.listGoogleChatMessages(spaceId, {
+          pageSize: MESSAGE_PAGE,
+          order: 'desc',
+          until: cursor.until,
+          ...(cursor.pageToken ? { pageToken: cursor.pageToken } : {}),
+        });
+        const next: string | null = body.nextPageToken || null;
+        updateView(spaceId, (v) =>
+          // The history was replaced while this page was in flight; it belongs
+          // to the old history, so drop it.
+          v.generation !== generation
+            ? { ...v, loadingOlder: false }
+            : {
+                ...v,
+                messages: mergeOlderPage(v.messages, (body.messages || []) as ChatMessage[]),
+                hasOlder: !!next,
+                older: next ? { until: cursor.until, pageToken: next } : null,
+                loadingOlder: false,
+              },
+        );
+      } catch (err: any) {
+        updateView(spaceId, (v) =>
+          v.generation !== generation
+            ? { ...v, loadingOlder: false }
+            : {
+                ...v,
+                loadingOlder: false,
+                olderError: err.message || 'Failed to load older messages',
+              },
+        );
+        if (err?.code === CHAT_READ_SCOPE_ERROR) refreshStatus();
+      } finally {
+        loadingOlderRef.current.delete(spaceId);
+      }
+    },
+    [patchView, updateView, refreshStatus],
+  );
+
+  useEffect(() => {
+    loadSpaces();
+  }, [loadSpaces]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    loadMessages(selectedId);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') loadMessages(selectedId);
+    }, POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [selectedId, loadMessages]);
+
+  // Follow the newest message, not the list length: prepending an older page
+  // must not yank the view to the bottom.
+  const newestName = messages.length ? messages[messages.length - 1].name : null;
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView?.({ block: 'end' });
+  }, [newestName, selectedId]);
+
+  const startOAuth = async (scopes: string[]) => {
+    setOauthBusy(true);
+    setError(null);
+    try {
+      const returnTo = window.location.pathname + window.location.search + window.location.hash;
+      const body = await api.startGoogleOAuth({ returnTo, scopes });
+      window.location.href = body.authorizeUrl;
+    } catch (err: any) {
+      setError(err.message || 'Failed to start Google consent');
+      setOauthBusy(false);
+    }
+  };
+
+  const send = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const spaceId = selectedId;
+    const submitted = composer;
+    const text = submitted.text.trim();
+    if (!spaceId || !text || sendingRef.current.has(spaceId)) return;
+    sendingRef.current.add(spaceId);
+    // Clear on submit so anything typed while the request is pending is a new
+    // message, not text the completion handler would wipe.
+    const clearedRev = submitted.rev + 1;
+    updateComposer(spaceId, (c) => ({
+      ...c,
+      text: '',
+      replyTo: null,
+      rev: clearedRev,
+      sending: true,
+      error: null,
+    }));
+    try {
+      await api.sendGoogleChatMessage(spaceId, {
+        text,
+        // The reply target only exists in spaces that support thread replies
+        // (the button is gated on it); the proxy re-checks the space anyway.
+        ...(submitted.replyTo?.threadName && selectedSpace?.supportsThreadReplies
+          ? { threadName: submitted.replyTo.threadName }
+          : {}),
+      });
+      updateComposer(spaceId, (c) => ({ ...c, sending: false }));
+      loadMessages(spaceId);
+    } catch (err: any) {
+      const reason = err.message || 'Failed to send message';
+      if (err?.code === CHAT_SEND_SCOPE_ERROR) refreshStatus();
+      updateComposer(spaceId, (c) =>
+        c.rev === clearedRev
+          ? // Untouched since submit: put the message back so it can be retried.
+            {
+              ...c,
+              text: submitted.text,
+              replyTo: submitted.replyTo,
+              sending: false,
+              error: reason,
+            }
+          : // The user started a new message; keep it and keep the failed text visible.
+            { ...c, sending: false, error: `${reason}. Not sent: "${text}"` },
+      );
+    } finally {
+      sendingRef.current.delete(spaceId);
+    }
+  };
+
+  const connected = !!status?.connected;
+  const configured = status?.serverConfigured !== false;
+
+  let emptyState: {
+    title: string;
+    body: string;
+    action: string | null;
+    onAction?: () => void;
+  } | null = null;
+  if (!configured && !connected) {
+    emptyState = {
+      title: 'Google is not configured',
+      body: 'An Admin needs to add the Google OAuth app before Google Chat can connect.',
+      action: onOpenAccountSettings ? 'Open Account settings' : null,
+      onAction: onOpenAccountSettings,
+    };
+  } else if (!connected) {
+    emptyState = {
+      title: 'Connect Google to use Chat',
+      body: 'Messages stay server-side through the Google proxy. Connect your account to continue.',
+      action: 'Connect Google',
+      onAction: () => startOAuth(CHAT_SURFACE_SCOPES),
+    };
+  } else if (!canRead) {
+    emptyState = {
+      title: 'Enable Google Chat access',
+      body: `Connected as ${status?.email || 'Google account'}, but Chat access has not been granted yet. Google Chat requires a Google Workspace account.`,
+      action: 'Enable Chat',
+      // Request sending in the same round-trip so one consent unlocks the pane.
+      onAction: () =>
+        startOAuth([...consent.missingRead, ...consent.missingSend, ...consent.missingNames]),
+    };
+  } else if (!spaces.length && !spacesLoading && !error) {
+    emptyState = {
+      title: 'No conversations',
+      body: 'Spaces, group chats, and direct messages you belong to will appear here.',
+      action: null,
+    };
+  }
+
+  return (
+    <div className="flex flex-1 min-h-0 flex-col bg-gray-950" data-testid="google-chat-page">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <MessagesSquare size={16} className="text-blue-300" />
+          <h2 className="text-lg font-semibold text-white">Google Chat</h2>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            loadSpaces();
+            if (selectedId) loadMessages(selectedId);
+          }}
+          disabled={spacesLoading}
+          className="inline-flex items-center gap-2 rounded border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+        >
+          <RefreshCw size={14} className={spacesLoading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
+
+      {error && (
+        <div className="m-4 flex items-start gap-2 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+          <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="m-4 flex items-center gap-2 rounded-lg border border-gray-800 bg-gray-900 p-4 text-sm text-gray-400">
+          <Loader2 size={16} className="animate-spin" />
+          Loading Google Chat...
+        </div>
+      ) : emptyState ? (
+        <div className="m-4 rounded-lg border border-gray-800 bg-gray-900 p-6">
+          <h3 className="text-lg font-semibold text-white">{emptyState.title}</h3>
+          <p className="mt-2 max-w-2xl text-sm text-gray-400">{emptyState.body}</p>
+          {emptyState.action && (
+            <button
+              type="button"
+              onClick={emptyState.onAction}
+              disabled={oauthBusy}
+              className="mt-4 inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+            >
+              {oauthBusy ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <ExternalLink size={14} />
+              )}
+              {emptyState.action}
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+          <nav
+            aria-label="Chat spaces"
+            className="max-h-48 shrink-0 overflow-y-auto border-b border-gray-800 md:max-h-none md:w-64 md:border-b-0 md:border-r"
+          >
+            {consent.missingNames.length > 0 &&
+              spaces.some(
+                (sp) =>
+                  !sp.displayName &&
+                  (sp.spaceType === 'DIRECT_MESSAGE' || sp.spaceType === 'GROUP_CHAT'),
+              ) && (
+                <div
+                  className="m-2 rounded border border-gray-800 bg-gray-900 p-2 text-xs text-gray-400"
+                  data-testid="chat-enable-names"
+                >
+                  Direct messages and group chats show an id until Agent Hub can see who is in them.
+                  <button
+                    type="button"
+                    onClick={() => startOAuth(consent.missingNames)}
+                    disabled={oauthBusy}
+                    className="mt-1 block text-blue-300 hover:text-blue-200 disabled:opacity-50"
+                  >
+                    Show participant names
+                  </button>
+                </div>
+              )}
+            {spaces.length > 8 && (
+              <input
+                type="search"
+                value={spaceFilter}
+                onChange={(e) => setSpaceFilter(e.target.value)}
+                placeholder="Filter conversations"
+                aria-label="Filter conversations"
+                className="m-2 w-[calc(100%-1rem)] rounded border border-gray-700 bg-gray-950 px-2 py-1 text-sm text-white outline-none focus:border-blue-500"
+              />
+            )}
+            {filterSpaces(spaces, spaceFilter).map((space) => (
+              <button
+                key={space.id}
+                type="button"
+                onClick={() => setSelectedId(space.id)}
+                data-testid={`chat-space-${space.id}`}
+                className={`block w-full truncate px-4 py-2 text-left text-sm ${
+                  space.id === selectedId
+                    ? 'bg-gray-800 text-white'
+                    : 'text-gray-300 hover:bg-gray-800/50'
+                }`}
+              >
+                {chatSpaceLabel(space)}
+              </button>
+            ))}
+          </nav>
+
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {selectedSpace && (
+              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-gray-800 px-4 py-2">
+                <span className="truncate text-sm font-medium text-gray-200">
+                  {chatSpaceLabel(selectedSpace)}
+                </span>
+                {chatSpaceDeepLink(selectedSpace) && (
+                  <a
+                    href={chatSpaceDeepLink(selectedSpace) as string}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white"
+                  >
+                    <ExternalLink size={12} />
+                    Open in Google Chat
+                  </a>
+                )}
+              </div>
+            )}
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {view.error && view.loaded && (
+                <div className="mb-3 flex items-center gap-2 text-xs text-amber-300">
+                  <AlertCircle size={14} className="flex-shrink-0" />
+                  Could not refresh: {view.error}
+                </div>
+              )}
+              {view.loading && !view.loaded ? (
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <Loader2 size={16} className="animate-spin" />
+                  Loading messages...
+                </div>
+              ) : view.error && !view.loaded ? (
+                <div className="flex items-start gap-2 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+                  <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+                  {view.error}
+                </div>
+              ) : !messages.length ? (
+                <p className="text-sm text-gray-500">No messages yet.</p>
+              ) : (
+                <>
+                  {view.hasOlder ? (
+                    <div className="mb-3 flex flex-col items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => selectedId && loadOlder(selectedId)}
+                        disabled={view.loadingOlder}
+                        className="inline-flex items-center gap-2 rounded border border-gray-700 px-3 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+                      >
+                        {view.loadingOlder && <Loader2 size={12} className="animate-spin" />}
+                        Load older messages
+                      </button>
+                      {view.olderError && (
+                        <span className="text-xs text-red-300">{view.olderError}</span>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mb-3 text-center text-xs text-gray-600">Start of conversation</p>
+                  )}
+                  <ul className="space-y-3">
+                    {messages.map((message) => (
+                      <li
+                        key={message.name || message.id}
+                        className={`group rounded-lg border border-gray-800 bg-gray-900 p-3 ${
+                          message.threadReply ? 'ml-6' : ''
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 text-xs text-gray-400">
+                          <span className="flex min-w-0 items-center gap-1 truncate font-medium text-gray-200">
+                            {message.threadReply && <CornerDownRight size={12} />}
+                            {chatSenderLabel(message.sender)}
+                          </span>
+                          {message.createTime && (
+                            <span className="flex-shrink-0">
+                              {formatDateTime(message.createTime)}
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1 whitespace-pre-wrap break-words text-sm text-gray-200">
+                          {message.deleted ? (
+                            <span className="italic text-gray-500">Message deleted</span>
+                          ) : (
+                            message.text || <span className="italic text-gray-500">(no text)</span>
+                          )}
+                        </p>
+                        {message.attachmentCount > 0 && (
+                          <div className="mt-1 inline-flex items-center gap-1 text-xs text-gray-500">
+                            <Paperclip size={12} />
+                            {message.attachmentCount} attachment
+                            {message.attachmentCount === 1 ? '' : 's'}
+                          </div>
+                        )}
+                        {!message.deleted && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSessionSeed(
+                                  buildSeedForMessage(selectedSpace, messages, message),
+                                )
+                              }
+                              title="Start an agent session with this message as the task"
+                              className="inline-flex items-center gap-1 rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-xs text-blue-200 hover:bg-blue-500/20"
+                            >
+                              <MessageSquarePlus size={13} />
+                              Send to agent
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setTicketDraft(buildTicketDraftForMessage(selectedSpace, message))
+                              }
+                              title="Create a kanban ticket from this message"
+                              className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
+                            >
+                              <Ticket size={13} />
+                              Ticket
+                            </button>
+                            {canSend &&
+                              selectedSpace?.supportsThreadReplies &&
+                              message.threadName && (
+                                <button
+                                  type="button"
+                                  onClick={() => editComposer({ replyTo: message })}
+                                  className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
+                                >
+                                  <Reply size={13} />
+                                  Reply in thread
+                                </button>
+                              )}
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              <div ref={bottomRef} />
+            </div>
+
+            {selectedSpace && !canSend && (
+              <div
+                className="flex shrink-0 items-center justify-between gap-3 border-t border-gray-800 px-4 py-3 text-sm text-gray-400"
+                data-testid="chat-enable-sending"
+              >
+                <span>Replying from Agent Hub needs permission to send Chat messages.</span>
+                <button
+                  type="button"
+                  onClick={() => startOAuth(consent.missingSend)}
+                  disabled={oauthBusy}
+                  className="inline-flex flex-shrink-0 items-center gap-2 rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                >
+                  {oauthBusy ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <ExternalLink size={14} />
+                  )}
+                  Enable sending
+                </button>
+              </div>
+            )}
+            {selectedSpace && canSend && (
+              <form onSubmit={send} className="shrink-0 border-t border-gray-800 p-3">
+                {replyTo && (
+                  <div className="mb-2 flex items-center justify-between gap-2 rounded bg-gray-900 px-2 py-1 text-xs text-gray-400">
+                    <span className="truncate">
+                      Replying to {chatSenderLabel(replyTo.sender)}:{' '}
+                      {(replyTo.text || '').split('\n')[0]}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => editComposer({ replyTo: null })}
+                      aria-label="Cancel reply"
+                      className="rounded p-1 hover:bg-gray-800 hover:text-white"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                )}
+                {sendError && <div className="mb-2 text-xs text-red-300">{sendError}</div>}
+                <div className="flex items-end gap-2">
+                  <textarea
+                    value={draft}
+                    onChange={(e) => editComposer({ text: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (isSubmitEnter(e)) {
+                        e.preventDefault();
+                        e.currentTarget.form?.requestSubmit();
+                      }
+                    }}
+                    rows={2}
+                    placeholder={`Message ${chatSpaceLabel(selectedSpace)}`}
+                    className="min-w-0 flex-1 resize-none rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!draft.trim() || sending}
+                    aria-label="Send"
+                    className="inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                    Send
+                  </button>
+                </div>
+              </form>
+            )}
+          </section>
+        </div>
+      )}
+
+      {ticketDraft && (
+        <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
+      )}
+      {sessionSeed && (
+        <StartSessionModal
+          contextLabel={sessionSeed.label}
+          seedMessage={sessionSeed.seed}
+          defaultName={sessionSeed.label}
+          onClose={() => setSessionSeed(null)}
+          onStarted={(session) => onSessionStarted?.(session)}
+        />
+      )}
+    </div>
+  );
+}
