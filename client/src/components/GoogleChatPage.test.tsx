@@ -1284,6 +1284,142 @@ describe('GoogleChatPage message links', () => {
   });
 });
 
+describe('GoogleChatPage multi-select', () => {
+  function setup(links: unknown[] = []) {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE], nextPageToken: null });
+    mockApi.listGoogleChatMessages.mockResolvedValue({
+      messages: [
+        msg({
+          name: 'spaces/AAA/messages/M3',
+          text: 'Third, unrelated',
+          createTime: '2026-10-08T10:10:00Z',
+          threadName: 'spaces/AAA/threads/T2',
+        }),
+        msg({
+          name: 'spaces/AAA/messages/M2',
+          text: 'It started after the deploy',
+          createTime: '2026-10-08T10:05:00Z',
+          threadReply: true,
+          sender: { name: 'users/2', displayName: 'Lee', type: 'HUMAN' },
+        }),
+        msg({
+          name: 'spaces/AAA/messages/M1',
+          text: 'Invoices show the wrong total',
+          sender: { name: 'users/1', displayName: 'Dana', type: 'HUMAN' },
+        }),
+      ],
+      nextPageToken: null,
+    });
+    mockApi.listGoogleChatMessageLinks.mockResolvedValue({ links });
+  }
+
+  it('sends the ticked messages to one session and links each of them', async () => {
+    setup();
+    mockApi.createGoogleChatMessageLink.mockResolvedValue({ link: {}, existing: [] });
+    render(<GoogleChatPage />);
+    await screen.findByText('Invoices show the wrong total');
+    expect(screen.queryByTestId('chat-selection-bar')).toBeNull();
+
+    const boxes = screen.getAllByTestId('chat-message-select');
+    fireEvent.click(boxes[0]);
+    fireEvent.click(boxes[1]);
+    expect(screen.getByTestId('chat-selection-bar').textContent).toContain('2 selected');
+
+    fireEvent.click(screen.getByRole('button', { name: /Send selected to agent/ }));
+    const seed = (await screen.findByTestId('start-session-modal')).textContent || '';
+    expect(seed).toContain("Here are 2 Google Chat messages I'd like you to work on.");
+    expect(seed).toContain('**Chat reference:** spaces/AAA (thread spaces/AAA/threads/T1)');
+    expect(seed.indexOf('Invoices show the wrong total')).toBeLessThan(
+      seed.indexOf('It started after the deploy'),
+    );
+    expect(seed).not.toContain('Third, unrelated');
+    expect(startSessionProps.last?.contextLabel).toBe('Chat: 2 messages in Acme support');
+    expect(startSessionProps.last?.warning).toBeNull();
+
+    const onStarted = startSessionProps.last?.onStarted as (s: unknown) => void;
+    act(() => onStarted({ id: 'sess-9', agent_id: 'a' }));
+    await waitFor(() => expect(mockApi.createGoogleChatMessageLink).toHaveBeenCalledTimes(2));
+    expect(mockApi.createGoogleChatMessageLink).toHaveBeenCalledWith('AAA', {
+      messageName: 'spaces/AAA/messages/M1',
+      threadName: 'spaces/AAA/threads/T1',
+      sessionId: 'sess-9',
+    });
+    expect(mockApi.createGoogleChatMessageLink).toHaveBeenCalledWith('AAA', {
+      messageName: 'spaces/AAA/messages/M2',
+      threadName: 'spaces/AAA/threads/T1',
+      sessionId: 'sess-9',
+    });
+    await waitFor(() => expect(screen.queryByTestId('chat-selection-bar')).toBeNull());
+  });
+
+  it('warns when some ticked messages were already sent and drops the thread for mixed threads', async () => {
+    setup([
+      {
+        id: 'L1',
+        messageName: 'spaces/AAA/messages/M1',
+        spaceName: 'spaces/AAA',
+        threadName: 'spaces/AAA/threads/T1',
+        sessionId: 's1',
+        sessionName: 'Old',
+        agentId: 'a',
+        userId: 'u',
+        createdAt: '2026-10-08T10:01:00.000Z',
+        repliedAt: null,
+        replyMessageName: null,
+      },
+    ]);
+    render(<GoogleChatPage />);
+    await screen.findByTestId('chat-link-chip');
+    const boxes = screen.getAllByTestId('chat-message-select');
+    fireEvent.click(boxes[0]);
+    fireEvent.click(boxes[2]);
+    fireEvent.click(screen.getByRole('button', { name: /Send selected to agent/ }));
+    const seed = (await screen.findByTestId('start-session-modal')).textContent || '';
+    expect(seed).toContain('**Chat reference:** spaces/AAA\n');
+    expect(String(startSessionProps.last?.warning)).toContain(
+      '1 of the 2 selected messages was already sent',
+    );
+  });
+
+  it('makes one ticket from the ticked messages', async () => {
+    setup();
+    render(<GoogleChatPage />);
+    await screen.findByText('Invoices show the wrong total');
+    const boxes = screen.getAllByTestId('chat-message-select');
+    fireEvent.click(boxes[0]);
+    fireEvent.click(boxes[1]);
+    fireEvent.click(screen.getByRole('button', { name: /Ticket from selected/ }));
+    await screen.findByTestId('ticket-modal');
+    const draft = ticketProps.last?.draft;
+    expect(draft.title).toBe('Invoices show the wrong total');
+    expect(draft.description).toContain('2 messages in Acme support');
+    expect(draft.description).toContain('Dana');
+    expect(draft.description).toContain('It started after the deploy');
+    expect(draft.source.sourceId).toBe('spaces/AAA/messages/M1');
+    expect(draft.source.sourceMeta.messageNames).toEqual([
+      'spaces/AAA/messages/M1',
+      'spaces/AAA/messages/M2',
+    ]);
+  });
+
+  it('clears the selection with Clear selection', async () => {
+    setup();
+    render(<GoogleChatPage />);
+    await screen.findByText('Invoices show the wrong total');
+    fireEvent.click(screen.getAllByTestId('chat-message-select')[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection' }));
+    expect(screen.queryByTestId('chat-selection-bar')).toBeNull();
+    expect((screen.getAllByTestId('chat-message-select')[0] as HTMLInputElement).checked).toBe(
+      false,
+    );
+  });
+});
+
 describe('GoogleChatPage push updates', () => {
   const OTHER = {
     ...SPACE,

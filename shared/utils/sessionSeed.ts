@@ -150,3 +150,56 @@ export function buildChatSessionSeed(input: ChatSessionSeedInput): string {
   }
   return lines.join('\n');
 }
+
+/** Several Google Chat messages from one space, picked together in the pane. */
+export interface ChatMultiSessionSeedInput {
+  spaceLabel?: string | null;
+  spaceName?: string | null;
+  /** Set only when every picked message is in the same thread of a threaded space. */
+  threadName?: string | null;
+  deepLink?: string | null;
+  /** Oldest first. */
+  messages: Array<{ sender?: string | null; createTime?: string | null; text?: string | null }>;
+}
+
+/**
+ * Build the opening user message for a session seeded from several Chat
+ * messages. The whole selection shares one size budget so a long pick can't
+ * blow past what a single-message seed allows.
+ */
+export function buildChatMultiSessionSeed(input: ChatMultiSessionSeedInput): string {
+  const spaceLabel = clean(input.spaceLabel);
+  const spaceName = clean(input.spaceName);
+  const threadName = clean(input.threadName);
+  const deepLink = clean(input.deepLink);
+  const count = input.messages.length;
+
+  const lines: string[] = [
+    `Here are ${count} Google Chat message${count === 1 ? '' : 's'} I'd like you to work on.`,
+    '',
+  ];
+  if (spaceLabel) lines.push(`**Space:** ${spaceLabel}`);
+  if (deepLink) lines.push(`**Link:** ${deepLink}`);
+  if (spaceName) {
+    const ref = threadName ? `${spaceName} (thread ${threadName})` : spaceName;
+    lines.push(`**Chat reference:** ${ref}`);
+  }
+
+  const blocks = input.messages.map((m) => {
+    const sender = clean(m.sender) || 'Someone';
+    const createTime = clean(m.createTime);
+    const head = createTime ? `**${sender}** (${createTime}):` : `**${sender}**:`;
+    return `${head}\n${clean(m.text) || '(no text)'}`;
+  });
+  lines.push('', clampBody(blocks.join('\n\n')));
+
+  if (spaceName) {
+    lines.push(
+      '',
+      `When you are done, post a reply to the requester in that ${
+        threadName ? 'thread (pass --thread)' : 'conversation'
+      } with \`google-chat.sh send\` from the google skill. It goes out under my name, so it is saved as a draft for me to approve, edit, or discard in Agent Hub. Tell me when it is waiting, and do not resend it.`,
+    );
+  }
+  return lines.join('\n');
+}

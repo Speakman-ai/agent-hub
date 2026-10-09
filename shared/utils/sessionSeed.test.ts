@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildChatSessionSeed, buildEmailSessionSeed, buildTodoSessionSeed } from './sessionSeed';
+import {
+  buildChatMultiSessionSeed,
+  buildChatSessionSeed,
+  buildEmailSessionSeed,
+  buildTodoSessionSeed,
+} from './sessionSeed';
 
 describe('buildEmailSessionSeed', () => {
   it('includes subject, headers, link, and prefers full body over snippet', () => {
@@ -105,5 +110,22 @@ describe('buildChatSessionSeed', () => {
     expect(seed).toContain('Earlier in the conversation:');
     expect(seed).toContain('post a reply to the requester in that conversation');
     expect(seed).not.toContain('--thread');
+  });
+});
+
+describe('buildChatMultiSessionSeed', () => {
+  it('lists every message in order and asks for a conversation reply without a thread', () => {
+    const seed = buildChatMultiSessionSeed({
+      spaceLabel: 'Support',
+      spaceName: 'spaces/A',
+      messages: [
+        { sender: 'Dana', createTime: '10:00', text: 'First' },
+        { sender: null, text: 'Second' },
+      ],
+    });
+    expect(seed).toContain("Here are 2 Google Chat messages I'd like you to work on.");
+    expect(seed).toContain('**Chat reference:** spaces/A\n');
+    expect(seed).toContain('**Dana** (10:00):\nFirst\n\n**Someone**:\nSecond');
+    expect(seed).toContain('in that conversation with `google-chat.sh send`');
   });
 });

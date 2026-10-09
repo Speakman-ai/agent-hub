@@ -360,3 +360,36 @@ export function dispatchWarningFor(
   if (!state || state.failed || !state.links) return LINKS_UNKNOWN_WARNING;
   return sendToAgentWarning(linksByMessage(state.links).get(messageName));
 }
+
+/**
+ * Duplicate-dispatch warning for one or more messages sent together. One
+ * message keeps the per-message wording; several summarise how many were
+ * already sent.
+ */
+export function dispatchWarningForMany(
+  state: SpaceLinks | undefined,
+  messageNames: string[],
+): string | null {
+  if (messageNames.length === 1) return dispatchWarningFor(state, messageNames[0]);
+  if (!state || state.failed || !state.links) {
+    return 'Could not check whether these messages were already sent to an agent. Starting a session may dispatch them twice.';
+  }
+  const byMessage = linksByMessage(state.links);
+  const sent = messageNames.filter((name) => byMessage.get(name)?.length).length;
+  if (!sent) return null;
+  return `${sent} of the ${messageNames.length} selected messages ${
+    sent === 1 ? 'was' : 'were'
+  } already sent to an agent. Starting another session dispatches ${
+    sent === 1 ? 'it' : 'them'
+  } again.`;
+}
+
+/**
+ * The thread a multi-message dispatch replies in: the shared thread when every
+ * picked message is in the same one of a threaded space, otherwise none.
+ */
+export function sharedThreadName(messages: ChatMessage[], threaded: boolean): string | null {
+  if (!threaded || !messages.length) return null;
+  const first = messages[0].threadName;
+  return first && messages.every((m) => m.threadName === first) ? first : null;
+}

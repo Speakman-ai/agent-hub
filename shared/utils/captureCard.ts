@@ -113,3 +113,61 @@ export function buildChatCardDraft(input: ChatCaptureInput): CaptureCardDraft {
     source: { sourceType: 'chat', sourceId: parts.sourceId, sourceMeta: parts.sourceMeta },
   };
 }
+
+/** Several Chat messages from one space, picked together in the pane. */
+export interface ChatMultiCaptureInput {
+  spaceName?: string | null;
+  /** Set only when every picked message is in the same thread. */
+  threadName?: string | null;
+  spaceLabel?: string | null;
+  deepLink?: string | null;
+  /** Oldest first. */
+  messages: Array<{
+    messageName?: string | null;
+    sender?: string | null;
+    createTime?: string | null;
+    text?: string | null;
+  }>;
+}
+
+const MAX_MULTI_CHAT_BODY = 8_000;
+
+/**
+ * Several Chat messages → one card draft. The title comes from the first
+ * message; every message goes in the description, and `sourceMeta.messageNames`
+ * keeps all of them while `sourceId` stays the first for provenance lookups.
+ */
+export function buildChatMultiCardDraft(input: ChatMultiCaptureInput): CaptureCardDraft {
+  const first = input.messages[0];
+  const parts = chatCaptureParts({
+    messageName: first?.messageName,
+    spaceName: input.spaceName,
+    threadName: input.threadName,
+    spaceLabel: input.spaceLabel,
+    text: first?.text,
+    deepLink: input.deepLink,
+  });
+  const spaceLabel = (input.spaceLabel || '').trim();
+  const count = input.messages.length;
+  const header = `${count} message${count === 1 ? '' : 's'}${spaceLabel ? ` in ${spaceLabel}` : ''}`;
+  const joined = input.messages
+    .map((m) => {
+      const sender = (m.sender || '').trim() || 'Someone';
+      const time = (m.createTime || '').trim();
+      return `${time ? `${sender} (${time})` : sender}:\n${(m.text || '').trim() || '(no text)'}`;
+    })
+    .join('\n\n');
+  const body =
+    joined.length > MAX_MULTI_CHAT_BODY ? `${joined.slice(0, MAX_MULTI_CHAT_BODY - 1)}…` : joined;
+  const description = [header, body, parts.deepLink && `Source: ${parts.deepLink}`]
+    .filter(Boolean)
+    .join('\n\n');
+  const messageNames = input.messages.map((m) => (m.messageName || '').trim()).filter(Boolean);
+  const sourceMeta: Record<string, unknown> = { ...parts.sourceMeta };
+  if (messageNames.length) sourceMeta.messageNames = messageNames;
+  return {
+    title: parts.title,
+    description,
+    source: { sourceType: 'chat', sourceId: parts.sourceId, sourceMeta },
+  };
+}

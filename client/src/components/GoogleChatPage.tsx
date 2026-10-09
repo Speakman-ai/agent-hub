@@ -18,8 +18,12 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api';
 import type { SessionWire } from '@shared/types';
-import { buildChatSessionSeed } from '@shared/utils/sessionSeed';
-import { buildChatCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
+import { buildChatMultiSessionSeed, buildChatSessionSeed } from '@shared/utils/sessionSeed';
+import {
+  buildChatCardDraft,
+  buildChatMultiCardDraft,
+  type CaptureCardDraft,
+} from '@shared/utils/captureCard';
 import { buildChatTodoDraft, type CaptureTodoDraft } from '@shared/utils/captureTodo';
 import StartSessionModal from './StartSessionModal';
 import CaptureToTicketModal from './CaptureToTicketModal';
@@ -50,7 +54,8 @@ import {
   chatLinkChip,
   linksByMessage,
   applyLinksResult,
-  dispatchWarningFor,
+  dispatchWarningForMany,
+  sharedThreadName,
   LINKS_UNKNOWN_WARNING,
   type SpaceLinks,
   chatSetupHelpLink,
@@ -209,14 +214,60 @@ export function buildSeedForMessage(
   };
 }
 
-/** "Send to agent" in progress: the seed plus the message it should be linked to. */
+/** Build the "Ticket" card draft for several picked messages. Exported for unit tests. */
+export function buildTicketDraftForMessages(
+  space: ChatSpace | null,
+  picked: ChatMessage[],
+): CaptureCardDraft {
+  if (picked.length === 1) return buildTicketDraftForMessage(space, picked[0]);
+  return buildChatMultiCardDraft({
+    spaceName: picked[0]?.spaceName || space?.name || null,
+    threadName: sharedThreadName(picked, true),
+    spaceLabel: space ? chatSpaceLabel(space) : null,
+    deepLink: chatSpaceDeepLink(space),
+    messages: picked.map((m) => ({
+      messageName: m.name,
+      sender: chatSenderLabel(m.sender),
+      createTime: m.createTime ? formatDateTime(m.createTime) : null,
+      text: m.text,
+    })),
+  });
+}
+
+/** Build the "Start session" seed for several picked messages. Exported for unit tests. */
+export function buildSeedForMessages(
+  space: ChatSpace | null,
+  messages: ChatMessage[],
+  picked: ChatMessage[],
+): { label: string; seed: string } {
+  if (picked.length === 1) return buildSeedForMessage(space, messages, picked[0]);
+  const spaceLabel = space ? chatSpaceLabel(space) : null;
+  return {
+    label: `Chat: ${picked.length} messages${spaceLabel ? ` in ${spaceLabel}` : ''}`,
+    seed: buildChatMultiSessionSeed({
+      spaceLabel,
+      spaceName: picked[0]?.spaceName || space?.name || null,
+      threadName: sharedThreadName(picked, !!space?.supportsThreadReplies),
+      deepLink: chatSpaceDeepLink(space),
+      messages: picked.map((m) => ({
+        sender: chatSenderLabel(m.sender),
+        createTime: m.createTime ? formatDateTime(m.createTime) : null,
+        text: m.text,
+      })),
+    }),
+  };
+}
+
+/** "Send to agent" in progress: the seed plus the messages it should be linked to. */
 type PendingDispatch = {
   label: string;
   seed: string;
   spaceId: string;
-  messageName: string;
-  /** Only for spaces that keep replies in threads, matching the seed. */
-  threadName: string | null;
+  targets: Array<{
+    messageName: string;
+    /** Only for spaces that keep replies in threads, matching the seed. */
+    threadName: string | null;
+  }>;
 };
 
 export { LINKS_UNKNOWN_WARNING };
@@ -257,6 +308,9 @@ export default function GoogleChatPage({
   const checkingDispatchRef = useRef(false);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
+  // Messages ticked for a bulk Send to agent / Ticket, by message name. Scoped
+  // to the open space: switching conversations clears it.
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
   // "Add to todos" progress per message name. Kept for the life of the page so
   // a captured message keeps showing "Added" when the user switches back.
   const [todoCaptures, setTodoCaptures] = useState<Record<string, TodoCapture>>({});
@@ -287,6 +341,19 @@ export default function GoogleChatPage({
   const messages = view.messages;
   const chatDrafts = useChatDrafts({ spaceId: selectedId ?? undefined }, canRead);
   const placedDrafts = placeDrafts(messages, chatDrafts.drafts);
+  // Oldest first, like the list. A ticked message that was deleted or dropped
+  // from the loaded range falls out here.
+  const pickedMessages = messages.filter((m) => !!m.name && !m.deleted && picked.has(m.name));
+  const togglePicked = (name: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  useEffect(() => {
+    setPicked(new Set());
+  }, [selectedId]);
   const [autoSend, setAutoSend] = useState<boolean | null>(null);
   const [autoSendError, setAutoSendError] = useState<string | null>(null);
   // One settings write at a time, so the server always ends on the user's last
@@ -776,17 +843,21 @@ export default function GoogleChatPage({
    * finished (or failed). The warning itself is derived at render time from
    * the latest links, so a poll landing while the dialog is open updates it.
    */
-  const openSendToAgent = async (message: ChatMessage) => {
-    if (!selectedId || !message.name || checkingDispatchRef.current) return;
+  const openSendToAgent = async (chosen: ChatMessage[], checkingKey: string) => {
+    const named = chosen.filter((m): m is ChatMessage & { name: string } => !!m.name);
+    if (!selectedId || !named.length || checkingDispatchRef.current) return;
     const spaceId = selectedId;
+    const threaded = !!selectedSpace?.supportsThreadReplies;
     const target: PendingDispatch = {
-      ...buildSeedForMessage(selectedSpace, messages, message),
+      ...buildSeedForMessages(selectedSpace, messages, named),
       spaceId,
-      messageName: message.name,
-      threadName: selectedSpace?.supportsThreadReplies ? message.threadName : null,
+      targets: named.map((m) => ({
+        messageName: m.name,
+        threadName: threaded ? m.threadName : null,
+      })),
     };
     checkingDispatchRef.current = true;
-    setCheckingDispatch(message.name);
+    setCheckingDispatch(checkingKey);
     setLinkError(null);
     try {
       await loadLinks(spaceId);
@@ -798,22 +869,33 @@ export default function GoogleChatPage({
   };
 
   const dispatchWarning = dispatch
-    ? dispatchWarningFor(links[dispatch.spaceId], dispatch.messageName)
+    ? dispatchWarningForMany(
+        links[dispatch.spaceId],
+        dispatch.targets.map((t) => t.messageName),
+      )
     : null;
 
   const linkDispatchedSession = async (target: PendingDispatch, session: SessionWire) => {
-    try {
-      await api.createGoogleChatMessageLink(target.spaceId, {
-        messageName: target.messageName,
-        threadName: target.threadName,
-        sessionId: session.id,
-      });
-    } catch (err: any) {
+    const results = await Promise.allSettled(
+      target.targets.map((t) =>
+        api.createGoogleChatMessageLink(target.spaceId, {
+          messageName: t.messageName,
+          threadName: t.threadName,
+          sessionId: session.id,
+        }),
+      ),
+    );
+    const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failures.length) {
       // The session already exists; say the message isn't marked rather than
       // pretending the dispatch failed.
+      const what =
+        target.targets.length === 1
+          ? 'the message'
+          : `${failures.length} of ${target.targets.length} messages`;
       setLinkError(
-        `Session started, but the message could not be marked as sent: ${
-          err?.message || 'unknown error'
+        `Session started, but ${what} could not be marked as sent: ${
+          failures[0].reason?.message || 'unknown error'
         }`,
       );
     }
@@ -1040,6 +1122,47 @@ export default function GoogleChatPage({
               </div>
             )}
 
+            {pickedMessages.length > 0 && (
+              <div
+                className="flex shrink-0 flex-wrap items-center gap-2 border-b border-gray-800 bg-gray-900 px-4 py-2 text-xs text-gray-300"
+                data-testid="chat-selection-bar"
+              >
+                <span className="font-medium text-gray-200">{pickedMessages.length} selected</span>
+                <button
+                  type="button"
+                  onClick={() => void openSendToAgent(pickedMessages, 'selection')}
+                  disabled={checkingDispatch !== null}
+                  title="Start one agent session with all selected messages"
+                  className="inline-flex items-center gap-1 rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-blue-200 hover:bg-blue-500/20 disabled:opacity-50"
+                >
+                  {checkingDispatch === 'selection' ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <MessageSquarePlus size={13} />
+                  )}
+                  Send selected to agent
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setTicketDraft(buildTicketDraftForMessages(selectedSpace, pickedMessages))
+                  }
+                  title="Create one kanban ticket from all selected messages"
+                  className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 hover:bg-gray-800"
+                >
+                  <Ticket size={13} />
+                  Ticket from selected
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPicked(new Set())}
+                  className="ml-auto rounded px-2 py-1 text-gray-400 hover:bg-gray-800 hover:text-white"
+                >
+                  Clear selection
+                </button>
+              </div>
+            )}
+
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
               {linkError && (
                 <div className="mb-3 flex items-center gap-2 text-xs text-amber-300">
@@ -1089,12 +1212,24 @@ export default function GoogleChatPage({
                     {messages.map((message) => (
                       <li
                         key={message.name || message.id}
-                        className={`group rounded-lg border border-gray-800 bg-gray-900 p-3 ${
-                          message.threadReply ? 'ml-6' : ''
-                        }`}
+                        className={`group rounded-lg border bg-gray-900 p-3 ${
+                          message.name && picked.has(message.name)
+                            ? 'border-blue-500/60'
+                            : 'border-gray-800'
+                        } ${message.threadReply ? 'ml-6' : ''}`}
                       >
                         <div className="flex items-center justify-between gap-2 text-xs text-gray-400">
                           <span className="flex min-w-0 items-center gap-1 truncate font-medium text-gray-200">
+                            {message.name && !message.deleted && (
+                              <input
+                                type="checkbox"
+                                checked={picked.has(message.name)}
+                                onChange={() => message.name && togglePicked(message.name)}
+                                aria-label={`Select message from ${chatSenderLabel(message.sender)}`}
+                                data-testid="chat-message-select"
+                                className="mr-1 h-3.5 w-3.5 flex-shrink-0 cursor-pointer accent-blue-500"
+                              />
+                            )}
                             {message.threadReply && <CornerDownRight size={12} />}
                             {chatSenderLabel(message.sender)}
                           </span>
@@ -1155,7 +1290,9 @@ export default function GoogleChatPage({
                           <div className="mt-2 flex flex-wrap gap-2">
                             <button
                               type="button"
-                              onClick={() => void openSendToAgent(message)}
+                              onClick={() =>
+                                message.name && void openSendToAgent([message], message.name)
+                              }
                               disabled={checkingDispatch !== null}
                               title="Start an agent session with this message as the task"
                               className="inline-flex items-center gap-1 rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-xs text-blue-200 hover:bg-blue-500/20 disabled:opacity-50"
@@ -1323,7 +1460,11 @@ export default function GoogleChatPage({
       )}
 
       {ticketDraft && (
-        <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
+        <CaptureToTicketModal
+          draft={ticketDraft}
+          onClose={() => setTicketDraft(null)}
+          onCreated={() => setPicked(new Set())}
+        />
       )}
       {dispatch && (
         <StartSessionModal
@@ -1334,6 +1475,7 @@ export default function GoogleChatPage({
           onClose={() => setDispatch(null)}
           onStarted={(session) => {
             void linkDispatchedSession(dispatch, session);
+            if (dispatch.targets.length > 1) setPicked(new Set());
             onSessionStarted?.(session);
           }}
         />

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildChatCardDraft, cardOriginDeepLink, cardOriginLabel } from './captureCard';
+import {
+  buildChatCardDraft,
+  buildChatMultiCardDraft,
+  cardOriginDeepLink,
+  cardOriginLabel,
+} from './captureCard';
 import { buildChatTodoDraft, todoOriginDeepLink, todoOriginLabel } from './captureTodo';
 
 describe('buildChatCardDraft', () => {
@@ -91,5 +96,28 @@ describe('Google Chat origin display', () => {
     expect(
       cardOriginDeepLink({ source_type: 'chat', source_meta: { deepLink: 'https://evil.test' } }),
     ).toBeNull();
+  });
+});
+
+describe('buildChatMultiCardDraft', () => {
+  it('titles from the first message and keeps every message name', () => {
+    const draft = buildChatMultiCardDraft({
+      spaceName: 'spaces/A',
+      spaceLabel: 'Support',
+      deepLink: 'https://chat.google.com/room/A',
+      messages: [
+        { messageName: 'spaces/A/messages/1', sender: 'Dana', text: 'Totals are wrong\nmore' },
+        { messageName: 'spaces/A/messages/2', sender: '', text: '' },
+      ],
+    });
+    expect(draft.title).toBe('Totals are wrong');
+    expect(draft.description).toBe(
+      '2 messages in Support\n\nDana:\nTotals are wrong\nmore\n\nSomeone:\n(no text)\n\nSource: https://chat.google.com/room/A',
+    );
+    expect(draft.source.sourceId).toBe('spaces/A/messages/1');
+    expect(draft.source.sourceMeta.messageNames).toEqual([
+      'spaces/A/messages/1',
+      'spaces/A/messages/2',
+    ]);
   });
 });
