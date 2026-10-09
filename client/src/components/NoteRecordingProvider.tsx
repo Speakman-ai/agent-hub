@@ -115,6 +115,11 @@ export function useNoteRecording(): NoteRecordingContextValue | null {
   return useContext(NoteRecordingContext);
 }
 
+// Notes record meetings. Echo cancellation subtracts whatever the laptop's
+// speakers play, which is exactly the meeting audio, so it is turned off here.
+// The chat composer keeps the browser defaults.
+export const NOTE_AUDIO_CONSTRAINTS: MediaTrackConstraints = { echoCancellation: false };
+
 export const DETACHED_NOTE_TITLE = 'Voice note';
 
 /** Appends a voice block to a note that is not open in an editor. */
@@ -286,6 +291,7 @@ export function NoteRecordingProvider({ children }: { children: ReactNode }) {
     onStart: () => ownerRef.current?.current.onStart(),
     onTranscript: (transcript) => void deliver(transcript),
     onError: reportError,
+    audio: NOTE_AUDIO_CONSTRAINTS,
   });
 
   const start = useCallback(

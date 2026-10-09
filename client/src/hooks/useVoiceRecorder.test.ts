@@ -5,6 +5,8 @@ import {
   joinSegmentTranscripts,
   RECORDING_BITS_PER_SECOND,
   SEGMENT_DURATION_MS,
+  transcribeSegment,
+  transcriptionLanguage,
 } from './useVoiceRecorder';
 
 vi.mock('../utils/connection', () => ({ getAuthHeaders: () => ({}) }));
@@ -75,6 +77,38 @@ function setup() {
   return { hook, onTranscript, onError };
 }
 
+function stubLanguage(value: string) {
+  vi.spyOn(navigator, 'language', 'get').mockReturnValue(value);
+}
+
+describe('transcriptionLanguage', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('reduces the browser locale to its primary subtag', () => {
+    stubLanguage('en-US');
+    expect(transcriptionLanguage()).toBe('en');
+  });
+
+  it('returns null for an unusable value', () => {
+    stubLanguage('');
+    expect(transcriptionLanguage()).toBeNull();
+  });
+});
+
+describe('transcribeSegment', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('sends the browser language as X-Language', async () => {
+    stubLanguage('uk-UA');
+    const pending = transcribeSegment(new Blob(['a']), 'audio/webm', new AbortController().signal);
+    fetchResolvers[0](ok('hi'));
+    await pending;
+    const init = (fetch as any).mock.calls[0][1];
+    expect(init.headers['X-Language']).toBe('uk');
+    expect(init.headers['Content-Type']).toBe('audio/webm');
+  });
+});
+
 describe('joinSegmentTranscripts', () => {
   it('joins trimmed non-empty parts in order', () => {
     expect(joinSegmentTranscripts([' one ', null, '', 'two', undefined, 'three'])).toBe(
@@ -84,6 +118,22 @@ describe('joinSegmentTranscripts', () => {
 });
 
 describe('useVoiceRecorder', () => {
+  it('requests the microphone with browser defaults unless constraints are given', async () => {
+    const { hook } = setup();
+    await act(() => hook.result.current.start());
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
+  });
+
+  it('passes custom audio constraints to getUserMedia', async () => {
+    const hook = renderHook(() =>
+      useVoiceRecorder({ onTranscript: vi.fn(), audio: { echoCancellation: false } }),
+    );
+    await act(() => hook.result.current.start());
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: { echoCancellation: false },
+    });
+  });
+
   it('records at the speech bitrate', async () => {
     const { hook } = setup();
     await act(() => hook.result.current.start());

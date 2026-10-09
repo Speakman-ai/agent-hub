@@ -71,6 +71,17 @@ export function joinSegmentTranscripts(parts: Array<string | null | undefined>):
     .join(' ');
 }
 
+/**
+ * Primary subtag of the browser language ("en" from "en-US"). Sent as a hint
+ * so the provider does not guess a language from quiet or noisy audio, which
+ * is how Whisper ends up emitting unrelated languages.
+ */
+export function transcriptionLanguage(): string | null {
+  const raw = typeof navigator !== 'undefined' ? navigator.language : '';
+  const primary = (raw || '').split('-')[0].trim().toLowerCase();
+  return /^[a-z]{2,3}$/.test(primary) ? primary : null;
+}
+
 async function readJson(res: any): Promise<any> {
   try {
     return (await res.json()) ?? {};
@@ -91,9 +102,14 @@ export async function transcribeSegment(
   signal: AbortSignal,
 ): Promise<SegmentResult> {
   try {
+    const language = transcriptionLanguage();
     const res = await fetch('/api/transcribe', {
       method: 'POST',
-      headers: { 'Content-Type': contentType, ...getAuthHeaders() },
+      headers: {
+        'Content-Type': contentType,
+        ...(language ? { 'X-Language': language } : {}),
+        ...getAuthHeaders(),
+      },
       body: blob,
       signal,
     });
@@ -155,6 +171,8 @@ export interface VoiceRecorderOptions {
    * permission prompt steals focus. Callers capture their caret here.
    */
   onStart?: () => void;
+  /** Microphone constraints; defaults to `true` (browser processing on). */
+  audio?: boolean | MediaTrackConstraints;
 }
 
 // One mic session from start() to stop()/cancel(). It owns a chain of
@@ -180,7 +198,12 @@ interface Take {
  * stop. `cancel()` aborts everything so a caller switching context never
  * receives a stale transcript.
  */
-export function useVoiceRecorder({ onTranscript, onError, onStart }: VoiceRecorderOptions) {
+export function useVoiceRecorder({
+  onTranscript,
+  onError,
+  onStart,
+  audio = true,
+}: VoiceRecorderOptions) {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const takeRef = useRef<Take | null>(null);
@@ -196,6 +219,8 @@ export function useVoiceRecorder({ onTranscript, onError, onStart }: VoiceRecord
   onTranscriptRef.current = onTranscript;
   onErrorRef.current = onError;
   onStartRef.current = onStart;
+  const audioRef = useRef(audio);
+  audioRef.current = audio;
 
   const reportError = useCallback((msg: string) => {
     const fn = onErrorRef.current;
@@ -377,7 +402,7 @@ export function useVoiceRecorder({ onTranscript, onError, onStart }: VoiceRecord
 
     let stream: any;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: audioRef.current });
     } catch (err: any) {
       if (generation !== generationRef.current) return;
       const denied = err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError';

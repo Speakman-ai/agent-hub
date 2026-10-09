@@ -32,6 +32,7 @@
 import { Router, Request, Response } from 'express';
 import express from 'express';
 import type { RouteDeps, TranscriptionProvider } from '../types.js';
+import { collapseRepeatedPhrases } from '../transcript-cleanup.js';
 
 const MB = 1024 * 1024;
 // Documented per-request upload limits.
@@ -217,7 +218,7 @@ export async function transcribeWithXai(opts: {
     throw Object.assign(new Error('xAI STT response missing `text`'), { status: 502 });
   }
 
-  return body.text;
+  return collapseRepeatedPhrases(body.text);
 }
 
 export interface WhisperResponse {
@@ -271,7 +272,7 @@ export async function transcribeWithWhisper(opts: {
     throw Object.assign(new Error('Whisper response missing `text`'), { status: 502 });
   }
 
-  return body.text;
+  return collapseRepeatedPhrases(body.text);
 }
 
 export default function createTranscribeRoutes(deps: RouteDeps): Router {

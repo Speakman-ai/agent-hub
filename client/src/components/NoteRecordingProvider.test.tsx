@@ -150,6 +150,19 @@ async function stopFromWidget() {
 }
 
 describe('notes recording across navigation', () => {
+  it('records with echo cancellation off so meeting audio from the speakers is kept', async () => {
+    await mountShell();
+    await act(async () => {
+      fireEvent.click(await screen.findByText('Standup'));
+      await Promise.resolve();
+    });
+    fireEvent.click(await screen.findByText('Edit'));
+    await startRecording();
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: { echoCancellation: false },
+    });
+  });
+
   it('keeps recording after leaving Notes and saves the take from the widget', async () => {
     await mountShell();
     await act(async () => {
