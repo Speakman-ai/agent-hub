@@ -100,3 +100,25 @@ export function hasChatMessagesReadScope(scopes: string[]): boolean {
 export function hasChatMessagesCreateScope(scopes: string[]): boolean {
   return scopes.includes(CHAT_MESSAGES_CREATE_SCOPE) || scopes.includes(CHAT_MESSAGES_SCOPE);
 }
+
+// Optional: add and remove the caller's own emoji reactions. The broader
+// `chat.messages` scope also covers reactions.
+export const CHAT_REACTIONS_SCOPE = 'https://www.googleapis.com/auth/chat.messages.reactions';
+
+export function hasChatReactionsScope(scopes: string[]): boolean {
+  return scopes.includes(CHAT_REACTIONS_SCOPE) || scopes.includes(CHAT_MESSAGES_SCOPE);
+}
+
+// Optional: the caller's own read position in a space. Google exposes no read
+// receipts for other members, only "where I last read up to".
+export const CHAT_READSTATE_SCOPE = 'https://www.googleapis.com/auth/chat.users.readstate';
+export const CHAT_READSTATE_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/chat.users.readstate.readonly';
+
+export function hasChatReadStateReadScope(scopes: string[]): boolean {
+  return scopes.includes(CHAT_READSTATE_SCOPE) || scopes.includes(CHAT_READSTATE_READONLY_SCOPE);
+}
+
+export function hasChatReadStateWriteScope(scopes: string[]): boolean {
+  return scopes.includes(CHAT_READSTATE_SCOPE);
+}

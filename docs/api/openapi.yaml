@@ -6666,6 +6666,22 @@ components:
         - lastActiveTime
         - spaceUri
         - participants
+    GoogleChatReaction:
+      type: object
+      properties:
+        emoji:
+          type: string
+          description: The unicode emoji, or the `:name:` of a custom emoji.
+        customEmojiUrl:
+          type: string
+          nullable: true
+          description: Short-lived image URL for a custom emoji; null for unicode emoji.
+        count:
+          type: integer
+      required:
+        - emoji
+        - customEmojiUrl
+        - count
     GoogleChatMessage:
       type: object
       properties:
@@ -6700,6 +6716,11 @@ components:
           allOf:
             - $ref: "#/components/schemas/GoogleChatUser"
             - nullable: true
+        reactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoogleChatReaction"
+          description: Emoji reactions on the message, one entry per emoji with its total count.
       required:
         - name
         - id
@@ -6712,6 +6733,16 @@ components:
         - deleted
         - attachmentCount
         - sender
+        - reactions
+    GoogleChatReadState:
+      type: object
+      properties:
+        lastReadTime:
+          type: string
+          nullable: true
+          description: When the calling user last read the space. Messages created after it are unread. Google exposes no read state for other members.
+      required:
+        - lastReadTime
     GoogleChatMessageLink:
       type: object
       properties:
@@ -31722,9 +31753,14 @@ paths:
                   nextPageToken:
                     type: string
                     nullable: true
+                  selfUserName:
+                    type: string
+                    nullable: true
+                    description: The caller's Chat user name (`users/{id}`), so a client can tell the caller's own messages apart.
                 required:
                   - messages
                   - nextPageToken
+                  - selfUserName
         "400":
           description: Invalid space id or query.
           content:
@@ -31837,6 +31873,246 @@ paths:
                 $ref: "#/components/schemas/GoogleChatErrorResponse"
         "403":
           description: Required Chat send scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Space not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/spaces/{spaceId}/messages/{messageId}/reactions/toggle:
+    post:
+      tags:
+        - Google
+      summary: Add or remove the calling user's emoji reaction on a Google Chat message
+      description: "Removes the caller's reaction with this emoji when one exists, otherwise adds it. Refused for agent sessions: reactions go out under the owner's name."
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_.-]{1,256}$
+          required: true
+          name: messageId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                emoji:
+                  type: string
+                  minLength: 1
+                  maxLength: 32
+                  description: A unicode emoji, e.g. 👍.
+              required:
+                - emoji
+              additionalProperties: false
+      responses:
+        "200":
+          description: Whether the caller now has this reaction, and the message's reaction summary read back from Google after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reacted:
+                    type: boolean
+                  reactions:
+                    type: array
+                    nullable: true
+                    items:
+                      $ref: "#/components/schemas/GoogleChatReaction"
+                    description: Authoritative summary after the change; null when it could not be read back (the change still applied).
+                required:
+                  - reacted
+                  - reactions
+        "400":
+          description: Invalid body or ids.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Reactions scope not granted, or the caller is an agent session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Message not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/spaces/{spaceId}/read-state:
+    get:
+      tags:
+        - Google
+      summary: Get the calling user's read position in a Google Chat space
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+      responses:
+        "200":
+          description: The read state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatReadState"
+        "400":
+          description: Invalid space id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Read-state scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Space not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+    put:
+      tags:
+        - Google
+      summary: Mark a Google Chat space read for the calling user
+      description: "Updates the read position in Google Chat itself, forward only: a time at or before the current position leaves it unchanged (`updated: false`). Refused for agent sessions."
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lastReadTime:
+                  type: string
+                  description: Mark the space read up to this RFC 3339 time, usually the newest message.
+              required:
+                - lastReadTime
+              additionalProperties: false
+      responses:
+        "200":
+          description: The read state after the request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lastReadTime:
+                    type: string
+                    nullable: true
+                  updated:
+                    type: boolean
+                    description: False when the position was already at or past the requested time.
+                required:
+                  - lastReadTime
+                  - updated
+        "400":
+          description: Invalid body or space id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Read-state scope not granted, or the caller is an agent session.
           content:
             application/json:
               schema:

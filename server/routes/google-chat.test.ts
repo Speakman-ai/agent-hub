@@ -171,6 +171,7 @@ describe('Google Chat proxy routes', () => {
       deleted: false,
       attachmentCount: 1,
       sender: { name: 'users/123', displayName: null, type: 'HUMAN' },
+      reactions: [],
     });
     expect(res.body.messages[1]).toMatchObject({ deleted: true, text: null });
     expect(res.body.nextPageToken).toBeNull();

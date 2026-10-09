@@ -20,6 +20,9 @@ vi.mock('../utils/api', () => ({
     ensureGoogleChatSubscription: vi.fn(),
     listGoogleChatUnread: vi.fn(),
     markGoogleChatSpaceRead: vi.fn(),
+    toggleGoogleChatReaction: vi.fn(),
+    getGoogleChatReadState: vi.fn(),
+    setGoogleChatReadState: vi.fn(),
   },
 }));
 
@@ -82,6 +85,8 @@ beforeEach(() => {
   for (const fn of Object.values(mockApi)) fn.mockReset();
   mockApi.listGoogleChatDrafts.mockResolvedValue({ drafts: [] });
   mockApi.getGoogleChatSettings.mockResolvedValue({ autoSendAgentReplies: false });
+  mockApi.getGoogleChatReadState.mockResolvedValue({ lastReadTime: null });
+  mockApi.setGoogleChatReadState.mockResolvedValue({ lastReadTime: null });
   resetChatPushStore();
   startSessionProps.last = null;
   ticketProps.last = null;
@@ -632,6 +637,8 @@ describe('GoogleChatPage', () => {
     expect(mockApi.startGoogleOAuth.mock.calls[0][0].scopes).toEqual([
       READ_ONLY[1],
       'https://www.googleapis.com/auth/chat.memberships.readonly',
+      'https://www.googleapis.com/auth/chat.messages.reactions',
+      'https://www.googleapis.com/auth/chat.users.readstate',
     ]);
     expect(mockApi.listGoogleChatSpaces).not.toHaveBeenCalled();
   });
@@ -1809,5 +1816,346 @@ describe('GoogleChatPage push updates', () => {
     const ids = screen.getAllByTestId(/^chat-space-[A-Z]+$/).map((el) => el.dataset.testid);
     expect(ids).toEqual(['chat-space-CCC', 'chat-space-BBB', 'chat-space-AAA']);
     expect(mockApi.listGoogleChatSpaces).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GoogleChatPage, Google Chat layout', () => {
+  const ME = { name: 'users/999', displayName: 'Ryan Speakman', type: 'HUMAN' };
+  const KEVIN = { name: 'users/555', displayName: 'Kevin Woeste', type: 'HUMAN' };
+
+  function setup(scopes: string[] = ALL_SCOPES) {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      grantedScopes: scopes,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE] });
+    mockApi.listGoogleChatMessageLinks.mockResolvedValue({ links: [] });
+    mockApi.listGoogleChatMessages.mockResolvedValue({
+      messages: [
+        msg({
+          name: 'spaces/AAA/messages/M3',
+          id: 'M3',
+          text: 'mine',
+          createTime: '2026-10-08T10:03:00Z',
+          sender: ME,
+        }),
+        msg({
+          name: 'spaces/AAA/messages/M2',
+          id: 'M2',
+          text: 'second from kevin',
+          createTime: '2026-10-08T10:01:00Z',
+          sender: KEVIN,
+          reactions: [{ emoji: '👍', customEmojiUrl: null, count: 2 }],
+        }),
+        msg({
+          name: 'spaces/AAA/messages/M1',
+          id: 'M1',
+          text: 'first from kevin',
+          createTime: '2026-10-08T10:00:00Z',
+          sender: KEVIN,
+        }),
+      ],
+      nextPageToken: null,
+      selfUserName: 'users/999',
+    });
+  }
+
+  it("puts your own messages on the right and groups a sender's run under one header", async () => {
+    setup();
+    render(<GoogleChatPage />);
+    await screen.findByText('mine');
+
+    const rows = screen.getAllByTestId('chat-message');
+    expect(rows.map((r) => r.getAttribute('data-own'))).toEqual([null, null, 'true']);
+    // Kevin's name and avatar appear once for his two consecutive messages.
+    expect(screen.getAllByText('Kevin Woeste')).toHaveLength(1);
+    expect(rows[0].textContent).toContain('KW');
+    expect(rows[1].textContent).not.toContain('Kevin Woeste');
+    // Your own message carries no name.
+    expect(rows[2].textContent).not.toContain('Ryan Speakman');
+  });
+
+  it('shows reactions and toggles one through the proxy', async () => {
+    setup();
+    mockApi.toggleGoogleChatReaction.mockResolvedValue({
+      reacted: true,
+      reactions: [{ emoji: '👍', customEmojiUrl: null, count: 3 }],
+    });
+    render(<GoogleChatPage />);
+    const pill = await screen.findByTestId('chat-reaction');
+    expect(pill.textContent).toBe('👍2');
+
+    fireEvent.click(pill);
+    await waitFor(() => expect(screen.getByTestId('chat-reaction').textContent).toBe('👍3'));
+    expect(mockApi.toggleGoogleChatReaction).toHaveBeenCalledWith('AAA', 'M2', '👍');
+
+    // A new emoji from the quick menu adds a pill.
+    mockApi.toggleGoogleChatReaction.mockResolvedValue({
+      reacted: true,
+      reactions: [{ emoji: '🎉', customEmojiUrl: null, count: 1 }],
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add reaction' })[0]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'React with 🎉' }));
+    await waitFor(() =>
+      expect(mockApi.toggleGoogleChatReaction).toHaveBeenCalledWith('AAA', 'M1', '🎉'),
+    );
+    expect((await screen.findAllByTestId('chat-reaction')).map((p) => p.textContent)).toContain(
+      '🎉1',
+    );
+  });
+
+  function kevinWith(count: number) {
+    return {
+      messages: [
+        msg({
+          name: 'spaces/AAA/messages/M2',
+          id: 'M2',
+          text: 'second from kevin',
+          createTime: '2026-10-08T10:01:00Z',
+          sender: KEVIN,
+          reactions: [{ emoji: '👍', customEmojiUrl: null, count }],
+        }),
+      ],
+      nextPageToken: null,
+      selfUserName: 'users/999',
+    };
+  }
+
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  it('a refresh that already includes the new reaction is not counted twice', async () => {
+    setup();
+    mockApi.listGoogleChatMessages.mockResolvedValue(kevinWith(2));
+    const toggle = deferred<unknown>();
+    mockApi.toggleGoogleChatReaction.mockReturnValue(toggle.promise);
+    render(<GoogleChatPage />);
+    fireEvent.click(await screen.findByTestId('chat-reaction'));
+
+    // Google applied the reaction; a refresh lands before the toggle answers.
+    mockApi.listGoogleChatMessages.mockResolvedValue(kevinWith(3));
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));
+    await waitFor(() => expect(screen.getByTestId('chat-reaction').textContent).toBe('👍3'));
+
+    await act(async () => {
+      toggle.resolve({
+        reacted: true,
+        reactions: [{ emoji: '👍', customEmojiUrl: null, count: 3 }],
+      });
+    });
+    expect(screen.getByTestId('chat-reaction').textContent).toBe('👍3');
+  });
+
+  it('a refresh issued before the toggle answered cannot restore the old count', async () => {
+    setup();
+    mockApi.listGoogleChatMessages.mockResolvedValue(kevinWith(2));
+    const toggle = deferred<unknown>();
+    mockApi.toggleGoogleChatReaction.mockReturnValue(toggle.promise);
+    render(<GoogleChatPage />);
+    fireEvent.click(await screen.findByTestId('chat-reaction'));
+
+    // A refresh read Google before the reaction applied, and answers last.
+    const stale = deferred<unknown>();
+    mockApi.listGoogleChatMessages.mockReturnValue(stale.promise);
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));
+    await act(async () => {
+      toggle.resolve({
+        reacted: true,
+        reactions: [{ emoji: '👍', customEmojiUrl: null, count: 3 }],
+      });
+    });
+    expect(screen.getByTestId('chat-reaction').textContent).toBe('👍3');
+    await act(async () => {
+      stale.resolve(kevinWith(2));
+    });
+    expect(screen.getByTestId('chat-reaction').textContent).toBe('👍3');
+
+    // A read issued after the toggle is authoritative again.
+    mockApi.listGoogleChatMessages.mockResolvedValue(kevinWith(4));
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));
+    await waitFor(() => expect(screen.getByTestId('chat-reaction').textContent).toBe('👍4'));
+  });
+
+  it('toggles of two emoji on one message apply in order, so a later summary is not lost', async () => {
+    setup();
+    mockApi.listGoogleChatMessages.mockResolvedValue(kevinWith(2));
+    const first = deferred<unknown>();
+    mockApi.toggleGoogleChatReaction.mockReturnValueOnce(first.promise).mockResolvedValueOnce({
+      reacted: true,
+      reactions: [
+        { emoji: '👍', customEmojiUrl: null, count: 3 },
+        { emoji: '🎉', customEmojiUrl: null, count: 1 },
+      ],
+    });
+    render(<GoogleChatPage />);
+    fireEvent.click(await screen.findByTestId('chat-reaction'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add reaction' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'React with 🎉' }));
+
+    // The 🎉 toggle waits for the 👍 one, so its read-back includes 👍.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(mockApi.toggleGoogleChatReaction).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({
+        reacted: true,
+        reactions: [{ emoji: '👍', customEmojiUrl: null, count: 3 }],
+      });
+    });
+    await waitFor(() =>
+      expect(screen.getAllByTestId('chat-reaction').map((p) => p.textContent)).toEqual([
+        '👍3',
+        '🎉1',
+      ]),
+    );
+    expect(mockApi.toggleGoogleChatReaction).toHaveBeenNthCalledWith(2, 'AAA', 'M2', '🎉');
+  });
+
+  it('re-reads the messages when the toggle could not read the summary back', async () => {
+    setup();
+    mockApi.listGoogleChatMessages.mockResolvedValue(kevinWith(2));
+    mockApi.toggleGoogleChatReaction.mockResolvedValue({ reacted: true, reactions: null });
+    render(<GoogleChatPage />);
+    fireEvent.click(await screen.findByTestId('chat-reaction'));
+    mockApi.listGoogleChatMessages.mockResolvedValue(kevinWith(3));
+    await waitFor(() => expect(screen.getByTestId('chat-reaction').textContent).toBe('👍3'));
+  });
+
+  it('draws the Unread line at your read position, then marks the space read in Google', async () => {
+    setup();
+    mockApi.getGoogleChatReadState.mockResolvedValue({ lastReadTime: '2026-10-08T10:00:30Z' });
+    render(<GoogleChatPage />);
+
+    const divider = await screen.findByTestId('chat-unread-divider');
+    // It sits right before Kevin's second message, the first one after the mark.
+    expect(divider.nextElementSibling?.textContent).toContain('second from kevin');
+    await waitFor(() =>
+      expect(mockApi.setGoogleChatReadState).toHaveBeenCalledWith('AAA', '2026-10-08T10:03:00Z'),
+    );
+  });
+
+  it('on reopen, never moves the Google read position back behind where the user read', async () => {
+    const SPACE_B = { ...SPACE, name: 'spaces/BBB', id: 'BBB', displayName: 'Other' };
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE, SPACE_B] });
+    mockApi.listGoogleChatMessageLinks.mockResolvedValue({ links: [] });
+    let aaaNewest = '2026-10-08T10:01:00Z';
+    mockApi.listGoogleChatMessages.mockImplementation(async (spaceId: string) => ({
+      messages:
+        spaceId === 'AAA'
+          ? [
+              msg({
+                name: 'spaces/AAA/messages/N',
+                id: 'N',
+                text: `newest ${aaaNewest}`,
+                createTime: aaaNewest,
+                sender: KEVIN,
+              }),
+            ]
+          : [msg({ name: 'spaces/BBB/messages/B1', id: 'B1', text: 'in b', sender: KEVIN })],
+      nextPageToken: null,
+      selfUserName: 'users/999',
+    }));
+    render(<GoogleChatPage />);
+
+    // First open: nothing read yet, so the pane marks AAA read through 10:01.
+    await waitFor(() =>
+      expect(mockApi.setGoogleChatReadState).toHaveBeenCalledWith('AAA', '2026-10-08T10:01:00Z'),
+    );
+
+    // Meanwhile the user read through 10:10 in Google Chat; the pane has only
+    // loaded through 10:05.
+    aaaNewest = '2026-10-08T10:05:00Z';
+    mockApi.getGoogleChatReadState.mockResolvedValue({ lastReadTime: '2026-10-08T10:10:00Z' });
+    fireEvent.click(await screen.findByTestId('chat-space-BBB'));
+    await screen.findByText('in b');
+    fireEvent.click(screen.getByTestId('chat-space-AAA'));
+    await screen.findByText('newest 2026-10-08T10:05:00Z');
+    await waitFor(() => expect(mockApi.getGoogleChatReadState).toHaveBeenLastCalledWith('AAA'));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(mockApi.setGoogleChatReadState).not.toHaveBeenCalledWith('AAA', '2026-10-08T10:05:00Z');
+    expect(screen.queryByTestId('chat-unread-divider')).toBeNull();
+  });
+
+  it('a failed read-state fetch leaves the Google position alone', async () => {
+    setup();
+    mockApi.getGoogleChatReadState.mockRejectedValue(new Error('upstream 503'));
+    render(<GoogleChatPage />);
+    await screen.findByText('mine');
+    await waitFor(() => expect(mockApi.getGoogleChatReadState).toHaveBeenCalledWith('AAA'));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    // The loaded messages end at 10:03, but the user may have read further in
+    // Google: with the position unknown, nothing is written.
+    expect(mockApi.setGoogleChatReadState).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('chat-unread-divider')).toBeNull();
+  });
+
+  it('marks read up to the newest top-level message, not a newer thread reply', async () => {
+    setup();
+    mockApi.listGoogleChatMessages.mockResolvedValue({
+      messages: [
+        msg({
+          name: 'spaces/AAA/messages/R',
+          id: 'R',
+          text: 'reply in a thread',
+          createTime: '2026-10-08T10:09:00Z',
+          threadReply: true,
+          sender: KEVIN,
+        }),
+        msg({
+          name: 'spaces/AAA/messages/T',
+          id: 'T',
+          text: 'top level',
+          createTime: '2026-10-08T10:00:00Z',
+          sender: KEVIN,
+        }),
+      ],
+      nextPageToken: null,
+      selfUserName: 'users/999',
+    });
+    mockApi.getGoogleChatReadState.mockResolvedValue({ lastReadTime: '2026-10-08T09:00:00Z' });
+    render(<GoogleChatPage />);
+
+    await waitFor(() =>
+      expect(mockApi.setGoogleChatReadState).toHaveBeenCalledWith('AAA', '2026-10-08T10:00:00Z'),
+    );
+    expect(mockApi.setGoogleChatReadState).not.toHaveBeenCalledWith('AAA', '2026-10-08T10:09:00Z');
+    // The Unread line goes before the top-level message, never on the reply.
+    const divider = await screen.findByTestId('chat-unread-divider');
+    expect(divider.nextElementSibling?.textContent).toContain('top level');
+  });
+
+  it('without the extra scopes, hides reacting and read state and offers to turn them on', async () => {
+    setup(CHAT_SURFACE_SCOPES.slice(0, 4));
+    mockApi.startGoogleOAuth.mockResolvedValue({ authorizeUrl: 'about:blank' });
+    render(<GoogleChatPage />);
+    await screen.findByText('mine');
+
+    expect(screen.queryByRole('button', { name: 'Add reaction' })).toBeNull();
+    expect((screen.getByTestId('chat-reaction') as HTMLButtonElement).disabled).toBe(true);
+    expect(mockApi.getGoogleChatReadState).not.toHaveBeenCalled();
+    expect(mockApi.setGoogleChatReadState).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('chat-enable-extras'));
+    await waitFor(() => expect(mockApi.startGoogleOAuth).toHaveBeenCalled());
+    expect(mockApi.startGoogleOAuth.mock.calls[0][0].scopes).toEqual([
+      'https://www.googleapis.com/auth/chat.messages.reactions',
+      'https://www.googleapis.com/auth/chat.users.readstate',
+    ]);
   });
 });

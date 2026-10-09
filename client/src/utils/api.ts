@@ -1173,6 +1173,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  toggleGoogleChatReaction: (spaceId: string, messageId: string, emoji: string) =>
+    fetchJSON(
+      `/google/chat/spaces/${encodeURIComponent(spaceId)}/messages/${encodeURIComponent(
+        messageId,
+      )}/reactions/toggle`,
+      { method: 'POST', body: JSON.stringify({ emoji }) },
+    ),
+  getGoogleChatReadState: (spaceId: string) =>
+    fetchJSON(`/google/chat/spaces/${encodeURIComponent(spaceId)}/read-state`),
+  setGoogleChatReadState: (spaceId: string, lastReadTime: string) =>
+    fetchJSON(`/google/chat/spaces/${encodeURIComponent(spaceId)}/read-state`, {
+      method: 'PUT',
+      body: JSON.stringify({ lastReadTime }),
+    }),
   // Chat push (Workspace Events API) and per-user unread state.
   ensureGoogleChatSubscription: () =>
     fetchJSON('/google/chat/events/subscription', { method: 'POST' }),

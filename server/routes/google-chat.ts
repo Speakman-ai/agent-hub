@@ -34,10 +34,15 @@ import type { AuthenticatedRequest } from '../auth.js';
 import {
   CHAT_MESSAGES_CREATE_SCOPE,
   CHAT_MESSAGES_READONLY_SCOPE,
+  CHAT_REACTIONS_SCOPE,
+  CHAT_READSTATE_SCOPE,
   CHAT_SPACES_READONLY_SCOPE,
   hasChatMessagesCreateScope,
   hasChatMembershipsReadScope,
   hasChatMessagesReadScope,
+  hasChatReactionsScope,
+  hasChatReadStateReadScope,
+  hasChatReadStateWriteScope,
   hasChatSpacesReadScope,
 } from '../google-scopes.js';
 import { registerComponent, registerPath, z } from '../openapi/registry.js';
@@ -57,7 +62,9 @@ import { compareRfc3339, isRfc3339, shiftRfc3339 } from '../../shared/utils/rfc3
  * Scopes (https://developers.google.com/workspace/chat/authenticate-authorize):
  *   - listing spaces gates on `chat.spaces.readonly` (sensitive);
  *   - reading messages gates on `chat.messages.readonly` (restricted);
- *   - posting gates on `chat.messages.create` (sensitive).
+ *   - posting gates on `chat.messages.create` (sensitive);
+ *   - reacting gates on `chat.messages.reactions` (optional);
+ *   - the caller's read position gates on `chat.users.readstate` (optional).
  *
  * Agent replies: a post made from an agent session goes out under the session
  * owner's own Google identity, so by default it is held as a draft until that
@@ -110,6 +117,19 @@ const ChatSpaceSchema = registerComponent(
   }),
 );
 
+const ChatReactionSchema = registerComponent(
+  'GoogleChatReaction',
+  z.object({
+    emoji: z.string().openapi({
+      description: 'The unicode emoji, or the `:name:` of a custom emoji.',
+    }),
+    customEmojiUrl: z.string().nullable().openapi({
+      description: 'Short-lived image URL for a custom emoji; null for unicode emoji.',
+    }),
+    count: z.number().int(),
+  }),
+);
+
 const ChatMessageSchema = registerComponent(
   'GoogleChatMessage',
   z.object({
@@ -124,6 +144,9 @@ const ChatMessageSchema = registerComponent(
     deleted: z.boolean(),
     attachmentCount: z.number(),
     sender: ChatUserSchema.nullable(),
+    reactions: z.array(ChatReactionSchema).openapi({
+      description: 'Emoji reactions on the message, one entry per emoji with its total count.',
+    }),
   }),
 );
 
@@ -141,6 +164,36 @@ const SpaceParamsSchema = z.object({
   spaceId: z.string().regex(SPACE_ID_RE, 'invalid space id'),
 });
 
+const MessageParamsSchema = z.object({
+  spaceId: z.string().regex(SPACE_ID_RE, 'invalid space id'),
+  messageId: z.string().regex(/^[A-Za-z0-9_.-]{1,256}$/, 'invalid message id'),
+});
+
+const ToggleReactionBodySchema = z
+  .object({
+    // Interpolated into a quoted Chat API filter, so quotes, backslashes, and
+    // control characters are refused.
+    emoji: z
+      .string()
+      .min(1)
+      .max(32)
+      .refine((v) => ![...v].some((ch) => ch === '"' || ch === '\\' || ch.charCodeAt(0) < 0x20), {
+        message: 'invalid emoji',
+      })
+      .openapi({ description: 'A unicode emoji, e.g. 👍.' }),
+  })
+  .strict();
+
+const ReadStateSchema = registerComponent(
+  'GoogleChatReadState',
+  z.object({
+    lastReadTime: z.string().nullable().openapi({
+      description:
+        'When the calling user last read the space. Messages created after it are unread. Google exposes no read state for other members.',
+    }),
+  }),
+);
+
 const ListSpacesQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(1000).optional(),
   pageToken: z.string().optional(),
@@ -149,6 +202,14 @@ const ListSpacesQuerySchema = z.object({
 const rfc3339Param = z.string().refine(isRfc3339, {
   message: 'must be an RFC 3339 timestamp with a zone, e.g. 2026-10-08T10:00:00.123456Z',
 });
+
+const UpdateReadStateBodySchema = z
+  .object({
+    lastReadTime: rfc3339Param.openapi({
+      description: 'Mark the space read up to this RFC 3339 time, usually the newest message.',
+    }),
+  })
+  .strict();
 
 const ListMessagesQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(1000).optional(),
@@ -347,6 +408,10 @@ registerPath({
         z.object({
           messages: z.array(ChatMessageSchema),
           nextPageToken: z.string().nullable(),
+          selfUserName: z.string().nullable().openapi({
+            description:
+              "The caller's Chat user name (`users/{id}`), so a client can tell the caller's own messages apart.",
+          }),
         }),
       ),
     },
@@ -382,6 +447,83 @@ registerPath({
     },
     400: errorResponse('Invalid body or space id.'),
     403: errorResponse('Required Chat send scope has not been granted.'),
+    404: errorResponse('Space not found.'),
+    ...commonErrors,
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/google/chat/spaces/{spaceId}/messages/{messageId}/reactions/toggle',
+  tags: ['Google'],
+  summary: "Add or remove the calling user's emoji reaction on a Google Chat message",
+  description:
+    "Removes the caller's reaction with this emoji when one exists, otherwise adds it. Refused for agent sessions: reactions go out under the owner's name.",
+  request: {
+    params: MessageParamsSchema,
+    body: { content: jsonContent(ToggleReactionBodySchema), required: true },
+  },
+  responses: {
+    200: {
+      description:
+        "Whether the caller now has this reaction, and the message's reaction summary read back from Google after the change.",
+      content: jsonContent(
+        z.object({
+          reacted: z.boolean(),
+          reactions: z.array(ChatReactionSchema).nullable().openapi({
+            description:
+              'Authoritative summary after the change; null when it could not be read back (the change still applied).',
+          }),
+        }),
+      ),
+    },
+    400: errorResponse('Invalid body or ids.'),
+    403: errorResponse('Reactions scope not granted, or the caller is an agent session.'),
+    404: errorResponse('Message not found.'),
+    ...commonErrors,
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/google/chat/spaces/{spaceId}/read-state',
+  tags: ['Google'],
+  summary: "Get the calling user's read position in a Google Chat space",
+  request: { params: SpaceParamsSchema },
+  responses: {
+    200: { description: 'The read state.', content: jsonContent(ReadStateSchema) },
+    400: errorResponse('Invalid space id.'),
+    403: errorResponse('Read-state scope has not been granted.'),
+    404: errorResponse('Space not found.'),
+    ...commonErrors,
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/google/chat/spaces/{spaceId}/read-state',
+  tags: ['Google'],
+  summary: 'Mark a Google Chat space read for the calling user',
+  description:
+    'Updates the read position in Google Chat itself, forward only: a time at or before the current position leaves it unchanged (`updated: false`). Refused for agent sessions.',
+  request: {
+    params: SpaceParamsSchema,
+    body: { content: jsonContent(UpdateReadStateBodySchema), required: true },
+  },
+  responses: {
+    200: {
+      description: 'The read state after the request.',
+      content: jsonContent(
+        z.object({
+          lastReadTime: z.string().nullable(),
+          updated: z.boolean().openapi({
+            description: 'False when the position was already at or past the requested time.',
+          }),
+        }),
+      ),
+    },
+    400: errorResponse('Invalid body or space id.'),
+    403: errorResponse('Read-state scope not granted, or the caller is an agent session.'),
     404: errorResponse('Space not found.'),
     ...commonErrors,
   },
@@ -816,7 +958,28 @@ export function shapeMessage(message: chat_v1.Schema$Message): z.infer<typeof Ch
     deleted: !!message.deleteTime,
     attachmentCount: message.attachment?.length ?? 0,
     sender,
+    reactions: message.deleteTime ? [] : shapeReactions(message.emojiReactionSummaries),
   };
+}
+
+export function shapeReactions(
+  summaries: chat_v1.Schema$EmojiReactionSummary[] | null | undefined,
+): z.infer<typeof ChatReactionSchema>[] {
+  const out: z.infer<typeof ChatReactionSchema>[] = [];
+  for (const summary of summaries ?? []) {
+    const count = summary.reactionCount ?? 0;
+    if (count <= 0) continue;
+    const unicode = summary.emoji?.unicode;
+    const custom = summary.emoji?.customEmoji;
+    const emoji = unicode || custom?.emojiName || null;
+    if (!emoji) continue;
+    out.push({
+      emoji,
+      customEmojiUrl: unicode ? null : (custom?.temporaryImageUri ?? null),
+      count,
+    });
+  }
+  return out;
 }
 
 /** Most recently active first; spaces without activity sink to the bottom. */
@@ -1031,6 +1194,29 @@ function recordAgentReply(
   }
 }
 
+// Every read-modify-write against Google Chat state (read position, the
+// caller's reactions on a message) runs one at a time per key, each after the
+// previous one for that key settled. Without this, overlapping requests read
+// the same old state and their results land in whatever order they finish:
+// a read position moves backwards, or a reaction summary read back before a
+// later change is returned last. The Hub is one process, so an in-memory
+// chain covers every tab and client.
+const chatWriteChains = new Map<string, Promise<unknown>>();
+
+export function serializeChatWrite<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const previous = chatWriteChains.get(key) ?? Promise.resolve();
+  const run = previous.then(task, task);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  chatWriteChains.set(key, settled);
+  void settled.then(() => {
+    if (chatWriteChains.get(key) === settled) chatWriteChains.delete(key);
+  });
+  return run;
+}
+
 export default function createGoogleChatRoutes(deps: RouteDeps): Router {
   const router = Router();
 
@@ -1143,9 +1329,12 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
         showDeleted: true,
         ...(filter ? { filter } : {}),
       });
+      const sub = getGoogleConnection(uid)?.googleSub;
       return res.json({
         messages: (result.data.messages ?? []).map(shapeMessage),
         nextPageToken: result.data.nextPageToken || null,
+        // Chat user ids are the Google account id, i.e. the OIDC `sub`.
+        selfUserName: sub ? `users/${sub}` : null,
       });
     } catch (err: unknown) {
       return sendGoogleError(res, err);
@@ -1222,6 +1411,175 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
       const sent = shapeMessage(message);
       if (agentSessionId) recordAgentReply(agentSessionId, spaceId, sent);
       return res.status(201).json(sent);
+    } catch (err: unknown) {
+      return sendGoogleError(res, err);
+    }
+  });
+
+  router.post(
+    '/api/google/chat/spaces/:spaceId/messages/:messageId/reactions/toggle',
+    async (req: Request, res: Response) => {
+      const params = MessageParamsSchema.safeParse(req.params);
+      if (!params.success) {
+        return bad(res, 400, params.error.issues[0]?.message || 'Invalid ids', 'invalid_request');
+      }
+      const body = ToggleReactionBodySchema.safeParse(req.body);
+      if (!body.success) {
+        return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
+      }
+      if (refuseAgentCaller(req, res)) return;
+      const uid = requireChatAccess(
+        req,
+        res,
+        deps,
+        hasChatReactionsScope,
+        [CHAT_REACTIONS_SCOPE],
+        'google_chat_reactions_scope_required',
+      );
+      if (!uid) return;
+      const sub = getGoogleConnection(uid)?.googleSub;
+      if (!sub) return bad(res, 401, 'Google account is not connected', 'google_not_connected');
+      const token = await resolveChatToken(uid, deps, res);
+      if (!token) return;
+
+      const parent = `spaces/${params.data.spaceId}/messages/${params.data.messageId}`;
+      const { emoji } = body.data;
+      try {
+        const chat = createChatClient(token);
+        // One toggle per user and message at a time, so each read-back
+        // reflects every earlier change and responses can't carry an older
+        // summary than one already returned.
+        const result = await serializeChatWrite(`reaction:${uid}:${parent}`, async () => {
+          const { data } = await chat.spaces.messages.reactions.list(
+            {
+              parent,
+              pageSize: 10,
+              filter: `emoji.unicode = "${emoji}" AND user.name = "users/${sub}"`,
+            },
+            { timeout: CHAT_CALL_TIMEOUT_MS },
+          );
+          const mine = (data.reactions ?? []).filter((r) => !!r.name);
+          const reacted = mine.length === 0;
+          if (reacted) {
+            await chat.spaces.messages.reactions.create(
+              { parent, requestBody: { emoji: { unicode: emoji } } },
+              { timeout: CHAT_CALL_TIMEOUT_MS },
+            );
+          } else {
+            for (const reaction of mine) {
+              await chat.spaces.messages.reactions.delete(
+                { name: reaction.name as string },
+                { timeout: CHAT_CALL_TIMEOUT_MS },
+              );
+            }
+          }
+          // Read the summary back so the client replaces its counts instead of
+          // guessing a delta that a concurrent refresh may already include. The
+          // change itself succeeded, so a failed read-back only drops the summary.
+          let reactions: ReturnType<typeof shapeReactions> | null = null;
+          try {
+            const message = await chat.spaces.messages.get(
+              { name: parent },
+              { timeout: CHAT_CALL_TIMEOUT_MS },
+            );
+            reactions = shapeReactions(message.data.emojiReactionSummaries);
+          } catch {
+            reactions = null;
+          }
+          return { reacted, reactions };
+        });
+        return res.json(result);
+      } catch (err: unknown) {
+        return sendGoogleError(res, err);
+      }
+    },
+  );
+
+  router.get('/api/google/chat/spaces/:spaceId/read-state', async (req: Request, res: Response) => {
+    const params = SpaceParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      return bad(
+        res,
+        400,
+        params.error.issues[0]?.message || 'Invalid space id',
+        'invalid_request',
+      );
+    }
+    const uid = requireChatAccess(
+      req,
+      res,
+      deps,
+      hasChatReadStateReadScope,
+      [CHAT_READSTATE_SCOPE],
+      'google_chat_readstate_scope_required',
+    );
+    if (!uid) return;
+    const token = await resolveChatToken(uid, deps, res);
+    if (!token) return;
+    try {
+      const chat = createChatClient(token);
+      const { data } = await chat.users.spaces.getSpaceReadState(
+        { name: `users/me/spaces/${params.data.spaceId}/spaceReadState` },
+        { timeout: CHAT_CALL_TIMEOUT_MS },
+      );
+      return res.json({ lastReadTime: data.lastReadTime ?? null });
+    } catch (err: unknown) {
+      return sendGoogleError(res, err);
+    }
+  });
+
+  router.put('/api/google/chat/spaces/:spaceId/read-state', async (req: Request, res: Response) => {
+    const params = SpaceParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      return bad(
+        res,
+        400,
+        params.error.issues[0]?.message || 'Invalid space id',
+        'invalid_request',
+      );
+    }
+    const body = UpdateReadStateBodySchema.safeParse(req.body);
+    if (!body.success) {
+      return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
+    }
+    if (refuseAgentCaller(req, res)) return;
+    const uid = requireChatAccess(
+      req,
+      res,
+      deps,
+      hasChatReadStateWriteScope,
+      [CHAT_READSTATE_SCOPE],
+      'google_chat_readstate_scope_required',
+    );
+    if (!uid) return;
+    const token = await resolveChatToken(uid, deps, res);
+    if (!token) return;
+    const target = body.data.lastReadTime;
+    try {
+      const chat = createChatClient(token);
+      const name = `users/me/spaces/${params.data.spaceId}/spaceReadState`;
+      const result = await serializeChatWrite(
+        `read-state:${uid}:${params.data.spaceId}`,
+        async () => {
+          // The read position only moves forward. The user may have read further
+          // in Google Chat than this client has loaded, and Google would accept
+          // an older time and mark those messages unread again.
+          const current = await chat.users.spaces.getSpaceReadState(
+            { name },
+            { timeout: CHAT_CALL_TIMEOUT_MS },
+          );
+          const known = current.data.lastReadTime ?? null;
+          if (known && compareRfc3339(target, known) <= 0) {
+            return { lastReadTime: known, updated: false };
+          }
+          const { data } = await chat.users.spaces.updateSpaceReadState(
+            { name, updateMask: 'lastReadTime', requestBody: { lastReadTime: target } },
+            { timeout: CHAT_CALL_TIMEOUT_MS },
+          );
+          return { lastReadTime: data.lastReadTime ?? null, updated: true };
+        },
+      );
+      return res.json(result);
     } catch (err: unknown) {
       return sendGoogleError(res, err);
     }

@@ -289,6 +289,8 @@ user**. Google adds three requirements on top of Steps 1–9:
 | `.../auth/chat.messages.readonly` | **restricted** | read messages | `CHAT_MESSAGES_READONLY_SCOPE` |
 | `.../auth/chat.messages.create` | sensitive | send / reply | `CHAT_MESSAGES_CREATE_SCOPE` |
 | `.../auth/chat.memberships.readonly` | sensitive | participant names for unnamed DMs (optional) | `CHAT_MEMBERSHIPS_READONLY_SCOPE` |
+| `.../auth/chat.messages.reactions` | sensitive | add and remove your own emoji reactions (optional) | `CHAT_REACTIONS_SCOPE` |
+| `.../auth/chat.users.readstate` | sensitive | the Unread line, and marking conversations read in Google Chat (optional) | `CHAT_READSTATE_SCOPE` |
 
 `chat.messages.readonly` is the only **restricted** scope the Hub requests, and
 there is no non-restricted way to read Chat messages. That changes the

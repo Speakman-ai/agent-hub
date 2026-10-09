@@ -38,6 +38,16 @@ export type ChatMessage = {
   deleted: boolean;
   attachmentCount: number;
   sender: ChatUser | null;
+  /** One entry per emoji with its total count. */
+  reactions?: ChatReaction[];
+};
+
+export type ChatReaction = {
+  /** Unicode emoji, or `:name:` for a custom emoji. */
+  emoji: string;
+  /** Short-lived image URL for a custom emoji; null for unicode. */
+  customEmojiUrl: string | null;
+  count: number;
 };
 
 /** Named spaces show their name; DMs and unnamed group chats get a type label. */

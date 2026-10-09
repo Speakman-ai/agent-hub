@@ -143,11 +143,21 @@ export const CHAT_MEMBERSHIPS_READONLY_SCOPE =
   'https://www.googleapis.com/auth/chat.memberships.readonly';
 export const CHAT_MEMBERSHIPS_SCOPE = 'https://www.googleapis.com/auth/chat.memberships';
 
+// Optional: add and remove your own emoji reactions.
+export const CHAT_REACTIONS_SCOPE = 'https://www.googleapis.com/auth/chat.messages.reactions';
+// Optional: your read position, so the pane shows unread messages and marks
+// conversations read in Google Chat too.
+export const CHAT_READSTATE_SCOPE = 'https://www.googleapis.com/auth/chat.users.readstate';
+export const CHAT_READSTATE_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/chat.users.readstate.readonly';
+
 export const CHAT_SURFACE_SCOPES = [
   CHAT_SPACES_READONLY_SCOPE,
   CHAT_MESSAGES_READONLY_SCOPE,
   CHAT_MESSAGES_CREATE_SCOPE,
   CHAT_MEMBERSHIPS_READONLY_SCOPE,
+  CHAT_REACTIONS_SCOPE,
+  CHAT_READSTATE_SCOPE,
 ];
 
 /** True when the account can list spaces AND read their messages. */
@@ -169,6 +179,13 @@ export type ChatConsent = {
   missingSend: string[];
   /** Scopes to request to name DMs and group chats by participant. */
   missingNames: string[];
+  canReact: boolean;
+  /** Can read the caller's read position (for the Unread line). */
+  canReadState: boolean;
+  /** Can mark conversations read in Google Chat. */
+  canWriteReadState: boolean;
+  /** Scopes to request for reactions and read status. */
+  missingExtras: string[];
 };
 
 /**
@@ -184,6 +201,10 @@ export function chatConsent(status: GoogleStatusLike): ChatConsent {
     hasGoogleScope(status, CHAT_MESSAGES_READONLY_SCOPE) ||
     hasGoogleScope(status, CHAT_MESSAGES_SCOPE);
   const canSend = hasChatSendScope(status);
+  const canReact =
+    hasGoogleScope(status, CHAT_REACTIONS_SCOPE) || hasGoogleScope(status, CHAT_MESSAGES_SCOPE);
+  const canWriteReadState = hasGoogleScope(status, CHAT_READSTATE_SCOPE);
+  const canReadState = canWriteReadState || hasGoogleScope(status, CHAT_READSTATE_READONLY_SCOPE);
   const missingRead = [
     ...(hasSpaces ? [] : [CHAT_SPACES_READONLY_SCOPE]),
     ...(hasMessagesRead ? [] : [CHAT_MESSAGES_READONLY_SCOPE]),
@@ -198,6 +219,13 @@ export function chatConsent(status: GoogleStatusLike): ChatConsent {
       hasGoogleScope(status, CHAT_MEMBERSHIPS_SCOPE)
         ? []
         : [CHAT_MEMBERSHIPS_READONLY_SCOPE],
+    canReact,
+    canReadState,
+    canWriteReadState,
+    missingExtras: [
+      ...(canReact ? [] : [CHAT_REACTIONS_SCOPE]),
+      ...(canWriteReadState ? [] : [CHAT_READSTATE_SCOPE]),
+    ],
   };
 }
 

@@ -7,6 +7,9 @@ import {
   CHAT_MESSAGES_SCOPE,
   CHAT_SPACES_READONLY_SCOPE,
   CHAT_SPACES_SCOPE,
+  CHAT_REACTIONS_SCOPE,
+  CHAT_READSTATE_SCOPE,
+  CHAT_READSTATE_READONLY_SCOPE,
   chatConsent,
 } from './googleSurface';
 
@@ -20,6 +23,10 @@ describe('chatConsent', () => {
       missingRead: [CHAT_SPACES_READONLY_SCOPE, CHAT_MESSAGES_READONLY_SCOPE],
       missingSend: [CHAT_MESSAGES_CREATE_SCOPE],
       missingNames: [CHAT_MEMBERSHIPS_READONLY_SCOPE],
+      canReact: false,
+      canReadState: false,
+      canWriteReadState: false,
+      missingExtras: [CHAT_REACTIONS_SCOPE, CHAT_READSTATE_SCOPE],
     });
     expect(chatConsent(null).missingRead).toHaveLength(2);
   });
@@ -32,6 +39,10 @@ describe('chatConsent', () => {
         missingRead: [],
         missingSend: [CHAT_MESSAGES_CREATE_SCOPE],
         missingNames: [CHAT_MEMBERSHIPS_READONLY_SCOPE],
+        canReact: false,
+        canReadState: false,
+        canWriteReadState: false,
+        missingExtras: [CHAT_REACTIONS_SCOPE, CHAT_READSTATE_SCOPE],
       },
     );
   });
@@ -53,6 +64,19 @@ describe('chatConsent', () => {
       missingRead: [],
       missingSend: [],
       missingNames: [],
+      // chat.messages covers reactions; read state has no broader scope.
+      canReact: true,
+      canReadState: false,
+      canWriteReadState: false,
+      missingExtras: [CHAT_READSTATE_SCOPE],
     });
+  });
+
+  it('the readonly read-state scope shows the Unread line but cannot mark read', () => {
+    const c = chatConsent(status([CHAT_READSTATE_READONLY_SCOPE, CHAT_REACTIONS_SCOPE]));
+    expect(c.canReact).toBe(true);
+    expect(c.canReadState).toBe(true);
+    expect(c.canWriteReadState).toBe(false);
+    expect(c.missingExtras).toEqual([CHAT_READSTATE_SCOPE]);
   });
 });

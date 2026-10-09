@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Bot,
@@ -13,9 +13,11 @@ import {
   RefreshCw,
   Reply,
   Send,
+  SmilePlus,
   Ticket,
   X,
 } from 'lucide-react';
+import { compareRfc3339 } from '@shared/utils/rfc3339';
 import { api } from '../utils/api';
 import type { SessionWire } from '@shared/types';
 import { buildChatMultiSessionSeed, buildChatSessionSeed } from '@shared/utils/sessionSeed';
@@ -27,7 +29,7 @@ import {
 import { buildChatTodoDraft, type CaptureTodoDraft } from '@shared/utils/captureTodo';
 import StartSessionModal from './StartSessionModal';
 import CaptureToTicketModal from './CaptureToTicketModal';
-import { formatDateTime } from '../utils/time';
+import { formatDateTime, formatTime } from '../utils/time';
 import {
   CHAT_READ_SCOPE_ERROR,
   CHAT_SEND_SCOPE_ERROR,
@@ -51,6 +53,7 @@ import {
   type ChatMessage,
   type ChatMessageLink,
   type ChatSpace,
+  type ChatReaction,
   chatLinkChip,
   linksByMessage,
   applyLinksResult,
@@ -61,6 +64,15 @@ import {
   chatSetupHelpLink,
 } from '../utils/googleChat';
 import { isSubmitEnter } from '../utils/keyboard';
+import { createKeyedQueue } from '../utils/keyedQueue';
+import {
+  QUICK_REACTIONS,
+  keepNewerReactions,
+  avatarColor,
+  avatarInitials,
+  layoutChatMessages,
+  newestTopLevelTime,
+} from '../utils/googleChatLayout';
 import { placeDrafts, useChatDrafts, type ChatDraft } from '../utils/googleChatDrafts';
 import GoogleChatDraftCard from './GoogleChatDraftCard';
 import { DraftsLoadError } from './GoogleChatDraftsPanel';
@@ -316,6 +328,28 @@ export default function GoogleChatPage({
   const [todoCaptures, setTodoCaptures] = useState<Record<string, TodoCapture>>({});
   const todoCapturingRef = useRef<Set<string>>(new Set());
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  // The caller's Chat user, so their own messages render on the right.
+  const [selfUserName, setSelfUserName] = useState<string | null>(null);
+  // Google read position per open space, read once when the space is opened so
+  // the Unread line stays put while the user reads. A missing key means the
+  // read is still in flight. `fetched: false` means it failed: the position is
+  // unknown, so nothing is written to Google for that space.
+  const [readMarks, setReadMarks] = useState<
+    Record<string, { lastReadTime: string | null; fetched: boolean; dividerHidden: boolean }>
+  >({});
+  // The newest time already reported to Google per space.
+  const googleReadWrittenRef = useRef<Record<string, string>>({});
+  const [reactionMenuFor, setReactionMenuFor] = useState<string | null>(null);
+  const reactingRef = useRef<Set<string>>(new Set());
+  // Each applied toggle result bumps the epoch and stamps its message. Message
+  // loads note the epoch when issued and leave newer-stamped reactions alone,
+  // so a read started before the toggle answered cannot restore old counts.
+  const reactionEpochRef = useRef(0);
+  const reactionTouchedRef = useRef<Map<string, number>>(new Map());
+  // Toggles on one message run one after another (the server serializes them
+  // too), so a summary read back earlier can never be applied after a later one.
+  const reactionQueueRef = useRef(createKeyedQueue());
+  const [reactionError, setReactionError] = useState<{ name: string; error: string } | null>(null);
   // Every async result below is written to the space (or spaces list) that
   // issued it, never to "whatever is selected now". Message loads and sends
   // for space A therefore cannot touch B's list, spinner, or composer, no
@@ -470,6 +504,9 @@ export default function GoogleChatPage({
       messageSeqRef.current[spaceId] = seq;
       const isCurrent = () => messageSeqRef.current[spaceId] === seq;
       const since = oldestCreateTime(viewsRef.current[spaceId]?.messages ?? []);
+      const reactionEpoch = reactionEpochRef.current;
+      const keepReactions = (fresh: ChatMessage[], current: ChatMessage[]) =>
+        keepNewerReactions(fresh, current, reactionTouchedRef.current, reactionEpoch);
       patchView(spaceId, { loading: true });
       try {
         if (!since) {
@@ -478,9 +515,12 @@ export default function GoogleChatPage({
             order: 'desc',
           });
           if (!isCurrent()) return;
+          if (body.selfUserName) setSelfUserName(body.selfUserName);
           updateView(spaceId, (v) => ({
             ...v,
-            messages: uniqueMessages((body.messages || []) as ChatMessage[]),
+            messages: uniqueMessages(
+              keepReactions((body.messages || []) as ChatMessage[], v.messages),
+            ),
             hasOlder: !!body.nextPageToken,
             older: null,
             generation: v.generation + 1,
@@ -502,6 +542,7 @@ export default function GoogleChatPage({
             ...(pageToken ? { pageToken } : {}),
           });
           if (!isCurrent()) return;
+          if (body.selfUserName) setSelfUserName(body.selfUserName);
           fresh.push(...((body.messages || []) as ChatMessage[]));
           pageToken = body.nextPageToken || undefined;
           if (!pageToken) {
@@ -513,7 +554,7 @@ export default function GoogleChatPage({
           complete
             ? {
                 ...v,
-                messages: reconcileRange(v.messages, fresh, since),
+                messages: reconcileRange(v.messages, keepReactions(fresh, v.messages), since),
                 loaded: true,
                 loading: false,
                 error: null,
@@ -522,7 +563,7 @@ export default function GoogleChatPage({
               // newest slice we did read and page back from there.
               {
                 ...v,
-                messages: uniqueMessages(fresh),
+                messages: uniqueMessages(keepReactions(fresh, v.messages)),
                 hasOlder: true,
                 older: null,
                 generation: v.generation + 1,
@@ -554,6 +595,7 @@ export default function GoogleChatPage({
       const cursor = current.older ?? (anchor ? { until: anchor, pageToken: null } : null);
       if (!cursor) return;
       const generation = current.generation;
+      const reactionEpoch = reactionEpochRef.current;
       loadingOlderRef.current.add(spaceId);
       patchView(spaceId, { loadingOlder: true, olderError: null });
       try {
@@ -571,7 +613,15 @@ export default function GoogleChatPage({
             ? { ...v, loadingOlder: false }
             : {
                 ...v,
-                messages: mergeOlderPage(v.messages, (body.messages || []) as ChatMessage[]),
+                messages: mergeOlderPage(
+                  v.messages,
+                  keepNewerReactions(
+                    (body.messages || []) as ChatMessage[],
+                    v.messages,
+                    reactionTouchedRef.current,
+                    reactionEpoch,
+                  ),
+                ),
                 hasOlder: !!next,
                 older: next ? { until: cursor.until, pageToken: next } : null,
                 loadingOlder: false,
@@ -766,6 +816,126 @@ export default function GoogleChatPage({
     void chatPushStore().markRead(selectedId, newestLoadedTime);
   }, [selectedId, newestLoadedTime, view.loaded, pageVisible]);
 
+  // Fetch where the user had read up to in Google Chat each time a space is
+  // opened. Leaving the space drops it, so coming back starts fresh.
+  const { canReadState, canWriteReadState, canReact } = consent;
+  useEffect(() => {
+    if (!selectedId || !canReadState) return;
+    const spaceId = selectedId;
+    let cancelled = false;
+    api
+      .getGoogleChatReadState(spaceId)
+      .then((body: { lastReadTime?: string | null }) => {
+        if (!cancelled) {
+          setReadMarks((all) => ({
+            ...all,
+            [spaceId]: {
+              lastReadTime: body?.lastReadTime ?? null,
+              fetched: true,
+              dividerHidden: false,
+            },
+          }));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setReadMarks((all) => ({
+            ...all,
+            [spaceId]: { lastReadTime: null, fetched: false, dividerHidden: true },
+          }));
+        }
+      });
+    return () => {
+      cancelled = true;
+      setReadMarks((all) => {
+        const { [spaceId]: _dropped, ...rest } = all;
+        return rest;
+      });
+    };
+  }, [selectedId, canReadState]);
+
+  // Mark the open space read in Google Chat too, but only once its read
+  // position was fetched successfully: writing first would erase the Unread
+  // line, and writing blind could move it backwards. The server also refuses
+  // to move it backwards. Google's space read state covers top-level messages
+  // only (thread replies have their own), so only those count.
+  const openMark = selectedId ? readMarks[selectedId] : undefined;
+  const readMarkFetched = !!openMark?.fetched;
+  const readMark = openMark?.lastReadTime ?? null;
+  const dividerReadTime = openMark && !openMark.dividerHidden ? openMark.lastReadTime : null;
+  const newestTopLevel = newestTopLevelTime(view.messages);
+  useEffect(() => {
+    if (!selectedId || !canWriteReadState || !readMarkFetched) return;
+    if (!view.loaded || !pageVisible || !newestTopLevel) return;
+    const spaceId = selectedId;
+    // The user may have read further in Google Chat since this pane last
+    // wrote, so never move the position back past either one.
+    const written = googleReadWrittenRef.current[spaceId] ?? null;
+    const known =
+      written && readMark
+        ? compareRfc3339(written, readMark) >= 0
+          ? written
+          : readMark
+        : (written ?? readMark);
+    if (known && compareRfc3339(newestTopLevel, known) <= 0) return;
+    googleReadWrittenRef.current[spaceId] = newestTopLevel;
+    api.setGoogleChatReadState(spaceId, newestTopLevel).catch(() => {
+      if (googleReadWrittenRef.current[spaceId] === newestTopLevel) {
+        delete googleReadWrittenRef.current[spaceId];
+      }
+    });
+  }, [
+    selectedId,
+    canWriteReadState,
+    readMarkFetched,
+    readMark,
+    view.loaded,
+    pageVisible,
+    newestTopLevel,
+  ]);
+
+  useEffect(() => {
+    setReactionMenuFor(null);
+    setReactionError(null);
+  }, [selectedId]);
+
+  const toggleReaction = async (message: ChatMessage, emoji: string) => {
+    setReactionMenuFor(null);
+    if (!selectedId || !message.name || !message.id) return;
+    const spaceId = selectedId;
+    const name = message.name;
+    const key = `${name}|${emoji}`;
+    if (reactingRef.current.has(key)) return;
+    reactingRef.current.add(key);
+    setReactionError(null);
+    const messageId = message.id;
+    try {
+      // The request and applying its result both run inside the queue, so
+      // results are applied in the order Google made the changes.
+      await reactionQueueRef.current(name, async () => {
+        const body = await api.toggleGoogleChatReaction(spaceId, messageId, emoji);
+        if (Array.isArray(body?.reactions)) {
+          // Google's summary read back after the change: replace, never add a
+          // delta, since a refresh may already include this change.
+          const reactions = body.reactions as ChatReaction[];
+          reactionTouchedRef.current.set(name, ++reactionEpochRef.current);
+          updateView(spaceId, (v) => ({
+            ...v,
+            messages: v.messages.map((m) => (m.name === name ? { ...m, reactions } : m)),
+          }));
+        } else {
+          // The change applied but the summary didn't come back: re-read.
+          loadMessages(spaceId);
+        }
+      });
+    } catch (err: any) {
+      setReactionError({ name, error: err?.message || 'Could not update the reaction' });
+      if (err?.code === 'google_chat_reactions_scope_required') refreshStatus();
+    } finally {
+      reactingRef.current.delete(key);
+    }
+  };
+
   // Follow the newest message, not the list length: prepending an older page
   // must not yank the view to the bottom.
   const newestName = messages.length ? messages[messages.length - 1].name : null;
@@ -815,6 +985,10 @@ export default function GoogleChatPage({
           : {}),
       });
       updateComposer(spaceId, (c) => ({ ...c, sending: false }));
+      // Replying means you've caught up, as in Google Chat.
+      setReadMarks((all) =>
+        all[spaceId] ? { ...all, [spaceId]: { ...all[spaceId], dividerHidden: true } } : all,
+      );
       loadMessages(spaceId);
     } catch (err: any) {
       const reason = err.message || 'Failed to send message';
@@ -932,7 +1106,12 @@ export default function GoogleChatPage({
       action: 'Enable Chat',
       // Request sending in the same round-trip so one consent unlocks the pane.
       onAction: () =>
-        startOAuth([...consent.missingRead, ...consent.missingSend, ...consent.missingNames]),
+        startOAuth([
+          ...consent.missingRead,
+          ...consent.missingSend,
+          ...consent.missingNames,
+          ...consent.missingExtras,
+        ]),
     };
   } else if (!spaces.length && !spacesLoading && !error) {
     emptyState = {
@@ -950,6 +1129,19 @@ export default function GoogleChatPage({
           <h2 className="text-lg font-semibold text-white">Google Chat</h2>
         </div>
         <div className="flex items-center gap-3">
+          {canRead && consent.missingExtras.length > 0 && (
+            <button
+              type="button"
+              data-testid="chat-enable-extras"
+              onClick={() => startOAuth(consent.missingExtras)}
+              disabled={oauthBusy}
+              title="Lets Agent Hub add your reactions, show where you stopped reading, and mark conversations read in Google Chat."
+              className="inline-flex items-center gap-1 text-xs text-blue-300 hover:text-blue-200 disabled:opacity-50"
+            >
+              <SmilePlus size={13} />
+              Turn on reactions and read status
+            </button>
+          )}
           {autoSend !== null && (
             <label
               className="inline-flex items-center gap-2 text-xs text-gray-400"
@@ -1208,169 +1400,338 @@ export default function GoogleChatPage({
                   ) : (
                     <p className="mb-3 text-center text-xs text-gray-600">Start of conversation</p>
                   )}
-                  <ul className="space-y-3">
-                    {messages.map((message) => (
-                      <li
-                        key={message.name || message.id}
-                        className={`group rounded-lg border bg-gray-900 p-3 ${
-                          message.name && picked.has(message.name)
-                            ? 'border-blue-500/60'
-                            : 'border-gray-800'
-                        } ${message.threadReply ? 'ml-6' : ''}`}
-                      >
-                        <div className="flex items-center justify-between gap-2 text-xs text-gray-400">
-                          <span className="flex min-w-0 items-center gap-1 truncate font-medium text-gray-200">
-                            {message.name && !message.deleted && (
-                              <input
-                                type="checkbox"
-                                checked={picked.has(message.name)}
-                                onChange={() => message.name && togglePicked(message.name)}
-                                aria-label={`Select message from ${chatSenderLabel(message.sender)}`}
-                                data-testid="chat-message-select"
-                                className="mr-1 h-3.5 w-3.5 flex-shrink-0 cursor-pointer accent-blue-500"
-                              />
-                            )}
-                            {message.threadReply && <CornerDownRight size={12} />}
-                            {chatSenderLabel(message.sender)}
-                          </span>
-                          <span className="flex flex-shrink-0 items-center gap-2">
-                            {(() => {
-                              const chip = chatLinkChip(
-                                message.name ? messageLinks.get(message.name) : undefined,
-                              );
-                              if (!chip) return null;
-                              const replied = chip.label === 'Agent replied';
-                              const session = chip.link.sessionName || 'Untitled session';
-                              const extra = chip.count > 1 ? ` (+${chip.count - 1})` : '';
-                              return (
-                                <button
-                                  type="button"
-                                  data-testid="chat-link-chip"
-                                  disabled={!onOpenSession || !chip.link.agentId}
-                                  onClick={() =>
-                                    chip.link.agentId &&
-                                    onOpenSession?.({
-                                      sessionId: chip.link.sessionId,
-                                      agentId: chip.link.agentId,
-                                    })
-                                  }
-                                  title={`Open session: ${session}`}
-                                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium disabled:cursor-default ${
-                                    replied
-                                      ? 'border-green-500/40 bg-green-500/10 text-green-300 hover:bg-green-500/20'
-                                      : 'border-blue-500/40 bg-blue-500/10 text-blue-200 hover:bg-blue-500/20'
-                                  }`}
-                                >
-                                  {replied ? <CheckCircle2 size={11} /> : <Bot size={11} />}
-                                  {chip.label}
-                                  {extra}
-                                </button>
-                              );
-                            })()}
-                            {message.createTime && (
-                              <span>{formatDateTime(message.createTime)}</span>
-                            )}
-                          </span>
-                        </div>
-                        <p className="mt-1 whitespace-pre-wrap break-words text-sm text-gray-200">
-                          {message.deleted ? (
-                            <span className="italic text-gray-500">Message deleted</span>
-                          ) : (
-                            message.text || <span className="italic text-gray-500">(no text)</span>
+                  <ul className="pb-2">
+                    {layoutChatMessages(messages, {
+                      selfUserName,
+                      lastReadTime: dividerReadTime,
+                    }).map(({ message, own, showHeader, dayLabel, unreadDivider }) => {
+                      const key = message.name || message.id;
+                      const senderLabel = chatSenderLabel(message.sender);
+                      const capture = message.name ? todoCaptures[message.name] : undefined;
+                      const added = capture?.status === 'added';
+                      const saving = capture?.status === 'saving';
+                      const chip = chatLinkChip(
+                        message.name ? messageLinks.get(message.name) : undefined,
+                      );
+                      const reactions = message.reactions ?? [];
+                      const menuOpen = reactionMenuFor === message.name;
+                      const isPicked = !!message.name && picked.has(message.name);
+                      const canReply =
+                        canSend && !!selectedSpace?.supportsThreadReplies && !!message.threadName;
+                      const toolButton =
+                        'inline-flex h-7 w-7 items-center justify-center rounded-full text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-50';
+                      return (
+                        <Fragment key={key}>
+                          {dayLabel && (
+                            <li
+                              role="separator"
+                              className="my-4 flex items-center gap-3 text-xs font-medium text-gray-400"
+                            >
+                              <span className="h-px flex-1 bg-gray-800" />
+                              {dayLabel}
+                              <span className="h-px flex-1 bg-gray-800" />
+                            </li>
                           )}
-                        </p>
-                        {message.attachmentCount > 0 && (
-                          <div className="mt-1 inline-flex items-center gap-1 text-xs text-gray-500">
-                            <Paperclip size={12} />
-                            {message.attachmentCount} attachment
-                            {message.attachmentCount === 1 ? '' : 's'}
-                          </div>
-                        )}
-                        {!message.deleted && (
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                message.name && void openSendToAgent([message], message.name)
-                              }
-                              disabled={checkingDispatch !== null}
-                              title="Start an agent session with this message as the task"
-                              className="inline-flex items-center gap-1 rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-xs text-blue-200 hover:bg-blue-500/20 disabled:opacity-50"
+                          {unreadDivider && (
+                            <li
+                              role="separator"
+                              data-testid="chat-unread-divider"
+                              className="my-3 flex items-center gap-3 text-xs font-medium text-red-400"
                             >
-                              {checkingDispatch === message.name ? (
-                                <Loader2 size={13} className="animate-spin" />
-                              ) : (
-                                <MessageSquarePlus size={13} />
+                              <span className="h-px flex-1 bg-red-500/50" />
+                              Unread
+                              <span className="h-px flex-1 bg-red-500/50" />
+                            </li>
+                          )}
+                          <li
+                            data-testid="chat-message"
+                            data-own={own ? 'true' : undefined}
+                            className={`group relative flex gap-2 rounded-lg px-1 py-0.5 ${
+                              isPicked ? 'bg-blue-500/10' : 'hover:bg-white/[0.02]'
+                            } ${own ? 'flex-row-reverse' : ''} ${showHeader ? 'mt-3' : ''} ${
+                              message.threadReply ? (own ? 'mr-8' : 'ml-8') : ''
+                            }`}
+                          >
+                            <div className="flex w-4 shrink-0 items-start pt-2">
+                              {message.name && !message.deleted && (
+                                <input
+                                  type="checkbox"
+                                  checked={isPicked}
+                                  onChange={() => message.name && togglePicked(message.name)}
+                                  aria-label={`Select message from ${own ? 'you' : senderLabel}`}
+                                  data-testid="chat-message-select"
+                                  className={`h-3.5 w-3.5 cursor-pointer accent-blue-500 focus:opacity-100 group-hover:opacity-100 ${
+                                    isPicked || pickedMessages.length > 0
+                                      ? ''
+                                      : '[@media(hover:hover)]:opacity-0'
+                                  }`}
+                                />
                               )}
-                              Send to agent
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setTicketDraft(buildTicketDraftForMessage(selectedSpace, message))
-                              }
-                              title="Create a kanban ticket from this message"
-                              className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
+                            </div>
+                            {!own && (
+                              <div className="w-8 shrink-0" aria-hidden="true">
+                                {showHeader &&
+                                  (message.sender?.type === 'BOT' ? (
+                                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-700 text-gray-200">
+                                      <Bot size={16} />
+                                    </div>
+                                  ) : (
+                                    <div
+                                      className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold text-white ${avatarColor(
+                                        message.sender,
+                                      )}`}
+                                    >
+                                      {avatarInitials(senderLabel)}
+                                    </div>
+                                  ))}
+                              </div>
+                            )}
+                            <div
+                              className={`flex min-w-0 max-w-[80%] flex-col ${
+                                own ? 'items-end' : 'items-start'
+                              }`}
                             >
-                              <Ticket size={13} />
-                              Ticket
-                            </button>
-                            {(() => {
-                              const capture = message.name ? todoCaptures[message.name] : undefined;
-                              const added = capture?.status === 'added';
-                              const saving = capture?.status === 'saving';
-                              return (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => void addMessageToTodos(message)}
-                                    disabled={added || saving}
-                                    title={
-                                      added
-                                        ? 'Added to your todos'
-                                        : 'Add this message to your personal todos'
-                                    }
-                                    className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-60"
-                                  >
-                                    {saving ? (
-                                      <Loader2 size={13} className="animate-spin" />
-                                    ) : added ? (
-                                      <CheckCircle2 size={13} className="text-green-400" />
-                                    ) : (
-                                      <ListTodo size={13} />
-                                    )}
-                                    {added ? 'Added to todos' : 'Add to todos'}
-                                  </button>
-                                  {capture?.status === 'error' && (
-                                    <span role="alert" className="self-center text-xs text-red-300">
-                                      {capture.error}
+                              {showHeader && (
+                                <div className="mb-1 flex items-baseline gap-2 px-1 text-xs">
+                                  {message.threadReply && (
+                                    <CornerDownRight
+                                      size={12}
+                                      className="self-center text-gray-500"
+                                      aria-label="Thread reply"
+                                    />
+                                  )}
+                                  {!own && (
+                                    <span className="font-semibold text-gray-100">
+                                      {senderLabel}
                                     </span>
                                   )}
-                                </>
-                              );
-                            })()}
-                            {canSend &&
-                              selectedSpace?.supportsThreadReplies &&
-                              message.threadName && (
+                                  {message.createTime && (
+                                    <span
+                                      className="text-gray-500"
+                                      title={formatDateTime(message.createTime)}
+                                    >
+                                      {formatTime(message.createTime, {
+                                        hour: 'numeric',
+                                        minute: '2-digit',
+                                      })}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              <div
+                                title={showHeader ? undefined : formatDateTime(message.createTime)}
+                                className={`whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm ${
+                                  own ? 'bg-blue-600/30 text-blue-50' : 'bg-gray-800 text-gray-100'
+                                } ${showHeader ? (own ? 'rounded-tr-md' : 'rounded-tl-md') : ''}`}
+                              >
+                                {message.deleted ? (
+                                  <span className="italic text-gray-500">Message deleted</span>
+                                ) : (
+                                  message.text || (
+                                    <span className="italic text-gray-500">(no text)</span>
+                                  )
+                                )}
+                                {message.attachmentCount > 0 && (
+                                  <div className="mt-1 flex items-center gap-1 text-xs text-gray-400">
+                                    <Paperclip size={12} />
+                                    {message.attachmentCount} attachment
+                                    {message.attachmentCount === 1 ? '' : 's'}
+                                  </div>
+                                )}
+                              </div>
+                              {(reactions.length > 0 || chip) && (
+                                <div
+                                  className={`mt-1 flex flex-wrap items-center gap-1 ${
+                                    own ? 'justify-end' : ''
+                                  }`}
+                                >
+                                  {reactions.map((r) => {
+                                    const custom = !!r.customEmojiUrl || r.emoji.startsWith(':');
+                                    return (
+                                      <button
+                                        key={r.emoji}
+                                        type="button"
+                                        data-testid="chat-reaction"
+                                        disabled={!canReact || custom || message.deleted}
+                                        onClick={() => void toggleReaction(message, r.emoji)}
+                                        title={
+                                          canReact
+                                            ? `${r.count} reacted with ${r.emoji}`
+                                            : `${r.count} reacted with ${r.emoji}. Turn on reactions to react.`
+                                        }
+                                        className="inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-900 px-2 py-0.5 text-xs text-gray-200 hover:border-blue-500/60 hover:bg-blue-500/10 disabled:cursor-default disabled:hover:border-gray-700 disabled:hover:bg-gray-900"
+                                      >
+                                        {r.customEmojiUrl ? (
+                                          <img
+                                            src={r.customEmojiUrl}
+                                            alt={r.emoji}
+                                            className="h-4 w-4"
+                                          />
+                                        ) : (
+                                          <span>{r.emoji}</span>
+                                        )}
+                                        <span>{r.count}</span>
+                                      </button>
+                                    );
+                                  })}
+                                  {chip &&
+                                    (() => {
+                                      const replied = chip.label === 'Agent replied';
+                                      const session = chip.link.sessionName || 'Untitled session';
+                                      const extra = chip.count > 1 ? ` (+${chip.count - 1})` : '';
+                                      return (
+                                        <button
+                                          type="button"
+                                          data-testid="chat-link-chip"
+                                          disabled={!onOpenSession || !chip.link.agentId}
+                                          onClick={() =>
+                                            chip.link.agentId &&
+                                            onOpenSession?.({
+                                              sessionId: chip.link.sessionId,
+                                              agentId: chip.link.agentId,
+                                            })
+                                          }
+                                          title={`Open session: ${session}`}
+                                          className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium disabled:cursor-default ${
+                                            replied
+                                              ? 'border-green-500/40 bg-green-500/10 text-green-300 hover:bg-green-500/20'
+                                              : 'border-blue-500/40 bg-blue-500/10 text-blue-200 hover:bg-blue-500/20'
+                                          }`}
+                                        >
+                                          {replied ? <CheckCircle2 size={11} /> : <Bot size={11} />}
+                                          {chip.label}
+                                          {extra}
+                                        </button>
+                                      );
+                                    })()}
+                                </div>
+                              )}
+                              {capture?.status === 'error' && (
+                                <span role="alert" className="mt-1 px-1 text-xs text-red-300">
+                                  {capture.error}
+                                </span>
+                              )}
+                              {reactionError?.name === message.name && (
+                                <span className="mt-1 px-1 text-xs text-red-300">
+                                  {reactionError.error}
+                                </span>
+                              )}
+                              {message.name &&
+                                placedDrafts.byMessage.get(message.name)?.map((d) => (
+                                  <div key={d.id} className="mt-2 w-full">
+                                    {renderDraft(d, 'reply in this thread')}
+                                  </div>
+                                ))}
+                            </div>
+                            {!message.deleted && (
+                              <div
+                                data-testid="chat-message-actions"
+                                className={`absolute -top-3 z-10 flex items-center gap-0.5 rounded-full border border-gray-700 bg-gray-900 p-0.5 shadow-lg transition-opacity focus-within:opacity-100 group-hover:opacity-100 ${
+                                  own ? 'left-2' : 'right-2'
+                                } ${menuOpen ? 'opacity-100' : '[@media(hover:hover)]:opacity-0'}`}
+                              >
+                                {canReact && (
+                                  <button
+                                    type="button"
+                                    aria-label="Add reaction"
+                                    title="Add reaction"
+                                    aria-expanded={menuOpen}
+                                    onClick={() =>
+                                      setReactionMenuFor(menuOpen ? null : message.name)
+                                    }
+                                    className={toolButton}
+                                  >
+                                    <SmilePlus size={15} />
+                                  </button>
+                                )}
+                                {canReply && (
+                                  <button
+                                    type="button"
+                                    aria-label="Reply in thread"
+                                    title="Reply in thread"
+                                    onClick={() => editComposer({ replyTo: message })}
+                                    className={toolButton}
+                                  >
+                                    <Reply size={15} />
+                                  </button>
+                                )}
                                 <button
                                   type="button"
-                                  onClick={() => editComposer({ replyTo: message })}
-                                  className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
+                                  aria-label="Send to agent"
+                                  title="Send to agent: start a session with this message as the task"
+                                  onClick={() =>
+                                    message.name && void openSendToAgent([message], message.name)
+                                  }
+                                  disabled={checkingDispatch !== null}
+                                  className={`${toolButton} text-blue-300`}
                                 >
-                                  <Reply size={13} />
-                                  Reply in thread
+                                  {checkingDispatch === message.name ? (
+                                    <Loader2 size={15} className="animate-spin" />
+                                  ) : (
+                                    <MessageSquarePlus size={15} />
+                                  )}
                                 </button>
-                              )}
-                          </div>
-                        )}
-                        {message.name &&
-                          placedDrafts.byMessage.get(message.name)?.map((d) => (
-                            <div key={d.id} className="mt-2">
-                              {renderDraft(d, 'reply in this thread')}
-                            </div>
-                          ))}
-                      </li>
-                    ))}
+                                <button
+                                  type="button"
+                                  aria-label="Ticket"
+                                  title="Create a kanban ticket from this message"
+                                  onClick={() =>
+                                    setTicketDraft(
+                                      buildTicketDraftForMessage(selectedSpace, message),
+                                    )
+                                  }
+                                  className={toolButton}
+                                >
+                                  <Ticket size={15} />
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label={added ? 'Added to todos' : 'Add to todos'}
+                                  title={
+                                    added
+                                      ? 'Added to your todos'
+                                      : 'Add this message to your personal todos'
+                                  }
+                                  onClick={() => void addMessageToTodos(message)}
+                                  disabled={added || saving}
+                                  className={toolButton}
+                                >
+                                  {saving ? (
+                                    <Loader2 size={15} className="animate-spin" />
+                                  ) : added ? (
+                                    <CheckCircle2 size={15} className="text-green-400" />
+                                  ) : (
+                                    <ListTodo size={15} />
+                                  )}
+                                </button>
+                                {menuOpen && (
+                                  <div
+                                    role="menu"
+                                    aria-label="Reactions"
+                                    className={`absolute top-full mt-1 flex gap-0.5 rounded-full border border-gray-700 bg-gray-900 p-1 shadow-lg ${
+                                      own ? 'left-0' : 'right-0'
+                                    }`}
+                                  >
+                                    {QUICK_REACTIONS.map((emoji) => (
+                                      <button
+                                        key={emoji}
+                                        type="button"
+                                        role="menuitem"
+                                        aria-label={`React with ${emoji}`}
+                                        onClick={() => void toggleReaction(message, emoji)}
+                                        className="flex h-8 w-8 items-center justify-center rounded-full text-lg hover:bg-gray-700"
+                                      >
+                                        {emoji}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </li>
+                        </Fragment>
+                      );
+                    })}
                   </ul>
                 </>
               )}
