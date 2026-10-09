@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
 (vi as any).mock('../utils/auth.js', () => ({
   getAuthStatus: vi.fn(),
@@ -13,7 +13,20 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
   getApiBase: vi.fn(() => '/api'),
 }));
 
+const pickerProps = vi.hoisted(() => ({ current: null as any }));
+(vi as any).mock('./LoginServerPicker', () => ({
+  default: (props: any) => {
+    pickerProps.current = props;
+    return <div data-testid="login-server-picker" />;
+  },
+}));
+
+(vi as any).mock('../utils/isElectron.js', () => ({
+  isElectron: vi.fn(() => false),
+}));
+
 import LoginScreen from './LoginScreen';
+import { isElectron } from '../utils/isElectron';
 import { completeMfaLogin, getAuthStatus, login, forgotPassword } from '../utils/auth';
 
 beforeEach(() => {
@@ -21,6 +34,7 @@ beforeEach(() => {
   (login as any).mockReset();
   (completeMfaLogin as any).mockReset();
   (forgotPassword as any).mockReset();
+  pickerProps.current = null;
 });
 
 afterEach(() => {
@@ -28,6 +42,22 @@ afterEach(() => {
 });
 
 describe('LoginScreen', () => {
+  it('shows the server picker only inside Electron', async () => {
+    // Desktop remote mode renders the remote server's login page; without
+    // the picker a user with no password for that org has no way back.
+    (getAuthStatus as any).mockResolvedValue({ authConfigured: true });
+
+    (isElectron as any).mockReturnValue(false);
+    const { unmount } = render(<LoginScreen onAuthenticated={vi.fn()} />);
+    await screen.findByRole('button', { name: /^Sign in$/i });
+    expect(screen.queryByTestId('login-server-picker')).toBeNull();
+    unmount();
+
+    (isElectron as any).mockReturnValue(true);
+    render(<LoginScreen onAuthenticated={vi.fn()} />);
+    expect(await screen.findByTestId('login-server-picker')).toBeInTheDocument();
+  });
+
   it('submits legacy non-email login names even after install status no longer needs email update', async () => {
     (getAuthStatus as any).mockResolvedValue({
       authConfigured: true,
@@ -248,5 +278,64 @@ describe('LoginScreen', () => {
 
     expect(await screen.findByText(/Too many MFA attempts/i)).toBeInTheDocument();
     expect(screen.getByText(/Verify MFA/i)).toBeInTheDocument();
+  });
+
+  describe('desktop sign-in vs server switch', () => {
+    async function renderDesktop(onAuthenticated = vi.fn()) {
+      (isElectron as any).mockReturnValue(true);
+      (getAuthStatus as any).mockResolvedValue({ authConfigured: true });
+      const utils = render(<LoginScreen onAuthenticated={onAuthenticated} />);
+      await screen.findByRole('button', { name: /^Sign in$/i });
+      const inputs = utils.container.querySelectorAll('input');
+      fireEvent.change(inputs[0], { target: { value: 'me@a.example' } });
+      fireEvent.change(inputs[1], { target: { value: 'pw' } });
+      return { ...utils, form: inputs[1].closest('form')!, onAuthenticated };
+    }
+
+    it('blocks sign-in from the moment a switch starts', async () => {
+      const { form } = await renderDesktop();
+      // The picker has claimed a switch whose connection change is pending.
+      let started = false;
+      act(() => {
+        started = pickerProps.current.onServerChangeStart();
+      });
+      expect(started).toBe(true);
+      expect(screen.getByRole('button', { name: /^Sign in$/i })).toBeDisabled();
+      // Even a submit that bypasses the disabled button is refused.
+      fireEvent.submit(form);
+      await Promise.resolve();
+      expect(login).not.toHaveBeenCalled();
+      // A second switch can't overlap either.
+      expect(pickerProps.current.onServerChangeStart()).toBe(false);
+    });
+
+    it('re-enables sign-in when the switch fails', async () => {
+      (login as any).mockResolvedValue({ token: 'jwt' });
+      const { form, onAuthenticated } = await renderDesktop();
+      act(() => {
+        pickerProps.current.onServerChangeStart();
+      });
+      act(() => {
+        pickerProps.current.onServerChangeEnd();
+      });
+      fireEvent.submit(form);
+      await waitFor(() => expect(onAuthenticated).toHaveBeenCalledTimes(1));
+    });
+
+    it('refuses to start a switch while a sign-in is in flight', async () => {
+      let resolveLogin!: (v: any) => void;
+      (login as any).mockReturnValue(new Promise((r) => (resolveLogin = r)));
+      const { form, onAuthenticated } = await renderDesktop();
+      fireEvent.submit(form);
+      await waitFor(() => expect(login).toHaveBeenCalledTimes(1));
+      // Refused synchronously, before any re-render could disable the picker.
+      expect(pickerProps.current.onServerChangeStart()).toBe(false);
+      expect(pickerProps.current.disabled).toBe(true);
+      await act(async () => {
+        resolveLogin({ token: 'jwt' });
+      });
+      expect(onAuthenticated).toHaveBeenCalledTimes(1);
+      expect(pickerProps.current.onServerChangeStart()).toBe(true);
+    });
   });
 });

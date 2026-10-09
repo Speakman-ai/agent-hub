@@ -71,11 +71,16 @@
     "files": [
       "electron/**/*",
       "server/**/*",
+      "!server/node_modules/better-sqlite3/**",
+      "shared/**/*",
+      "!shared/node_modules/**",
+      "!shared/**/*.test.ts",
       "client/dist/**/*",
       "package.json"
     ],
     "asarUnpack": [
       "server/**/*",
+      "shared/**/*",
       "node_modules/better-sqlite3/**/*",
       "node_modules/bindings/**/*",
       "node_modules/file-uri-to-path/**/*"

@@ -8,7 +8,7 @@
  * On success, invokes `onAuthenticated` so the parent can re-render into
  * the normal app.
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -31,9 +31,13 @@ import {
   needsEmailUpdate,
   completeMfaLogin,
   forgotPassword,
+  isAuthenticated,
+  clearToken,
 } from '../utils/auth';
 import { getApiBaseUrl } from '../utils/config';
+import { shouldGateAuthFromStatus } from '../utils/setupState';
 import BrandLogo from './BrandLogo';
+import LoginServerPicker from './LoginServerPicker';
 
 export function getPostAuthenticationMode({
   needsEmailUpdateValue,
@@ -43,10 +47,46 @@ export function getPostAuthenticationMode({
   return needsEmailUpdateValue ? 'email-update' : 'authenticated';
 }
 
+/**
+ * What the login screen should do with a fresh `/auth/status` probe.
+ *
+ * On first mount the app already decided to gate, so the screen just picks a
+ * form. After the user switches servers from the picker, the gate decision is
+ * stale: the new server goes through the same policy AppContext applies at
+ * startup, and `'release'` means the app would not have gated on it at all
+ * (e.g. a bundled local server), so the login screen must step aside.
+ */
+export function resolveProbedLoginMode({
+  status,
+  serverChanged,
+  isAuthenticatedValue,
+  needsEmailUpdateValue,
+}: {
+  status: any;
+  serverChanged: boolean;
+  isAuthenticatedValue: boolean;
+  needsEmailUpdateValue: boolean;
+}): 'email-update' | 'login' | 'setup' | 'release' {
+  if (needsEmailUpdateValue || (status?.activeOrgIsLocal && status?.needsEmailUpdate)) {
+    return 'email-update';
+  }
+  if (
+    serverChanged &&
+    !shouldGateAuthFromStatus({
+      status,
+      isAuthenticated: isAuthenticatedValue,
+      needsEmailUpdate: needsEmailUpdateValue,
+    })
+  ) {
+    return 'release';
+  }
+  return status?.authConfigured ? 'login' : 'setup';
+}
+
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
-export default function LoginScreen({ onAuthenticated }: any) {
+export default function LoginScreen({ onAuthenticated, onSwitchOrg }: any) {
   const [mode, setMode] = useState('loading'); // loading | login | setup | email-update
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -55,6 +95,37 @@ export default function LoginScreen({ onAuthenticated }: any) {
   const [pendingMfa, setPendingMfa] = useState<any>(null);
   const [error, setError] = useState<any>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Bumped by the server picker after an org swap / URL edit so the status
+  // probe below re-runs against the new server.
+  const [probeNonce, setProbeNonce] = useState(0);
+  const onAuthenticatedRef = useRef(onAuthenticated);
+  onAuthenticatedRef.current = onAuthenticated;
+  // Sign-in and server switching are mutually exclusive, and this screen is
+  // the only arbiter. The refs are the synchronous source of truth (state
+  // lags a render); `switching` mirrors the ref for rendering. The epoch
+  // advances when a switch *starts*, so any auth response from before it is
+  // stale no matter when the switch finishes.
+  const submittingRef = useRef(false);
+  const switchingRef = useRef(false);
+  const serverEpochRef = useRef(0);
+  const [switching, setSwitching] = useState(false);
+  const beginServerChange = useCallback(() => {
+    if (submittingRef.current || switchingRef.current) return false;
+    switchingRef.current = true;
+    serverEpochRef.current += 1;
+    setSwitching(true);
+    return true;
+  }, []);
+  const endServerChange = useCallback(() => {
+    switchingRef.current = false;
+    setSwitching(false);
+    setMode('loading');
+    setError(null);
+    setPassword('');
+    setMfaCode('');
+    setPendingMfa(null);
+    setProbeNonce((n) => n + 1);
+  }, []);
   const finishAuthentication = () => {
     if (
       getPostAuthenticationMode({ needsEmailUpdateValue: needsEmailUpdate() }) === 'email-update'
@@ -68,27 +139,37 @@ export default function LoginScreen({ onAuthenticated }: any) {
     onAuthenticated?.();
   };
   useEffect(() => {
+    // A probe describes the server it was sent to. Once another switch has
+    // started, its answer is about a server the user is leaving.
+    const epoch = serverEpochRef.current;
     let cancelled = false;
+    const stale = () => cancelled || epoch !== serverEpochRef.current;
     (async () => {
       try {
         const baseUrl = getApiBaseUrl();
         if (!baseUrl) {
-          if (!cancelled) {
+          if (!stale()) {
             setError('No server URL configured.');
             setMode('login');
           }
           return;
         }
         const status = await getAuthStatus(baseUrl);
-        if (cancelled) return;
-        if (needsEmailUpdate() || (status.activeOrgIsLocal && status.needsEmailUpdate)) {
-          setMode('email-update');
+        if (stale()) return;
+        const next = resolveProbedLoginMode({
+          status,
+          serverChanged: probeNonce > 0,
+          isAuthenticatedValue: isAuthenticated(),
+          needsEmailUpdateValue: needsEmailUpdate(),
+        });
+        if (next === 'release') {
+          onAuthenticatedRef.current?.();
           return;
         }
-        setMode(status.authConfigured ? 'login' : 'setup');
-        if (status.email) setUsername(status.email);
+        setMode(next);
+        if (next !== 'email-update' && status.email) setUsername(status.email);
       } catch (err: any) {
-        if (cancelled) return;
+        if (stale()) return;
         setError(err?.message || 'Failed to reach server');
         setMode('login');
       }
@@ -96,9 +177,26 @@ export default function LoginScreen({ onAuthenticated }: any) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [probeNonce]);
   const handleSubmit = async () => {
+    if (submittingRef.current || switchingRef.current) return;
+    submittingRef.current = true;
+    try {
+      await submitAuth();
+    } finally {
+      submittingRef.current = false;
+    }
+  };
+  const submitAuth = async () => {
     setError(null);
+    const epoch = serverEpochRef.current;
+    // True (after dropping any token it stored) when the server changed while
+    // this request was in flight; the caller then abandons the result.
+    const isStale = async () => {
+      if (epoch === serverEpochRef.current) return false;
+      await clearToken();
+      return true;
+    };
     if (pendingMfa) {
       if (!mfaCode.trim()) return;
       setSubmitting(true);
@@ -108,6 +206,7 @@ export default function LoginScreen({ onAuthenticated }: any) {
           challengeId: pendingMfa.challengeId,
           code: mfaCode.trim().replace(/\s+/g, ''),
         });
+        if (await isStale()) return;
         setMfaCode('');
         setPendingMfa(null);
         finishAuthentication();
@@ -139,6 +238,7 @@ export default function LoginScreen({ onAuthenticated }: any) {
       setSubmitting(true);
       try {
         await updateEmail({ baseUrl: getApiBaseUrl(), email: username.trim() });
+        if (await isStale()) return;
         onAuthenticated?.();
       } catch (err: any) {
         setError(err?.message || 'Failed to save email');
@@ -160,8 +260,10 @@ export default function LoginScreen({ onAuthenticated }: any) {
       const baseUrl = getApiBaseUrl();
       if (mode === 'setup') {
         await setup({ baseUrl, username, password });
+        if (await isStale()) return;
       } else {
         const result = await login({ baseUrl, username, password });
+        if (await isStale()) return;
         if (result?.mfaRequired) {
           setPendingMfa(result);
           setPassword('');
@@ -175,6 +277,7 @@ export default function LoginScreen({ onAuthenticated }: any) {
       setSubmitting(false);
     }
   };
+  const authLocked = submitting || switching;
   const isSetup = mode === 'setup';
   const isEmailUpdate = mode === 'email-update';
   const isForgot = mode === 'forgot';
@@ -221,6 +324,20 @@ export default function LoginScreen({ onAuthenticated }: any) {
             ) : null}
             {title ? <Text style={styles.title}>{title}</Text> : null}
             <Text style={styles.subtitle}>{subtitle}</Text>
+
+            {/* Swap orgs / edit the server URL before signing in, so pointing
+                the app at an org without a password never locks the user out.
+                Hidden mid-MFA so the challenge isn't abandoned by accident, and
+                locked while a sign-in is in flight so it can't complete
+                against a server the user already left. */}
+            {onSwitchOrg && !pendingMfa && !isEmailUpdate ? (
+              <LoginServerPicker
+                onSwitchOrg={onSwitchOrg}
+                onServerChangeStart={beginServerChange}
+                onServerChangeEnd={endServerChange}
+                disabled={submitting}
+              />
+            ) : null}
 
             {mode !== 'loading' && pendingMfa && (
               <>
@@ -283,10 +400,10 @@ export default function LoginScreen({ onAuthenticated }: any) {
                 <TouchableOpacity
                   style={[
                     styles.primaryBtn,
-                    (submitting || !mfaCode.trim()) && styles.primaryBtnDisabled,
+                    (authLocked || !mfaCode.trim()) && styles.primaryBtnDisabled,
                   ]}
                   onPress={handleSubmit}
-                  disabled={submitting || !mfaCode.trim()}
+                  disabled={authLocked || !mfaCode.trim()}
                   testID="login-submit"
                 >
                   {submitting ? (
@@ -351,11 +468,11 @@ export default function LoginScreen({ onAuthenticated }: any) {
                   <TouchableOpacity
                     style={[
                       styles.primaryBtn,
-                      (submitting || !username || (!isEmailUpdate && !isForgot && !password)) &&
+                      (authLocked || !username || (!isEmailUpdate && !isForgot && !password)) &&
                         styles.primaryBtnDisabled,
                     ]}
                     onPress={handleSubmit}
-                    disabled={submitting || !username || (!isEmailUpdate && !isForgot && !password)}
+                    disabled={authLocked || !username || (!isEmailUpdate && !isForgot && !password)}
                     testID="login-submit"
                   >
                     {submitting ? (

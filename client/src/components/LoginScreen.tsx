@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Lock, Loader2, UserPlus, KeyRound, ShieldCheck } from 'lucide-react';
 import { login, setup, getAuthStatus, completeMfaLogin, forgotPassword } from '../utils/auth';
 import { getApiBase } from '../utils/connection';
+import { isElectron } from '../utils/isElectron';
 import BrandLogo from './BrandLogo';
+import LoginServerPicker from './LoginServerPicker';
 
 /**
  * Full-screen login gate.
@@ -25,6 +27,24 @@ export default function LoginScreen({ onAuthenticated }: any) {
   const [pendingMfa, setPendingMfa] = useState<any>(null);
   const [error, setError] = useState<any>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Sign-in and the desktop server picker are mutually exclusive, and this
+  // screen is the only arbiter. Refs are the synchronous truth (state lags a
+  // render), so neither can start in the window before the other's re-render
+  // disables it. A successful switch reloads the window, so `switching` is
+  // only cleared when one fails.
+  const submittingRef = useRef(false);
+  const switchingRef = useRef(false);
+  const [switching, setSwitching] = useState(false);
+  const beginServerChange = useCallback(() => {
+    if (submittingRef.current || switchingRef.current) return false;
+    switchingRef.current = true;
+    setSwitching(true);
+    return true;
+  }, []);
+  const endServerChange = useCallback(() => {
+    switchingRef.current = false;
+    setSwitching(false);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,6 +67,16 @@ export default function LoginScreen({ onAuthenticated }: any) {
 
   async function handleSubmit(e: any) {
     e.preventDefault();
+    if (submittingRef.current || switchingRef.current) return;
+    submittingRef.current = true;
+    try {
+      await submitAuth();
+    } finally {
+      submittingRef.current = false;
+    }
+  }
+
+  async function submitAuth() {
     setError(null);
     if (pendingMfa) {
       setSubmitting(true);
@@ -134,6 +164,17 @@ export default function LoginScreen({ onAuthenticated }: any) {
           {title ? <h1 className="text-lg font-semibold text-white">{title}</h1> : null}
           <p className="text-xs text-gray-400 text-center">{subtitle}</p>
         </div>
+
+        {/* Desktop only: let the user swap orgs / edit the server URL before
+            signing in, so targeting an org they have no password for never
+            locks them out of the app. */}
+        {isElectron() && (
+          <LoginServerPicker
+            onServerChangeStart={beginServerChange}
+            onServerChangeEnd={endServerChange}
+            disabled={submitting}
+          />
+        )}
 
         {mode !== 'loading' && !isForgotSent && (
           // Keyed so the MFA step mounts a fresh <form> and <input>. Without the key
@@ -258,6 +299,7 @@ export default function LoginScreen({ onAuthenticated }: any) {
               type="submit"
               disabled={
                 submitting ||
+                switching ||
                 (pendingMfa ? !mfaCode : isForgot ? !username.trim() : !username || !password)
               }
               className="w-full flex items-center justify-center gap-2 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded transition-colors"

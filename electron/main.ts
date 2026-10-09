@@ -32,6 +32,12 @@ import { createNotificationHandlers } from './notifications.js';
 import { saveDesignPdfWithDialog } from './save-design-pdf-dialog.js';
 import { mergeElectronServerPath } from './merge-server-path.js';
 import { resolveElectronDevUserDataDir } from './resolve-user-data-dir.js';
+import {
+  remoteAuthHeaders,
+  authRecordFromIpc,
+  type RemoteConnection,
+  type ScopedAuthRecord,
+} from './remote-auth-scope.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -44,16 +50,8 @@ const USER_DATA = isDev
   ? resolveElectronDevUserDataDir()
   : path.join(app.getPath('userData'), 'data');
 
-interface ConnectionConfig {
-  mode: string;
-  remoteUrl: string;
-  apiKey: string;
-}
-
-interface AuthTokenRecord {
-  token: string;
-  expiresAt?: string;
-}
+type ConnectionConfig = RemoteConnection;
+type AuthTokenRecord = ScopedAuthRecord;
 
 interface RemoteOrg {
   remote_url?: string;
@@ -133,15 +131,6 @@ function writeAuthToken(record: AuthTokenRecord | null | undefined) {
   cachedAuthToken = record;
 }
 
-function isAuthTokenValid(record: AuthTokenRecord | null | undefined) {
-  if (!record || typeof record.token !== 'string') return false;
-  if (record.expiresAt) {
-    const exp = new Date(record.expiresAt).getTime();
-    if (Number.isFinite(exp) && exp <= Date.now()) return false;
-  }
-  return true;
-}
-
 // Remote orgs (file-backed for Electron, survives origin changes)
 
 function readRemoteOrgs() {
@@ -164,25 +153,18 @@ function writeRemoteOrgs(orgs: RemoteOrg[]) {
 // until the HTML loads — and the HTML load itself needs the header.
 //
 // Precedence:
-//   1. Authorization: Bearer <jwt>   (JWT auth, Phase 1)
-//   2. X-API-Key: <apiKey>           (legacy)
+//   1. Authorization: Bearer <jwt>, only when the JWT was issued by this origin
+//   2. X-API-Key: <apiKey>
 function installRemoteApiKeyInjector() {
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    const config = readConnectionConfig();
-    if (config.mode === 'remote' && config.remoteUrl) {
-      try {
-        const reqHost = new URL(details.url).host;
-        const remoteHost = new URL(config.remoteUrl).host;
-        if (reqHost === remoteHost) {
-          const authRecord = readAuthToken();
-          if (authRecord && isAuthTokenValid(authRecord)) {
-            details.requestHeaders['Authorization'] = `Bearer ${authRecord.token}`;
-          } else if (config.apiKey) {
-            details.requestHeaders['X-API-Key'] = config.apiKey;
-          }
-        }
-      } catch {}
-    }
+    Object.assign(
+      details.requestHeaders,
+      remoteAuthHeaders({
+        connection: readConnectionConfig(),
+        authRecord: readAuthToken(),
+        requestUrl: details.url,
+      }),
+    );
     callback({ requestHeaders: details.requestHeaders });
   });
 }
@@ -404,7 +386,7 @@ ipcMain.on('save-connection-config', (event, config) => {
 // interceptor can inject `Authorization: Bearer` on the very first HTML
 // load. Passing `null` clears the token (logout).
 ipcMain.on('save-auth-token', (event, record) => {
-  writeAuthToken(record || null);
+  writeAuthToken(authRecordFromIpc(event, record));
   event.returnValue = true;
 });
 

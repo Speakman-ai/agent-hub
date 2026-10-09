@@ -102,6 +102,7 @@ function AppContent() {
     completeSetup,
     needsAuth,
     completeAuth,
+    handleSwitchOrg,
     registerNavigator,
   } = useApp();
   const openSidebar = useCallback(() => {
@@ -226,7 +227,7 @@ function AppContent() {
   }
   // Server has auth configured and we don't have a valid JWT — gate on login.
   if (needsAuth) {
-    return <LoginScreen onAuthenticated={completeAuth} />;
+    return <LoginScreen onAuthenticated={completeAuth} onSwitchOrg={handleSwitchOrg} />;
   }
   return (
     <SidebarContext.Provider value={{ openSidebar, closeSidebar, toggleSidebar }}>

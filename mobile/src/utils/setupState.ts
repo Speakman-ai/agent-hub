@@ -86,41 +86,5 @@ export async function saveSetupDismissed(value: any) {
     /* best-effort — wizard will simply re-prompt next launch */
   }
 }
-/**
- * Normalize a user-entered server URL. Trims whitespace, strips trailing
- * slashes, and prepends `https://` when the user omitted a scheme.
- *
- * Returns an empty string if the input is empty after trimming.
- *
- * @param {string} input
- * @returns {string}
- */
-export function normalizeServerUrl(input: any) {
-  if (typeof input !== 'string') return '';
-  const trimmed = input.trim();
-  if (!trimmed) return '';
-  const stripped = trimmed.replace(/\/+$/, '');
-  if (/^https?:\/\//i.test(stripped)) return stripped;
-  return `https://${stripped}`;
-}
-/**
- * Lightweight validation for the URL field before hitting the network.
- *
- * Returns `null` if valid, or a short error message describing why not.
- *
- * @param {string} input
- * @returns {string|null}
- */
-export function validateServerUrl(input: any) {
-  if (typeof input !== 'string' || !input.trim()) {
-    return 'Server URL is required.';
-  }
-  const normalized = normalizeServerUrl(input);
-  try {
-    const u = new URL(normalized);
-    if (!u.hostname) return 'Server URL must include a hostname.';
-    return null;
-  } catch {
-    return 'Server URL is not valid.';
-  }
-}
+// URL normalization/validation is shared with the login-screen server picker.
+export { normalizeServerUrl, validateServerUrl } from '@shared/utils/loginServerPicker';

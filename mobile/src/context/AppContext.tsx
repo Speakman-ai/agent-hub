@@ -15,6 +15,7 @@ import { api } from '../utils/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { extractSubmittedAskIds } from '../utils/askAnswers';
 import { loadOrgs, migrateFromLegacy, getOrgs } from '../utils/orgs';
+import { createOrgSwitcher } from '../utils/orgSwitch';
 import { loadConnectionConfig, getApiBaseUrl, getAuthHeaders } from '../utils/config';
 import {
   loadAuthToken,
@@ -1733,64 +1734,73 @@ export function AppProvider({ children }: any) {
       setStreamingAgent(null);
     }
   }, [activeSessionId]);
-  const handleSwitchOrg = useCallback(
-    async (orgId: any) => {
-      const { switchOrg } = require('../utils/orgs');
-      await switchOrg(orgId);
-      // Reset all state
-      setAgents([]);
-      setProjects([]);
-      setSessions([]);
-      setActiveAgentId(null);
-      setActiveSessionId(null);
-      setMessages([]);
-      setThinking(false);
-      setStreamingContent('');
-      setActiveTasks({});
-      setSessionAgents([]);
-      setSessionRoundProcessing(false);
-      setDelegations({});
-      setMessageQueues({});
-      setEventsByMessage({});
-      setCronSessions([]);
-      setChangesReady({});
-      setFinalizeStatusBySession({});
-      setSessionHandoffs([]);
-      setSessionConsultMode(false);
-      // Reconnect WebSocket to new org
-      reconnect();
-      // Re-probe the new server's auth mode so notification owner-scoping uses
-      // the right local-bypass. Reset to the secure default (strict) first so a
-      // stale value from the previous server can never leak owner-only banners
-      // if the probe fails.
-      serverAuthConfiguredRef.current = true;
-      (async () => {
-        const probeUrl = getApiBaseUrl();
-        if (!probeUrl) return;
-        try {
-          const status = await getAuthStatus(probeUrl);
-          serverAuthConfiguredRef.current = Boolean(status?.authConfigured);
-        } catch {
-          /* unreachable — keep the strict default */
-        }
-      })();
-      // Reload data
-      try {
-        const [agentData, projectData, cronSessionData] = await Promise.all([
-          api.getAgents(),
-          api.getProjects().catch(() => []),
-          api.getCronSessions().catch(() => []),
-        ]);
-        setAgents(agentData);
-        setProjects(projectData);
-        setCronSessions(cronSessionData);
-        if (agentData.length > 0) setActiveAgentId(agentData[0].id);
-      } catch (err: any) {
-        console.error('Failed to load data after org switch:', err);
-      }
-    },
-    [reconnect],
+  const reconnectRef = useRef(reconnect);
+  reconnectRef.current = reconnect;
+  // Resolves once the connection points at the new org; the data reload runs
+  // in the background so a hung endpoint can't freeze the caller's UI.
+  const switchToOrg = useMemo(
+    () =>
+      createOrgSwitcher({
+        switchOrg: async (orgId) => {
+          const { switchOrg } = require('../utils/orgs');
+          await switchOrg(orgId);
+        },
+        onConnectionChanged: () => {
+          // Reset all state
+          setAgents([]);
+          setProjects([]);
+          setSessions([]);
+          setActiveAgentId(null);
+          setActiveSessionId(null);
+          setMessages([]);
+          setThinking(false);
+          setStreamingContent('');
+          setActiveTasks({});
+          setSessionAgents([]);
+          setSessionRoundProcessing(false);
+          setDelegations({});
+          setMessageQueues({});
+          setEventsByMessage({});
+          setCronSessions([]);
+          setChangesReady({});
+          setFinalizeStatusBySession({});
+          setSessionHandoffs([]);
+          setSessionConsultMode(false);
+          // Reconnect WebSocket to new org
+          reconnectRef.current();
+          // Re-probe the new server's auth mode so notification owner-scoping
+          // uses the right local-bypass. Reset to the secure default (strict)
+          // first so a stale value from the previous server can never leak
+          // owner-only banners if the probe fails.
+          serverAuthConfiguredRef.current = true;
+          (async () => {
+            const probeUrl = getApiBaseUrl();
+            if (!probeUrl) return;
+            try {
+              const status = await getAuthStatus(probeUrl);
+              serverAuthConfiguredRef.current = Boolean(status?.authConfigured);
+            } catch {
+              /* unreachable — keep the strict default */
+            }
+          })();
+        },
+        loadData: async (isCurrent) => {
+          const [agentData, projectData, cronSessionData] = await Promise.all([
+            api.getAgents(),
+            api.getProjects().catch(() => []),
+            api.getCronSessions().catch(() => []),
+          ]);
+          if (!isCurrent()) return;
+          setAgents(agentData);
+          setProjects(projectData);
+          setCronSessions(cronSessionData);
+          if (agentData.length > 0) setActiveAgentId(agentData[0].id);
+        },
+        onLoadError: (err) => console.error('Failed to load data after org switch:', err),
+      }),
+    [],
   );
+  const handleSwitchOrg = useCallback((orgId: any) => switchToOrg(orgId), [switchToOrg]);
   const handleNewSession = useCallback(async () => {
     if (!activeAgentId) return;
     // A brand-new session always starts at the project default mode. Consult is
