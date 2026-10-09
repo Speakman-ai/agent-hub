@@ -37,10 +37,30 @@ export type ChatMessage = {
   lastUpdateTime: string | null;
   deleted: boolean;
   attachmentCount: number;
+  /** Absent from servers that predate attachment previews; fall back to the count. */
+  attachments?: ChatAttachment[];
   sender: ChatUser | null;
   /** One entry per emoji with its total count. */
   reactions?: ChatReaction[];
 };
+
+export type ChatAttachment = {
+  id: string;
+  contentName: string | null;
+  contentType: string | null;
+  source: 'UPLOADED_CONTENT' | 'DRIVE_FILE' | 'UNKNOWN';
+  /** Bytes are reachable through the Hub's content route. */
+  downloadable: boolean;
+  driveUrl: string | null;
+};
+
+const PREVIEWABLE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+/** Matches the types the server serves inline; everything else is a download chip. */
+export function isPreviewableImage(attachment: ChatAttachment): boolean {
+  const type = (attachment.contentType ?? '').toLowerCase().split(';')[0].trim();
+  return attachment.downloadable && PREVIEWABLE_IMAGE_TYPES.has(type);
+}
 
 export type ChatReaction = {
   /** Unicode emoji, or `:name:` for a custom emoji. */

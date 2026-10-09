@@ -75,6 +75,7 @@ import {
 } from '../utils/googleChatLayout';
 import { placeDrafts, useChatDrafts, type ChatDraft } from '../utils/googleChatDrafts';
 import GoogleChatDraftCard from './GoogleChatDraftCard';
+import GoogleChatAttachments from './GoogleChatAttachments';
 import { DraftsLoadError } from './GoogleChatDraftsPanel';
 import {
   chatPushStore,
@@ -1531,12 +1532,23 @@ export default function GoogleChatPage({
                                     <span className="italic text-gray-500">(no text)</span>
                                   )
                                 )}
-                                {message.attachmentCount > 0 && (
-                                  <div className="mt-1 flex items-center gap-1 text-xs text-gray-400">
-                                    <Paperclip size={12} />
-                                    {message.attachmentCount} attachment
-                                    {message.attachmentCount === 1 ? '' : 's'}
-                                  </div>
+                                {!message.deleted &&
+                                message.attachments?.length &&
+                                selectedId &&
+                                message.id ? (
+                                  <GoogleChatAttachments
+                                    spaceId={selectedId}
+                                    messageId={message.id}
+                                    attachments={message.attachments}
+                                  />
+                                ) : (
+                                  message.attachmentCount > 0 && (
+                                    <div className="mt-1 flex items-center gap-1 text-xs text-gray-400">
+                                      <Paperclip size={12} />
+                                      {message.attachmentCount} attachment
+                                      {message.attachmentCount === 1 ? '' : 's'}
+                                    </div>
+                                  )
                                 )}
                               </div>
                               {(reactions.length > 0 || chip) && (

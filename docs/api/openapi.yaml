@@ -6682,6 +6682,38 @@ components:
         - emoji
         - customEmojiUrl
         - count
+    GoogleChatAttachment:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Last segment of the attachment resource name; use it with the content route.
+        contentName:
+          type: string
+          nullable: true
+        contentType:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum:
+            - UPLOADED_CONTENT
+            - DRIVE_FILE
+            - UNKNOWN
+        downloadable:
+          type: boolean
+          description: True when the bytes can be fetched through the content route. Drive files are not; open driveUrl instead.
+        driveUrl:
+          type: string
+          nullable: true
+          description: Google Drive link for DRIVE_FILE attachments.
+      required:
+        - id
+        - contentName
+        - contentType
+        - source
+        - downloadable
+        - driveUrl
     GoogleChatMessage:
       type: object
       properties:
@@ -6712,6 +6744,10 @@ components:
           type: boolean
         attachmentCount:
           type: number
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoogleChatAttachment"
         sender:
           allOf:
             - $ref: "#/components/schemas/GoogleChatUser"
@@ -6732,6 +6768,7 @@ components:
         - lastUpdateTime
         - deleted
         - attachmentCount
+        - attachments
         - sender
         - reactions
     GoogleChatReadState:
@@ -31879,6 +31916,87 @@ paths:
                 $ref: "#/components/schemas/GoogleChatErrorResponse"
         "404":
           description: Space not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/spaces/{spaceId}/messages/{messageId}/attachments/{attachmentId}/content:
+    get:
+      tags:
+        - Google
+      summary: Download an uploaded Google Chat attachment as the calling user
+      description: Streams the bytes through the Chat media API. PNG, JPEG, GIF, and WebP are served inline for previews; everything else is served as an octet-stream download. Drive-file attachments are refused; open their driveUrl instead.
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_.-]{1,256}$
+          required: true
+          name: messageId
+          in: path
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_.=+-]{1,2048}$
+          required: true
+          name: attachmentId
+          in: path
+      responses:
+        "200":
+          description: The attachment bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid ids.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Required Chat read scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Message or attachment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "409":
+          description: The attachment is a Drive file and cannot be downloaded here.
           content:
             application/json:
               schema:

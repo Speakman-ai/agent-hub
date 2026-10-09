@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express, { type Request } from 'express';
 import request from 'supertest';
+import { Readable } from 'node:stream';
 import type { RouteDeps } from '../types.js';
 
 const SPACES_READONLY = 'https://www.googleapis.com/auth/chat.spaces.readonly';
@@ -10,14 +11,16 @@ const MESSAGES_CREATE = 'https://www.googleapis.com/auth/chat.messages.create';
 const googleMock = vi.hoisted(() => {
   const spaces = { list: vi.fn(), get: vi.fn() };
   const members = { list: vi.fn() };
-  const messages = { list: vi.fn(), create: vi.fn() };
+  const messages = { list: vi.fn(), create: vi.fn(), get: vi.fn() };
+  const media = { download: vi.fn() };
   const setCredentials = vi.fn();
   return {
     spaces,
     messages,
+    media,
     setCredentials,
     members,
-    chat: vi.fn(() => ({ spaces: { ...spaces, messages, members } })),
+    chat: vi.fn(() => ({ spaces: { ...spaces, messages, members }, media })),
     OAuth2: vi.fn(function OAuth2() {
       return { setCredentials };
     }),
@@ -170,11 +173,144 @@ describe('Google Chat proxy routes', () => {
       lastUpdateTime: null,
       deleted: false,
       attachmentCount: 1,
+      attachments: [
+        {
+          id: 'a',
+          contentName: null,
+          contentType: null,
+          source: 'UNKNOWN',
+          downloadable: false,
+          driveUrl: null,
+        },
+      ],
       sender: { name: 'users/123', displayName: null, type: 'HUMAN' },
       reactions: [],
     });
     expect(res.body.messages[1]).toMatchObject({ deleted: true, text: null });
     expect(res.body.nextPageToken).toBeNull();
+  });
+
+  it('shapes uploaded and Drive attachments', async () => {
+    googleMock.messages.list.mockResolvedValue({
+      data: {
+        messages: [
+          {
+            name: 'spaces/AAA/messages/M2',
+            attachment: [
+              {
+                name: 'spaces/AAA/messages/M2/attachments/ATT1',
+                contentName: 'shot.png',
+                contentType: 'image/png',
+                source: 'UPLOADED_CONTENT',
+                attachmentDataRef: { resourceName: 'media-ref-1' },
+              },
+              {
+                name: 'spaces/AAA/messages/M2/attachments/ATT2',
+                contentName: 'Plan',
+                contentType: 'application/vnd.google-apps.document',
+                source: 'DRIVE_FILE',
+                driveDataRef: { driveFileId: 'drv1' },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const res = await request(makeApp()).get('/api/google/chat/spaces/AAA/messages');
+    expect(res.body.messages[0].attachments).toEqual([
+      {
+        id: 'ATT1',
+        contentName: 'shot.png',
+        contentType: 'image/png',
+        source: 'UPLOADED_CONTENT',
+        downloadable: true,
+        driveUrl: null,
+      },
+      {
+        id: 'ATT2',
+        contentName: 'Plan',
+        contentType: 'application/vnd.google-apps.document',
+        source: 'DRIVE_FILE',
+        downloadable: false,
+        driveUrl: 'https://drive.google.com/open?id=drv1',
+      },
+    ]);
+    expect(JSON.stringify(res.body)).not.toContain('media-ref-1');
+  });
+
+  describe('attachment content', () => {
+    const url = '/api/google/chat/spaces/AAA/messages/M2/attachments';
+    function messageWith(attachment: Record<string, unknown>) {
+      return { data: { name: 'spaces/AAA/messages/M2', attachment: [attachment] } };
+    }
+
+    it('streams an image inline using the media ref from Google, not the caller', async () => {
+      googleMock.messages.get.mockResolvedValue(
+        messageWith({
+          name: 'spaces/AAA/messages/M2/attachments/ATT1',
+          contentName: 'shot.png',
+          contentType: 'image/png',
+          source: 'UPLOADED_CONTENT',
+          attachmentDataRef: { resourceName: 'media-ref-1' },
+        }),
+      );
+      googleMock.media.download.mockResolvedValue({
+        data: Readable.from([Buffer.from('PNGDATA')]),
+        headers: new Headers({ 'content-length': '7' }),
+      });
+      const res = await request(makeApp()).get(`${url}/ATT1/content`).buffer(true);
+      expect(res.status).toBe(200);
+      expect(googleMock.messages.get).toHaveBeenCalledWith({ name: 'spaces/AAA/messages/M2' });
+      expect(googleMock.media.download).toHaveBeenCalledWith(
+        { resourceName: 'media-ref-1', alt: 'media' },
+        { responseType: 'stream' },
+      );
+      expect(res.headers['content-type']).toBe('image/png');
+      expect(res.headers['content-disposition']).toMatch(/^inline;/);
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(Buffer.from(res.body).toString()).toBe('PNGDATA');
+    });
+
+    it('forces a download for active content like HTML or SVG', async () => {
+      googleMock.messages.get.mockResolvedValue(
+        messageWith({
+          name: 'spaces/AAA/messages/M2/attachments/ATT1',
+          contentName: 'evil.svg',
+          contentType: 'image/svg+xml',
+          source: 'UPLOADED_CONTENT',
+          attachmentDataRef: { resourceName: 'media-ref-1' },
+        }),
+      );
+      googleMock.media.download.mockResolvedValue({
+        data: Readable.from([Buffer.from('<svg/>')]),
+        headers: new Headers(),
+      });
+      const res = await request(makeApp()).get(`${url}/ATT1/content`);
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toBe('application/octet-stream');
+      expect(res.headers['content-disposition']).toMatch(/^attachment; filename="evil.svg"/);
+    });
+
+    it('returns 404 for an unknown attachment and 409 for a Drive file', async () => {
+      googleMock.messages.get.mockResolvedValue(
+        messageWith({
+          name: 'spaces/AAA/messages/M2/attachments/ATT2',
+          source: 'DRIVE_FILE',
+          driveDataRef: { driveFileId: 'drv1' },
+        }),
+      );
+      expect((await request(makeApp()).get(`${url}/NOPE/content`)).status).toBe(404);
+      const drive = await request(makeApp()).get(`${url}/ATT2/content`);
+      expect(drive.status).toBe(409);
+      expect(drive.body.code).toBe('google_chat_attachment_not_downloadable');
+      expect(googleMock.media.download).not.toHaveBeenCalled();
+    });
+
+    it('rejects ids that could escape the resource name', async () => {
+      const res = await request(makeApp()).get(`${url}/..%2F..%2Fx/content`);
+      expect(res.status).toBe(400);
+      expect(googleMock.messages.get).not.toHaveBeenCalled();
+    });
   });
 
   it('filters by thread and rejects a thread from another space', async () => {

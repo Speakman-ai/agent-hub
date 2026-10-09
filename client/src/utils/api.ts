@@ -1180,6 +1180,29 @@ export const api = {
       )}/reactions/toggle`,
       { method: 'POST', body: JSON.stringify({ emoji }) },
     ),
+  // An <img src> can't carry the auth header, so attachments come back as a Blob.
+  fetchGoogleChatAttachment: async (
+    spaceId: string,
+    messageId: string,
+    attachmentId: string,
+  ): Promise<Blob> => {
+    const res = await fetch(
+      `${getApiBase()}/google/chat/spaces/${encodeURIComponent(spaceId)}/messages/${encodeURIComponent(
+        messageId,
+      )}/attachments/${encodeURIComponent(attachmentId)}/content`,
+      { headers: getAuthHeaders() },
+    );
+    if (!res.ok) {
+      let detail = '';
+      try {
+        detail = ((await res.json()) as { error?: string }).error ?? '';
+      } catch {
+        /* not json */
+      }
+      throw new Error(detail ? `${res.status}: ${detail}` : `Download failed: ${res.status}`);
+    }
+    return res.blob();
+  },
   getGoogleChatReadState: (spaceId: string) =>
     fetchJSON(`/google/chat/spaces/${encodeURIComponent(spaceId)}/read-state`),
   setGoogleChatReadState: (spaceId: string, lastReadTime: string) =>

@@ -130,6 +130,25 @@ const ChatReactionSchema = registerComponent(
   }),
 );
 
+const ChatAttachmentSchema = registerComponent(
+  'GoogleChatAttachment',
+  z.object({
+    id: z.string().openapi({
+      description: 'Last segment of the attachment resource name; use it with the content route.',
+    }),
+    contentName: z.string().nullable(),
+    contentType: z.string().nullable(),
+    source: z.enum(['UPLOADED_CONTENT', 'DRIVE_FILE', 'UNKNOWN']),
+    downloadable: z.boolean().openapi({
+      description:
+        'True when the bytes can be fetched through the content route. Drive files are not; open driveUrl instead.',
+    }),
+    driveUrl: z.string().nullable().openapi({
+      description: 'Google Drive link for DRIVE_FILE attachments.',
+    }),
+  }),
+);
+
 const ChatMessageSchema = registerComponent(
   'GoogleChatMessage',
   z.object({
@@ -143,6 +162,7 @@ const ChatMessageSchema = registerComponent(
     lastUpdateTime: z.string().nullable(),
     deleted: z.boolean(),
     attachmentCount: z.number(),
+    attachments: z.array(ChatAttachmentSchema),
     sender: ChatUserSchema.nullable(),
     reactions: z.array(ChatReactionSchema).openapi({
       description: 'Emoji reactions on the message, one entry per emoji with its total count.',
@@ -167,6 +187,12 @@ const SpaceParamsSchema = z.object({
 const MessageParamsSchema = z.object({
   spaceId: z.string().regex(SPACE_ID_RE, 'invalid space id'),
   messageId: z.string().regex(/^[A-Za-z0-9_.-]{1,256}$/, 'invalid message id'),
+});
+
+// Attachment ids are opaque Google tokens; the route only uses one to pick an
+// attachment off the fetched message, so this just keeps `/` and junk out.
+const AttachmentParamsSchema = MessageParamsSchema.extend({
+  attachmentId: z.string().regex(/^[A-Za-z0-9_.=+-]{1,2048}$/, 'invalid attachment id'),
 });
 
 const ToggleReactionBodySchema = z
@@ -448,6 +474,27 @@ registerPath({
     400: errorResponse('Invalid body or space id.'),
     403: errorResponse('Required Chat send scope has not been granted.'),
     404: errorResponse('Space not found.'),
+    ...commonErrors,
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/google/chat/spaces/{spaceId}/messages/{messageId}/attachments/{attachmentId}/content',
+  tags: ['Google'],
+  summary: 'Download an uploaded Google Chat attachment as the calling user',
+  description:
+    'Streams the bytes through the Chat media API. PNG, JPEG, GIF, and WebP are served inline for previews; everything else is served as an octet-stream download. Drive-file attachments are refused; open their driveUrl instead.',
+  request: { params: AttachmentParamsSchema },
+  responses: {
+    200: {
+      description: 'The attachment bytes.',
+      content: { 'application/octet-stream': { schema: z.string().openapi({ format: 'binary' }) } },
+    },
+    400: errorResponse('Invalid ids.'),
+    403: errorResponse('Required Chat read scope has not been granted.'),
+    404: errorResponse('Message or attachment not found.'),
+    409: errorResponse('The attachment is a Drive file and cannot be downloaded here.'),
     ...commonErrors,
   },
 });
@@ -957,8 +1004,54 @@ export function shapeMessage(message: chat_v1.Schema$Message): z.infer<typeof Ch
     lastUpdateTime: message.lastUpdateTime ?? null,
     deleted: !!message.deleteTime,
     attachmentCount: message.attachment?.length ?? 0,
+    attachments: message.deleteTime ? [] : shapeAttachments(message.attachment),
     sender,
     reactions: message.deleteTime ? [] : shapeReactions(message.emojiReactionSummaries),
+  };
+}
+
+export function shapeAttachments(
+  attachments: chat_v1.Schema$Attachment[] | null | undefined,
+): z.infer<typeof ChatAttachmentSchema>[] {
+  const out: z.infer<typeof ChatAttachmentSchema>[] = [];
+  for (const a of attachments ?? []) {
+    const id = lastSegment(a.name);
+    if (!id) continue;
+    const driveFileId = a.driveDataRef?.driveFileId ?? null;
+    const source =
+      a.source === 'UPLOADED_CONTENT' || a.source === 'DRIVE_FILE' ? a.source : 'UNKNOWN';
+    out.push({
+      id,
+      contentName: a.contentName || null,
+      contentType: a.contentType || null,
+      source,
+      downloadable: source !== 'DRIVE_FILE' && !!a.attachmentDataRef?.resourceName,
+      driveUrl: driveFileId
+        ? `https://drive.google.com/open?id=${encodeURIComponent(driveFileId)}`
+        : null,
+    });
+  }
+  return out;
+}
+
+// Only raster image types render inline. Anything else (HTML, SVG, PDF, ...)
+// from another user would otherwise execute or render on the Hub's origin.
+const INLINE_ATTACHMENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+export function attachmentResponseHeaders(
+  contentType: string | null | undefined,
+  contentName: string | null | undefined,
+): Record<string, string> {
+  const type = (contentType ?? '').toLowerCase().split(';')[0].trim();
+  const inline = INLINE_ATTACHMENT_TYPES.has(type);
+  const filename = (contentName || 'attachment').replace(/[\r\n"\\]/g, '_');
+  const ascii = filename.replace(/[^\x20-\x7e]/g, '_');
+  return {
+    'Content-Type': inline ? type : 'application/octet-stream',
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': "default-src 'none'; sandbox",
+    'Cache-Control': 'private, max-age=300',
   };
 }
 
@@ -1415,6 +1508,71 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
       return sendGoogleError(res, err);
     }
   });
+
+  router.get(
+    '/api/google/chat/spaces/:spaceId/messages/:messageId/attachments/:attachmentId/content',
+    async (req: Request, res: Response) => {
+      const params = AttachmentParamsSchema.safeParse(req.params);
+      if (!params.success) {
+        return bad(res, 400, params.error.issues[0]?.message || 'Invalid ids', 'invalid_request');
+      }
+      const uid = requireChatAccess(
+        req,
+        res,
+        deps,
+        hasChatMessagesReadScope,
+        [CHAT_MESSAGES_READONLY_SCOPE],
+        'google_chat_scope_required',
+      );
+      if (!uid) return;
+      const token = await resolveChatToken(uid, deps, res);
+      if (!token) return;
+      const { spaceId, messageId, attachmentId } = params.data;
+      try {
+        const chat = createChatClient(token);
+        // The media resource name comes from Google's copy of the message, never
+        // from the caller, so the proxy can only reach media on messages the
+        // user can read.
+        const message = (
+          await chat.spaces.messages.get({ name: `spaces/${spaceId}/messages/${messageId}` })
+        ).data;
+        const attachment = message.deleteTime
+          ? undefined
+          : (message.attachment ?? []).find((a) => lastSegment(a.name) === attachmentId);
+        if (!attachment) {
+          return bad(res, 404, 'Attachment not found', 'google_chat_not_found');
+        }
+        const resourceName = attachment.attachmentDataRef?.resourceName;
+        if (attachment.source === 'DRIVE_FILE' || !resourceName) {
+          return bad(
+            res,
+            409,
+            'This attachment is a Google Drive file. Open it in Drive instead.',
+            'google_chat_attachment_not_downloadable',
+          );
+        }
+        const media = await chat.media.download(
+          { resourceName, alt: 'media' },
+          { responseType: 'stream' },
+        );
+        res.set(attachmentResponseHeaders(attachment.contentType, attachment.contentName));
+        const headers = media.headers as unknown;
+        const length =
+          headers instanceof Headers
+            ? headers.get('content-length')
+            : (headers as Record<string, unknown> | undefined)?.['content-length'];
+        if (typeof length === 'string' && /^\d+$/.test(length)) res.set('Content-Length', length);
+        media.data.on('error', (err: Error) => {
+          console.warn(`[google-chat] Attachment stream failed: ${err.message}`);
+          res.destroy(err);
+        });
+        req.on('close', () => media.data.destroy());
+        media.data.pipe(res);
+      } catch (err: unknown) {
+        return sendGoogleError(res, err);
+      }
+    },
+  );
 
   router.post(
     '/api/google/chat/spaces/:spaceId/messages/:messageId/reactions/toggle',
