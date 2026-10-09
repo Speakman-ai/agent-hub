@@ -80,6 +80,11 @@ import GoogleChatDraftCard from './GoogleChatDraftCard';
 import GoogleChatAttachments from './GoogleChatAttachments';
 import { DraftsLoadError } from './GoogleChatDraftsPanel';
 import {
+  OPEN_CHAT_SPACE_EVENT,
+  setOpenChatSpace,
+  takePendingOpenChatSpace,
+} from '../utils/googleChatNotifications';
+import {
   chatPushStore,
   formatUnreadCount,
   spaceIdFromName,
@@ -388,6 +393,24 @@ export default function GoogleChatPage({
   const loadingOlderRef = useRef<Set<string>>(new Set());
 
   const selectedSpace = spaces.find((s) => s.id === selectedId) ?? null;
+
+  // A clicked new-message notification picks the conversation, whether it
+  // fired before this pane mounted or while it is open.
+  useEffect(() => {
+    const pending = takePendingOpenChatSpace();
+    if (pending) setSelectedId(pending);
+    const onOpen = () => {
+      const id = takePendingOpenChatSpace();
+      if (id) setSelectedId(id);
+    };
+    window.addEventListener(OPEN_CHAT_SPACE_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_CHAT_SPACE_EVENT, onOpen);
+  }, []);
+  // Tells the notifier which conversation is on screen, so it stays quiet for it.
+  useEffect(() => {
+    setOpenChatSpace(selectedId);
+    return () => setOpenChatSpace(null);
+  }, [selectedId]);
   const push = useGoogleChatPush();
   // Derived in the store from connectivity, subscription state, and expiry.
   const pushActive = push.pushActive;

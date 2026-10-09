@@ -109,7 +109,9 @@ import {
   type HubWorkspacePane,
 } from '@shared/utils/hub';
 import { useGoogleStatus } from './hooks/useGoogleStatus';
-import { shouldShowCalendarNav, shouldShowGmailNav } from './utils/googleSurface';
+import { chatConsent, shouldShowCalendarNav, shouldShowGmailNav } from './utils/googleSurface';
+import { useGoogleChatNotifications } from './hooks/useGoogleChatNotifications';
+import { getOpenChatSpace, requestOpenChatSpace } from './utils/googleChatNotifications';
 import DeploymentsPage from './components/DeploymentsPage';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
@@ -3830,6 +3832,41 @@ export default function App({ initialView }: any = {}) {
   useWsReconnectBroadcast(connected);
   useGoogleChatPushBootstrap(connected);
   const googleChatPush = useGoogleChatPush();
+  // New Google Chat messages for the signed-in user only: the proxy reads with
+  // the caller's own Google connection, and pushed events for any other Hub
+  // user are dropped inside the notifier.
+  const chatPaneOpen = currentView === 'hub' && (hubPane === 'chat' || hubMobileTab === 'chat');
+  const chatPaneOpenRef = useRef(chatPaneOpen);
+  chatPaneOpenRef.current = chatPaneOpen;
+  useGoogleChatNotifications({
+    enabled: !!googleStatus?.connected && chatConsent(googleStatus).canRead,
+    pushActive: googleChatPush.pushActive,
+    userId: getAuthRecord()?.user?.id || null,
+    isViewingSpace: (spaceId) =>
+      chatPaneOpenRef.current &&
+      document.visibilityState === 'visible' &&
+      document.hasFocus() &&
+      getOpenChatSpace() === spaceId,
+    onNotify: (notice) => {
+      const more = notice.count > 1 ? ` (+${notice.count - 1} more)` : '';
+      setToasts((prev: any) => [
+        ...prev,
+        {
+          id: `google-chat-${notice.messageName}`,
+          type: 'info',
+          message: `${notice.sender} in ${notice.spaceLabel}: ${notice.text}${more}`,
+          duration: 10000,
+          onClick: () => {
+            requestOpenChatSpace(notice.spaceId);
+            setCurrentView('hub');
+            setHubPane('chat');
+            setHubMobileTab('chat');
+          },
+        },
+      ]);
+      notify({ title: `${notice.sender} · ${notice.spaceLabel}`, body: `${notice.text}${more}` });
+    },
+  });
 
   const handleCancel = useCallback(() => {
     if (activeSessionId) {
