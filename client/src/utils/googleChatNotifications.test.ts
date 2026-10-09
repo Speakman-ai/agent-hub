@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  chatBadgeCount,
   createChatNotifier,
   isChatEventForMe,
   previewText,
@@ -531,5 +532,15 @@ describe('requestOpenChatSpace', () => {
     expect(listener).toHaveBeenCalledTimes(1);
     expect(takePendingOpenChatSpace()).toBe('A');
     expect(takePendingOpenChatSpace()).toBeNull();
+  });
+});
+
+describe('chatBadgeCount', () => {
+  it('uses announced messages when push is off', () => {
+    expect(chatBadgeCount(false, 0, 3)).toBe(3);
+  });
+
+  it('uses the push unread total when push is active, without double counting', () => {
+    expect(chatBadgeCount(true, 5, 3)).toBe(5);
   });
 });

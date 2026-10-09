@@ -38,7 +38,9 @@ import {
   ShieldAlert,
   PanelLeftClose,
   Sparkles,
+  MessagesSquare,
 } from 'lucide-react';
+import { formatUnreadCount } from '../utils/googleChatPush';
 import { getServerBase } from '../utils/connection';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion';
 import OrgSwitcher from './OrgSwitcher';
@@ -203,6 +205,10 @@ export default function Sidebar({
   onCollapseSidebar,
   showAiSignInGuide = false,
   onDismissAiSignInGuide,
+  /** Opens the Hub's Google Chat pane. The link renders only when provided. */
+  onOpenGoogleChat,
+  googleChatActive = false,
+  googleChatUnread = 0,
   /** Kanban board: project id when `currentView` is `kanban:<id>`. */
   kanbanProjectId = null,
   kanbanProjectName = null,
@@ -1947,6 +1953,30 @@ export default function Sidebar({
             <span>Settings</span>
           </span>
         </button>
+        {onOpenGoogleChat && (
+          <button
+            type="button"
+            data-testid="sidebar-google-chat"
+            onClick={onOpenGoogleChat}
+            className={`w-full text-left px-3 py-3 md:py-2 rounded-lg flex items-center gap-2 text-sm transition-colors min-h-[44px] ${
+              googleChatActive
+                ? 'bg-gray-800 text-white'
+                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+            }`}
+          >
+            <MessagesSquare size={16} />
+            <span>Google Chat</span>
+            {googleChatUnread > 0 && (
+              <span
+                data-testid="sidebar-google-chat-badge"
+                aria-label={`${googleChatUnread} unread`}
+                className="ml-auto min-w-[1.25rem] rounded-full bg-blue-600 px-1.5 text-center text-[11px] font-semibold leading-5 text-white"
+              >
+                {formatUnreadCount(googleChatUnread)}
+              </span>
+            )}
+          </button>
+        )}
         {/* Version display.
             In a browser, the React bundle is served by the same Hub that
             answers /api/health — client and server versions are always

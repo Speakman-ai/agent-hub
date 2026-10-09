@@ -1829,3 +1829,26 @@ describe('Sidebar — workflow projects collapse like multi-agent ones', () => {
     expect(screen.queryByTestId('agent-sessions-list')).not.toBeInTheDocument();
   });
 });
+
+describe('Sidebar Google Chat link', () => {
+  it('is hidden when Google Chat is not enabled', () => {
+    render(<Sidebar {...buildProps()} />);
+    expect(screen.queryByTestId('sidebar-google-chat')).toBeNull();
+  });
+
+  it('renders under Settings, opens the pane, and shows the unread badge', () => {
+    const onOpenGoogleChat = vi.fn();
+    render(<Sidebar {...buildProps({ onOpenGoogleChat, googleChatUnread: 120 })} />);
+    const link = screen.getByTestId('sidebar-google-chat');
+    expect(link.previousElementSibling).toHaveTextContent('Settings');
+    expect(screen.getByTestId('sidebar-google-chat-badge')).toHaveTextContent('99+');
+    fireEvent.click(link);
+    expect(onOpenGoogleChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits the badge when nothing is unread', () => {
+    render(<Sidebar {...buildProps({ onOpenGoogleChat: vi.fn(), googleChatUnread: 0 })} />);
+    expect(screen.getByTestId('sidebar-google-chat')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-google-chat-badge')).toBeNull();
+  });
+});

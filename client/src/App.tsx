@@ -111,7 +111,11 @@ import {
 import { useGoogleStatus } from './hooks/useGoogleStatus';
 import { chatConsent, shouldShowCalendarNav, shouldShowGmailNav } from './utils/googleSurface';
 import { useGoogleChatNotifications } from './hooks/useGoogleChatNotifications';
-import { getOpenChatSpace, requestOpenChatSpace } from './utils/googleChatNotifications';
+import {
+  chatBadgeCount,
+  getOpenChatSpace,
+  requestOpenChatSpace,
+} from './utils/googleChatNotifications';
 import DeploymentsPage from './components/DeploymentsPage';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
@@ -3838,6 +3842,17 @@ export default function App({ initialView }: any = {}) {
   const chatPaneOpen = currentView === 'hub' && (hubPane === 'chat' || hubMobileTab === 'chat');
   const chatPaneOpenRef = useRef(chatPaneOpen);
   chatPaneOpenRef.current = chatPaneOpen;
+  // Messages announced since the Chat pane was last open. Drives the sidebar
+  // and Hub tab badges when push is not active.
+  const [chatAnnouncedSinceOpen, setChatAnnouncedSinceOpen] = useState(0);
+  useEffect(() => {
+    if (chatPaneOpen) setChatAnnouncedSinceOpen(0);
+  }, [chatPaneOpen]);
+  const googleChatBadge = chatBadgeCount(
+    googleChatPush.pushActive,
+    totalUnread(googleChatPush.unread),
+    chatAnnouncedSinceOpen,
+  );
   useGoogleChatNotifications({
     enabled: !!googleStatus?.connected && chatConsent(googleStatus).canRead,
     pushActive: googleChatPush.pushActive,
@@ -3848,6 +3863,7 @@ export default function App({ initialView }: any = {}) {
       document.hasFocus() &&
       getOpenChatSpace() === spaceId,
     onNotify: (notice) => {
+      if (!chatPaneOpenRef.current) setChatAnnouncedSinceOpen((n) => n + notice.count);
       const more = notice.count > 1 ? ` (+${notice.count - 1} more)` : '';
       setToasts((prev: any) => [
         ...prev,
@@ -6537,6 +6553,18 @@ export default function App({ initialView }: any = {}) {
           <Sidebar
             showAiSignInGuide={showAiSignInGuide && !currentView.startsWith('settings')}
             onDismissAiSignInGuide={dismissAiSignInGuide}
+            onOpenGoogleChat={
+              googleStatus?.connected && chatConsent(googleStatus).canRead
+                ? () => {
+                    setCurrentView('hub');
+                    setHubPane('chat');
+                    setHubMobileTab('chat');
+                    setSidebarOpen(false);
+                  }
+                : undefined
+            }
+            googleChatActive={currentView === 'hub' && hubPane === 'chat'}
+            googleChatUnread={googleChatBadge}
             onCollapseSidebar={() => setSidebarCollapsed(true)}
             isLoading={sidebarDataLoading}
             projects={projects}
@@ -7228,7 +7256,7 @@ export default function App({ initialView }: any = {}) {
                     />
                   }
                   assistant={hubAssistantChat}
-                  paneBadges={{ chat: totalUnread(googleChatPush.unread) }}
+                  paneBadges={{ chat: googleChatBadge }}
                 />
               ) : currentView === 'deployments' && deploymentsProjectId ? (
                 <DeploymentsPage

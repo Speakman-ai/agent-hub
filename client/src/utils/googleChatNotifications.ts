@@ -32,6 +32,20 @@ export interface ChatNotification {
   count: number;
 }
 
+/**
+ * Unread count for Chat badges. With push active the push store tracks real
+ * unread counts per space; without it, fall back to the messages the notifier
+ * announced since the user last opened the Chat pane. Never sum the two: the
+ * notifier also announces pushed messages, so that would double count.
+ */
+export function chatBadgeCount(
+  pushActive: boolean,
+  pushUnread: number,
+  announcedSinceOpen: number,
+): number {
+  return pushActive ? pushUnread : announcedSinceOpen;
+}
+
 export interface ChatNotifierApi {
   listGoogleChatSpaces: (opts?: { pageSize?: number; pageToken?: string }) => Promise<any>;
   listGoogleChatMessages: (
