@@ -90,6 +90,18 @@ import {
   spaceIdFromName,
   useGoogleChatPush,
 } from '../utils/googleChatPush';
+import {
+  isSpaceUnread,
+  laterOf,
+  loadSeen,
+  markSeen,
+  pruneSeen,
+  saveSeen,
+  spacesNeedingReadState,
+  type GoogleReadCache,
+  type SeenStore,
+} from '../utils/googleChatUnread';
+import { getAuthRecord } from '../utils/auth';
 
 type GoogleStatus = NonNullable<GoogleStatusLike>;
 
@@ -108,6 +120,8 @@ const PUSH_RECONCILE_MS = 5 * 60_000;
 const PUSH_REFRESH_DEBOUNCE_MS = 300;
 const MESSAGE_PAGE = 50;
 const SPACE_PAGE = 1000;
+// Google read-state reads in flight at once for the list's unread dots.
+const READ_STATE_CONCURRENCY = 3;
 // Google caps a page at 1000 spaces; 20 pages is far past any real account and
 // keeps a misbehaving token from looping forever.
 const MAX_SPACE_PAGES = 20;
@@ -349,6 +363,12 @@ export default function GoogleChatPage({
   const [readMarks, setReadMarks] = useState<
     Record<string, { lastReadTime: string | null; fetched: boolean; dividerHidden: boolean }>
   >({});
+  // Unread dots for the list (see googleChatUnread.ts): Google read positions
+  // per space, and what this browser has shown the user.
+  const unreadUserId = getAuthRecord()?.user?.id ?? null;
+  const [googleRead, setGoogleRead] = useState<GoogleReadCache>({});
+  const readStateInFlightRef = useRef<Set<string>>(new Set());
+  const [seen, setSeen] = useState<SeenStore>(() => loadSeen(unreadUserId));
   // The newest time already reported to Google per space.
   const googleReadWrittenRef = useRef<Record<string, string>>({});
   const [reactionMenuFor, setReactionMenuFor] = useState<string | null>(null);
@@ -958,6 +978,81 @@ export default function GoogleChatPage({
     newestTopLevel,
   ]);
 
+  // List unread dots. Each list refresh (or read-state grant) queues up to
+  // READ_STATE_CHECKS_PER_PASS spaces whose activity moved since their last
+  // check. One shared queue drains them with at most READ_STATE_CONCURRENCY
+  // requests in flight across all passes. Cache updates do not start a pass:
+  // the cache is read through a ref, so only the list drives the budget.
+  const googleReadRef = useRef(googleRead);
+  googleReadRef.current = googleRead;
+  const readQueueRef = useRef<{ spaceId: string; active: string | null }[]>([]);
+  const readWorkersRef = useRef(0);
+  useEffect(() => {
+    if (!canReadState || !spaces.length) return;
+    const due = spacesNeedingReadState(spaces, googleReadRef.current, {
+      now: Date.now(),
+      skip: readStateInFlightRef.current,
+    });
+    if (!due.length) return;
+    const activeById = new Map(spaces.map((s) => [s.id, s.lastActiveTime]));
+    for (const spaceId of due) {
+      readStateInFlightRef.current.add(spaceId);
+      readQueueRef.current.push({ spaceId, active: activeById.get(spaceId) ?? null });
+    }
+    const worker = async () => {
+      readWorkersRef.current += 1;
+      try {
+        for (let job = readQueueRef.current.shift(); job; job = readQueueRef.current.shift()) {
+          const { spaceId, active } = job;
+          try {
+            const body = await api.getGoogleChatReadState(spaceId);
+            setGoogleRead((all) => ({
+              ...all,
+              [spaceId]: {
+                lastReadTime: body?.lastReadTime ?? null,
+                checkedActive: active,
+                checkedAt: Date.now(),
+              },
+            }));
+          } catch {
+            // Unknown position: leave the space without a dot until a later pass.
+          } finally {
+            readStateInFlightRef.current.delete(spaceId);
+          }
+        }
+      } finally {
+        readWorkersRef.current -= 1;
+      }
+    };
+    // A worker takes its first job synchronously, so the queue shrinks as each starts.
+    while (readWorkersRef.current < READ_STATE_CONCURRENCY && readQueueRef.current.length > 0) {
+      void worker();
+    }
+  }, [spaces, canReadState]);
+
+  // The open, visible space counts as seen up to its latest activity.
+  const selectedActive = selectedSpace?.lastActiveTime ?? null;
+  useEffect(() => {
+    if (!selectedId || !view.loaded || !pageVisible) return;
+    // The list's activity can lag messages already loaded here, or run ahead
+    // of them (a reaction, an edit); keep the later of the two.
+    setSeen((store) => markSeen(store, selectedId, laterOf(selectedActive, newestLoadedTime)));
+  }, [selectedId, selectedActive, newestLoadedTime, view.loaded, pageVisible]);
+
+  useEffect(() => {
+    if (!spaces.length) return;
+    setSeen((store) =>
+      pruneSeen(
+        store,
+        spaces.flatMap((s) => (s.id ? [s.id] : [])),
+      ),
+    );
+  }, [spaces]);
+
+  useEffect(() => {
+    saveSeen(unreadUserId, seen);
+  }, [unreadUserId, seen]);
+
   useEffect(() => {
     setReactionMenuFor(null);
     setReactionError(null);
@@ -1400,38 +1495,54 @@ export default function GoogleChatPage({
                 className="m-2 w-[calc(100%-1rem)] rounded border border-gray-700 bg-gray-950 px-2 py-1 text-sm text-white outline-none focus:border-blue-500"
               />
             )}
-            {filterSpaces(spaces, spaceFilter).map((space) => (
-              <button
-                key={space.id}
-                type="button"
-                onClick={() => setSelectedId(space.id)}
-                data-testid={`chat-space-${space.id}`}
-                className={`block w-full truncate px-4 py-2 text-left text-sm ${
-                  space.id === selectedId
-                    ? 'bg-gray-800 text-white'
-                    : 'text-gray-300 hover:bg-gray-800/50'
-                }`}
-              >
-                <span className="flex items-center gap-2">
-                  <span
-                    className={`min-w-0 flex-1 truncate ${
-                      push.unread[`spaces/${space.id}`] ? 'font-semibold text-white' : ''
-                    }`}
-                  >
-                    {chatSpaceLabel(space)}
-                  </span>
-                  {!!push.unread[`spaces/${space.id}`] && (
+            {filterSpaces(spaces, spaceFilter).map((space) => {
+              const unreadCount = push.unread[`spaces/${space.id}`]?.count ?? 0;
+              // The open space is being read, so it never shows a dot.
+              const hasDot =
+                !unreadCount &&
+                space.id !== selectedId &&
+                isSpaceUnread(space, { google: googleRead, seen, useGoogle: canReadState });
+              return (
+                <button
+                  key={space.id}
+                  type="button"
+                  onClick={() => setSelectedId(space.id)}
+                  data-testid={`chat-space-${space.id}`}
+                  className={`block w-full truncate px-4 py-2 text-left text-sm ${
+                    space.id === selectedId
+                      ? 'bg-gray-800 text-white'
+                      : 'text-gray-300 hover:bg-gray-800/50'
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
                     <span
-                      data-testid={`chat-space-unread-${space.id}`}
-                      aria-label={`${push.unread[`spaces/${space.id}`].count} unread`}
-                      className="shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
+                      className={`min-w-0 flex-1 truncate ${
+                        unreadCount || hasDot ? 'font-semibold text-white' : ''
+                      }`}
                     >
-                      {formatUnreadCount(push.unread[`spaces/${space.id}`].count)}
+                      {chatSpaceLabel(space)}
                     </span>
-                  )}
-                </span>
-              </button>
-            ))}
+                    {!!unreadCount && (
+                      <span
+                        data-testid={`chat-space-unread-${space.id}`}
+                        aria-label={`${unreadCount} unread`}
+                        className="shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
+                      >
+                        {formatUnreadCount(unreadCount)}
+                      </span>
+                    )}
+                    {hasDot && (
+                      <span
+                        data-testid={`chat-unread-dot-${space.id}`}
+                        role="img"
+                        aria-label="Unread"
+                        className="h-2 w-2 shrink-0 rounded-full bg-blue-500"
+                      />
+                    )}
+                  </span>
+                </button>
+              );
+            })}
           </nav>
 
           <section className="flex min-h-0 min-w-0 flex-1 flex-col">
