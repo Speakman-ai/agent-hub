@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import HubPage from './HubPage';
+import HubPage, { HUB_ASSISTANT_COLLAPSED_KEY } from './HubPage';
 
 const panes = {
   assistant: <span>a</span>,
@@ -107,5 +107,49 @@ describe('HubPage', () => {
     expect(screen.queryByTestId('hub-pane-mail-badge')).toBeNull();
     rerender(<HubPage pane="today" onPaneChange={vi.fn()} {...panes} paneBadges={{ chat: 0 }} />);
     expect(screen.queryByTestId('hub-pane-chat-badge')).toBeNull();
+  });
+
+  describe('assistant close', () => {
+    beforeEach(() => window.localStorage.removeItem(HUB_ASSISTANT_COLLAPSED_KEY));
+
+    it('hides the assistant column on desktop and reopens it from the header', () => {
+      render(<HubPage pane="today" onPaneChange={vi.fn()} {...panes} mobileAssistantTab />);
+      const aside = screen.getByTestId('hub-assistant-pane');
+      expect(aside.className).toContain('lg:flex');
+      expect(screen.queryByTestId('hub-assistant-open')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('hub-assistant-close'));
+      expect(aside.className).toContain('lg:hidden');
+      expect(aside.className).not.toContain('lg:flex');
+      expect(window.localStorage.getItem(HUB_ASSISTANT_COLLAPSED_KEY)).toBe('1');
+
+      fireEvent.click(screen.getByTestId('hub-assistant-open'));
+      expect(aside.className).toContain('lg:flex');
+      expect(screen.queryByTestId('hub-assistant-open')).toBeNull();
+      expect(window.localStorage.getItem(HUB_ASSISTANT_COLLAPSED_KEY)).toBeNull();
+    });
+
+    it('restores the closed state on the next render', () => {
+      window.localStorage.setItem(HUB_ASSISTANT_COLLAPSED_KEY, '1');
+      render(<HubPage pane="today" onPaneChange={vi.fn()} {...panes} />);
+      expect(screen.getByTestId('hub-assistant-pane').className).toContain('lg:hidden');
+      expect(screen.getByTestId('hub-assistant-open')).toBeInTheDocument();
+    });
+
+    it('still shows the assistant on the mobile Assistant tab when closed on desktop', () => {
+      window.localStorage.setItem(HUB_ASSISTANT_COLLAPSED_KEY, '1');
+      render(
+        <HubPage
+          pane="today"
+          onPaneChange={vi.fn()}
+          {...panes}
+          mobileAssistantTab
+          mobileTab="assistant"
+        />,
+      );
+      const cls = screen.getByTestId('hub-assistant-pane').className.split(/\s+/);
+      expect(cls).toContain('flex');
+      expect(cls).toContain('lg:hidden');
+    });
   });
 });

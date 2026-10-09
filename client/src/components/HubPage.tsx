@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useCallback, useState, type ReactNode } from 'react';
 import {
   BarChart3,
   Bot,
@@ -8,6 +8,8 @@ import {
   ListTodo,
   Mail,
   MessagesSquare,
+  PanelRightClose,
+  PanelRightOpen,
   ScrollText,
 } from 'lucide-react';
 import BrandLogo from './BrandLogo';
@@ -54,6 +56,25 @@ export interface HubPageProps {
   assistantActions?: ReactNode;
   /** Unread counts shown on pane tabs (e.g. Google Chat). Zero hides the badge. */
   paneBadges?: Partial<Record<HubWorkspacePane, number>>;
+}
+
+export const HUB_ASSISTANT_COLLAPSED_KEY = 'agentHub.hubAssistantCollapsed';
+
+function readAssistantCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(HUB_ASSISTANT_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeAssistantCollapsed(collapsed: boolean): void {
+  try {
+    if (collapsed) window.localStorage.setItem(HUB_ASSISTANT_COLLAPSED_KEY, '1');
+    else window.localStorage.removeItem(HUB_ASSISTANT_COLLAPSED_KEY);
+  } catch {
+    // Storage unavailable (private mode): the toggle still works for this page view.
+  }
 }
 
 function workspaceBody(
@@ -109,6 +130,12 @@ export default function HubPage({
   paneBadges,
 }: HubPageProps) {
   const active = parseHubPane(pane);
+  // Desktop-only: narrow viewports reach the assistant through its own tab.
+  const [assistantCollapsed, setAssistantCollapsedState] = useState(readAssistantCollapsed);
+  const setAssistantCollapsed = useCallback((collapsed: boolean) => {
+    setAssistantCollapsedState(collapsed);
+    writeAssistantCollapsed(collapsed);
+  }, []);
   const workspace = workspaceBody(active, {
     today,
     summary,
@@ -184,6 +211,19 @@ export default function HubPage({
               );
             })}
           </nav>
+          {assistantCollapsed && (
+            <button
+              type="button"
+              data-testid="hub-assistant-open"
+              onClick={() => setAssistantCollapsed(false)}
+              title="Show assistant"
+              aria-label="Show assistant"
+              className="hidden lg:inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 transition-colors"
+            >
+              <PanelRightOpen size={13} />
+              Assistant
+            </button>
+          )}
         </header>
         {/* Flex column so pane roots using `flex-1` (org/todos/calendar/mail) get a
             bounded height and can scroll; `h-full` panes (today/summary) still resolve
@@ -194,16 +234,24 @@ export default function HubPage({
 
       <aside
         className={`border-gray-800 bg-gray-950 min-h-0 min-w-0 flex-col ${
-          mobileAssistantTab
-            ? `${mobileTab === 'assistant' ? 'flex' : 'hidden'} lg:flex lg:w-[min(28rem,40vw)] lg:border-l`
-            : 'hidden lg:flex lg:w-[min(28rem,40vw)] lg:border-l'
-        }`}
+          mobileAssistantTab && mobileTab === 'assistant' ? 'flex' : 'hidden'
+        } ${assistantCollapsed ? 'lg:hidden' : 'lg:flex lg:w-[min(28rem,40vw)] lg:border-l'}`}
         data-testid="hub-assistant-pane"
       >
         <div className="hidden lg:flex shrink-0 items-center gap-2 border-b border-gray-800 px-3 py-2">
           <Bot size={14} className="text-cyan-400" />
           <span className="text-xs font-semibold text-white flex-1">Assistant</span>
           {assistantActions}
+          <button
+            type="button"
+            data-testid="hub-assistant-close"
+            onClick={() => setAssistantCollapsed(true)}
+            title="Hide assistant"
+            aria-label="Hide assistant"
+            className="shrink-0 rounded p-1 text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 transition-colors"
+          >
+            <PanelRightClose size={14} />
+          </button>
         </div>
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden">{assistant}</div>
       </aside>
