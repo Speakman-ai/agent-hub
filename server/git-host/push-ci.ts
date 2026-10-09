@@ -47,7 +47,11 @@ import { gitHostRepoPath, hostedRepoDefaultBranch, hostedRepoExists } from './re
 import { loadCiConfigFromFile } from '../finalize/ci-config.js';
 import { runJobPhase } from '../finalize/job-runner.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
-import { createFinalizeRunSignal } from '../finalize/run-abort-registry.js';
+import {
+  createFinalizeRunSignal,
+  registerFinalizeRunAbort,
+  unregisterFinalizeRunAbort,
+} from '../finalize/run-abort-registry.js';
 import type { CancelSignal } from '../finalize/fix-dispatch.js';
 import { resolvePushConcurrency } from './push-concurrency.js';
 
@@ -483,8 +487,8 @@ async function runCiForSha(
     signal?: CancelSignal;
   },
 ): Promise<void> {
-  const { branch, headSha, trigger, signal } = args;
-  if (signal?.aborted) return;
+  const { branch, headSha, trigger, signal: supersedeSignal } = args;
+  if (supersedeSignal?.aborted) return;
   const bare = gitHostRepoPath(project.id, dataDir);
 
   // One run per (project, sha) ACROSS triggers. UNIQUE(idempotency_key)
@@ -550,12 +554,26 @@ async function runCiForSha(
     `[push-ci] run=${runId} project=${project.id} trigger=${trigger} ${branch}@${shortSha} starting`,
   );
 
+  // One signal trips on either a newer push (supersede) or an explicit Stop
+  // from the cancel route, which finds the run through the abort registry.
+  const runSignal = createFinalizeRunSignal();
+  const signal = runSignal.signal;
+  supersedeSignal?.onAbort(runSignal.abort);
+  registerFinalizeRunAbort(runId, runSignal.abort);
+
   // Ephemeral workspace: clone the bare repo at the pushed sha. Local
   // path clone is cheap (hardlinked objects) and the job phase ships a
   // `git bundle` of HEAD to runners anyway.
   const workRoot = path.join(dataDir, 'push-ci');
   const workDir = path.join(workRoot, `${project.id}-${shortSha}-${runId.slice(0, 8)}`);
   const cancelled = (): void => {
+    // A Stop from the cancel route or a stuck-run reap already wrote the
+    // terminal row and broadcast it; only a supersede still finds it live.
+    const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+    if (row && row.status !== 'queued' && row.status !== 'running') {
+      console.log(`[push-ci] run=${runId} stopped (${row.status})`);
+      return;
+    }
     console.log(`[push-ci] run=${runId} cancelled: superseded by a newer push`);
     deps.stmts.failFinalizeRun.run('cancelled', 'superseded', runId);
     deps.broadcast({
@@ -664,6 +682,7 @@ async function runCiForSha(
     if (signal?.aborted) cancelled();
     else fail('infra_error', err instanceof Error ? err.message : String(err));
   } finally {
+    unregisterFinalizeRunAbort(runId);
     if (existsSync(workDir)) {
       try {
         rmSync(workDir, { recursive: true, force: true });

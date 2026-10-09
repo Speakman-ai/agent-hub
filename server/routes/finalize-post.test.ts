@@ -1077,6 +1077,36 @@ describe('POST /api/projects/:projectId/finalize/:runId/cancel', () => {
   });
 });
 
+describe('POST /api/projects/:projectId/finalize/:runId/cancel — push / PR CI runs', () => {
+  it.each(['pr_push', 'git_push'])(
+    '200 for a %s run even though its sentinel session has no owner',
+    async (trigger) => {
+      const { app, findProject, stmts, broadcast } = makeApp();
+      findProject.mockReturnValue({ id: 'proj-1' });
+      stmts.getFinalizeRun.get.mockReturnValue({
+        id: 'run-1',
+        project_id: 'proj-1',
+        status: 'running',
+        session_id: 'ci-sentinel',
+        trigger_source: trigger,
+      });
+      // Sentinel CI sessions are ownerless, so the ownership check fails for everyone.
+      userOwnsSession.mockReturnValue(false);
+      const res = await supertest(app)
+        .post('/api/projects/proj-1/finalize/run-1/cancel')
+        .send({})
+        .expect(200);
+      expect(res.body).toEqual({ ok: true, status: 'cancelled' });
+      expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('cancelled', 'cancelled', 'run-1');
+      // No agent turn backs a CI run, so nothing is interrupted.
+      expect(cancelSessionChatRun).not.toHaveBeenCalled();
+      const types = broadcast.mock.calls.map((c) => (c[0] as { type: string }).type);
+      expect(types).not.toContain('interrupted');
+      expect(types).toContain('finalize_run_completed');
+    },
+  );
+});
+
 describe('resolveFinalizeAttempt', () => {
   const base = {
     projectId: 'p',

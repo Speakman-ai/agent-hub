@@ -459,7 +459,13 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       return res.status(404).json({ error: 'Finalize run not found' });
     }
 
-    if (run.session_id && !userOwnsSession(req as AuthenticatedRequest, run.session_id)) {
+    // Push / PR CI runs hang off an ownerless sentinel session, so the
+    // session-ownership gate would always 404 them. They are project-level
+    // work: anyone who can see the project's PR checks may stop them, the
+    // same as re-running them through the ci-runs route.
+    const isPushCiRun = run.trigger_source === 'git_push' || run.trigger_source === 'pr_push';
+    const agentSessionId = isPushCiRun ? null : run.session_id;
+    if (agentSessionId && !userOwnsSession(req as AuthenticatedRequest, agentSessionId)) {
       return res.status(404).json({ error: 'Finalize run not found' });
     }
 
@@ -480,9 +486,9 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     // Halt the originating session's agent turn so the session falls idle and
     // waits for user input. Aborting the orchestrator stops it from waiting,
     // but the dev-agent's fix turn keeps running until its process is killed.
-    if (run.session_id) {
+    if (agentSessionId) {
       try {
-        cancelSessionChatRun({ sessionId: run.session_id, activeProcesses: deps.activeProcesses });
+        cancelSessionChatRun({ sessionId: agentSessionId, activeProcesses: deps.activeProcesses });
       } catch (err) {
         console.warn(
           `[finalize] session turn halt failed for session=${run.session_id}: ${
@@ -516,8 +522,8 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
     });
     // Tell the session UI the agent turn was interrupted so it stops streaming
     // and waits for user input.
-    if (run.session_id) {
-      deps.broadcast({ type: 'interrupted', sessionId: run.session_id });
+    if (agentSessionId) {
+      deps.broadcast({ type: 'interrupted', sessionId: agentSessionId });
     }
     return res.json({ ok: true, status: 'cancelled' });
   });

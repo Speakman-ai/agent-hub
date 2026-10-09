@@ -687,6 +687,42 @@ describe('push concurrency (per-branch groups)', () => {
     expect(runRowFor(project, second)?.status).toBe('succeeded');
   });
 
+  it('stop: the cancel route aborts a running push-CI run through the abort registry', async () => {
+    const { abortFinalizeRunInProcess, isFinalizeRunLive } =
+      await import('../finalize/run-abort-registry.js');
+    const { project, headSha } = await seedHostedProject();
+    let started = false;
+    const runJobPhase = vi.fn(
+      (_deps: unknown, opts: JobOpts) =>
+        new Promise((resolve) => {
+          started = true;
+          opts.signal?.onAbort(() =>
+            resolve({ status: 'failure' as const, stepResults: [], activeSecondsBilled: 1 }),
+          );
+        }),
+    );
+    const p = maybeRunPushCi(project, ['refs/heads/main'], {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: runJobPhase as never,
+      mergeSecrets: () => {},
+    });
+    await vi.waitFor(() => expect(started).toBe(true), { timeout: 10_000 });
+
+    const runId = runRowFor(project, headSha)!.id;
+    expect(isFinalizeRunLive(runId)).toBe(true);
+    // What the cancel route does: write the terminal row, then trip the run.
+    stmts.failFinalizeRun.run('cancelled', 'cancelled', runId);
+    expect(abortFinalizeRunInProcess(runId)).toBe(true);
+    await p;
+
+    expect(runRowFor(project, headSha)).toMatchObject({
+      status: 'cancelled',
+      failure_reason: 'cancelled',
+    });
+    expect(isFinalizeRunLive(runId)).toBe(false);
+  });
+
   it('queue: the running CI finishes, then the newest push runs', async () => {
     const { project, headSha: first } = await seedHostedProject();
     const events: string[] = [];
