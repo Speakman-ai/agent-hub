@@ -10,6 +10,7 @@ import {
   MessageSquarePlus,
   MessagesSquare,
   Paperclip,
+  Pencil,
   RefreshCw,
   Reply,
   Send,
@@ -31,6 +32,7 @@ import StartSessionModal from './StartSessionModal';
 import CaptureToTicketModal from './CaptureToTicketModal';
 import { formatDateTime, formatTime } from '../utils/time';
 import {
+  CHAT_EDIT_SCOPE_ERROR,
   CHAT_READ_SCOPE_ERROR,
   CHAT_SEND_SCOPE_ERROR,
   CHAT_SURFACE_SCOPES,
@@ -355,6 +357,24 @@ export default function GoogleChatPage({
   // too), so a summary read back earlier can never be applied after a later one.
   const reactionQueueRef = useRef(createKeyedQueue());
   const [reactionError, setReactionError] = useState<{ name: string; error: string } | null>(null);
+  // Inline edit of one of your own messages. Only one at a time.
+  const [editing, setEditing] = useState<{
+    /** Identifies this editor instance, so a save only updates the editor that issued it. */
+    id: number;
+    name: string;
+    text: string;
+    saving: boolean;
+    error: string | null;
+  } | null>(null);
+  const editSeqRef = useRef(0);
+  // Editors whose save has been submitted. Enter can fire again before the
+  // saving state re-renders.
+  const editSavingRef = useRef<Set<number>>(new Set());
+  // Saves to one message run one after another, so the last one submitted is
+  // the last one Google applies, even across a closed and reopened editor.
+  const editQueueRef = useRef(createKeyedQueue());
+  // Saves submitted per message and not yet settled.
+  const editPendingRef = useRef<Map<string, number>>(new Map());
   // Every async result below is written to the space (or spaces list) that
   // issued it, never to "whatever is selected now". Message loads and sends
   // for space A therefore cannot touch B's list, spinner, or composer, no
@@ -918,7 +938,83 @@ export default function GoogleChatPage({
   useEffect(() => {
     setReactionMenuFor(null);
     setReactionError(null);
+    setEditing(null);
   }, [selectedId]);
+
+  const startEdit = (message: ChatMessage) => {
+    if (!message.name) return;
+    // Editing needs the full chat.messages scope, which the pane only asks
+    // for when the user first tries to edit.
+    if (!consent.canEdit) {
+      void startOAuth(consent.missingEdit);
+      return;
+    }
+    setReactionMenuFor(null);
+    setEditing({
+      id: ++editSeqRef.current,
+      name: message.name,
+      text: message.text ?? '',
+      saving: false,
+      error: null,
+    });
+  };
+
+  const saveEdit = async (message: ChatMessage) => {
+    if (!editing || !selectedId || !message.id || !message.name) return;
+    const name = message.name;
+    const messageId = message.id;
+    const text = editing.text.trim();
+    if (!text) return;
+    // Unchanged text needs no request, unless an earlier save is still on its
+    // way: then the shown text is stale and this save must follow it.
+    if (!editPendingRef.current.get(name) && text === (message.text ?? '').trim()) {
+      setEditing(null);
+      return;
+    }
+    const editorId = editing.id;
+    if (editSavingRef.current.has(editorId)) return;
+    editSavingRef.current.add(editorId);
+    editPendingRef.current.set(name, (editPendingRef.current.get(name) ?? 0) + 1);
+    const spaceId = selectedId;
+    setEditing((e) => (e?.id === editorId ? { ...e, saving: true, error: null } : e));
+    try {
+      // The request and applying its result both run inside the queue, so the
+      // view never moves back to an older save's text.
+      await editQueueRef.current(name, async () => {
+        const updated = (await api.editGoogleChatMessage(spaceId, messageId, text)) as
+          | Partial<ChatMessage>
+          | undefined;
+        updateView(spaceId, (v) => ({
+          ...v,
+          messages: v.messages.map((m) =>
+            m.name === name
+              ? {
+                  ...m,
+                  text: updated?.text ?? text,
+                  lastUpdateTime: updated?.lastUpdateTime ?? m.lastUpdateTime,
+                }
+              : m,
+          ),
+        }));
+      });
+      // Only the editor that issued this save closes; a newer one keeps its draft.
+      setEditing((e) => (e?.id === editorId ? null : e));
+      // Supersedes any read issued before the edit, which would carry the old text.
+      loadMessages(spaceId);
+    } catch (err: any) {
+      if (err?.code === CHAT_EDIT_SCOPE_ERROR) refreshStatus();
+      setEditing((e) =>
+        e?.id === editorId
+          ? { ...e, saving: false, error: err?.message || 'Could not edit the message' }
+          : e,
+      );
+    } finally {
+      editSavingRef.current.delete(editorId);
+      const left = (editPendingRef.current.get(name) ?? 1) - 1;
+      if (left > 0) editPendingRef.current.set(name, left);
+      else editPendingRef.current.delete(name);
+    }
+  };
 
   const toggleReaction = async (message: ChatMessage, emoji: string) => {
     setReactionMenuFor(null);
@@ -1437,6 +1533,8 @@ export default function GoogleChatPage({
                       const reactions = message.reactions ?? [];
                       const menuOpen = reactionMenuFor === message.name;
                       const isPicked = !!message.name && picked.has(message.name);
+                      const isEditing = !!editing && editing.name === message.name;
+                      const canEditThis = own && canSend && !message.deleted && !!message.id;
                       const canReply =
                         canSend && !!selectedSpace?.supportsThreadReplies && !!message.threadName;
                       const toolButton =
@@ -1539,38 +1637,113 @@ export default function GoogleChatPage({
                                   )}
                                 </div>
                               )}
-                              <div
-                                title={showHeader ? undefined : formatDateTime(message.createTime)}
-                                className={`whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm ${
-                                  own ? 'bg-blue-600/30 text-blue-50' : 'bg-gray-800 text-gray-100'
-                                } ${showHeader ? (own ? 'rounded-tr-md' : 'rounded-tl-md') : ''}`}
-                              >
-                                {message.deleted ? (
-                                  <span className="italic text-gray-500">Message deleted</span>
-                                ) : (
-                                  message.text || (
-                                    <span className="italic text-gray-500">(no text)</span>
-                                  )
-                                )}
-                                {!message.deleted &&
-                                message.attachments?.length &&
-                                selectedId &&
-                                message.id ? (
-                                  <GoogleChatAttachments
-                                    spaceId={selectedId}
-                                    messageId={message.id}
-                                    attachments={message.attachments}
+                              {isEditing && editing ? (
+                                <form
+                                  data-testid="chat-edit-form"
+                                  className="flex w-full min-w-[16rem] flex-col gap-1"
+                                  onSubmit={(e) => {
+                                    e.preventDefault();
+                                    void saveEdit(message);
+                                  }}
+                                >
+                                  <textarea
+                                    aria-label="Edit message"
+                                    data-testid="chat-edit-input"
+                                    autoFocus
+                                    rows={Math.min(8, Math.max(2, editing.text.split('\n').length))}
+                                    value={editing.text}
+                                    disabled={editing.saving}
+                                    onChange={(e) =>
+                                      setEditing((cur) =>
+                                        cur ? { ...cur, text: e.target.value, error: null } : cur,
+                                      )
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Escape') {
+                                        e.preventDefault();
+                                        setEditing(null);
+                                      } else if (isSubmitEnter(e)) {
+                                        e.preventDefault();
+                                        e.currentTarget.form?.requestSubmit();
+                                      }
+                                    }}
+                                    className="w-full resize-y rounded-xl border border-blue-500/60 bg-gray-900 px-3 py-2 text-sm text-gray-100 focus:outline-none"
                                   />
-                                ) : (
-                                  message.attachmentCount > 0 && (
-                                    <div className="mt-1 flex items-center gap-1 text-xs text-gray-400">
-                                      <Paperclip size={12} />
-                                      {message.attachmentCount} attachment
-                                      {message.attachmentCount === 1 ? '' : 's'}
-                                    </div>
-                                  )
-                                )}
-                              </div>
+                                  <div className="flex items-center justify-end gap-2 text-xs">
+                                    {editing.error && (
+                                      <span role="alert" className="mr-auto text-red-300">
+                                        {editing.error}
+                                      </span>
+                                    )}
+                                    <span className="text-gray-500">Esc to cancel</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditing(null)}
+                                      disabled={editing.saving}
+                                      className="rounded px-2 py-1 text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      type="submit"
+                                      data-testid="chat-edit-save"
+                                      disabled={editing.saving || !editing.text.trim()}
+                                      className="inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                                    >
+                                      {editing.saving && (
+                                        <Loader2 size={12} className="animate-spin" />
+                                      )}
+                                      Save
+                                    </button>
+                                  </div>
+                                </form>
+                              ) : (
+                                <div
+                                  title={
+                                    showHeader ? undefined : formatDateTime(message.createTime)
+                                  }
+                                  className={`whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm ${
+                                    own
+                                      ? 'bg-blue-600/30 text-blue-50'
+                                      : 'bg-gray-800 text-gray-100'
+                                  } ${showHeader ? (own ? 'rounded-tr-md' : 'rounded-tl-md') : ''}`}
+                                >
+                                  {message.deleted ? (
+                                    <span className="italic text-gray-500">Message deleted</span>
+                                  ) : (
+                                    message.text || (
+                                      <span className="italic text-gray-500">(no text)</span>
+                                    )
+                                  )}
+                                  {!message.deleted &&
+                                  message.attachments?.length &&
+                                  selectedId &&
+                                  message.id ? (
+                                    <GoogleChatAttachments
+                                      spaceId={selectedId}
+                                      messageId={message.id}
+                                      attachments={message.attachments}
+                                    />
+                                  ) : (
+                                    message.attachmentCount > 0 && (
+                                      <div className="mt-1 flex items-center gap-1 text-xs text-gray-400">
+                                        <Paperclip size={12} />
+                                        {message.attachmentCount} attachment
+                                        {message.attachmentCount === 1 ? '' : 's'}
+                                      </div>
+                                    )
+                                  )}
+                                </div>
+                              )}
+                              {!message.deleted && message.lastUpdateTime && !isEditing && (
+                                <span
+                                  data-testid="chat-message-edited"
+                                  className="px-1 text-[11px] text-gray-500"
+                                  title={`Edited ${formatDateTime(message.lastUpdateTime)}`}
+                                >
+                                  Edited
+                                </span>
+                              )}
                               {(reactions.length > 0 || chip) && (
                                 <div
                                   className={`mt-1 flex flex-wrap items-center gap-1 ${
@@ -1655,7 +1828,7 @@ export default function GoogleChatPage({
                                   </div>
                                 ))}
                             </div>
-                            {!message.deleted && (
+                            {!message.deleted && !isEditing && (
                               <div
                                 data-testid="chat-message-actions"
                                 className={`absolute -top-3 z-10 flex items-center gap-0.5 rounded-full border border-gray-700 bg-gray-900 p-0.5 shadow-lg transition-opacity focus-within:opacity-100 group-hover:opacity-100 ${
@@ -1674,6 +1847,22 @@ export default function GoogleChatPage({
                                     className={toolButton}
                                   >
                                     <SmilePlus size={15} />
+                                  </button>
+                                )}
+                                {canEditThis && (
+                                  <button
+                                    type="button"
+                                    aria-label="Edit message"
+                                    title={
+                                      consent.canEdit
+                                        ? 'Edit message'
+                                        : 'Edit message (Google asks you to allow editing first)'
+                                    }
+                                    onClick={() => startEdit(message)}
+                                    disabled={oauthBusy}
+                                    className={toolButton}
+                                  >
+                                    <Pencil size={14} />
                                   </button>
                                 )}
                                 {canReply && (

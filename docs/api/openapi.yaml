@@ -32114,6 +32114,95 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/spaces/{spaceId}/messages/{messageId}:
+    patch:
+      tags:
+        - Google
+      summary: Edit the text of the calling user's own Google Chat message
+      description: "Replaces the message text (update mask `text`). Only messages the caller sent can be edited. Refused for agent sessions: the edit goes out under the owner's name without review."
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_.-]{1,256}$
+          required: true
+          name: messageId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 4096
+                  description: Replacement text. Attachments on the message are kept.
+              required:
+                - text
+              additionalProperties: false
+      responses:
+        "200":
+          description: The edited message.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatMessage"
+        "400":
+          description: Invalid body or ids.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Edit scope (`chat.messages`) not granted, the message was sent by someone else, or the caller is an agent session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Message not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "409":
+          description: The message was deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
   /api/google/chat/spaces/{spaceId}/read-state:
     get:
       tags:

@@ -101,6 +101,13 @@ export function hasChatMessagesCreateScope(scopes: string[]): boolean {
   return scopes.includes(CHAT_MESSAGES_CREATE_SCOPE) || scopes.includes(CHAT_MESSAGES_SCOPE);
 }
 
+// Optional: edit the caller's own messages. Google only accepts the full
+// `chat.messages` scope for spaces.messages.patch with user auth; no narrower
+// scope covers it.
+export function hasChatMessagesEditScope(scopes: string[]): boolean {
+  return scopes.includes(CHAT_MESSAGES_SCOPE);
+}
+
 // Optional: add and remove the caller's own emoji reactions. The broader
 // `chat.messages` scope also covers reactions.
 export const CHAT_REACTIONS_SCOPE = 'https://www.googleapis.com/auth/chat.messages.reactions';

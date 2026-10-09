@@ -1173,6 +1173,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  editGoogleChatMessage: (spaceId: string, messageId: string, text: string) =>
+    fetchJSON(
+      `/google/chat/spaces/${encodeURIComponent(spaceId)}/messages/${encodeURIComponent(messageId)}`,
+      { method: 'PATCH', body: JSON.stringify({ text }) },
+    ),
   toggleGoogleChatReaction: (spaceId: string, messageId: string, emoji: string) =>
     fetchJSON(
       `/google/chat/spaces/${encodeURIComponent(spaceId)}/messages/${encodeURIComponent(

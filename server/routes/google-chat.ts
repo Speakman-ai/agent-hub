@@ -34,10 +34,12 @@ import type { AuthenticatedRequest } from '../auth.js';
 import {
   CHAT_MESSAGES_CREATE_SCOPE,
   CHAT_MESSAGES_READONLY_SCOPE,
+  CHAT_MESSAGES_SCOPE,
   CHAT_REACTIONS_SCOPE,
   CHAT_READSTATE_SCOPE,
   CHAT_SPACES_READONLY_SCOPE,
   hasChatMessagesCreateScope,
+  hasChatMessagesEditScope,
   hasChatMembershipsReadScope,
   hasChatMessagesReadScope,
   hasChatReactionsScope,
@@ -64,6 +66,8 @@ import { compareRfc3339, isRfc3339, shiftRfc3339 } from '../../shared/utils/rfc3
  *   - reading messages gates on `chat.messages.readonly` (restricted);
  *   - posting gates on `chat.messages.create` (sensitive);
  *   - reacting gates on `chat.messages.reactions` (optional);
+ *   - editing the caller's own messages gates on `chat.messages` (optional;
+ *     Google accepts no narrower scope for spaces.messages.patch);
  *   - the caller's read position gates on `chat.users.readstate` (optional).
  *
  * Agent replies: a post made from an agent session goes out under the session
@@ -207,6 +211,14 @@ const ToggleReactionBodySchema = z
         message: 'invalid emoji',
       })
       .openapi({ description: 'A unicode emoji, e.g. 👍.' }),
+  })
+  .strict();
+
+const EditMessageBodySchema = z
+  .object({
+    text: z.string().trim().min(1).max(4096).openapi({
+      description: 'Replacement text. Attachments on the message are kept.',
+    }),
   })
   .strict();
 
@@ -527,6 +539,29 @@ registerPath({
     400: errorResponse('Invalid body or ids.'),
     403: errorResponse('Reactions scope not granted, or the caller is an agent session.'),
     404: errorResponse('Message not found.'),
+    ...commonErrors,
+  },
+});
+
+registerPath({
+  method: 'patch',
+  path: '/api/google/chat/spaces/{spaceId}/messages/{messageId}',
+  tags: ['Google'],
+  summary: "Edit the text of the calling user's own Google Chat message",
+  description:
+    "Replaces the message text (update mask `text`). Only messages the caller sent can be edited. Refused for agent sessions: the edit goes out under the owner's name without review.",
+  request: {
+    params: MessageParamsSchema,
+    body: { content: jsonContent(EditMessageBodySchema), required: true },
+  },
+  responses: {
+    200: { description: 'The edited message.', content: jsonContent(ChatMessageSchema) },
+    400: errorResponse('Invalid body or ids.'),
+    403: errorResponse(
+      'Edit scope (`chat.messages`) not granted, the message was sent by someone else, or the caller is an agent session.',
+    ),
+    404: errorResponse('Message not found.'),
+    409: errorResponse('The message was deleted.'),
     ...commonErrors,
   },
 });
@@ -1647,6 +1682,76 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
           return { reacted, reactions };
         });
         return res.json(result);
+      } catch (err: unknown) {
+        return sendGoogleError(res, err);
+      }
+    },
+  );
+
+  router.patch(
+    '/api/google/chat/spaces/:spaceId/messages/:messageId',
+    async (req: Request, res: Response) => {
+      const params = MessageParamsSchema.safeParse(req.params);
+      if (!params.success) {
+        return bad(res, 400, params.error.issues[0]?.message || 'Invalid ids', 'invalid_request');
+      }
+      const body = EditMessageBodySchema.safeParse(req.body);
+      if (!body.success) {
+        return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
+      }
+      if (refuseAgentCaller(req, res)) return;
+      const uid = requireChatAccess(
+        req,
+        res,
+        deps,
+        hasChatMessagesEditScope,
+        [CHAT_MESSAGES_SCOPE],
+        'google_chat_edit_scope_required',
+      );
+      if (!uid) return;
+      const sub = getGoogleConnection(uid)?.googleSub;
+      if (!sub) return bad(res, 401, 'Google account is not connected', 'google_not_connected');
+      const token = await resolveChatToken(uid, deps, res);
+      if (!token) return;
+
+      const name = `spaces/${params.data.spaceId}/messages/${params.data.messageId}`;
+      try {
+        const chat = createChatClient(token);
+        // Edits to one message reach Google in the order they arrive, so two
+        // tabs (or a reopened editor) can't have an older edit land last.
+        const result = await serializeChatWrite(`edit:${uid}:${name}`, async () => {
+          // Google refuses edits to other people's messages too, but checking
+          // first gives the client a clear reason instead of a generic 403.
+          const { data: current } = await chat.spaces.messages.get(
+            { name },
+            { timeout: CHAT_CALL_TIMEOUT_MS },
+          );
+          if (current.deleteTime) {
+            return {
+              status: 409,
+              error: 'This message was deleted',
+              code: 'google_chat_message_deleted',
+            };
+          }
+          if (current.sender?.name !== `users/${sub}`) {
+            return {
+              status: 403,
+              error: 'You can only edit messages you sent',
+              code: 'google_chat_not_own_message',
+            };
+          }
+          const { data } = await chat.spaces.messages.patch(
+            { name, updateMask: 'text', requestBody: { text: body.data.text } },
+            { timeout: CHAT_CALL_TIMEOUT_MS },
+          );
+          // The patch response can omit fields it didn't touch; fill them from
+          // the copy read just before.
+          return {
+            message: shapeMessage({ ...current, ...data, text: data.text ?? body.data.text }),
+          };
+        });
+        if ('message' in result) return res.json(result.message);
+        return bad(res, result.status, result.error, result.code);
       } catch (err: unknown) {
         return sendGoogleError(res, err);
       }

@@ -186,6 +186,10 @@ export type ChatConsent = {
   canWriteReadState: boolean;
   /** Scopes to request for reactions and read status. */
   missingExtras: string[];
+  /** Can edit your own messages (Google only accepts the full `chat.messages` scope). */
+  canEdit: boolean;
+  /** Scopes to request to unlock editing. */
+  missingEdit: string[];
 };
 
 /**
@@ -204,6 +208,7 @@ export function chatConsent(status: GoogleStatusLike): ChatConsent {
   const canReact =
     hasGoogleScope(status, CHAT_REACTIONS_SCOPE) || hasGoogleScope(status, CHAT_MESSAGES_SCOPE);
   const canWriteReadState = hasGoogleScope(status, CHAT_READSTATE_SCOPE);
+  const canEdit = hasGoogleScope(status, CHAT_MESSAGES_SCOPE);
   const canReadState = canWriteReadState || hasGoogleScope(status, CHAT_READSTATE_READONLY_SCOPE);
   const missingRead = [
     ...(hasSpaces ? [] : [CHAT_SPACES_READONLY_SCOPE]),
@@ -226,12 +231,15 @@ export function chatConsent(status: GoogleStatusLike): ChatConsent {
       ...(canReact ? [] : [CHAT_REACTIONS_SCOPE]),
       ...(canWriteReadState ? [] : [CHAT_READSTATE_SCOPE]),
     ],
+    canEdit,
+    missingEdit: canEdit ? [] : [CHAT_MESSAGES_SCOPE],
   };
 }
 
 /** Proxy error codes meaning a Chat scope is missing or was revoked. */
 export const CHAT_READ_SCOPE_ERROR = 'google_chat_scope_required';
 export const CHAT_SEND_SCOPE_ERROR = 'google_chat_send_scope_required';
+export const CHAT_EDIT_SCOPE_ERROR = 'google_chat_edit_scope_required';
 
 /** True when the account can post Chat messages. */
 export function hasChatSendScope(status: GoogleStatusLike): boolean {

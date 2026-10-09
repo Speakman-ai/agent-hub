@@ -27,6 +27,8 @@ describe('chatConsent', () => {
       canReadState: false,
       canWriteReadState: false,
       missingExtras: [CHAT_REACTIONS_SCOPE, CHAT_READSTATE_SCOPE],
+      canEdit: false,
+      missingEdit: [CHAT_MESSAGES_SCOPE],
     });
     expect(chatConsent(null).missingRead).toHaveLength(2);
   });
@@ -43,6 +45,8 @@ describe('chatConsent', () => {
         canReadState: false,
         canWriteReadState: false,
         missingExtras: [CHAT_REACTIONS_SCOPE, CHAT_READSTATE_SCOPE],
+        canEdit: false,
+        missingEdit: [CHAT_MESSAGES_SCOPE],
       },
     );
   });
@@ -69,7 +73,17 @@ describe('chatConsent', () => {
       canReadState: false,
       canWriteReadState: false,
       missingExtras: [CHAT_READSTATE_SCOPE],
+      // Only the full chat.messages scope can edit.
+      canEdit: true,
+      missingEdit: [],
     });
+  });
+
+  it('chat.messages.create alone cannot edit', () => {
+    const c = chatConsent(status([CHAT_MESSAGES_CREATE_SCOPE]));
+    expect(c.canSend).toBe(true);
+    expect(c.canEdit).toBe(false);
+    expect(c.missingEdit).toEqual([CHAT_MESSAGES_SCOPE]);
   });
 
   it('the readonly read-state scope shows the Unread line but cannot mark read', () => {

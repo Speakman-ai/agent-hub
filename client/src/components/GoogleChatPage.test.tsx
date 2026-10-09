@@ -21,6 +21,7 @@ vi.mock('../utils/api', () => ({
     listGoogleChatUnread: vi.fn(),
     markGoogleChatSpaceRead: vi.fn(),
     toggleGoogleChatReaction: vi.fn(),
+    editGoogleChatMessage: vi.fn(),
     getGoogleChatReadState: vi.fn(),
     setGoogleChatReadState: vi.fn(),
   },
@@ -2204,5 +2205,224 @@ describe('GoogleChatPage, Google Chat layout', () => {
       'https://www.googleapis.com/auth/chat.messages.reactions',
       'https://www.googleapis.com/auth/chat.users.readstate',
     ]);
+  });
+
+  const MESSAGES_FULL = 'https://www.googleapis.com/auth/chat.messages';
+
+  it('edits your own message inline and marks it edited', async () => {
+    setup([...ALL_SCOPES, MESSAGES_FULL]);
+    const edited = msg({
+      name: 'spaces/AAA/messages/M3',
+      id: 'M3',
+      text: 'mine, fixed',
+      createTime: '2026-10-08T10:03:00Z',
+      lastUpdateTime: '2026-10-08T10:05:00Z',
+      sender: ME,
+    });
+    mockApi.editGoogleChatMessage.mockImplementation(async () => {
+      // Google now returns the edited text on every read.
+      const before = await (
+        mockApi.listGoogleChatMessages as unknown as () => Promise<{
+          messages: { id: string }[];
+        }>
+      )();
+      mockApi.listGoogleChatMessages.mockResolvedValue({
+        ...before,
+        messages: before.messages.map((m) => (m.id === 'M3' ? edited : m)),
+      });
+      return edited;
+    });
+    render(<GoogleChatPage />);
+    await screen.findByText('mine');
+
+    const rows = screen.getAllByTestId('chat-message');
+    // Only your own message offers Edit.
+    expect(rows.map((r) => !!r.querySelector('[aria-label="Edit message"]'))).toEqual([
+      false,
+      false,
+      true,
+    ]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    const input = screen.getByTestId('chat-edit-input') as HTMLTextAreaElement;
+    expect(input.value).toBe('mine');
+    fireEvent.change(input, { target: { value: '  mine, fixed ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(mockApi.editGoogleChatMessage).toHaveBeenCalledWith('AAA', 'M3', 'mine, fixed'),
+    );
+    expect(await screen.findByText('mine, fixed')).toBeTruthy();
+    expect(screen.queryByTestId('chat-edit-form')).toBeNull();
+    expect(screen.getByTestId('chat-message-edited')).toBeTruthy();
+  });
+
+  it('Escape cancels an edit without calling the proxy', async () => {
+    setup([...ALL_SCOPES, MESSAGES_FULL]);
+    render(<GoogleChatPage />);
+    await screen.findByText('mine');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    const input = screen.getByTestId('chat-edit-input');
+    fireEvent.change(input, { target: { value: 'nope' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(screen.queryByTestId('chat-edit-form')).toBeNull();
+    expect(screen.getByText('mine')).toBeTruthy();
+    expect(mockApi.editGoogleChatMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the editor open with the error when the edit fails', async () => {
+    setup([...ALL_SCOPES, MESSAGES_FULL]);
+    mockApi.editGoogleChatMessage.mockRejectedValue(new Error('Google Chat rate limit exceeded'));
+    render(<GoogleChatPage />);
+    await screen.findByText('mine');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    fireEvent.change(screen.getByTestId('chat-edit-input'), { target: { value: 'retry me' } });
+    fireEvent.click(screen.getByTestId('chat-edit-save'));
+
+    expect(await screen.findByText('Google Chat rate limit exceeded')).toBeTruthy();
+    expect((screen.getByTestId('chat-edit-input') as HTMLTextAreaElement).value).toBe('retry me');
+  });
+
+  it('a save that resolves after the editor was reopened leaves the new draft alone', async () => {
+    setup([...ALL_SCOPES, MESSAGES_FULL]);
+    mockApi.listGoogleChatSpaces.mockResolvedValue({
+      spaces: [SPACE, { ...SPACE, name: 'spaces/BBB', id: 'BBB', displayName: 'Other' }],
+    });
+    let resolveSave!: (v: unknown) => void;
+    mockApi.editGoogleChatMessage.mockReturnValueOnce(
+      new Promise((r) => {
+        resolveSave = r;
+      }),
+    );
+    render(<GoogleChatPage />);
+    await screen.findByText('mine');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    fireEvent.change(screen.getByTestId('chat-edit-input'), { target: { value: 'first save' } });
+    fireEvent.click(screen.getByTestId('chat-edit-save'));
+    await waitFor(() => expect(mockApi.editGoogleChatMessage).toHaveBeenCalledTimes(1));
+
+    // Switch away and back while the save is pending, then reopen the same message.
+    fireEvent.click(screen.getByTestId('chat-space-BBB'));
+    fireEvent.click(screen.getByTestId('chat-space-AAA'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }));
+    fireEvent.change(screen.getByTestId('chat-edit-input'), {
+      target: { value: 'second draft' },
+    });
+
+    await act(async () => {
+      resolveSave(
+        msg({ name: 'spaces/AAA/messages/M3', id: 'M3', text: 'first save', sender: ME }),
+      );
+    });
+
+    const input = screen.getByTestId('chat-edit-input') as HTMLTextAreaElement;
+    expect(input.value).toBe('second draft');
+    expect(input.disabled).toBe(false);
+    // The reopened editor can save on its own while nothing else is pending.
+    mockApi.editGoogleChatMessage.mockResolvedValueOnce(
+      msg({ name: 'spaces/AAA/messages/M3', id: 'M3', text: 'second draft', sender: ME }),
+    );
+    fireEvent.click(screen.getByTestId('chat-edit-save'));
+    await waitFor(() =>
+      expect(mockApi.editGoogleChatMessage).toHaveBeenLastCalledWith('AAA', 'M3', 'second draft'),
+    );
+  });
+
+  it('a reopened editor submitted while an earlier save is pending saves after it', async () => {
+    setup([...ALL_SCOPES, MESSAGES_FULL]);
+    mockApi.listGoogleChatSpaces.mockResolvedValue({
+      spaces: [SPACE, { ...SPACE, name: 'spaces/BBB', id: 'BBB', displayName: 'Other' }],
+    });
+    let resolveFirst!: (v: unknown) => void;
+    mockApi.editGoogleChatMessage
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          resolveFirst = r;
+        }),
+      )
+      .mockResolvedValueOnce(
+        msg({ name: 'spaces/AAA/messages/M3', id: 'M3', text: 'second save', sender: ME }),
+      );
+    render(<GoogleChatPage />);
+    await screen.findByText('mine');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    fireEvent.change(screen.getByTestId('chat-edit-input'), { target: { value: 'first save' } });
+    fireEvent.click(screen.getByTestId('chat-edit-save'));
+    await waitFor(() => expect(mockApi.editGoogleChatMessage).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByTestId('chat-space-BBB'));
+    fireEvent.click(screen.getByTestId('chat-space-AAA'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }));
+    fireEvent.change(screen.getByTestId('chat-edit-input'), { target: { value: 'second save' } });
+    fireEvent.click(screen.getByTestId('chat-edit-save'));
+
+    // The second request waits for the first, so Google applies them in order.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockApi.editGoogleChatMessage).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirst(
+        msg({ name: 'spaces/AAA/messages/M3', id: 'M3', text: 'first save', sender: ME }),
+      );
+    });
+    await waitFor(() => expect(mockApi.editGoogleChatMessage).toHaveBeenCalledTimes(2));
+    expect(mockApi.editGoogleChatMessage).toHaveBeenNthCalledWith(2, 'AAA', 'M3', 'second save');
+    await waitFor(() => expect(screen.queryByTestId('chat-edit-form')).toBeNull());
+  });
+
+  it('saving the old text while an earlier save is pending still sends it', async () => {
+    setup([...ALL_SCOPES, MESSAGES_FULL]);
+    let resolveFirst!: (v: unknown) => void;
+    mockApi.editGoogleChatMessage
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          resolveFirst = r;
+        }),
+      )
+      .mockResolvedValueOnce(
+        msg({ name: 'spaces/AAA/messages/M3', id: 'M3', text: 'mine', sender: ME }),
+      );
+    mockApi.listGoogleChatSpaces.mockResolvedValue({
+      spaces: [SPACE, { ...SPACE, name: 'spaces/BBB', id: 'BBB', displayName: 'Other' }],
+    });
+    render(<GoogleChatPage />);
+    await screen.findByText('mine');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+    fireEvent.change(screen.getByTestId('chat-edit-input'), { target: { value: 'oops' } });
+    fireEvent.click(screen.getByTestId('chat-edit-save'));
+    await waitFor(() => expect(mockApi.editGoogleChatMessage).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId('chat-space-BBB'));
+    fireEvent.click(screen.getByTestId('chat-space-AAA'));
+
+    // The reopened editor still shows "mine"; saving it must revert the pending edit.
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }));
+    fireEvent.click(screen.getByTestId('chat-edit-save'));
+    await act(async () => {
+      resolveFirst(msg({ name: 'spaces/AAA/messages/M3', id: 'M3', text: 'oops', sender: ME }));
+    });
+    await waitFor(() =>
+      expect(mockApi.editGoogleChatMessage).toHaveBeenNthCalledWith(2, 'AAA', 'M3', 'mine'),
+    );
+  });
+
+  it('asks Google for the edit scope before the first edit', async () => {
+    setup();
+    mockApi.startGoogleOAuth.mockResolvedValue({ authorizeUrl: 'about:blank' });
+    render(<GoogleChatPage />);
+    await screen.findByText('mine');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
+
+    await waitFor(() => expect(mockApi.startGoogleOAuth).toHaveBeenCalled());
+    expect(mockApi.startGoogleOAuth.mock.calls[0][0].scopes).toEqual([MESSAGES_FULL]);
+    expect(screen.queryByTestId('chat-edit-form')).toBeNull();
   });
 });
