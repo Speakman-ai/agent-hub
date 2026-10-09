@@ -91,7 +91,11 @@ type GoogleStatus = NonNullable<GoogleStatusLike>;
 // fallback for Hubs without push, or while push is down (socket closed,
 // subscription suspended or expired). Push still keeps a slow re-read: Pub/Sub
 // can drop a delivery, and nothing else would ever correct the view.
-const POLL_MS = 30_000;
+// Without push, the conversation list is polled too so new DMs and activity
+// reordering show up without a manual Refresh. Each open tab costs about 16
+// Chat API reads a minute against the per-project quota of 3,000.
+export const POLL_MS = 5_000;
+export const SPACES_POLL_MS = 15_000;
 const PUSH_RECONCILE_MS = 5 * 60_000;
 // Bursts of events (a busy thread) collapse into one re-read.
 const PUSH_REFRESH_DEBOUNCE_MS = 300;
@@ -449,12 +453,18 @@ export default function GoogleChatPage({
     }
   }, []);
 
-  const loadSpaces = useCallback(async () => {
+  /**
+   * `background`: a poll. It shows no spinner and, on failure, keeps the list
+   * and any error already shown rather than blanking the pane over a blip.
+   */
+  const loadSpaces = useCallback(async ({ background = false } = {}) => {
     const seq = ++spacesSeqRef.current;
     const isCurrent = () => seq === spacesSeqRef.current;
-    setError(null);
-    setErrorHelp(null);
-    setSpacesLoading(true);
+    if (!background) {
+      setError(null);
+      setErrorHelp(null);
+      setSpacesLoading(true);
+    }
     try {
       const nextStatus = await api.getGoogleStatus();
       if (!isCurrent()) return;
@@ -481,7 +491,7 @@ export default function GoogleChatPage({
         setSpaces([]);
       }
     } catch (err: any) {
-      if (!isCurrent()) return;
+      if (!isCurrent() || background) return;
       setError(err.message || 'Failed to load Google Chat');
       setErrorHelp(chatSetupHelpLink(err));
       setSpaces([]);
@@ -669,6 +679,16 @@ export default function GoogleChatPage({
   useEffect(() => {
     loadSpaces();
   }, [loadSpaces]);
+
+  // Push reloads the list itself when a message lands in an unlisted space.
+  useEffect(() => {
+    if (pushActive) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void loadSpaces({ background: true });
+    }, SPACES_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [pushActive, loadSpaces]);
 
   useEffect(() => {
     if (!canRead) return;

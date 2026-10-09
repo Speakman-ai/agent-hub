@@ -42,7 +42,7 @@ vi.mock('./CaptureToTicketModal', () => ({
   },
 }));
 
-import GoogleChatPage, { LINKS_UNKNOWN_WARNING } from './GoogleChatPage';
+import GoogleChatPage, { LINKS_UNKNOWN_WARNING, POLL_MS, SPACES_POLL_MS } from './GoogleChatPage';
 import { api } from '../utils/api';
 import { CHAT_SURFACE_SCOPES } from '../utils/googleSurface';
 import { compareRfc3339 } from '@shared/utils/rfc3339';
@@ -758,7 +758,7 @@ describe('GoogleChatPage', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(60);
     expect(screen.getByText('Start of conversation')).toBeInTheDocument();
 
-    // Refresh (same path as the 30s poll) re-reads the whole loaded range.
+    // Refresh (same path as the poll) re-reads the whole loaded range.
     space.add(
       msg({
         name: 'spaces/AAA/messages/LATE',
@@ -1518,7 +1518,7 @@ describe('GoogleChatPage push updates', () => {
     const intervals = vi.spyOn(window, 'setInterval');
     render(<GoogleChatPage />);
     await screen.findByText('latest');
-    expect(intervals.mock.calls.some(([, ms]) => ms === 30_000)).toBe(false);
+    expect(intervals.mock.calls.some(([, ms]) => ms === POLL_MS)).toBe(false);
     // Push can drop an event; a slow re-read still corrects the view.
     expect(intervals.mock.calls.some(([, ms]) => ms === 5 * 60_000)).toBe(true);
     const before = mockApi.listGoogleChatMessages.mock.calls.length;
@@ -1546,9 +1546,9 @@ describe('GoogleChatPage push updates', () => {
     const intervals = vi.spyOn(window, 'setInterval');
     render(<GoogleChatPage />);
     await screen.findByText('latest');
-    expect(intervals.mock.calls.some(([, ms]) => ms === 30_000)).toBe(false);
+    expect(intervals.mock.calls.some(([, ms]) => ms === POLL_MS)).toBe(false);
     act(() => chatPushStore().setConnected(false));
-    await waitFor(() => expect(intervals.mock.calls.some(([, ms]) => ms === 30_000)).toBe(true));
+    await waitFor(() => expect(intervals.mock.calls.some(([, ms]) => ms === POLL_MS)).toBe(true));
     intervals.mockRestore();
   });
 
@@ -1557,7 +1557,54 @@ describe('GoogleChatPage push updates', () => {
     const intervals = vi.spyOn(window, 'setInterval');
     render(<GoogleChatPage />);
     await screen.findByText('latest');
-    expect(intervals.mock.calls.some(([, ms]) => ms === 30_000)).toBe(true);
+    expect(intervals.mock.calls.some(([, ms]) => ms === POLL_MS)).toBe(true);
+    intervals.mockRestore();
+  });
+
+  it('polls the open space every 5 seconds and the list every 15 without push', async () => {
+    expect(POLL_MS).toBe(5_000);
+    expect(SPACES_POLL_MS).toBe(15_000);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      setup({ push: false });
+      render(<GoogleChatPage />);
+      await screen.findByText('latest');
+      const messagesBefore = mockApi.listGoogleChatMessages.mock.calls.length;
+      const spacesBefore = mockApi.listGoogleChatSpaces.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_MS);
+      });
+      expect(mockApi.listGoogleChatMessages.mock.calls.length).toBeGreaterThan(messagesBefore);
+      expect(mockApi.listGoogleChatSpaces.mock.calls.length).toBe(spacesBefore);
+
+      // A new DM appears on the next list poll; a failed poll keeps the list.
+      mockApi.listGoogleChatSpaces.mockRejectedValueOnce(new Error('429'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SPACES_POLL_MS);
+      });
+      expect(screen.getByTestId('chat-space-AAA')).toBeTruthy();
+      expect(screen.queryByText('429')).toBeNull();
+
+      mockApi.listGoogleChatSpaces.mockResolvedValue({
+        spaces: [SPACE, OTHER, { ...SPACE, name: 'spaces/CCC', id: 'CCC', displayName: 'New DM' }],
+        nextPageToken: null,
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SPACES_POLL_MS);
+      });
+      await waitFor(() => expect(screen.getByTestId('chat-space-CCC')).toBeTruthy());
+      expect(screen.getByText('latest')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not poll the list while push is active', async () => {
+    setup({ push: true });
+    const intervals = vi.spyOn(window, 'setInterval');
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+    expect(intervals.mock.calls.some(([, ms]) => ms === SPACES_POLL_MS)).toBe(false);
     intervals.mockRestore();
   });
 
