@@ -104,9 +104,17 @@ describe('buildDmgDownloadUrl', () => {
       );
     });
 
-    it('falls back to x64 URL when arch is undefined on darwin', () => {
+    it('defaults to the arm64 URL when arch is undefined on darwin', () => {
+      // Apple Silicon is the default: the Intel DMG runs there under Rosetta
+      // and is noticeably slower, so an unknown arch must not steer users to it.
       expect(buildDmgDownloadUrl({ version: '1.4.2', platform: 'darwin' })).toBe(
-        `${BASE}/v1.4.2/Agent%20Hub-1.4.2.dmg`,
+        `${BASE}/v1.4.2/Agent%20Hub-1.4.2-arm64.dmg`,
+      );
+    });
+
+    it('defaults to the arm64 URL for an unrecognized arch on darwin', () => {
+      expect(buildDmgDownloadUrl({ version: '1.4.2', platform: 'darwin', arch: 'mips' })).toBe(
+        `${BASE}/v1.4.2/Agent%20Hub-1.4.2-arm64.dmg`,
       );
     });
 
@@ -138,11 +146,20 @@ describe('buildDmgDownloadUrl', () => {
 });
 
 describe('buildLatestDmgDownloadUrl', () => {
-  it('builds a direct x64 DMG URL from the current web bundle version', () => {
+  it('builds the arm64 DMG URL from the current web bundle version by default', () => {
     vi.stubEnv('VITE_RELEASE_BUCKET_BASE', BASE);
     vi.stubEnv('VITE_APP_VERSION', '2.31.41');
 
-    expect(buildLatestDmgDownloadUrl()).toBe(`${BASE}/v2.31.41/Agent%20Hub-2.31.41.dmg`);
+    expect(buildLatestDmgDownloadUrl()).toBe(`${BASE}/v2.31.41/Agent%20Hub-2.31.41-arm64.dmg`);
+  });
+
+  it('builds the Intel DMG URL when asked for x64 explicitly', () => {
+    vi.stubEnv('VITE_RELEASE_BUCKET_BASE', BASE);
+    vi.stubEnv('VITE_APP_VERSION', '2.31.41');
+
+    expect(buildLatestDmgDownloadUrl({ arch: 'x64' })).toBe(
+      `${BASE}/v2.31.41/Agent%20Hub-2.31.41.dmg`,
+    );
   });
 
   it('returns null when the web bundle has no release version', () => {

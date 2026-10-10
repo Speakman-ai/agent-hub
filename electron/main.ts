@@ -38,6 +38,7 @@ import {
   type RemoteConnection,
   type ScopedAuthRecord,
 } from './remote-auth-scope.js';
+import { resolveEffectiveArch } from './effective-arch.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -614,6 +615,18 @@ ipcMain.handle('preview:pop-out', async (event, payload) => {
 
 /** Packaged app / electron-builder version (normalized DMG semver). */
 ipcMain.handle('get-app-version', () => app.getVersion());
+
+// Architecture the renderer should pick a DMG for. An Intel build running on
+// Apple Silicon reports process.arch === 'x64', which would keep the update
+// prompt pointing at the Intel DMG (and the user stuck under Rosetta); report
+// arm64 in that case. Sync because the preload reads it at bridge-creation time.
+ipcMain.on('get-effective-arch', (event) => {
+  event.returnValue = resolveEffectiveArch(process.arch, app.runningUnderARM64Translation);
+});
+
+ipcMain.on('get-running-under-arm64-translation', (event) => {
+  event.returnValue = Boolean(app.runningUnderARM64Translation);
+});
 
 /**
  * GET JSON health in the main process so local Electron can compare against a

@@ -15,8 +15,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Platform string (darwin, win32, linux). */
   platform: process.platform,
 
-  /** CPU architecture (arm64, x64, ia32). Used by the renderer to pick the right DMG when prompting the user to download a newer build. */
-  arch: process.arch,
+  /**
+   * CPU architecture to pick a DMG for (arm64, x64, ia32). This is the
+   * *machine's* architecture, not the binary's: an Intel build running under
+   * Rosetta on Apple Silicon reports `arm64` here so the update prompt offers
+   * the native build instead of perpetuating the translated one.
+   */
+  arch: ipcRenderer.sendSync('get-effective-arch'),
+
+  /** True when this is an Intel build being translated by Rosetta on an Apple Silicon Mac. */
+  runningUnderArm64Translation: ipcRenderer.sendSync('get-running-under-arm64-translation'),
 
   /** DMG / installer semver from electron-builder (`app.getVersion()`). */
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),

@@ -31,6 +31,13 @@ export default function UpdateAvailableModal({
     return () => window.removeEventListener('keydown', onKey);
   }, [onDismiss]);
 
+  // Intel build translated by Rosetta on an Apple Silicon Mac: the preload
+  // already reports arch `arm64`, so `downloadUrl` points at the native DMG —
+  // tell the user why this particular update is worth taking.
+  const runningUnderRosetta = Boolean(
+    typeof window !== 'undefined' && window.electronAPI?.runningUnderArm64Translation,
+  );
+
   return (
     <div
       className="fixed inset-0 z-[60] flex items-start justify-center pt-[15vh] bg-black/60"
@@ -67,6 +74,12 @@ export default function UpdateAvailableModal({
             latest is <span className="font-mono text-gray-200">{serverVersion}</span>. Download the
             newest build to stay in sync with the server.
           </p>
+          {runningUnderRosetta && downloadUrl && (
+            <p className="text-xs text-amber-200/90" data-testid="update-rosetta-hint">
+              You&apos;re running the Intel build under Rosetta on an Apple Silicon Mac. This
+              download is the native Apple Silicon build, which is noticeably faster.
+            </p>
+          )}
           {!downloadUrl && RELEASE_BUCKET_ROOT && (
             <p className="text-xs text-gray-500">
               Direct download isn&apos;t published for your platform yet. You can browse the

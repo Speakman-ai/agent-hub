@@ -75,6 +75,9 @@ export function compareSemver(a: any, b: any) {
   return 0;
 }
 
+/** macOS CPU architectures we publish DMGs for. */
+export type MacDmgArch = 'arm64' | 'x64';
+
 /**
  * Build the S3 download URL for a specific version + platform + arch.
  *
@@ -82,9 +85,12 @@ export function compareSemver(a: any, b: any) {
  *   darwin + x64   → https://…/v1.2.3/Agent%20Hub-1.2.3.dmg
  *   anything else  → null (we only publish macOS DMGs today)
  *
- * Undefined arch on darwin falls through to x64. Apple Silicon users who
- * grab the wrong DMG just re-download the arm64 one — the worst-case is
- * mild annoyance, not a broken install.
+ * Unknown / undefined arch on darwin defaults to **arm64**. Every Mac sold
+ * since 2020 is Apple Silicon, and the Intel DMG does run on those machines —
+ * under Rosetta, where Electron, the renderer, and the embedded tsx server are
+ * all translated and noticeably slow. Defaulting the other way used to steer
+ * Apple Silicon users onto that build whenever the arch was unknown. Only an
+ * explicit `x64` picks the Intel DMG.
  */
 export function buildDmgDownloadUrl({ version, platform, arch }: any = {}) {
   if (platform !== 'darwin') return null;
@@ -92,20 +98,21 @@ export function buildDmgDownloadUrl({ version, platform, arch }: any = {}) {
   const base = resolveReleaseBucketBase();
   if (!base) return null; // no release bucket configured → no direct download
   const v = version.trim().replace(/^[vV]/, '');
-  const suffix = arch === 'arm64' ? '-arm64' : '';
+  const suffix = arch === 'x64' ? '' : '-arm64';
   const filename = `Agent%20Hub-${encodeURIComponent(v)}${suffix}.dmg`;
   return `${base}/v${encodeURIComponent(v)}/${filename}`;
 }
 
 /**
- * Build the default desktop download URL for the release represented by the
- * current web bundle. Browser user agents do not expose the Mac CPU
- * architecture, so this follows the update flow's x64 fallback.
+ * Build the desktop download URL for the release represented by the current
+ * web bundle. Browser user agents do not expose the Mac CPU architecture, so
+ * the default is Apple Silicon; pass `arch: 'x64'` for the Intel link.
  */
-export function buildLatestDmgDownloadUrl() {
+export function buildLatestDmgDownloadUrl({ arch }: { arch?: MacDmgArch } = {}) {
   return buildDmgDownloadUrl({
     version: importMetaEnv()?.VITE_APP_VERSION,
     platform: 'darwin',
+    arch,
   });
 }
 

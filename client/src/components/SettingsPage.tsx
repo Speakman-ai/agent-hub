@@ -832,7 +832,10 @@ export function GeneralSection() {
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
   const labelClass = 'block text-xs text-gray-400 mb-1';
+  // Browsers can't tell us the Mac CPU, so the primary link is Apple Silicon
+  // (the Intel build runs there too, but under Rosetta and noticeably slower).
   const desktopDownloadUrl = buildLatestDmgDownloadUrl();
+  const desktopIntelDownloadUrl = buildLatestDmgDownloadUrl({ arch: 'x64' });
 
   if (loading) return <p className="text-sm text-gray-500">Loading config...</p>;
   if (!config) return <p className="text-sm text-red-400">Failed to load config</p>;
@@ -871,16 +874,28 @@ export function GeneralSection() {
             <code className="text-gray-400"> PATH</code> setup for Git and the GitHub CLI. Grab the
             latest build from the releases bucket.
           </p>
-          <a
-            href={desktopDownloadUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 transition-colors"
-          >
-            <Download size={14} />
-            Download desktop app
-            <ExternalLink size={11} />
-          </a>
+          <div className="flex flex-wrap items-center gap-3">
+            <a
+              href={desktopDownloadUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 transition-colors"
+            >
+              <Download size={14} />
+              Download for Apple Silicon
+              <ExternalLink size={11} />
+            </a>
+            {desktopIntelDownloadUrl && (
+              <a
+                href={desktopIntelDownloadUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-gray-400 hover:text-gray-200 underline underline-offset-2"
+              >
+                Intel Mac build
+              </a>
+            )}
+          </div>
         </div>
       )}
 

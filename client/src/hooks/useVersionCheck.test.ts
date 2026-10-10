@@ -71,6 +71,29 @@ describe('useVersionCheck', () => {
     );
   });
 
+  it('offers the arm64 DMG when the preload reports arm64 for an Intel build under Rosetta', () => {
+    // The preload resolves `arch` from app.runningUnderARM64Translation, so a
+    // translated x64 build shows up here as arm64 and gets the native DMG.
+    vi.stubEnv('VITE_RELEASE_BUCKET_BASE', 'https://releases.example.test');
+    stubElectron({ platform: 'darwin', arch: 'arm64' });
+    window.electronAPI!.runningUnderArm64Translation = true;
+    stubClientVersion('1.4.2');
+    const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.5.0' }));
+    expect(result!.current.downloadUrl).toBe(
+      'https://releases.example.test/v1.5.0/Agent%20Hub-1.5.0-arm64.dmg',
+    );
+  });
+
+  it('still offers the Intel DMG when the desktop reports a genuine x64 machine', () => {
+    vi.stubEnv('VITE_RELEASE_BUCKET_BASE', 'https://releases.example.test');
+    stubElectron({ platform: 'darwin', arch: 'x64' });
+    stubClientVersion('1.4.2');
+    const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.5.0' }));
+    expect(result!.current.downloadUrl).toBe(
+      'https://releases.example.test/v1.5.0/Agent%20Hub-1.5.0.dmg',
+    );
+  });
+
   it('returns null downloadUrl when no release bucket is configured (self-hosted)', () => {
     stubElectron({ platform: 'darwin', arch: 'arm64' });
     stubClientVersion('1.4.2');

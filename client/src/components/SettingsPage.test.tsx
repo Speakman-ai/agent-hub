@@ -427,14 +427,19 @@ describe('GeneralSection — CLI binary paths', () => {
     });
   });
 
-  it('links to the versioned desktop DMG instead of the release bucket root', async () => {
+  it('links to the versioned Apple Silicon DMG by default, with Intel as a secondary link', async () => {
     vi.stubEnv('VITE_RELEASE_BUCKET_BASE', 'https://releases.example.test');
     vi.stubEnv('VITE_APP_VERSION', '2.31.41');
 
     const { findByRole } = render(<GeneralSection />);
-    const link = await findByRole('link', { name: /Download desktop app/ });
+    const primary = await findByRole('link', { name: /Download for Apple Silicon/ });
+    expect(primary).toHaveAttribute(
+      'href',
+      'https://releases.example.test/v2.31.41/Agent%20Hub-2.31.41-arm64.dmg',
+    );
 
-    expect(link).toHaveAttribute(
+    const intel = await findByRole('link', { name: /Intel Mac build/ });
+    expect(intel).toHaveAttribute(
       'href',
       'https://releases.example.test/v2.31.41/Agent%20Hub-2.31.41.dmg',
     );
