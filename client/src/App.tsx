@@ -267,6 +267,7 @@ import {
   prependSessionDeduped,
   planCreatedSessionCaches,
   planRemoteSessionCreatedCaches,
+  patchSessionInAgentCaches,
 } from './utils/sessionDerivedState';
 import { needsAutopilotSetup } from '@shared/utils/sessionAutopilot';
 import { appendPreviewLogTail, mergePreviewEventLogTail } from './utils/previewLogTail';
@@ -2497,6 +2498,12 @@ export default function App({ initialView }: any = {}) {
           setSessions((prev: any) =>
             prev.map((s: any) => (s.id === data.session.id ? { ...s, ...data.session } : s)),
           );
+          setSessionsByAgentId((prev: any) =>
+            patchSessionInAgentCaches(prev, data.session?.id, (s: any) => ({
+              ...s,
+              ...data.session,
+            })),
+          );
           if (
             data.session?.id === activeSessionIdRef.current &&
             Array.isArray(data.session.agents)
@@ -2562,6 +2569,11 @@ export default function App({ initialView }: any = {}) {
           }
           setSessions((prev: any) =>
             prev.map((s: any) => (s.id === sid ? { ...s, state: data.state } : s)),
+          );
+          // Other agents' / projects' sidebar rows render from the per-agent
+          // cache, which `sessions` only syncs for the loaded agent.
+          setSessionsByAgentId((prev: any) =>
+            patchSessionInAgentCaches(prev, sid, (s: any) => ({ ...s, state: data.state })),
           );
           setCronSessions((prev: any) =>
             prev.map((s: any) => (s.id === sid ? { ...s, state: data.state } : s)),
@@ -3564,6 +3576,9 @@ export default function App({ initialView }: any = {}) {
         case 'session_deleted':
           tearDownSessionPreviewRef.current?.(data.sessionId);
           setSessions((prev: any) => prev.filter((s: any) => s.id !== data.sessionId));
+          setSessionsByAgentId((prev: any) =>
+            patchSessionInAgentCaches(prev, data.sessionId, () => null),
+          );
           // Drop any awaiting-input flag — the session is gone, so an
           // indicator pointing at it would dangle.
           setAwaitingInputBySession((prev: any) =>

@@ -242,3 +242,38 @@ export function planRemoteSessionCreatedCaches(args: {
     sessions: nextSessions,
   };
 }
+
+/**
+ * Apply a live session-row update (WS `session_state`, `session-updated`) to
+ * every cached per-agent sidebar list, not just the loaded agent's `sessions`.
+ * The sidebar renders other agents' and other projects' sessions from these
+ * caches, so patching only `sessions` leaves their status icons stale until a
+ * project switch refetches them.
+ *
+ * `update` returns the replacement row, or `null` to drop it. Returns the same
+ * object (and same per-agent arrays) when no cached list holds the session, so
+ * React can skip the render.
+ */
+export function patchSessionInAgentCaches(
+  sessionsByAgentId: Record<string, any[]>,
+  sessionId: string,
+  update: (session: any) => any | null,
+): Record<string, any[]> {
+  if (!sessionId) return sessionsByAgentId;
+  let next: Record<string, any[]> | null = null;
+  for (const [agentId, list] of Object.entries(sessionsByAgentId)) {
+    if (!Array.isArray(list) || !list.some((s: any) => s?.id === sessionId)) continue;
+    const patched: any[] = [];
+    for (const s of list) {
+      if (s?.id !== sessionId) {
+        patched.push(s);
+        continue;
+      }
+      const row = update(s);
+      if (row) patched.push(row);
+    }
+    if (!next) next = { ...sessionsByAgentId };
+    next[agentId] = patched;
+  }
+  return next ?? sessionsByAgentId;
+}

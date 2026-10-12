@@ -13,7 +13,9 @@ import {
   prependSessionDeduped,
   planCreatedSessionCaches,
   planRemoteSessionCreatedCaches,
+  patchSessionInAgentCaches,
 } from './sessionDerivedState';
+import { deriveSessionState } from './deriveSessionState';
 
 describe('sessionDerivedState', () => {
   describe('isSessionConsultModeEnabled', () => {
@@ -621,5 +623,48 @@ describe('showSessionDiscardAction', () => {
       showSessionDiscardAction({ ...base, session: { id: 's1', name: '[Resolve PR #12] Fix' } }),
     ).toBe(false);
     expect(showSessionDiscardAction({ ...base, session: null })).toBe(false);
+  });
+});
+
+describe('patchSessionInAgentCaches', () => {
+  it('updates a non-loaded agent cache so its sidebar status stops showing stale state', () => {
+    // Session belongs to an agent in another project: only the per-agent
+    // cache holds it, never the live `sessions` array.
+    const cache = {
+      'agent-hub-dev': [
+        { id: 's1', state: 'working' },
+        { id: 's2', state: 'waiting_for_user_input' },
+      ],
+      'survey-tracker-dev': [{ id: 's3', state: 'waiting_for_user_input' }],
+    };
+    const next = patchSessionInAgentCaches(cache, 's1', (s) => ({ ...s, state: 'pending_push' }));
+    expect(next['agent-hub-dev'][0].state).toBe('pending_push');
+    expect(next['agent-hub-dev'][1]).toBe(cache['agent-hub-dev'][1]);
+    expect(next['survey-tracker-dev']).toBe(cache['survey-tracker-dev']);
+    expect(cache['agent-hub-dev'][0].state).toBe('working');
+  });
+
+  it('lets the sidebar icon settle after the turn ends for a non-loaded agent', () => {
+    const cache = { other: [{ id: 's1', state: 'working' }] };
+    // Turn ended: no active task, server pushes the resolved state.
+    const stale = deriveSessionState(cache.other[0], {});
+    expect(stale).toBe('working');
+    const next = patchSessionInAgentCaches(cache, 's1', (s) => ({
+      ...s,
+      state: 'waiting_for_user_input',
+    }));
+    expect(deriveSessionState(next.other[0], {})).toBe('waiting_for_user_input');
+  });
+
+  it('returns the same object when no cache holds the session', () => {
+    const cache = { a: [{ id: 's1' }] };
+    expect(patchSessionInAgentCaches(cache, 'missing', (s) => s)).toBe(cache);
+    expect(patchSessionInAgentCaches(cache, '', (s) => s)).toBe(cache);
+  });
+
+  it('drops the row when the updater returns null', () => {
+    const cache = { a: [{ id: 's1' }, { id: 's2' }] };
+    const next = patchSessionInAgentCaches(cache, 's1', () => null);
+    expect(next.a.map((s: any) => s.id)).toEqual(['s2']);
   });
 });
