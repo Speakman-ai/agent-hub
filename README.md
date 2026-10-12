@@ -95,6 +95,8 @@ other findings, with a configurable ignore list so you're not drowning in noise.
 Define your environments in a `deploy.yaml` and ship from the app — pick a
 branch, hit deploy, watch the live stream, and roll back if needed. Release
 digests and notifications keep everyone in the loop.
+The same file's `preview:` block declares what a per-PR environment boots. See
+[`docs/guides/deploy-yaml.md`](docs/guides/deploy-yaml.md).
 
 ![Deployments](docs/media/deployments.png)
 

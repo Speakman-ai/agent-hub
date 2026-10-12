@@ -119,6 +119,15 @@ Tier-1 fields (`repoFullName`, `previewHost`, `previewBaseUrl`,
 **pre-populated by the Tier-3 `prEnv` block Terraform writes at first boot**
 — in the normal case the operator only confirms them, doesn't enter them.
 
+### Project repo owns
+
+What a PR environment boots for a given repo (compose file, entry service and
+port, migrate/seed hooks, which preview secrets to inject) is declared in that
+repo's `.agent-hub/deploy.yaml` under the top-level `preview:` block. It lives
+in the repo, not in Terraform or `config.json`, and needs no database
+migration. Check it with `GET /api/projects/{projectId}/deploy/preview`. Full
+schema: [`docs/guides/deploy-yaml.md`](../guides/deploy-yaml.md#preview).
+
 ### Agent Hub auto-registers
 
 When the operator clicks "Register Reviewer App", the server:
@@ -231,6 +240,7 @@ and this page, the contract is honored.
 
 ## Related pages
 
+- [`deploy.yaml` guide](../guides/deploy-yaml.md) — per-project `preview:` block (what the PR environment boots).
 - [PR Environments — UI Configuration & Secret Store](/projects/agent-hub/wiki/pr-environments-ui-configuration-secret-store) — three-tier config split, encryption, REST contract.
 - [PR Environments — Per-Project Config, Wizard & Script-Mode Builder](/projects/agent-hub/wiki/pr-environments-per-project-config-wizard-script-mode-builder) — multi-repo wizard layered on top of this baseline.
 - [Container Pool — PR Envs + Scaffolding](/projects/agent-hub/wiki/container-pool-pr-envs-scaffolding) — the runtime that actually builds preview containers.
