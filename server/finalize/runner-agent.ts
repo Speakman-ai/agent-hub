@@ -28,7 +28,7 @@ import {
   noopTaskProtection,
   type TaskProtection,
 } from './ecs-task-protection.js';
-import { checkSpotInterruption } from './spot-interruption.js';
+import { checkRebalanceRecommendation, checkSpotInterruption } from './spot-interruption.js';
 import {
   chownWorktreeForJobRunner,
   clearWorktreeDestForRematerialize,
@@ -994,22 +994,31 @@ export function assertNativeRunnerTenancy(native: boolean, orgScope: string): vo
 
 /**
  * Should the agent stop claiming new work because its instance is draining?
- * True once IMDS reports a pending EC2 Spot interruption. Without this guard
- * the claim loop happily picks up a fresh job inside the 2-minute reclaim
- * window — a job that is then GUARANTEED to be lost mid-run (lease expiry →
- * reaper → infra retry on another agent), burning a retry generation and
- * several minutes of the run's wall clock for nothing. Probe failures (off-EC2,
- * IMDS blip) report "not draining" so a healthy fleet never idles on a false
- * positive. Injectable for tests; the real probe is a fast no-op off EC2.
+ * True once IMDS reports either a pending EC2 Spot interruption (2-minute
+ * notice) or a rebalance recommendation (elevated interruption risk, often
+ * minutes earlier). Without this guard the claim loop happily picks up a fresh
+ * job on a box that is about to be reclaimed — a 20-minute shard that is then
+ * lost mid-run, burning a retry and the run's wall clock for nothing. The
+ * agent finishes the job it already holds (a rebalance recommendation is a
+ * risk signal, not a deadline); it just takes no new one. Probe failures
+ * (off-EC2, IMDS blip) report "not draining" so a healthy fleet never idles on
+ * a false positive. Injectable for tests; the real probes are fast no-ops off
+ * EC2.
  */
 export async function agentIsDraining(
   checkSpot: () => Promise<boolean> = async () => (await checkSpotInterruption()).pending,
+  checkRebalance: () => Promise<boolean> = async () =>
+    (await checkRebalanceRecommendation()).recommended,
 ): Promise<boolean> {
-  try {
-    return await checkSpot();
-  } catch {
-    return false;
-  }
+  const safe = async (probe: () => Promise<boolean>): Promise<boolean> => {
+    try {
+      return await probe();
+    } catch {
+      return false;
+    }
+  };
+  const [interrupted, rebalance] = await Promise.all([safe(checkSpot), safe(checkRebalance)]);
+  return interrupted || rebalance;
 }
 
 /**
@@ -1026,13 +1035,14 @@ export async function runAgentClaimLoop(args: {
   const pauseAfterClaimError =
     args.pauseAfterClaimError ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 2_000)));
   for (;;) {
-    // A draining instance (pending EC2 Spot reclaim) must NOT claim new work —
-    // any job it picks up now is guaranteed to be lost mid-run. Exit instead;
+    // A draining instance (Spot interruption notice or rebalance
+    // recommendation) must NOT claim new work — a job it picks up now is likely
+    // to be lost mid-run. Exit instead;
     // the queued job stays `queued` for a healthy agent and the fleet scaler
     // replaces this task.
     if (await isDraining()) {
       console.log(
-        '[runner-agent] EC2 Spot interruption notice pending — draining instead of claiming new work',
+        '[runner-agent] EC2 Spot interruption notice or rebalance recommendation — draining instead of claiming new work',
       );
       return;
     }

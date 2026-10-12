@@ -156,13 +156,71 @@ async function withTimeout<T>(
 export async function checkSpotInterruption(
   opts: CheckSpotInterruptionOptions = {},
 ): Promise<SpotInterruptionStatus> {
-  if (metadataDisabled()) return NOT_INTERRUPTED;
+  const body = await getImdsMetadata('spot/instance-action', opts);
+  return body == null ? NOT_INTERRUPTED : parseInstanceActionBody(body);
+}
+
+/** Result of a single IMDS rebalance-recommendation probe. */
+export interface RebalanceRecommendationStatus {
+  /** True iff IMDS reports a rebalance recommendation for this instance. */
+  recommended: boolean;
+  /** ISO-8601 time the signal was emitted, when supplied by IMDS. */
+  noticeTime?: string | null;
+}
+
+const NO_REBALANCE: RebalanceRecommendationStatus = { recommended: false, noticeTime: null };
+
+/**
+ * Probe IMDS once for an EC2 rebalance recommendation
+ * (`events/recommendations/rebalance`): the "elevated interruption risk" signal
+ * that can arrive well before the 2-minute notice, or together with it. It is a
+ * risk signal, not a deadline, so the agent uses it only to stop taking new
+ * work; it never fails a running job. Same fail-closed stance as
+ * {@link checkSpotInterruption}: every failure path, including the steady-state
+ * 404, reports "not recommended". Never throws.
+ */
+export async function checkRebalanceRecommendation(
+  opts: CheckSpotInterruptionOptions = {},
+): Promise<RebalanceRecommendationStatus> {
+  const body = await getImdsMetadata('events/recommendations/rebalance', opts);
+  return body == null ? NO_REBALANCE : parseRebalanceBody(body);
+}
+
+/**
+ * Parse the IMDS rebalance body, `{"noticeTime":"2020-10-27T08:22:00Z"}`. Any
+ * parseable JSON object counts as a recommendation (the path only exists once
+ * the signal is emitted); empty or unparseable bodies fail safe. Exposed for
+ * unit testing.
+ */
+export function parseRebalanceBody(body: string): RebalanceRecommendationStatus {
+  if (!body) return NO_REBALANCE;
+  try {
+    const parsed = JSON.parse(body) as { noticeTime?: unknown } | null;
+    if (!parsed || typeof parsed !== 'object') return NO_REBALANCE;
+    return {
+      recommended: true,
+      noticeTime: typeof parsed.noticeTime === 'string' ? parsed.noticeTime : null,
+    };
+  } catch {
+    return NO_REBALANCE;
+  }
+}
+
+/**
+ * IMDSv2 GET of `/latest/meta-data/<path>`. Returns the trimmed body on HTTP
+ * 2xx, or null on every failure path (non-EC2 host, IMDS disabled, token
+ * failure, network error/timeout, 404). Never throws.
+ */
+async function getImdsMetadata(
+  metadataPath: string,
+  opts: CheckSpotInterruptionOptions,
+): Promise<string | null> {
+  if (metadataDisabled()) return null;
   const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as FetchLike | undefined);
-  if (!fetchImpl) return NOT_INTERRUPTED;
+  if (!fetchImpl) return null;
   const base = resolveEndpoint(opts.endpoint);
   const timeoutMs = opts.timeoutMs ?? IMDS_PROBE_TIMEOUT_MS;
 
-  // IMDSv2: a session token is mandatory.
   let token: string;
   try {
     const tokenRes = await withTimeout(timeoutMs, (signal) =>
@@ -172,29 +230,25 @@ export async function checkSpotInterruption(
         signal,
       }),
     );
-    if (!tokenRes.ok) return NOT_INTERRUPTED;
+    if (!tokenRes.ok) return null;
     token = (await tokenRes.text()).trim();
-    if (!token) return NOT_INTERRUPTED;
+    if (!token) return null;
   } catch {
-    // Off-EC2 (unroutable link-local), IMDS proxy down, or timeout — not a reclaim.
-    return NOT_INTERRUPTED;
+    return null;
   }
 
   try {
     const res = await withTimeout(timeoutMs, (signal) =>
-      fetchImpl(`${base}/latest/meta-data/spot/instance-action`, {
+      fetchImpl(`${base}/latest/meta-data/${metadataPath}`, {
         method: 'GET',
         headers: { 'x-aws-ec2-metadata-token': token },
         signal,
       }),
     );
-    // 404 = no interruption scheduled (the steady-state response). Anything
-    // non-2xx → treat as no interruption.
-    if (!res.ok) return NOT_INTERRUPTED;
-    const body = (await res.text()).trim();
-    return parseInstanceActionBody(body);
+    if (!res.ok) return null;
+    return (await res.text()).trim();
   } catch {
-    return NOT_INTERRUPTED;
+    return null;
   }
 }
 

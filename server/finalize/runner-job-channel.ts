@@ -60,6 +60,8 @@ export class RunnerJobChannel implements RemoteStepSink {
   private settled = false;
   private disposed = false;
   private failed = false;
+  /** The error passed to {@link fail}, reused for steps started afterwards. */
+  private failure: Error | null = null;
 
   private readonly outbound: RunnerDirective[] = [];
   private directiveWaiter: ((d: RunnerDirective | null) => void) | null = null;
@@ -107,7 +109,9 @@ export class RunnerJobChannel implements RemoteStepSink {
     });
     this.steps.set(stepIndex, step);
     if (this.failed || this.disposed) {
-      step.fail(new Error('runner channel is closed'));
+      // Carry the original failure (e.g. the spot_reclaimed marker) so a step
+      // started after the loss is classified the same as one already in flight.
+      step.fail(this.failure ?? new Error('runner channel is closed'));
       return step;
     }
     this.pushDirective({
@@ -207,6 +211,7 @@ export class RunnerJobChannel implements RemoteStepSink {
   /** Transport dropped / agent lost: fail any unsettled steps so step-runner unblocks. */
   fail(err: Error): void {
     this.failed = true;
+    this.failure ??= err;
     // Revoke commands before consumers observe loss and retry elsewhere.
     for (let i = this.outbound.length - 1; i >= 0; i--) {
       if (this.outbound[i].type === 'run_step') this.outbound.splice(i, 1);

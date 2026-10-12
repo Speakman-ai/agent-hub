@@ -828,6 +828,37 @@ export async function runStepsSequence(
       outputTail: runOutcome.outputTail,
       failureExcerpt: runOutcome.failureExcerpt,
     };
+    // The runner reported an EC2 Spot interruption notice before this exit
+    // settled: the exit is the reclaim tearing the job down, whatever text it
+    // left behind (a cut-off `docker pull` ends in `exit 1` with no sentinel in
+    // the terminal window). Classify on that recorded evidence, not log
+    // pattern-matching, so it earns the reclaim retry cap and never reaches the
+    // fix loop. A genuine test-failure summary still wins: a red that happened
+    // to finish inside the notice window stays CI-class.
+    if (
+      runOutcome.kind === 'non-zero-exit' &&
+      runOutcome.runnerSpotInterrupted &&
+      !hasTestFailureSummary(cancelDetectInput)
+    ) {
+      return finishStepSequence(
+        deps,
+        opts,
+        terminate(
+          stmts,
+          opts.runId,
+          'infra_error',
+          'spot_reclaimed',
+          `step ${stepIndex} (${displayName}) exited ${runOutcome.result.exitCode} after an EC2 Spot interruption notice — retrying on a fresh runner`,
+          activeSecondsBilled,
+          stepResults,
+          spotReclaimDetail(
+            `step ${stepIndex} (${displayName}) torn down by an EC2 Spot reclaim (exit ${runOutcome.result.exitCode})`,
+          ),
+          failedStep,
+          writeRunTerminal,
+        ),
+      );
+    }
     if (isRunnerTeardownExit(cancelDetectInput)) {
       return finishStepSequence(
         deps,
@@ -999,7 +1030,15 @@ interface SingleStepOutcomeBase {
 
 type SingleStepOutcome =
   | ({ kind: 'success' } & SingleStepOutcomeBase)
-  | ({ kind: 'non-zero-exit' } & SingleStepOutcomeBase)
+  | ({
+      kind: 'non-zero-exit';
+      /**
+       * The runner backing this step had reported an EC2 Spot interruption
+       * notice when the exit settled (remote backend only). The exit is almost
+       * certainly the reclaim tearing the job down, not a test result.
+       */
+      runnerSpotInterrupted?: boolean;
+    } & SingleStepOutcomeBase)
   | ({ kind: 'timeout' } & SingleStepOutcomeBase)
   | ({ kind: 'spawn-error'; detail: string } & SingleStepOutcomeBase);
 
@@ -1363,12 +1402,19 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         });
         return;
       }
+      let runnerSpotInterrupted = false;
+      try {
+        runnerSpotInterrupted = child.probeRunnerLoss?.()?.spotInterrupted === true;
+      } catch {
+        runnerSpotInterrupted = false;
+      }
       resolve({
         kind: 'non-zero-exit',
         result,
         outputTail: tail.snapshot(),
         failureExcerpt: excerpt.snapshot(),
         logSnapshot,
+        ...(runnerSpotInterrupted ? { runnerSpotInterrupted } : {}),
       });
     };
 

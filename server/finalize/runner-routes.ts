@@ -38,6 +38,7 @@ import {
   type AgentTokenPayload,
 } from './runner-auth.js';
 import { MACOS_RUNNER_CLASS } from './runner-images.js';
+import { spotReclaimDetail } from './spot-interruption.js';
 
 interface RunnerReq extends Request {
   agent?: AgentTokenPayload;
@@ -329,6 +330,38 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       if (!authorizeJob(req.agent!, jobId, res)) return;
       const now = Date.now();
       heartbeatRunnerJob({ jobId, agentId: req.agent!.agentId, leaseMs, now });
+      // The agent probes IMDS and sets `spotInterruption: true` once EC2 posts
+      // the 2-minute reclaim notice. The instance is certain to die, so on the
+      // FIRST report (the stamp is sticky and only lands once) give up on this
+      // agent now instead of waiting ~2 minutes for the kill plus a lease
+      // expiry: mark the queue row lost and fail the in-process channel with the
+      // spot_reclaimed marker. step-runner settles the in-flight step as a
+      // `spot_reclaimed` spawn-error and the per-instance infra retry re-queues
+      // the shard on a fresh agent. This also keeps the doomed agent's
+      // `context canceled` step result from ever being classified, since the
+      // channel is already closed when it arrives. Scoped to the claiming agent
+      // + a live state, so a stale or spoofed report can't touch other jobs.
+      if (
+        (req.body as { spotInterruption?: unknown } | undefined)?.spotInterruption === true &&
+        markRunnerJobSpotInterruption({ jobId, agentId: req.agent!.agentId, now })
+      ) {
+        reportRunnerJob({
+          jobId,
+          state: 'lost',
+          detail: 'spot interruption notice; requeued before the instance was reclaimed',
+          now,
+        });
+        getJobChannel(jobId)?.fail(
+          new Error(
+            spotReclaimDetail(
+              'EC2 Spot interruption notice received; requeuing on a fresh runner before the instance is reclaimed',
+            ),
+          ),
+        );
+        void clearHubTaskProtection(agentTaskArn(req.agent!.agentId), taskProtectionCfg);
+        res.status(204).end();
+        return;
+      }
       // Re-arm scale-in protection off the SAME heartbeat that keeps the lease
       // alive (throttled). This is the crux: a long shard keeps heartbeating, so
       // the Hub keeps protection fresh — it can't silently lapse the way the
@@ -337,15 +370,6 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       void armHubTaskProtection(agentTaskArn(req.agent!.agentId), taskProtectionCfg, {
         now: () => now,
       });
-      // The agent polls IMDS on its heartbeat tick; when it sees an EC2 Spot
-      // interruption notice it sets `spotInterruption: true` here. Stamp the row
-      // (sticky) so that when the instance dies and the lease expires, the reaper
-      // can classify the lost job as `spot_reclaimed` (generous retry cap) rather
-      // than a generic crash. Honored only from the claiming agent (the queue op
-      // scopes to claimed_by + a live state).
-      if ((req.body as { spotInterruption?: unknown } | undefined)?.spotInterruption === true) {
-        markRunnerJobSpotInterruption({ jobId, agentId: req.agent!.agentId, now });
-      }
       res.status(204).end();
     },
   );

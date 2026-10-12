@@ -1043,24 +1043,37 @@ describe('runExecStepChild (exit-vs-close + process-group kill)', () => {
   });
 });
 
-// A draining instance (pending EC2 Spot reclaim) must never claim fresh work —
-// any job it picks up inside the 2-minute window is guaranteed to be lost
-// mid-run, burning a retry generation and minutes of the run's wall clock.
+// A draining instance (Spot interruption notice or rebalance recommendation)
+// must never claim fresh work: a job it picks up now is likely to be lost
+// mid-run, burning a retry and minutes of the run's wall clock.
 describe('agentIsDraining (claim-loop Spot guard)', () => {
+  const no = async () => false;
+  const yes = async () => true;
+
   it('reports draining once the IMDS probe sees a pending interruption', async () => {
-    await expect(agentIsDraining(async () => true)).resolves.toBe(true);
+    await expect(agentIsDraining(yes, no)).resolves.toBe(true);
   });
 
-  it('reports healthy when no interruption is pending', async () => {
-    await expect(agentIsDraining(async () => false)).resolves.toBe(false);
+  it('reports draining on a rebalance recommendation before any interruption notice', async () => {
+    await expect(agentIsDraining(no, yes)).resolves.toBe(true);
+  });
+
+  it('reports healthy when neither signal is present', async () => {
+    await expect(agentIsDraining(no, no)).resolves.toBe(false);
   });
 
   it('fails open to healthy on a probe error (off-EC2 / IMDS blip must not idle the fleet)', async () => {
-    await expect(
-      agentIsDraining(async () => {
-        throw new Error('IMDS unreachable');
-      }),
-    ).resolves.toBe(false);
+    const boom = async (): Promise<boolean> => {
+      throw new Error('IMDS unreachable');
+    };
+    await expect(agentIsDraining(boom, boom)).resolves.toBe(false);
+  });
+
+  it('still drains on a rebalance recommendation when the interruption probe errors', async () => {
+    const boom = async (): Promise<boolean> => {
+      throw new Error('IMDS unreachable');
+    };
+    await expect(agentIsDraining(boom, yes)).resolves.toBe(true);
   });
 });
 

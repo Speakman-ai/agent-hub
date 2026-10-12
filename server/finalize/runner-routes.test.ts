@@ -22,7 +22,8 @@ vi.mock('./hub-task-protection.js', async (importOriginal) => {
 import { armHubTaskProtection } from './hub-task-protection.js';
 import { createRemoteRunnerBackend } from './runner-backend-remote.js';
 import { httpTransport } from './runner-agent.js';
-import { getJobChannel } from './runner-job-channel.js';
+import { createJobChannel, getJobChannel, removeJobChannel } from './runner-job-channel.js';
+import { detailIsSpotReclaim } from './spot-interruption.js';
 import type { AddressInfo } from 'net';
 import createRunnerRoutes, {
   parseResourceSummary,
@@ -179,7 +180,7 @@ describe('runner-routes (HTTP control plane)', () => {
     expect(armSettled).toBe(true);
   });
 
-  it('heartbeat with spotInterruption=true stamps the job so a lost lease is a known reclaim', async () => {
+  it('heartbeat with spotInterruption=true requeues the job immediately as a spot reclaim', async () => {
     const token = await register();
     enqueueRunnerJob({
       orgId: 'orgA',
@@ -197,6 +198,8 @@ describe('runner-routes (HTTP control plane)', () => {
       .send({});
     expect(claim.status).toBe(200);
     const jobId = claim.body.jobId as string;
+    const channel = createJobChannel(jobId);
+    const failSpy = vi.spyOn(channel, 'fail');
 
     // End-to-end through express.json() parsing: the real transport body shape.
     const hb = await request(app)
@@ -205,15 +208,30 @@ describe('runner-routes (HTTP control plane)', () => {
       .send({ spotInterruption: true });
     expect(hb.status).toBe(204);
 
-    const row = getOrgsDb()
-      .prepare('SELECT spot_interruption_at FROM runner_jobs WHERE id=?')
-      .get(jobId) as { spot_interruption_at: number | null };
-    expect(row.spot_interruption_at).not.toBeNull();
+    // The in-process channel fails right away with the spot_reclaimed marker, so
+    // step-runner classifies the in-flight step as `spot_reclaimed` and the
+    // per-instance retry re-queues it, without waiting for the kill + lease expiry.
+    expect(failSpy).toHaveBeenCalledTimes(1);
+    expect(detailIsSpotReclaim((failSpy.mock.calls[0]![0] as Error).message)).toBe(true);
 
-    // And the consequence: a later lease expiry is classified as a reclaim.
-    expect(reapExpiredRunnerLeases(Date.now() + 10 * 60_000)).toEqual([
-      { id: jobId, spotReclaimed: true, ecsTaskArn: null },
-    ]);
+    const row = getOrgsDb()
+      .prepare('SELECT state, spot_interruption_at, detail FROM runner_jobs WHERE id=?')
+      .get(jobId) as { state: string; spot_interruption_at: number | null; detail: string | null };
+    expect(row.state).toBe('lost');
+    expect(row.spot_interruption_at).not.toBeNull();
+    expect(row.detail).toMatch(/spot interruption notice/);
+
+    // Already terminal, so the reaper has nothing left to do for it.
+    expect(reapExpiredRunnerLeases(Date.now() + 10 * 60_000)).toEqual([]);
+
+    // A repeat report (the agent keeps re-sending the sticky flag) is a no-op.
+    const again = await request(app)
+      .post(`/api/runners/jobs/${jobId}/heartbeat`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ spotInterruption: true });
+    expect(again.status).toBe(204);
+    expect(failSpy).toHaveBeenCalledTimes(1);
+    removeJobChannel(jobId);
   });
 
   it('heartbeat without the flag does not stamp a spot interruption', async () => {

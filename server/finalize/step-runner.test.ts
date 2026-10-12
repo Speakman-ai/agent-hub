@@ -691,6 +691,83 @@ describe('runJobSteps — runner teardown (context canceled) reclassifies to inf
   });
 });
 
+describe('runJobSteps — non-zero exit after a recorded Spot notice is spot_reclaimed', () => {
+  const spotProbe =
+    (spotInterrupted: boolean): (() => RunnerJobLossProbe) =>
+    () => ({
+      state: 'running',
+      lost: false,
+      leaseExpired: false,
+      spotInterrupted,
+      heartbeatAt: Date.now(),
+      detail: null,
+    });
+
+  function run(probe: () => RunnerJobLossProbe) {
+    const stmts = makeStmts();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      f.child.probeRunnerLoss = probe;
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const resultP = runJobSteps(deps, {
+      runId: RUN_ID,
+      config: makeConfig([{ name: 'E2E', run: 'docker compose up' }]),
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    return { stmts, fakes, resultP };
+  }
+
+  it('a cut-off docker pull (exit 1, no sentinel at the end) on a spot-flagged runner → spot_reclaimed', async () => {
+    const { stmts, fakes, resultP } = run(spotProbe(true));
+    await microtaskTick();
+    // The shape from production: the teardown sentinel is not in the terminal
+    // window, so the text-based detectors miss it and it used to reach the fix loop.
+    fakes[0].stdout.push('60493946972a Pull complete\n');
+    fakes[0].stdout.push('368ee3bc Downloading [=====>     ]\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 1);
+
+    const result = await resultP;
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('spot_reclaimed');
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('the same exit without a spot notice stays CI-class', async () => {
+    const { stmts, fakes, resultP } = run(spotProbe(false));
+    await microtaskTick();
+    fakes[0].stdout.push('60493946972a Pull complete\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 1);
+
+    const result = await resultP;
+    expect(result.status).toBe('failure');
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'step_failed', RUN_ID);
+  });
+
+  it('a genuine test-failure summary wins even on a spot-flagged runner', async () => {
+    const { stmts, fakes, resultP } = run(spotProbe(true));
+    await microtaskTick();
+    fakes[0].stdout.push('Tests  3 failed | 900 passed (903)\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 1);
+
+    const result = await resultP;
+    expect(result.status).toBe('failure');
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'step_failed', RUN_ID);
+  });
+});
+
 describe('runJobSteps — workspace-permission (EACCES) reclassifies to infra_error', () => {
   it('an install step dying with EACCES on /github/workspace → infra `runner_workspace_unwritable`, not step_failed', async () => {
     const stmts = makeStmts();

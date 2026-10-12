@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  checkRebalanceRecommendation,
   checkSpotInterruption,
   detailIsSpotReclaim,
   parseInstanceActionBody,
+  parseRebalanceBody,
   spotReclaimDetail,
   SPOT_RECLAIM_DETAIL_MARKER,
   type FetchLike,
@@ -129,5 +131,63 @@ describe('checkSpotInterruption', () => {
     const status = await checkSpotInterruption({ fetchImpl });
     expect(status.pending).toBe(true);
     expect(seen[0]).toBe('http://imds.test:1234/latest/api/token');
+  });
+});
+
+describe('parseRebalanceBody', () => {
+  it('reads the noticeTime from the IMDS body', () => {
+    expect(parseRebalanceBody('{"noticeTime": "2020-10-27T08:22:00Z"}')).toEqual({
+      recommended: true,
+      noticeTime: '2020-10-27T08:22:00Z',
+    });
+  });
+
+  it('treats an empty, unparseable, or non-object body as no recommendation', () => {
+    expect(parseRebalanceBody('').recommended).toBe(false);
+    expect(parseRebalanceBody('not json').recommended).toBe(false);
+    expect(parseRebalanceBody('null').recommended).toBe(false);
+  });
+});
+
+describe('checkRebalanceRecommendation', () => {
+  const ORIGINAL_ENV = { ...process.env };
+  beforeEach(() => {
+    delete process.env.AWS_EC2_METADATA_DISABLED;
+    delete process.env.AWS_EC2_METADATA_SERVICE_ENDPOINT;
+  });
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it('detects a rebalance recommendation via IMDSv2', async () => {
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = vi.fn(async (url, init) => {
+      calls.push(`${init?.method} ${url}`);
+      if (url.endsWith('/latest/api/token')) return resp(200, 'TOKEN123');
+      if (url.endsWith('/latest/meta-data/events/recommendations/rebalance')) {
+        expect(init?.headers?.['x-aws-ec2-metadata-token']).toBe('TOKEN123');
+        return resp(200, '{"noticeTime":"2026-10-12T20:00:00Z"}');
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const status = await checkRebalanceRecommendation({ fetchImpl });
+    expect(status).toEqual({ recommended: true, noticeTime: '2026-10-12T20:00:00Z' });
+    expect(calls[1]).toBe(
+      'GET http://169.254.169.254/latest/meta-data/events/recommendations/rebalance',
+    );
+  });
+
+  it('returns not-recommended on the steady-state 404', async () => {
+    const fetchImpl: FetchLike = vi.fn(async (url) =>
+      url.endsWith('/latest/api/token') ? resp(200, 'T') : resp(404, 'not found'),
+    );
+    expect((await checkRebalanceRecommendation({ fetchImpl })).recommended).toBe(false);
+  });
+
+  it('returns not-recommended (no throw) off-EC2', async () => {
+    const fetchImpl: FetchLike = vi.fn(async () => {
+      throw new Error('connect ECONNREFUSED 169.254.169.254:80');
+    });
+    expect((await checkRebalanceRecommendation({ fetchImpl })).recommended).toBe(false);
   });
 });

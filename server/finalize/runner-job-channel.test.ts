@@ -63,6 +63,19 @@ describe('RunnerJobChannel', () => {
     removeJobChannel(ch.jobId);
   });
 
+  it('a step started after fail() carries the original failure, not a generic error', async () => {
+    const ch = createJobChannel('fail-then-run');
+    ch.attach();
+    ch.fail(new Error('[spot_reclaimed] notice received'));
+    ch.fail(new Error('later, less specific'));
+    const step = ch.runStep(0, 'ship', {});
+    const errs: string[] = [];
+    step.on('error', (e) => errs.push(e.message));
+    await tick();
+    expect(errs).toEqual(['[spot_reclaimed] notice received']);
+    removeJobChannel(ch.jobId);
+  });
+
   it('revokes undelivered commands before reporting runner loss', async () => {
     const ch = createJobChannel('undelivered');
     ch.attach();
