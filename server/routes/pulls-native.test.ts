@@ -40,6 +40,9 @@ function authedPost(url: string) {
 function authedPatch(url: string) {
   return request.patch(url).set(authHeader());
 }
+function authedPut(url: string) {
+  return request.put(url).set(authHeader());
+}
 function authedDelete(url: string) {
   return request.delete(url).set(authHeader());
 }
@@ -321,6 +324,75 @@ describe('PATCH /api/projects/:projectId/pulls/:number', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('PUT /api/projects/:projectId/pulls/:number/auto-merge/schedule', () => {
+  /** Tomorrow's date as a wall-clock string, so the time is always future. */
+  function tomorrowAt(hhmm: string): string {
+    const d = new Date(Date.now() + 2 * 86_400_000);
+    return `${d.toISOString().slice(0, 10)}T${hhmm}`;
+  }
+
+  it('converts the browser-local time to UTC and does not merge a green PR early', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Scheduled' }).expect(201);
+
+    const local = tomorrowAt('09:30');
+    const res = await authedPut(`/api/projects/${id}/pulls/1/auto-merge/schedule`)
+      .send({ localDateTime: local, timeZone: 'America/Chicago' })
+      .expect(200);
+    const expectedUtc = new Date(`${local}:00-05:00`).getTime();
+    const expectedUtcCst = new Date(`${local}:00-06:00`).getTime();
+    const got = Date.parse(res.body.autoMergeAt);
+    expect([expectedUtc, expectedUtcCst]).toContain(got);
+    // Scheduled, not armed: a green PR (no protection) stays open.
+    expect(res.body.pr).toMatchObject({ status: 'open', auto_merge: 0, auto_merge_at: got });
+
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.pr.auto_merge).toBe(false);
+    expect(detail.body.pr.auto_merge_at).toBe(new Date(got).toISOString());
+  });
+
+  it('clears the schedule with null, and direct arming cancels a schedule', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await authedPatch(`/api/projects/${id}`)
+      .send({ branchProtection: { requiredReview: true } })
+      .expect(200);
+    await postPulls(id).send({ headBranch: branch, title: 'Clear' }).expect(201);
+    const url = `/api/projects/${id}/pulls/1/auto-merge/schedule`;
+
+    await authedPut(url)
+      .send({ localDateTime: tomorrowAt('10:00'), timeZone: 'UTC' })
+      .expect(200);
+    const cleared = await authedPut(url).send({ localDateTime: null }).expect(200);
+    expect(cleared.body).toMatchObject({ autoMergeAt: null, pr: { auto_merge_at: null } });
+
+    await authedPut(url)
+      .send({ localDateTime: tomorrowAt('10:00'), timeZone: 'UTC' })
+      .expect(200);
+    const armed = await authedPost(`/api/projects/${id}/pulls/1/auto-merge`)
+      .send({ enabled: true })
+      .expect(200);
+    expect(armed.body.pr).toMatchObject({ auto_merge: 1, auto_merge_at: null });
+  });
+
+  it('rejects past times, bad zones, malformed input, and unknown PRs', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Validate schedule' }).expect(201);
+    const url = `/api/projects/${id}/pulls/1/auto-merge/schedule`;
+    await authedPut(url).send({}).expect(400);
+    await authedPut(url).send({ localDateTime: '2020-01-01T09:00', timeZone: 'UTC' }).expect(400);
+    await authedPut(url)
+      .send({ localDateTime: tomorrowAt('09:00') })
+      .expect(400);
+    await authedPut(url)
+      .send({ localDateTime: tomorrowAt('09:00'), timeZone: 'Mars/Olympus' })
+      .expect(400);
+    await authedPut(url).send({ localDateTime: 'soon', timeZone: 'UTC' }).expect(400);
+    await authedPut(`/api/projects/${id}/pulls/99/auto-merge/schedule`)
+      .send({ localDateTime: tomorrowAt('09:00'), timeZone: 'UTC' })
+      .expect(404);
   });
 });
 

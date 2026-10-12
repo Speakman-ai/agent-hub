@@ -43637,6 +43637,92 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/pulls/{number}/auto-merge/schedule:
+    put:
+      tags:
+        - Projects
+      summary: Schedule auto-merge on a native pull request for a date and time
+      description: Schedules auto-merge for a browser-local date/time; the server converts it to UTC using the given IANA zone. Until that time the PR is not armed, so checks passing early do not merge it. At the scheduled time the Hub arms auto-merge and merges if the PR is mergeable; otherwise it stays armed and merges once checks pass. Arming or disarming via `POST .../auto-merge` cancels the schedule. Agent Hub-hosted projects only; the time must be in the future and within one year.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                localDateTime:
+                  type: string
+                  nullable: true
+                  description: Wall-clock time the user picked in their browser, `YYYY-MM-DDTHH:mm`. `null` clears the schedule.
+                  example: 2026-10-13T09:30
+                timeZone:
+                  type: string
+                  description: The browser's IANA time zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Required unless clearing.
+                  example: America/Chicago
+              required:
+                - localDateTime
+      responses:
+        "200":
+          description: The updated PR summary; `pr.auto_merge_at` is the scheduled UTC instant.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                  autoMergeAt:
+                    type: string
+                    nullable: true
+                    description: Scheduled time, UTC ISO 8601.
+                required:
+                  - pr
+                  - autoMergeAt
+        "400":
+          description: Not Hub-hosted, invalid time/zone, or time not in the future.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is merged or closed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/pulls/{number}/revert:
     post:
       tags:

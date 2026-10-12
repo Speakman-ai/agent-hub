@@ -992,6 +992,14 @@ export interface PullRequestRow {
    * toggle or a `git push -o automerge`.
    */
   auto_merge?: number;
+  /**
+   * Scheduled auto-merge time (UTC epoch ms). At this time the Hub arms
+   * auto-merge and merges if the PR is mergeable; otherwise it stays armed
+   * and merges once checks pass. NULL/absent = no schedule.
+   */
+  auto_merge_at?: number | null;
+  /** Last scheduler attempt for a due {@link auto_merge_at} (retry backoff). */
+  auto_merge_attempted_at?: number | null;
 }
 
 /** Inline (per-line) review comment on a native PR diff. */
@@ -3068,6 +3076,12 @@ export interface Stmts {
   updatePullRequestBase: Stmt;
   /** Arm/disarm per-PR auto-merge (open PRs only). Params: (auto_merge, updated_at, id). */
   setPullRequestAutoMerge: Stmt;
+  /** Schedule/clear a timed auto-merge (open PRs only). Params: (auto_merge_at, updated_at, id). */
+  setPullRequestAutoMergeAt: Stmt;
+  /** Open PRs with a due schedule, not attempted since the cutoff. Params: (now, retryCutoff). */
+  listDueScheduledAutoMergePrs: Stmt;
+  /** Guarded claim of one scheduled merge attempt. Params: (attempted_at, updated_at, id, now, retryCutoff). */
+  claimScheduledAutoMergeAttempt: Stmt;
   /** Upsert a pending auto-merge intent for a branch. Params: (project_id, branch, requested_by, created_at). */
   upsertPrAutoMergeIntent: Stmt;
   /** Params: (project_id, branch). */

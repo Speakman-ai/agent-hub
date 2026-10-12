@@ -52,6 +52,7 @@ import { readNativePrState } from './preview/pr-environment-native.js';
 import { bareRepoPath, hostedRepoExists } from './native-pr/host.js';
 import { revParse } from './native-pr/git-read.js';
 import { tryAutoMergeArmedNativePr } from './native-pr/auto-merge-armed.js';
+import { startScheduledAutoMergeTicker } from './native-pr/scheduled-auto-merge.js';
 import { maybeRunPrAutoReview } from './native-pr/auto-review.js';
 import {
   initProjects,
@@ -2979,6 +2980,14 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
           if (!found) return null;
           return { name: found.agent.name, projectId: found.project.id };
         },
+      });
+
+      // Native PRs scheduled to auto-merge at a picked date/time.
+      startScheduledAutoMergeTicker({
+        stmts: stmts!,
+        nativePr,
+        broadcast,
+        getProject: (id) => findProject(id) ?? null,
       });
 
       // Periodic dependency security re-scan for projects that opted into a

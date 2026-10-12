@@ -23,6 +23,7 @@ import {
 import { Pencil, Check, X, Sparkles, SquareKanban, Layers } from 'lucide-react';
 import { api } from '../utils/api';
 import FileDiffView from './FileDiffView';
+import ScheduleAutoMergeButton from './ScheduleAutoMergeButton';
 import { MarkdownContent } from './MarkdownRenderer';
 import { RunRow } from './CiRunsSection';
 import {
@@ -1215,6 +1216,15 @@ function PrDetail({
               )}
               {autoMergeState.enabled ? 'Auto-merge on' : 'Auto-merge'}
             </button>
+          )}
+          {autoMergeState.available && isNative && (
+            <ScheduleAutoMergeButton
+              projectId={projectId}
+              prNumber={pr.number}
+              scheduledAt={pr.auto_merge_at}
+              onChanged={onRefresh}
+              onToast={onToast}
+            />
           )}
           {isOpen && (
             <button

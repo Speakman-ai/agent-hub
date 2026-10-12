@@ -1771,6 +1771,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ enabled }),
     }),
+  // Schedule auto-merge for a device-local wall-clock time (`YYYY-MM-DDTHH:mm`)
+  // in `timeZone`; the server converts to UTC. `null` clears the schedule.
+  schedulePullAutoMerge: (
+    projectId: any,
+    number: any,
+    localDateTime: string | null,
+    timeZone?: string,
+  ) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/auto-merge/schedule`, {
+      method: 'PUT',
+      body: JSON.stringify({ localDateTime, timeZone }),
+    }),
   // Undo a merged PR: commits the inverse on the base branch and pushes the
   // moved branch to the GitHub mirror. Adds a commit; no history rewrite.
   revertPull: (projectId: any, number: any) =>

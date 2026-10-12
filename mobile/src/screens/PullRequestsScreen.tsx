@@ -15,6 +15,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
 import { SidebarContext } from '../context/SidebarContext';
 import { api } from '../utils/api';
+import ScheduleAutoMergeSheet from '../components/ScheduleAutoMergeSheet';
+import { formatScheduledAutoMerge, deviceTimeZone } from '@shared/utils/autoMergeSchedule';
 import { colors } from '../theme/colors';
 import {
   relativePrTime,
@@ -516,6 +518,28 @@ export function PrDetail({
       setTogglingAutoMerge(false);
     }
   }, [projectId, prNumber, togglingAutoMerge, caps.autoMergeEnabled, onRefresh]);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const scheduledAt: string | null = detail?.pr?.auto_merge_at ?? null;
+  const scheduledLabel = formatScheduledAutoMerge(scheduledAt);
+  const handleScheduleSubmit = useCallback(
+    async (localDateTime: string | null) => {
+      if (!prNumber) return;
+      setScheduling(true);
+      setScheduleError(null);
+      try {
+        await api.schedulePullAutoMerge(projectId, prNumber, localDateTime, deviceTimeZone());
+        setScheduleOpen(false);
+        onRefresh();
+      } catch (err: any) {
+        setScheduleError(err?.message || 'Could not schedule auto-merge');
+      } finally {
+        setScheduling(false);
+      }
+    },
+    [projectId, prNumber, onRefresh],
+  );
   const handleRevert = useCallback(() => {
     if (reverting || !prNumber) return;
     Alert.alert(
@@ -821,6 +845,32 @@ export function PrDetail({
               </Text>
             )}
           </TouchableOpacity>
+        ) : null}
+        {caps.canAutoMerge ? (
+          <TouchableOpacity
+            style={styles.prActionButton}
+            onPress={() => {
+              setScheduleError(null);
+              setScheduleOpen(true);
+            }}
+            accessibilityLabel="Schedule auto-merge"
+          >
+            <Text
+              style={[styles.prActionButtonText, scheduledLabel ? { color: colors.sky300 } : null]}
+            >
+              {scheduledLabel ? `Merges ${scheduledLabel}` : 'Schedule'}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
+        {scheduleOpen ? (
+          <ScheduleAutoMergeSheet
+            visible
+            scheduledAt={scheduledAt}
+            busy={scheduling}
+            error={scheduleError}
+            onCancel={() => setScheduleOpen(false)}
+            onSubmit={handleScheduleSubmit}
+          />
         ) : null}
       </View>
 

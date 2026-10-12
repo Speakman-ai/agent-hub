@@ -47,6 +47,8 @@ import { mapWithConcurrency } from '../git-host/recent-pushes.js';
 
 const execFileP = promisify(execFile);
 const LIST_MERGEABILITY_CONCURRENCY = 4;
+/** Upper bound on how far ahead an auto-merge can be scheduled. */
+export const MAX_AUTO_MERGE_SCHEDULE_MS = 365 * 24 * 60 * 60 * 1000;
 
 async function ciConfigTextAtCommit(repoPath: string, sha: string): Promise<string | null> {
   try {
@@ -211,6 +213,13 @@ export interface NativePrService {
   setAutoMerge(args: { project: Project; number: number; enabled: boolean }): {
     row: PullRequestRow;
   };
+  /**
+   * Schedule auto-merge for a UTC instant (epoch ms), or clear the schedule
+   * with `null`. At that time the PR is armed; it never merges earlier.
+   */
+  scheduleAutoMerge(args: { project: Project; number: number; at: number | null }): {
+    row: PullRequestRow;
+  };
   /** Record a human review; approve/changes-requested clears the request flag. */
   submitReview(args: {
     project: Project;
@@ -355,6 +364,10 @@ function summarize(
     // Native PR auto-merge arming (boolean; the GitHub path surfaces an
     // `auto_merge` object instead — the client toggle handles both shapes).
     auto_merge: row.auto_merge === 1,
+    // Scheduled auto-merge time (UTC ISO) or null; clients render it local.
+    // Once the time passes the PR is armed (auto_merge = 1) and the schedule
+    // is only kept server-side for retries, so it is no longer "upcoming".
+    auto_merge_at: row.auto_merge === 1 ? null : toIso(row.auto_merge_at ?? null),
     ...extra,
   };
 }
@@ -1272,6 +1285,34 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         projectId: project.id,
         prNumber: number,
         action: enabled ? 'auto_merge_enabled' : 'auto_merge_disabled',
+      });
+      return { row: requirePr(stmts, project, number) };
+    },
+
+    scheduleAutoMerge({ project, number, at }) {
+      requireHostedRepo(project);
+      const row = requirePr(stmts, project, number);
+      if (row.status !== 'open') {
+        throw new NativePrError(
+          `PR #${number} is ${row.status} — auto-merge cannot be scheduled`,
+          409,
+        );
+      }
+      if (at !== null) {
+        const now = Date.now();
+        if (!Number.isFinite(at) || at <= now) {
+          throw new NativePrError('Scheduled time must be in the future', 400);
+        }
+        if (at > now + MAX_AUTO_MERGE_SCHEDULE_MS) {
+          throw new NativePrError('Scheduled time must be within one year', 400);
+        }
+      }
+      stmts.setPullRequestAutoMergeAt.run(at, Date.now(), row.id);
+      broadcast({
+        type: 'native_pr_update',
+        projectId: project.id,
+        prNumber: number,
+        action: at === null ? 'auto_merge_schedule_cleared' : 'auto_merge_scheduled',
       });
       return { row: requirePr(stmts, project, number) };
     },

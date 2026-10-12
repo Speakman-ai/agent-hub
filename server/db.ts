@@ -1472,6 +1472,14 @@ function initDb(dataDir: string): void {
     // Persisted per-PR auto-merge arming. 1 = merge once the head's checks
     // pass and the PR is otherwise mergeable; 0 = off (default).
     'auto_merge INTEGER NOT NULL DEFAULT 0',
+    // Scheduled auto-merge: UTC epoch ms at which the PR becomes armed
+    // (auto_merge = 1). NULL = no schedule. Kept separate from auto_merge so
+    // a PR that goes green before the scheduled time does not merge early.
+    'auto_merge_at INTEGER',
+    // Last time the scheduler attempted a due scheduled merge. auto_merge_at
+    // stays set until the PR merges/closes/is disarmed, so a failed attempt
+    // (or a crash mid-attempt) is retried once this is old enough.
+    'auto_merge_attempted_at INTEGER',
   ]) {
     try {
       db.exec(`ALTER TABLE pull_requests ADD COLUMN ${col}`);
@@ -1479,6 +1487,9 @@ function initDb(dataDir: string): void {
       /* column already exists */
     }
   }
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_pull_requests_auto_merge_at ON pull_requests(auto_merge_at) WHERE auto_merge_at IS NOT NULL',
+  );
 
   // Dismissal state added to pull_request_reviews after the table shipped.
   // A dismissed review keeps its row (history) but no longer counts toward
@@ -7836,8 +7847,35 @@ function initDb(dataDir: string): void {
     ),
     // Arm/disarm per-PR auto-merge (PR-page toggle or push-option). Open PRs
     // only — a merged/closed PR cannot be armed.
+    // Arming or disarming directly also cancels any pending schedule.
     setPullRequestAutoMerge: db.prepare(
-      `UPDATE pull_requests SET auto_merge = ?, updated_at = ? WHERE id = ? AND status = 'open'`,
+      `UPDATE pull_requests
+          SET auto_merge = ?, auto_merge_at = NULL, auto_merge_attempted_at = NULL, updated_at = ?
+        WHERE id = ? AND status = 'open'`,
+    ),
+    // Schedule (or clear) a timed auto-merge. Scheduling replaces immediate
+    // arming so checks passing before the time cannot merge early.
+    setPullRequestAutoMergeAt: db.prepare(
+      `UPDATE pull_requests
+          SET auto_merge_at = ?, auto_merge = 0, auto_merge_attempted_at = NULL, updated_at = ?
+        WHERE id = ? AND status = 'open'`,
+    ),
+    // Due scheduled merges: never attempted, or last attempted before the
+    // retry cutoff. Params: (now, retryCutoff).
+    listDueScheduledAutoMergePrs: db.prepare(
+      `SELECT * FROM pull_requests
+        WHERE status = 'open' AND auto_merge_at IS NOT NULL AND auto_merge_at <= ?
+          AND (auto_merge_attempted_at IS NULL OR auto_merge_attempted_at <= ?)
+        ORDER BY auto_merge_at`,
+    ),
+    // Guarded claim of one attempt: arms the PR and stamps the attempt time.
+    // auto_merge_at is kept so the row stays retryable until it merges.
+    // `changes = 0` means another tick or a user edit got there first.
+    // Params: (attempted_at, updated_at, id, now, retryCutoff).
+    claimScheduledAutoMergeAttempt: db.prepare(
+      `UPDATE pull_requests SET auto_merge = 1, auto_merge_attempted_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'open' AND auto_merge_at IS NOT NULL AND auto_merge_at <= ?
+          AND (auto_merge_attempted_at IS NULL OR auto_merge_attempted_at <= ?)`,
     ),
     // Pending auto-merge intents for a branch with no open PR yet.
     upsertPrAutoMergeIntent: db.prepare(
@@ -7855,12 +7893,13 @@ function initDb(dataDir: string): void {
     markPullRequestMerged: db.prepare(
       `UPDATE pull_requests
           SET status = 'merged', merged_sha = ?, merged_by = ?, merge_method = ?,
-              merged_at = ?, updated_at = ?
+              merged_at = ?, updated_at = ?, auto_merge_at = NULL, auto_merge_attempted_at = NULL
         WHERE id = ? AND status = 'open'`,
     ),
     markPullRequestClosed: db.prepare(
       `UPDATE pull_requests
-          SET status = 'closed', closed_at = ?, updated_at = ?
+          SET status = 'closed', closed_at = ?, updated_at = ?, auto_merge_at = NULL,
+              auto_merge_attempted_at = NULL
         WHERE id = ? AND status = 'open'`,
     ),
     // Guarded closed → open transition (merged PRs stay closed forever).

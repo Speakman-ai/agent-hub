@@ -22,6 +22,7 @@ import { isSafeBranchName } from '../git-host/repo-read.js';
 import { git, prCommits, prDiff, prDiffStat, prFiles, revParse } from '../native-pr/git-read.js';
 import { NativePrError } from '../native-pr/errors.js';
 import { tryAutoMergeArmedNativePr } from '../native-pr/auto-merge-armed.js';
+import { zonedWallTimeToUtcMs, ZonedTimeError } from '../native-pr/zoned-time.js';
 import { maybeRunPrAutoReview } from '../native-pr/auto-review.js';
 import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
 import { resolveCardSessionId } from '../kanban-caller-session.js';
@@ -310,6 +311,52 @@ registerPath({
       ),
     },
     400: { description: 'Not Hub-hosted or invalid body.', content: jsonContent(PrErrorSchema) },
+    404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
+    409: { description: 'PR is merged or closed.', content: jsonContent(PrErrorSchema) },
+  },
+});
+
+const ScheduleAutoMergeBodySchema = z.object({
+  localDateTime: z.string().nullable().openapi({
+    description:
+      'Wall-clock time the user picked in their browser, `YYYY-MM-DDTHH:mm`. `null` clears the schedule.',
+    example: '2026-10-13T09:30',
+  }),
+  timeZone: z.string().optional().openapi({
+    description:
+      "The browser's IANA time zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Required unless clearing.",
+    example: 'America/Chicago',
+  }),
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/pulls/{number}/auto-merge/schedule',
+  tags: ['Projects'],
+  summary: 'Schedule auto-merge on a native pull request for a date and time',
+  description:
+    'Schedules auto-merge for a browser-local date/time; the server converts it to UTC using the given IANA zone. Until that time the PR is not armed, so checks passing early do not merge it. At the scheduled time the Hub arms auto-merge and merges if the PR is mergeable; otherwise it stays armed and merges once checks pass. Arming or disarming via `POST .../auto-merge` cancels the schedule. Agent Hub-hosted projects only; the time must be in the future and within one year.',
+  request: {
+    params: z.object({ projectId: z.string(), number: z.string() }),
+    body: { content: jsonContent(ScheduleAutoMergeBodySchema) },
+  },
+  responses: {
+    200: {
+      description: 'The updated PR summary; `pr.auto_merge_at` is the scheduled UTC instant.',
+      content: jsonContent(
+        z.object({
+          pr: z.record(z.string(), z.unknown()),
+          autoMergeAt: z
+            .string()
+            .nullable()
+            .openapi({ description: 'Scheduled time, UTC ISO 8601.' }),
+        }),
+      ),
+    },
+    400: {
+      description: 'Not Hub-hosted, invalid time/zone, or time not in the future.',
+      content: jsonContent(PrErrorSchema),
+    },
     404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
     409: { description: 'PR is merged or closed.', content: jsonContent(PrErrorSchema) },
   },
@@ -1013,6 +1060,43 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
           }
         }
         return res.json({ pr: row, merged: false });
+      } catch (err: unknown) {
+        sendNativeError(res, err);
+      }
+    },
+  );
+
+  router.put(
+    '/api/projects/:projectId/pulls/:number/auto-merge/schedule',
+    (req: Request, res: Response) => {
+      const ctx = resolveActionContext(req, res);
+      if (!ctx) return;
+      const parsed = ScheduleAutoMergeBodySchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'localDateTime (string or null) is required' });
+      }
+      const { localDateTime, timeZone } = parsed.data;
+      let at: number | null = null;
+      if (localDateTime !== null) {
+        if (!timeZone) return res.status(400).json({ error: 'timeZone is required' });
+        try {
+          at = zonedWallTimeToUtcMs(localDateTime, timeZone);
+        } catch (err: unknown) {
+          if (err instanceof ZonedTimeError) return res.status(400).json({ error: err.message });
+          throw err;
+        }
+      }
+      try {
+        const { row } = deps.nativePr!.scheduleAutoMerge({
+          project: ctx.project,
+          number: ctx.number,
+          at,
+        });
+        const atMs = row.auto_merge_at ?? null;
+        return res.json({
+          pr: row,
+          autoMergeAt: atMs === null ? null : new Date(atMs).toISOString(),
+        });
       } catch (err: unknown) {
         sendNativeError(res, err);
       }
