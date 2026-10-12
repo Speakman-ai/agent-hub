@@ -2013,33 +2013,90 @@ describe('epic ↔ PR feature-branch linkage', () => {
   });
 });
 
-describe('native PR previews', () => {
-  // The seeded head branch (`agent-hub/dev/session-cafe0001`) has no backing
-  // session row in the test DB, so start/stop resolve to "no session" (409)
-  // and state resolves to null — all without spawning a real preview process.
-  it('start/stop 409 when no live session backs the PR head branch', async () => {
-    const { id, branch } = await hostedProjectWithBranch();
-    await postPulls(id).send({ headBranch: branch, title: 'Preview me' }).expect(201);
+describe('native PR environments', () => {
+  const PREVIEW_YAML = [
+    'version: 1',
+    'preview:',
+    '  compose: docker-compose.yml',
+    '  service: app',
+    '  port: 3000',
+    '',
+  ].join('\n');
 
+  /** Push a hand-named branch (no session) whose deploy.yaml declares `preview:`. */
+  function pushPreviewBranch(work: string, branch: string): void {
+    git(work, 'checkout main');
+    git(work, `checkout -b ${branch}`);
+    mkdirSync(path.join(work, '.agent-hub'), { recursive: true });
+    writeFileSync(path.join(work, '.agent-hub', 'deploy.yaml'), PREVIEW_YAML);
+    git(work, 'add .agent-hub/deploy.yaml');
+    git(work, 'commit -m "declare preview"');
+    git(work, `push -u origin ${branch}`);
+  }
+
+  it('opening a PR on a hand-named branch queues an environment with no session lookup', async () => {
+    const { id, work } = await hostedProjectWithBranch();
+    pushPreviewBranch(work, 'fix/login-redirect');
+    await postPulls(id).send({ headBranch: 'fix/login-redirect', title: 'Fix login' }).expect(201);
+
+    const headSha = execSync('git rev-parse HEAD', { cwd: work }).toString().trim();
+    await vi.waitFor(
+      async () => {
+        const res = await authedGet(`/api/projects/${id}/pulls/1/preview/state`).expect(200);
+        expect(res.body.environment).toMatchObject({
+          source: 'native',
+          prNumber: 1,
+          headSha,
+          headBranch: 'fix/login-redirect',
+          status: 'queued',
+        });
+      },
+      { timeout: 10_000 },
+    );
+
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.preview_available).toBe(true);
+
+    // Manual stop, then start again.
+    const stop = await authedPost(`/api/projects/${id}/pulls/1/preview/stop`).send({}).expect(200);
+    expect(stop.body).toMatchObject({ ok: true, stopped: true });
+    expect(stop.body.environment).toMatchObject({ status: 'stopped', stopReason: 'manual' });
+    const start = await authedPost(`/api/projects/${id}/pulls/1/preview/start`)
+      .send({})
+      .expect(200);
+    expect(start.body.environment).toMatchObject({ status: 'queued', headSha });
+
+    // Close tears it down.
+    await authedPost('/api/pr/close')
+      .send({ prUrl: `/projects/${id}/pulls/1` })
+      .expect(200);
+    await vi.waitFor(async () => {
+      const res = await authedGet(`/api/projects/${id}/pulls/1/preview/state`).expect(200);
+      expect(res.body.environment).toMatchObject({ status: 'stopped', stopReason: 'closed' });
+    });
+    const closedStart = await authedPost(`/api/projects/${id}/pulls/1/preview/start`)
+      .send({})
+      .expect(409);
+    expect(closedStart.body.error).toMatch(/open pull request/);
+  });
+
+  it('a PR whose head has no preview block gets no environment and start 409s', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'No preview' }).expect(201);
+
+    const state = await authedGet(`/api/projects/${id}/pulls/1/preview/state`).expect(200);
+    expect(state.body).toEqual({ environment: null });
     const start = await authedPost(`/api/projects/${id}/pulls/1/preview/start`)
       .send({})
       .expect(409);
-    expect(start.body.error).toMatch(/no live session worktree/i);
-
-    const stop = await authedPost(`/api/projects/${id}/pulls/1/preview/stop`).send({}).expect(409);
-    expect(stop.body.error).toMatch(/no live session worktree/i);
-  });
-
-  it('state returns { sessionId: null, preview: null } when no session backs the PR', async () => {
-    const { id, branch } = await hostedProjectWithBranch();
-    await postPulls(id).send({ headBranch: branch, title: 'State me' }).expect(201);
-
-    const res = await authedGet(`/api/projects/${id}/pulls/1/preview/state`).expect(200);
-    expect(res.body).toEqual({ sessionId: null, preview: null });
+    expect(start.body.error).toMatch(/preview:/);
+    const stop = await authedPost(`/api/projects/${id}/pulls/1/preview/stop`).send({}).expect(200);
+    expect(stop.body).toEqual({ ok: true, stopped: false, environment: null });
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.preview_available).toBe(false);
   });
 
   it('rejects non-hosted projects (400) and unknown PR numbers (404)', async () => {
-    // Non-hosted project.
     const plainId = `plain-${uuidv4().slice(0, 8)}`;
     await authedPost('/api/projects')
       .send({ id: plainId, name: plainId, cwd: '/tmp', color: '#3B82F6' })
@@ -2049,7 +2106,6 @@ describe('native PR previews', () => {
       .expect(400);
     expect(notHosted.body.error).toMatch(/not hosted on Agent Hub/);
 
-    // Hosted project, unknown PR number.
     const { id } = await hostedProjectWithBranch();
     await authedGet(`/api/projects/${id}/pulls/999/preview/state`).expect(404);
   });

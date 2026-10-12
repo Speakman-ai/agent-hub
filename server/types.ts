@@ -2195,8 +2195,6 @@ export interface Stmts {
   createSession: Stmt;
   getSessions: Stmt;
   getSession: Stmt;
-  /** Resolve a session by an id prefix (the 8-hex a PR head branch encodes). */
-  getSessionByIdPrefix: Stmt;
   getRecentLiveSessions: Stmt;
   updateSessionName: Stmt;
   updateSessionNameWithTitleSource: Stmt;
@@ -4577,6 +4575,13 @@ export interface RouteDeps {
    * pr-list/pr-actions route branches and the Finalize push step.
    */
   nativePr?: import('./native-pr/service.js').NativePrService;
+  /**
+   * PR environment lifecycle (rows keyed by pull request). Backs the
+   * `/pulls/:number/preview/*` routes.
+   * Call `pin()` once per request and use the result throughout, so deferred
+   * work stays in the org the request started in.
+   */
+  prEnvironments?: import('./preview/pr-environments.js').OrgScopedPrEnvironmentService<Stmts>;
   findProject: (projectId: string) => Project | null;
   findAgent: (agentId: string) => AgentLookup | null;
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;

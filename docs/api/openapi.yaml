@@ -43719,8 +43719,8 @@ paths:
     post:
       tags:
         - Projects
-      summary: Launch a live preview for a native pull request
-      description: Boots a worktree preview for the session that owns the PR's head branch and returns once the start was accepted (the preview then transitions loading → ready/failed asynchronously; poll the preview state route or the `agenthub_preview` WebSocket channel). Agent Hub-hosted PRs only. 409 when no live session worktree backs the PR's head branch.
+      summary: Start (or rebuild) the PR environment for a pull request
+      description: Queues the PR environment at the PR's current head commit. Environments are keyed by the pull request, not by any chat session, so any head branch works. Requires a `preview:` block in `.agent-hub/deploy.yaml` at the head commit. A failed or stopped environment is rebuilt; an active one at the same commit is returned unchanged. Agent Hub-hosted PRs only. Environments are also queued automatically when a PR opens or its head moves.
       parameters:
         - schema:
             type: string
@@ -43744,7 +43744,7 @@ paths:
                   type: string
       responses:
         "200":
-          description: Preview start accepted.
+          description: Environment queued (or already active at this commit).
           content:
             application/json:
               schema:
@@ -43754,16 +43754,88 @@ paths:
                     type: boolean
                     enum:
                       - true
-                  started:
-                    type: boolean
-                    enum:
-                      - true
-                  sessionId:
-                    type: string
+                  environment:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      projectId:
+                        type: string
+                      source:
+                        type: string
+                        enum:
+                          - native
+                          - github
+                      prNumber:
+                        type: integer
+                      headSha:
+                        type: string
+                      headBranch:
+                        type: string
+                        nullable: true
+                      status:
+                        type: string
+                        enum:
+                          - queued
+                          - building
+                          - ready
+                          - failed
+                          - stopped
+                      url:
+                        type: string
+                        nullable: true
+                      error:
+                        type: string
+                        nullable: true
+                      stopReason:
+                        type: string
+                        nullable: true
+                        enum:
+                          - merged
+                          - closed
+                          - manual
+                          - no_preview_config
+                          - null
+                      runnerRef:
+                        type: string
+                        nullable: true
+                      cleanupPending:
+                        type: boolean
+                      logTail:
+                        type: array
+                        items:
+                          type: string
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      readyAt:
+                        type: string
+                        nullable: true
+                      stoppedAt:
+                        type: string
+                        nullable: true
+                    required:
+                      - id
+                      - projectId
+                      - source
+                      - prNumber
+                      - headSha
+                      - headBranch
+                      - status
+                      - url
+                      - error
+                      - stopReason
+                      - runnerRef
+                      - cleanupPending
+                      - logTail
+                      - createdAt
+                      - updatedAt
+                      - readyAt
+                      - stoppedAt
                 required:
                   - ok
-                  - started
-                  - sessionId
+                  - environment
         "400":
           description: Not Hub-hosted or invalid PR number.
           content:
@@ -43776,7 +43848,7 @@ paths:
                 required:
                   - error
         "404":
-          description: Unknown project/PR/session/agent.
+          description: Unknown project/PR.
           content:
             application/json:
               schema:
@@ -43787,7 +43859,7 @@ paths:
                 required:
                   - error
         "409":
-          description: The PR is not open (previews only start for open PRs), no live session worktree backs the PR, or the worktree is not ready.
+          description: The PR is not open, its head has no `preview:` block, or its head commit could not be read (retry later).
           content:
             application/json:
               schema:
@@ -43798,7 +43870,7 @@ paths:
                 required:
                   - error
         "501":
-          description: Preview routing is not available on this deployment.
+          description: PR environments are not available on this deployment.
           content:
             application/json:
               schema:
@@ -43812,8 +43884,8 @@ paths:
     post:
       tags:
         - Projects
-      summary: Tear down a native pull request preview
-      description: "Stops the worktree preview for the session behind the PR's head branch (SIGTERM to the process group, port release). Idempotent — returns `stopped: 0` when nothing was running. Also fired automatically when the PR merges."
+      summary: Stop the PR environment for a pull request
+      description: "Tears down the PR environment and marks it `stopped` (reason `manual`). When an earlier teardown failed (`cleanupPending`), stopping again retries it. New commits do not restart a manually stopped environment until it is started again. Idempotent: `stopped` is false when nothing was running. Environments also stop automatically when the PR merges or closes."
       parameters:
         - schema:
             type: string
@@ -43827,7 +43899,7 @@ paths:
           in: path
       responses:
         "200":
-          description: Preview stop processed.
+          description: Stop processed.
           content:
             application/json:
               schema:
@@ -43838,13 +43910,91 @@ paths:
                     enum:
                       - true
                   stopped:
-                    type: number
-                  sessionId:
-                    type: string
+                    type: boolean
+                  environment:
+                    type: object
+                    nullable: true
+                    properties:
+                      id:
+                        type: string
+                      projectId:
+                        type: string
+                      source:
+                        type: string
+                        enum:
+                          - native
+                          - github
+                      prNumber:
+                        type: integer
+                      headSha:
+                        type: string
+                      headBranch:
+                        type: string
+                        nullable: true
+                      status:
+                        type: string
+                        enum:
+                          - queued
+                          - building
+                          - ready
+                          - failed
+                          - stopped
+                      url:
+                        type: string
+                        nullable: true
+                      error:
+                        type: string
+                        nullable: true
+                      stopReason:
+                        type: string
+                        nullable: true
+                        enum:
+                          - merged
+                          - closed
+                          - manual
+                          - no_preview_config
+                          - null
+                      runnerRef:
+                        type: string
+                        nullable: true
+                      cleanupPending:
+                        type: boolean
+                      logTail:
+                        type: array
+                        items:
+                          type: string
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      readyAt:
+                        type: string
+                        nullable: true
+                      stoppedAt:
+                        type: string
+                        nullable: true
+                    required:
+                      - id
+                      - projectId
+                      - source
+                      - prNumber
+                      - headSha
+                      - headBranch
+                      - status
+                      - url
+                      - error
+                      - stopReason
+                      - runnerRef
+                      - cleanupPending
+                      - logTail
+                      - createdAt
+                      - updatedAt
+                      - readyAt
+                      - stoppedAt
                 required:
                   - ok
                   - stopped
-                  - sessionId
+                  - environment
         "400":
           description: Not Hub-hosted or invalid PR number.
           content:
@@ -43867,8 +44017,8 @@ paths:
                     type: string
                 required:
                   - error
-        "409":
-          description: No live session worktree backs the PR.
+        "501":
+          description: PR environments are not available on this deployment.
           content:
             application/json:
               schema:
@@ -43882,8 +44032,8 @@ paths:
     get:
       tags:
         - Projects
-      summary: Read the current preview state for a native pull request
-      description: "Returns the `agenthub_preview` snapshot event for the session behind the PR's head branch (status loading/ready/failed, url, port, log tail), or `preview: null` when no preview is active or no session backs the branch."
+      summary: Read the PR environment for a pull request
+      description: "Returns the PR environment row (status queued/building/ready/failed/stopped, url, error, log tail), or `environment: null` when the PR never had one."
       parameters:
         - schema:
             type: string
@@ -43897,23 +44047,94 @@ paths:
           in: path
       responses:
         "200":
-          description: Preview snapshot (or null).
+          description: Environment (or null).
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  sessionId:
-                    type: string
-                    nullable: true
-                  preview:
+                  environment:
                     type: object
                     nullable: true
-                    additionalProperties:
-                      nullable: true
+                    properties:
+                      id:
+                        type: string
+                      projectId:
+                        type: string
+                      source:
+                        type: string
+                        enum:
+                          - native
+                          - github
+                      prNumber:
+                        type: integer
+                      headSha:
+                        type: string
+                      headBranch:
+                        type: string
+                        nullable: true
+                      status:
+                        type: string
+                        enum:
+                          - queued
+                          - building
+                          - ready
+                          - failed
+                          - stopped
+                      url:
+                        type: string
+                        nullable: true
+                      error:
+                        type: string
+                        nullable: true
+                      stopReason:
+                        type: string
+                        nullable: true
+                        enum:
+                          - merged
+                          - closed
+                          - manual
+                          - no_preview_config
+                          - null
+                      runnerRef:
+                        type: string
+                        nullable: true
+                      cleanupPending:
+                        type: boolean
+                      logTail:
+                        type: array
+                        items:
+                          type: string
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      readyAt:
+                        type: string
+                        nullable: true
+                      stoppedAt:
+                        type: string
+                        nullable: true
+                    required:
+                      - id
+                      - projectId
+                      - source
+                      - prNumber
+                      - headSha
+                      - headBranch
+                      - status
+                      - url
+                      - error
+                      - stopReason
+                      - runnerRef
+                      - cleanupPending
+                      - logTail
+                      - createdAt
+                      - updatedAt
+                      - readyAt
+                      - stoppedAt
                 required:
-                  - sessionId
-                  - preview
+                  - environment
         "400":
           description: Not Hub-hosted or invalid PR number.
           content:
@@ -43927,6 +44148,17 @@ paths:
                   - error
         "404":
           description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "501":
+          description: PR environments are not available on this deployment.
           content:
             application/json:
               schema:

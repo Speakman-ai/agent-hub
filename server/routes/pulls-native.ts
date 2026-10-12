@@ -13,16 +13,8 @@
 import { Router, type Request, type Response } from 'express';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import type { Project, PullRequestRow, RouteDeps, SessionRow } from '../types.js';
-import {
-  startSessionPreview,
-  type StartSessionPreviewDeps,
-} from '../preview/start-session-preview.js';
-import {
-  getSessionPreviewStateEvent,
-  type SessionPreviewStateRuntime,
-} from '../preview/get-session-preview-state.js';
-import { resolveSessionForPrHeadBranch } from '../preview/pr-preview.js';
+import type { Project, PullRequestRow, RouteDeps } from '../types.js';
+import { readNativePrState } from '../preview/pr-environment-native.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { isAgentHubHosted, bareRepoPath, hostedRepoExists } from '../native-pr/host.js';
 import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
@@ -355,13 +347,33 @@ registerPath({
   },
 });
 
+const PrEnvironmentSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  source: z.enum(['native', 'github']),
+  prNumber: z.number().int(),
+  headSha: z.string(),
+  headBranch: z.string().nullable(),
+  status: z.enum(['queued', 'building', 'ready', 'failed', 'stopped']),
+  url: z.string().nullable(),
+  error: z.string().nullable(),
+  stopReason: z.enum(['merged', 'closed', 'manual', 'no_preview_config']).nullable(),
+  runnerRef: z.string().nullable(),
+  cleanupPending: z.boolean(),
+  logTail: z.array(z.string()),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  readyAt: z.string().nullable(),
+  stoppedAt: z.string().nullable(),
+});
+
 registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/pulls/{number}/preview/start',
   tags: ['Projects'],
-  summary: 'Launch a live preview for a native pull request',
+  summary: 'Start (or rebuild) the PR environment for a pull request',
   description:
-    "Boots a worktree preview for the session that owns the PR's head branch and returns once the start was accepted (the preview then transitions loading → ready/failed asynchronously; poll the preview state route or the `agenthub_preview` WebSocket channel). Agent Hub-hosted PRs only. 409 when no live session worktree backs the PR's head branch.",
+    "Queues the PR environment at the PR's current head commit. Environments are keyed by the pull request, not by any chat session, so any head branch works. Requires a `preview:` block in `.agent-hub/deploy.yaml` at the head commit. A failed or stopped environment is rebuilt; an active one at the same commit is returned unchanged. Agent Hub-hosted PRs only. Environments are also queued automatically when a PR opens or its head moves.",
   request: {
     params: z.object({ projectId: z.string(), number: z.string() }),
     body: {
@@ -372,23 +384,21 @@ registerPath({
   },
   responses: {
     200: {
-      description: 'Preview start accepted.',
-      content: jsonContent(
-        z.object({ ok: z.literal(true), started: z.literal(true), sessionId: z.string() }),
-      ),
+      description: 'Environment queued (or already active at this commit).',
+      content: jsonContent(z.object({ ok: z.literal(true), environment: PrEnvironmentSchema })),
     },
     400: {
       description: 'Not Hub-hosted or invalid PR number.',
       content: jsonContent(PrErrorSchema),
     },
-    404: { description: 'Unknown project/PR/session/agent.', content: jsonContent(PrErrorSchema) },
+    404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
     409: {
       description:
-        'The PR is not open (previews only start for open PRs), no live session worktree backs the PR, or the worktree is not ready.',
+        'The PR is not open, its head has no `preview:` block, or its head commit could not be read (retry later).',
       content: jsonContent(PrErrorSchema),
     },
     501: {
-      description: 'Preview routing is not available on this deployment.',
+      description: 'PR environments are not available on this deployment.',
       content: jsonContent(PrErrorSchema),
     },
   },
@@ -398,15 +408,19 @@ registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/pulls/{number}/preview/stop',
   tags: ['Projects'],
-  summary: 'Tear down a native pull request preview',
+  summary: 'Stop the PR environment for a pull request',
   description:
-    "Stops the worktree preview for the session behind the PR's head branch (SIGTERM to the process group, port release). Idempotent — returns `stopped: 0` when nothing was running. Also fired automatically when the PR merges.",
+    'Tears down the PR environment and marks it `stopped` (reason `manual`). When an earlier teardown failed (`cleanupPending`), stopping again retries it. New commits do not restart a manually stopped environment until it is started again. Idempotent: `stopped` is false when nothing was running. Environments also stop automatically when the PR merges or closes.',
   request: { params: z.object({ projectId: z.string(), number: z.string() }) },
   responses: {
     200: {
-      description: 'Preview stop processed.',
+      description: 'Stop processed.',
       content: jsonContent(
-        z.object({ ok: z.literal(true), stopped: z.number(), sessionId: z.string() }),
+        z.object({
+          ok: z.literal(true),
+          stopped: z.boolean(),
+          environment: PrEnvironmentSchema.nullable(),
+        }),
       ),
     },
     400: {
@@ -414,8 +428,8 @@ registerPath({
       content: jsonContent(PrErrorSchema),
     },
     404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
-    409: {
-      description: 'No live session worktree backs the PR.',
+    501: {
+      description: 'PR environments are not available on this deployment.',
       content: jsonContent(PrErrorSchema),
     },
   },
@@ -425,25 +439,24 @@ registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/pulls/{number}/preview/state',
   tags: ['Projects'],
-  summary: 'Read the current preview state for a native pull request',
+  summary: 'Read the PR environment for a pull request',
   description:
-    "Returns the `agenthub_preview` snapshot event for the session behind the PR's head branch (status loading/ready/failed, url, port, log tail), or `preview: null` when no preview is active or no session backs the branch.",
+    'Returns the PR environment row (status queued/building/ready/failed/stopped, url, error, log tail), or `environment: null` when the PR never had one.',
   request: { params: z.object({ projectId: z.string(), number: z.string() }) },
   responses: {
     200: {
-      description: 'Preview snapshot (or null).',
-      content: jsonContent(
-        z.object({
-          sessionId: z.string().nullable(),
-          preview: z.record(z.string(), z.unknown()).nullable(),
-        }),
-      ),
+      description: 'Environment (or null).',
+      content: jsonContent(z.object({ environment: PrEnvironmentSchema.nullable() })),
     },
     400: {
       description: 'Not Hub-hosted or invalid PR number.',
       content: jsonContent(PrErrorSchema),
     },
     404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
+    501: {
+      description: 'PR environments are not available on this deployment.',
+      content: jsonContent(PrErrorSchema),
+    },
   },
 });
 
@@ -1028,27 +1041,19 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
     },
   );
 
-  // PR-scoped previews
-  // A native PR has no preview runtime of its own — previews are
-  // session/worktree-scoped. A PR's head branch encodes the session that owns
-  // it, so a PR preview IS that session's worktree preview. These routes
-  // resolve the session and drive the existing session preview surface.
-  // Resolve the session that owns a PR head branch, scoped to `project` and
-  // pinned to the full canonical branch identity (see
-  // `resolveSessionForPrHeadBranch`). The 8-hex prefix is never the boundary.
-  const resolvePreviewSession = (project: Project, headBranch: string): SessionRow | null =>
-    resolveSessionForPrHeadBranch(
-      headBranch,
-      project.id,
-      (prefix) => deps.stmts.getSessionByIdPrefix.all(prefix) as SessionRow[],
-      (s) => deps.findAgent(s.agent_id)?.project?.id ?? null,
-    );
+  // PR environments
+  // Keyed by pull request (`pr_environments`), never by the authoring session,
+  // so a PR on any head branch can have one. Agent Hub-hosted PRs only; open
+  // state and head come from the PR row and the hosted ref.
+  type PreviewCtx = { project: Project; number: number; source: 'native'; pr: PullRequestRow };
 
-  const resolvePrSession = (
-    ctx: { project: Project; number: number },
-    res: Response,
-    opts: { requireOpen?: boolean } = {},
-  ): SessionRow | null => {
+  const resolvePreviewContext = (req: Request, res: Response): PreviewCtx | null => {
+    const ctx = resolveActionContext(req, res);
+    if (!ctx) return null;
+    if (!deps.prEnvironments) {
+      res.status(501).json({ error: 'PR environments are not available on this deployment.' });
+      return null;
+    }
     const pr = deps.stmts.getPullRequestByNumber.get(ctx.project.id, ctx.number) as
       | PullRequestRow
       | undefined;
@@ -1056,54 +1061,42 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       res.status(404).json({ error: `PR #${ctx.number} not found` });
       return null;
     }
-    // Starting a preview is an open-PR action. A merged PR's preview is torn
-    // down automatically on merge, so accepting a start for a merged/closed PR
-    // would defeat that teardown (and let a default-on client re-boot it). The
-    // client hides the control for non-open PRs; this is the server-side half.
-    if (opts.requireOpen && pr.status !== 'open') {
-      res.status(409).json({
-        error: `A preview can only be started for an open pull request (PR #${ctx.number} is ${pr.status}).`,
-      });
-      return null;
-    }
-    const session = resolvePreviewSession(ctx.project, pr.head_branch);
-    if (!session) {
-      res.status(409).json({
-        error:
-          'No live session worktree is associated with this pull request, so a preview cannot be launched for it.',
-      });
-      return null;
-    }
-    return session;
+    return { ...ctx, source: 'native', pr };
   };
 
   router.post(
     '/api/projects/:projectId/pulls/:number/preview/start',
     async (req: Request, res: Response) => {
-      const ctx = resolveActionContext(req, res);
+      const ctx = resolvePreviewContext(req, res);
       if (!ctx) return;
-      const session = resolvePrSession(ctx, res, { requireOpen: true });
-      if (!session) return;
-      const body = (req.body ?? {}) as { route?: string; reason?: string };
-      try {
-        const result = await startSessionPreview({
-          sessionId: session.id,
-          body: { route: body.route, reason: body.reason ?? `PR #${ctx.number} preview` },
-          broadcast: deps.broadcast,
-          findAgent: deps.findAgent,
-          getDevServerRuntime: deps.getDevServerRuntime as
-            | StartSessionPreviewDeps['getDevServerRuntime']
-            | undefined,
-          getSession: (id) => deps.stmts.getSession.get(id) as SessionRow | undefined,
-          routing: {
-            publicUrl: deps.config.publicUrl,
-            subdomainBase: deps.config.previewSubdomainBase,
+      // Pin the org once for the whole request: the reads below run later,
+      // inside that org's per-PR queue, and must not follow an org switch.
+      const service = deps.prEnvironments!.pin();
+      const pr = { source: ctx.source, prNumber: ctx.number } as const;
+      const projectId = ctx.project.id;
+      const orgStmts = service.org.stmts;
+      // Read inside the service's per-PR queue: a close/merge that lands while
+      // the head lookup is in flight is seen before anything is queued.
+      const readState = () =>
+        readNativePrState(
+          {
+            getPr: (id, n) =>
+              orgStmts.getPullRequestByNumber.get(id, n) as PullRequestRow | undefined,
+            // The hosted ref is the truth; the row's sha only moves on PR create/refresh.
+            revParseHead: async (id, branch) =>
+              hostedRepoExists(id) ? revParse(bareRepoPath(id), `refs/heads/${branch}`) : null,
           },
-        });
+          projectId,
+          ctx.number,
+        );
+      try {
+        const result = await service.start(ctx.project, pr, readState);
         if (!result.ok) {
-          return res.status(result.statusCode).json({ error: result.error });
+          return res
+            .status(result.reason === 'not_found' ? 404 : 409)
+            .json({ error: result.error });
         }
-        return res.json({ ok: true, started: true, sessionId: session.id });
+        return res.json({ ok: true, environment: result.environment });
       } catch (err: unknown) {
         return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -1113,54 +1106,31 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
   router.post(
     '/api/projects/:projectId/pulls/:number/preview/stop',
     async (req: Request, res: Response) => {
-      const ctx = resolveActionContext(req, res);
+      const ctx = resolvePreviewContext(req, res);
       if (!ctx) return;
-      const session = resolvePrSession(ctx, res);
-      if (!session) return;
-      const runtime = deps.getDevServerRuntime?.() ?? null;
-      let stopped = 0;
-      if (runtime) {
-        try {
-          stopped = await runtime.stopBySessionId(session.id);
-        } catch (err: unknown) {
-          console.warn(
-            `[pulls-native] preview stop failed for ${ctx.project.id}#${ctx.number} (session ${session.id}): ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
+      const service = deps.prEnvironments!.pin();
+      const pr = { source: ctx.source, prNumber: ctx.number } as const;
+      const before = service.get(ctx.project.id, pr);
+      try {
+        const environment = await service.stop(ctx.project, pr);
+        const stopped = Boolean(before && before.status !== 'stopped');
+        return res.json({ ok: true, stopped, environment });
+      } catch (err: unknown) {
+        return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
-      deps.broadcast({
-        type: 'agenthub_preview',
-        kind: 'preview_stopped',
-        sessionId: session.id,
-      } as Record<string, unknown>);
-      return res.json({ ok: true, stopped, sessionId: session.id });
     },
   );
 
   router.get(
     '/api/projects/:projectId/pulls/:number/preview/state',
     (req: Request, res: Response) => {
-      const ctx = resolveActionContext(req, res);
+      const ctx = resolvePreviewContext(req, res);
       if (!ctx) return;
-      const pr = deps.stmts.getPullRequestByNumber.get(ctx.project.id, ctx.number) as
-        | PullRequestRow
-        | undefined;
-      if (!pr) {
-        return res.status(404).json({ error: `PR #${ctx.number} not found` });
-      }
-      const session = resolvePreviewSession(ctx.project, pr.head_branch);
-      if (!session) {
-        // No session behind the branch → definitively no preview, not an error.
-        return res.json({ sessionId: null, preview: null });
-      }
-      const runtime = deps.getDevServerRuntime?.() as unknown as
-        | SessionPreviewStateRuntime
-        | null
-        | undefined;
-      const event = getSessionPreviewStateEvent(runtime, session.id);
-      return res.json({ sessionId: session.id, preview: event });
+      const environment = deps.prEnvironments!.get(ctx.project.id, {
+        source: ctx.source,
+        prNumber: ctx.number,
+      });
+      return res.json({ environment });
     },
   );
 

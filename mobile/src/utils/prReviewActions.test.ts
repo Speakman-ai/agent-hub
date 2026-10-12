@@ -204,83 +204,32 @@ describe('prDetailCapabilities', () => {
         .canAutoMerge,
     ).toBe(false);
   });
-  it('native open PR with a configured dev server: canPreview true', () => {
-    expect(
-      prDetailCapabilities({
-        source: 'agenthub',
-        preview_available: true,
-        pr: { state: 'open', html_url: 'x' },
-      }),
-    ).toMatchObject({ canPreview: true, previewDefaultOn: false });
+  it('open PR with a preview block: canPreview true, native or GitHub', () => {
+    for (const source of ['agenthub', 'github']) {
+      expect(
+        prDetailCapabilities({
+          source,
+          preview_available: true,
+          pr: { state: 'open', html_url: 'x' },
+        }),
+      ).toMatchObject({ canPreview: true, canStartPreview: true });
+    }
   });
-  it('previewDefaultOn reflects the project toggle', () => {
-    expect(
-      prDetailCapabilities({
-        source: 'agenthub',
-        preview_available: true,
-        preview_default_on: true,
-        pr: { state: 'open', html_url: 'x' },
-      }).previewDefaultOn,
-    ).toBe(true);
-  });
-  it('canPreview false without a dev server, or for GitHub PRs', () => {
+  it('canPreview false without a preview block', () => {
     expect(
       prDetailCapabilities({ source: 'agenthub', pr: { state: 'open', html_url: 'x' } }).canPreview,
     ).toBe(false);
-    expect(
-      prDetailCapabilities({
-        source: 'github',
-        preview_available: true,
-        pr: { state: 'open', html_url: 'x' },
-      }).canPreview,
-    ).toBe(false);
   });
-  it('canPreview false when the owning session worktree is gone (would 409); shows the archived note', () => {
-    const caps = prDetailCapabilities({
-      source: 'agenthub',
-      preview_available: true,
-      preview_session_available: false,
-      pr: { state: 'open', html_url: 'x' },
-    });
-    expect(caps.canPreview).toBe(false);
-    expect(caps.previewSessionLive).toBe(false);
-    expect(caps.previewArchived).toBe(true);
-  });
-  it('a configured, session-backed PR is not treated as archived', () => {
-    const caps = prDetailCapabilities({
-      source: 'agenthub',
-      preview_available: true,
-      preview_session_available: true,
-      pr: { state: 'open', html_url: 'x' },
-    });
-    expect(caps.canPreview).toBe(true);
-    expect(caps.previewArchived).toBe(false);
-  });
-  it('preview_session_available absent (older server) defaults to live', () => {
-    const caps = prDetailCapabilities({
-      source: 'agenthub',
-      preview_available: true,
-      pr: { state: 'open', html_url: 'x' },
-    });
-    expect(caps.canPreview).toBe(true);
-    expect(caps.previewSessionLive).toBe(true);
-    expect(caps.previewArchived).toBe(false);
-  });
-  it('canPreview false for merged/closed PRs (preview torn down on merge)', () => {
-    expect(
-      prDetailCapabilities({
-        source: 'agenthub',
-        preview_available: true,
-        pr: { state: 'closed', html_url: 'x' },
-      }).canPreview,
-    ).toBe(false);
-    expect(
-      prDetailCapabilities({
-        source: 'agenthub',
-        preview_available: true,
-        pr: { state: 'closed', merged_at: '2026-06-01T00:00:00Z', html_url: 'x' },
-      }).canPreview,
-    ).toBe(false);
+  it('closed/merged PRs: panel follows the server flag (pending cleanup), never Start', () => {
+    for (const pr of [
+      { state: 'closed', html_url: 'x' },
+      { state: 'closed', merged_at: '2026-06-01T00:00:00Z', html_url: 'x' },
+    ]) {
+      const shown = prDetailCapabilities({ source: 'agenthub', preview_available: true, pr });
+      expect(shown).toMatchObject({ canPreview: true, canStartPreview: false });
+      const hidden = prDetailCapabilities({ source: 'agenthub', preview_available: false, pr });
+      expect(hidden).toMatchObject({ canPreview: false, canStartPreview: false });
+    }
   });
   it('native closed (not merged) PR: only reopen', () => {
     const caps = prDetailCapabilities({

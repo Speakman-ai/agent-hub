@@ -14,7 +14,6 @@ import {
   MessageSquare,
   Wrench,
   Eye,
-  EyeOff,
   Bot,
   Search,
   Zap,
@@ -45,7 +44,9 @@ import {
 import {
   prPreviewViewState,
   prPreviewAvailable,
-  prPreviewSessionLive,
+  prPreviewCanStart,
+  prEnvironmentPollMs,
+  startPrEnvironmentPoller,
 } from '@shared/utils/prPreview';
 import { prAgentReviewProgress } from '@shared/utils/prAgentReview';
 import GitHubRepoChrome from './github/GitHubRepoChrome';
@@ -643,16 +644,13 @@ function PrDetail({
     'conversation',
   );
 
-  // PR-scoped preview
-  // Only native PRs whose project has a dev server configured can preview.
+  // PR environment (keyed by the PR, not a session). Shown when the PR's head
+  // declares a `preview:` block in deploy.yaml and the PR is open.
   const previewAvailable = prPreviewAvailable(detail);
-  const previewDefaultOn = Boolean(detail?.preview_default_on);
-  // A live session worktree must still back the PR's head branch for a preview
-  // to launch; once the owning session is archived the worktree is reaped and
-  // `preview/start` 409s. When false we show an explanatory note instead of an
-  // Enable button that only errors, and never auto-start.
-  const previewSessionLive = prPreviewSessionLive(detail);
-  // The latest `/preview/state` response ({ sessionId, preview } | null).
+  // Start/Retry only on an open PR. A closed/merged PR can still show the
+  // panel (its teardown failed and needs Retry teardown) but never starts.
+  const canStartPreview = prPreviewCanStart(detail);
+  // The latest `/preview/state` response ({ environment } | null).
   const [previewStateResp, setPreviewStateResp] = useState<any>(null);
   // True between the Enable click and the first snapshot, so we render loading
   // even though the server has not produced a snapshot row yet.
@@ -660,9 +658,6 @@ function PrDetail({
   const [previewBusy, setPreviewBusy] = useState(false);
   const previewView = prPreviewViewState(previewStateResp, { pending: previewPending });
   const previewStatus = previewView.status;
-  // The PR number we've already auto-started (default-on projects), so opening
-  // a PR does not restart it or fight the reaper.
-  const autoStartedRef = useRef<number | null>(null);
   // The PR the UI is currently showing. A `/preview/state` request captures the
   // PR it was issued for; if this ref has moved on by the time it resolves, the
   // response is stale and must NOT mutate state (else it paints the previous
@@ -676,7 +671,6 @@ function PrDetail({
     setPreviewStateResp(null);
     setPreviewPending(false);
     setPreviewBusy(false);
-    autoStartedRef.current = null;
   }, [pr?.number]);
 
   const refreshPreview = useCallback(async () => {
@@ -687,7 +681,7 @@ function PrDetail({
       // Drop a response for a PR the user already navigated away from.
       if (requested !== currentPrRef.current) return null;
       setPreviewStateResp(res);
-      if (res?.preview) setPreviewPending(false);
+      if (res?.environment && res.environment.status !== 'stopped') setPreviewPending(false);
       return res;
     } catch {
       return null;
@@ -704,13 +698,13 @@ function PrDetail({
     setPreviewPending(true);
     try {
       await api.startNativePrPreview(projectId, requested, {
-        reason: `PR #${requested} preview`,
+        reason: `PR #${requested} environment`,
       });
       await refreshPreview();
     } catch (e: any) {
       if (requested !== currentPrRef.current) return;
       setPreviewPending(false);
-      onToast?.(e?.message || 'Failed to start preview', 'error');
+      onToast?.(e?.message || 'Failed to start PR environment', 'error');
     } finally {
       if (requested === currentPrRef.current) setPreviewBusy(false);
     }
@@ -726,54 +720,37 @@ function PrDetail({
       await refreshPreview();
     } catch (e: any) {
       if (requested === currentPrRef.current) {
-        onToast?.(e?.message || 'Failed to stop preview', 'error');
+        onToast?.(e?.message || 'Failed to stop PR environment', 'error');
       }
     } finally {
       if (requested === currentPrRef.current) setPreviewBusy(false);
     }
   }, [projectId, pr?.number, refreshPreview, onToast]);
 
-  // Hydrate the CURRENT preview state whenever the PR detail opens — even when
-  // the project default is off — so an already-running/failed preview is shown
-  // instead of a misleading idle state. When the project opts every PR in
-  // (previewDefaultOn) and nothing is running, auto-start one so the preview is
-  // there "by default".
+  // One polling loop per (PR, head): reads immediately, then re-reads after
+  // every request settles, success or failure, so neither a transient error
+  // nor an unchanged response can stop it. Fast while queued/building, slower
+  // otherwise, so a server-side rebuild (new head) or teardown shows up
+  // without a reload. A head change restarts it with an immediate read.
+  // Nothing auto-starts here; the server queues environments itself.
+  const prHeadSha = detail?.headSha ?? null;
+  const previewStatusRef = useRef(previewStatus);
+  previewStatusRef.current = previewStatus;
   useEffect(() => {
-    if (!previewAvailable || !pr?.number) return;
-    let alive = true;
-    (async () => {
-      const res = await refreshPreview();
-      if (!alive) return;
-      const hydrated = prPreviewViewState(res).status;
-      if (
-        previewDefaultOn &&
-        previewSessionLive &&
-        hydrated === 'idle' &&
-        autoStartedRef.current !== pr.number
-      ) {
-        autoStartedRef.current = pr.number;
-        void handleEnablePreview();
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-    // handleEnablePreview is guarded by autoStartedRef, so re-runs cannot
-    // double-start; excluding it keeps this to a single hydrate per PR.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewAvailable, previewDefaultOn, previewSessionLive, pr?.number, refreshPreview]);
-
-  // Poll while a preview is booting (from any source: this client's Enable, an
-  // auto-start, or a boot already in flight when the PR was opened).
-  useEffect(() => {
-    if (!previewAvailable || previewStatus !== 'loading') return;
-    const timer = setTimeout(() => {
-      void refreshPreview();
-    }, 2500);
-    return () => clearTimeout(timer);
-    // previewStateResp in deps re-arms the timer after each poll result, so the
-    // loop continues until the status leaves 'loading'.
-  }, [previewAvailable, previewStatus, previewStateResp, refreshPreview]);
+    if (!previewAvailable || !pr?.number) return undefined;
+    const requested = pr.number;
+    return startPrEnvironmentPoller({
+      fetchState: () => api.getNativePrPreviewState(projectId, requested),
+      onState: (res: any) => {
+        // The effect cleanup stops the poller on a PR switch; this guards the
+        // window between a switch and that cleanup.
+        if (requested !== currentPrRef.current) return;
+        setPreviewStateResp(res);
+        if (res?.environment && res.environment.status !== 'stopped') setPreviewPending(false);
+      },
+      nextDelayMs: () => prEnvironmentPollMs(previewStatusRef.current),
+    });
+  }, [previewAvailable, pr?.number, prHeadSha, projectId]);
 
   // Drop the "agent review requested" latch when we move to a different PR.
   useEffect(() => {
@@ -1342,30 +1319,45 @@ function PrDetail({
         >
           <div className="flex items-center gap-2 flex-wrap">
             <Eye size={14} className="text-sky-300" />
-            <span className="text-sm font-medium text-gray-200">Preview</span>
+            <span className="text-sm font-medium text-gray-200">PR environment</span>
 
-            {previewView.status === 'idle' &&
-              (previewSessionLive ? (
-                <button
-                  type="button"
-                  data-testid="pr-preview-enable"
-                  onClick={handleEnablePreview}
-                  disabled={previewBusy}
-                  className="ml-auto flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50"
-                >
-                  {previewBusy ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
-                  Enable preview
-                </button>
-              ) : (
-                <span
-                  data-testid="pr-preview-unavailable"
-                  title="A preview runs against the live session worktree that created this PR. That session has been archived, so its worktree is gone and a preview can no longer be launched."
-                  className="ml-auto flex items-center gap-1.5 text-sm text-gray-500"
-                >
-                  <EyeOff size={14} />
-                  Preview unavailable — session archived
-                </span>
-              ))}
+            {previewView.status === 'idle' && (
+              <>
+                {previewView.reason && (
+                  <span data-testid="pr-preview-stopped" className="text-xs text-gray-500">
+                    {previewView.reason}
+                  </span>
+                )}
+                {previewView.cleanupPending && (
+                  <button
+                    type="button"
+                    data-testid="pr-preview-retry-teardown"
+                    onClick={handleStopPreview}
+                    disabled={previewBusy}
+                    className="flex items-center gap-1.5 text-sm text-amber-300 hover:text-amber-100 transition-colors disabled:opacity-50"
+                  >
+                    <RefreshCw size={14} className={previewBusy ? 'animate-spin' : ''} />
+                    Retry teardown
+                  </button>
+                )}
+                {canStartPreview && (
+                  <button
+                    type="button"
+                    data-testid="pr-preview-enable"
+                    onClick={handleEnablePreview}
+                    disabled={previewBusy}
+                    className="ml-auto flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50"
+                  >
+                    {previewBusy ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Eye size={14} />
+                    )}
+                    Start environment
+                  </button>
+                )}
+              </>
+            )}
 
             {previewView.status === 'loading' && (
               <>
@@ -1374,7 +1366,7 @@ function PrDetail({
                   className="flex items-center gap-1.5 text-sm text-amber-300"
                 >
                   <Loader2 size={14} className="animate-spin" />
-                  Starting preview…
+                  {previewView.label}
                 </span>
                 <button
                   type="button"
@@ -1391,16 +1383,20 @@ function PrDetail({
 
             {previewView.status === 'ready' && (
               <>
-                <a
-                  data-testid="pr-preview-link"
-                  href={previewView.url || '#'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-sm text-emerald-300 hover:text-emerald-100 transition-colors"
-                >
-                  <ExternalLink size={14} />
-                  Open preview
-                </a>
+                {previewView.url ? (
+                  <a
+                    data-testid="pr-preview-link"
+                    href={previewView.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-sm text-emerald-300 hover:text-emerald-100 transition-colors"
+                  >
+                    <ExternalLink size={14} />
+                    {previewView.url}
+                  </a>
+                ) : (
+                  <span className="text-sm text-emerald-300">{previewView.label}</span>
+                )}
                 <button
                   type="button"
                   data-testid="pr-preview-stop"
@@ -1414,7 +1410,7 @@ function PrDetail({
               </>
             )}
 
-            {previewView.status === 'failed' && (
+            {previewView.status === 'failed' && canStartPreview && (
               <button
                 type="button"
                 data-testid="pr-preview-retry"
@@ -1436,6 +1432,17 @@ function PrDetail({
               <XCircle size={13} className="mt-0.5 shrink-0" />
               <span className="break-words">{previewView.reason}</span>
             </div>
+          )}
+
+          {previewView.logTail.length > 0 && (
+            <details data-testid="pr-preview-logs" className="mt-1.5">
+              <summary className="cursor-pointer text-xs text-gray-400 hover:text-gray-200">
+                Logs ({previewView.logTail.length} lines)
+              </summary>
+              <pre className="mt-1 max-h-48 overflow-auto rounded bg-gray-900/70 p-2 text-[11px] leading-snug text-gray-300 whitespace-pre-wrap">
+                {previewView.logTail.slice(-50).join('\n')}
+              </pre>
+            </details>
           )}
         </div>
       )}

@@ -40,7 +40,17 @@ import type { SecurityAutofixDeps } from './security-audit/autofix.js';
 import { createSecurityAuditStore } from './security-audit/findings-store.js';
 import { recordRecentPush } from './git-host/recent-pushes.js';
 import { createNativePrService } from './native-pr/service.js';
-import { resolveSessionForPrHeadBranch } from './preview/pr-preview.js';
+import {
+  createOrgScopedPrEnvironmentService,
+  createPrEnvironmentService,
+  type PrEnvironmentOrgContext,
+  createPrEnvironmentStore,
+  onPrEnvironmentRuntimeRegistered,
+} from './preview/pr-environments.js';
+import { hasPreviewConfigAtSha, probePreviewConfigAtSha } from './preview/pr-environment-config.js';
+import { readNativePrState } from './preview/pr-environment-native.js';
+import { bareRepoPath, hostedRepoExists } from './native-pr/host.js';
+import { revParse } from './native-pr/git-read.js';
 import { tryAutoMergeArmedNativePr } from './native-pr/auto-merge-armed.js';
 import { maybeRunPrAutoReview } from './native-pr/auto-review.js';
 import {
@@ -420,6 +430,7 @@ import type {
   ActiveTaskRow,
   MessageRow,
   Project,
+  PullRequestRow,
 } from './types.js';
 
 const __dirname: string = path.dirname(fileURLToPath(import.meta.url));
@@ -794,6 +805,11 @@ app.use(
             );
           }
         }
+        if (open && project.gitHost === 'agenthub') {
+          // A push to an open PR's head rebuilds its environment at the new
+          // sha. The head and open state are read inside the per-PR queue.
+          syncNativePrEnvironment(project, open.number);
+        }
         if (open) {
           void maybeRunPrAutoReview(
             project,
@@ -887,23 +903,108 @@ app.use(createApiDocsRoutes());
 // does), so those paths push the moved base branch to GitHub themselves.
 // Constructed before initAutoGit so the session "Create PR" flow can
 // create native PRs too.
+// PR environments: lifecycle rows keyed by pull request, in the database of
+// the org the operation started in. Build/teardown go to the registered
+// runtime (`setPrEnvironmentRuntime`); with none registered rows stay queued.
+// Last-seen projects of each org (keyed by its database handle), so an org's
+// pending work can still resolve ITS projects after the active org switches.
+const prEnvProjectSnapshots = new Map<unknown, Map<string, Project>>();
+
+/** The active org's PR-environment context, captured at call entry. */
+function currentPrEnvironmentOrg(): PrEnvironmentOrgContext<NonNullable<typeof stmts>> {
+  const db = getDb();
+  prEnvProjectSnapshots.set(db, new Map(getProjects().map((p) => [p.id, p])));
+  return {
+    key: db,
+    db,
+    stmts: stmts!,
+    // Live lookup while this org is active; its own snapshot once another
+    // org is. Never the other org's project with the same id.
+    findProject: (projectId) =>
+      getDb() === db
+        ? findProject(projectId)
+        : (prEnvProjectSnapshots.get(db)?.get(projectId) ?? null),
+  };
+}
+
+const prEnvironments = createOrgScopedPrEnvironmentService({
+  currentOrg: currentPrEnvironmentOrg,
+  // One service per org: everything an operation does stays in the org it
+  // started in, even if the active org switches while it awaits.
+  create: (org) =>
+    createPrEnvironmentService({
+      store: createPrEnvironmentStore(org.db),
+      probePreviewConfig: (project, headSha) => probePreviewConfigAtSha(project, headSha),
+      findProject: org.findProject,
+      // The PR row and hosted ref are durable, so every reconcile (live
+      // hooks and catch-up after a restart) reads the same truth, in this org.
+      readPrState: (project, pr) =>
+        readNativePrState(
+          {
+            getPr: (projectId, n) =>
+              org.stmts.getPullRequestByNumber.get(projectId, n) as PullRequestRow | undefined,
+            revParseHead: async (projectId, branch) =>
+              hostedRepoExists(projectId)
+                ? revParse(bareRepoPath(projectId), `refs/heads/${branch}`)
+                : null,
+          },
+          project.id,
+          pr.prNumber,
+        ),
+      listOpenPrs: () =>
+        (
+          org.db
+            .prepare("SELECT project_id, number FROM pull_requests WHERE status = 'open'")
+            .all() as Array<{ project_id: string; number: number }>
+        ).map((r) => ({ projectId: r.project_id, prNumber: r.number })),
+      broadcast,
+    }),
+});
+// Catch up on what the active org owes from before a restart (environment
+// work, once a runtime exists).
+void prEnvironments.catchUp().catch((err: unknown) => {
+  console.warn(
+    `[pr-env] startup catch-up failed: ${err instanceof Error ? err.message : String(err)}`,
+  );
+});
+// Work a runtime could not do while absent (queued builds, unconfirmed
+// teardowns, a restart mid-teardown) is caught up once one registers.
+onPrEnvironmentRuntimeRegistered(() => {
+  void prEnvironments.catchUp().catch((err: unknown) => {
+    console.warn(
+      `[pr-env] catch-up after runtime registration failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  });
+});
+
+/**
+ * Sync a native PR's environment with the PR's current state (open + head
+ * sha, or closed/merged). The state is read inside the per-PR queue, so a
+ * head lookup racing a close/merge cannot requeue a closed PR.
+ */
+function syncNativePrEnvironment(project: Project, number: number): void {
+  // Pin the org once; the service reads the PR state (`readPrState`) inside
+  // its per-PR queue. A sync lost to a restart is redone by catch-up.
+  void prEnvironments
+    .pin()
+    .reconcile(project, { source: 'native', prNumber: number })
+    .catch((err: unknown) => {
+      console.warn(
+        `[pr-env] sync failed for ${project.id}#${number}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
+}
+
 const nativePr = createNativePrService({
   stmts: stmts!,
   broadcast,
-  // Whether a live session worktree still backs a PR's head branch, so the PR
-  // detail can gate the Enable-preview control (a dead session 409s on start).
-  // Same resolver the preview/start route and the merge-teardown hook use:
-  // scoped to the project and pinned to the full canonical branch, never the
-  // 8-hex prefix alone.
-  hasLivePreviewSession: (project, headBranch) =>
-    Boolean(
-      resolveSessionForPrHeadBranch(
-        headBranch,
-        project.id,
-        (prefix) => stmts!.getSessionByIdPrefix.all(prefix) as SessionRow[],
-        (s) => findAgent(s.agent_id)?.project?.id ?? null,
-      ),
-    ),
+  hasPreviewEnvironmentConfig: hasPreviewConfigAtSha,
+  getPrEnvironment: (project, number) =>
+    prEnvironments.pin().get(project.id, { source: 'native', prNumber: number }),
   afterBaseBranchMoved: async ({ project, baseBranch }) => {
     // Native merges and reverts move the base branch via `update-ref` — no
     // post-receive hook fires — so EVERY downstream reaction to "default
@@ -938,6 +1039,7 @@ const nativePr = createNativePrService({
   // existed.
   onPrHeadChanged: (project, row, meta) => {
     void maybeRunPrCi(project, row, { stmts: stmts!, broadcast });
+    syncNativePrEnvironment(project, row.number);
     void maybeRunPrAutoReview(
       project,
       row,
@@ -951,35 +1053,10 @@ const nativePr = createNativePrService({
       { trigger: meta.reason === 'created' ? 'pr_create' : 'head_update' },
     );
   },
-  // A merged PR's preview should not linger until the idle reaper catches it.
-  // The PR preview is the worktree preview for the session that owns the head
-  // branch, so resolve that session and stop it. Best-effort: the head branch
-  // is usually deleted on merge, but we key off the branch *name* string on the
-  // (already-updated) row, which survives the git-side branch deletion.
-  afterPrMerged: ({ project, row }) => {
-    // Scoped to the PR's project and pinned to the full canonical branch — an
-    // 8-hex prefix must not let a merge in one project stop another tenant's
-    // preview.
-    const session = resolveSessionForPrHeadBranch(
-      row.head_branch,
-      project.id,
-      (prefix) => stmts!.getSessionByIdPrefix.all(prefix) as SessionRow[],
-      (s) => findAgent(s.agent_id)?.project?.id ?? null,
-    );
-    if (!session) return;
-    void devServerRuntime.stopBySessionId(session.id).catch((err: unknown) => {
-      console.warn(
-        `[native-pr] PR-merge preview teardown failed for session ${session.id}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    });
-    broadcast({
-      type: 'agenthub_preview',
-      kind: 'preview_stopped',
-      sessionId: session.id,
-    } as Record<string, unknown>);
-  },
+  // PR environments are torn down on merge/close and re-queued on reopen.
+  afterPrMerged: ({ project, row }) => syncNativePrEnvironment(project, row.number),
+  afterPrClosed: ({ project, row }) => syncNativePrEnvironment(project, row.number),
+  afterPrReopened: ({ project, row }) => syncNativePrEnvironment(project, row.number),
 });
 
 initAutoGit({
@@ -1890,6 +1967,7 @@ export const routeDeps: RouteDeps = {
   stmts: stmts!,
   broadcast,
   nativePr,
+  prEnvironments,
   findProject,
   findAgent,
   getEnrichedAgent,

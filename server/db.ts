@@ -17,6 +17,7 @@ import {
   dropComposePreviewColumns,
 } from './preview/preview-schema.js';
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
+import { PR_ENVIRONMENTS_SCHEMA } from './preview/pr-environments-schema.js';
 import { BACKGROUND_SHELLS_SCHEMA } from './background-shells/background-shell-schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
@@ -3689,6 +3690,9 @@ function initDb(dataDir: string): void {
   // preview spawns. Schema is co-located with `preview-secrets-store.ts`.
   db.exec(WORKTREE_PREVIEW_SECRETS_SCHEMA);
 
+  // PR environments: lifecycle rows keyed by pull request (not session).
+  db.exec(PR_ENVIRONMENTS_SCHEMA);
+
   // Hub-owned background shells: long-running commands that outlive the
   // per-turn CLI so they can be monitored across turns. Distinct from the
   // older `background_tasks` table (async agent prompt turns). Schema is
@@ -4949,15 +4953,6 @@ function initDb(dataDir: string): void {
       'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL AND sidebar_parent_id IS NULL ORDER BY updated_at DESC',
     ),
     getSession: db.prepare('SELECT * FROM sessions WHERE id = ?'),
-    // Candidate sessions behind a native PR's head branch
-    // (`agent-hub/<agentId>/session-<first8-of-id>`). The branch encodes only
-    // the 8-hex id prefix, so this returns ALL sessions sharing that prefix;
-    // the caller (`resolveSessionForPrHeadBranch`) then pins the exact session
-    // by full canonical-branch identity AND requesting-project scope — the
-    // 8-hex prefix must never be the authorization boundary on its own.
-    getSessionByIdPrefix: db.prepare(
-      "SELECT * FROM sessions WHERE id LIKE ? || '%' ORDER BY created_at DESC",
-    ),
     // Used by the awaiting-input snapshot to bound the scan: only sessions a
     // user has plausibly touched in the last week can be "blocked waiting for
     // a reply." The LIMIT keeps the worst-case bootstrap O(few hundred) row

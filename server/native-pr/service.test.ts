@@ -191,22 +191,20 @@ describe('NativePrService', () => {
     });
   });
 
-  it('getDetail: preview_session_available reflects hasLivePreviewSession only when a dev server is configured', async () => {
+  it('getDetail: preview_available follows the preview-block probe at the head sha', async () => {
     const projectId = `npr-${uuidv4().slice(0, 8)}`;
-    const project = {
-      ...makeProject(projectId),
-      prEnv: { devServer: { startCommand: 'npm run dev' } },
-    } as unknown as Project;
-    const branch = 'agent-hub/dev/session-cafe0001';
+    const project = makeProject(projectId);
+    // Hand-named branch: environments no longer depend on a session branch.
+    const branch = 'fix/preview-gate';
     const { headSha } = await seedHostedRepoWithBranch(projectId, branch);
 
-    const hasLivePreviewSession = vi.fn<(project: Project, headBranch: string) => boolean>(
-      () => true,
-    );
+    const hasPreviewEnvironmentConfig = vi
+      .fn<(project: Project, headSha: string) => Promise<boolean>>()
+      .mockResolvedValue(true);
     const service = createNativePrService({
       stmts,
       broadcast: () => {},
-      hasLivePreviewSession,
+      hasPreviewEnvironmentConfig,
     });
     service.createOrGetOpenPr({
       project,
@@ -218,48 +216,110 @@ describe('NativePrService', () => {
       author: TEST_PR_AUTHOR,
     });
 
-    // Live session → the Enable-preview control is offered.
-    const live = await service.getDetail({ project, number: 1 });
-    expect(live.preview_available).toBe(true);
-    expect(live.preview_session_available).toBe(true);
-    expect(hasLivePreviewSession).toHaveBeenCalledWith(project, branch);
+    const withBlock = await service.getDetail({ project, number: 1 });
+    expect(withBlock.preview_available).toBe(true);
+    expect(hasPreviewEnvironmentConfig).toHaveBeenCalledWith(project, headSha);
+    expect(withBlock).not.toHaveProperty('preview_session_available');
 
-    // Archived session (resolver returns null) → control gated, no 409-on-click.
-    hasLivePreviewSession.mockReturnValue(false);
-    const dead = await service.getDetail({ project, number: 1 });
-    expect(dead.preview_available).toBe(true);
-    expect(dead.preview_session_available).toBe(false);
+    hasPreviewEnvironmentConfig.mockRejectedValue(new Error('git read failed'));
+    expect((await service.getDetail({ project, number: 1 })).preview_available).toBe(false);
   });
 
-  it('getDetail: preview_session_available is false (and resolver is skipped) with no dev server', async () => {
+  it('getDetail: an environment with failed cleanup keeps the panel after the head drops preview', async () => {
     const projectId = `npr-${uuidv4().slice(0, 8)}`;
-    const project = makeProject(projectId); // no prEnv.devServer
-    const branch = 'agent-hub/dev/session-cafe0002';
+    const project = makeProject(projectId);
+    const branch = 'fix/drop-preview';
     const { headSha } = await seedHostedRepoWithBranch(projectId, branch);
-
-    const hasLivePreviewSession = vi.fn<(project: Project, headBranch: string) => boolean>(
-      () => true,
-    );
+    let env: { status: 'stopped'; stopReason: 'no_preview_config'; cleanupPending: boolean } = {
+      status: 'stopped',
+      stopReason: 'no_preview_config',
+      cleanupPending: true,
+    };
     const service = createNativePrService({
       stmts,
       broadcast: () => {},
-      hasLivePreviewSession,
+      hasPreviewEnvironmentConfig: async () => false, // the new head has no block
+      getPrEnvironment: () => env,
     });
     service.createOrGetOpenPr({
       project,
       headBranch: branch,
       baseBranch: 'main',
       headSha,
-      title: 'No preview',
+      title: 'Drop preview',
       body: '',
       author: TEST_PR_AUTHOR,
     });
+    expect((await service.getDetail({ project, number: 1 })).preview_available).toBe(true);
 
-    const detail = await service.getDetail({ project, number: 1 });
-    expect(detail.preview_available).toBe(false);
-    expect(detail.preview_session_available).toBe(false);
-    // No preview control at all → never spend a session lookup.
-    expect(hasLivePreviewSession).not.toHaveBeenCalled();
+    env = { ...env, cleanupPending: false };
+    expect((await service.getDetail({ project, number: 1 })).preview_available).toBe(false);
+  });
+
+  it('getDetail: a closed PR shows the panel only while its environment needs attention', async () => {
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = makeProject(projectId);
+    const branch = 'fix/close-failed-teardown';
+    const { headSha } = await seedHostedRepoWithBranch(projectId, branch);
+    let env: { status: 'stopped'; stopReason: 'closed'; cleanupPending: boolean } | null = {
+      status: 'stopped',
+      stopReason: 'closed',
+      cleanupPending: true,
+    };
+    const service = createNativePrService({
+      stmts,
+      broadcast: () => {},
+      hasPreviewEnvironmentConfig: async () => true, // the head still declares preview
+      getPrEnvironment: () => env,
+    });
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'Close with failed teardown',
+      body: '',
+      author: TEST_PR_AUTHOR,
+    });
+    service.close({ project, number: 1 });
+    expect((await service.getDetail({ project, number: 1 })).preview_available).toBe(true);
+
+    env = { ...env!, cleanupPending: false };
+    expect((await service.getDetail({ project, number: 1 })).preview_available).toBe(false);
+    env = null;
+    expect((await service.getDetail({ project, number: 1 })).preview_available).toBe(false);
+  });
+
+  it('close and reopen fire their PR-environment hooks', async () => {
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = makeProject(projectId);
+    const branch = 'fix/close-reopen';
+    const { headSha } = await seedHostedRepoWithBranch(projectId, branch);
+    const afterPrClosed = vi.fn();
+    const afterPrReopened = vi.fn();
+    const service = createNativePrService({
+      stmts,
+      broadcast: () => {},
+      afterPrClosed,
+      afterPrReopened,
+    });
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'Close me',
+      body: '',
+      author: TEST_PR_AUTHOR,
+    });
+    service.close({ project, number: 1 });
+    expect(afterPrClosed).toHaveBeenCalledWith(
+      expect.objectContaining({ row: expect.objectContaining({ number: 1, status: 'closed' }) }),
+    );
+    service.reopen({ project, number: 1 });
+    expect(afterPrReopened).toHaveBeenCalledWith(
+      expect.objectContaining({ row: expect.objectContaining({ number: 1, status: 'open' }) }),
+    );
   });
 
   it('broadcasts a merge without a linked card and fires afterPrMerged', async () => {

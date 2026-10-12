@@ -1546,23 +1546,31 @@ describe('<PullRequestsPage /> — Request Agent/Human Review buttons', () => {
   });
 });
 
-describe('PR-scoped preview panel', () => {
+describe('PR environment panel', () => {
+  const env = (over: any = {}) => ({
+    environment: {
+      id: 'e1',
+      source: 'native',
+      prNumber: 123,
+      headSha: 'a'.repeat(40),
+      headBranch: 'fix/flaky',
+      status: 'queued',
+      url: null,
+      error: null,
+      stopReason: null,
+      logTail: [],
+      ...over,
+    },
+  });
+
   beforeEach(() => {
     (api.getProjectPulls as any).mockReset();
     (api.getProjectPullDetail as any).mockReset();
-    (api.startNativePrPreview as any).mockReset().mockResolvedValue({
-      ok: true,
-      started: true,
-      sessionId: 's1',
-    });
-    (api.stopNativePrPreview as any).mockReset().mockResolvedValue({
-      ok: true,
-      stopped: 1,
-      sessionId: 's1',
-    });
-    (api.getNativePrPreviewState as any)
+    (api.startNativePrPreview as any).mockReset().mockResolvedValue({ ok: true, ...env() });
+    (api.stopNativePrPreview as any)
       .mockReset()
-      .mockResolvedValue({ sessionId: null, preview: null });
+      .mockResolvedValue({ ok: true, stopped: true, ...env({ status: 'stopped' }) });
+    (api.getNativePrPreviewState as any).mockReset().mockResolvedValue({ environment: null });
   });
 
   async function openPreviewDetail(detailOverrides: any = {}) {
@@ -1578,18 +1586,18 @@ describe('PR-scoped preview panel', () => {
     return await screen.findByTestId('pr-preview-panel');
   }
 
-  it('shows Enable preview and starts the preview on click', async () => {
+  it('shows Start environment when none exists and starts it on click', async () => {
     await openPreviewDetail();
     const enable = await screen.findByTestId('pr-preview-enable');
     fireEvent.click(enable as any);
     await waitFor(() => expect(api.startNativePrPreview).toHaveBeenCalledTimes(1));
     expect(api.startNativePrPreview).toHaveBeenCalledWith('proj-1', 123, {
-      reason: 'PR #123 preview',
+      reason: 'PR #123 environment',
     });
     await waitFor(() => expect(api.getNativePrPreviewState).toHaveBeenCalled());
   });
 
-  it('hides the panel entirely when no dev server is configured', async () => {
+  it('hides the panel when the PR head has no preview block', async () => {
     (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
     (api.getProjectPullDetail as any).mockResolvedValue({
       ...detailResponse,
@@ -1602,101 +1610,117 @@ describe('PR-scoped preview panel', () => {
     expect(screen.queryByTestId('pr-preview-panel')).toBeNull();
   });
 
-  it('auto-opens and renders a ready preview link + tear-down when the project defaults previews on', async () => {
-    (api.getNativePrPreviewState as any).mockResolvedValue({
-      sessionId: 's1',
-      preview: { kind: 'preview', fullUrl: 'https://pr-preview.example.com/', logTail: [] },
-    });
-    await openPreviewDetail({ preview_default_on: true });
+  it('shows the queued status from the server without the user clicking anything', async () => {
+    (api.getNativePrPreviewState as any).mockResolvedValue(env({ status: 'queued' }));
+    await openPreviewDetail();
+    expect(await screen.findByTestId('pr-preview-loading')).toHaveTextContent(/queued/i);
+    expect(api.startNativePrPreview).not.toHaveBeenCalled();
+  });
+
+  it('renders a ready URL, the log tail, and tears down on click', async () => {
+    (api.getNativePrPreviewState as any).mockResolvedValue(
+      env({ status: 'ready', url: 'https://pr-123.example/', logTail: ['compose up', 'healthy'] }),
+    );
+    await openPreviewDetail();
 
     const link = await screen.findByTestId('pr-preview-link');
-    expect(link).toHaveAttribute('href', 'https://pr-preview.example.com/');
+    expect(link).toHaveAttribute('href', 'https://pr-123.example/');
+    expect(screen.getByTestId('pr-preview-logs')).toHaveTextContent('healthy');
 
-    const stop = await screen.findByTestId('pr-preview-stop');
-    fireEvent.click(stop as any);
+    fireEvent.click((await screen.findByTestId('pr-preview-stop')) as any);
     await waitFor(() => expect(api.stopNativePrPreview).toHaveBeenCalledWith('proj-1', 123));
   });
 
-  it('renders the failure reason when the preview fails to boot', async () => {
-    (api.getNativePrPreviewState as any).mockResolvedValue({
-      sessionId: 's1',
-      preview: { kind: 'preview_failed', error: 'npm run dev exited 1', logTail: [] },
-    });
-    await openPreviewDetail({ preview_default_on: true });
-    const err = await screen.findByTestId('pr-preview-error');
-    expect(err).toHaveTextContent('npm run dev exited 1');
-  });
-
-  it('reflects an already-running preview on open — default OFF, no click, no restart', async () => {
-    // The visibility bug: revisiting a PR with a live preview used to show idle
-    // because state was only fetched after expanding. Now it hydrates on open.
-    (api.getNativePrPreviewState as any).mockResolvedValue({
-      sessionId: 's1',
-      preview: { kind: 'preview', fullUrl: 'https://pr-preview.example.com/', logTail: [] },
-    });
-    await openPreviewDetail(); // preview_default_on omitted → false
-
-    const link = await screen.findByTestId('pr-preview-link');
-    expect(link).toHaveAttribute('href', 'https://pr-preview.example.com/');
-    // No idle "Enable" affordance, and we never (re)started it.
-    expect(screen.queryByTestId('pr-preview-enable')).toBeNull();
-    expect(api.startNativePrPreview).not.toHaveBeenCalled();
-  });
-
-  it('reflects an already-failed preview on open without clicking (default OFF)', async () => {
-    (api.getNativePrPreviewState as any).mockResolvedValue({
-      sessionId: 's1',
-      preview: { kind: 'preview_failed', error: 'boot crashed', logTail: [] },
-    });
+  it('renders the failure reason and offers Retry', async () => {
+    (api.getNativePrPreviewState as any).mockResolvedValue(
+      env({ status: 'failed', error: 'health check timed out' }),
+    );
     await openPreviewDetail();
-    expect(await screen.findByTestId('pr-preview-error')).toHaveTextContent('boot crashed');
-    expect(api.startNativePrPreview).not.toHaveBeenCalled();
-  });
-
-  it('auto-starts once when the project defaults previews on and none is running', async () => {
-    // Hydrate returns idle (no preview) → default-on auto-starts one.
-    (api.getNativePrPreviewState as any).mockResolvedValue({ sessionId: null, preview: null });
-    await openPreviewDetail({ preview_default_on: true });
+    expect(await screen.findByTestId('pr-preview-error')).toHaveTextContent(
+      'health check timed out',
+    );
+    fireEvent.click(screen.getByTestId('pr-preview-retry'));
     await waitFor(() => expect(api.startNativePrPreview).toHaveBeenCalledTimes(1));
-    expect(api.startNativePrPreview).toHaveBeenCalledWith('proj-1', 123, {
-      reason: 'PR #123 preview',
-    });
   });
 
-  it('shows an archived note instead of Enable when no live session backs the PR', async () => {
-    await openPreviewDetail({ preview_session_available: false });
-    // The panel still renders (dev server IS configured), but the clickable
-    // Enable control is replaced by an explanatory note — clicking it used to
-    // 409 with "No live session worktree is associated with this pull request".
-    expect(await screen.findByTestId('pr-preview-unavailable')).toBeTruthy();
-    expect(screen.queryByTestId('pr-preview-enable')).toBeNull();
-    expect(api.startNativePrPreview).not.toHaveBeenCalled();
+  it('explains why a stopped environment is down', async () => {
+    (api.getNativePrPreviewState as any).mockResolvedValue(
+      env({ status: 'stopped', stopReason: 'manual' }),
+    );
+    await openPreviewDetail();
+    expect(await screen.findByTestId('pr-preview-stopped')).toHaveTextContent('Stopped');
+    expect(screen.getByTestId('pr-preview-enable')).toBeTruthy();
   });
 
-  it('does NOT auto-start when default-on but the owning session is archived', async () => {
-    (api.getNativePrPreviewState as any).mockResolvedValue({ sessionId: null, preview: null });
-    await openPreviewDetail({ preview_default_on: true, preview_session_available: false });
-    await screen.findByTestId('pr-preview-unavailable');
-    expect(api.startNativePrPreview).not.toHaveBeenCalled();
+  it('offers Retry teardown when cleanup did not finish, and it calls stop', async () => {
+    (api.getNativePrPreviewState as any).mockResolvedValue(
+      env({
+        status: 'stopped',
+        stopReason: 'manual',
+        cleanupPending: true,
+        error: 'Teardown failed: x',
+      }),
+    );
+    await openPreviewDetail();
+    expect(await screen.findByTestId('pr-preview-stopped')).toHaveTextContent(
+      /Stop again to retry/,
+    );
+    fireEvent.click(screen.getByTestId('pr-preview-retry-teardown'));
+    await waitFor(() => expect(api.stopNativePrPreview).toHaveBeenCalledWith('proj-1', 123));
   });
 
-  it('does NOT auto-start when default-on but a preview is already running', async () => {
-    (api.getNativePrPreviewState as any).mockResolvedValue({
-      sessionId: 's1',
-      preview: { kind: 'preview', fullUrl: 'https://x/', logTail: [] },
-    });
-    await openPreviewDetail({ preview_default_on: true });
-    await screen.findByTestId('pr-preview-link');
-    expect(api.startNativePrPreview).not.toHaveBeenCalled();
+  it('a ready panel picks up a server-side rebuild for a new head without a reload', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      (api.getNativePrPreviewState as any)
+        .mockResolvedValueOnce(
+          env({ status: 'ready', url: 'https://pr-123-a.example/', headSha: 'a'.repeat(40) }),
+        )
+        .mockResolvedValue(env({ status: 'building', headSha: 'b'.repeat(40) }));
+      await openPreviewDetail();
+      expect(await screen.findByTestId('pr-preview-link')).toHaveAttribute(
+        'href',
+        'https://pr-123-a.example/',
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(await screen.findByTestId('pr-preview-loading')).toHaveTextContent(/Building/);
+      expect(screen.queryByTestId('pr-preview-link')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('hides the panel (no fetch, no auto-start) for a merged PR even with default-on', async () => {
+  it('a failed state read does not stop polling: the next poll shows the environment', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      (api.getNativePrPreviewState as any)
+        .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+        .mockResolvedValue(env({ status: 'ready', url: 'https://pr-123.example/' }));
+      await openPreviewDetail();
+      await waitFor(() => expect(api.getNativePrPreviewState).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId('pr-preview-link')).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(await screen.findByTestId('pr-preview-link')).toHaveAttribute(
+        'href',
+        'https://pr-123.example/',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hides the panel (no fetch) for a merged PR with nothing left to clean up', async () => {
     (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
     (api.getProjectPullDetail as any).mockResolvedValue({
       ...detailResponse,
       source: 'agenthub',
-      preview_available: true,
-      preview_default_on: true,
+      preview_available: false, // the server's verdict for a merged PR with no pending work
       pr: { ...prSummary, state: 'closed', merged_at: '2026-04-20T00:00:00Z' },
     });
     render(<PullRequestsPage projectId="proj-1" project={project} />);
@@ -1704,10 +1728,36 @@ describe('PR-scoped preview panel', () => {
     await screen.findByText(/#123/);
     expect(screen.queryByTestId('pr-preview-panel')).toBeNull();
     expect(api.getNativePrPreviewState).not.toHaveBeenCalled();
-    expect(api.startNativePrPreview).not.toHaveBeenCalled();
   });
 
-  it('discards a stale preview-state response after switching PRs', async () => {
+  it('a merged PR whose teardown failed keeps the panel with Retry teardown and no Start', async () => {
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
+    (api.getProjectPullDetail as any).mockResolvedValue({
+      ...detailResponse,
+      source: 'agenthub',
+      preview_available: true,
+      pr: { ...prSummary, state: 'closed', merged_at: '2026-04-20T00:00:00Z' },
+    });
+    (api.getNativePrPreviewState as any).mockResolvedValue(
+      env({
+        status: 'stopped',
+        stopReason: 'merged',
+        cleanupPending: true,
+        error: 'Teardown failed: docker daemon down',
+        logTail: ['docker compose down', 'error: daemon unreachable'],
+      }),
+    );
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click((await screen.findByText('Fix the flaky test')) as any);
+    await screen.findByTestId('pr-preview-panel');
+    expect(await screen.findByTestId('pr-preview-stopped')).toHaveTextContent(/docker daemon down/);
+    expect(screen.getByTestId('pr-preview-logs')).toHaveTextContent('daemon unreachable');
+    expect(screen.queryByTestId('pr-preview-enable')).toBeNull();
+    fireEvent.click(screen.getByTestId('pr-preview-retry-teardown'));
+    await waitFor(() => expect(api.stopNativePrPreview).toHaveBeenCalledWith('proj-1', 123));
+  });
+
+  it('discards a stale environment-state response after switching PRs', async () => {
     const prA = { ...prSummary, number: 123 };
     const prB = { ...prSummary, number: 456 };
     (api.getProjectPulls as any).mockResolvedValue({ pulls: [prA, prB] });
@@ -1718,37 +1768,25 @@ describe('PR-scoped preview panel', () => {
       pr: { ...(n === 123 ? prA : prB), mergeable: true },
     }));
 
-    // PR 123's state request stays pending until we resolve it late, with a
-    // FAILURE — which must be ignored because we've moved to PR 456 by then.
     let resolveA: (v: any) => void = () => {};
     const deferredA = new Promise((r) => {
       resolveA = r;
     });
     (api.getNativePrPreviewState as any).mockImplementation((_pid: any, n: any) =>
-      n === 123
-        ? deferredA
-        : Promise.resolve({
-            sessionId: 'sB',
-            preview: { kind: 'preview', fullUrl: 'https://B/', logTail: [] },
-          }),
+      n === 123 ? deferredA : Promise.resolve(env({ status: 'ready', url: 'https://B/' })),
     );
 
     const { rerender } = render(
       <PullRequestsPage projectId="proj-1" project={project} initialPrNumber={123} />,
     );
-    await screen.findByTestId('pr-preview-panel'); // PR 123 open; state request pending
+    await screen.findByTestId('pr-preview-panel');
 
-    // Switch to PR 456 — its ready snapshot renders the link.
     rerender(<PullRequestsPage projectId="proj-1" project={project} initialPrNumber={456} />);
     const link = await screen.findByTestId('pr-preview-link');
     expect(link).toHaveAttribute('href', 'https://B/');
 
-    // Now PR 123's stale response lands — it must NOT paint a failure on 456.
     await act(async () => {
-      resolveA({
-        sessionId: 'sA',
-        preview: { kind: 'preview_failed', error: 'PR 123 failed', logTail: [] },
-      });
+      resolveA(env({ status: 'failed', error: 'PR 123 failed' }));
       await Promise.resolve();
     });
 
@@ -1766,15 +1804,13 @@ describe('PR-scoped preview panel', () => {
       preview_available: true,
       pr: { ...(n === 123 ? prA : prB), mergeable: true },
     }));
-    (api.getNativePrPreviewState as any).mockResolvedValue({ sessionId: null, preview: null });
 
-    // PR 123's start REJECTS late — after we've moved to PR 456.
     let rejectA: (e: any) => void = () => {};
     const startA = new Promise((_res, rej) => {
       rejectA = rej;
     });
     (api.startNativePrPreview as any).mockImplementation((_pid: any, n: any) =>
-      n === 123 ? startA : Promise.resolve({ ok: true, started: true }),
+      n === 123 ? startA : Promise.resolve({ ok: true, ...env() }),
     );
 
     const onToast = vi.fn();
@@ -1786,13 +1822,11 @@ describe('PR-scoped preview panel', () => {
         onToast={onToast}
       />,
     );
-    // Kick off PR 123's start.
     fireEvent.click(await screen.findByTestId('pr-preview-enable'));
     await waitFor(() =>
       expect(api.startNativePrPreview).toHaveBeenCalledWith('proj-1', 123, expect.anything()),
     );
 
-    // Navigate to PR 456 before 123's start settles.
     rerender(
       <PullRequestsPage
         projectId="proj-1"
@@ -1801,16 +1835,15 @@ describe('PR-scoped preview panel', () => {
         onToast={onToast}
       />,
     );
-    await screen.findByTestId('pr-preview-enable'); // PR 456 panel is live
+    await screen.findByTestId('pr-preview-enable');
 
-    // 123's start now fails — its toast must be suppressed (stale PR).
     await act(async () => {
       rejectA(new Error('PR 123 start blew up'));
       await Promise.resolve();
     });
 
     expect(onToast).not.toHaveBeenCalledWith(
-      expect.stringContaining('Failed to start preview'),
+      expect.stringContaining('Failed to start PR environment'),
       'error',
     );
   });

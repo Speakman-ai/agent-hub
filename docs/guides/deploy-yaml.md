@@ -48,6 +48,30 @@ environment boots the project's own compose stack instead, declared here.
 `environments` may be omitted when `preview` is present, so a project can
 declare its PR environment before it has any deploy targets.
 
+### Lifecycle
+
+Each pull request gets at most one environment, keyed by the PR (project,
+source, number) and never by the chat session that wrote it, so any head
+branch name works. The `preview:` block is read at the PR's head commit.
+
+| Trigger                                                       | Effect                                         |
+| ------------------------------------------------------------- | ---------------------------------------------- |
+| PR opened or reopened                                         | Queue a build at the head commit               |
+| New commits on the PR head                                    | Tear down and rebuild at the new commit        |
+| PR merged or closed                                           | Tear down; status `stopped`                    |
+| Head commit drops the `preview:` block                        | Tear down; status `stopped`                    |
+| `POST /api/projects/{projectId}/pulls/{number}/preview/start` | Start or retry (rebuilds a failed/stopped one) |
+| `POST .../preview/stop`                                       | Tear down; new commits do not restart it       |
+
+Statuses are `queued`, `building`, `ready`, `failed`, and `stopped`. An environment
+stays `queued` until a runner backend picks it up; the build itself is done
+by the runtime registered with `setPrEnvironmentRuntime`
+(`server/preview/pr-environments.ts`).
+`GET .../preview/state` returns the row with its URL, error, and log tail;
+the PR page on web and mobile renders the same.
+
+PR environments cover Agent Hub-hosted PRs.
+
 ### Secrets
 
 `secrets` lists names only. Values live in the project secrets store

@@ -1778,9 +1778,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
-  // PR-scoped previews (native Agent Hub-hosted PRs)
-  // Launch a live preview for the session that owns the PR's head branch.
-  // Returns immediately; poll getPullPreviewState for loading → ready/failed.
+  // PR environments (keyed by the PR; Hub-hosted and GitHub PRs).
+  // Start queues a build at the PR head; poll getPullPreviewState for
+  // queued → building → ready/failed.
   startPullPreview: (projectId: any, number: any, opts: any = {}) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/preview/start`, {
       method: 'POST',

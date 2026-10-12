@@ -12,7 +12,6 @@
 
 import type { BroadcastFn, Project, PullRequestRow, Stmts } from '../types.js';
 import { bareRepoPath, hostedRepoExists, isAgentHubHosted } from './host.js';
-import { isDevServerConfigured } from '../dev-server-config.js';
 import { buildNativePrUrl } from './url.js';
 import { matchEpicForPrBranches, type EpicBranchRef, type LinkedEpic } from './epic-branch-link.js';
 import {
@@ -83,6 +82,8 @@ import { tryAutoMergeArmedNativePr } from './auto-merge-armed.js';
 import { revertPullRequest } from './revert.js';
 import { handleCardOnMerge } from './card-on-merge.js';
 
+import { prEnvironmentPanelVisible, type PrEnvironmentDto } from '../preview/pr-environments.js';
+
 export { NativePrError } from './errors.js';
 
 export interface NativePrServiceDeps {
@@ -113,24 +114,30 @@ export interface NativePrServiceDeps {
     meta: { reason: 'created' | 'head_updated' },
   ) => void;
   /**
-   * Fired after a PR merges, so per-PR side effects that key off the head
-   * branch can run. Used to tear down a PR preview (the worktree preview for
-   * the session that owns the head branch) — a merged PR's preview should not
-   * linger until the idle reaper catches it. Fire-and-forget; a teardown
-   * failure never rolls back the merge that already landed in git.
+   * Fired after a PR merges. Tears down the PR environment. Fire-and-forget;
+   * a teardown failure never rolls back the merge that already landed in git.
    */
   afterPrMerged?: (args: { project: Project; row: PullRequestRow }) => void;
+  /** Fired after an open PR is closed without merging. Tears down the PR environment. */
+  afterPrClosed?: (args: { project: Project; row: PullRequestRow }) => void;
+  /** Fired after a closed PR is reopened. Re-queues the PR environment. */
+  afterPrReopened?: (args: { project: Project; row: PullRequestRow }) => void;
   /**
-   * Resolve whether a live session worktree still backs a PR's head branch.
-   * A PR's preview is the worktree preview for the session that owns its head
-   * branch; once that session is archived/deleted the worktree is gone and
-   * `POST /preview/start` 409s. `getDetail` surfaces the result as
-   * `preview_session_available` so the client can gate the Enable-preview
-   * affordance instead of offering a button that only errors. When omitted
-   * (e.g. in tests), the field defaults to `preview_available` — the prior
-   * behavior — so wiring it is what activates the extra gate.
+   * Whether the project's deploy.yaml at `headSha` declares a `preview:`
+   * block. Surfaced as `preview_available` on the PR detail; omitted means
+   * false.
    */
-  hasLivePreviewSession?: (project: Project, headBranch: string) => boolean;
+  hasPreviewEnvironmentConfig?: (project: Project, headSha: string) => Promise<boolean>;
+  /**
+   * The PR's existing environment, if any. With the config probe it decides
+   * `preview_available` (see `prEnvironmentPanelVisible`): an environment
+   * that still needs attention keeps the panel even if the head dropped its
+   * `preview:` block.
+   */
+  getPrEnvironment?: (
+    project: Project,
+    number: number,
+  ) => Pick<PrEnvironmentDto, 'status' | 'stopReason' | 'cleanupPending'> | null;
 }
 
 export interface NativePrService {
@@ -181,16 +188,11 @@ export interface NativePrService {
     commits: PrCommitEntry[];
     /** Raw inline diff comments for in-diff rendering. */
     inline_comments: Array<Record<string, unknown>>;
-    /** True when the project has a dev server configured (preview control shown). */
-    preview_available: boolean;
-    /** Project opts every PR into showing preview state by default. */
-    preview_default_on: boolean;
     /**
-     * True when a live session worktree still backs this PR's head branch, so a
-     * preview can actually be launched. False once the owning session is
-     * archived/deleted — the Enable-preview control would otherwise 409.
+     * Show the PR environment panel: the head declares a `preview:` block, or
+     * an environment still needs attention (running, failed, cleanup pending).
      */
-    preview_session_available: boolean;
+    preview_available: boolean;
   }>;
   /** Guarded closed → open transition (merged PRs are immutable). */
   reopen(args: { project: Project; number: number }): { row: PullRequestRow };
@@ -931,7 +933,19 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       const blockedReason =
         row.status === 'open' ? await mergeBlockedReason(stmts, project, row, repoPath) : null;
       const checks = checksForSha(stmts, project.id, statusSha);
-      const previewAvailable = isDevServerConfigured(project.prEnv?.devServer);
+      let headDeclaresPreview = false;
+      if (deps.hasPreviewEnvironmentConfig) {
+        try {
+          headDeclaresPreview = await deps.hasPreviewEnvironmentConfig(project, statusSha);
+        } catch {
+          headDeclaresPreview = false;
+        }
+      }
+      const previewAvailable = prEnvironmentPanelVisible(
+        deps.getPrEnvironment?.(project, row.number) ?? null,
+        headDeclaresPreview,
+        row.status === 'open',
+      );
       return {
         source: 'agenthub' as const,
         pr: summarize(project.id, row, {
@@ -970,23 +984,8 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         headSha,
         commits,
         inline_comments: inline,
-        // PR-scoped preview affordances. `preview_available` gates whether the
-        // PR page shows the "Enable preview" control at all (a dev server must
-        // be configured for the project); `preview_default_on` is the project
-        // toggle that opts every PR into showing preview state by default.
+        // PR environment control: shown when the head declares `preview:`.
         preview_available: previewAvailable,
-        preview_default_on: project.prEnv?.devServer?.previewOnPullRequests === true,
-        // Whether a live session worktree still backs the head branch. The
-        // preview control only works while that session is alive; once it is
-        // archived the worktree is reaped and `preview/start` 409s, so the
-        // client shows an explanatory note instead of an Enable button. Only
-        // meaningful when a dev server is configured; defaults to
-        // `preview_available` when the resolver is not wired (tests).
-        preview_session_available: previewAvailable
-          ? deps.hasLivePreviewSession
-            ? deps.hasLivePreviewSession(project, row.head_branch)
-            : true
-          : false,
       };
     },
 
@@ -1163,6 +1162,15 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         prNumber: number,
         action: 'closed',
       });
+      try {
+        deps.afterPrClosed?.({ project, row: updated });
+      } catch (err: unknown) {
+        console.warn(
+          `[native-pr] afterPrClosed hook failed for ${project.id}#${number}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
       return { row: updated };
     },
 
@@ -1218,7 +1226,17 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         prNumber: number,
         action: 'reopened',
       });
-      return { row: requirePr(stmts, project, number) };
+      const reopened = requirePr(stmts, project, number);
+      try {
+        deps.afterPrReopened?.({ project, row: reopened });
+      } catch (err: unknown) {
+        console.warn(
+          `[native-pr] afterPrReopened hook failed for ${project.id}#${number}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+      return { row: reopened };
     },
 
     setReviewRequested({ project, number, requested, actor }) {
