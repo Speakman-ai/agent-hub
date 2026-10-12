@@ -165,3 +165,51 @@ describe('deriveIssueGrouping — facets', () => {
     expect(g.title).toBe('DBError: row <n> locked');
   });
 });
+
+describe('deriveIssueGrouping — opaque request IDs in the message body', () => {
+  // Shapes taken from a live Python app whose every occurrence opened its own
+  // issue because the provider request id leaked into the template.
+  const anthropic = (reqId: string) =>
+    `acme.evaluation.vision_extractor ERROR 2026-10-12 16:01:02,331 vision_extractor 41 140 Claude Vision API error: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Output blocked by content filtering policy'}, 'request_id': '${reqId}'}`;
+  const samsara = (reqId: string) =>
+    `fleet.services.samsara ERROR 2026-10-12 16:01:02,331 samsara 41 140 Samsara API HTTP error: 404 Client Error: Not Found for url: https://api.samsara.com/addresses/9 (URL: https://api.samsara.com/addresses/9 Response: {"message":"Could not find address by id 9","requestId":"${reqId}"}`;
+
+  it('groups Anthropic errors that differ only by request_id', () => {
+    const a = deriveIssueGrouping(base({ body: anthropic('req_011CfqGamVeZ5ycaBjLx1TSm') }))!;
+    const b = deriveIssueGrouping(base({ body: anthropic('req_011CfpzS88Fzh39AEpQj5Adj') }))!;
+    expect(a.fingerprint).toBe(b.fingerprint);
+    expect(a.messageTemplate).toContain(`'request_id': '<id>'`);
+  });
+
+  it('groups JSON bodies that differ only by an all-letter requestId', () => {
+    const a = deriveIssueGrouping(base({ body: samsara('mvgnblis-vwqkflrx') }))!;
+    const b = deriveIssueGrouping(base({ body: samsara('puoemdio-gzbafwry') }))!;
+    expect(a.fingerprint).toBe(b.fingerprint);
+    expect(a.messageTemplate).toContain(`"requestId":"<id>"`);
+  });
+
+  it('scrubs key=value and bare mixed-case random tokens', () => {
+    expect(normalizeMessageTemplate('failed trace_id=abcdefghij request')).toBe(
+      'failed trace_id=<id> request',
+    );
+    expect(normalizeMessageTemplate('upload token Zx9QwErTy7UiOpAsD rejected')).toBe(
+      'upload token <id> rejected',
+    );
+  });
+
+  it('keeps ordinary identifiers and different error messages apart', () => {
+    expect(normalizeMessageTemplate('sync_employer_burden_snapshot HTTPSConnectionPool')).toBe(
+      'sync_employer_burden_snapshot HTTPSConnectionPool',
+    );
+    const a = deriveIssueGrouping(base({ body: anthropic('req_011CfqGamVeZ5ycaBjLx1TSm') }))!;
+    const c = deriveIssueGrouping(
+      base({
+        body: anthropic('req_011CfqGamVeZ5ycaBjLx1TSm').replace(
+          'Output blocked by content filtering policy',
+          'Overloaded',
+        ),
+      }),
+    )!;
+    expect(a.fingerprint).not.toBe(c.fingerprint);
+  });
+});

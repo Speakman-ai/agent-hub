@@ -111,6 +111,9 @@ function firstStringFrom(
   return null;
 }
 
+const ID_KEY_VALUE_RE =
+  /(['"]?\b(?:x[_-]?)?(?:request|req|trace|span|correlation|message|msg|event|transaction|txn)[_-]?id\b['"]?)(\s*[:=]\s*)(['"]?)[^'"\s,;)}\]]+\3/gi;
+
 /**
  * Scrub volatile identifiers out of a message so the same error text yields
  * the same template regardless of the concrete IDs it embeds. Order matters:
@@ -132,6 +135,18 @@ export function normalizeMessageTemplate(message: string | null | undefined): st
   out = out.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '<url>');
   // IPv4 (before the number rule).
   out = out.replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, '<ip>');
+  // Values of request/trace/correlation id keys, in dict/JSON (`'request_id': 'x'`,
+  // `"requestId":"x"`) or key=value form. Provider ids are often all letters
+  // (`mvgnblis-vwqkflrx`), so only the key tells us they're volatile.
+  out = out.replace(ID_KEY_VALUE_RE, (_m, key: string, sep: string, q: string) => {
+    return `${key}${sep}${q}<id>${q}`;
+  });
+  // Opaque random tokens (`req_011CfqGamVeZ5ycaBjLx1TSm`): long runs mixing
+  // upper, lower and digits. Code identifiers rarely carry all three.
+  out = out.replace(
+    /(?<![\w-])(?=[\w-]*\d)(?=[\w-]*[a-z])(?=[\w-]*[A-Z])[\w-]{16,}(?![\w-])/g,
+    '<id>',
+  );
   // Hex literals (0x…) and long hashes (require at least one a-f so pure
   // decimals fall through to the number rule and become <n>, not <hex>).
   out = out.replace(/\b0x[0-9a-f]+\b/gi, '<hex>');
