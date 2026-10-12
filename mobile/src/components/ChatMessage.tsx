@@ -49,6 +49,7 @@ const ENGINE_BADGES: Record<string, any> = {
   'cursor-agent': { color: '#10B981', label: 'Cursor Agent' },
   'codex-cli': { color: '#10A37F', label: 'Codex' },
   'grok-cli': { color: '#1D9BF0', label: 'Grok' },
+  'muse-code': { color: '#0866FF', label: 'Muse' },
 };
 const markdownStyles = {
   body: {

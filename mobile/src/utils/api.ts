@@ -1144,6 +1144,15 @@ export const api = {
   cancelMyCodexBrowserDeviceLogin: () =>
     fetchJSON('/auth/me/codex-auth/browser/cancel-login', { method: 'POST' }),
   logoutMyCodexBrowser: () => fetchJSON('/auth/me/codex-auth/browser', { method: 'DELETE' }),
+  getMyMuseBrowserAuth: () => fetchJSON('/auth/me/muse-auth/browser'),
+  startMyMuseDeviceLogin: () =>
+    fetchJSON('/auth/me/muse-auth/browser/device-login', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  cancelMyMuseDeviceLogin: () =>
+    fetchJSON('/auth/me/muse-auth/browser/cancel-login', { method: 'POST' }),
+  logoutMyMuse: () => fetchJSON('/auth/me/muse-auth/browser', { method: 'DELETE' }),
   getGithubAuthStatus: () => fetchJSON('/auth/github/status'),
   // Mints the GitHub authorize URL for the native OAuth flow. `returnTo`
   // is the app deep-link the callback redirects back to (closes the

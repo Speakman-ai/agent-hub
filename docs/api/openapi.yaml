@@ -3292,6 +3292,8 @@ components:
           type: string
         grokBin:
           type: string
+        museBin:
+          type: string
         defaultModel:
           type: string
           deprecated: true
@@ -3368,12 +3370,16 @@ components:
             grokBin:
               type: string
               nullable: true
+            museBin:
+              type: string
+              nullable: true
           required:
             - claudeBin
             - cursorBin
             - geminiBin
             - codexBin
             - grokBin
+            - museBin
         features:
           type: object
           properties:
@@ -12877,11 +12883,29 @@ components:
                 - authenticated
                 - path
               description: Availability + auth state for a single agent engine.
+            muse-code:
+              type: object
+              properties:
+                available:
+                  type: boolean
+                  description: Whether the engine binary responded to `<bin> --version` within the probe timeout.
+                authenticated:
+                  type: boolean
+                  description: Whether the requesting user has working credentials for this engine (per-account; no host fallback).
+                path:
+                  type: string
+                  description: Resolved path to the engine binary.
+              required:
+                - available
+                - authenticated
+                - path
+              description: Availability + auth state for a single agent engine.
           required:
             - claude-code
             - cursor-agent
             - codex-cli
             - grok-cli
+            - muse-code
           description: Per-engine binary availability + auth + resolved path.
         dataDir:
           type: string
@@ -24121,6 +24145,7 @@ paths:
                     - gemini-cli
                     - codex-cli
                     - grok-cli
+                    - muse-code
                     - null
               required:
                 - agentId
@@ -24271,6 +24296,7 @@ paths:
                     - gemini-cli
                     - codex-cli
                     - grok-cli
+                    - muse-code
                     - null
               required:
                 - engine
@@ -24353,6 +24379,7 @@ paths:
                     - gemini-cli
                     - codex-cli
                     - grok-cli
+                    - muse-code
               required:
                 - engine
       responses:
@@ -26090,7 +26117,7 @@ paths:
       tags:
         - Config
       summary: Update one or more config fields
-      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `cursorSandboxBypass`, `codexProfile`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked)."
+      description: "Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `museBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `cursorSandboxBypass`, `codexProfile`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked)."
       requestBody:
         content:
           application/json:
@@ -26106,6 +26133,8 @@ paths:
                 codexBin:
                   type: string
                 grokBin:
+                  type: string
+                museBin:
                   type: string
                 defaultModel:
                   type: string
@@ -27029,7 +27058,7 @@ paths:
       tags:
         - Crons
       summary: Create a new cron job
-      description: "`schedule` must be a valid cron expression. The cron owner is the authenticated caller. `shared` defaults to false; when true the cron is visible to the org but still executes under the owner's credentials. `engine` (when provided) must be one of: claude-code, cursor-agent, codex-cli, gemini-cli, grok-cli — when omitted/null, the cron inherits its engine from the resolved skill principal agent at run time, falling back to `claude-code`. `model` is validated against `engineValidModels[engine]` for whichever engine the cron resolves to. `skill_principal_agent_id` (when provided) must be an agent in the cron's project."
+      description: "`schedule` must be a valid cron expression. The cron owner is the authenticated caller. `shared` defaults to false; when true the cron is visible to the org but still executes under the owner's credentials. `engine` (when provided) must be one of: claude-code, cursor-agent, codex-cli, gemini-cli, grok-cli, muse-code — when omitted/null, the cron inherits its engine from the resolved skill principal agent at run time, falling back to `claude-code`. `model` is validated against `engineValidModels[engine]` for whichever engine the cron resolves to. `skill_principal_agent_id` (when provided) must be an agent in the cron's project."
       requestBody:
         content:
           application/json:
@@ -41458,6 +41487,210 @@ paths:
       tags:
         - Auth
       summary: Cancel an in-progress per-user Grok device login.
+      responses:
+        "200":
+          description: Cancellation receipt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/muse-auth/browser:
+    get:
+      tags:
+        - Auth
+      summary: Per-user Muse Code sign-in status.
+      responses:
+        "200":
+          description: Caller-scoped Muse credential state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uiStatus:
+                    type: string
+                    enum:
+                      - missing
+                      - pending
+                      - authenticated
+                  binary:
+                    type: object
+                    properties:
+                      present:
+                        type: boolean
+                      path:
+                        type: string
+                    required:
+                      - present
+                      - path
+                  auth:
+                    type: object
+                    properties:
+                      loggedIn:
+                        type: boolean
+                        nullable: true
+                      mode:
+                        type: string
+                        nullable: true
+                        enum:
+                          - oauth
+                          - apikey
+                          - unknown
+                          - null
+                    required:
+                      - loggedIn
+                      - mode
+                  loginInProgress:
+                    type: boolean
+                  statusError:
+                    type: string
+                    nullable: true
+                required:
+                  - uiStatus
+                  - binary
+                  - auth
+                  - loginInProgress
+                  - statusError
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags:
+        - Auth
+      summary: Sign the caller out of Muse Code (removes the stored Meta credential).
+      responses:
+        "200":
+          description: Credential removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Credential file could not be removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  loginId:
+                    type: string
+                  deviceAuthUrl:
+                    type: string
+                  userCode:
+                    type: string
+                  output:
+                    type: string
+                  error:
+                    type: string
+                required:
+                  - ok
+  /api/auth/me/muse-auth/browser/device-login:
+    post:
+      tags:
+        - Auth
+      summary: Start a per-user Muse Code (Meta account) device login.
+      description: Spawns `muse login` under the caller's per-user HOME and responds once the verification URL and code are printed. Completion is broadcast as a `per-user-muse-auth-update` WebSocket event.
+      responses:
+        "200":
+          description: Device code emitted, or the login output when it ended early.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  loginId:
+                    type: string
+                  deviceAuthUrl:
+                    type: string
+                  userCode:
+                    type: string
+                  output:
+                    type: string
+                  error:
+                    type: string
+                required:
+                  - ok
+        "400":
+          description: Muse binary missing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  loginId:
+                    type: string
+                  deviceAuthUrl:
+                    type: string
+                  userCode:
+                    type: string
+                  output:
+                    type: string
+                  error:
+                    type: string
+                required:
+                  - ok
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/muse-auth/browser/cancel-login:
+    post:
+      tags:
+        - Auth
+      summary: Cancel an in-progress per-user Muse device login.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                loginId:
+                  type: string
+                  description: Only cancel the login with this id. Omit to cancel whatever login is running; that form can kill a retry the caller started after deciding to cancel.
       responses:
         "200":
           description: Cancellation receipt.

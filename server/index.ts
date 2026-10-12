@@ -224,6 +224,7 @@ import { createApiDocsRoutes } from './routes/api-docs.js';
 import createHookRoutes from './routes/hooks.js';
 import createGeminiAuthRoutes from './routes/gemini-auth.js';
 import createPerUserEngineAuthRoutes from './routes/per-user-engine-auth.js';
+import createPerUserMuseAuthRoutes from './routes/per-user-muse-auth.js';
 import createThreadRoutes from './routes/threads.js';
 import createWorkflowRoutes from './routes/workflows.js';
 import { failStuckWorkflowRunsOnBoot } from './workflow-runner.js';
@@ -434,6 +435,7 @@ let CURSOR_BIN: string = config.cursorBin;
 let GEMINI_BIN: string = config.geminiBin;
 let CODEX_BIN: string = config.codexBin;
 let GROK_BIN: string = config.grokBin;
+let MUSE_BIN: string = config.museBin;
 
 let handleChat: ((ws: unknown, msg: ChatMessage) => Promise<void>) | undefined;
 let prepareAutonomousSessionEnv: (sessionId: string) => Promise<void> = async () => {};
@@ -1932,6 +1934,10 @@ export const routeDeps: RouteDeps = {
   setGrokBin: (v: string) => {
     GROK_BIN = v;
   },
+  getMuseBin: () => MUSE_BIN,
+  setMuseBin: (v: string) => {
+    MUSE_BIN = v;
+  },
   initDb,
   reloadProjects,
   setActiveDataDir: (v: string) => {
@@ -2166,6 +2172,7 @@ app.use(createSlackRoutes(routeDeps));
 app.use(createHookRoutes(routeDeps));
 app.use(createGeminiAuthRoutes(routeDeps));
 app.use(createPerUserEngineAuthRoutes(routeDeps));
+app.use(createPerUserMuseAuthRoutes(routeDeps));
 app.use(createThreadRoutes(routeDeps));
 app.use(createWorkflowRoutes(routeDeps));
 app.use(createEscalationRoutes(routeDeps));
@@ -2354,6 +2361,7 @@ const chatHandler = createChatHandler({
   getGeminiBin: () => GEMINI_BIN,
   getCodexBin: () => CODEX_BIN,
   getGrokBin: () => GROK_BIN,
+  getMuseBin: () => MUSE_BIN,
   uploadsDir: UPLOADS_DIR,
   resolveSlashSkill,
   createCursorChat: undefined,

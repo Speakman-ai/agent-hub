@@ -279,6 +279,11 @@ ARG GROK_CLI_VERSION=1.0.40
 RUN curl -fsSL https://x.ai/cli/install.sh | bash -s -- "$GROK_CLI_VERSION" \
     && ln -sfn "$HOME/.grok/bin/grok" "$HOME/.local/bin/grok"
 
+# Muse Code (Meta). Pinned binary with a manifest checksum check instead of the
+# self-updating launcher; lands at ~/.local/bin/muse, the museBin default.
+ARG MUSE_CLI_VERSION=1.4.6-R6000.1
+RUN /app/server/docker/install-muse.sh "$MUSE_CLI_VERSION"
+
 # Download Playwright's Chromium as the node user using the PINNED playwright in
 # server/node_modules (note `cd /app/server` + bare `npx playwright`, NOT
 # `npx --yes playwright`). `npx --yes` at /app cannot resolve the local pinned

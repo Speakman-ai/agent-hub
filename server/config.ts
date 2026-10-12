@@ -27,6 +27,7 @@ import { resolveGoogleChatEventsConfig } from './google-chat-events-config.js';
 import { normalizeSmtpConfig } from './smtp-config.js';
 import { coerceSessionEnvAdapterMode } from './session-env/sysbox-capability.js';
 import { CODEX_DEFAULT_MODEL } from './codex-model-capability.js';
+import { MUSE_DEFAULT_MODEL, MUSE_MODELS, applyMuseSpawnEnv } from './muse-cli.js';
 import { sanitizeSpawnPythonEnv } from './spawn-python-env.js';
 import { deriveLocalDockerPreviewSubdomainBase } from './preview/preview-routing-mode.js';
 
@@ -267,6 +268,7 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
     'grok-build',
     'grok-composer-2.5-fast',
   ],
+  'muse-code': [...MUSE_MODELS],
 };
 
 const mergedEngineValidModelsRaw =
@@ -283,6 +285,7 @@ const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   // is unavailable.
   'codex-cli': CODEX_DEFAULT_MODEL,
   'grok-cli': 'grok-4.7',
+  'muse-code': MUSE_DEFAULT_MODEL,
 };
 
 const mergedEngineDefaultModelsRaw =
@@ -411,6 +414,8 @@ const config: AppConfig = {
   geminiBin: pickBin('gemini', 'GEMINI_BIN', 'geminiBin', '/usr/local/bin/gemini'),
   codexBin: pickBin('codex', 'CODEX_BIN', 'codexBin', '/usr/local/bin/codex'),
   grokBin: pickBin('grok', 'GROK_BIN', 'grokBin', path.join(HOME, '.local', 'bin', 'grok')),
+  // Meta's installer and the Docker image's pinned install both land here.
+  museBin: pickBin('muse', 'MUSE_BIN', 'museBin', path.join(HOME, '.local', 'bin', 'muse')),
 
   // Directories
   defaultCwd: resolve('AGENT_HUB_DEFAULT_CWD', 'defaultCwd', HOME) as string,
@@ -929,6 +934,9 @@ export function buildSpawnEnv(
   // helper strips inherited values and adds the key back only for grok-cli —
   // preferring the acting user's own key over the host xAI key.
   applyEngineScopedSpawnEnv(env, cfg, opts.engine, override?.grokApiKey);
+  // A host META_API_KEY beats the per-user Muse login, so it must never reach
+  // any spawn; Muse-specific isolation is applied for muse-code below.
+  delete env.META_API_KEY;
   const codexApiKey = presentString(override?.codexApiKey);
   if (codexApiKey) {
     // The Codex CLI reads OPENAI_API_KEY (preferred) or CODEX_API_KEY from the
@@ -1047,6 +1055,8 @@ export function buildSpawnEnv(
       /* best-effort — spawn proceeds; ah-api.sh may still read the file */
     }
   }
+
+  if (opts.engine === 'muse-code') applyMuseSpawnEnv(env);
 
   // Strip inherited venv relocation vars and pin npm/node-gyp at the image
   // Python so a leftover `.venv` cannot break native addon compiles.

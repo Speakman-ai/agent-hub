@@ -43,6 +43,7 @@ import { resolveCodexHomeForProbe } from './host-cli-home.js';
 import { warmCursorAuthForHome } from './cursor-auth-warm.js';
 import { cursorSandboxArgs } from './cursor-sandbox-args.js';
 import type { SupportedEngine } from './engine-availability.js';
+import { resolveMuseSpawnModel } from './muse-cli.js';
 
 export interface OneShotSpawnInput {
   engine: SupportedEngine;
@@ -126,6 +127,25 @@ export function buildOneShotSpawnArgs(
     const grokModel = resolveGrokSpawnModel(trimmedModel, cfg);
     if (grokModel) args.push('--model', grokModel);
     return { bin: cfg.grokBin, args };
+  }
+
+  if (engine === 'muse-code') {
+    // Plain `muse exec` prints only the final reply on stdout, which is what
+    // the one-shot callers return. Read-only tools like the Codex branch, no
+    // persisted session, and never block on a user-input request.
+    const body = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
+    const args = [
+      'exec',
+      '--trust-workspace',
+      '--disable-write',
+      '--disable-shell',
+      '--no-session-log',
+      '--user-input-auto-resolve',
+    ];
+    const museModel = resolveMuseSpawnModel(trimmedModel, cfg);
+    if (museModel) args.push('--model', museModel);
+    args.push(body);
+    return { bin: cfg.museBin, args };
   }
 
   if (engine === 'codex-cli') {

@@ -352,9 +352,13 @@ export const PatchSessionRequestSchema = z.object({
   ask_mode: z.boolean().optional(),
 });
 
-const EngineEnum = z.enum(['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli', 'grok-cli'], {
-  error: 'Invalid engine. Must be claude-code, cursor-agent, gemini-cli, codex-cli, or grok-cli',
-});
+const EngineEnum = z.enum(
+  ['claude-code', 'cursor-agent', 'gemini-cli', 'codex-cli', 'grok-cli', 'muse-code'],
+  {
+    error:
+      'Invalid engine. Must be claude-code, cursor-agent, gemini-cli, codex-cli, grok-cli, or muse-code',
+  },
+);
 
 export const AddSessionAgentRequestSchema = z.object({
   agentId: z.string().min(1, 'agentId is required'),

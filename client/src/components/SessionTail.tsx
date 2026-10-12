@@ -761,6 +761,10 @@ const ENGINE_BADGES = {
     icon: <span className="w-2.5 h-2.5 rounded-full bg-sky-400 inline-block" />,
     label: 'Grok',
   },
+  'muse-code': {
+    icon: <span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block" />,
+    label: 'Muse',
+  },
   'gemini-cli': {
     icon: <span className="w-2.5 h-2.5 rounded-full bg-blue-400 inline-block" />,
     label: 'Gemini',

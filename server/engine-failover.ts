@@ -58,6 +58,9 @@ export const ENGINE_FAILOVER_CHAINS: Readonly<Record<string, readonly SupportedE
   'codex-cli': ['codex-cli', 'claude-code', 'grok-cli', 'cursor-agent'],
   'grok-cli': ['grok-cli', 'claude-code', 'codex-cli', 'cursor-agent'],
   'cursor-agent': ['cursor-agent', 'claude-code', 'codex-cli', 'grok-cli'],
+  // Muse Code is in beta, so it fails over to the established engines but is
+  // never picked as another engine's fallback.
+  'muse-code': ['muse-code', 'claude-code', 'codex-cli', 'grok-cli', 'cursor-agent'],
 } as const;
 
 /**
@@ -326,6 +329,8 @@ export function engineLabel(engine: string): string {
       return 'Cursor Agent';
     case 'grok-cli':
       return 'Grok';
+    case 'muse-code':
+      return 'Muse';
     case 'gemini-cli':
       return 'Gemini';
     default:
@@ -426,7 +431,12 @@ export function formatFailoverLogLine(
   );
 }
 
-/** All engines that can appear in a chain — handy for tests + diagnostics. */
+/** Engines that fail over to others but are never chosen as a fallback. */
+export const FAILOVER_SOURCE_ONLY_ENGINES: ReadonlySet<SupportedEngine> = new Set<SupportedEngine>([
+  'muse-code',
+]);
+
+/** Engines that can be picked as a failover target — handy for tests + diagnostics. */
 export const FAILOVER_ELIGIBLE_ENGINES: readonly SupportedEngine[] = ALL_SUPPORTED_ENGINES.filter(
-  (e) => !RAG_ONLY_ENGINES.has(e),
+  (e) => !RAG_ONLY_ENGINES.has(e) && !FAILOVER_SOURCE_ONLY_ENGINES.has(e),
 );

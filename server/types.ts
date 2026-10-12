@@ -3901,6 +3901,8 @@ export interface AppConfig {
   geminiBin: string;
   codexBin: string;
   grokBin: string;
+  /** Muse Code (Meta) CLI binary. */
+  museBin: string;
   defaultCwd: string;
   dataDir: string;
   /**
@@ -4615,6 +4617,8 @@ export interface RouteDeps {
   setCodexBin?: (v: string) => void;
   getGrokBin?: () => string;
   setGrokBin?: (v: string) => void;
+  getMuseBin?: () => string;
+  setMuseBin?: (v: string) => void;
   initDb: (dataDir: string) => void;
   reloadProjects: (dataDir: string) => void;
   setActiveDataDir: (v: string) => void;

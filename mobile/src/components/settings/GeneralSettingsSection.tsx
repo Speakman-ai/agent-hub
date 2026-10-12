@@ -8,6 +8,7 @@ const BIN_FIELDS = [
   { key: 'geminiBin', label: 'Gemini CLI' },
   { key: 'codexBin', label: 'Codex CLI' },
   { key: 'grokBin', label: 'Grok CLI' },
+  { key: 'museBin', label: 'Muse Code CLI' },
 ];
 export default function GeneralSettingsSection() {
   const [form, setForm] = useState<any>({});

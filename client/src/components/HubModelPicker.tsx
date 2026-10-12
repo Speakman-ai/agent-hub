@@ -3,6 +3,7 @@ export const ENGINE_LABELS: Record<string, string> = {
   'cursor-agent': 'Cursor',
   'codex-cli': 'Codex',
   'grok-cli': 'Grok',
+  'muse-code': 'Muse',
 };
 
 const SKIP_ENGINES = new Set(['gemini-cli']);

@@ -791,3 +791,33 @@ describe('buildSpawnEnv — Python hygiene', () => {
     }
   });
 });
+
+describe('buildSpawnEnv — Muse Code isolation', () => {
+  it('pins Muse to the per-user HOME and drops host Meta credentials', () => {
+    const dataDir = mkdtempSync(path.join(os.tmpdir(), 'muse-env-'));
+    vi.stubEnv('META_API_KEY', 'host-meta-key');
+    vi.stubEnv('XDG_CONFIG_HOME', '/host/.config');
+    vi.stubEnv('XDG_DATA_HOME', '/host/.local/share');
+    vi.stubEnv('MUSE_AUTH_PATH', '/host/auth.json');
+    try {
+      const muse = buildSpawnEnv({ ...config, dataDir }, { userId: 'u-muse', engine: 'muse-code' });
+      expect(muse.HOME).toBe(perUserHomePath('u-muse', dataDir));
+      expect(muse.META_API_KEY).toBeUndefined();
+      expect(muse.XDG_CONFIG_HOME).toBeUndefined();
+      expect(muse.XDG_DATA_HOME).toBeUndefined();
+      expect(muse.MUSE_AUTH_PATH).toBeUndefined();
+      expect(muse.MUSE_NO_AUTO_UPDATE).toBe('1');
+
+      // Other engines never see the host Meta key either, but keep their XDG env.
+      const claude = buildSpawnEnv(
+        { ...config, dataDir },
+        { userId: 'u-muse', engine: 'claude-code' },
+      );
+      expect(claude.META_API_KEY).toBeUndefined();
+      expect(claude.XDG_CONFIG_HOME).toBe('/host/.config');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});

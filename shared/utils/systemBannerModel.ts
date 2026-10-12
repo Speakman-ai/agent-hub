@@ -3,6 +3,7 @@ const ENGINE_DISPLAY: Record<string, string> = {
   'cursor-agent': 'Cursor Agent',
   'codex-cli': 'Codex',
   'gemini-cli': 'Gemini CLI',
+  'muse-code': 'Muse Code',
 };
 
 const MODEL_KNOWN_LABELS: Record<string, string> = {
@@ -35,6 +36,9 @@ const MODEL_KNOWN_LABELS: Record<string, string> = {
   'grok-4.7-high': 'Grok 4.7',
   'grok-4.7-high-fast': 'Grok 4.7 Fast',
   'grok-4.7': 'Grok 4.7',
+  'muse-spark-1.3': 'Muse Spark 1.3',
+  'muse-spark-1.2': 'Muse Spark 1.2',
+  'muse-spark-1.1': 'Muse Spark 1.1',
   'grok-4.7-build-fast': 'Grok 4.7 Fast',
   'grok-build': 'Grok Build',
   'grok-composer-2.5-fast': 'Composer 2.5 Fast',

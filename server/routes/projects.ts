@@ -1359,6 +1359,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const cursorBinResolved = getCursorBin?.() ?? config.cursorBin;
     const codexBinResolved = getCodexBin?.() ?? config.codexBin;
     const grokBinResolved = getGrokBin?.() ?? config.grokBin;
+    const museBinResolved = deps.getMuseBin?.() ?? config.museBin;
     const probeEngine = async (bin: string): Promise<boolean> => {
       try {
         await execFileAsync(bin, ['--version'], { timeout: 5000 });
@@ -1367,12 +1368,14 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         return false;
       }
     };
-    const [claudeAvailable, cursorAvailable, codexAvailable, grokAvailable] = await Promise.all([
-      probeEngine(getClaudeBin()),
-      probeEngine(cursorBinResolved),
-      probeEngine(codexBinResolved),
-      probeEngine(grokBinResolved),
-    ]);
+    const [claudeAvailable, cursorAvailable, codexAvailable, grokAvailable, museAvailable] =
+      await Promise.all([
+        probeEngine(getClaudeBin()),
+        probeEngine(cursorBinResolved),
+        probeEngine(codexBinResolved),
+        probeEngine(grokBinResolved),
+        probeEngine(museBinResolved),
+      ]);
 
     // `hasAnyAiCredentials` mirrors the auth-resolution that `buildSpawnEnv`
     // applies — strictly per-account: the requesting user's own Claude /
@@ -1406,6 +1409,15 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         : false;
     } catch {
       grokAuthenticated = false;
+    }
+    let museAuthenticated = false;
+    try {
+      const museUserId = authedReq.authUserId ?? null;
+      museAuthenticated = museUserId
+        ? userHasEngineCreds('muse-code', museUserId, config.dataDir)
+        : false;
+    } catch {
+      museAuthenticated = false;
     }
 
     // `authConfigured` reflects whether the Agent Hub Owner record exists.
@@ -1471,6 +1483,11 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
           available: grokAvailable,
           authenticated: grokAuthenticated,
           path: grokBinResolved,
+        },
+        'muse-code': {
+          available: museAvailable,
+          authenticated: museAuthenticated,
+          path: museBinResolved,
         },
       },
       dataDir: config.dataDir,
@@ -1818,6 +1835,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       'gemini-cli',
       'codex-cli',
       'grok-cli',
+      'muse-code',
     ] as const;
     let resolvedEngine: (typeof VALID_ENGINES)[number] = 'claude-code';
     if (requestedEngine !== undefined && requestedEngine !== null && requestedEngine !== '') {

@@ -22,6 +22,7 @@ import MySingleKeyAuthSection from './MySingleKeyAuthSection';
 import MyCursorAuthSection from './MyCursorAuthSection';
 import MyCodexAuthSection from './MyCodexAuthSection';
 import MyGrokAuthSection from './MyGrokAuthSection';
+import MyMuseAuthSection from './MyMuseAuthSection';
 import GoogleConnectionSection from './GoogleConnectionSection';
 import GoogleOAuthConfigSection from './GoogleOAuthConfigSection';
 import MfaSettingsPanel from './MfaSettingsPanel';
@@ -196,6 +197,9 @@ export default function AccountSection() {
 
           <div className="h-px bg-gray-700/50" />
           <MyGrokAuthSection bare />
+
+          <div className="h-px bg-gray-700/50" />
+          <MyMuseAuthSection bare />
 
           <div className="h-px bg-gray-700/50" />
           <MySingleKeyAuthSection

@@ -51,6 +51,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     geminiBin: fakeBin,
     codexBin: fakeBin,
     grokBin: fakeBin,
+    museBin: fakeBin,
     geminiApiKey: null,
     xaiApiKey: null,
     openaiApiKey: null,
@@ -255,19 +256,39 @@ describe('probeEngineAvailability — grok-cli (per-account)', () => {
   });
 });
 
+describe('probeEngineAvailability — muse-code (per-account)', () => {
+  it('reports no-binary when museBin does not exist', async () => {
+    const cfg = makeConfig({ museBin: '/no/such/path/muse' });
+    const r = await probeEngineAvailability('muse-code', cfg, { userId: 'u1' });
+    expect(r).toMatchObject({ available: false, reason: 'no-binary' });
+    expect(r.detail).toContain('museBin');
+  });
+
+  it("gates on the acting user's own Muse login", async () => {
+    const cfg = makeConfig();
+    expect((await probeEngineAvailability('muse-code', cfg)).reason).toBe('no-credentials');
+    mockUserHasEngineCreds.mockReturnValue(true);
+    expect((await probeEngineAvailability('muse-code', cfg, { userId: 'u1' })).available).toBe(
+      true,
+    );
+    expect(mockUserHasEngineCreds).toHaveBeenCalledWith('muse-code', 'u1', cfg.dataDir);
+  });
+});
+
 describe('probeAllEngineAvailability', () => {
   it('returns a record keyed by every supported engine', async () => {
     const cfg = makeConfig();
     // No acting user + no Gemini key → nothing is available.
     const all = await probeAllEngineAvailability(cfg, { env: { HOME: tmpDir } });
     expect(Object.keys(all).sort()).toEqual(
-      ['claude-code', 'codex-cli', 'cursor-agent', 'gemini-cli', 'grok-cli'].sort(),
+      ['claude-code', 'codex-cli', 'cursor-agent', 'gemini-cli', 'grok-cli', 'muse-code'].sort(),
     );
     expect(all['claude-code'].available).toBe(false);
     expect(all['cursor-agent'].available).toBe(false);
     expect(all['codex-cli'].available).toBe(false);
     expect(all['gemini-cli'].available).toBe(false);
     expect(all['grok-cli'].available).toBe(false);
+    expect(all['muse-code'].available).toBe(false);
   });
 });
 
@@ -295,6 +316,7 @@ describe('RAG_ONLY_ENGINES / SELECTABLE_ENGINES', () => {
       'cursor-agent',
       'codex-cli',
       'grok-cli',
+      'muse-code',
     ]);
   });
 });

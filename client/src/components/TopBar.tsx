@@ -24,6 +24,8 @@ const ENGINE_OPTIONS = [
   // xAI Grok Build CLI — host-key authed (XAI_API_KEY) like Gemini. See
   // server/engine-availability.ts + the grok branches in server/chat.ts.
   { id: 'grok-cli', label: 'Grok', color: '#1D9BF0' },
+  // Meta Muse Code CLI. Per-user Meta login; see server/muse-cli.ts.
+  { id: 'muse-code', label: 'Muse', color: '#0866FF' },
 ];
 
 const MODEL_LABELS = {
@@ -59,6 +61,9 @@ const MODEL_LABELS = {
   'gpt-5.4-mini': { label: 'GPT-5.4 Mini', short: '5.4 Mini' },
   'gpt-5.2': { label: 'GPT-5.2', short: '5.2' },
   'grok-4.7': { label: 'Grok 4.7', short: '4.7' },
+  'muse-spark-1.3': { label: 'Muse Spark 1.3', short: 'Spark 1.3' },
+  'muse-spark-1.2': { label: 'Muse Spark 1.2', short: 'Spark 1.2' },
+  'muse-spark-1.1': { label: 'Muse Spark 1.1', short: 'Spark 1.1' },
   'grok-4.7-build-fast': { label: 'Grok 4.7 Fast', short: '4.7 Fast' },
   'grok-4.6': { label: 'Grok 4.6', short: '4.6' },
   'grok-4.5': { label: 'Grok 4.5', short: '4.5' },
@@ -105,6 +110,7 @@ function fallbackModelsForEngine(engine: any) {
       'grok-build',
       'grok-composer-2.5-fast',
     ];
+  if (engine === 'muse-code') return ['muse-spark-1.3', 'muse-spark-1.2', 'muse-spark-1.1'];
   return ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5'];
 }
 

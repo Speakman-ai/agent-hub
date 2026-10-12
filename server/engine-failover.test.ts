@@ -84,6 +84,19 @@ describe('failover chains', () => {
       expect([...chain].sort()).toEqual([...FAILOVER_ELIGIBLE_ENGINES].sort());
     }
   });
+
+  it('lets muse-code fail over to every target but never be picked as a fallback', () => {
+    expect(failoverChainFor('muse-code')).toEqual([
+      'muse-code',
+      'claude-code',
+      'codex-cli',
+      'grok-cli',
+      'cursor-agent',
+    ]);
+    for (const engine of FAILOVER_ELIGIBLE_ENGINES) {
+      expect(failoverChainFor(engine)).not.toContain('muse-code');
+    }
+  });
 });
 
 describe('classifyEngineFailure', () => {

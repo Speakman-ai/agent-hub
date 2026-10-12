@@ -18,6 +18,7 @@ import { perUserHomePath, perUserHomeHasClaudeCache } from './per-user-home.js';
 import { hasPopulatedCodexDeviceAuth } from './per-user-codex-device-login.js';
 import { detectCodexAuthMode } from './codex-auth.js';
 import { detectGrokAuthMode } from './grok-device-auth-parse.js';
+import { homeHasMuseCredential } from './muse-cli.js';
 
 function perUserHomeHasCursorCache(userId: string, dataDir: string): boolean {
   try {
@@ -56,6 +57,19 @@ export function perUserHomeHasGrokCache(userId: string, dataDir: string): boolea
 }
 
 /**
+ * True when the user's per-user HOME holds a `muse login` token or a stored
+ * Meta API key at `.config/muse/auth.json`. Muse spawns pin HOME to this tree
+ * and strip XDG_CONFIG_HOME, so this is exactly the file the CLI will read.
+ */
+export function perUserHomeHasMuseCache(userId: string, dataDir: string): boolean {
+  try {
+    return homeHasMuseCredential(perUserHomePath(userId, dataDir));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * True when the user has any per-account CLI material we should prefer over
  * the host operator's global subscription (stored API keys and/or OAuth
  * caches under their per-user HOME / CODEX_HOME).
@@ -83,7 +97,13 @@ export interface ResolveSessionCliSpawnEnvOpts {
 }
 
 /** Engines whose credentials are strictly per-account (no host fallback). */
-const PER_ACCOUNT_ENGINES = new Set(['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli']);
+const PER_ACCOUNT_ENGINES = new Set([
+  'claude-code',
+  'cursor-agent',
+  'codex-cli',
+  'grok-cli',
+  'muse-code',
+]);
 
 /**
  * Thrown when a per-account engine spawn cannot be attributed to an acting
@@ -139,6 +159,8 @@ export function userHasEngineCreds(
         if (grok?.apiKey) return true;
         return perUserHomeHasGrokCache(userId, dataDir);
       }
+      case 'muse-code':
+        return perUserHomeHasMuseCache(userId, dataDir);
       default:
         // gemini-cli (host key allowed) + unknown engines are not gated here.
         return true;
@@ -279,6 +301,7 @@ export function userHasPerUserCliIdentity(userId: string, dataDir: string): bool
     if (perUserHomeHasCodexCache(userId, dataDir)) return true;
     if (perUserHomeHasClaudeCache(userId, dataDir)) return true;
     if (perUserHomeHasGrokCache(userId, dataDir)) return true;
+    if (perUserHomeHasMuseCache(userId, dataDir)) return true;
 
     return false;
   } catch {

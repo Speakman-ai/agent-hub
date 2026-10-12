@@ -7,8 +7,12 @@ const { initOrgsDb, setOrgsDbPathForTests } = await import('./orgs.js');
 const { setAuthFilePathForTests, reloadAuthRecord } = await import('./auth-store.js');
 const { createUser, setUserCursorAuth, setUserGrokAuth } = await import('./users-store.js');
 const { ensurePerUserHome } = await import('./per-user-home.js');
-const { userHasPerUserCliIdentity, perUserHomeHasGrokCache } =
-  await import('./per-user-cli-spawn.js');
+const {
+  userHasPerUserCliIdentity,
+  perUserHomeHasGrokCache,
+  userHasEngineCreds,
+  assertEngineCredsOrThrow,
+} = await import('./per-user-cli-spawn.js');
 
 let dataDir = '';
 
@@ -81,5 +85,27 @@ describe('userHasPerUserCliIdentity', () => {
     mkdirSync(path.join(home, '.grok'), { recursive: true });
     writeFileSync(path.join(home, '.grok', 'auth.json'), JSON.stringify({ api_key: 'xai-onfile' }));
     expect(perUserHomeHasGrokCache(user.id, dataDir)).toBe(false);
+  });
+});
+
+describe('userHasEngineCreds — muse-code', () => {
+  beforeEach(() => {
+    freshSandbox();
+  });
+
+  it('reads the Muse login token from the per-user HOME only', () => {
+    expect(userHasEngineCreds('muse-code', 'u1', dataDir)).toBe(false);
+    expect(() => assertEngineCredsOrThrow('muse-code', 'u1', dataDir)).toThrow(/muse-code/);
+
+    const dir = path.join(ensurePerUserHome('u1', dataDir), '.config', 'muse');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, 'auth.json'),
+      JSON.stringify({ providers: { meta: { mechanism: 'oauth', access_token: 'tok' } } }),
+    );
+    expect(userHasEngineCreds('muse-code', 'u1', dataDir)).toBe(true);
+    expect(() => assertEngineCredsOrThrow('muse-code', 'u1', dataDir)).not.toThrow();
+    expect(userHasPerUserCliIdentity('u1', dataDir)).toBe(true);
+    expect(userHasEngineCreds('muse-code', 'u2', dataDir)).toBe(false);
   });
 });

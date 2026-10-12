@@ -212,6 +212,24 @@ function ProviderCard({ provider }: any) {
     </View>
   );
 }
+/** Muse Code has no pasted-key slot; the Meta device login is the only credential. */
+function MuseCard() {
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>Muse Code</Text>
+      <Text style={styles.cardDesc}>Used when sessions you own spawn Meta's Muse Code CLI.</Text>
+      <MobileBrowserAuthCard
+        label="Muse Code"
+        description="Sign in with your Meta developer account using a device code."
+        loginMode="device"
+        getStatus={api.getMyMuseBrowserAuth}
+        startLogin={api.startMyMuseDeviceLogin}
+        cancelLogin={api.cancelMyMuseDeviceLogin}
+        logout={api.logoutMyMuse}
+      />
+    </View>
+  );
+}
 function GithubCard() {
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -337,6 +355,7 @@ export default function MyCliKeysSection() {
       {CLI_KEY_PROVIDERS.map((provider: any) => (
         <ProviderCard key={provider.id} provider={provider} />
       ))}
+      <MuseCard />
       <GithubCard />
     </View>
   );

@@ -217,6 +217,7 @@ import {
   writeCursorHubSessionRule,
   SAFE_ARG_STRLEN_BYTES,
 } from './spawn-prompt-payload.js';
+import { buildMuseExecArgs, resolveMuseSpawnModel } from './muse-cli.js';
 import { pickProcessErrorMessage } from './process-error-message.js';
 import {
   getSessionWorktreeLockOwner,
@@ -538,6 +539,8 @@ export interface ChatHandlerDeps {
   getGeminiBin: () => string;
   getCodexBin: () => string;
   getGrokBin: () => string;
+  /** Optional so older harnesses keep compiling; falls back to config.museBin. */
+  getMuseBin?: () => string;
   uploadsDir: string;
   resolveSlashSkill: (agent: Agent, content: string, project: Project) => SlashSkillResult | null;
   createCursorChat: ((cwd: string, env: NodeJS.ProcessEnv) => Promise<string>) | undefined;
@@ -897,7 +900,7 @@ Do not print access keys or session tokens.`;
 /**
  * Whether an engine's CLI persists the turn-1 system prompt across turns via a
  * resume mechanism. claude-code (`--resume`), cursor-agent (`--resume`), and
- * codex-cli (`resume <id>`) keep their own session store, so the Hub can gate
+ * codex-cli (`resume <id>`), and muse-code (`--session-id <id>`) keep their own session store, so the Hub can gate
  * the heavy first-message instructional blocks (shipping contract, lifecycle)
  * behind `isFirstMessage` to save tokens. gemini-cli and grok-cli have no
  * resume flag — each spawn starts blank — so the full enriched system prompt
@@ -907,7 +910,12 @@ Do not print access keys or session tokens.`;
  * non-resuming engines so the full prompt rides every turn.
  */
 export function engineResumesAcrossTurns(engine: string): boolean {
-  return engine === 'claude-code' || engine === 'cursor-agent' || engine === 'codex-cli';
+  return (
+    engine === 'claude-code' ||
+    engine === 'cursor-agent' ||
+    engine === 'codex-cli' ||
+    engine === 'muse-code'
+  );
 }
 
 export function buildEnrichedPrompt(
@@ -2248,6 +2256,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     getGeminiBin,
     getCodexBin,
     getGrokBin,
+    getMuseBin,
     uploadsDir,
     resolveSlashSkill,
     createCursorChat: _createCursorChat,
@@ -4020,6 +4029,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const GEMINI_BIN = getGeminiBin();
       const CODEX_BIN = getCodexBin();
       const GROK_BIN = getGrokBin();
+      const MUSE_BIN = getMuseBin?.() ?? config.museBin;
 
       const awsSsoEnabledForProject = projectHasAwsSsoProfiles(project);
       let projectAwsFiles: ProjectAwsFiles | undefined;
@@ -4201,6 +4211,28 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           args.push('--always-approve');
         }
         bin = GROK_BIN;
+      } else if (engine === 'muse-code') {
+        // Muse Code headless contract: see muse-cli.ts. `--session-id` both
+        // creates the Muse session and resumes it, so a fresh engine session
+        // mints its own UUID (persisted from the parser's `system` event) and
+        // later turns reuse the stored id. Muse has no system-prompt flag, so
+        // the Hub rules ride the first turn and Muse's session store keeps
+        // them, like Codex. The prompt goes through a file, so no argv cap.
+        const museSessionId = engineSessionId ?? uuidv4();
+        const prompt =
+          isNewEngineSession || forceSystemPromptThisTurn
+            ? buildInlineHubPrompt({ enrichedPrompt, finalPrompt, committable })
+            : cliContent + imagePromptSuffix;
+        const promptFile = writeSystemPromptFile(prompt, sessionId);
+        systemPromptFileCleanup = promptFile.cleanup;
+        args = buildMuseExecArgs({
+          museSessionId,
+          promptFile: promptFile.path,
+          model: resolveMuseSpawnModel(model, config),
+          reasoningPreset: session!.reasoning_effort,
+          askMode: readOnlyCliSession,
+        });
+        bin = MUSE_BIN;
       } else if (engine === 'codex-cli') {
         // Codex CLI flags per https://developers.openai.com/codex/noninteractive:
         //   codex exec --json "<prompt>"                  — new turn
@@ -4966,7 +4998,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // event (normalized to a `system` event by normalizeCodex). Persist it on
         // the first appearance so subsequent turns can `codex exec resume <id>`.
         if (
-          engine === 'codex-cli' &&
+          (engine === 'codex-cli' || engine === 'muse-code') &&
           event.type === 'system' &&
           event.sessionId &&
           !engineSessionId
@@ -5380,7 +5412,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     ? 'codexBin'
                     : engine === 'grok-cli'
                       ? 'grokBin'
-                      : 'claudeBin';
+                      : engine === 'muse-code'
+                        ? 'museBin'
+                        : 'claudeBin';
             const reason = code === -2 ? 'not found (ENOENT)' : 'not executable (EACCES)';
             errorMsg =
               `${engine} binary ${reason} at ${bin}. ` +
@@ -7143,7 +7177,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 ? 'codex'
                 : engine === 'grok-cli'
                   ? 'grok'
-                  : 'claude';
+                  : engine === 'muse-code'
+                    ? 'muse'
+                    : 'claude';
         // Point the user at the correct config key. ENOENT here almost always
         // means the configured bin path is wrong (wiki: "Spawn PATH Propagation").
         const configKey =
@@ -7155,7 +7191,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 ? 'codexBin'
                 : engine === 'grok-cli'
                   ? 'grokBin'
-                  : 'claudeBin';
+                  : engine === 'muse-code'
+                    ? 'museBin'
+                    : 'claudeBin';
         const errnoCode = (err as NodeJS.ErrnoException).code;
         // Node reports ENOENT against the command when *either* the binary or
         // the cwd is missing. Re-check the cwd here so the user gets an

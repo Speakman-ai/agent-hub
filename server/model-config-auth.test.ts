@@ -11,6 +11,7 @@ function makeConfig(): AppConfig {
     geminiBin: '/usr/local/bin/gemini',
     codexBin: '/usr/local/bin/codex',
     grokBin: '/usr/local/bin/grok',
+    museBin: '/usr/local/bin/muse',
     defaultCwd: '/tmp',
     dataDir: '/tmp',
     uploadsDir: '/tmp/uploads',
@@ -89,6 +90,7 @@ describe('buildAuthenticatedModelConfig', () => {
       'gemini-cli': false,
       'codex-cli': true,
       'grok-cli': false,
+      'muse-code': false,
     });
 
     expect(out.engineValidModels['claude-code']).toEqual(['claude-opus-4-8', 'claude-sonnet-4-6']);
@@ -113,6 +115,7 @@ describe('buildAuthenticatedModelConfig', () => {
       'gemini-cli': true,
       'codex-cli': true,
       'grok-cli': true,
+      'muse-code': false,
     });
 
     expect(out.engineValidModels).not.toHaveProperty('gemini-cli');
@@ -135,6 +138,7 @@ describe('buildAuthenticatedModelConfig', () => {
         'gemini-cli': false,
         'codex-cli': true,
         'grok-cli': false,
+        'muse-code': false,
       },
       { codexSelectableModels: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'] },
     );
@@ -154,6 +158,7 @@ describe('buildAuthenticatedModelConfig', () => {
       'gemini-cli': false,
       'codex-cli': true,
       'grok-cli': false,
+      'muse-code': false,
     } as const;
 
     expect(buildAuthenticatedModelConfig(cfg, auth).engineDefaultModels['codex-cli']).toBe('');
@@ -174,6 +179,7 @@ describe('buildAuthenticatedModelConfig', () => {
         'gemini-cli': false,
         'codex-cli': false,
         'grok-cli': false,
+        'muse-code': false,
       },
       { codexSelectableModels: ['gpt-5.6-sol', 'gpt-5.5'] },
     );
@@ -189,6 +195,7 @@ describe('buildAuthenticatedModelConfig', () => {
         'gemini-cli': false,
         'codex-cli': true,
         'grok-cli': false,
+        'muse-code': false,
       },
       { codexSelectableModels: ['gpt-5.6-sol'] },
     );
@@ -213,6 +220,7 @@ describe('buildAuthenticatedModelConfig', () => {
       'gemini-cli': false,
       'codex-cli': false,
       'grok-cli': false,
+      'muse-code': false,
     });
 
     expect(out.engineValidModels['cursor-agent']).toEqual(['composer-2.5']);
@@ -230,6 +238,7 @@ describe('buildAuthenticatedModelConfig', () => {
       'gemini-cli': false,
       'codex-cli': false,
       'grok-cli': false,
+      'muse-code': false,
     });
 
     expect(out.engineValidModels['cursor-agent']).toEqual(['cursor-grok-4.5-high']);
@@ -251,6 +260,7 @@ describe('buildAuthenticatedModelConfig', () => {
       'gemini-cli': false,
       'codex-cli': false,
       'grok-cli': false,
+      'muse-code': false,
     });
 
     expect(out.engineValidModels['cursor-agent']).toEqual(['cursor-grok-4.6-high', 'composer-2.5']);
@@ -273,6 +283,7 @@ describe('buildAuthenticatedModelConfig', () => {
       'gemini-cli': false,
       'codex-cli': false,
       'grok-cli': false,
+      'muse-code': false,
     });
 
     expect(out.engineValidModels['cursor-agent']).toEqual([

@@ -318,6 +318,7 @@ export function AppProvider({ children }: any) {
     if (engine === 'cursor-agent') return 'grok-4.7-high';
     if (engine === 'codex-cli') return 'gpt-5.6-sol';
     if (engine === 'grok-cli') return 'grok-4.7';
+    if (engine === 'muse-code') return 'muse-spark-1.3';
     return 'claude-opus-5-5';
   };
   const activeSessionIdRef = useRef(activeSessionId);

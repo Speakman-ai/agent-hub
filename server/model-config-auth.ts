@@ -10,6 +10,7 @@ export interface EngineAuthState {
   'gemini-cli': boolean;
   'codex-cli': boolean;
   'grok-cli': boolean;
+  'muse-code': boolean;
 }
 
 export interface PublicModelConfig {

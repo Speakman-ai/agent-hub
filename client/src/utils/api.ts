@@ -2837,6 +2837,21 @@ export const api = {
     fetchJSON('/auth/me/grok-auth/browser/cancel-login', { method: 'POST' }),
   logoutMyGrok: () => fetchJSON('/auth/me/grok-auth/browser', { method: 'DELETE', timeout: 65000 }),
 
+  // Muse Code (Meta) device login: server/routes/per-user-muse-auth.ts.
+  getMyMuseBrowserAuth: () => fetchJSON('/auth/me/muse-auth/browser'),
+  startMyMuseDeviceLogin: () =>
+    fetchJSON('/auth/me/muse-auth/browser/device-login', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: 50000,
+    }),
+  cancelMyMuseDeviceLogin: (loginId?: string) =>
+    fetchJSON('/auth/me/muse-auth/browser/cancel-login', {
+      method: 'POST',
+      body: JSON.stringify(loginId ? { loginId } : {}),
+    }),
+  logoutMyMuse: () => fetchJSON('/auth/me/muse-auth/browser', { method: 'DELETE', timeout: 45000 }),
+
   // Per-project export/import
   exportProject: (projectId: any) => fetchJSON(`/projects/${projectId}/export`),
   importProject: (projectId: any, data: any) =>

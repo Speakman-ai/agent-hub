@@ -62,6 +62,7 @@ interface FileConfig {
   geminiBin?: string;
   codexBin?: string;
   grokBin?: string;
+  museBin?: string;
   personalOAuth?: PersonalOAuthConfig;
   googleOAuth?: GoogleOAuthConfig;
   githubApp?: GitHubAppConfig;
@@ -346,6 +347,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       geminiBin: config.geminiBin,
       codexBin: config.codexBin,
       grokBin: config.grokBin,
+      museBin: config.museBin,
       // Kept for older clients that still read AppConfig.defaultModel. New
       // model resolution never consults this host-wide legacy value.
       defaultModel: config.defaultModel,
@@ -384,6 +386,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         geminiBin: fileConfig.geminiBin || null,
         codexBin: fileConfig.codexBin || null,
         grokBin: fileConfig.grokBin || null,
+        museBin: fileConfig.museBin || null,
       },
       // Feature flags surfaced to clients so the UI can hide deprecated
       // sections (Settings → PR Environments, the provisioning wizard,
@@ -487,6 +490,11 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     const grokProbe = await probeEngineAvailability('grok-cli', config, {
       userId: authedReq.authUserId ?? null,
     });
+    const museProbe = await probeEngineAvailability(
+      'muse-code',
+      { ...config, museBin: deps.getMuseBin?.() ?? config.museBin },
+      { userId: authedReq.authUserId ?? null },
+    );
 
     // Capability-gated Codex list: surface newer models (gpt-5.6-*) only when
     // the installed codex-cli advertises them in its models cache, so the
@@ -507,6 +515,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           'gemini-cli': geminiAuthenticated,
           'codex-cli': engineStatus.codex,
           'grok-cli': grokProbe.available,
+          'muse-code': museProbe.available,
         },
         { codexSelectableModels },
       ),
@@ -520,6 +529,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'geminiBin',
       'codexBin',
       'grokBin',
+      'museBin',
       // Compatibility-only: accepted below as an explicit no-op so older
       // clients do not receive a misleading success from an unknown field.
       'defaultModel',
@@ -657,6 +667,9 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     }
     if ('grokBin' in updates && typeof updates.grokBin === 'string' && deps.setGrokBin) {
       deps.setGrokBin(updates.grokBin);
+    }
+    if ('museBin' in updates && typeof updates.museBin === 'string' && deps.setMuseBin) {
+      deps.setMuseBin(updates.museBin);
     }
 
     const response: {

@@ -797,6 +797,7 @@ export function GeneralSection({
           geminiBin: data.geminiBin,
           codexBin: data.codexBin,
           grokBin: data.grokBin,
+          museBin: data.museBin,
         });
         setLoading(false);
       })
@@ -809,7 +810,8 @@ export function GeneralSection({
       (edits.cursorBin ?? '') !== (config.cursorBin ?? '') ||
       (edits.geminiBin ?? '') !== (config.geminiBin ?? '') ||
       (edits.codexBin ?? '') !== (config.codexBin ?? '') ||
-      (edits.grokBin ?? '') !== (config.grokBin ?? ''));
+      (edits.grokBin ?? '') !== (config.grokBin ?? '') ||
+      (edits.museBin ?? '') !== (config.museBin ?? ''));
 
   const handleSave = async () => {
     setSaving(true);
@@ -820,6 +822,7 @@ export function GeneralSection({
         geminiBin: edits.geminiBin,
         codexBin: edits.codexBin,
         grokBin: edits.grokBin,
+        museBin: edits.museBin,
       };
       await api.updateConfig(payload);
       setConfig((prev: any) => ({ ...prev, ...payload }));
@@ -976,6 +979,20 @@ export function GeneralSection({
           <p className="text-xs text-gray-600 mt-1">
             Path to the <code>grok</code> binary (xAI Grok Build CLI). Used for all grok-cli engine
             sessions. Auth uses <code>XAI_API_KEY</code> or <code>grok login</code>.
+          </p>
+        </div>
+
+        <div>
+          <label className={labelClass}>Muse Code CLI</label>
+          <input
+            value={edits.museBin || ''}
+            onChange={(e: any) => setEdits((prev: any) => ({ ...prev, museBin: e.target.value }))}
+            className={inputClass}
+            placeholder="/usr/local/bin/muse"
+          />
+          <p className="text-xs text-gray-600 mt-1">
+            Path to the <code>muse</code> binary (Meta Muse Code). Used for all muse-code engine
+            sessions. Each user signs in with their Meta account under Account settings.
           </p>
         </div>
 

@@ -31,6 +31,7 @@ function makeAvailability(
     'codex-cli': bad('codex-cli'),
     'gemini-cli': bad('gemini-cli'),
     'grok-cli': bad('grok-cli'),
+    'muse-code': bad('muse-code'),
     ...overrides,
   };
 }

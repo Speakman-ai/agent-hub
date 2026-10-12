@@ -17,6 +17,7 @@ const CFG: AppConfig = {
   geminiBin: '/bin/gemini',
   codexBin: '/bin/codex',
   grokBin: '/bin/grok',
+  museBin: '/bin/muse',
 } as AppConfig;
 
 const tempHomes: string[] = [];
@@ -151,6 +152,33 @@ describe('buildOneShotSpawnArgs — grok-cli', () => {
     );
     expect(out.args).toContain('--model');
     expect(out.args).toContain('grok-build');
+  });
+});
+
+describe('buildOneShotSpawnArgs — muse-code', () => {
+  it('runs a read-only plain-text exec with the prompt last', () => {
+    const out = buildOneShotSpawnArgs(
+      { engine: 'muse-code', model: 'muse-spark-1.2', prompt: 'P', systemPrompt: 'S' },
+      CFG,
+    );
+    expect(out.bin).toBe('/bin/muse');
+    expect(out.args[0]).toBe('exec');
+    expect(out.args).not.toContain('--json');
+    expect(out.args).not.toContain('--yolo');
+    expect(out.args).toEqual(
+      expect.arrayContaining(['--disable-write', '--disable-shell', '--no-session-log']),
+    );
+    expect(out.args[out.args.indexOf('--model') + 1]).toBe('muse-spark-1.2');
+    expect(out.args.at(-1)).toBe('S\n\nP');
+  });
+
+  it('never falls through to the Claude CLI', () => {
+    const out = buildOneShotSpawnArgs(
+      { engine: 'muse-code', model: 'muse-spark-1.3', prompt: 'P' },
+      CFG,
+    );
+    expect(out.bin).not.toBe('/bin/claude');
+    expect(out.args).not.toContain('--print');
   });
 });
 

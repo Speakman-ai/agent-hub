@@ -47,6 +47,7 @@ export const AppConfigComponent = registerComponent(
       geminiBin: z.string().optional(),
       codexBin: z.string().optional(),
       grokBin: z.string().optional(),
+      museBin: z.string().optional(),
       defaultModel: z.string().optional().openapi({
         deprecated: true,
         description:
@@ -97,6 +98,7 @@ export const AppConfigComponent = registerComponent(
         geminiBin: z.string().nullable(),
         codexBin: z.string().nullable(),
         grokBin: z.string().nullable(),
+        museBin: z.string().nullable(),
       }),
       features: z.object({
         prEnv: z.boolean(),
@@ -330,6 +332,7 @@ export const PatchConfigRequestSchema = z
     geminiBin: z.string().optional(),
     codexBin: z.string().optional(),
     grokBin: z.string().optional(),
+    museBin: z.string().optional(),
     defaultModel: z.string().optional().openapi({
       deprecated: true,
       description:
@@ -564,7 +567,7 @@ registerPath({
   tags: ['Config'],
   summary: 'Update one or more config fields',
   description:
-    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `cursorSandboxBypass`, `codexProfile`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
+    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `museBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `cursorSandboxBypass`, `codexProfile`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
   request: { body: { content: jsonContent(PatchConfigRequestSchema) } },
   responses: {
     200: {

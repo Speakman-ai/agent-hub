@@ -242,6 +242,7 @@ const ENGINE_BADGES = {
   'cursor-agent': { dotClass: 'bg-emerald-500', label: 'Cursor Agent' },
   'codex-cli': { dotClass: 'bg-sky-500', label: 'Codex' },
   'grok-cli': { dotClass: 'bg-blue-400', label: 'Grok' },
+  'muse-code': { dotClass: 'bg-blue-600', label: 'Muse' },
 } as Record<string, any>;
 
 function SystemShipRequestedMessage({ message }: any) {

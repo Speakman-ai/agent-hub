@@ -134,9 +134,10 @@ process.env.CURSOR_BIN = NO_REAL_CLI;
 process.env.GEMINI_BIN = NO_REAL_CLI;
 process.env.CODEX_BIN = NO_REAL_CLI;
 process.env.GROK_BIN = NO_REAL_CLI;
+process.env.MUSE_BIN = NO_REAL_CLI;
 
 const FORBIDDEN_BIN_RE =
-  /(?:^|[/\\])(claude|claude-code|cursor-agent|gemini|codex|grok)(?:\.exe)?$/i;
+  /(?:^|[/\\])(claude|claude-code|cursor-agent|gemini|codex|grok|muse)(?:\.exe)?$/i;
 
 function makeGuard<T extends (...args: unknown[]) => unknown>(name: string, original: T): T {
   const wrapped = ((...args: unknown[]) => {

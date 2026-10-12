@@ -10,6 +10,7 @@ export const ENGINE_OPTIONS = [
   { id: 'cursor-agent', label: 'Cursor Agent', color: '#10B981' },
   { id: 'codex-cli', label: 'Codex', color: '#10A37F' },
   { id: 'grok-cli', label: 'Grok', color: '#1D9BF0' },
+  { id: 'muse-code', label: 'Muse', color: '#0866FF' },
 ];
 export const ENGINE_MODELS: Record<string, any> = {
   'claude-code': [
@@ -47,12 +48,19 @@ export const ENGINE_MODELS: Record<string, any> = {
     { id: 'grok-build', label: 'Grok Build', short: 'Build' },
     { id: 'grok-composer-2.5-fast', label: 'Composer 2.5 Fast', short: 'Composer' },
   ],
+  // Meta Muse Code. Keep in sync with server/muse-cli.ts → MUSE_MODELS.
+  'muse-code': [
+    { id: 'muse-spark-1.3', label: 'Muse Spark 1.3', short: 'Spark 1.3' },
+    { id: 'muse-spark-1.2', label: 'Muse Spark 1.2', short: 'Spark 1.2' },
+    { id: 'muse-spark-1.1', label: 'Muse Spark 1.1', short: 'Spark 1.1' },
+  ],
 };
 export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
   'claude-code': 'claude-opus-5-5',
   'cursor-agent': 'grok-4.7-high',
   'codex-cli': 'gpt-6-astra',
   'grok-cli': 'grok-4.7',
+  'muse-code': 'muse-spark-1.3',
 };
 // Display labels for models that are no longer selectable but may still appear
 // on historical sessions/crons. Kept OUT of ENGINE_MODELS so the picker never

@@ -9,9 +9,17 @@ import {
   currentModelDisplay,
 } from './engineOptions';
 describe('mobile engine picker constants', () => {
-  it('exposes claude-code, cursor-agent, codex-cli, and grok-cli as engine options', () => {
+  it('exposes claude-code, cursor-agent, codex-cli, grok-cli, and muse-code as engine options', () => {
     const ids = ENGINE_OPTIONS.map((e: any) => e.id);
-    expect(ids).toEqual(['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli']);
+    expect(ids).toEqual(['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli', 'muse-code']);
+  });
+  it('mirrors the server Muse model list and defaults to the newest Spark', () => {
+    expect(ENGINE_DEFAULT_MODELS['muse-code']).toBe('muse-spark-1.3');
+    expect(ENGINE_MODELS['muse-code'].map((m: any) => m.id)).toEqual([
+      'muse-spark-1.3',
+      'muse-spark-1.2',
+      'muse-spark-1.1',
+    ]);
   });
   it('defaults grok-cli to grok-4.7 and lists it first', () => {
     expect(ENGINE_DEFAULT_MODELS['grok-cli']).toBe('grok-4.7');

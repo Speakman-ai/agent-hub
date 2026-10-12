@@ -23,7 +23,8 @@ export type SupportedEngine =
   | 'cursor-agent'
   | 'codex-cli'
   | 'gemini-cli'
-  | 'grok-cli';
+  | 'grok-cli'
+  | 'muse-code';
 
 /**
  * Why an engine is unavailable. Used by the resolver to pick a clear
@@ -54,6 +55,7 @@ export const ALL_SUPPORTED_ENGINES: readonly SupportedEngine[] = [
   'codex-cli',
   'gemini-cli',
   'grok-cli',
+  'muse-code',
 ] as const;
 
 /**
@@ -172,6 +174,18 @@ export async function probeEngineAvailability(
       detail:
         'No grok-cli credentials on your account. Add your own Grok login under Account settings — there is no host or org-owner fallback.',
     };
+  }
+
+  if (engine === 'muse-code') {
+    const bin = cfg.museBin;
+    if (!bin || !existsSync(bin)) {
+      return {
+        engine,
+        available: false,
+        reason: 'no-binary',
+        detail: `muse binary not found at "${bin || '(unset)'}". Install Muse Code or update museBin in Settings.`,
+      };
+    }
   }
 
   // Claude / Cursor / Codex — strictly per-account.

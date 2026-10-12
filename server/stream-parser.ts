@@ -299,6 +299,7 @@ export function createStreamParser(engine: string): StreamParser {
   // The parent agent's model, so the turn's `modelUsage` lookup ignores
   // entries contributed by subagents on other models.
   const claudeState: ClaudeParserState = { parentModel: null };
+  const museState: MuseParserState = { text: '', sessionEmitted: false };
   const normalize: NormalizeFn =
     engine === 'cursor-agent'
       ? (raw) =>
@@ -314,7 +315,9 @@ export function createStreamParser(engine: string): StreamParser {
           ? (raw) => normalizeCodex(raw, codexFileChangeToolUseIssued)
           : engine === 'grok-cli'
             ? (raw) => normalizeGrok(raw, grokAgentMessage)
-            : (raw) => normalizeClaude(raw, claudeState);
+            : engine === 'muse-code'
+              ? (raw) => normalizeMuse(raw, museState)
+              : (raw) => normalizeClaude(raw, claudeState);
 
   return {
     feed(chunk: Buffer | string): StreamEvent[] {
@@ -1678,5 +1681,173 @@ function normalizeCodex(
 
     default:
       return [{ type: 'unknown', text: `unhandled codex event: ${type ?? 'undefined'}` }];
+  }
+}
+
+// Muse Code normalizer
+//
+// `muse exec --json` writes one record per line:
+//   { schema_version, id, stream: { kind: 'session', id: <session uuid> },
+//     sequence, record_type, payload_type, payload }
+// Payload types that matter (verified on muse 1.4.6):
+//   run.output.delta        { text }                 assistant token delta
+//   task.lifecycle.proposed { event: { task_kind } } `tool.<name>` opens a tool call
+//   tool.result             { call_id, text, correlation_facts: { outcome, tool_name },
+//                             edit_facts?: { path, added?, removed? } }
+//   run.terminal.completed  { terminal: 'completed', text }
+//   run.terminal.failed     { terminal: 'failed', reason }
+// Everything else (task scheduling, retries, reminder child runs) is runtime
+// bookkeeping and is dropped. The stream carries neither tool arguments nor
+// token usage, so tool cards are built from the result record and turns
+// report no token counts.
+
+interface MuseParserState {
+  /** Assistant text since the last tool call. */
+  text: string;
+  sessionEmitted: boolean;
+}
+
+const MUSE_TOOL_NAMES: Record<string, string> = {
+  bash: 'Bash',
+  read_file: 'Read',
+  write_file: 'Write',
+  edit_file: 'Edit',
+  search: 'Grep',
+  web_search: 'WebSearch',
+  web_fetch: 'WebFetch',
+  write_todos: 'TodoWrite',
+};
+
+function museToolEvents(payload: Record<string, unknown>): StreamEvent[] {
+  const facts = (payload.correlation_facts as Record<string, unknown> | undefined) ?? {};
+  const editFacts = (payload.edit_facts as Record<string, unknown> | undefined) ?? undefined;
+  const rawName = (facts.tool_name as string) ?? (editFacts?.tool_name as string) ?? 'tool';
+  const id = (payload.call_id as string) ?? simpleHash(JSON.stringify(payload));
+  const text = typeof payload.text === 'string' ? payload.text : '';
+  let isError = facts.outcome !== undefined && facts.outcome !== 'success';
+  const input: Record<string, unknown> = {};
+  let output = text;
+  if (rawName === 'bash') {
+    // The bash result is a JSON envelope: { command, exit_code, output, ... }.
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      if (typeof parsed.command === 'string') input.command = parsed.command;
+      if (typeof parsed.output === 'string') output = parsed.output;
+      if (typeof parsed.exit_code === 'number' && parsed.exit_code !== 0) isError = true;
+    } catch {
+      /* plain-text failure such as "tool failed: ..." */
+    }
+  }
+  if (typeof editFacts?.path === 'string') input.file_path = editFacts.path;
+  return [
+    { type: 'tool_use', id, tool: MUSE_TOOL_NAMES[rawName] ?? rawName, input },
+    { type: 'tool_result', toolUseId: id, output, isError },
+  ];
+}
+
+function finalizeMuseTurn(
+  state: MuseParserState,
+  payload: Record<string, unknown>,
+  failed: boolean,
+): StreamEvent[] {
+  const buffered = state.text;
+  state.text = '';
+  const out: StreamEvent[] = [];
+  if (failed) {
+    if (buffered) {
+      out.push({
+        type: 'assistant_text',
+        text: buffered,
+        partial: false,
+        replacesAssistantBuffer: true,
+      });
+    }
+    const reason = (payload.reason as string) || (payload.terminal as string) || 'run failed';
+    out.push({
+      type: 'result',
+      text: `muse error: ${reason}`,
+      durationMs: null,
+      costUsd: null,
+      numTurns: null,
+      isError: true,
+      stopReason: 'error',
+      inputTokens: null,
+      outputTokens: null,
+    });
+    return out;
+  }
+  // Prefer the streamed burst since the last tool. The terminal `text` covers
+  // the whole run, so it is only the fallback when nothing streamed.
+  const finalText = buffered || (typeof payload.text === 'string' ? payload.text : '');
+  if (finalText) {
+    const { strippedText: afterAsk, asks } = extractAskBlocks(finalText);
+    const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
+    out.push({
+      type: 'assistant_text',
+      text: afterSteps,
+      partial: false,
+      replacesAssistantBuffer: true,
+    });
+    for (const s of steps) out.push(stepEvent(s));
+    for (const ask of asks) out.push(askEvent(ask));
+  }
+  out.push({
+    type: 'result',
+    text: finalText,
+    durationMs: null,
+    costUsd: null,
+    numTurns: null,
+    isError: false,
+    stopReason: (payload.terminal as string) ?? null,
+    inputTokens: null,
+    outputTokens: null,
+  });
+  return out;
+}
+
+function normalizeMuse(raw: Record<string, unknown>, state: MuseParserState): StreamEvent[] {
+  const out: StreamEvent[] = [];
+  const stream = raw.stream as Record<string, unknown> | undefined;
+  if (!state.sessionEmitted && stream?.kind === 'session' && typeof stream.id === 'string') {
+    state.sessionEmitted = true;
+    out.push({ type: 'system', sessionId: stream.id, model: null, cwd: null, tools: [] });
+  }
+  const type = raw.payload_type as string | undefined;
+  const payload = (raw.payload as Record<string, unknown> | undefined) ?? {};
+  if (!type) {
+    out.push({
+      type: 'unknown',
+      text: `unhandled muse line: ${JSON.stringify(raw).slice(0, 200)}`,
+    });
+    return out;
+  }
+  switch (type) {
+    case 'run.output.delta': {
+      const text = typeof payload.text === 'string' ? payload.text : '';
+      if (text) {
+        state.text += text;
+        out.push({ type: 'assistant_text', text, partial: true });
+      }
+      return out;
+    }
+    case 'task.lifecycle.proposed': {
+      const event = (payload.event as Record<string, unknown> | undefined) ?? {};
+      const kind = typeof event.task_kind === 'string' ? event.task_kind : '';
+      // A tool call ends the current text burst, so the final reply is only
+      // what the model says after its last tool.
+      if (kind.startsWith('tool.')) state.text = '';
+      return out;
+    }
+    case 'tool.result':
+      out.push(...museToolEvents(payload));
+      return out;
+    case 'run.terminal.completed':
+      out.push(...finalizeMuseTurn(state, payload, false));
+      return out;
+    default:
+      if (type.startsWith('run.terminal.')) {
+        out.push(...finalizeMuseTurn(state, payload, true));
+      }
+      return out;
   }
 }
