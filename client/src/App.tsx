@@ -8063,6 +8063,7 @@ export default function App({ initialView }: any = {}) {
                                   icon: Gauge,
                                   title: "Show what is filling this session's context window",
                                   pressed: !!contextUsageOpenBySession[activeSessionId],
+                                  closeOnSelect: true,
                                   onSelect: () => {
                                     setContextUsageOpenBySession((prev) => ({
                                       ...prev,

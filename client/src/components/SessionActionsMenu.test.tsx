@@ -27,6 +27,38 @@ describe('<SessionActionsMenu />', () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
+  it('collapses the dropdown after selecting a closeOnSelect item only', () => {
+    const onSelect = vi.fn();
+    render(
+      <SessionActionsMenu
+        items={[
+          {
+            id: 'timeline',
+            testId: 'toggle-timeline-pane',
+            label: 'Timeline',
+            icon: History,
+            onSelect: () => undefined,
+          },
+          {
+            id: 'context-usage',
+            testId: 'toggle-context-usage',
+            label: 'Context usage',
+            icon: Package,
+            closeOnSelect: true,
+            onSelect,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('session-actions-trigger'));
+    fireEvent.click(screen.getByTestId('toggle-timeline-pane'));
+    expect(screen.getByTestId('session-actions-dropdown')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('toggle-context-usage'));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('session-actions-dropdown')).not.toBeInTheDocument();
+  });
+
   it('shows a pressed count on the trigger and a check on the active item', () => {
     render(
       <SessionActionsMenu

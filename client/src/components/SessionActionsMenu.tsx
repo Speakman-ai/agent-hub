@@ -17,6 +17,8 @@ export type SessionActionMenuItem = {
   badge?: number | string | null;
   hidden?: boolean;
   disabled?: boolean;
+  /** Collapse the dropdown after selecting, for items that open a floating panel the menu would cover. */
+  closeOnSelect?: boolean;
   onSelect: () => void;
 };
 
@@ -140,7 +142,10 @@ export default function SessionActionsMenu({
                 title={item.title}
                 disabled={item.disabled}
                 aria-checked={Boolean(item.pressed)}
-                onClick={() => item.onSelect()}
+                onClick={() => {
+                  item.onSelect();
+                  if (item.closeOnSelect) setOpen(false);
+                }}
                 className={`${SESSION_ACTION_MENU_ITEM_CLASS} ${
                   item.pressed ? SESSION_ACTION_MENU_ITEM_PRESSED_CLASS : ''
                 }`}

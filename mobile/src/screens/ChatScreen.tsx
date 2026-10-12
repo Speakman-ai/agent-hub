@@ -551,7 +551,10 @@ export default function ChatScreen({
                 testID="toggle-mobile-context-usage"
                 accessibilityRole="button"
                 accessibilityState={{ expanded: showContextUsage }}
-                onPress={() => setShowContextUsage((open) => !open)}
+                onPress={() => {
+                  setShowContextUsage((open) => !open);
+                  setShowActions(false);
+                }}
                 style={[styles.actionRow, showContextUsage && styles.actionRowActive]}
               >
                 <Gauge size={14} color={showContextUsage ? colors.sky300 : colors.gray300} />
