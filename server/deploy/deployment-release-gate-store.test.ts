@@ -138,6 +138,34 @@ describe('release gate update', () => {
       /at least one session or epic/,
     );
   });
+
+  it('adds sessions and epics to an existing armed gate', () => {
+    const row = createReleaseGate({ projectId: P, environmentName: 'prod', sessionIds: ['s1'] });
+    const updated = updateReleaseGate(P, row.id, {
+      ref: 'release/1.2',
+      sessionIds: ['s1', 's2'],
+      epicIds: ['e1'],
+    });
+    expect(updated).toMatchObject({ status: 'armed', ref: 'release/1.2' });
+    expect(parseGateSessionIds(updated!)).toEqual(['s1', 's2']);
+    expect(parseGateEpicIds(updated!)).toEqual(['e1']);
+  });
+
+  it('refuses ref/selection edits on a released or failed gate', () => {
+    const fired = createReleaseGate({ projectId: P, environmentName: 'prod', sessionIds: ['s1'] });
+    markReleaseGateFired(P, fired.id, 'dep-1');
+    expect(() => updateReleaseGate(P, fired.id, { sessionIds: ['s1', 's2'] })).toThrow(
+      /already released/,
+    );
+    expect(() => updateReleaseGate(P, fired.id, { ref: 'other' })).toThrow(/already released/);
+    expect(parseGateSessionIds(getReleaseGate(P, fired.id)!)).toEqual(['s1']);
+
+    const failed = createReleaseGate({ projectId: P, environmentName: 'prod', epicIds: ['e1'] });
+    markReleaseGateFailed(P, failed.id, 'boom');
+    expect(() => updateReleaseGate(P, failed.id, { epicIds: ['e1', 'e2'] })).toThrow(
+      /already failed/,
+    );
+  });
 });
 
 describe('release gate mark helpers (compare-and-set)', () => {

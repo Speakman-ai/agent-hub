@@ -8,14 +8,27 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { CheckSquare, Plus, Power, PowerOff, Rocket, Square, Trash2 } from 'lucide-react-native';
+import {
+  CheckSquare,
+  Pencil,
+  Plus,
+  Power,
+  PowerOff,
+  Rocket,
+  Save,
+  Square,
+  Trash2,
+  X,
+} from 'lucide-react-native';
 import { colors } from '../../theme/colors';
 import { api } from '../../utils/api';
 import {
   describeReleaseGate,
   describeReleaseGateProgress,
+  releaseGateSelectionMap,
   sortReleaseGates,
   validateReleaseGateDraft,
+  withSelectedReleaseGateOptions,
   type DeployReleaseGate,
 } from '../../utils/deployReleaseGates';
 
@@ -33,7 +46,8 @@ function statusLabel(gate: DeployReleaseGate): { text: string; color: string } {
 }
 
 /**
- * Per-environment release-gates editor body.
+ * Per-environment release-gates editor body. The bottom form adds a new gate,
+ * or saves changes to `editingGate` when one is being edited.
  */
 export function EnvironmentReleaseGatesPanelContent({
   environmentName,
@@ -47,10 +61,14 @@ export function EnvironmentReleaseGatesPanelContent({
   selectedSessions,
   selectedEpics,
   adding,
+  editingGate,
   onRefChange,
   onToggleSessionOption,
   onToggleEpicOption,
   onAdd,
+  onSave,
+  onCancelEdit,
+  onEdit,
   onToggle,
   onDelete,
 }: {
@@ -65,10 +83,14 @@ export function EnvironmentReleaseGatesPanelContent({
   selectedSessions: Record<string, boolean>;
   selectedEpics: Record<string, boolean>;
   adding: boolean;
+  editingGate: DeployReleaseGate | null;
   onRefChange: (value: string) => void;
   onToggleSessionOption: (id: string) => void;
   onToggleEpicOption: (id: string) => void;
   onAdd: () => void;
+  onSave: () => void;
+  onCancelEdit: () => void;
+  onEdit: (gate: DeployReleaseGate) => void;
   onToggle: (gate: DeployReleaseGate) => void;
   onDelete: (gate: DeployReleaseGate) => void;
 }) {
@@ -103,10 +125,15 @@ export function EnvironmentReleaseGatesPanelContent({
           const deleteKey = `delete:${gate.id}`;
           const terminal = gate.status !== 'armed';
           const status = statusLabel(gate);
+          const isEditing = editingGate?.id === gate.id;
           return (
             <View
               key={gate.id}
-              style={[styles.gateRow, (!gate.enabled || terminal) && styles.disabledRow]}
+              style={[
+                styles.gateRow,
+                (!gate.enabled || terminal) && styles.disabledRow,
+                isEditing && styles.editingRow,
+              ]}
               testID={`release-gate-row-${gate.id}`}
             >
               <View style={styles.refBadge}>
@@ -125,6 +152,18 @@ export function EnvironmentReleaseGatesPanelContent({
                   </Text>
                 ) : null}
               </View>
+              {!terminal ? (
+                <TouchableOpacity
+                  onPress={() => onEdit(gate)}
+                  // A create/save in flight resets the draft on completion, so
+                  // no row may start editing until it settles.
+                  disabled={isEditing || adding}
+                  style={[styles.smallButton, (isEditing || adding) && styles.disabled]}
+                  accessibilityLabel={`Edit ${describeReleaseGate(gate)}`}
+                >
+                  <Pencil size={12} color={colors.gray300} />
+                </TouchableOpacity>
+              ) : null}
               {!terminal ? (
                 <TouchableOpacity
                   onPress={() => onToggle(gate)}
@@ -159,6 +198,11 @@ export function EnvironmentReleaseGatesPanelContent({
       )}
 
       <View style={styles.addBlock}>
+        {editingGate ? (
+          <Text style={styles.editingTitle}>
+            Editing release gate: {describeReleaseGate(editingGate)}
+          </Text>
+        ) : null}
         <TextInput
           value={refValue}
           onChangeText={onRefChange}
@@ -186,18 +230,33 @@ export function EnvironmentReleaseGatesPanelContent({
           testID="release-gate-epic-options"
         />
         <TouchableOpacity
-          onPress={onAdd}
+          onPress={editingGate ? onSave : onAdd}
           disabled={!canAdd}
           style={[styles.addButton, !canAdd && styles.disabled]}
-          accessibilityLabel="Add release gate"
+          accessibilityLabel={editingGate ? 'Save release gate changes' : 'Add release gate'}
         >
           {adding ? (
             <ActivityIndicator color={colors.emerald300} size="small" />
+          ) : editingGate ? (
+            <Save size={13} color={colors.emerald300} />
           ) : (
             <Plus size={13} color={colors.emerald300} />
           )}
-          <Text style={styles.addButtonText}>Add release gate</Text>
+          <Text style={styles.addButtonText}>
+            {editingGate ? 'Save changes' : 'Add release gate'}
+          </Text>
         </TouchableOpacity>
+        {editingGate ? (
+          <TouchableOpacity
+            onPress={onCancelEdit}
+            disabled={adding}
+            style={[styles.cancelButton, adding && styles.disabled]}
+            accessibilityLabel="Cancel editing release gate"
+          >
+            <X size={13} color={colors.gray300} />
+            <Text style={styles.cancelButtonText}>Cancel</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     </View>
   );
@@ -252,7 +311,8 @@ function PickList({
  * Per-environment release-gates editor (mobile). Owns state + API calls and
  * delegates rendering to {@link EnvironmentReleaseGatesPanelContent}. Mirrors the
  * web EnvironmentReleaseGatesPanel: curate sessions/epics from the board, then a
- * one-shot deployment fires once they all complete.
+ * one-shot deployment fires once they all complete. Armed gates can be edited
+ * to change the ref or add/remove sessions and epics.
  */
 export default function EnvironmentReleaseGatesPanel({
   projectId,
@@ -266,6 +326,9 @@ export default function EnvironmentReleaseGatesPanel({
   const [gates, setGates] = useState<DeployReleaseGate[]>([]);
   const [sessionOptions, setSessionOptions] = useState<ReleaseGatePickOption[]>([]);
   const [epicOptions, setEpicOptions] = useState<ReleaseGatePickOption[]>([]);
+  // Labels for every epic, including done ones the pick list hides, so an
+  // edited gate's finished epics still show their names.
+  const [allEpicLabels, setAllEpicLabels] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionKey, setActionKey] = useState<string | null>(null);
@@ -273,6 +336,7 @@ export default function EnvironmentReleaseGatesPanel({
   const [selectedSessions, setSelectedSessions] = useState<Record<string, boolean>>({});
   const [selectedEpics, setSelectedEpics] = useState<Record<string, boolean>>({});
   const [adding, setAdding] = useState(false);
+  const [editingGateId, setEditingGateId] = useState<string | null>(null);
 
   const notify = useCallback(
     (message: string, type: string = 'info') => onNotify?.(message, type),
@@ -314,6 +378,9 @@ export default function EnvironmentReleaseGatesPanel({
       }
       setSessionOptions(sessions);
       const epics: any[] = Array.isArray(epicsRes) ? epicsRes : epicsRes?.epics || [];
+      setAllEpicLabels(
+        new Map(epics.filter((e) => e?.id).map((e) => [e.id, e.name || e.title || e.id] as const)),
+      );
       setEpicOptions(
         epics
           .filter((e) => e?.id && e?.state !== 'done')
@@ -338,6 +405,95 @@ export default function EnvironmentReleaseGatesPanel({
     [selectedEpics],
   );
 
+  const editingGate = useMemo(
+    () => (editingGateId ? gates.find((g) => g.id === editingGateId) || null : null),
+    [editingGateId, gates],
+  );
+
+  const sessionLabels = useMemo(
+    () => new Map(sessionOptions.map((o) => [o.id, o.label] as const)),
+    [sessionOptions],
+  );
+  // While editing, keep the gate's current selections visible even when they
+  // are no longer candidates (merged session, finished epic) so they can be
+  // unticked.
+  const visibleSessionOptions = useMemo(
+    () =>
+      editingGate
+        ? withSelectedReleaseGateOptions(sessionOptions, editingGate.sessionIds, sessionLabels)
+        : sessionOptions,
+    [editingGate, sessionOptions, sessionLabels],
+  );
+  const visibleEpicOptions = useMemo(
+    () =>
+      editingGate
+        ? withSelectedReleaseGateOptions(epicOptions, editingGate.epicIds, allEpicLabels)
+        : epicOptions,
+    [editingGate, epicOptions, allEpicLabels],
+  );
+
+  const resetDraft = useCallback(() => {
+    setEditingGateId(null);
+    setRef('');
+    setSelectedSessions({});
+    setSelectedEpics({});
+  }, []);
+
+  // Leave edit mode if the gate disappears or resolves underneath the editor.
+  useEffect(() => {
+    if (editingGateId && (!editingGate || editingGate.status !== 'armed')) resetDraft();
+  }, [editingGateId, editingGate, resetDraft]);
+
+  const startEdit = useCallback(
+    (gate: DeployReleaseGate) => {
+      if (adding) return;
+      setEditingGateId(gate.id);
+      setRef(gate.ref);
+      setSelectedSessions(releaseGateSelectionMap(gate.sessionIds));
+      setSelectedEpics(releaseGateSelectionMap(gate.epicIds));
+    },
+    [adding],
+  );
+
+  const saveEdit = useCallback(async () => {
+    if (!editingGate) return;
+    const draft = { ref, sessionIds: draftSessionIds, epicIds: draftEpicIds };
+    const validationError = validateReleaseGateDraft(draft);
+    if (validationError) {
+      notify(validationError, 'error');
+      return;
+    }
+    setAdding(true);
+    try {
+      const res = await api.updateDeployReleaseGate(projectId, environmentName, editingGate.id, {
+        ref: draft.ref.trim() || null,
+        sessionIds: draft.sessionIds,
+        epicIds: draft.epicIds,
+      });
+      if (res?.gate) {
+        setGates((prev) => prev.map((g) => (g.id === editingGate.id ? res.gate : g)));
+      }
+      resetDraft();
+      notify('Release gate updated', 'success');
+    } catch (e: any) {
+      notify(e?.message || 'Failed to update release gate', 'error');
+      // A 409 means the gate released while it was being edited; refresh.
+      load();
+    } finally {
+      setAdding(false);
+    }
+  }, [
+    editingGate,
+    ref,
+    draftSessionIds,
+    draftEpicIds,
+    projectId,
+    environmentName,
+    notify,
+    resetDraft,
+    load,
+  ]);
+
   const addGate = useCallback(async () => {
     const draft = { ref, sessionIds: draftSessionIds, epicIds: draftEpicIds };
     const validationError = validateReleaseGateDraft(draft);
@@ -353,16 +509,14 @@ export default function EnvironmentReleaseGatesPanel({
         epicIds: draft.epicIds,
       });
       if (res?.gate) setGates((prev) => [...prev, res.gate]);
-      setRef('');
-      setSelectedSessions({});
-      setSelectedEpics({});
+      resetDraft();
       notify(`Release gate added to ${environmentName}`, 'success');
     } catch (e: any) {
       notify(e?.message || 'Failed to add release gate', 'error');
     } finally {
       setAdding(false);
     }
-  }, [projectId, environmentName, ref, draftSessionIds, draftEpicIds, notify]);
+  }, [projectId, environmentName, ref, draftSessionIds, draftEpicIds, notify, resetDraft]);
 
   const toggleGate = useCallback(
     async (gate: DeployReleaseGate) => {
@@ -418,8 +572,8 @@ export default function EnvironmentReleaseGatesPanel({
     <EnvironmentReleaseGatesPanelContent
       environmentName={environmentName}
       gates={gates}
-      sessionOptions={sessionOptions}
-      epicOptions={epicOptions}
+      sessionOptions={visibleSessionOptions}
+      epicOptions={visibleEpicOptions}
       loading={loading}
       error={error}
       actionKey={actionKey}
@@ -427,10 +581,14 @@ export default function EnvironmentReleaseGatesPanel({
       selectedSessions={selectedSessions}
       selectedEpics={selectedEpics}
       adding={adding}
+      editingGate={editingGate}
       onRefChange={setRef}
       onToggleSessionOption={(id) => setSelectedSessions((p) => ({ ...p, [id]: !p[id] }))}
       onToggleEpicOption={(id) => setSelectedEpics((p) => ({ ...p, [id]: !p[id] }))}
       onAdd={addGate}
+      onSave={saveEdit}
+      onCancelEdit={resetDraft}
+      onEdit={startEdit}
       onToggle={toggleGate}
       onDelete={confirmDelete}
     />
@@ -463,6 +621,7 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   disabledRow: { opacity: 0.6 },
+  editingRow: { borderColor: colors.blue500 },
   refBadge: {
     borderWidth: 1,
     borderColor: colors.purple500,
@@ -540,5 +699,18 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   addButtonText: { color: colors.emerald300, fontSize: 12, fontWeight: '500' },
+  editingTitle: { color: colors.blue400, fontSize: 11, fontWeight: '500' },
+  cancelButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  cancelButtonText: { color: colors.gray300, fontSize: 12, fontWeight: '500' },
   disabled: { opacity: 0.5 },
 });

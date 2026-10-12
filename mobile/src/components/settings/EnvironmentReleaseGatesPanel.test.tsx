@@ -17,12 +17,15 @@ vi.mock('react-native', () => ({
 }));
 vi.mock('lucide-react-native', () => ({
   CheckSquare: 'CheckSquare',
+  Pencil: 'Pencil',
   Plus: 'Plus',
   Power: 'Power',
   PowerOff: 'PowerOff',
   Rocket: 'Rocket',
+  Save: 'Save',
   Square: 'Square',
   Trash2: 'Trash2',
+  X: 'X',
 }));
 vi.mock('../../utils/api', () => ({ api: {} }));
 
@@ -83,10 +86,14 @@ function renderContent(
       selectedSessions={{}}
       selectedEpics={{}}
       adding={false}
+      editingGate={null}
       onRefChange={noop}
       onToggleSessionOption={noop}
       onToggleEpicOption={noop}
       onAdd={noop}
+      onSave={noop}
+      onCancelEdit={noop}
+      onEdit={noop}
       onToggle={noop}
       onDelete={noop}
       {...over}
@@ -136,5 +143,35 @@ describe('EnvironmentReleaseGatesPanelContent', () => {
     });
     expect(html).toContain('failed');
     expect(html).toContain('runner exploded');
+  });
+
+  it('offers Edit on an armed gate but not on a released one', () => {
+    expect(renderContent({ gates: [gate()] })).toContain('Edit Deploy main');
+    expect(
+      renderContent({ gates: [gate({ status: 'fired', firedDeploymentId: 'dep-1' })] }),
+    ).not.toContain('Edit Deploy main');
+  });
+
+  it('switches the form to save/cancel while editing a gate', () => {
+    const editing = gate({ ref: 'release/1.2' });
+    const html = renderContent({
+      gates: [editing],
+      editingGate: editing,
+      refValue: 'release/1.2',
+      selectedSessions: { 'sess-a': true },
+    });
+    expect(html).toContain('Editing release gate: Deploy release/1.2 when 1 session complete');
+    expect(html).toContain('Save changes');
+    expect(html).toContain('Cancel');
+    expect(html).not.toContain('>Add release gate<');
+  });
+
+  // A create/save in flight resets the draft when it settles, so no gate may
+  // open the editor until then.
+  it('disables every Edit action while the form is busy', () => {
+    const editButton = (html: string) =>
+      html.match(/<TouchableOpacity[^>]*accessibilityLabel="Edit Deploy main[^"]*"[^>]*>/)?.[0];
+    expect(editButton(renderContent({ gates: [gate()] }))).not.toContain('disabled');
+    expect(editButton(renderContent({ gates: [gate()], adding: true }))).toContain('disabled');
   });
 });

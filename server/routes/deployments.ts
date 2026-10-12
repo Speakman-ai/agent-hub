@@ -741,6 +741,7 @@ function releaseGateDto(
 function mapReleaseGateStoreError(err: unknown, res: Response): Response {
   if (err instanceof DeployReleaseGateError) {
     if (err.reason === 'not_found') return res.status(404).json({ error: err.message });
+    if (err.reason === 'terminal') return res.status(409).json({ error: err.message });
     return res.status(400).json({ error: err.message });
   }
   const message = err instanceof Error ? err.message : String(err);

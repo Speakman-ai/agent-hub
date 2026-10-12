@@ -128,3 +128,29 @@ export function validateReleaseGateDraft(draft: ReleaseGateDraft): string | null
 export function normalizeReleaseGateRef(ref: string): string {
   return ref.trim() || RELEASE_GATE_DEFAULT_REF;
 }
+
+/** `['a','b']` → `{ a: true, b: true }`, the checkbox state shape the pick lists use. */
+export function releaseGateSelectionMap(ids: string[]): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const id of ids) out[id] = true;
+  return out;
+}
+
+/**
+ * Pick-list options while editing a gate. The candidate lists only offer
+ * in-flight sessions and open epics, so a gate's existing selections that have
+ * since merged / finished (or were deleted) would vanish from the list and
+ * could not be unticked. Append any selected id missing from `options`, labeled
+ * from `labels` when known, so the editor always shows everything it will save.
+ */
+export function withSelectedReleaseGateOptions<T extends { id: string; label: string }>(
+  options: T[],
+  selectedIds: string[],
+  labels?: Map<string, string>,
+): { id: string; label: string }[] {
+  const known = new Set(options.map((o) => o.id));
+  const extra = selectedIds
+    .filter((id) => !known.has(id))
+    .map((id) => ({ id, label: labels?.get(id) || id }));
+  return extra.length ? [...options, ...extra] : options;
+}

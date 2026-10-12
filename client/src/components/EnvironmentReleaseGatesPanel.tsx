@@ -4,19 +4,24 @@ import {
   CheckCircle2,
   Circle,
   Loader2,
+  Pencil,
   Plus,
   Power,
   PowerOff,
   Rocket,
+  Save,
   Trash2,
+  X,
   XCircle,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import {
   describeReleaseGate,
   describeReleaseGateProgress,
+  releaseGateSelectionMap,
   sortReleaseGates,
   validateReleaseGateDraft,
+  withSelectedReleaseGateOptions,
   type DeployReleaseGate,
   type ReleaseGateSelectionState,
 } from '../utils/deployReleaseGates';
@@ -31,7 +36,8 @@ interface PickOption {
  * in EnvironmentsManagementSection. A release gate is a ONE-SHOT deploy: it
  * fires a single deployment once its selected sessions are all merged AND its
  * selected epics are all done, then is consumed (release-gate epic decision).
- * The operator curates the sessions/epics from the project board.
+ * The operator curates the sessions/epics from the project board, and can come
+ * back to an armed gate to change its ref or add/remove sessions and epics.
  */
 export default function EnvironmentReleaseGatesPanel({
   projectId,
@@ -45,6 +51,9 @@ export default function EnvironmentReleaseGatesPanel({
   const [gates, setGates] = useState<DeployReleaseGate[]>([]);
   const [sessionOptions, setSessionOptions] = useState<PickOption[]>([]);
   const [epicOptions, setEpicOptions] = useState<PickOption[]>([]);
+  // Labels for every epic, including done ones the pick list hides, so an
+  // edited gate's finished epics still show their names.
+  const [allEpicLabels, setAllEpicLabels] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionKey, setActionKey] = useState<string | null>(null);
@@ -52,6 +61,7 @@ export default function EnvironmentReleaseGatesPanel({
   const [selectedSessions, setSelectedSessions] = useState<Record<string, boolean>>({});
   const [selectedEpics, setSelectedEpics] = useState<Record<string, boolean>>({});
   const [adding, setAdding] = useState(false);
+  const [editingGateId, setEditingGateId] = useState<string | null>(null);
 
   const notify = useCallback(
     (message: string, type: string = 'info') => showToast?.(message, type),
@@ -89,6 +99,9 @@ export default function EnvironmentReleaseGatesPanel({
       setSessionOptions(sessions);
 
       const epics: any[] = Array.isArray(epicsRes) ? epicsRes : epicsRes?.epics || [];
+      setAllEpicLabels(
+        new Map(epics.filter((e) => e?.id).map((e) => [e.id, e.name || e.title || e.id] as const)),
+      );
       setEpicOptions(
         epics
           .filter((e) => e?.id && e?.state !== 'done')
@@ -110,13 +123,77 @@ export default function EnvironmentReleaseGatesPanel({
     return map;
   }, [sessionOptions]);
   const epicLabels = useMemo(() => {
-    const map = new Map<string, string>();
+    const map = new Map(allEpicLabels);
     for (const o of epicOptions) map.set(o.id, o.label);
     return map;
-  }, [epicOptions]);
+  }, [allEpicLabels, epicOptions]);
 
   const draftSessionIds = Object.keys(selectedSessions).filter((k) => selectedSessions[k]);
   const draftEpicIds = Object.keys(selectedEpics).filter((k) => selectedEpics[k]);
+
+  const editingGate = editingGateId ? gates.find((g) => g.id === editingGateId) || null : null;
+  // While editing, keep the gate's current selections visible even when they
+  // are no longer candidates (merged session, finished epic) so they can be
+  // unticked; otherwise they would be silently kept.
+  const visibleSessionOptions = editingGate
+    ? withSelectedReleaseGateOptions(sessionOptions, editingGate.sessionIds, sessionLabels)
+    : sessionOptions;
+  const visibleEpicOptions = editingGate
+    ? withSelectedReleaseGateOptions(epicOptions, editingGate.epicIds, epicLabels)
+    : epicOptions;
+
+  const resetDraft = useCallback(() => {
+    setEditingGateId(null);
+    setRef('');
+    setSelectedSessions({});
+    setSelectedEpics({});
+  }, []);
+
+  // Leave edit mode if the gate disappears or resolves underneath the editor
+  // (deleted elsewhere, or it fired after a reload).
+  useEffect(() => {
+    if (editingGateId && (!editingGate || editingGate.status !== 'armed')) resetDraft();
+  }, [editingGateId, editingGate, resetDraft]);
+
+  const startEdit = (gate: DeployReleaseGate) => {
+    // The in-flight request's completion calls resetDraft(), which would wipe
+    // a draft opened in the meantime.
+    if (adding) return;
+    setEditingGateId(gate.id);
+    setRef(gate.ref);
+    setSelectedSessions(releaseGateSelectionMap(gate.sessionIds));
+    setSelectedEpics(releaseGateSelectionMap(gate.epicIds));
+  };
+
+  const saveEdit = async () => {
+    if (!editingGate) return;
+    const draft = { ref, sessionIds: draftSessionIds, epicIds: draftEpicIds };
+    const validationError = validateReleaseGateDraft(draft);
+    if (validationError) {
+      notify(validationError, 'error');
+      return;
+    }
+    setAdding(true);
+    try {
+      const res = await api.updateDeployReleaseGate(projectId, environmentName, editingGate.id, {
+        ref: draft.ref.trim() || null,
+        sessionIds: draft.sessionIds,
+        epicIds: draft.epicIds,
+      });
+      if (res?.gate) {
+        setGates((prev) => prev.map((g) => (g.id === editingGate.id ? res.gate : g)));
+      }
+      resetDraft();
+      notify('Release gate updated', 'success');
+    } catch (e: any) {
+      notify(e?.message || 'Failed to update release gate', 'error');
+      // A 409 means the gate released while it was being edited; refresh so
+      // the row shows its real status.
+      load();
+    } finally {
+      setAdding(false);
+    }
+  };
 
   const addGate = async () => {
     const draft = { ref, sessionIds: draftSessionIds, epicIds: draftEpicIds };
@@ -133,9 +210,7 @@ export default function EnvironmentReleaseGatesPanel({
         epicIds: draft.epicIds,
       });
       if (res?.gate) setGates((prev) => [...prev, res.gate]);
-      setRef('');
-      setSelectedSessions({});
-      setSelectedEpics({});
+      resetDraft();
       notify(`Release gate added to ${environmentName}`, 'success');
     } catch (e: any) {
       notify(e?.message || 'Failed to add release gate', 'error');
@@ -172,6 +247,7 @@ export default function EnvironmentReleaseGatesPanel({
     try {
       await api.deleteDeployReleaseGate(projectId, environmentName, gate.id);
       setGates((prev) => prev.filter((g) => g.id !== gate.id));
+      if (editingGateId === gate.id) resetDraft();
       notify('Release gate deleted', 'success');
     } catch (e: any) {
       notify(e?.message || 'Failed to delete release gate', 'error');
@@ -221,6 +297,9 @@ export default function EnvironmentReleaseGatesPanel({
               busyKey={actionKey}
               sessionLabels={sessionLabels}
               epicLabels={epicLabels}
+              editing={editingGateId === gate.id}
+              formBusy={adding}
+              onEdit={() => startEdit(gate)}
               onToggle={() => toggleGate(gate)}
               onDelete={() => deleteGate(gate)}
             />
@@ -228,7 +307,12 @@ export default function EnvironmentReleaseGatesPanel({
         </div>
       )}
 
-      <div className="mt-3 space-y-2 border-t border-gray-800 pt-3">
+      <div className="mt-3 space-y-2 border-t border-gray-800 pt-3" data-testid="release-gate-form">
+        {editingGate ? (
+          <div className="text-[11px] font-medium text-sky-300">
+            Editing release gate: {describeReleaseGate(editingGate)}
+          </div>
+        ) : null}
         <input
           type="text"
           value={ref}
@@ -240,7 +324,7 @@ export default function EnvironmentReleaseGatesPanel({
         <PickList
           title="Sessions (merge to complete)"
           emptyLabel="No active sessions on the board."
-          options={sessionOptions}
+          options={visibleSessionOptions}
           selected={selectedSessions}
           onToggle={(id) => setSelectedSessions((p) => ({ ...p, [id]: !p[id] }))}
           testid="release-gate-session-options"
@@ -248,20 +332,39 @@ export default function EnvironmentReleaseGatesPanel({
         <PickList
           title="Epics (all cards done to complete)"
           emptyLabel="No open epics."
-          options={epicOptions}
+          options={visibleEpicOptions}
           selected={selectedEpics}
           onToggle={(id) => setSelectedEpics((p) => ({ ...p, [id]: !p[id] }))}
           testid="release-gate-epic-options"
         />
-        <button
-          type="button"
-          onClick={addGate}
-          disabled={adding || draftSessionIds.length + draftEpicIds.length === 0}
-          className="inline-flex items-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-200 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {adding ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
-          Add release gate
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={editingGate ? saveEdit : addGate}
+            disabled={adding || draftSessionIds.length + draftEpicIds.length === 0}
+            className="inline-flex items-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-200 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {adding ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : editingGate ? (
+              <Save size={12} />
+            ) : (
+              <Plus size={12} />
+            )}
+            {editingGate ? 'Save changes' : 'Add release gate'}
+          </button>
+          {editingGate ? (
+            <button
+              type="button"
+              onClick={resetDraft}
+              disabled={adding}
+              className="inline-flex items-center gap-1.5 rounded border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+            >
+              <X size={12} />
+              Cancel
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -360,6 +463,9 @@ function ReleaseGateRow({
   busyKey,
   sessionLabels,
   epicLabels,
+  editing,
+  formBusy,
+  onEdit,
   onToggle,
   onDelete,
 }: {
@@ -367,6 +473,10 @@ function ReleaseGateRow({
   busyKey: string | null;
   sessionLabels: Map<string, string>;
   epicLabels: Map<string, string>;
+  editing: boolean;
+  /** A create/save is in flight; its completion resets the draft, so no row may start editing. */
+  formBusy: boolean;
+  onEdit: () => void;
   onToggle: () => void;
   onDelete: () => void;
 }) {
@@ -389,9 +499,11 @@ function ReleaseGateRow({
     <div
       data-testid={`release-gate-row-${gate.id}`}
       className={`rounded border p-2 ${
-        gate.enabled && !terminal
-          ? 'border-gray-800 bg-gray-950/70'
-          : 'border-gray-800 bg-gray-950/40 opacity-80'
+        editing
+          ? 'border-sky-500/50 bg-gray-950/70'
+          : gate.enabled && !terminal
+            ? 'border-gray-800 bg-gray-950/70'
+            : 'border-gray-800 bg-gray-950/40 opacity-80'
       }`}
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -406,6 +518,19 @@ function ReleaseGateRow({
         <div className="min-w-0 flex-1 truncate text-[11px] text-gray-400">{progressLabel}</div>
         {!gate.enabled && !terminal ? (
           <span className="text-[10px] uppercase tracking-wide text-gray-500">paused</span>
+        ) : null}
+        {!terminal ? (
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={editing || formBusy}
+            className="inline-flex items-center gap-1 rounded border border-gray-700 px-1.5 py-1 text-[11px] text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+            title="Edit gate"
+            aria-label={`Edit ${describeReleaseGate(gate)}`}
+          >
+            <Pencil size={11} />
+            Edit
+          </button>
         ) : null}
         {!terminal ? (
           <button

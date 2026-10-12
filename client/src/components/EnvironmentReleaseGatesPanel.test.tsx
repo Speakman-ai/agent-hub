@@ -188,4 +188,110 @@ describe('EnvironmentReleaseGatesPanel', () => {
       expect(api.deleteDeployReleaseGate).toHaveBeenCalledWith('proj-1', 'prod', 'g1'),
     );
   });
+
+  it('edits an armed gate: adds an epic and drops a merged session', async () => {
+    const existing = gate({
+      sessionIds: ['sess-a', 'sess-merged'],
+      epicIds: ['epic-done'],
+    });
+    (api.listDeployReleaseGates as any).mockResolvedValue({ gates: [existing] });
+    (api.updateDeployReleaseGate as any).mockResolvedValue({
+      gate: gate({ sessionIds: ['sess-a'], epicIds: ['epic-done', 'epic-1'] }),
+    });
+    render(<EnvironmentReleaseGatesPanel projectId="proj-1" environmentName="prod" />);
+    await waitFor(() => expect(screen.getByLabelText(/Edit Deploy main/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId('release-gate-session-options')).toBeTruthy());
+    fireEvent.click(screen.getByLabelText(/Edit Deploy main/));
+
+    const form = screen.getByTestId('release-gate-form');
+    expect(within(form).getByText(/Editing release gate/)).toBeTruthy();
+    expect((within(form).getByLabelText('Ref') as HTMLInputElement).value).toBe('main');
+    // Selections that are no longer candidates stay visible (and ticked) so
+    // they can be removed; the done epic keeps its name.
+    const checkbox = (label: string) =>
+      within(form).getByText(label).closest('label')!.querySelector('input') as HTMLInputElement;
+    expect(checkbox('Fix auth').checked).toBe(true);
+    expect(checkbox('sess-merged').checked).toBe(true);
+    expect(checkbox('Shipped').checked).toBe(true);
+    expect(checkbox('Billing').checked).toBe(false);
+
+    fireEvent.click(checkbox('Billing'));
+    fireEvent.click(checkbox('sess-merged'));
+    fireEvent.click(within(form).getByText('Save changes'));
+
+    await waitFor(() =>
+      expect(api.updateDeployReleaseGate).toHaveBeenCalledWith('proj-1', 'prod', 'g1', {
+        ref: 'main',
+        sessionIds: ['sess-a'],
+        epicIds: ['epic-done', 'epic-1'],
+      }),
+    );
+    await waitFor(() => expect(within(form).getByText('Add release gate')).toBeTruthy());
+    expect(api.createDeployReleaseGate).not.toHaveBeenCalled();
+  });
+
+  it('cancel leaves edit mode without saving', async () => {
+    (api.listDeployReleaseGates as any).mockResolvedValue({ gates: [gate()] });
+    render(<EnvironmentReleaseGatesPanel projectId="proj-1" environmentName="prod" />);
+    await waitFor(() => expect(screen.getByLabelText(/Edit Deploy main/)).toBeTruthy());
+    fireEvent.click(screen.getByLabelText(/Edit Deploy main/));
+    fireEvent.click(screen.getByText('Cancel'));
+    const form = screen.getByTestId('release-gate-form');
+    expect(within(form).queryByText(/Editing release gate/)).toBeNull();
+    expect((within(form).getByLabelText('Ref') as HTMLInputElement).value).toBe('');
+    expect(api.updateDeployReleaseGate).not.toHaveBeenCalled();
+  });
+
+  it('does not offer Edit on a released gate', async () => {
+    (api.listDeployReleaseGates as any).mockResolvedValue({
+      gates: [gate({ status: 'fired', firedDeploymentId: 'dep-12345678' })],
+    });
+    render(<EnvironmentReleaseGatesPanel projectId="proj-1" environmentName="prod" />);
+    await waitFor(() => expect(screen.getByText('released')).toBeTruthy());
+    expect(screen.queryByLabelText(/Edit Deploy main/)).toBeNull();
+  });
+
+  // Regression: a save's completion resets the draft, so opening another gate's
+  // editor while the save was in flight lost that second draft.
+  it('locks Edit on every gate until an in-flight save settles', async () => {
+    const g1 = gate();
+    const g2 = gate({ id: 'g2', ref: 'release/2', createdAt: '2026-08-19T00:00:00Z' });
+    (api.listDeployReleaseGates as any).mockResolvedValue({ gates: [g1, g2] });
+    let resolveSave!: (v: any) => void;
+    (api.updateDeployReleaseGate as any).mockReturnValue(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    render(<EnvironmentReleaseGatesPanel projectId="proj-1" environmentName="prod" />);
+    await waitFor(() => expect(screen.getByLabelText(/Edit Deploy release\/2/)).toBeTruthy());
+    const editG2 = () => screen.getByLabelText(/Edit Deploy release\/2/) as HTMLButtonElement;
+
+    fireEvent.click(screen.getByLabelText(/Edit Deploy main/));
+    const form = screen.getByTestId('release-gate-form');
+    fireEvent.click(within(form).getByText('Save changes'));
+    await waitFor(() => expect(api.updateDeployReleaseGate).toHaveBeenCalledTimes(1));
+
+    expect(editG2().disabled).toBe(true);
+    fireEvent.click(editG2());
+    expect((within(form).getByLabelText('Ref') as HTMLInputElement).value).toBe('main');
+
+    resolveSave({ gate: g1 });
+    await waitFor(() => expect(editG2().disabled).toBe(false));
+    fireEvent.click(editG2());
+    expect((within(form).getByLabelText('Ref') as HTMLInputElement).value).toBe('release/2');
+    expect(within(form).getByText(/Editing release gate: Deploy release\/2/)).toBeTruthy();
+  });
+
+  it('locks Edit while a new gate is being created', async () => {
+    (api.listDeployReleaseGates as any).mockResolvedValue({ gates: [gate()] });
+    (api.createDeployReleaseGate as any).mockReturnValue(new Promise(() => undefined));
+    render(<EnvironmentReleaseGatesPanel projectId="proj-1" environmentName="prod" />);
+    await waitFor(() => expect(screen.getByTestId('release-gate-epic-options')).toBeTruthy());
+    const form = screen.getByTestId('release-gate-form');
+    fireEvent.click(within(form).getByText('Billing'));
+    fireEvent.click(within(form).getByText('Add release gate'));
+    await waitFor(() => expect(api.createDeployReleaseGate).toHaveBeenCalled());
+    expect((screen.getByLabelText(/Edit Deploy main/) as HTMLButtonElement).disabled).toBe(true);
+  });
 });

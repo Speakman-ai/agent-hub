@@ -43,6 +43,7 @@ import {
 import {
   createReleaseGate,
   listReleaseGatesForEnvironment,
+  markReleaseGateFired,
 } from '../deploy/deployment-release-gate-store.js';
 import { DeployConfigError } from '../deploy/deploy-config-error.js';
 import { createSupportTicket, recordSupportTicketInvestigation } from '../support-tickets-store.js';
@@ -2476,6 +2477,21 @@ environments:
           .patch(`${gatesUrl('prod')}/${row.id}`)
           .send({ sessionIds: [], epicIds: [] })
           .expect(400);
+      });
+
+      it('returns 409 when re-scoping a gate that already released', async () => {
+        const row = createReleaseGate({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          sessionIds: ['sess-a'],
+        });
+        markReleaseGateFired(PROJECT_ID, row.id, 'dep-1');
+        const { app } = makeApp();
+        const res = await request(app)
+          .patch(`${gatesUrl('prod')}/${row.id}`)
+          .send({ sessionIds: ['sess-a', 'sess-b'] })
+          .expect(409);
+        expect(res.body.error).toMatch(/already released/);
       });
 
       it('returns 404 for a missing gate', async () => {

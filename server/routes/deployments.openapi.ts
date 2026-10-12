@@ -1011,7 +1011,7 @@ registerPath({
   tags: ['Deployments'],
   summary: 'Update a release gate',
   description:
-    'Admin+. Partial update of an armed gate: omitted fields keep their current value. The owner identity and lifecycle status are fixed. A fired/failed gate is terminal (retry by delete + recreate). The gate must still watch at least one session or epic.',
+    'Admin+. Partial update of an armed gate: omitted fields keep their current value. The owner identity and lifecycle status are fixed. Use it to add or remove sessions/epics on an existing gate. A fired/failed gate is terminal: changing its ref or selections is 409 (retry by delete + recreate). The gate must still watch at least one session or epic.',
   request: {
     params: deployReleaseGateParams,
     body: { content: jsonContent(UpdateDeployReleaseGateRequestSchema) },
@@ -1024,6 +1024,7 @@ registerPath({
     400: errorResponse('Invalid body.'),
     403: errorResponse('Admin role required.'),
     404: errorResponse('Project or gate not found.'),
+    409: errorResponse('Gate already released or failed; its ref and selections are frozen.'),
   },
 });
 

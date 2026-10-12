@@ -3,6 +3,8 @@ import {
   describeReleaseGate,
   describeReleaseGateProgress,
   normalizeReleaseGateRef,
+  releaseGateSelectionMap,
+  withSelectedReleaseGateOptions,
   sortReleaseGates,
   validateReleaseGateDraft,
 } from './deployReleaseGates';
@@ -85,5 +87,27 @@ describe('normalizeReleaseGateRef', () => {
   it('defaults a blank ref to main', () => {
     expect(normalizeReleaseGateRef('   ')).toBe('main');
     expect(normalizeReleaseGateRef('release-2')).toBe('release-2');
+  });
+});
+
+describe('release gate edit helpers', () => {
+  it('builds a checkbox map from ids', () => {
+    expect(releaseGateSelectionMap(['a', 'b'])).toEqual({ a: true, b: true });
+    expect(releaseGateSelectionMap([])).toEqual({});
+  });
+
+  it('keeps existing selections that dropped out of the candidate list', () => {
+    const options = [{ id: 's1', label: 'Fix auth' }];
+    const labels = new Map([['e-done', 'Shipped epic']]);
+    expect(withSelectedReleaseGateOptions(options, ['s1', 's-merged', 'e-done'], labels)).toEqual([
+      { id: 's1', label: 'Fix auth' },
+      { id: 's-merged', label: 's-merged' },
+      { id: 'e-done', label: 'Shipped epic' },
+    ]);
+  });
+
+  it('returns the same options when every selection is already listed', () => {
+    const options = [{ id: 's1', label: 'Fix auth' }];
+    expect(withSelectedReleaseGateOptions(options, ['s1'])).toBe(options);
   });
 });

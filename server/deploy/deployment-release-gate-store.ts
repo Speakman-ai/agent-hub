@@ -24,7 +24,7 @@ export const RELEASE_GATE_DEFAULT_REF = 'main';
 
 export class DeployReleaseGateError extends Error {
   constructor(
-    public reason: 'not_found' | 'invalid',
+    public reason: 'not_found' | 'invalid' | 'terminal',
     message: string,
   ) {
     super(message);
@@ -202,9 +202,10 @@ export function createReleaseGate(
 /**
  * Partial update of a gate scoped by (project, id). Omitted fields keep their
  * current value. `status`, `owner_user_id`, and the terminal columns are NOT
- * editable here — a fired/failed gate is terminal (retry by delete + recreate).
- * Returns null when the gate does not exist. Throws `invalid` when the edit
- * would leave the gate watching nothing.
+ * editable here. A fired/failed gate is terminal: its ref and selections are
+ * frozen (throws `terminal`) so the record still says what it released; retry
+ * by delete + recreate. Returns null when the gate does not exist. Throws
+ * `invalid` when the edit would leave the gate watching nothing.
  */
 export function updateReleaseGate(
   projectId: string,
@@ -213,6 +214,17 @@ export function updateReleaseGate(
 ): DeploymentEnvironmentReleaseGateRow | null {
   const current = getReleaseGate(projectId, gateId);
   if (!current) return null;
+
+  const editsScope =
+    input.ref !== undefined || input.sessionIds !== undefined || input.epicIds !== undefined;
+  if (editsScope && current.status !== 'armed') {
+    throw new DeployReleaseGateError(
+      'terminal',
+      current.status === 'fired'
+        ? 'This release gate was already released; its ref and selections can no longer change.'
+        : 'This release gate already failed; delete it and create a new one.',
+    );
+  }
 
   const ref = input.ref === undefined ? current.ref : normalizeRef(input.ref);
   const sessionIds =
