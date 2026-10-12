@@ -138,7 +138,6 @@ import LogsPage from './components/logs/LogsPage';
 import InfrastructurePage from './components/infra/InfrastructurePage';
 import ProjectAwsProfilesEditor from './components/ProjectAwsProfilesEditor';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal';
-import UpdateAvailableModal from './components/UpdateAvailableModal';
 import ReleasesView from './components/ReleasesView';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useWsReconnectBroadcast } from './hooks/useWsReconnectBroadcast';
@@ -6521,18 +6520,6 @@ export default function App({ initialView }: any = {}) {
 
   return (
     <div className="flex flex-col h-dvh max-h-dvh overflow-hidden bg-gray-950 text-gray-100">
-      {/* "Update available" modal — rendered at the top level so it floats
-          above the sidebar and main content. Only shows when the Electron
-          client is older than the server it's connected to. */}
-      {versionCheck.updateAvailable && (
-        <UpdateAvailableModal
-          serverVersion={versionCheck.serverVersion}
-          clientVersion={versionCheck.clientVersion}
-          downloadUrl={versionCheck.downloadUrl}
-          onDismiss={versionCheck.dismiss}
-        />
-      )}
-
       {/* Electron title bar — draggable region for window movement */}
       {isElectron && (
         <div
@@ -6585,6 +6572,12 @@ export default function App({ initialView }: any = {}) {
           <Sidebar
             showAiSignInGuide={showAiSignInGuide && !currentView.startsWith('settings')}
             onDismissAiSignInGuide={dismissAiSignInGuide}
+            desktopUpdateHintVersion={
+              versionCheck.showUpdateHint && !currentView.startsWith('settings')
+                ? versionCheck.serverVersion
+                : null
+            }
+            onDismissDesktopUpdateHint={versionCheck.dismiss}
             onOpenGoogleChat={
               googleStatus?.connected && chatConsent(googleStatus).canRead
                 ? () => {
@@ -7063,6 +7056,17 @@ export default function App({ initialView }: any = {}) {
                 <SettingsPage
                   showAiSignInGuide={showAiSignInGuide}
                   onDismissAiSignInGuide={dismissAiSignInGuide}
+                  desktopUpdate={
+                    versionCheck.updateAvailable
+                      ? {
+                          serverVersion: versionCheck.serverVersion,
+                          clientVersion: versionCheck.clientVersion,
+                          downloadUrl: versionCheck.downloadUrl,
+                        }
+                      : null
+                  }
+                  showDesktopUpdateHint={versionCheck.showUpdateHint}
+                  onDismissDesktopUpdateHint={versionCheck.dismiss}
                   projects={projects}
                   agents={agents}
                   onAgentsChange={refreshAgents}

@@ -30,7 +30,7 @@ const S3_BUCKET_BASE = resolveReleaseBucketBase();
  * Root of the published release bucket (trailing slash), or '' when no release
  * bucket is configured. Use this when we want to point the user at "all
  * releases" rather than a specific DMG — e.g. the General settings download
- * link, or the UpdateAvailableModal fallback when no platform-specific DMG
+ * link, or the desktop update card fallback when no platform-specific DMG
  * exists. Callers must treat '' as "no releases published" and hide the link.
  */
 export const RELEASE_BUCKET_ROOT = S3_BUCKET_BASE ? `${S3_BUCKET_BASE}/` : '';

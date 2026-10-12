@@ -35,6 +35,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
    */
   fetchRemoteHealth: (url) => ipcRenderer.invoke('agenthub-fetch-health', url),
 
+  /** HEAD-check a published S3 release DMG. Resolves true / false, or null when the URL is not probeable. */
+  probeInstallerUrl: (url) => ipcRenderer.invoke('agenthub-probe-installer', url),
+
   /** Read the connection config from the main process (file-backed). */
   getConnectionConfig: () => ipcRenderer.sendSync('get-connection-config'),
 

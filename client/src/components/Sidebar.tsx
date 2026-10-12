@@ -1,4 +1,5 @@
 import AiSignInHint from './AiSignInHint';
+import DesktopUpdateHint from './DesktopUpdateHint';
 import { useState, useEffect, useRef } from 'react';
 import {
   BookOpen,
@@ -205,6 +206,8 @@ export default function Sidebar({
   onCollapseSidebar,
   showAiSignInGuide = false,
   onDismissAiSignInGuide,
+  desktopUpdateHintVersion = null,
+  onDismissDesktopUpdateHint,
   /** Opens the Hub's Google Chat pane. The link renders only when provided. */
   onOpenGoogleChat,
   googleChatActive = false,
@@ -1940,6 +1943,13 @@ export default function Sidebar({
       {/* Bottom nav */}
       <div className="border-t border-gray-800 p-3 space-y-1">
         {showAiSignInGuide && <AiSignInHint target="Settings" onDismiss={onDismissAiSignInGuide} />}
+        {!showAiSignInGuide && desktopUpdateHintVersion && (
+          <DesktopUpdateHint
+            target="Settings"
+            version={desktopUpdateHintVersion}
+            onDismiss={onDismissDesktopUpdateHint}
+          />
+        )}
         <button
           onClick={() => onNavigate('settings')}
           className={`w-full text-left px-3 py-3 md:py-2 rounded-lg flex items-center gap-2 text-sm transition-colors min-h-[44px] ${

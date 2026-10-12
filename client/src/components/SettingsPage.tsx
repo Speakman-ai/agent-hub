@@ -1,4 +1,6 @@
 import AiSignInHint from './AiSignInHint';
+import DesktopUpdateHint from './DesktopUpdateHint';
+import DesktopUpdateCard, { type DesktopUpdateInfo } from './DesktopUpdateCard';
 import { useState, useEffect, useRef, useMemo, Component } from 'react';
 import { api } from '../utils/api';
 import {
@@ -775,7 +777,9 @@ function GeminiAuthSection() {
  * Codex CLI auth — API key plus ChatGPT device login (`codex login --device-auth`).
  * See https://developers.openai.com/codex/noninteractive
  */
-export function GeneralSection() {
+export function GeneralSection({
+  desktopUpdate = null,
+}: { desktopUpdate?: DesktopUpdateInfo | null } = {}) {
   const [config, setConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [edits, setEdits] = useState<Record<string, any>>({});
@@ -862,6 +866,8 @@ export function GeneralSection() {
           </div>
         )}
       </div>
+
+      {desktopUpdate && <DesktopUpdateCard {...desktopUpdate} />}
 
       {!isElectron() && desktopDownloadUrl && (
         <div className="bg-gray-800 rounded-xl p-4 space-y-3">
@@ -5512,6 +5518,9 @@ function SettingsNavItem({ tab, active, onSelect }: any) {
 export default function SettingsPage({
   showAiSignInGuide = false,
   onDismissAiSignInGuide,
+  desktopUpdate = null,
+  showDesktopUpdateHint = false,
+  onDismissDesktopUpdateHint,
   projects = [],
   agents,
   onAgentsChange,
@@ -5533,6 +5542,10 @@ export default function SettingsPage({
     if (showAiSignInGuide && tab === 'account') onDismissAiSignInGuide?.();
     else if (showAiSignInGuide) setMobileNavOpen(true);
   }, [showAiSignInGuide, tab, onDismissAiSignInGuide]);
+  // Reaching General shows the download card, so the pointer has done its job.
+  useEffect(() => {
+    if (showDesktopUpdateHint && tab === 'general') onDismissDesktopUpdateHint?.();
+  }, [showDesktopUpdateHint, tab, onDismissDesktopUpdateHint]);
 
   // Legacy `?tab=integrations` / `?tab=tool-errors` / `?tab=slack` deep-links
   // fall back to the General tab (handled by the `tab` initializer above).
@@ -5647,6 +5660,13 @@ export default function SettingsPage({
           {t.id === 'account' && showAiSignInGuide && tab !== 'account' && (
             <AiSignInHint target="Account" onDismiss={onDismissAiSignInGuide} />
           )}
+          {t.id === 'general' && showDesktopUpdateHint && desktopUpdate && tab !== 'general' && (
+            <DesktopUpdateHint
+              target="General"
+              version={desktopUpdate.serverVersion}
+              onDismiss={onDismissDesktopUpdateHint}
+            />
+          )}
           <SettingsNavItem tab={t} active={tab === t.id} onSelect={handleSelectTab} />
         </div>
       ))}
@@ -5712,7 +5732,7 @@ export default function SettingsPage({
             <AuthUpgradeBanner />
 
             <SettingsErrorBoundary key={tab}>
-              {tab === 'general' && <GeneralSection />}
+              {tab === 'general' && <GeneralSection desktopUpdate={desktopUpdate} />}
               {tab === 'account' && <AccountSection />}
               {tab === 'organization' && isAdminPlus && <OrganizationSection />}
               {tab === 'claude-auth' && isAdminPlus && <GeminiAuthSection />}

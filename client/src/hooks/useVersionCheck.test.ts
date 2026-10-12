@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, renderHook } from '@testing-library/react';
-import { useVersionCheck } from './useVersionCheck';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import {
+  useVersionCheck,
+  INSTALLER_RECHECK_MS,
+  INSTALLER_MAX_TIMED_RECHECKS,
+} from './useVersionCheck';
 
 // VITE_APP_VERSION is exposed by vite.config.js at build time. For tests we
 // stub it per-test via vi.stubEnv so we control the "client" side of the
@@ -110,35 +114,132 @@ describe('useVersionCheck', () => {
     expect(result!.current.downloadUrl).toBeNull();
   });
 
-  it('respects a dismissal stored in sessionStorage for this server version', () => {
+  it('keeps the update available but hides the pointer after a stored dismissal', () => {
     sessionStorage.setItem('update-dismissed-version', '1.5.0');
     stubElectron();
     stubClientVersion('1.4.2');
     const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.5.0' }));
-    expect(result!.current.updateAvailable).toBe(false);
+    expect(result!.current.updateAvailable).toBe(true);
+    expect(result!.current.showUpdateHint).toBe(false);
   });
 
-  it('still prompts when sessionStorage dismissal is for a different (older) server version', () => {
-    // User dismissed 1.5.0 earlier; server has since been bumped to 1.6.0.
+  it('shows the pointer again when the dismissal is for an older server version', () => {
     sessionStorage.setItem('update-dismissed-version', '1.5.0');
     stubElectron();
     stubClientVersion('1.4.2');
     const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.6.0' }));
-    expect(result!.current.updateAvailable).toBe(true);
+    expect(result!.current.showUpdateHint).toBe(true);
   });
 
-  it('dismiss() hides the modal and persists to sessionStorage', () => {
+  it('dismiss() hides the pointer and persists to sessionStorage', () => {
     stubElectron();
     stubClientVersion('1.4.2');
     const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.5.0' }));
-    expect(result!.current.updateAvailable).toBe(true);
+    expect(result!.current.showUpdateHint).toBe(true);
 
     act(() => {
       result.current.dismiss();
     });
 
-    expect(result!.current.updateAvailable).toBe(false);
+    expect(result!.current.showUpdateHint).toBe(false);
+    expect(result!.current.updateAvailable).toBe(true);
     expect(sessionStorage.getItem('update-dismissed-version')).toBe('1.5.0');
+  });
+
+  it('does not announce a version whose DMG is not published yet', async () => {
+    // Regression: the hub reported 2.31.185 before its DMG was uploaded, and
+    // the update link opened an S3 AccessDenied page.
+    vi.stubEnv('VITE_RELEASE_BUCKET_BASE', 'https://releases.example.test');
+    stubElectron();
+    const probe = vi.fn().mockResolvedValue(false);
+    window.electronAPI!.probeInstallerUrl = probe;
+    stubClientVersion('1.4.2');
+    const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.5.0' }));
+    await waitFor(() => expect(probe).toHaveBeenCalled());
+    expect(probe).toHaveBeenCalledWith(
+      'https://releases.example.test/v1.5.0/Agent%20Hub-1.5.0-arm64.dmg',
+    );
+    await act(async () => {});
+    expect(result!.current.updateAvailable).toBe(false);
+    expect(result!.current.showUpdateHint).toBe(false);
+  });
+
+  it('rechecks a missing DMG on a timer and announces it once uploaded', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubEnv('VITE_RELEASE_BUCKET_BASE', 'https://releases.example.test');
+      stubElectron();
+      const probe = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+      window.electronAPI!.probeInstallerUrl = probe;
+      stubClientVersion('1.4.2');
+      const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.5.0' }));
+      await act(async () => {});
+      expect(result!.current.updateAvailable).toBe(false);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(INSTALLER_RECHECK_MS);
+      });
+      expect(probe).toHaveBeenCalledTimes(2);
+      expect(result!.current.updateAvailable).toBe(true);
+      expect(result!.current.showUpdateHint).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops timed rechecks after the cap but still rechecks on window focus', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubEnv('VITE_RELEASE_BUCKET_BASE', 'https://releases.example.test');
+      stubElectron();
+      let published = false;
+      const probe = vi.fn(async () => published);
+      window.electronAPI!.probeInstallerUrl = probe;
+      stubClientVersion('1.4.2');
+      const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.5.0' }));
+      await act(async () => {});
+
+      for (let i = 0; i < INSTALLER_MAX_TIMED_RECHECKS + 5; i += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(INSTALLER_RECHECK_MS);
+        });
+      }
+      expect(probe).toHaveBeenCalledTimes(1 + INSTALLER_MAX_TIMED_RECHECKS);
+
+      published = true;
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+      });
+      expect(probe).toHaveBeenCalledTimes(2 + INSTALLER_MAX_TIMED_RECHECKS);
+      expect(result!.current.updateAvailable).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('announces unverified when the main process will not probe the release host', async () => {
+    vi.stubEnv('VITE_RELEASE_BUCKET_BASE', 'https://releases.example.test');
+    stubElectron();
+    window.electronAPI!.probeInstallerUrl = vi.fn().mockResolvedValue(null);
+    stubClientVersion('1.4.2');
+    const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.5.0' }));
+    await act(async () => {});
+    expect(result!.current.updateAvailable).toBe(true);
+  });
+
+  it('announces the update once the probe confirms the DMG exists', async () => {
+    vi.stubEnv('VITE_RELEASE_BUCKET_BASE', 'https://releases.example.test');
+    stubElectron();
+    let resolveProbe: (ok: boolean) => void = () => {};
+    window.electronAPI!.probeInstallerUrl = vi.fn(
+      () => new Promise<boolean>((r) => (resolveProbe = r)),
+    );
+    stubClientVersion('1.4.2');
+    const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.5.0' }));
+    expect(result!.current.updateAvailable).toBe(false);
+    await act(async () => resolveProbe(true));
+    expect(result!.current.updateAvailable).toBe(true);
+    expect(result!.current.showUpdateHint).toBe(true);
   });
 
   it('returns updateAvailable=false when serverVersion is null/undefined', () => {

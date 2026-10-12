@@ -39,6 +39,7 @@ import {
   type ScopedAuthRecord,
 } from './remote-auth-scope.js';
 import { resolveEffectiveArch } from './effective-arch.js';
+import { probeInstallerUrl } from './release-asset-probe.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -661,6 +662,8 @@ ipcMain.handle('agenthub-fetch-health', async (_event, rawUrl) => {
     clearTimeout(timer);
   }
 });
+
+ipcMain.handle('agenthub-probe-installer', (_event, rawUrl) => probeInstallerUrl(rawUrl));
 
 // Notification IPC handlers
 
