@@ -19,6 +19,8 @@ import { buildEmailSessionSeed } from '@shared/utils/sessionSeed';
 import { buildEmailCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
 import CaptureToTicketModal from './CaptureToTicketModal';
 import StartSessionModal from './StartSessionModal';
+import GmailImportantSection from './GmailImportantSection';
+import { withoutImportantThreads, type GmailImportantThread } from '@shared/utils/gmailImportance';
 import {
   GMAIL_SURFACE_SCOPES,
   hasGmailReadScope,
@@ -331,6 +333,8 @@ export default function GmailPage({
   // "Start session with this email as context": holds the pre-built seed and
   // display label while the project/agent picker is open; null when closed.
   const [sessionSeed, setSessionSeed] = useState<{ label: string; seed: string } | null>(null);
+  // Threads the importance scan pinned above the list; hidden from the list below.
+  const [pinned, setPinned] = useState<GmailImportantThread[]>([]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -466,6 +470,7 @@ export default function GmailPage({
   const configured = status?.serverConfigured !== false;
   const gmailEnabled = hasGmailReadScope(status);
   const canSend = hasGmailSendScope(status);
+  const listThreads = withoutImportantThreads(threads, pinned);
 
   let emptyState: {
     title: string;
@@ -545,6 +550,13 @@ export default function GmailPage({
           </div>
         )}
 
+        {!loading && connected && gmailEnabled && (
+          <GmailImportantSection
+            onOpenThread={(id) => openThreadDetail({ id, snippet: null, historyId: null })}
+            onPinnedChange={setPinned}
+          />
+        )}
+
         {loading ? (
           <div className="flex items-center gap-2 rounded-lg border border-gray-800 bg-gray-900 p-4 text-sm text-gray-400">
             <Loader2 size={16} className="animate-spin" />
@@ -570,9 +582,9 @@ export default function GmailPage({
               </button>
             )}
           </div>
-        ) : (
+        ) : listThreads.length === 0 ? null : (
           <div className="overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
-            {threads.map((thread) => (
+            {listThreads.map((thread) => (
               <button
                 key={thread.id || thread.snippet}
                 type="button"

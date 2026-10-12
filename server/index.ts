@@ -280,6 +280,8 @@ import createGithubOAuthRoutes from './routes/github-oauth.js';
 import createGoogleOAuthRoutes from './routes/google-oauth.js';
 import createGoogleCalendarRoutes from './routes/google-calendar.js';
 import createGoogleGmailRoutes from './routes/google-gmail.js';
+import createGmailImportanceRoutes from './routes/gmail-importance.js';
+import { initGmailImportanceAutoScan } from './gmail-importance.js';
 import createGoogleSheetsRoutes from './routes/google-sheets.js';
 import createGoogleDriveRoutes from './routes/google-drive.js';
 import createGoogleChatRoutes from './routes/google-chat.js';
@@ -2224,6 +2226,7 @@ app.use(createGithubOAuthRoutes(routeDeps));
 app.use(createGoogleOAuthRoutes(routeDeps));
 app.use(createGoogleCalendarRoutes(routeDeps));
 app.use(createGoogleGmailRoutes(routeDeps));
+app.use(createGmailImportanceRoutes(routeDeps));
 app.use(createGoogleSheetsRoutes(routeDeps));
 app.use(createGoogleDriveRoutes(routeDeps));
 app.use(createGoogleChatRoutes(routeDeps));
@@ -2856,6 +2859,13 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       });
     } catch (e) {
       console.error('[daily-summary-schedule] init on boot', (e as Error).message);
+    }
+
+    // Automated Gmail importance scans on each user's own engine credentials.
+    try {
+      initGmailImportanceAutoScan(config);
+    } catch (e) {
+      console.error('[gmail-importance] init on boot', (e as Error).message);
     }
 
     setOnCronSessionUpdate((info: Record<string, unknown>) => {

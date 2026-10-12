@@ -1127,6 +1127,16 @@ export const api = {
   },
   sendGoogleGmailMessage: (data: any) =>
     fetchJSON('/google/gmail/messages', { method: 'POST', body: JSON.stringify(data) }),
+  // AI importance scan for the Gmail pane (runs on the caller's own engine).
+  getGmailImportance: () => fetchJSON('/google/gmail/importance'),
+  updateGmailImportanceSettings: (data: {
+    enabled?: boolean;
+    windowDays?: 1 | 7 | 30;
+    autoScan?: 'off' | 'hourly' | 'every6h' | 'daily';
+  }) =>
+    fetchJSON('/google/gmail/importance/settings', { method: 'PUT', body: JSON.stringify(data) }),
+  startGmailImportanceScan: (data: { windowDays?: 1 | 7 | 30 } = {}) =>
+    fetchJSON('/google/gmail/importance/scan', { method: 'POST', body: JSON.stringify(data) }),
   // Google Chat proxy (user-scoped). Tokens stay server-side.
   listGoogleChatSpaces: ({
     pageSize,

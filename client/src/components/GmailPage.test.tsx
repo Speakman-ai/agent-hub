@@ -8,6 +8,9 @@ vi.mock('../utils/api', () => ({
     getGoogleGmailThread: vi.fn(),
     sendGoogleGmailMessage: vi.fn(),
     startGoogleOAuth: vi.fn(),
+    getGmailImportance: vi.fn(),
+    updateGmailImportanceSettings: vi.fn(),
+    startGmailImportanceScan: vi.fn(),
   },
 }));
 
@@ -101,6 +104,56 @@ describe('GmailPage', () => {
         expect.objectContaining({ scopes: GMAIL_SURFACE_SCOPES }),
       );
     });
+  });
+
+  it('pins important threads above the list without repeating them', async () => {
+    mockApi.getGoogleStatus.mockResolvedValueOnce({
+      connected: true,
+      email: 'person@example.com',
+      grantedScopes: [GMAIL_MODIFY, GMAIL_SEND],
+      serverConfigured: true,
+    });
+    mockApi.listGoogleGmailThreads.mockResolvedValueOnce({
+      threads: [
+        { id: 't1', snippet: 'Quarterly review', historyId: '9' },
+        { id: 't2', snippet: 'Weekly newsletter', historyId: '8' },
+      ],
+    });
+    mockApi.getGmailImportance.mockResolvedValue({
+      running: false,
+      settings: {
+        enabled: true,
+        windowDays: 7,
+        autoScan: 'off',
+        lastScanAt: '2026-10-12T11:00:00.000Z',
+        lastScanStatus: 'ok',
+        lastScanError: null,
+        lastScanEngine: 'claude-code',
+        lastScanModel: null,
+        lastScanFailover: null,
+      },
+      threads: [
+        {
+          threadId: 't1',
+          historyId: '9',
+          important: true,
+          score: 90,
+          reason: 'Needs your sign-off today',
+          subject: 'Quarterly review',
+          from: 'Boss <boss@example.com>',
+          snippet: 'Quarterly review',
+          lastMessageAt: '2026-10-12T10:00:00.000Z',
+          scannedAt: '2026-10-12T11:00:00.000Z',
+        },
+      ],
+    });
+
+    render(<GmailPage />);
+
+    expect(await screen.findByText('Needs your sign-off today')).toBeInTheDocument();
+    expect(screen.getByText('Weekly newsletter')).toBeInTheDocument();
+    // The pinned thread renders once (subject in the Important section), not again in the list.
+    expect(screen.getAllByText('Quarterly review')).toHaveLength(1);
   });
 
   it('lists threads and sends a composed message through the proxy', async () => {

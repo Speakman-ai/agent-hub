@@ -24,6 +24,8 @@ import { buildEmailSessionSeed } from '@shared/utils/sessionSeed';
 import { buildEmailCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
 import CaptureToTicketModal from '../components/CaptureToTicketModal';
 import StartSessionModal from '../components/StartSessionModal';
+import GmailImportantSection from '../components/GmailImportantSection';
+import { withoutImportantThreads, type GmailImportantThread } from '@shared/utils/gmailImportance';
 
 export { GMAIL_SURFACE_SCOPES };
 
@@ -80,6 +82,8 @@ export function GmailContent({
   onOpenSettings,
   onCompose,
   onOpenThread,
+  importantSection = null,
+  pinned = [],
 }: any) {
   const connected = !!status?.connected;
   const configured = status?.serverConfigured !== false;
@@ -117,7 +121,10 @@ export function GmailContent({
       action: 'Enable Gmail',
       onAction: onConnect,
     };
-  } else if (!threads?.length && !threadsLoading) {
+  }
+  const showImportant = connected && gmailEnabled && importantSection;
+  const listThreads = withoutImportantThreads<any>(threads || [], pinned);
+  if (!empty && !threads?.length && !threadsLoading) {
     empty = {
       title: 'No messages',
       body: 'Your recent threads will appear here. Compose a message or refresh after new mail arrives.',
@@ -150,18 +157,22 @@ export function GmailContent({
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
       {empty ? (
-        <View style={styles.emptyCard}>
-          <Text style={styles.emptyTitle}>{empty.title}</Text>
-          <Text style={styles.emptyBody}>{empty.body}</Text>
-          {empty.action ? (
-            <TouchableOpacity onPress={empty.onAction} style={styles.primaryButton}>
-              <Text style={styles.primaryButtonText}>{empty.action}</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
+        <>
+          {showImportant ? importantSection : null}
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyTitle}>{empty.title}</Text>
+            <Text style={styles.emptyBody}>{empty.body}</Text>
+            {empty.action ? (
+              <TouchableOpacity onPress={empty.onAction} style={styles.primaryButton}>
+                <Text style={styles.primaryButtonText}>{empty.action}</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </>
       ) : (
         <FlatList
-          data={threads}
+          data={listThreads}
+          ListHeaderComponent={showImportant ? importantSection : null}
           keyExtractor={(item: any, index) => item.id || `${item.snippet}-${index}`}
           renderItem={({ item }: any) => (
             <TouchableOpacity onPress={() => onOpenThread(item)} style={styles.threadCard}>
@@ -380,6 +391,8 @@ export default function GmailScreen({ navigation }: any) {
   const [captured, setCaptured] = useState(false);
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
   const [sessionSeed, setSessionSeed] = useState<{ label: string; seed: string } | null>(null);
+  // Threads pinned by the importance scan; hidden from the regular list.
+  const [pinned, setPinned] = useState<GmailImportantThread[]>([]);
   // What to open AFTER the thread modal finishes dismissing. Held in a ref (not
   // state) because it is consumed by the dismissal-completion callback, not
   // rendered. `null` means "just close the thread".
@@ -550,6 +563,13 @@ export default function GmailScreen({ navigation }: any) {
         onOpenSettings={() => navigation.navigate('Settings', { tab: 'account' })}
         onCompose={() => setComposeOpen(true)}
         onOpenThread={openThreadDetail}
+        pinned={pinned}
+        importantSection={
+          <GmailImportantSection
+            onOpenThread={(id) => openThreadDetail({ id })}
+            onPinnedChange={setPinned}
+          />
+        }
       />
       {composeOpen ? (
         <ComposeModal

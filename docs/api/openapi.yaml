@@ -6328,6 +6328,136 @@ components:
       required:
         - ok
       description: Acknowledgement envelope.
+    GmailImportanceErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        requiredScopes:
+          type: array
+          items:
+            type: string
+      required:
+        - error
+    GmailImportanceSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Show important threads above the inbox list.
+        windowDays:
+          anyOf:
+            - type: number
+              enum:
+                - 1
+            - type: number
+              enum:
+                - 7
+            - type: number
+              enum:
+                - 30
+          description: How far back the scan looks, in days.
+          example: 7
+        autoScan:
+          type: string
+          enum:
+            - off
+            - hourly
+            - every6h
+            - daily
+          description: Automated scan cadence. `off` disables automated scans.
+        lastScanAt:
+          type: string
+          nullable: true
+        lastScanStatus:
+          type: string
+          enum:
+            - idle
+            - running
+            - ok
+            - error
+        lastScanError:
+          type: string
+          nullable: true
+        lastScanEngine:
+          type: string
+          nullable: true
+        lastScanModel:
+          type: string
+          nullable: true
+        lastScanFailover:
+          type: string
+          nullable: true
+          description: Set when the last scan had to switch AI engines.
+      required:
+        - enabled
+        - windowDays
+        - autoScan
+        - lastScanAt
+        - lastScanStatus
+        - lastScanError
+        - lastScanEngine
+        - lastScanModel
+        - lastScanFailover
+    GmailImportantThread:
+      type: object
+      properties:
+        threadId:
+          type: string
+        historyId:
+          type: string
+          nullable: true
+        important:
+          type: boolean
+        score:
+          type: integer
+          description: Importance 0-100, higher first.
+        reason:
+          type: string
+          nullable: true
+        subject:
+          type: string
+          nullable: true
+        from:
+          type: string
+          nullable: true
+        snippet:
+          type: string
+          nullable: true
+        lastMessageAt:
+          type: string
+          nullable: true
+        scannedAt:
+          type: string
+      required:
+        - threadId
+        - historyId
+        - important
+        - score
+        - reason
+        - subject
+        - from
+        - snippet
+        - lastMessageAt
+        - scannedAt
+    GmailImportanceState:
+      type: object
+      properties:
+        settings:
+          $ref: "#/components/schemas/GmailImportanceSettings"
+        running:
+          type: boolean
+          description: A scan is in progress for this user.
+        threads:
+          type: array
+          items:
+            $ref: "#/components/schemas/GmailImportantThread"
+      required:
+        - settings
+        - running
+        - threads
     GoogleCalendarErrorResponse:
       type: object
       properties:
@@ -31356,6 +31486,149 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/google/gmail/importance:
+    get:
+      tags:
+        - Google Gmail
+      summary: Get Gmail importance settings and important threads
+      description: Returns the caller's importance-scan settings, whether a scan is running, and the threads the AI marked important within the configured window.
+      responses:
+        "200":
+          description: Settings and important threads.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceState"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
+  /api/google/gmail/importance/settings:
+    put:
+      tags:
+        - Google Gmail
+      summary: Update Gmail importance settings
+      description: Toggle the important-threads section, pick the scan window (1, 7, or 30 days), and set the automated scan cadence.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                windowDays:
+                  anyOf:
+                    - type: number
+                      enum:
+                        - 1
+                    - type: number
+                      enum:
+                        - 7
+                    - type: number
+                      enum:
+                        - 30
+                  description: How far back the scan looks, in days.
+                  example: 7
+                autoScan:
+                  type: string
+                  enum:
+                    - off
+                    - hourly
+                    - every6h
+                    - daily
+                  description: Automated scan cadence. `off` disables automated scans.
+              additionalProperties: false
+      responses:
+        "200":
+          description: Updated settings and important threads.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceState"
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
+        "409":
+          description: The scan window cannot change while a scan is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
+  /api/google/gmail/importance/scan:
+    post:
+      tags:
+        - Google Gmail
+      summary: Start a Gmail importance scan
+      description: Starts a background scan of the caller's inbox over the window, rated by the caller's own AI engine with the session failover chain. Poll the GET until `running` is false.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                windowDays:
+                  anyOf:
+                    - type: number
+                      enum:
+                        - 1
+                    - type: number
+                      enum:
+                        - 7
+                    - type: number
+                      enum:
+                        - 30
+                  description: How far back the scan looks, in days.
+                  example: 7
+              additionalProperties: false
+      responses:
+        "202":
+          description: Scan started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceState"
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
+        "401":
+          description: Authentication required, or Google is not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
+        "403":
+          description: Gmail read access has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
+        "409":
+          description: A scan is already running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
   /api/google/calendar/events:
     get:
       tags:

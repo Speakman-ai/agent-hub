@@ -1313,6 +1313,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  // AI importance scan for the Gmail pane (runs on the caller's own engine).
+  getGmailImportance: () => fetchJSON('/google/gmail/importance'),
+  updateGmailImportanceSettings: (data: {
+    enabled?: boolean;
+    windowDays?: 1 | 7 | 30;
+    autoScan?: 'off' | 'hourly' | 'every6h' | 'daily';
+  }) =>
+    fetchJSON('/google/gmail/importance/settings', { method: 'PUT', body: JSON.stringify(data) }),
+  startGmailImportanceScan: (data: { windowDays?: 1 | 7 | 30 } = {}) =>
+    fetchJSON('/google/gmail/importance/scan', { method: 'POST', body: JSON.stringify(data) }),
   // Agent-written Google Chat replies held for the owner's approval.
   listGoogleChatDrafts: ({ sessionId, spaceId }: { sessionId?: string; spaceId?: string } = {}) => {
     const params = new URLSearchParams();

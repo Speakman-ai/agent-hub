@@ -5,8 +5,11 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('react-native', () => ({
   ActivityIndicator: 'ActivityIndicator',
   Alert: { alert: vi.fn() },
-  FlatList: ({ data, renderItem }: any) => (
-    <div>{(data || []).map((item: any, index: number) => renderItem({ item, index }))}</div>
+  FlatList: ({ data, renderItem, ListHeaderComponent }: any) => (
+    <div>
+      {ListHeaderComponent}
+      {(data || []).map((item: any, index: number) => renderItem({ item, index }))}
+    </div>
   ),
   Linking: { openURL: vi.fn() },
   Modal: 'Modal',
@@ -60,6 +63,35 @@ describe('GmailScreen mobile parity', () => {
     expect(html).toContain('Refresh');
     expect(html).toContain('Compose');
     expect(html).toContain('Quarterly review');
+  });
+
+  it('renders the Important section above the list and drops pinned threads from it', () => {
+    const html = renderToStaticMarkup(
+      <GmailContent
+        loading={false}
+        threadsLoading={false}
+        error={null}
+        status={{
+          connected: true,
+          email: 'person@example.com',
+          grantedScopes: [GMAIL_MODIFY, GMAIL_SEND],
+          serverConfigured: true,
+        }}
+        threads={[
+          { id: 't1', snippet: 'Quarterly review', historyId: '9' },
+          { id: 't2', snippet: 'Weekly newsletter', historyId: '8' },
+        ]}
+        pinned={[{ threadId: 't1' }]}
+        importantSection={<span>IMPORTANT-SECTION</span>}
+        onRefresh={() => undefined}
+        onConnect={() => undefined}
+        onOpenSettings={() => undefined}
+        onCompose={() => undefined}
+        onOpenThread={() => undefined}
+      />,
+    );
+    expect(html.indexOf('IMPORTANT-SECTION')).toBeLessThan(html.indexOf('Weekly newsletter'));
+    expect(html).not.toContain('Quarterly review');
   });
 
   it('renders the not-linked route to connect Google', () => {

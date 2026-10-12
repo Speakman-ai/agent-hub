@@ -50,6 +50,23 @@ describe('api Gmail helpers', () => {
     expect(JSON.parse(init.body)).toEqual({ to: ['a@x.com'], subject: 'Hi', text: 'Body' });
   });
 
+  it('reads, updates, and starts the importance scan', async () => {
+    await api.getGmailImportance();
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/google/gmail/importance');
+
+    await api.updateGmailImportanceSettings({ enabled: true, windowDays: 30, autoScan: 'daily' });
+    const [putUrl, putInit] = fetchSpy.mock.calls[1];
+    expect(String(putUrl)).toContain('/api/google/gmail/importance/settings');
+    expect(putInit.method).toBe('PUT');
+    expect(JSON.parse(putInit.body)).toEqual({ enabled: true, windowDays: 30, autoScan: 'daily' });
+
+    await api.startGmailImportanceScan({ windowDays: 1 });
+    const [postUrl, postInit] = fetchSpy.mock.calls[2];
+    expect(String(postUrl)).toContain('/api/google/gmail/importance/scan');
+    expect(postInit.method).toBe('POST');
+    expect(JSON.parse(postInit.body)).toEqual({ windowDays: 1 });
+  });
+
   it('exposes the server error code and status on a failed request', async () => {
     fetchSpy.mockImplementationOnce(() =>
       Promise.resolve(
