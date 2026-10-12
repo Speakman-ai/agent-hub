@@ -827,11 +827,22 @@ describe('DashboardView', () => {
     );
     const working = container.querySelector('[data-testid="active-sessions-column-working"]');
     const reviewing = container.querySelector('[data-testid="active-sessions-column-reviewing"]');
-    // Empty in-flight states still get a column so the layout is stable.
-    const pushed = container.querySelector('[data-testid="active-sessions-column-pushed"]');
     expect(working!).toHaveTextContent('Refactor stream parser');
     expect(reviewing!).toHaveTextContent('Awaiting review feedback');
-    expect(pushed!).toHaveTextContent('None');
+    expect(working!).not.toHaveAttribute('data-collapsed');
+    // Empty in-flight states collapse to a narrow strip instead of vanishing.
+    const testing = container.querySelector('[data-testid="active-sessions-column-running_tests"]');
+    expect(testing!).toHaveAttribute('data-collapsed', 'true');
+    expect(testing!).toHaveTextContent('Running tests');
+    // Pushed never holds an in-flight session, so it has no column.
+    expect(
+      container.querySelector('[data-testid="active-sessions-column-pushed"]'),
+    ).not.toBeInTheDocument();
+    // The board breaks out of the page's max-width column.
+    expect(screen.getByRole('region', { name: 'Active sessions' })).toHaveAttribute(
+      'data-full-width',
+      'true',
+    );
     expect(
       container.querySelector('[data-testid="active-sessions-column-merged"]'),
     ).not.toBeInTheDocument();

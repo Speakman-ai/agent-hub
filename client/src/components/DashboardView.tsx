@@ -67,6 +67,9 @@ import {
  * @param {(projectId: string) => void} [onOpenPulls] — open project PR list
  * @param {(url: string) => void} [onOpenExternalUrl] — open GitHub etc. (Electron uses shell)
  */
+/** Width cap for dashboard sections; the sessions board opts out to use the full page. */
+const PAGE_COLUMN = 'max-w-6xl mx-auto';
+
 /** How often the dashboard silently re-polls while the tab is foregrounded. */
 const DASHBOARD_REFRESH_MS = 5000;
 
@@ -185,8 +188,8 @@ export default function DashboardView({
 
   return (
     <div className="flex-1 overflow-y-auto bg-gray-950">
-      <div className="max-w-6xl mx-auto p-4 md:p-8">
-        <div className="flex justify-end mb-4">
+      <div className="p-4 md:p-8">
+        <div className={`${PAGE_COLUMN} flex justify-end mb-4`}>
           <button
             type="button"
             onClick={() => onNavigate?.('settings:account')}
@@ -197,7 +200,7 @@ export default function DashboardView({
             <span className="font-medium truncate max-w-[12rem]">{accountName}</span>
           </button>
         </div>
-        <div className="flex items-center justify-between mb-6">
+        <div className={`${PAGE_COLUMN} flex items-center justify-between mb-6`}>
           <div className="flex items-center gap-3">
             <BarChart3 size={28} className="text-blue-400" />
             <div>
@@ -220,36 +223,40 @@ export default function DashboardView({
         {error && (
           <div
             role="alert"
-            className="mb-6 px-4 py-3 rounded-lg bg-red-900/30 border border-red-800 text-red-300 text-sm"
+            className="max-w-6xl mx-auto mb-6 px-4 py-3 rounded-lg bg-red-900/30 border border-red-800 text-red-300 text-sm"
           >
             Failed to load dashboard: {error}
           </div>
         )}
 
         {!data && !error && loading && (
-          <div className="text-gray-500 text-sm">Loading dashboard…</div>
+          <div className={`${PAGE_COLUMN} text-gray-500 text-sm`}>Loading dashboard…</div>
         )}
 
         {data && (
           <>
-            <WeeklyCalendarPanel onNavigate={onNavigate} />
+            <div className={PAGE_COLUMN}>
+              <WeeklyCalendarPanel onNavigate={onNavigate} />
+            </div>
             <ActiveSessionsPanel
               sessions={data.activeSessions}
               onOpenSession={onOpenSession}
               currentUser={currentUser}
             />
-            <OpenPRsPanel
-              prs={data.openPRs}
-              onOpenPulls={onOpenPulls}
-              onOpenExternalUrl={onOpenExternalUrl}
-            />
-            <RecentActivity
-              items={data.recentActivity}
-              onOpenSession={onOpenSession}
-              onOpenKanban={onOpenKanban}
-              onOpenPulls={onOpenPulls}
-              onOpenExternalUrl={onOpenExternalUrl}
-            />
+            <div className={PAGE_COLUMN}>
+              <OpenPRsPanel
+                prs={data.openPRs}
+                onOpenPulls={onOpenPulls}
+                onOpenExternalUrl={onOpenExternalUrl}
+              />
+              <RecentActivity
+                items={data.recentActivity}
+                onOpenSession={onOpenSession}
+                onOpenKanban={onOpenKanban}
+                onOpenPulls={onOpenPulls}
+                onOpenExternalUrl={onOpenExternalUrl}
+              />
+            </div>
           </>
         )}
       </div>
@@ -756,36 +763,55 @@ function ActiveSessionCard({ session: s, onOpenSession }: any) {
   );
 }
 
+function CollapsedBoardColumn({ col }: any) {
+  return (
+    <div
+      data-testid={`active-sessions-column-${col.state}`}
+      data-collapsed="true"
+      title={`${col.meta.label}: no sessions`}
+      className="flex-shrink-0 w-9 bg-gray-900/60 border border-gray-800 rounded-xl flex flex-col items-center gap-2 py-2 max-h-[28rem]"
+    >
+      <SessionStateIcon state={col.state} size={12} />
+      <span className="text-[11px] text-gray-600">0</span>
+      <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 [writing-mode:vertical-rl] whitespace-nowrap">
+        {col.meta.label}
+      </span>
+    </div>
+  );
+}
+
+// Empty columns collapse to a narrow strip and populated ones share the rest
+// of the row, so the board fills the page and widens a column as work lands.
 function ActiveSessionsBoard({ sessions, onOpenSession }: any) {
   const columns = buildSessionBoardColumns(sessions);
   return (
     <div data-testid="active-sessions-board" className="flex gap-3 overflow-x-auto pb-2">
-      {columns.map((col: any) => (
-        <div
-          key={col.state}
-          data-testid={`active-sessions-column-${col.state}`}
-          className="flex-shrink-0 w-60 bg-gray-900 border border-gray-800 rounded-xl flex flex-col max-h-[28rem]"
-        >
-          <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-gray-800">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <SessionStateIcon state={col.state} size={12} />
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 truncate">
-                {col.meta.label}
-              </h3>
+      {columns.map((col: any) =>
+        col.sessions.length === 0 ? (
+          <CollapsedBoardColumn key={col.state} col={col} />
+        ) : (
+          <div
+            key={col.state}
+            data-testid={`active-sessions-column-${col.state}`}
+            className="flex-1 min-w-[15rem] bg-gray-900 border border-gray-800 rounded-xl flex flex-col max-h-[28rem]"
+          >
+            <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-gray-800">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <SessionStateIcon state={col.state} size={12} />
+                <h3 className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 truncate">
+                  {col.meta.label}
+                </h3>
+              </div>
+              <span className="text-[11px] text-gray-600">{col.sessions.length}</span>
             </div>
-            <span className="text-[11px] text-gray-600">{col.sessions.length}</span>
-          </div>
-          <div className="p-2 space-y-2 overflow-y-auto">
-            {col.sessions.length === 0 ? (
-              <div className="px-1 py-3 text-center text-[11px] text-gray-700">None</div>
-            ) : (
-              col.sessions.map((s: any) => (
+            <div className="p-2 space-y-2 overflow-y-auto">
+              {col.sessions.map((s: any) => (
                 <ActiveSessionCard key={s.sessionId} session={s} onOpenSession={onOpenSession} />
-              ))
-            )}
+              ))}
+            </div>
           </div>
-        </div>
-      ))}
+        ),
+      )}
     </div>
   );
 }
@@ -809,7 +835,11 @@ function ActiveSessionsPanel({ sessions = [], onOpenSession, currentUser = null 
     saveSessionsViewMode(mode);
   };
   return (
-    <section aria-label="Active sessions" className="mb-8">
+    <section
+      aria-label="Active sessions"
+      data-full-width={viewMode === 'board' ? 'true' : undefined}
+      className={`mb-8 ${viewMode === 'board' ? '' : PAGE_COLUMN}`}
+    >
       <div className="flex items-baseline justify-between mb-3 gap-3">
         <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
           Active sessions

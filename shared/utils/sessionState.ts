@@ -155,13 +155,19 @@ export function isSessionsViewMode(v: unknown): v is SessionsViewMode {
  * Kanban columns for the dashboard's board view. Unlike
  * {@link groupSessionsByState}, every in-flight state gets a column even when
  * empty, so the board layout stays stable as sessions move between states.
- * `merged` only appears when a merged session is actually in the list.
+ * `pushed` and `merged` only appear when a session is actually in them: a
+ * pushed session normally resolves to `merged` or back to an active state, so
+ * an always-empty Pushed column is noise. Renderers collapse empty columns.
  */
+const BOARD_COLUMNS_SHOWN_ONLY_WHEN_POPULATED: readonly SessionState[] = ['pushed', 'merged'];
+
 export function buildSessionBoardColumns<T extends { state?: string | null }>(
   sessions?: T[] | null,
 ): Array<{ state: SessionState; meta: SessionStateMeta; sessions: T[] }> {
   const groups = new Map(groupSessionsByState(sessions).map((g) => [g.state, g.sessions]));
-  return SESSION_STATES.filter((state) => state !== 'merged' || groups.has(state)).map((state) => ({
+  return SESSION_STATES.filter(
+    (state) => !BOARD_COLUMNS_SHOWN_ONLY_WHEN_POPULATED.includes(state) || groups.has(state),
+  ).map((state) => ({
     state,
     meta: SESSION_STATE_META[state],
     sessions: groups.get(state) ?? [],

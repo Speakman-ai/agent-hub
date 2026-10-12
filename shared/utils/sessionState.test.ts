@@ -190,7 +190,6 @@ describe('buildSessionBoardColumns', () => {
       'reviewing',
       'pending_checks',
       'pending_push',
-      'pushed',
     ]);
     expect(cols[0].sessions.map((s) => s.sessionId)).toEqual(['b']);
     expect(cols[3].sessions.map((s) => s.sessionId)).toEqual(['a']);
@@ -201,7 +200,14 @@ describe('buildSessionBoardColumns', () => {
     const cols = buildSessionBoardColumns([{ sessionId: 'm', state: 'merged' }]);
     expect(cols[cols.length - 1].state).toBe('merged');
     expect(cols[cols.length - 1].sessions).toHaveLength(1);
-    expect(buildSessionBoardColumns(null)).toHaveLength(7);
+    expect(buildSessionBoardColumns(null)).toHaveLength(6);
+  });
+
+  it('omits the Pushed column unless a pushed session is present', () => {
+    expect(buildSessionBoardColumns([]).some((c) => c.state === 'pushed')).toBe(false);
+    const cols = buildSessionBoardColumns([{ sessionId: 'p', state: 'pushed' }]);
+    const pushed = cols.find((c) => c.state === 'pushed');
+    expect(pushed?.sessions.map((s) => s.sessionId)).toEqual(['p']);
   });
 });
 

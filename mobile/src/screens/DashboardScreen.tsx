@@ -505,22 +505,30 @@ export default function DashboardScreen() {
                       contentContainerStyle={styles.boardRow}
                       testID="active-sessions-board"
                     >
-                      {buildSessionBoardColumns(sessions as any).map((col: any) => (
-                        <View
-                          key={col.state}
-                          style={styles.boardColumn}
-                          testID={`active-sessions-column-${col.state}`}
-                        >
-                          <View style={styles.sessionGroupHeader}>
-                            <Text style={styles.sessionGroupLabel} numberOfLines={1}>
-                              {col.meta.label}
-                            </Text>
-                            <Text style={styles.sessionGroupCount}>{col.sessions.length}</Text>
+                      {buildSessionBoardColumns(sessions as any).map((col: any) =>
+                        col.sessions.length === 0 ? (
+                          <View
+                            key={col.state}
+                            style={styles.boardColumnCollapsed}
+                            testID={`active-sessions-column-${col.state}`}
+                            accessibilityLabel={`${col.meta.label}: no sessions`}
+                          >
+                            <SessionStateIcon state={col.state} size={12} />
+                            <Text style={styles.sessionGroupCount}>0</Text>
                           </View>
-                          {col.sessions.length === 0 ? (
-                            <Text style={styles.muted}>None</Text>
-                          ) : (
-                            col.sessions.map((s: any) => {
+                        ) : (
+                          <View
+                            key={col.state}
+                            style={styles.boardColumn}
+                            testID={`active-sessions-column-${col.state}`}
+                          >
+                            <View style={styles.sessionGroupHeader}>
+                              <Text style={styles.sessionGroupLabel} numberOfLines={1}>
+                                {col.meta.label}
+                              </Text>
+                              <Text style={styles.sessionGroupCount}>{col.sessions.length}</Text>
+                            </View>
+                            {col.sessions.map((s: any) => {
                               const actionable = Boolean(s.agentId && s.sessionId);
                               const Card = actionable ? TouchableOpacity : View;
                               const stamp = s.startedAt || s.lastActivityAt;
@@ -549,10 +557,10 @@ export default function DashboardScreen() {
                                   ) : null}
                                 </Card>
                               );
-                            })
-                          )}
-                        </View>
-                      ))}
+                            })}
+                          </View>
+                        ),
+                      )}
                     </ScrollView>
                   ) : (
                     <View testID="active-sessions">
@@ -1084,6 +1092,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 12,
     padding: 10,
+  },
+  boardColumnCollapsed: {
+    width: 36,
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.gray900,
+    borderColor: colors.gray800,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
   },
   boardCard: {
     backgroundColor: colors.gray950,
