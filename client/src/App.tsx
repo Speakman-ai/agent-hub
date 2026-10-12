@@ -51,6 +51,7 @@ import SessionPreviewStartButton from './components/SessionPreviewStartButton';
 import SessionBranchPicker from './components/SessionBranchPicker';
 import AwsSsoLoginMenu from './components/AwsSsoLoginMenu';
 import SessionActionsMenu from './components/SessionActionsMenu';
+import SessionContextUsagePanel from './components/SessionContextUsagePanel';
 import {
   paneOpenStorageKey,
   clearSessionPreviewStorage,
@@ -222,6 +223,7 @@ import {
   History,
   Globe,
   MessageCircleQuestion,
+  Gauge,
 } from 'lucide-react';
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarCollapse';
 import { SIDEBAR_WS_EVENT, isSidebarWsEvent } from '@shared/utils/sessionSidebar';
@@ -501,6 +503,10 @@ export default function App({ initialView }: any = {}) {
   const [sideBarPaneOpenBySession, setSideBarPaneOpenBySession] = useState<Record<string, boolean>>(
     {},
   );
+  /** Per-session floating Context Usage window, toggled from the Actions menu. */
+  const [contextUsageOpenBySession, setContextUsageOpenBySession] = useState<
+    Record<string, boolean>
+  >({});
   // Hidden SideBar child session ids. WS events for these go to the SideBar
   // panel instead of the main chat (no streaming into the transcript, no
   // "session finished" toasts for a session that is not in the list).
@@ -7879,7 +7885,20 @@ export default function App({ initialView }: any = {}) {
                         )}
 
                       {activeSessionId && (
-                        <div className="shrink-0 border-t border-gray-800/80">
+                        <div className="relative shrink-0 border-t border-gray-800/80">
+                          {contextUsageOpenBySession[activeSessionId] ? (
+                            <div className="absolute bottom-full left-3 md:left-6 mb-2 z-30">
+                              <SessionContextUsagePanel
+                                sessionId={activeSessionId}
+                                onClose={() =>
+                                  setContextUsageOpenBySession((prev) => ({
+                                    ...prev,
+                                    [activeSessionId]: false,
+                                  }))
+                                }
+                              />
+                            </div>
+                          ) : null}
                           <div className="px-3 md:px-6 pb-2 flex flex-wrap justify-center gap-2 sm:flex-nowrap sm:justify-start sm:items-center pt-2">
                             <SessionActionsMenu
                               inline={chatProjectIsWorkflow}
@@ -8027,6 +8046,20 @@ export default function App({ initialView }: any = {}) {
                                   pressed: !!sideBarPaneOpenBySession[activeSessionId],
                                   onSelect: () => {
                                     setSideBarPaneOpenBySession((prev) => ({
+                                      ...prev,
+                                      [activeSessionId]: !prev[activeSessionId],
+                                    }));
+                                  },
+                                },
+                                {
+                                  id: 'context-usage',
+                                  testId: 'toggle-context-usage',
+                                  label: 'Context usage',
+                                  icon: Gauge,
+                                  title: "Show what is filling this session's context window",
+                                  pressed: !!contextUsageOpenBySession[activeSessionId],
+                                  onSelect: () => {
+                                    setContextUsageOpenBySession((prev) => ({
                                       ...prev,
                                       [activeSessionId]: !prev[activeSessionId],
                                     }));

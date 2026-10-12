@@ -345,6 +345,15 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_session_progress_session
       ON session_progress(session_id, started_at ASC);
 
+    -- session_context_usage: latest context-window snapshot per session (Hub
+    -- prompt breakdown + engine-reported token count). Read by the Context
+    -- usage panel. JSON shape lives in server/session-context-usage.ts.
+    CREATE TABLE IF NOT EXISTS session_context_usage (
+      session_id TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS session_credential_requests (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,

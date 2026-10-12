@@ -4199,6 +4199,7 @@ export type StreamEventType =
   | 'tool_use'
   | 'tool_result'
   | 'result'
+  | 'context_usage'
   | 'checkpoint'
   | 'rate_limit'
   | 'ask_user_question'
@@ -4298,6 +4299,19 @@ export interface ResultEvent extends BaseStreamEvent {
   outputTokens?: number | null;
 }
 
+/**
+ * Engine-reported context size for one model step (input + cache + output
+ * tokens), or the model's context window. Bookkeeping only: chat.ts records it and never persists or
+ * broadcasts the event.
+ */
+export interface ContextUsageEvent extends BaseStreamEvent {
+  type: 'context_usage';
+  /** Set on per-step frames. */
+  contextTokens?: number;
+  /** Set on the turn's terminal result, from `modelUsage[*].contextWindow`. */
+  contextWindow?: number;
+}
+
 export interface CheckpointEvent extends BaseStreamEvent {
   type: 'checkpoint';
   uuid: string;
@@ -4389,6 +4403,7 @@ export type StreamEvent =
   | ToolUseEvent
   | ToolResultEvent
   | ResultEvent
+  | ContextUsageEvent
   | CheckpointEvent
   | RateLimitEvent
   | AskUserQuestionEvent

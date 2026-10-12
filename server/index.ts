@@ -215,6 +215,7 @@ import createArtifactRoutes from './routes/artifacts.js';
 import createBackgroundShellRoutes from './routes/background-shells.js';
 import createSessionDiscardRoutes from './routes/session-discard.js';
 import createSessionSidebarRoutes from './routes/session-sidebar.js';
+import createSessionContextUsageRoutes from './routes/session-context-usage.js';
 import createTranscribeRoutes from './routes/transcribe.js';
 import createVoiceNoteSummaryRoutes from './routes/voice-note-summary.js';
 import createMiscRoutes, { createHealthRoute } from './routes/misc.js';
@@ -2109,6 +2110,7 @@ app.use(createConfigRoutes(routeDeps));
 app.use(createSessionRoutes(routeDeps));
 app.use(createSessionDiscardRoutes(routeDeps));
 app.use(createSessionSidebarRoutes(routeDeps));
+app.use(createSessionContextUsageRoutes(routeDeps));
 app.use(createArtifactRoutes(routeDeps));
 app.use(
   createBackgroundShellRoutes({

@@ -6,6 +6,7 @@ import { transcribeAudio as transcribeAudioImpl } from './transcribeAudio';
 import { getToken as getJwt, clearToken } from './auth';
 import { normalizeSessionMessagesResponse } from '@shared/utils/sessionMessagesResponse';
 import { isDeadSessionResponse } from '@shared/utils/authErrorCodes';
+import type { SessionContextUsage } from '@shared/utils/contextUsage';
 /** A machine error code (`no_pushable_commits`) rather than human copy. */
 const ERROR_CODE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
 /**
@@ -75,6 +76,8 @@ export const api = {
   getAgents: () => fetchJSON('/agents'),
   getSessions: (agentId: any) => fetchJSON(`/agents/${agentId}/sessions`),
   getSession: (sessionId: any) => fetchJSON(`/sessions/${sessionId}`),
+  getSessionContextUsage: (sessionId: string): Promise<SessionContextUsage> =>
+    fetchJSON(`/sessions/${sessionId}/context-usage`),
   // SideBar: one side conversation per session on a hidden Consult-mode fork.
   getSessionSidebar: (sessionId: string): Promise<{ session: any | null; running?: boolean }> =>
     fetchJSON(`/sessions/${sessionId}/sidebar`),

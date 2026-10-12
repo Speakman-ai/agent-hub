@@ -4,6 +4,11 @@ import { readFileSync, existsSync, mkdirSync, copyFileSync } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, stmts as _stmts } from './db.js';
+import {
+  recordContextTurn,
+  recordReportedContext,
+  recordReportedContextWindow,
+} from './session-context-usage.js';
 import { trackChild } from './process-groups.js';
 import { endChildStdin } from './child-stdin.js';
 import {
@@ -3997,6 +4002,19 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
       const finalPrompt = promptWithHistory + imagePromptSuffix;
 
+      try {
+        recordContextTurn(getDb(), sessionId, {
+          engine,
+          model: model ?? null,
+          systemPrompt: enrichedPrompt,
+          userTurn: finalPrompt,
+          freshEngineSession: isNewEngineSession && !session!.fork_from_engine_session_id,
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn('[chat] Failed to record context usage:', message);
+      }
+
       const CLAUDE_BIN = getClaudeBin();
       const CURSOR_BIN = getCursorBin();
       const GEMINI_BIN = getGeminiBin();
@@ -4867,6 +4885,23 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
 
       const handleEvent = (incoming: StreamEvent): void => {
+        if (incoming.type === 'context_usage') {
+          // Subagent steps run in their own context window; only the parent's
+          // count describes this session.
+          if (!incoming.parentToolUseId) {
+            try {
+              if (incoming.contextTokens != null) {
+                recordReportedContext(getDb(), sessionId, incoming.contextTokens);
+              }
+              if (incoming.contextWindow != null) {
+                recordReportedContextWindow(getDb(), sessionId, incoming.contextWindow);
+              }
+            } catch {
+              /* best-effort bookkeeping */
+            }
+          }
+          return;
+        }
         if (!shouldPersistStreamEvent(incoming)) {
           return;
         }

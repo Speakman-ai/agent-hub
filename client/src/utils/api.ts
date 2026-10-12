@@ -9,6 +9,7 @@ import type { InfraServicePackWire } from '@shared/utils/infraPacks';
 import type { InfraSpendTrendWire } from '@shared/utils/infraSpend';
 import type { InfraFleetWire } from '@shared/utils/infraFleet';
 import type { QuotaHeadroomResponse } from '@shared/utils/quotaHeadroom';
+import type { SessionContextUsage } from '@shared/utils/contextUsage';
 
 interface CreateDeployTriggerBody {
   event: DeployTriggerEvent;
@@ -1871,6 +1872,9 @@ export const api = {
    * deep-link to another user's session that the owner-only list omits.
    */
   getSession: (sessionId: string) => fetchJSON<SessionWire>(`/sessions/${sessionId}`),
+  /** Context-window usage for the session's latest turn, split by source. */
+  getSessionContextUsage: (sessionId: string) =>
+    fetchJSON<SessionContextUsage>(`/sessions/${sessionId}/context-usage`),
   /** The session's live SideBar (hidden Consult-mode fork), or null. */
   getSessionSidebar: (sessionId: string) =>
     fetchJSON<{ session: SessionWire | null; running?: boolean }>(`/sessions/${sessionId}/sidebar`),

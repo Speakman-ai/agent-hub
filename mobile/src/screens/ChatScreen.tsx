@@ -32,8 +32,10 @@ import SessionChatDraftsPanel from '../components/SessionChatDraftsPanel';
 import SessionTimelinePanel from '../components/SessionTimelinePanel';
 import MobileTerminalPane from '../components/MobileTerminalPane';
 import MobileBrowserPane from '../components/MobileBrowserPane';
+import MobileContextUsagePanel from '../components/MobileContextUsagePanel';
 import {
   ChevronDown,
+  Gauge,
   Globe,
   History,
   MessageCircleQuestion,
@@ -127,6 +129,7 @@ export default function ChatScreen({
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
+  const [showContextUsage, setShowContextUsage] = useState(false);
   const [showSideBar, setShowSideBar] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
   const [showActions, setShowActions] = useState(false);
@@ -544,6 +547,18 @@ export default function ChatScreen({
                 />
                 <Text style={styles.terminalToggleText}>SideBar</Text>
               </TouchableOpacity>
+              <TouchableOpacity
+                testID="toggle-mobile-context-usage"
+                accessibilityRole="button"
+                accessibilityState={{ expanded: showContextUsage }}
+                onPress={() => setShowContextUsage((open) => !open)}
+                style={[styles.actionRow, showContextUsage && styles.actionRowActive]}
+              >
+                <Gauge size={14} color={showContextUsage ? colors.sky300 : colors.gray300} />
+                <Text style={styles.terminalToggleText}>
+                  {showContextUsage ? 'Hide context usage' : 'Context usage'}
+                </Text>
+              </TouchableOpacity>
             </View>
           ) : null}
           {showTimeline ? (
@@ -571,6 +586,12 @@ export default function ChatScreen({
           ) : null}
           {showBrowser ? (
             <MobileBrowserPane sessionId={activeSessionId} onClose={() => setShowBrowser(false)} />
+          ) : null}
+          {showContextUsage ? (
+            <MobileContextUsagePanel
+              sessionId={activeSessionId}
+              onClose={() => setShowContextUsage(false)}
+            />
           ) : null}
           <SessionSideBarSheet
             visible={showSideBar}

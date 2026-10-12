@@ -147,6 +147,10 @@ function enrichCursorEditInputFromToolResult(
 // `agenthub:ask:answer` fenced block (handled on the client side).
 
 import {
+  contextTokensFromClaudeUsage,
+  contextWindowFromClaudeModelUsage,
+} from './session-context-usage.js';
+import {
   computeLockedNonAskFenceBodyRanges,
   extractAskBlocks as extractAskBlocksCore,
   parseAskPayload,
@@ -292,6 +296,9 @@ export function createStreamParser(engine: string): StreamParser {
   // extraction over the user-facing reply without folding earlier narration
   // into the stored message.
   const grokAgentMessage = { text: '' };
+  // The parent agent's model, so the turn's `modelUsage` lookup ignores
+  // entries contributed by subagents on other models.
+  const claudeState: ClaudeParserState = { parentModel: null };
   const normalize: NormalizeFn =
     engine === 'cursor-agent'
       ? (raw) =>
@@ -307,7 +314,7 @@ export function createStreamParser(engine: string): StreamParser {
           ? (raw) => normalizeCodex(raw, codexFileChangeToolUseIssued)
           : engine === 'grok-cli'
             ? (raw) => normalizeGrok(raw, grokAgentMessage)
-            : normalizeClaude;
+            : (raw) => normalizeClaude(raw, claudeState);
 
   return {
     feed(chunk: Buffer | string): StreamEvent[] {
@@ -377,14 +384,37 @@ function parseLine(line: string, normalize: NormalizeFn): StreamEvent[] {
  * text and rendered as top-level chat. Tag them here, once, so every downstream
  * consumer can tell whose output it is holding.
  */
-function normalizeClaude(raw: Record<string, unknown>): StreamEvent[] {
-  const events = normalizeClaudeFrame(raw);
+interface ClaudeParserState {
+  parentModel: string | null;
+}
+
+function normalizeClaude(
+  raw: Record<string, unknown>,
+  state: ClaudeParserState = { parentModel: null },
+): StreamEvent[] {
   const parentToolUseId = raw.parent_tool_use_id;
+  const isParentFrame = typeof parentToolUseId !== 'string' || parentToolUseId === '';
+  if (isParentFrame) {
+    const model =
+      raw.type === 'assistant'
+        ? (raw.message as Record<string, unknown> | undefined)?.model
+        : raw.type === 'system' && raw.subtype === 'init'
+          ? raw.model
+          : undefined;
+    // An assistant frame names the exact API model; init only seeds it.
+    if (typeof model === 'string' && model && (raw.type === 'assistant' || !state.parentModel)) {
+      state.parentModel = model;
+    }
+  }
+  const events = normalizeClaudeFrame(raw, state.parentModel);
   if (typeof parentToolUseId !== 'string' || parentToolUseId === '') return events;
   return events.map((event) => ({ ...event, parentToolUseId }) as StreamEvent);
 }
 
-function normalizeClaudeFrame(raw: Record<string, unknown>): StreamEvent[] {
+function normalizeClaudeFrame(
+  raw: Record<string, unknown>,
+  parentModel: string | null = null,
+): StreamEvent[] {
   switch (raw.type) {
     case 'system':
       if (raw.subtype === 'init') {
@@ -434,6 +464,8 @@ function normalizeClaudeFrame(raw: Record<string, unknown>): StreamEvent[] {
           });
         }
       }
+      const contextTokens = contextTokensFromClaudeUsage(msg?.usage);
+      if (contextTokens != null) out.push({ type: 'context_usage', contextTokens });
       return out;
     }
 
@@ -502,7 +534,9 @@ function normalizeClaudeFrame(raw: Record<string, unknown>): StreamEvent[] {
       // before summing, while durationMs/numTurns can be summed directly.
       // Dropping/deduping at the parser would be lossy for UI event replay,
       // so the dedupe lives at the aggregation layer.
+      const contextWindow = contextWindowFromClaudeModelUsage(raw.modelUsage, parentModel);
       return [
+        ...(contextWindow != null ? [{ type: 'context_usage' as const, contextWindow }] : []),
         {
           type: 'result',
           text: (raw.result as string) ?? '',

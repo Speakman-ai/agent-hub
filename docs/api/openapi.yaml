@@ -14332,6 +14332,82 @@ components:
         - first_seen_at
         - last_seen_at
         - scan_ref
+    SessionContextUsageErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+    SessionContextUsage:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        engine:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum:
+            - reported
+            - estimated
+            - none
+          description: "`reported`: the total comes from the engine (Claude Code per-step usage). `estimated`: ~4 characters per token. `none`: nothing recorded yet."
+        totalTokens:
+          type: integer
+          minimum: 0
+        contextWindow:
+          type: integer
+          nullable: true
+          minimum: 0
+          exclusiveMinimum: true
+          description: Context window of the session model, or null when unknown.
+        percent:
+          type: number
+          nullable: true
+          description: totalTokens / contextWindow, 0-100.
+        categories:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                enum:
+                  - system
+                  - rules
+                  - skills
+                  - wiki
+                  - memory
+                  - engine
+                  - conversation
+              label:
+                type: string
+              tokens:
+                type: integer
+                minimum: 0
+            required:
+              - key
+              - label
+              - tokens
+        updatedAt:
+          type: string
+          nullable: true
+      required:
+        - sessionId
+        - engine
+        - model
+        - source
+        - totalTokens
+        - contextWindow
+        - percent
+        - categories
+        - updatedAt
+      description: Context-window usage for the session's latest turn, split by source. Hub prompt sections are estimated from their size; the engine and conversation shares are derived from the engine-reported total when available.
     SessionDiscardErrorResponse:
       type: object
       properties:
@@ -46500,6 +46576,31 @@ paths:
                     type: string
                 required:
                   - error
+  /api/sessions/{sessionId}/context-usage:
+    get:
+      tags:
+        - Sessions
+      summary: Get context-window usage for a session
+      description: Breaks the latest turn's context down into system prompt, rules and context files, skills, wiki and retrieval, memory, the engine's own prompt and tools, and conversation. Owner only.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Context usage report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionContextUsage"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionContextUsageErrorResponse"
   /api/sessions/{sessionId}/discard-changes:
     post:
       tags:
