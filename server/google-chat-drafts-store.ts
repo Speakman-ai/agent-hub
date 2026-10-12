@@ -392,3 +392,52 @@ export function setChatSettings(userId: string, settings: GoogleChatSettings): G
     .run(userId, settings.autoSendAgentReplies ? 1 : 0);
   return getChatSettings(userId);
 }
+
+export interface ChatMuteList {
+  spaceIds: string[];
+  /** Increases with every change to this user's mutes. */
+  revision: number;
+}
+
+/** Space ids the user muted, oldest first. */
+export function listMutedChatSpaces(userId: string): string[] {
+  const rows = getOrgsDb()
+    .prepare(
+      'SELECT space_id FROM google_chat_space_mutes WHERE user_id = ? ORDER BY created_at, space_id',
+    )
+    .all(userId) as { space_id: string }[];
+  return rows.map((r) => r.space_id);
+}
+
+/** The muted list with its revision, read together. */
+export function getChatMuteList(userId: string): ChatMuteList {
+  const db = getOrgsDb();
+  return db.transaction((): ChatMuteList => {
+    const row = db
+      .prepare('SELECT revision FROM google_chat_mute_revisions WHERE user_id = ?')
+      .get(userId) as { revision: number } | undefined;
+    return { spaceIds: listMutedChatSpaces(userId), revision: row?.revision ?? 0 };
+  })();
+}
+
+/** Mute or unmute one space. Returns the full list after the change. */
+export function setChatSpaceMuted(userId: string, spaceId: string, muted: boolean): ChatMuteList {
+  const db = getOrgsDb();
+  return db.transaction((): ChatMuteList => {
+    if (muted) {
+      db.prepare(
+        'INSERT OR IGNORE INTO google_chat_space_mutes (user_id, space_id) VALUES (?, ?)',
+      ).run(userId, spaceId);
+    } else {
+      db.prepare('DELETE FROM google_chat_space_mutes WHERE user_id = ? AND space_id = ?').run(
+        userId,
+        spaceId,
+      );
+    }
+    db.prepare(
+      `INSERT INTO google_chat_mute_revisions (user_id, revision) VALUES (?, 1)
+       ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1`,
+    ).run(userId);
+    return getChatMuteList(userId);
+  })();
+}

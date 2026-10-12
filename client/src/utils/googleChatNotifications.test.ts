@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  chatBadgeCount,
   createChatNotifier,
   isChatEventForMe,
   previewText,
@@ -41,7 +40,9 @@ function msg(spaceId: string, id: string, createTime: string, sender: string, te
   };
 }
 
-function setup(opts: { myUserId?: string | null; viewing?: string | null } = {}) {
+function setup(
+  opts: { myUserId?: string | null; viewing?: string | null; muted?: Set<string> } = {},
+) {
   let spaces = [space('A', '2026-10-09T10:00:00Z'), space('B', '2026-10-09T09:00:00Z')];
   let messages: Record<string, any[]> = {};
   const api = {
@@ -58,6 +59,7 @@ function setup(opts: { myUserId?: string | null; viewing?: string | null } = {})
     api,
     getMyUserId: () => (opts.myUserId === undefined ? 'u1' : opts.myUserId),
     isViewingSpace: (id) => id === opts.viewing,
+    isMutedSpace: (id) => !!opts.muted?.has(id),
     onNotify,
     now: () => Date.parse('2026-10-09T10:30:00Z'),
   });
@@ -121,6 +123,29 @@ describe('createChatNotifier polling', () => {
     t.setSpaces([space('A', '2026-10-09T10:05:00Z')]);
     t.setMessages({ A: [msg('A', 'new', '2026-10-09T10:05:00Z', 'users/alice')] });
     await t.notifier.poll();
+    expect(t.onNotify).not.toHaveBeenCalled();
+  });
+
+  it('never notifies for a muted space, and unmuting does not replay what arrived meanwhile', async () => {
+    const muted = new Set(['A']);
+    const t = setup({ muted });
+    await t.notifier.poll();
+    t.setSpaces([space('A', '2026-10-09T10:05:00Z')]);
+    t.setMessages({ A: [msg('A', 'new', '2026-10-09T10:05:00Z', 'users/alice')] });
+    await t.notifier.poll();
+    expect(t.onNotify).not.toHaveBeenCalled();
+
+    muted.clear();
+    await t.notifier.poll();
+    expect(t.onNotify).not.toHaveBeenCalled();
+    await t.notifier.handleEvent({
+      type: 'google_chat_message',
+      kind: 'created',
+      ownerUserId: 'u1',
+      messageName: 'spaces/A/messages/new',
+      spaceName: 'spaces/A',
+      createTime: '2026-10-09T10:05:00Z',
+    });
     expect(t.onNotify).not.toHaveBeenCalled();
   });
 
@@ -532,15 +557,5 @@ describe('requestOpenChatSpace', () => {
     expect(listener).toHaveBeenCalledTimes(1);
     expect(takePendingOpenChatSpace()).toBe('A');
     expect(takePendingOpenChatSpace()).toBeNull();
-  });
-});
-
-describe('chatBadgeCount', () => {
-  it('uses announced messages when push is off', () => {
-    expect(chatBadgeCount(false, 0, 3)).toBe(3);
-  });
-
-  it('uses the push unread total when push is active, without double counting', () => {
-    expect(chatBadgeCount(true, 5, 3)).toBe(5);
   });
 });

@@ -1272,6 +1272,12 @@ export const api = {
   getGoogleChatSettings: () => fetchJSON('/google/chat/settings'),
   setGoogleChatSettings: (data: { autoSendAgentReplies: boolean }) =>
     fetchJSON('/google/chat/settings', { method: 'PUT', body: JSON.stringify(data) }),
+  getGoogleChatMutes: () => fetchJSON('/google/chat/mutes'),
+  setGoogleChatSpaceMuted: (spaceId: string, muted: boolean) =>
+    fetchJSON(`/google/chat/spaces/${encodeURIComponent(spaceId)}/mute`, {
+      method: 'PUT',
+      body: JSON.stringify({ muted }),
+    }),
   // Drive proxy (user-scoped, drive.file only). Lists and creates
   // app-accessible Drive / Docs files. Tokens stay server-side.
   listGoogleDriveFiles: ({

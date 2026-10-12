@@ -129,3 +129,11 @@ export function hasChatReadStateReadScope(scopes: string[]): boolean {
 export function hasChatReadStateWriteScope(scopes: string[]): boolean {
   return scopes.includes(CHAT_READSTATE_SCOPE);
 }
+
+// Optional: the caller's per-space notification settings. Used to mirror a
+// Hub mute into Google Chat so the phone and web apps go quiet too.
+export const CHAT_SPACE_SETTINGS_SCOPE = 'https://www.googleapis.com/auth/chat.users.spacesettings';
+
+export function hasChatSpaceSettingsScope(scopes: string[]): boolean {
+  return scopes.includes(CHAT_SPACE_SETTINGS_SCOPE);
+}

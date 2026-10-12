@@ -24,6 +24,7 @@ export function useGoogleChatNotifications({
   userId,
   onNotify,
   isViewingSpace,
+  isMutedSpace,
   chatApi = api,
 }: {
   enabled: boolean;
@@ -31,12 +32,15 @@ export function useGoogleChatNotifications({
   userId: string | null;
   onNotify: (notice: ChatNotification) => void;
   isViewingSpace?: (spaceId: string) => boolean;
+  isMutedSpace?: (spaceId: string) => boolean;
   chatApi?: ChatNotifierApi;
 }): void {
   const onNotifyRef = useRef(onNotify);
   onNotifyRef.current = onNotify;
   const viewingRef = useRef(isViewingSpace);
   viewingRef.current = isViewingSpace;
+  const mutedRef = useRef(isMutedSpace);
+  mutedRef.current = isMutedSpace;
   const notifierRef = useRef<ReturnType<typeof createChatNotifier> | null>(null);
 
   useEffect(() => {
@@ -48,6 +52,7 @@ export function useGoogleChatNotifications({
       api: chatApi,
       getMyUserId: () => getAuthRecord()?.user?.id || userId || null,
       isViewingSpace: (id) => !!viewingRef.current?.(id),
+      isMutedSpace: (id) => !!mutedRef.current?.(id),
       onNotify: (n) => onNotifyRef.current(n),
     });
     notifierRef.current = notifier;

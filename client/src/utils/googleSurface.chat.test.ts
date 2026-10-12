@@ -10,6 +10,7 @@ import {
   CHAT_REACTIONS_SCOPE,
   CHAT_READSTATE_SCOPE,
   CHAT_READSTATE_READONLY_SCOPE,
+  CHAT_SPACE_SETTINGS_SCOPE,
   chatConsent,
 } from './googleSurface';
 
@@ -26,7 +27,8 @@ describe('chatConsent', () => {
       canReact: false,
       canReadState: false,
       canWriteReadState: false,
-      missingExtras: [CHAT_REACTIONS_SCOPE, CHAT_READSTATE_SCOPE],
+      canSyncMute: false,
+      missingExtras: [CHAT_REACTIONS_SCOPE, CHAT_READSTATE_SCOPE, CHAT_SPACE_SETTINGS_SCOPE],
       canEdit: false,
       missingEdit: [CHAT_MESSAGES_SCOPE],
     });
@@ -44,7 +46,8 @@ describe('chatConsent', () => {
         canReact: false,
         canReadState: false,
         canWriteReadState: false,
-        missingExtras: [CHAT_REACTIONS_SCOPE, CHAT_READSTATE_SCOPE],
+        canSyncMute: false,
+        missingExtras: [CHAT_REACTIONS_SCOPE, CHAT_READSTATE_SCOPE, CHAT_SPACE_SETTINGS_SCOPE],
         canEdit: false,
         missingEdit: [CHAT_MESSAGES_SCOPE],
       },
@@ -72,7 +75,8 @@ describe('chatConsent', () => {
       canReact: true,
       canReadState: false,
       canWriteReadState: false,
-      missingExtras: [CHAT_READSTATE_SCOPE],
+      canSyncMute: false,
+      missingExtras: [CHAT_READSTATE_SCOPE, CHAT_SPACE_SETTINGS_SCOPE],
       // Only the full chat.messages scope can edit.
       canEdit: true,
       missingEdit: [],
@@ -91,6 +95,12 @@ describe('chatConsent', () => {
     expect(c.canReact).toBe(true);
     expect(c.canReadState).toBe(true);
     expect(c.canWriteReadState).toBe(false);
-    expect(c.missingExtras).toEqual([CHAT_READSTATE_SCOPE]);
+    expect(c.missingExtras).toEqual([CHAT_READSTATE_SCOPE, CHAT_SPACE_SETTINGS_SCOPE]);
+  });
+
+  it('the spacesettings scope turns on mute sync', () => {
+    const c = chatConsent(status([CHAT_SPACE_SETTINGS_SCOPE]));
+    expect(c.canSyncMute).toBe(true);
+    expect(c.missingExtras).not.toContain(CHAT_SPACE_SETTINGS_SCOPE);
   });
 });

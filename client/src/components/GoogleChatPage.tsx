@@ -1,6 +1,8 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
+  Bell,
+  BellOff,
   Bot,
   CheckCircle2,
   ListTodo,
@@ -102,6 +104,7 @@ import {
   type SeenStore,
 } from '../utils/googleChatUnread';
 import { getAuthRecord } from '../utils/auth';
+import { chatMuteStore, isSpaceQuiet, useChatMutes } from '../utils/googleChatMutes';
 
 type GoogleStatus = NonNullable<GoogleStatusLike>;
 
@@ -456,6 +459,55 @@ export default function GoogleChatPage({
   useEffect(() => {
     setPicked(new Set());
   }, [selectedId]);
+  const mutes = useChatMutes();
+  const selectedMuted = !!selectedId && mutes.spaceIds.has(selectedId);
+  // Mute requests and their notices belong to the space that issued them, like
+  // every other async result here, so switching conversations mid-request
+  // never shows one space's outcome on another or blocks its toggle.
+  const [muteBusy, setMuteBusy] = useState<Record<string, boolean>>({});
+  const [muteNotices, setMuteNotices] = useState<Record<string, string>>({});
+  const muteBusyRef = useRef<Set<string>>(new Set());
+  const setMuteNotice = (spaceId: string, notice: string | null) =>
+    setMuteNotices((prev) => {
+      const next = { ...prev };
+      if (notice) next[spaceId] = notice;
+      else delete next[spaceId];
+      return next;
+    });
+  const toggleMute = async (spaceId: string) => {
+    // The ref blocks a second click that lands before the disabled re-render.
+    if (muteBusyRef.current.has(spaceId)) return;
+    muteBusyRef.current.add(spaceId);
+    const muted = !mutes.spaceIds.has(spaceId);
+    setMuteBusy((prev) => ({ ...prev, [spaceId]: true }));
+    setMuteNotice(spaceId, null);
+    try {
+      const result = await chatMuteStore().setMuted(spaceId, muted);
+      if (result?.googleSync === 'failed') {
+        setMuteNotice(
+          spaceId,
+          `${muted ? 'Muted' : 'Unmuted'} in Agent Hub, but Google Chat did not accept the change${
+            result.googleError ? `: ${result.googleError}` : '.'
+          }`,
+        );
+      }
+    } catch (err) {
+      setMuteNotice(
+        spaceId,
+        `Could not ${muted ? 'mute' : 'unmute'} this conversation: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    } finally {
+      muteBusyRef.current.delete(spaceId);
+      setMuteBusy((prev) => {
+        const next = { ...prev };
+        delete next[spaceId];
+        return next;
+      });
+    }
+  };
+  const selectedMuteNotice = (selectedId && muteNotices[selectedId]) || null;
   const [autoSend, setAutoSend] = useState<boolean | null>(null);
   const [autoSendError, setAutoSendError] = useState<string | null>(null);
   // One settings write at a time, so the server always ends on the user's last
@@ -1370,7 +1422,7 @@ export default function GoogleChatPage({
               data-testid="chat-enable-extras"
               onClick={() => startOAuth(consent.missingExtras)}
               disabled={oauthBusy}
-              title="Lets Agent Hub add your reactions, show where you stopped reading, and mark conversations read in Google Chat."
+              title="Lets Agent Hub add your reactions, show where you stopped reading, mark conversations read in Google Chat, and mute conversations in Google Chat when you mute them here."
               className="inline-flex items-center gap-1 text-xs text-blue-300 hover:text-blue-200 disabled:opacity-50"
             >
               <SmilePlus size={13} />
@@ -1496,9 +1548,14 @@ export default function GoogleChatPage({
               />
             )}
             {filterSpaces(spaces, spaceFilter).map((space) => {
-              const unreadCount = push.unread[`spaces/${space.id}`]?.count ?? 0;
+              const muted = !!space.id && mutes.spaceIds.has(space.id);
+              // Muted spaces never call for attention, and none do until the
+              // mute list loads.
+              const quiet = !space.id || isSpaceQuiet(mutes, space.id);
+              const unreadCount = quiet ? 0 : (push.unread[`spaces/${space.id}`]?.count ?? 0);
               // The open space is being read, so it never shows a dot.
               const hasDot =
+                !quiet &&
                 !unreadCount &&
                 space.id !== selectedId &&
                 isSpaceUnread(space, { google: googleRead, seen, useGoogle: canReadState });
@@ -1522,6 +1579,14 @@ export default function GoogleChatPage({
                     >
                       {chatSpaceLabel(space)}
                     </span>
+                    {muted && (
+                      <BellOff
+                        size={12}
+                        data-testid={`chat-space-muted-${space.id}`}
+                        aria-label="Muted"
+                        className="shrink-0 text-gray-500"
+                      />
+                    )}
                     {!!unreadCount && (
                       <span
                         data-testid={`chat-space-unread-${space.id}`}
@@ -1551,17 +1616,54 @@ export default function GoogleChatPage({
                 <span className="truncate text-sm font-medium text-gray-200">
                   {chatSpaceLabel(selectedSpace)}
                 </span>
-                {chatSpaceDeepLink(selectedSpace) && (
-                  <a
-                    href={chatSpaceDeepLink(selectedSpace) as string}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white"
+                <div className="flex shrink-0 items-center gap-3">
+                  <button
+                    type="button"
+                    data-testid="chat-mute-toggle"
+                    onClick={() => void toggleMute(selectedSpace.id as string)}
+                    disabled={!!selectedSpace.id && !!muteBusy[selectedSpace.id]}
+                    aria-pressed={selectedMuted}
+                    title={
+                      selectedMuted
+                        ? 'Turn notifications and unread badges back on for this conversation.'
+                        : consent.canSyncMute
+                          ? 'Stop notifications and unread badges for this conversation, here and in Google Chat.'
+                          : 'Stop notifications and unread badges for this conversation in Agent Hub.'
+                    }
+                    className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white disabled:opacity-50"
                   >
-                    <ExternalLink size={12} />
-                    Open in Google Chat
-                  </a>
-                )}
+                    {selectedMuted ? <Bell size={12} /> : <BellOff size={12} />}
+                    {selectedMuted ? 'Unmute' : 'Mute'}
+                  </button>
+                  {chatSpaceDeepLink(selectedSpace) && (
+                    <a
+                      href={chatSpaceDeepLink(selectedSpace) as string}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white"
+                    >
+                      <ExternalLink size={12} />
+                      Open in Google Chat
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
+            {selectedSpace && selectedMuteNotice && (
+              <div
+                data-testid="chat-mute-notice"
+                role="status"
+                className="flex shrink-0 items-center justify-between gap-2 border-b border-gray-800 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-200"
+              >
+                <span>{selectedMuteNotice}</span>
+                <button
+                  type="button"
+                  onClick={() => selectedId && setMuteNotice(selectedId, null)}
+                  aria-label="Dismiss"
+                  className="text-amber-200 hover:text-white"
+                >
+                  <X size={12} />
+                </button>
               </div>
             )}
 

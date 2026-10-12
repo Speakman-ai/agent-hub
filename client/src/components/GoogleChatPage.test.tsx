@@ -24,6 +24,8 @@ vi.mock('../utils/api', () => ({
     editGoogleChatMessage: vi.fn(),
     getGoogleChatReadState: vi.fn(),
     setGoogleChatReadState: vi.fn(),
+    getGoogleChatMutes: vi.fn(),
+    setGoogleChatSpaceMuted: vi.fn(),
   },
 }));
 
@@ -48,6 +50,7 @@ import { api } from '../utils/api';
 import { CHAT_SURFACE_SCOPES } from '../utils/googleSurface';
 import { compareRfc3339 } from '@shared/utils/rfc3339';
 import { chatPushStore, resetChatPushStore } from '../utils/googleChatPush';
+import { chatMuteStore } from '../utils/googleChatMutes';
 
 const mockApi = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -89,6 +92,9 @@ beforeEach(() => {
   mockApi.getGoogleChatReadState.mockResolvedValue({ lastReadTime: null });
   mockApi.setGoogleChatReadState.mockResolvedValue({ lastReadTime: null });
   resetChatPushStore();
+  chatMuteStore().reset();
+  // App loads the mute list before the pane shows unread state; start loaded.
+  chatMuteStore().applyEvent({ spaceIds: [], revision: 0 });
   startSessionProps.last = null;
   ticketProps.last = null;
 });
@@ -640,6 +646,7 @@ describe('GoogleChatPage', () => {
       'https://www.googleapis.com/auth/chat.memberships.readonly',
       'https://www.googleapis.com/auth/chat.messages.reactions',
       'https://www.googleapis.com/auth/chat.users.readstate',
+      'https://www.googleapis.com/auth/chat.users.spacesettings',
     ]);
     expect(mockApi.listGoogleChatSpaces).not.toHaveBeenCalled();
   });
@@ -1796,6 +1803,111 @@ describe('GoogleChatPage push updates', () => {
     expect(mockApi.markGoogleChatSpaceRead).not.toHaveBeenCalledWith('BBB', expect.anything());
   });
 
+  it('shows no unread pills or dots until the mute list loads', async () => {
+    setup({
+      push: true,
+      unread: [
+        { spaceName: 'spaces/BBB', count: 3, lastMessageTime: '2026-10-08T09:00:00Z', version: 9 },
+      ],
+    });
+    const store = chatMuteStore();
+    act(() => store.reset());
+    let answer!: (v: unknown) => void;
+    mockApi.getGoogleChatMutes.mockReturnValue(new Promise((r) => (answer = r)));
+    const loading = store.load();
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+
+    // BBB is muted on the server, but the list hasn't arrived yet.
+    expect(screen.queryByTestId('chat-space-unread-BBB')).toBeNull();
+    expect(screen.queryByTestId(/^chat-unread-dot-/)).toBeNull();
+
+    await act(async () => {
+      answer({ spaceIds: ['BBB'], revision: 1 });
+      await loading;
+    });
+    expect(screen.getByTestId('chat-space-muted-BBB')).toBeTruthy();
+    expect(screen.queryByTestId('chat-space-unread-BBB')).toBeNull();
+
+    // Once loaded, an unmuted conversation's count shows.
+    act(() => store.applyEvent({ spaceIds: [], revision: 2 }));
+    expect(screen.getByTestId('chat-space-unread-BBB').textContent).toBe('3');
+  });
+
+  it.each([
+    ['Google refuses the mirror', 'resolve', 'Permission denied'],
+    ['the request fails', 'reject', 'offline'],
+  ] as const)(
+    'keeps the mute outcome on its own conversation when %s after switching away',
+    async (_label, outcome, text) => {
+      setup({ push: true });
+      let settle!: { resolve: (v: unknown) => void; reject: (e: unknown) => void };
+      mockApi.setGoogleChatSpaceMuted.mockReturnValue(
+        new Promise((resolve, reject) => (settle = { resolve, reject })),
+      );
+      render(<GoogleChatPage />);
+      await screen.findByText('latest');
+
+      fireEvent.click(screen.getByTestId('chat-mute-toggle'));
+      expect(mockApi.setGoogleChatSpaceMuted).toHaveBeenCalledWith('AAA', true);
+      expect((screen.getByTestId('chat-mute-toggle') as HTMLButtonElement).disabled).toBe(true);
+
+      // Switch before the request settles: B's toggle is free.
+      fireEvent.click(screen.getByTestId('chat-space-BBB'));
+      await waitFor(() =>
+        expect((screen.getByTestId('chat-mute-toggle') as HTMLButtonElement).disabled).toBe(false),
+      );
+
+      await act(async () => {
+        if (outcome === 'resolve') {
+          settle.resolve({
+            spaceIds: ['AAA'],
+            revision: 1,
+            googleSync: 'failed',
+            googleError: 'Permission denied',
+          });
+        } else {
+          settle.reject(new Error('offline'));
+        }
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      expect(screen.queryByTestId('chat-mute-notice')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('chat-space-AAA'));
+      expect((await screen.findByTestId('chat-mute-notice')).textContent).toContain(text);
+    },
+  );
+
+  it('hides unread counts for muted conversations and mutes the open one', async () => {
+    setup({
+      push: true,
+      unread: [
+        { spaceName: 'spaces/BBB', count: 3, lastMessageTime: '2026-10-08T09:00:00Z', version: 9 },
+      ],
+    });
+    act(() => chatMuteStore().applyEvent({ spaceIds: ['BBB'], revision: 1 }));
+    mockApi.setGoogleChatSpaceMuted.mockResolvedValue({
+      spaceIds: ['BBB', 'AAA'],
+      revision: 2,
+      googleSync: 'failed',
+      googleError: 'Permission denied',
+    });
+    render(<GoogleChatPage />);
+    await screen.findByText('latest');
+
+    expect(screen.getByTestId('chat-space-muted-BBB')).toBeTruthy();
+    expect(screen.queryByTestId('chat-space-unread-BBB')).toBeNull();
+    expect(screen.queryByTestId('chat-space-muted-AAA')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('chat-mute-toggle'));
+    await waitFor(() => expect(screen.getByTestId('chat-space-muted-AAA')).toBeTruthy());
+    expect(mockApi.setGoogleChatSpaceMuted).toHaveBeenCalledWith('AAA', true);
+    expect((await screen.findByTestId('chat-mute-notice')).textContent).toContain(
+      'Permission denied',
+    );
+    expect(screen.getByTestId('chat-mute-toggle').textContent).toContain('Unmute');
+  });
+
   it.each(['updated', 'deleted'] as const)(
     'refreshes the open space when a message is %s, with no new message after it',
     async (kind) => {
@@ -2347,6 +2459,7 @@ describe('GoogleChatPage, Google Chat layout', () => {
     expect(mockApi.startGoogleOAuth.mock.calls[0][0].scopes).toEqual([
       'https://www.googleapis.com/auth/chat.messages.reactions',
       'https://www.googleapis.com/auth/chat.users.readstate',
+      'https://www.googleapis.com/auth/chat.users.spacesettings',
     ]);
   });
 

@@ -95,7 +95,7 @@ import SupportOverviewPage from './components/SupportOverviewPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
 import GoogleChatPage from './components/GoogleChatPage';
-import { totalUnread, useGoogleChatPush, useGoogleChatPushBootstrap } from './utils/googleChatPush';
+import { useGoogleChatPush, useGoogleChatPushBootstrap } from './utils/googleChatPush';
 import TodosPage from './components/TodosPage';
 import PersonalDashboard from './components/PersonalDashboard';
 import DailySummaryPage from './components/DailySummaryPage';
@@ -112,10 +112,13 @@ import { useGoogleStatus } from './hooks/useGoogleStatus';
 import { chatConsent, shouldShowCalendarNav, shouldShowGmailNav } from './utils/googleSurface';
 import { useGoogleChatNotifications } from './hooks/useGoogleChatNotifications';
 import {
+  addAnnouncement,
   chatBadgeCount,
-  getOpenChatSpace,
-  requestOpenChatSpace,
-} from './utils/googleChatNotifications';
+  chatNotifyGate,
+  useChatMutes,
+  useChatMutesSync,
+} from './utils/googleChatMutes';
+import { getOpenChatSpace, requestOpenChatSpace } from './utils/googleChatNotifications';
 import DeploymentsPage from './components/DeploymentsPage';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
@@ -3403,6 +3406,7 @@ export default function App({ initialView }: any = {}) {
         case 'google_chat_message':
         case 'google_chat_unread':
         case 'google_chat_events_status':
+        case 'google_chat_mutes':
           window.dispatchEvent(new CustomEvent(data.type, { detail: data }));
           break;
 
@@ -3857,28 +3861,35 @@ export default function App({ initialView }: any = {}) {
   const chatPaneOpen = currentView === 'hub' && (hubPane === 'chat' || hubMobileTab === 'chat');
   const chatPaneOpenRef = useRef(chatPaneOpen);
   chatPaneOpenRef.current = chatPaneOpen;
-  // Messages announced since the Chat pane was last open. Drives the sidebar
-  // and Hub tab badges when push is not active.
-  const [chatAnnouncedSinceOpen, setChatAnnouncedSinceOpen] = useState(0);
+  // Messages announced since the Chat pane was last open, per space, so a later
+  // mute drops what that space already contributed. Drives the sidebar and Hub
+  // tab badges when push is not active.
+  const [chatAnnouncedSinceOpen, setChatAnnouncedSinceOpen] = useState<Record<string, number>>({});
   useEffect(() => {
-    if (chatPaneOpen) setChatAnnouncedSinceOpen(0);
+    if (chatPaneOpen) setChatAnnouncedSinceOpen({});
   }, [chatPaneOpen]);
+  const chatEnabled = !!googleStatus?.connected && chatConsent(googleStatus).canRead;
+  const chatUserId = getAuthRecord()?.user?.id || null;
+  useChatMutesSync(chatEnabled, chatUserId);
+  const chatMutes = useChatMutes();
   const googleChatBadge = chatBadgeCount(
     googleChatPush.pushActive,
-    totalUnread(googleChatPush.unread),
+    googleChatPush.unread,
     chatAnnouncedSinceOpen,
+    chatMutes,
   );
   useGoogleChatNotifications({
-    enabled: !!googleStatus?.connected && chatConsent(googleStatus).canRead,
+    ...chatNotifyGate(chatEnabled, chatMutes),
     pushActive: googleChatPush.pushActive,
-    userId: getAuthRecord()?.user?.id || null,
+    userId: chatUserId,
     isViewingSpace: (spaceId) =>
       chatPaneOpenRef.current &&
       document.visibilityState === 'visible' &&
       document.hasFocus() &&
       getOpenChatSpace() === spaceId,
     onNotify: (notice) => {
-      if (!chatPaneOpenRef.current) setChatAnnouncedSinceOpen((n) => n + notice.count);
+      if (!chatPaneOpenRef.current)
+        setChatAnnouncedSinceOpen((prev) => addAnnouncement(prev, notice));
       const more = notice.count > 1 ? ` (+${notice.count - 1} more)` : '';
       setToasts((prev: any) => [
         ...prev,

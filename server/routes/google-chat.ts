@@ -15,11 +15,14 @@ import {
   getChatDraft,
   getChatSettings,
   listChatDrafts,
+  getChatMuteList,
+  listMutedChatSpaces,
   markChatDraftSent,
   markChatDraftUnconfirmed,
   releaseChatDraftAfterRejection,
   OPEN_DRAFT_STATUSES,
   setChatSettings,
+  setChatSpaceMuted,
   updateChatDraftText,
   type GoogleChatDraft,
 } from '../google-chat-drafts-store.js';
@@ -45,6 +48,7 @@ import {
   hasChatReactionsScope,
   hasChatReadStateReadScope,
   hasChatReadStateWriteScope,
+  hasChatSpaceSettingsScope,
   hasChatSpacesReadScope,
 } from '../google-scopes.js';
 import { registerComponent, registerPath, z } from '../openapi/registry.js';
@@ -359,6 +363,39 @@ const ChatSettingsSchema = registerComponent(
       description:
         'When true, Chat messages posted from an agent session go out immediately. When false (the default) they are held as drafts for approval.',
     }),
+  }),
+);
+
+const ChatMutesSchema = registerComponent(
+  'GoogleChatMutes',
+  z.object({
+    spaceIds: z.array(z.string()).openapi({
+      description:
+        'Spaces the calling user muted in Agent Hub. Muted spaces raise no notifications and add nothing to unread badges.',
+    }),
+    revision: z.number().int().openapi({
+      description:
+        "Increases with every change to the user's mutes. Of two lists, the one with the higher revision is newer.",
+    }),
+  }),
+);
+
+const SetMuteBodySchema = z
+  .object({
+    muted: z.boolean().openapi({ description: 'True to mute the space, false to unmute it.' }),
+  })
+  .strict();
+
+const SetMuteResponseSchema = registerComponent(
+  'GoogleChatMuteResult',
+  ChatMutesSchema.extend({
+    spaceId: z.string(),
+    muted: z.boolean(),
+    googleSync: z.enum(['synced', 'not_granted', 'failed']).openapi({
+      description:
+        'Whether the mute was mirrored to Google Chat. `not_granted` means the `chat.users.spacesettings` scope is missing; `failed` means Google refused or was unreachable. The Hub mute is saved either way.',
+    }),
+    googleError: z.string().optional(),
   }),
 );
 
@@ -784,6 +821,36 @@ registerPath({
   },
 });
 
+registerPath({
+  method: 'get',
+  path: '/api/google/chat/mutes',
+  tags: ['Google'],
+  summary: 'List the Google Chat spaces the calling user muted',
+  responses: {
+    200: { description: 'Muted space ids.', content: jsonContent(ChatMutesSchema) },
+    401: errorResponse('Not authenticated.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/google/chat/spaces/{spaceId}/mute',
+  tags: ['Google'],
+  summary: 'Mute or unmute a Google Chat space for the calling user',
+  description:
+    'Saves the mute in Agent Hub and, when the account granted `chat.users.spacesettings`, mirrors it to the space notification setting in Google Chat.',
+  request: {
+    params: SpaceParamsSchema,
+    body: { content: jsonContent(SetMuteBodySchema), required: true },
+  },
+  responses: {
+    200: { description: 'Saved.', content: jsonContent(SetMuteResponseSchema) },
+    400: errorResponse('Invalid body or space id.'),
+    401: errorResponse('Not authenticated.'),
+    403: humanOnly,
+  },
+});
+
 interface GoogleErrorDetail {
   '@type'?: string;
   reason?: string;
@@ -966,6 +1033,55 @@ async function assertCanReadSpace(
   await chat.spaces.messages.list({ parent: spaceName, pageSize: 1 });
   if (spaceAccessCache.size >= MAX_SPACE_ACCESS_ENTRIES) spaceAccessCache.clear();
   spaceAccessCache.set(key, Date.now() + SPACE_ACCESS_TTL_MS);
+}
+
+/**
+ * PATCH users/me/spaces/{space}/spaceNotificationSetting?updateMask=muteSetting.
+ * The REST reference names the path parameter `spaceNotificationSetting.name`
+ * (the field it binds to). The Node client flattens that to `name`: its URL
+ * template is `/v1/{+name}` and `name` is its only required parameter.
+ */
+export async function patchSpaceMuteSetting(
+  chat: chat_v1.Chat,
+  spaceId: string,
+  muted: boolean,
+): Promise<void> {
+  const name = `users/me/spaces/${spaceId}/spaceNotificationSetting`;
+  await chat.users.spaces.spaceNotificationSetting.patch(
+    {
+      name,
+      updateMask: 'muteSetting',
+      requestBody: { name, muteSetting: muted ? 'MUTED' : 'UNMUTED' },
+    },
+    { timeout: CHAT_CALL_TIMEOUT_MS },
+  );
+}
+
+/**
+ * Best-effort copy of a Hub mute into Google Chat's own per-space setting.
+ * The Hub mute is already saved, so a failure here is reported, not raised.
+ */
+async function mirrorMuteToGoogle(
+  userId: string,
+  spaceId: string,
+  muted: boolean,
+  deps: RouteDeps,
+): Promise<{ googleSync: 'synced' | 'not_granted' | 'failed'; googleError?: string }> {
+  if (!deps.config.googleOAuth?.clientId || !deps.config.googleOAuth?.clientSecret) {
+    return { googleSync: 'not_granted' };
+  }
+  const status = getGoogleConnectionStatus(userId);
+  if (!status.connected || !hasChatSpaceSettingsScope(status.grantedScopes)) {
+    return { googleSync: 'not_granted' };
+  }
+  try {
+    const token = await getActiveAccessToken(userId, deps.config.googleOAuth);
+    if (!token) return { googleSync: 'failed', googleError: 'Google account must be reconnected' };
+    await patchSpaceMuteSetting(createChatClient(token), spaceId, muted);
+    return { googleSync: 'synced' };
+  } catch (err: unknown) {
+    return { googleSync: 'failed', googleError: extractGoogleError(err).error };
+  }
 }
 
 function createChatClient(accessToken: string): chat_v1.Chat {
@@ -2148,6 +2264,43 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
     const uid = requireUser(req, res);
     if (!uid) return;
     return res.json(setChatSettings(uid, body.data));
+  });
+
+  router.get('/api/google/chat/mutes', (req: Request, res: Response) => {
+    const uid = requireUser(req, res);
+    if (!uid) return;
+    return res.json(getChatMuteList(uid));
+  });
+
+  router.put('/api/google/chat/spaces/:spaceId/mute', async (req: Request, res: Response) => {
+    const params = SpaceParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      return bad(
+        res,
+        400,
+        params.error.issues[0]?.message || 'Invalid space id',
+        'invalid_request',
+      );
+    }
+    const body = SetMuteBodySchema.safeParse(req.body);
+    if (!body.success) {
+      return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
+    }
+    // Muting hides messages from the user, so an agent can't do it for them.
+    if (refuseAgentCaller(req, res)) return;
+    const uid = requireUser(req, res);
+    if (!uid) return;
+    const { spaceId } = params.data;
+    const muted = body.data.muted;
+    const list = setChatSpaceMuted(uid, spaceId, muted);
+    deps.broadcast?.({ type: 'google_chat_mutes', ownerUserId: uid, ...list });
+    // Mirrors for one space run one at a time, and each sends whatever is saved
+    // when it runs, so overlapping mute/unmute requests can't finish out of
+    // order and leave Google disagreeing with the Hub.
+    const googleResult = await serializeChatWrite(`mute:${uid}:${spaceId}`, () =>
+      mirrorMuteToGoogle(uid, spaceId, listMutedChatSpaces(uid).includes(spaceId), deps),
+    );
+    return res.json({ spaceId, muted, ...list, ...googleResult });
   });
 
   return router;

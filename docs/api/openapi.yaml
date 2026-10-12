@@ -7013,6 +7013,42 @@ components:
           description: When true, Chat messages posted from an agent session go out immediately. When false (the default) they are held as drafts for approval.
       required:
         - autoSendAgentReplies
+    GoogleChatMutes:
+      type: object
+      properties:
+        spaceIds:
+          type: array
+          items:
+            type: string
+          description: Spaces the calling user muted in Agent Hub. Muted spaces raise no notifications and add nothing to unread badges.
+        revision:
+          type: integer
+          description: Increases with every change to the user's mutes. Of two lists, the one with the higher revision is newer.
+      required:
+        - spaceIds
+        - revision
+    GoogleChatMuteResult:
+      allOf:
+        - $ref: "#/components/schemas/GoogleChatMutes"
+        - type: object
+          properties:
+            spaceId:
+              type: string
+            muted:
+              type: boolean
+            googleSync:
+              type: string
+              enum:
+                - synced
+                - not_granted
+                - failed
+              description: Whether the mute was mirrored to Google Chat. `not_granted` means the `chat.users.spacesettings` scope is missing; `failed` means Google refused or was unreachable. The Hub mute is saved either way.
+            googleError:
+              type: string
+          required:
+            - spaceId
+            - muted
+            - googleSync
     GoogleChatEventsErrorResponse:
       type: object
       properties:
@@ -33133,6 +33169,75 @@ paths:
                 $ref: "#/components/schemas/GoogleChatSettings"
         "400":
           description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Called from an agent session. Only the session owner can approve, edit, or discard drafts and change Chat settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/mutes:
+    get:
+      tags:
+        - Google
+      summary: List the Google Chat spaces the calling user muted
+      responses:
+        "200":
+          description: Muted space ids.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatMutes"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/spaces/{spaceId}/mute:
+    put:
+      tags:
+        - Google
+      summary: Mute or unmute a Google Chat space for the calling user
+      description: Saves the mute in Agent Hub and, when the account granted `chat.users.spacesettings`, mirrors it to the space notification setting in Google Chat.
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                muted:
+                  type: boolean
+                  description: True to mute the space, false to unmute it.
+              required:
+                - muted
+              additionalProperties: false
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatMuteResult"
+        "400":
+          description: Invalid body or space id.
           content:
             application/json:
               schema:

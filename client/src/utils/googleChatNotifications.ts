@@ -32,20 +32,6 @@ export interface ChatNotification {
   count: number;
 }
 
-/**
- * Unread count for Chat badges. With push active the push store tracks real
- * unread counts per space; without it, fall back to the messages the notifier
- * announced since the user last opened the Chat pane. Never sum the two: the
- * notifier also announces pushed messages, so that would double count.
- */
-export function chatBadgeCount(
-  pushActive: boolean,
-  pushUnread: number,
-  announcedSinceOpen: number,
-): number {
-  return pushActive ? pushUnread : announcedSinceOpen;
-}
-
 export interface ChatNotifierApi {
   listGoogleChatSpaces: (opts?: { pageSize?: number; pageToken?: string }) => Promise<any>;
   listGoogleChatMessages: (
@@ -60,6 +46,8 @@ export interface ChatNotifierDeps {
   getMyUserId: () => string | null;
   /** True while the user is looking at this space, so a notice would be noise. */
   isViewingSpace?: (spaceId: string) => boolean;
+  /** True when the user muted this space. Its messages are tracked but never announced. */
+  isMutedSpace?: (spaceId: string) => boolean;
   onNotify: (notice: ChatNotification) => void;
   now?: () => number;
 }
@@ -231,7 +219,8 @@ export function createChatNotifier(deps: ChatNotifierDeps): ChatNotifier {
         isFromOthers(m) && isAfter(m.createTime, st.cursor) && !st.announced.has(m.name as string),
     );
     for (const m of fresh) st.announced.set(m.name as string, m.createTime as string);
-    if (disposed || !fresh.length || deps.isViewingSpace?.(spaceId)) return;
+    if (disposed || !fresh.length) return;
+    if (deps.isViewingSpace?.(spaceId) || deps.isMutedSpace?.(spaceId)) return;
     const latest = fresh[fresh.length - 1];
     const space = spaces.get(spaceId);
     deps.onNotify({

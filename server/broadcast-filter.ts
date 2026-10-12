@@ -83,6 +83,7 @@ const GOOGLE_CHAT_USER_EVENT_TYPES = new Set([
   'google_chat_message',
   'google_chat_unread',
   'google_chat_events_status',
+  'google_chat_mutes',
 ]);
 const SESSION_READ_SCOPED_EVENT_TYPES = new Set(['session-event', 'session-progress']);
 

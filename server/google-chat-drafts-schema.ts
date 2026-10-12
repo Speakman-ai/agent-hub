@@ -57,4 +57,19 @@ export const GOOGLE_CHAT_DRAFTS_SCHEMA = `
     auto_send_agent_replies  INTEGER NOT NULL DEFAULT 0,
     updated_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
+
+  -- Conversations the user muted in the Hub: no notices, no badge counts.
+  CREATE TABLE IF NOT EXISTS google_chat_space_mutes (
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    space_id    TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (user_id, space_id)
+  );
+
+  -- Bumped on every mute change, so clients can tell which list is newest no
+  -- matter what order responses and pushes reach them in.
+  CREATE TABLE IF NOT EXISTS google_chat_mute_revisions (
+    user_id   TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    revision  INTEGER NOT NULL DEFAULT 0
+  );
 `;

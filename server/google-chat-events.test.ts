@@ -1353,5 +1353,8 @@ describe('broadcast filter for Chat events', () => {
     expect(shouldDeliverBroadcast({ type: 'google_chat_unread' }, stamp('u1'), filterDeps)).toBe(
       false,
     );
+    const mutes = { type: 'google_chat_mutes', ownerUserId: 'u1', spaceIds: ['S1'] };
+    expect(shouldDeliverBroadcast(mutes, stamp('u1'), filterDeps)).toBe(true);
+    expect(shouldDeliverBroadcast(mutes, stamp('u2'), filterDeps)).toBe(false);
   });
 });

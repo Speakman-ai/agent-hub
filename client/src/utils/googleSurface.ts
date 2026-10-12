@@ -151,6 +151,10 @@ export const CHAT_READSTATE_SCOPE = 'https://www.googleapis.com/auth/chat.users.
 export const CHAT_READSTATE_READONLY_SCOPE =
   'https://www.googleapis.com/auth/chat.users.readstate.readonly';
 
+// Optional: per-space notification settings, so muting a conversation here
+// also mutes it in Google Chat.
+export const CHAT_SPACE_SETTINGS_SCOPE = 'https://www.googleapis.com/auth/chat.users.spacesettings';
+
 export const CHAT_SURFACE_SCOPES = [
   CHAT_SPACES_READONLY_SCOPE,
   CHAT_MESSAGES_READONLY_SCOPE,
@@ -158,6 +162,7 @@ export const CHAT_SURFACE_SCOPES = [
   CHAT_MEMBERSHIPS_READONLY_SCOPE,
   CHAT_REACTIONS_SCOPE,
   CHAT_READSTATE_SCOPE,
+  CHAT_SPACE_SETTINGS_SCOPE,
 ];
 
 /** True when the account can list spaces AND read their messages. */
@@ -184,7 +189,9 @@ export type ChatConsent = {
   canReadState: boolean;
   /** Can mark conversations read in Google Chat. */
   canWriteReadState: boolean;
-  /** Scopes to request for reactions and read status. */
+  /** Can mirror mutes into Google Chat's own notification settings. */
+  canSyncMute: boolean;
+  /** Scopes to request for reactions, read status, and mute sync. */
   missingExtras: string[];
   /** Can edit your own messages (Google only accepts the full `chat.messages` scope). */
   canEdit: boolean;
@@ -209,6 +216,7 @@ export function chatConsent(status: GoogleStatusLike): ChatConsent {
     hasGoogleScope(status, CHAT_REACTIONS_SCOPE) || hasGoogleScope(status, CHAT_MESSAGES_SCOPE);
   const canWriteReadState = hasGoogleScope(status, CHAT_READSTATE_SCOPE);
   const canEdit = hasGoogleScope(status, CHAT_MESSAGES_SCOPE);
+  const canSyncMute = hasGoogleScope(status, CHAT_SPACE_SETTINGS_SCOPE);
   const canReadState = canWriteReadState || hasGoogleScope(status, CHAT_READSTATE_READONLY_SCOPE);
   const missingRead = [
     ...(hasSpaces ? [] : [CHAT_SPACES_READONLY_SCOPE]),
@@ -227,9 +235,11 @@ export function chatConsent(status: GoogleStatusLike): ChatConsent {
     canReact,
     canReadState,
     canWriteReadState,
+    canSyncMute,
     missingExtras: [
       ...(canReact ? [] : [CHAT_REACTIONS_SCOPE]),
       ...(canWriteReadState ? [] : [CHAT_READSTATE_SCOPE]),
+      ...(canSyncMute ? [] : [CHAT_SPACE_SETTINGS_SCOPE]),
     ],
     canEdit,
     missingEdit: canEdit ? [] : [CHAT_MESSAGES_SCOPE],
