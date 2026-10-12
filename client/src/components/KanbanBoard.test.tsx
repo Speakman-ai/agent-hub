@@ -546,7 +546,9 @@ describe('KanbanBoard reassign active session', () => {
     fireEvent.click(within(modal as any).getByRole('button', { name: /Reassign & Start/i }));
     // The card has no explicit auto_merge preference, so the assign omits the
     // field — letting the server fall back to the project auto-merge default.
-    await waitFor(() => expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-b', {}));
+    await waitFor(() =>
+      expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-b', { reopen: true }),
+    );
   });
 
   it('only offers agents from the current project in the assign dropdown', async () => {
@@ -634,6 +636,7 @@ describe('KanbanBoard reassign active session', () => {
     fireEvent.click(within(modal as any).getByRole('button', { name: /Reassign & Start/i }));
     await waitFor(() =>
       expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-b', {
+        reopen: true,
         model: 'claude-sonnet-4-20250514',
       }),
     );
@@ -968,6 +971,7 @@ describe('KanbanBoard Session engine dropdown', () => {
     fireEvent.click(within(modal as any).getByRole('button', { name: /Assign & Start/i }));
     await waitFor(() =>
       expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-a', {
+        reopen: true,
         model: 'gpt-5.3-codex',
         engine: 'codex-cli',
       }),
@@ -1005,7 +1009,10 @@ describe('KanbanBoard Session engine dropdown', () => {
     (api.assignCard as any).mockResolvedValueOnce({ sessionId: 'sess-m' });
     fireEvent.click(within(modal).getByRole('button', { name: /Assign & Start/i }));
     await waitFor(() =>
-      expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-a', { autoMerge: true }),
+      expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-a', {
+        autoMerge: true,
+        reopen: true,
+      }),
     );
   });
 
@@ -1040,7 +1047,10 @@ describe('KanbanBoard Session engine dropdown', () => {
     (api.assignCard as any).mockResolvedValueOnce({ sessionId: 'sess-t' });
     fireEvent.click(within(modal).getByRole('button', { name: /Assign & Start/i }));
     await waitFor(() =>
-      expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-a', { autoMerge: true }),
+      expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-a', {
+        autoMerge: true,
+        reopen: true,
+      }),
     );
   });
 
@@ -1682,6 +1692,53 @@ describe('KanbanBoard multi-select', () => {
     });
   });
 
+  it('bulk Assign lists each refused card and keeps the dialog open', async () => {
+    (api.getModelConfig as any).mockResolvedValue({
+      engineValidModels: { 'claude-code': ['claude-opus-4-8'] },
+    });
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([
+        { id: 'card-1', title: 'One', column_id: 'col-todo', position: 0 },
+        { id: 'card-2', title: 'Two', column_id: 'col-todo', position: 1 },
+      ]),
+    );
+    (api.assignCard as any).mockImplementation((_p: string, id: string) =>
+      id === 'card-2'
+        ? Promise.reject(
+            new Error('409: Card is in "Done". Pass "reopen": true to assign it again.'),
+          )
+        : Promise.resolve({ sessionId: 's1' }),
+    );
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' }]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('kanban-select-mode'));
+    fireEvent.click(screen.getByText('One'));
+    fireEvent.click(screen.getByText('Two'));
+    fireEvent.click(screen.getByTestId('kanban-bulk-assign'));
+
+    const dialog = await screen.findByTestId('kanban-bulk-assign-dialog');
+    fireEvent.change(within(dialog).getByTestId('kanban-bulk-agent-select'), {
+      target: { value: 'agent-a' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: /Assign & Start/i }));
+
+    const errors = await screen.findByTestId('kanban-bulk-assign-errors');
+    expect(errors).toHaveTextContent('1 card not assigned');
+    expect(errors).toHaveTextContent('Two');
+    expect(errors).toHaveTextContent('Pass "reopen": true');
+    expect(errors).not.toHaveTextContent('One');
+    expect(screen.getByTestId('kanban-bulk-assign-dialog')).toBeInTheDocument();
+  });
+
   it('column select-all toggles every visible card in that column', async () => {
     (api.getBoard as any).mockResolvedValue(
       makeBoard([
@@ -2064,7 +2121,9 @@ describe('KanbanBoard add card', () => {
 
     await waitFor(() => expect(api.assignCard).toHaveBeenCalledTimes(2));
     expect(api.createCard).toHaveBeenCalledTimes(1);
-    expect(api.assignCard).toHaveBeenLastCalledWith('p1', 'card-created', 'agent-a', {});
+    expect(api.assignCard).toHaveBeenLastCalledWith('p1', 'card-created', 'agent-a', {
+      reopen: true,
+    });
   });
 
   it('retries the PR URL update before assigning a created card', async () => {
@@ -2126,7 +2185,9 @@ describe('KanbanBoard add card', () => {
     });
     await waitFor(() => expect(api.assignCard).toHaveBeenCalledTimes(1));
     expect(api.createCard).toHaveBeenCalledTimes(1);
-    expect(api.assignCard).toHaveBeenLastCalledWith('p1', 'card-created', 'agent-a', {});
+    expect(api.assignCard).toHaveBeenLastCalledWith('p1', 'card-created', 'agent-a', {
+      reopen: true,
+    });
   });
 });
 

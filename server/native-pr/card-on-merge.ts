@@ -29,6 +29,7 @@ import { getOrCreateBoard } from '../routes/board.js';
 import { pickDoneColumn } from '../card-auto-close.js';
 import { buildNativePrUrl } from './url.js';
 import { maybeDispatchWikiDocOnMerge } from '../wiki-doc-session.js';
+import { closeResolvePrCardsOnMerge } from '../resolve-card-on-merge.js';
 
 export interface CardOnMergeDeps {
   stmts: Stmts;
@@ -105,6 +106,27 @@ export function handleCardOnMerge(
         }`,
       );
     }
+  }
+
+  // A "[Resolve PR #N]" session's own card is not the PR's linked card.
+  try {
+    const b = getOrCreateBoard(stmts, projectId);
+    closeResolvePrCardsOnMerge(
+      { stmts, broadcast },
+      {
+        projectId,
+        boardId: b.board.id,
+        columns: b.columns,
+        prNumber: pr.number,
+        excludeCardId: card?.id,
+      },
+    );
+  } catch (err: unknown) {
+    console.warn(
+      `[native-pr] Resolve PR card close failed for ${projectId}#${pr.number}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 
   // Legacy type name on purpose — the push-notification bridge in

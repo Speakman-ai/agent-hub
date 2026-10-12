@@ -742,12 +742,10 @@ export default function KanbanCardDetailModal({
                                   );
                                 }
 
-                                const result = await api.assignCard(
-                                  projectId,
-                                  cardId,
-                                  agent.id,
-                                  assignOpts,
-                                );
+                                const result = await api.assignCard(projectId, cardId, agent.id, {
+                                  ...assignOpts,
+                                  reopen: true,
+                                });
                                 closeDetail();
                                 setShowReassign(false);
                                 onRefresh?.();

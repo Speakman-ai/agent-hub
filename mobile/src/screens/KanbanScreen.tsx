@@ -706,7 +706,10 @@ export default function KanbanScreen({ route, navigation }: any) {
       if (editAssignModel.trim()) assignOpts.model = editAssignModel.trim();
       if (editAssignEngine.trim()) assignOpts.engine = editAssignEngine.trim();
       if (editAssignComment.trim()) assignOpts.comment = editAssignComment.trim();
-      const result = await api.assignCard(projectId, selectedCard.id, agent.id, assignOpts);
+      const result = await api.assignCard(projectId, selectedCard.id, agent.id, {
+        ...assignOpts,
+        reopen: true,
+      });
       setSelectedCard(null);
       setShowReassign(false);
       await loadBoard();
@@ -837,7 +840,7 @@ export default function KanbanScreen({ route, navigation }: any) {
   const quickAssign = useCallback(
     async (card: any, agentId: any, agentName: any) => {
       try {
-        const result = await api.assignCard(projectId, card.id, agentId);
+        const result = await api.assignCard(projectId, card.id, agentId, { reopen: true });
         await loadBoard();
         const newSessionId = assignedSessionId(result);
         if (newSessionId && navigation) {

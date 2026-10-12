@@ -1,4 +1,11 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+
+// The harness has no acting user, so the assign route's engine-credential
+// pre-check would 409 every request. Tests that cover that check stub it back.
+vi.mock('../per-user-cli-spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../per-user-cli-spawn.js')>();
+  return { ...actual, assertEngineCredsOrThrow: vi.fn() };
+});
 import type supertest from 'supertest';
 
 /** Hoisted so `vi.mock` factory can attach a stable spy before `../index.js` loads. */
@@ -429,3 +436,38 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/unassign', () => {
 // Verified via config.test.ts plus source: chat.ts sets base.AGENT_HUB_URL from
 // resolveAgentHubApiBaseForSpawn(config) and base.PROJECT_ID before `return base`
 // in the spawn env builder.
+
+describe('POST /assign on a card that already shipped', () => {
+  it('refuses a card sitting in Done unless reopen is set', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const columns = boardRes.body.columns as Array<{ id: string; name: string }>;
+    const done = columns.find((c) => c.name === 'Done');
+    expect(done).toBeDefined();
+    const card = await createCard(projectId, { title: 'Already shipped', columnId: done!.id });
+    const cardId = card.id as string;
+
+    const refused = await request
+      .post(`/api/projects/${projectId}/board/cards/${cardId}/assign`)
+      .send({ agentId: agent.id })
+      .expect(409);
+    expect(refused.body.error).toBe('card_already_done');
+
+    // Nothing moved and no session was linked.
+    const cardsRes = await request.get(`/api/projects/${projectId}/board/cards`).expect(200);
+    const after = (
+      cardsRes.body as Array<{ id: string; column_id: string; session_id: string | null }>
+    ).find((c) => c.id === cardId);
+    expect(after?.column_id).toBe(done!.id);
+    expect(after?.session_id).toBeFalsy();
+
+    const reopened = await request
+      .post(`/api/projects/${projectId}/board/cards/${cardId}/assign`)
+      .send({ agentId: agent.id, reopen: true })
+      .expect(200);
+    expect(reopened.body.card.session_id).toBe(reopened.body.sessionId);
+    expect(reopened.body.card.column_id).not.toBe(done!.id);
+  });
+});

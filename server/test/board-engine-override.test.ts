@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
+
+// The harness has no acting user, so the assign route's engine-credential
+// pre-check would 409 every request. Tests that cover that check stub it back.
+vi.mock('../per-user-cli-spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../per-user-cli-spawn.js')>();
+  return { ...actual, assertEngineCredsOrThrow: vi.fn() };
+});
 import type supertest from 'supertest';
 import { getRequest, createProject, createAgent, createCard } from './helpers.js';
 

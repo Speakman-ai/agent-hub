@@ -19,6 +19,8 @@
  *   - the card is linked to a session with a worktree,
  *   - that worktree is Finalize-gated (`.agent-hub/ci.yaml` present),
  *   - the session has not pushed through Finalize yet,
+ *   - the card's linked native PR has not merged (a merged PR already is
+ *     the "Done means merged" signal, e.g. after something reopened the card),
  *   - the caller did not pass `force: true` (operator escape hatch).
  *
  * Cancelled/other columns, unlinked cards, non-gated projects, and
@@ -39,9 +41,13 @@
 import { isColumnDone } from './kanban-blockers.js';
 import { hasPushedFinalizeRun } from './finalize/post-push-session-lock.js';
 import { worktreeHasFinalizeCi } from './finalize/worktree-has-ci.js';
-import type { KanbanCardRow, SessionRow, Stmts } from './types.js';
+import { parseNativePrUrl } from './native-pr/url.js';
+import type { KanbanCardRow, PullRequestRow, SessionRow, Stmts } from './types.js';
 
 export const PREMATURE_DONE_ERROR = 'premature_done_move';
+
+/** `/assign` refusal for a card that already shipped (Done column or merged PR). */
+export const CARD_ALREADY_DONE_ERROR = 'card_already_done';
 
 export const PREMATURE_DONE_MESSAGE =
   'Done is written on merge for Finalize-gated sessions. Leave this card in ' +
@@ -49,8 +55,9 @@ export const PREMATURE_DONE_MESSAGE =
   'Pass "force": true to override (operator escape hatch).';
 
 export interface PrematureDoneMoveArgs {
-  stmts: Pick<Stmts, 'getSession' | 'getPushedFinalizeRunForSession'>;
-  card: Pick<KanbanCardRow, 'session_id'>;
+  stmts: Pick<Stmts, 'getSession' | 'getPushedFinalizeRunForSession'> &
+    Partial<Pick<Stmts, 'getPullRequestByNumber'>>;
+  card: Pick<KanbanCardRow, 'session_id'> & { pr_url?: string | null };
   /** Name of the column the move targets. */
   targetColumnName: string;
   /** Explicit override from the request body — skips the guard entirely. */
@@ -64,6 +71,8 @@ export function blocksPrematureDoneMove(args: PrematureDoneMoveArgs): boolean {
   if (args.force === true) return false;
   if (!isColumnDone(args.targetColumnName)) return false;
   if (!args.card.session_id) return false;
+  const getPr = args.stmts.getPullRequestByNumber;
+  if (getPr && cardLinkedPrMerged({ getPullRequestByNumber: getPr }, args.card)) return false;
 
   const session = args.stmts.getSession.get(args.card.session_id) as SessionRow | undefined;
   if (!session?.worktree_path) return false;
@@ -72,4 +81,20 @@ export function blocksPrematureDoneMove(args: PrematureDoneMoveArgs): boolean {
   if (!hasCi(session.worktree_path)) return false;
 
   return !hasPushedFinalizeRun(args.stmts, args.card.session_id);
+}
+
+/**
+ * True when the card's `pr_url` points at a native PR that has merged. Only
+ * native (Hub-hosted) PRs are checked; GitHub URLs would need a network call.
+ */
+export function cardLinkedPrMerged(
+  stmts: Pick<Stmts, 'getPullRequestByNumber'>,
+  card: { pr_url?: string | null },
+): boolean {
+  const ref = parseNativePrUrl(card.pr_url);
+  if (!ref) return false;
+  const pr = stmts.getPullRequestByNumber.get(ref.projectId, ref.number) as
+    | PullRequestRow
+    | undefined;
+  return pr?.status === 'merged';
 }

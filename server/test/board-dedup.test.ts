@@ -1,5 +1,13 @@
+import { vi } from 'vitest';
 import type supertest from 'supertest';
 import { getRequest, createProject, createAgent, createCard } from './helpers.js';
+
+// These tests cover assign behavior, not engine credentials; the real
+// ownerless refusal is covered in board-assign-engine-auth.test.ts.
+vi.mock('../per-user-cli-spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../per-user-cli-spawn.js')>();
+  return { ...actual, assertEngineCredsOrThrow: vi.fn() };
+});
 
 let request: supertest.Agent;
 let projectId: string;

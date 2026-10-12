@@ -1012,3 +1012,64 @@ describe('agent-hub deterministic script wrappers — shape', () => {
 function fsMkdir(p: string): void {
   mkdirSync(p, { recursive: true, mode: 0o700 });
 }
+
+describe('session header is sent once', () => {
+  async function captureSessionHeader(
+    script: string,
+    args: string[],
+    env: Record<string, string>,
+  ): Promise<{ status: number | null; stderr: string; raw: string[] }> {
+    let raw: string[] = [];
+    const server = http.createServer((req, res) => {
+      if (req.method === 'GET') {
+        // Column-name resolution for kanban-create-card.sh.
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ board: { id: 'b' }, columns: [{ id: 'col-1', name: 'To Do' }] }));
+        return;
+      }
+      raw = [];
+      for (let i = 0; i < req.rawHeaders.length; i += 2) {
+        if (req.rawHeaders[i].toLowerCase() === 'x-agent-hub-session-id') {
+          raw.push(req.rawHeaders[i + 1]);
+        }
+      }
+      req.resume();
+      req.on('end', () => {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ id: 'card-1' }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const result = await spawnAsync(path.join(DEFAULT_SCRIPTS, script), args, {
+        ...process.env,
+        AGENT_HUB_URL: `http://127.0.0.1:${port}`,
+        AGENT_HUB_API_KEY: 'test-key',
+        PROJECT_ID: 'proj-x',
+        ...env,
+      });
+      return { status: result.status, stderr: result.stderr, raw };
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  it('board.sh create does not duplicate X-Agent-Hub-Session-Id', async () => {
+    const r = await captureSessionHeader('board.sh', ['create', '{"title":"t","columnId":"c"}'], {
+      AGENT_HUB_SESSION_ID: 'sess-1',
+    });
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.raw).toEqual(['sess-1']);
+  });
+
+  it('kanban-create-card.sh --session-id wins over the env session, sent once', async () => {
+    const r = await captureSessionHeader(
+      'kanban-create-card.sh',
+      ['--title', 't', '--column', 'To Do', '--session-id', 'sess-explicit'],
+      { AGENT_HUB_SESSION_ID: 'sess-env' },
+    );
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.raw).toEqual(['sess-explicit']);
+  });
+});

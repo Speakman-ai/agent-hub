@@ -2,6 +2,13 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import supertest from 'supertest';
 import { describe, it, expect, vi } from 'vitest';
+
+// The harness has no acting user, so the assign route's engine-credential
+// pre-check would 409 every request. Tests that cover that check stub it back.
+vi.mock('../per-user-cli-spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../per-user-cli-spawn.js')>();
+  return { ...actual, assertEngineCredsOrThrow: vi.fn() };
+});
 import createBoardRoutes from '../routes/board.js';
 import type { RouteDeps, Project, KanbanCardRow, KanbanEpicSpecItemRow } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -57,6 +64,8 @@ function buildApp(card: Partial<KanbanCardRow>, specItem?: KanbanEpicSpecItemRow
     updateSessionSpikeCard,
     getKanbanBoard: { get: () => ({ id: 'board-1' }) },
     getKanbanColumns: { all: () => [{ id: 'col-prog', name: 'In Progress' }] },
+    getKanbanColumn: { get: () => ({ id: 'col-todo', name: 'To Do' }) },
+    getPullRequestByNumber: { get: () => undefined },
     updateKanbanCard: noop,
     moveKanbanCard: noop,
     setKanbanCardAssignedUser: noop,

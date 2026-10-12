@@ -1594,6 +1594,9 @@ export const api = {
     if (typeof opts.autoMerge === 'boolean') body.autoMerge = opts.autoMerge;
     if (opts.comment != null && String(opts.comment).trim())
       body.comment = String(opts.comment).trim();
+    // Required by the server to re-assign a card that already shipped (Done
+    // column or merged PR). Single-card actions send it; bulk assign does not.
+    if (opts.reopen === true) body.reopen = true;
     return fetchJSON(`/projects/${projectId}/board/cards/${cardId}/assign`, {
       method: 'POST',
       body: JSON.stringify(body),

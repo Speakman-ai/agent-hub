@@ -1,3 +1,4 @@
+import { vi } from 'vitest';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import supertest from 'supertest';
 import { v4 as uuidv4 } from 'uuid';
@@ -11,6 +12,13 @@ import { getStmts } from '../db.js';
 import { setSessionOwner } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps } from '../types.js';
+
+// These tests cover assign behavior, not engine credentials; the real
+// ownerless refusal is covered in board-assign-engine-auth.test.ts.
+vi.mock('../per-user-cli-spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../per-user-cli-spawn.js')>();
+  return { ...actual, assertEngineCredsOrThrow: vi.fn() };
+});
 
 let request: Awaited<ReturnType<typeof getRequest>>;
 let projectId: string;

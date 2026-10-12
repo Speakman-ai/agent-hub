@@ -21233,7 +21233,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/KanbanCard"
         "400":
-          description: Validation failed.
+          description: Validation failed, or the session id (body `sessionId` or `X-Agent-Hub-Session-Id`) names more than one session.
           content:
             application/json:
               schema:
@@ -21360,7 +21360,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/KanbanCard"
         "400":
-          description: Validation failed.
+          description: Validation failed, or `sessionId` names more than one session.
           content:
             application/json:
               schema:
@@ -21485,6 +21485,9 @@ paths:
                   nullable: true
                   maxLength: 4000
                   description: Optional assignment note (max 4000 characters). Recorded as a comment on the card and prepended to the agent's task context so the assignee sees the instructions.
+                reopen:
+                  type: boolean
+                  description: Required to assign a card that already shipped (it sits in a Done column, or its linked native PR is merged). Without it those cards get 409 `card_already_done`, so a stray assign cannot pull merged work back to In Progress.
               required:
                 - agentId
       responses:
@@ -21510,6 +21513,12 @@ paths:
                 $ref: "#/components/schemas/BoardErrorResponse"
         "404":
           description: Card, agent, or project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "409":
+          description: "`card_already_done`: the card is in a Done column or its linked PR is merged, and `reopen` was not set. `code: no_account_credentials`: the resolved engine needs CLI credentials belonging to the caller and there are none (for example an API-key call with no acting user). Nothing is written in either case."
           content:
             application/json:
               schema:

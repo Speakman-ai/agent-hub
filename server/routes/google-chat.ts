@@ -33,7 +33,7 @@ import {
   recordSessionChatPost,
   sessionExists,
 } from '../google-chat-message-links-store.js';
-import { AGENT_HUB_SESSION_ID_HEADER } from '../kanban-caller-session.js';
+import { readSessionIdHeader } from '../kanban-caller-session.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import {
   CHAT_MESSAGES_CREATE_SCOPE,
@@ -1395,8 +1395,7 @@ export function sendGoogleError(res: Response, err: unknown): Response {
 export function agentSessionIdFromRequest(req: Request): string | null {
   const bound = (req as AuthenticatedRequest).authSpawnSessionId?.trim();
   if (bound) return bound;
-  const header = req.get(AGENT_HUB_SESSION_ID_HEADER)?.trim();
-  return header || null;
+  return readSessionIdHeader(req);
 }
 
 function refuseAgentCaller(req: Request, res: Response): boolean {

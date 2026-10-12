@@ -790,6 +790,10 @@ export const AssignCardRequestSchema = z.object({
     .openapi({
       description: `Optional assignment note (max ${MAX_ASSIGNMENT_COMMENT_LEN} characters). Recorded as a comment on the card and prepended to the agent's task context so the assignee sees the instructions.`,
     }),
+  reopen: z.boolean().optional().openapi({
+    description:
+      'Required to assign a card that already shipped (it sits in a Done column, or its linked native PR is merged). Without it those cards get 409 `card_already_done`, so a stray assign cannot pull merged work back to In Progress.',
+  }),
 });
 
 // OpenAPI path registrations
@@ -929,7 +933,9 @@ registerPath({
   },
   responses: {
     200: { description: 'Card.', content: jsonContent(KanbanCardComponent) },
-    400: errorResponse('Validation failed.'),
+    400: errorResponse(
+      'Validation failed, or the session id (body `sessionId` or `X-Agent-Hub-Session-Id`) names more than one session.',
+    ),
     404: errorResponse('Project or column not found.'),
   },
 });
@@ -948,7 +954,7 @@ registerPath({
   },
   responses: {
     200: { description: 'Updated card.', content: jsonContent(KanbanCardComponent) },
-    400: errorResponse('Validation failed.'),
+    400: errorResponse('Validation failed, or `sessionId` names more than one session.'),
     404: errorResponse('Card, project, or referenced epic not found.'),
   },
 });
@@ -1000,6 +1006,9 @@ registerPath({
     },
     400: errorResponse('Validation failed or model invalid for engine.'),
     404: errorResponse('Card, agent, or project not found.'),
+    409: errorResponse(
+      '`card_already_done`: the card is in a Done column or its linked PR is merged, and `reopen` was not set. `code: no_account_credentials`: the resolved engine needs CLI credentials belonging to the caller and there are none (for example an API-key call with no acting user). Nothing is written in either case.',
+    ),
   },
 });
 

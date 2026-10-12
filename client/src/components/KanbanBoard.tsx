@@ -610,7 +610,35 @@ function KanbanBulkActionBar({
   );
 }
 
-function BulkAssignDialog({ count, agents, modelConfig, busy, onClose, onAssign }: any) {
+/** Per-card failures from a settled bulk assign, in selection order. */
+export function bulkAssignFailures(
+  ids: string[],
+  results: PromiseSettledResult<unknown>[],
+  cards: Array<{ id: string; title?: string }>,
+): Array<{ id: string; title: string; message: string }> {
+  const out: Array<{ id: string; title: string; message: string }> = [];
+  results.forEach((r, i) => {
+    if (r.status !== 'rejected') return;
+    const id = ids[i];
+    const reason = r.reason as { message?: unknown } | undefined;
+    out.push({
+      id,
+      title: cards.find((c) => c.id === id)?.title || id,
+      message: typeof reason?.message === 'string' ? reason.message : String(r.reason),
+    });
+  });
+  return out;
+}
+
+function BulkAssignDialog({
+  count,
+  agents,
+  modelConfig,
+  busy,
+  errors = [],
+  onClose,
+  onAssign,
+}: any) {
   const [agentId, setAgentId] = useState('');
   const [assignEngine, setAssignEngine] = useState('');
   const [assignModel, setAssignModel] = useState('');
@@ -748,6 +776,25 @@ function BulkAssignDialog({ count, agents, modelConfig, busy, onClose, onAssign 
             Auto-merge
           </label>
         </div>
+
+        {errors.length > 0 ? (
+          <div
+            role="alert"
+            data-testid="kanban-bulk-assign-errors"
+            className="mx-4 mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200"
+          >
+            <p className="font-medium">
+              {errors.length} card{errors.length === 1 ? '' : 's'} not assigned:
+            </p>
+            <ul className="mt-1 space-y-1">
+              {errors.map((e: any) => (
+                <li key={e.id}>
+                  <span className="font-medium">{e.title}</span>: {e.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
         <div className="flex justify-end gap-2 border-t border-white/[0.08] px-4 py-3">
           <button
@@ -997,6 +1044,9 @@ export default function KanbanBoard({
   const selectionAnchorRef = useRef<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
+  const [bulkAssignErrors, setBulkAssignErrors] = useState<
+    Array<{ id: string; title: string; message: string }>
+  >([]);
 
   const selectedCount = selectedCardIds.size;
   const showSelectionUi = selectionMode || selectedCount > 0;
@@ -1760,13 +1810,21 @@ export default function KanbanBoard({
           : card,
       ),
     );
+    setBulkAssignErrors([]);
     try {
-      await Promise.all(ids.map((id) => api.assignCard(projectId, id, agent.id, opts)));
-      setBulkAssignOpen(false);
-      clearSelection();
-      reconcileBoard();
-    } catch (err: any) {
-      console.error('Bulk assign failed:', err);
+      // Settle every card: one refusal (e.g. a card that already shipped, or
+      // missing engine credentials) must not hide which others succeeded.
+      const results = await Promise.allSettled(
+        ids.map((id) => api.assignCard(projectId, id, agent.id, opts)),
+      );
+      const failures = bulkAssignFailures(ids, results, cards);
+      if (failures.length === 0) {
+        setBulkAssignOpen(false);
+        clearSelection();
+      } else {
+        setSelectedCardIds(new Set(failures.map((f) => f.id)));
+        setBulkAssignErrors(failures);
+      }
       reconcileBoard();
     } finally {
       setBulkBusy(false);
@@ -1866,7 +1924,7 @@ export default function KanbanBoard({
   const quickAssign = async (card: any, agent: any) => {
     if (!agent) return;
     try {
-      const result = await api.assignCard(projectId, card.id, agent.id);
+      const result = await api.assignCard(projectId, card.id, agent.id, { reopen: true });
       reconcileBoard();
       if (onNavigateToSession && result?.sessionId) {
         onNavigateToSession(agent.id, result.sessionId);
@@ -2511,7 +2569,11 @@ export default function KanbanBoard({
           agents={projectAgents}
           modelConfig={modelConfig}
           busy={bulkBusy}
-          onClose={() => setBulkAssignOpen(false)}
+          errors={bulkAssignErrors}
+          onClose={() => {
+            setBulkAssignOpen(false);
+            setBulkAssignErrors([]);
+          }}
           onAssign={bulkAssign}
         />
       ) : null}

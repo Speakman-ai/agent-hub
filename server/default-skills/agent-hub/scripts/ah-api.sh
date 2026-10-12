@@ -141,7 +141,16 @@ ah_api() {
   # session owner (kanban card linking, native PR author) can resolve it even
   # when the request authenticates with the global break-glass apiKey, which
   # carries no per-user identity. Harmless on routes that ignore the header.
-  if [[ -n "${AGENT_HUB_SESSION_ID:-}" ]]; then
+  # Skip it when the caller already passed one (board.sh / kanban-create-card.sh
+  # do): curl would send the header twice and Node joins the copies into
+  # "id, id", which then gets stored as the card's session_id.
+  local caller_sent_session=0 arg
+  for arg in "$@"; do
+    shopt -s nocasematch
+    [[ "$arg" == X-Agent-Hub-Session-Id:* ]] && caller_sent_session=1
+    shopt -u nocasematch
+  done
+  if [[ -n "${AGENT_HUB_SESSION_ID:-}" && "$caller_sent_session" -eq 0 ]]; then
     auth_args+=(-H "X-Agent-Hub-Session-Id: $AGENT_HUB_SESSION_ID")
   fi
 

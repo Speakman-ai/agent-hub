@@ -27,9 +27,12 @@ import {
   loadBlockersForCards,
   isSystemLockedColumnName,
   isColumnNotStarted,
+  isColumnDone,
 } from '../kanban-blockers.js';
 import {
   blocksPrematureDoneMove,
+  cardLinkedPrMerged,
+  CARD_ALREADY_DONE_ERROR,
   PREMATURE_DONE_ERROR,
   PREMATURE_DONE_MESSAGE,
 } from '../kanban-premature-done.js';
@@ -46,7 +49,13 @@ import {
   decodeCardCursor,
   encodeCardCursor,
 } from '../kanban-pagination.js';
-import { maybeRenameSessionForLinkedCard, resolveCardSessionId } from '../kanban-caller-session.js';
+import {
+  cardSessionIdConflicts,
+  collapseSessionIdList,
+  isSingleSessionId,
+  maybeRenameSessionForLinkedCard,
+  resolveCardSessionId,
+} from '../kanban-caller-session.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { isAgentHubHosted } from '../native-pr/host.js';
 import { prsForEpicFeatureBranch } from '../native-pr/epic-branch-link.js';
@@ -91,6 +100,8 @@ import {
   markSupportTicketsFixedPendingReleaseForCard,
 } from '../support-tickets-store.js';
 import { buildAssignedCardSessionContext } from '../assign-card-context.js';
+import { assertEngineCredsOrThrow, EngineAuthRequiredError } from '../per-user-cli-spawn.js';
+import { restoreCardAfterFailedAssign } from '../kanban-assign-restore.js';
 import { loadCardSupportTicketCommentContext } from '../support-ticket-comment-context.js';
 import {
   buildSpikeSessionContext,
@@ -1116,6 +1127,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     } = parsed;
     // Merge header / spawn-creds fallbacks before dedup and intake gating so
     // both guards see the same resolved session id (not just the Zod body).
+    if (cardSessionIdConflicts(req, bodySessionId)) {
+      return res.status(400).json({ error: 'sessionId must be a single session id' });
+    }
     const sessionId = resolveCardSessionId(req, bodySessionId);
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
 
@@ -1371,7 +1385,15 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       nextPhaseId = null;
     }
 
-    const effectiveSessionId: string | null | undefined = sessionId;
+    // One card, one session: collapse a doubled "id, id" and refuse a list.
+    let effectiveSessionId: string | null | undefined = sessionId;
+    if (typeof sessionId === 'string') {
+      const collapsed = collapseSessionIdList(sessionId);
+      if (collapsed !== null && !isSingleSessionId(collapsed)) {
+        return res.status(400).json({ error: 'sessionId must be a single session id' });
+      }
+      effectiveSessionId = collapsed;
+    }
     // Normalize agent.id → agent.name on update too, but only when the
     // caller is explicitly setting `assignee`. If the key isn't present in
     // the payload we leave the value untouched (no normalization sweep).
@@ -1619,7 +1641,30 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         engine: engineBody,
         autoMerge: autoMergeBody,
         comment: commentBody,
+        reopen,
       } = parsedAssign;
+
+      // A card that already shipped must not be pulled back to In Progress
+      // and handed a fresh session by a stray assign: the old session link is
+      // overwritten and, if the spawn then fails, the card is left stuck.
+      // Reopening shipped work is a deliberate act, so it needs `reopen`.
+      if (reopen !== true) {
+        const currentColumn = stmts.getKanbanColumn.get(card.column_id) as
+          | KanbanColumnRow
+          | undefined;
+        if (isColumnDone(currentColumn?.name)) {
+          return res.status(409).json({
+            error: CARD_ALREADY_DONE_ERROR,
+            message: `Card is in "${currentColumn?.name}". Pass "reopen": true to assign it again.`,
+          });
+        }
+        if (cardLinkedPrMerged(stmts, card)) {
+          return res.status(409).json({
+            error: CARD_ALREADY_DONE_ERROR,
+            message: `Card's linked PR (${card.pr_url}) is already merged. Pass "reopen": true to assign it again.`,
+          });
+        }
+      }
 
       const found = findAgent(agentId);
       if (!found) return res.status(404).json({ error: 'Agent not found' });
@@ -1665,6 +1710,17 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         // will use codex-cli.
         const v = validateKanbanAssignModelForEngine(trimmedOverride, engine, config);
         if (!v.ok) return res.status(400).json({ error: v.error });
+      }
+      // The spawn runs on the session owner's own engine credentials and
+      // hard-fails without them. Check before creating the session or touching
+      // the card, so a failed assign leaves the board exactly as it was.
+      try {
+        assertEngineCredsOrThrow(engine, assignOwnerUid, config.dataDir);
+      } catch (err) {
+        if (err instanceof EngineAuthRequiredError) {
+          return res.status(409).json({ error: err.message, code: 'no_account_credentials' });
+        }
+        throw err;
       }
       // Resolve the auto-merge preference for this assignment. An explicit
       // boolean in the request body wins; otherwise fall back to whatever the
@@ -1826,6 +1882,13 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
       }).catch((err: Error) => {
         console.error(`[Board Assign] handleChat failed for session ${sessionId}:`, err.message);
+        restoreCardAfterFailedAssign(stmts, broadcast, {
+          before: card,
+          sessionId,
+          assignedColumnId: inProgressColumnId,
+          projectId: req.params.projectId as string,
+          reason: err.message,
+        });
         broadcast({
           type: 'error',
           agentId,

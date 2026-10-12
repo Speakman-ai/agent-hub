@@ -49,7 +49,8 @@ import {
   sweepBrowserScreenshotStore,
 } from './browser-screenshot-store.js';
 import config from './config.js';
-import type { Project, Stmts } from './types.js';
+import type { BroadcastFn, Project, Stmts } from './types.js';
+import { syncLinkedCardToSessionStatus } from './session-card-status.js';
 import {
   createFirecrackerHostIo,
   resolveFirecrackerExecConfig,
@@ -83,6 +84,8 @@ export interface PurgeDeps {
    * disks on disk with no row left to retry. Injectable for tests.
    */
   forgetPersistedFirecrackerDisks?: (sessionId: string) => Promise<void>;
+  /** Board update fan-out for the linked-card sync. Defaults to a no-op. */
+  broadcast?: BroadcastFn;
 }
 
 export interface PurgeResult {
@@ -178,6 +181,20 @@ export async function purgeExpiredArchivedSessions(
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[Purge] removeWorkspace(${row.worktree_path}) threw:`, message);
       }
+    }
+
+    // Archive already ran this sync, but rows archived before it existed (or
+    // whose sync failed) still have an open card. Close it before the session
+    // disappears, or the card is left In Progress on a session that is gone.
+    try {
+      syncLinkedCardToSessionStatus(
+        { stmts, broadcast: deps.broadcast ?? (() => {}) },
+        row.id,
+        'closed',
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[Purge] linked-card sync for ${row.id} failed:`, message);
     }
 
     try {

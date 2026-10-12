@@ -35,6 +35,7 @@ import type { PreviewSetupApplySecrets } from '../preview-setup-apply.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, Project, SessionRow } from '../types.js';
 import type { PreviewRuntimeActiveLookup } from '../preview/preview-runtime-lookup.js';
+import { readSessionIdHeader } from '../kanban-caller-session.js';
 
 interface DevServerApplyBody {
   /** The authored `prEnv.devServer` block (validated by parseDevServerConfig). */
@@ -332,7 +333,7 @@ export default function createDevServerWizardRoutes(deps: RouteDeps): Router {
     (req: Request, res: Response) => {
       const project = findProject(req.params.projectId as string);
       const body = (req.body ?? {}) as { sessionId?: unknown };
-      const headerSession = req.get('x-agent-hub-session-id');
+      const headerSession = readSessionIdHeader(req);
       const sessionId =
         typeof body.sessionId === 'string' && body.sessionId
           ? body.sessionId

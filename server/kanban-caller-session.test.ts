@@ -1,10 +1,39 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   AGENT_HUB_SESSION_ID_HEADER,
+  collapseSessionIdList,
   maybeRenameSessionForLinkedCard,
   resolveCardSessionId,
 } from './kanban-caller-session.js';
 import type { Stmts } from './types.js';
+
+describe('duplicated session header', () => {
+  const reqWith = (value: string, spawn?: string) =>
+    ({
+      get: (name: string) =>
+        name.toLowerCase() === AGENT_HUB_SESSION_ID_HEADER ? value : undefined,
+      authSpawnSessionId: spawn,
+    }) as unknown as import('express').Request;
+
+  it('collapses a header Node joined from two identical copies', () => {
+    expect(resolveCardSessionId(reqWith('s1, s1'), undefined)).toBe('s1');
+  });
+
+  it('never links conflicting ids; falls back to the spawn identity', () => {
+    expect(resolveCardSessionId(reqWith('s1, s2'), undefined)).toBeNull();
+    expect(resolveCardSessionId(reqWith('s1, s2', 'spawn-1'), undefined)).toBe('spawn-1');
+  });
+
+  it('collapses a doubled body value too', () => {
+    expect(resolveCardSessionId(reqWith(''), 's1, s1')).toBe('s1');
+  });
+
+  it('collapseSessionIdList keeps conflicting ids joined and blanks to null', () => {
+    expect(collapseSessionIdList(' a ,a')).toBe('a');
+    expect(collapseSessionIdList('a, b, a')).toBe('a, b');
+    expect(collapseSessionIdList(' , ')).toBeNull();
+  });
+});
 
 describe('resolveCardSessionId', () => {
   const headerReq = {

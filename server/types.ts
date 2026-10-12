@@ -2470,6 +2470,7 @@ export interface Stmts {
   getCardAutofixDispatchCount: Stmt;
   reassignCardToSession: Stmt;
   getKanbanCardBySession: Stmt;
+  listResolvePrCards: Stmt;
   getKanbanCardByLogIssueSource: Stmt;
   getSessionIdsByWorktreeBranch: Stmt;
   getKanbanCardByPrUrl: Stmt;

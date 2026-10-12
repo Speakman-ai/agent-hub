@@ -254,3 +254,41 @@ describe('handleCardOnMerge — Done means merged, not pushed', () => {
     });
   });
 });
+
+describe('handleCardOnMerge — Resolve PR cards', () => {
+  it('also closes the card a [Resolve PR #N] session filed, by title or by session name', () => {
+    const projectId = `np-resolve-${uuidv4().slice(0, 8)}`;
+    const board = getOrCreateBoard(stmts, projectId);
+    const cols = board.columns as KanbanColumnRow[];
+    const done = cols.find((c) => c.name.toLowerCase() === 'done')!;
+    const prog = cols.find((c) => c.name.toLowerCase() === 'in progress')!;
+    const prNumber = 1205;
+
+    const insert = (title: string, sessionId: string | null = null) => {
+      const id = uuidv4();
+      db.prepare(
+        'INSERT INTO kanban_cards (id, column_id, board_id, title, position, session_id) VALUES (?, ?, ?, ?, 0, ?)',
+      ).run(id, prog.id, board.board.id, title, sessionId);
+      return id;
+    };
+    const linked = insert('Keep calculator fees trackable');
+    stmts.setCardPrUrl.run(buildNativePrUrl(projectId, prNumber), linked);
+    const byTitle = insert(`[Resolve PR #${prNumber}] Keep calculator fees trackable`);
+    const sessionId = uuidv4();
+    db.prepare(
+      'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree) VALUES (?, ?, ?, ?, ?, 0)',
+    ).run(sessionId, 'a1', `[Resolve PR #${prNumber}] fees`, 'claude-code', 'm');
+    const bySession = insert('Fix the review comments', sessionId);
+    const otherPr = insert(`[Resolve PR #${prNumber}0] different PR`);
+
+    handleCardOnMerge({ stmts, broadcast: () => {} }, projectId, makePr(projectId, prNumber), 'x');
+
+    const col = (id: string) => (stmts.getKanbanCard.get(id) as { column_id: string }).column_id;
+    expect(col(linked)).toBe(done.id);
+    expect(col(byTitle)).toBe(done.id);
+    expect(col(bySession)).toBe(done.id);
+    expect(col(otherPr)).toBe(prog.id);
+    const comments = stmts.getKanbanCardComments.all(byTitle) as Array<{ content: string }>;
+    expect(comments.some((c) => /Closed with the merge of PR #1205/.test(c.content))).toBe(true);
+  });
+});

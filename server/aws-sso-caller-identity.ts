@@ -44,7 +44,7 @@
  */
 import type { Request } from 'express';
 import type { AuthenticatedRequest } from './auth.js';
-import { AGENT_HUB_SESSION_ID_HEADER } from './kanban-caller-session.js';
+import { readSessionIdHeader } from './kanban-caller-session.js';
 import type { AgentLookup, SessionRow, Stmts } from './types.js';
 
 export interface AwsProbeContext {
@@ -95,6 +95,5 @@ function resolveProbeSessionId(authed: AuthenticatedRequest): string | null {
   const bound = authed.authSpawnSessionId;
   if (typeof bound === 'string' && bound.trim()) return bound.trim();
 
-  const header = authed.get(AGENT_HUB_SESSION_ID_HEADER);
-  return typeof header === 'string' && header.trim() ? header.trim() : null;
+  return readSessionIdHeader(authed);
 }

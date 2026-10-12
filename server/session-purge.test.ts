@@ -36,6 +36,7 @@ import {
 import { sessionVmId } from './session-env/firecracker/firecracker-vm-args.js';
 import { browserScreenshotDirForSession } from './browser-screenshot-store.js';
 import config from './config.js';
+import { getOrCreateBoard } from './routes/board.js';
 import type { Project } from './types.js';
 
 function projectSlugFor(cwd: string): string {
@@ -177,6 +178,33 @@ describe('purgeExpiredArchivedSessions', () => {
 
     const stillThere = getDb().prepare('SELECT 1 FROM sessions WHERE id = ?').get(id);
     expect(stillThere).toBeUndefined();
+  });
+
+  it('closes an In Progress card linked to the purged session', async () => {
+    const { id } = makeSession(fixture.workspaceDir, {
+      deletedAtSql: "datetime('now', '-25 hours')",
+    });
+    getDb()
+      .prepare("UPDATE sessions SET deleted_at = datetime('now', '-25 hours') WHERE id = ?")
+      .run(id);
+    const projectId = `purge-card-${uuidv4().slice(0, 8)}`;
+    const { board, columns } = getOrCreateBoard(getStmts(), projectId);
+    const inProgress = columns.find((c) => c.name === 'In Progress')!;
+    const done = columns.find((c) => c.name === 'Done')!;
+    const cardId = uuidv4();
+    getDb()
+      .prepare(
+        'INSERT INTO kanban_cards (id, column_id, board_id, title, position, session_id) VALUES (?, ?, ?, ?, 0, ?)',
+      )
+      .run(cardId, inProgress.id, board.id, 'Stranded card', id);
+
+    await purgeExpiredArchivedSessions(depsFor(fixture.projectCwd));
+
+    const card = getDb().prepare('SELECT column_id FROM kanban_cards WHERE id = ?').get(cardId) as {
+      column_id: string;
+    };
+    expect(card.column_id).toBe(done.id);
+    expect(getDb().prepare('SELECT 1 FROM sessions WHERE id = ?').get(id)).toBeUndefined();
   });
 
   it('removes the session browser-screenshot directory on hard delete', async () => {

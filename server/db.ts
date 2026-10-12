@@ -36,6 +36,7 @@ import {
 import { collapseReviewColumn } from './migrations/collapse-review-column.js';
 import { backfillPhaseAutonomousDefaults } from './migrations/backfill-phase-autonomous-defaults.js';
 import { backfillEpicStates } from './migrations/backfill-epic-states.js';
+import { repairCardSessionLinks } from './migrations/repair-card-session-links.js';
 import {
   deriveCardPrefix,
   KANBAN_CARD_SHORT_ID_TRIGGER_SQL,
@@ -3795,6 +3796,20 @@ function initDb(dataDir: string): void {
     }
   }
 
+  // Collapse doubled card session links and release In Progress cards whose
+  // session was hard-deleted. See migrations/repair-card-session-links.ts.
+  try {
+    const r = repairCardSessionLinks({ db, dataDir });
+    if (r.ran && r.collapsed + r.movedToDone + r.movedToTodo > 0) {
+      console.log(
+        `[migration] repair-card-session-links: collapsed ${r.collapsed}, ` +
+          `moved ${r.movedToDone} to Done, ${r.movedToTodo} to To Do.`,
+      );
+    }
+  } catch (e) {
+    console.error(`[migration] repair-card-session-links failed: ${(e as Error).message}`);
+  }
+
   {
     const wfCols = (db.pragma('table_info(workflows)') as { name: string }[]).map((c) => c.name);
     if (wfCols.length > 0) {
@@ -5780,6 +5795,13 @@ function initDb(dataDir: string): void {
       "UPDATE kanban_cards SET session_id = ?, assignee = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     getKanbanCardBySession: db.prepare('SELECT * FROM kanban_cards WHERE session_id = ? LIMIT 1'),
+    // Cards a "[Resolve PR #N]" session filed for PR N: matched by card title or
+    // by the linked session's name. Params: board_id, title LIKE, session LIKE.
+    listResolvePrCards: db.prepare(
+      `SELECT c.* FROM kanban_cards c
+         LEFT JOIN sessions s ON s.id = c.session_id
+        WHERE c.board_id = ? AND (c.title LIKE ? OR s.name LIKE ?)`,
+    ),
     getKanbanCardByLogIssueSource: db.prepare(
       `SELECT c.* FROM kanban_cards c
        JOIN kanban_boards b ON b.id = c.board_id
