@@ -10,7 +10,6 @@ import {
   ACTIVITY_TYPE_KEYS,
   HEADLINE_TILES,
   PRIORITY_KEYS,
-  sortSupportBySeverity,
   resolveActivityTarget,
   activityIsActionable,
   resolveOpenPrTarget,
@@ -164,28 +163,6 @@ describe('ACTIVITY_TYPE_KEYS', () => {
       'escalation',
       'pr_created',
     ]);
-  });
-});
-describe('sortSupportBySeverity', () => {
-  it('orders critical before high before medium before low', () => {
-    const sorted = sortSupportBySeverity([
-      { id: '1', severity: 'low', created_at: '2026-01-03T00:00:00Z' },
-      { id: '2', severity: 'critical', created_at: '2026-01-01T00:00:00Z' },
-      { id: '3', severity: 'high', created_at: '2026-01-02T00:00:00Z' },
-    ]);
-    expect(sorted.map((t: any) => t.id)).toEqual(['2', '3', '1']);
-  });
-  it('sorts newest-first within the same severity', () => {
-    const sorted = sortSupportBySeverity([
-      { id: 'a', severity: 'high', created_at: '2026-01-01T00:00:00Z' },
-      { id: 'b', severity: 'high', created_at: '2026-01-03T00:00:00Z' },
-    ]);
-    expect(sorted.map((t: any) => t.id)).toEqual(['b', 'a']);
-  });
-  it('does not mutate the input array', () => {
-    const input = [{ id: 'x', severity: 'low', created_at: '2026-01-01T00:00:00Z' }];
-    sortSupportBySeverity(input);
-    expect(input).toHaveLength(1);
   });
 });
 describe('resolveActivityTarget', () => {

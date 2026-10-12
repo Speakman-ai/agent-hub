@@ -114,22 +114,12 @@ export const PR_PRIORITY_DOT: Record<string, any> = {
   medium: colors.amber400,
   low: colors.emerald400,
 };
-const SUPPORT_SEVERITY_RANK: Record<string, any> = { critical: 0, high: 1, medium: 2, low: 3 };
 export const SUPPORT_SEVERITY_DOT: Record<string, any> = {
   critical: colors.red500,
   high: '#FB923C',
   medium: colors.amber400,
   low: colors.gray500,
 };
-/** Severity-first, newest-within-severity. Mirrors web `DashboardView`. */
-export function sortSupportBySeverity(list: any) {
-  return [...list].sort((a: any, b: any) => {
-    const sa = SUPPORT_SEVERITY_RANK[a.severity] ?? 4;
-    const sb = SUPPORT_SEVERITY_RANK[b.severity] ?? 4;
-    if (sa !== sb) return sa - sb;
-    return (b.created_at || '').localeCompare(a.created_at || '');
-  });
-}
 /**
  * Resolve where a recent-activity row should navigate.
  * Returns null when the row is not actionable (mirrors web `rowIsActionable`).

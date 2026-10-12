@@ -7226,12 +7226,6 @@ export default function App({ initialView }: any = {}) {
                       onOpenExternalUrl={(url: any) => {
                         window.open(url, '_blank', 'noopener,noreferrer');
                       }}
-                      onOpenProjectSupport={(projectId: any, ticketId: any = null) => {
-                        setSupportProjectId(projectId);
-                        setSupportTicketId(ticketId);
-                        setCurrentView('support');
-                        setSidebarOpen(false);
-                      }}
                     />
                   }
                   todos={

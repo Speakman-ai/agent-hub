@@ -8,6 +8,8 @@ import {
   SESSION_STATE_META,
   sessionStateMeta,
   groupSessionsByState,
+  buildSessionBoardColumns,
+  isSessionsViewMode,
 } from './sessionState.js';
 
 describe('finalizeStatusToState', () => {
@@ -172,5 +174,42 @@ describe('isSessionState', () => {
     expect(isSessionState('pushed')).toBe(true);
     expect(isSessionState('nope')).toBe(false);
     expect(isSessionState(3)).toBe(false);
+  });
+});
+
+describe('buildSessionBoardColumns', () => {
+  it('emits every in-flight column in pipeline order, including empty ones', () => {
+    const cols = buildSessionBoardColumns([
+      { sessionId: 'a', state: 'reviewing' },
+      { sessionId: 'b', state: 'bogus' },
+    ]);
+    expect(cols.map((c) => c.state)).toEqual([
+      'waiting_for_user_input',
+      'working',
+      'running_tests',
+      'reviewing',
+      'pending_checks',
+      'pending_push',
+      'pushed',
+    ]);
+    expect(cols[0].sessions.map((s) => s.sessionId)).toEqual(['b']);
+    expect(cols[3].sessions.map((s) => s.sessionId)).toEqual(['a']);
+    expect(cols[1].sessions).toEqual([]);
+  });
+
+  it('adds a merged column only when a merged session is present', () => {
+    const cols = buildSessionBoardColumns([{ sessionId: 'm', state: 'merged' }]);
+    expect(cols[cols.length - 1].state).toBe('merged');
+    expect(cols[cols.length - 1].sessions).toHaveLength(1);
+    expect(buildSessionBoardColumns(null)).toHaveLength(7);
+  });
+});
+
+describe('isSessionsViewMode', () => {
+  it('accepts list and board only', () => {
+    expect(isSessionsViewMode('list')).toBe(true);
+    expect(isSessionsViewMode('board')).toBe(true);
+    expect(isSessionsViewMode('grid')).toBe(false);
+    expect(isSessionsViewMode(null)).toBe(false);
   });
 });

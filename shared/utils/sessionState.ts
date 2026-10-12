@@ -144,3 +144,26 @@ export function groupSessionsByState<T extends { state?: string | null }>(
     sessions: buckets.get(state)!,
   }));
 }
+
+export type SessionsViewMode = 'list' | 'board';
+
+export function isSessionsViewMode(v: unknown): v is SessionsViewMode {
+  return v === 'list' || v === 'board';
+}
+
+/**
+ * Kanban columns for the dashboard's board view. Unlike
+ * {@link groupSessionsByState}, every in-flight state gets a column even when
+ * empty, so the board layout stays stable as sessions move between states.
+ * `merged` only appears when a merged session is actually in the list.
+ */
+export function buildSessionBoardColumns<T extends { state?: string | null }>(
+  sessions?: T[] | null,
+): Array<{ state: SessionState; meta: SessionStateMeta; sessions: T[] }> {
+  const groups = new Map(groupSessionsByState(sessions).map((g) => [g.state, g.sessions]));
+  return SESSION_STATES.filter((state) => state !== 'merged' || groups.has(state)).map((state) => ({
+    state,
+    meta: SESSION_STATE_META[state],
+    sessions: groups.get(state) ?? [],
+  }));
+}

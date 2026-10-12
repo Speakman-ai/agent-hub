@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   BarChart3,
   CalendarDays,
@@ -9,8 +9,8 @@ import {
   Sparkles,
   RefreshCw,
   UserCircle,
-  LifeBuoy,
-  Folder,
+  List,
+  SquareKanban,
   Check,
   ListPlus,
   Loader2,
@@ -34,7 +34,13 @@ import { getAuthRecord } from '../utils/auth';
 import { relativeTime } from '../utils/time';
 import { parseNativePrUrl, openPrDashboardStatusBadge } from '../utils/prFormatting';
 import SessionStateIcon from './SessionStateIcon';
-import { sessionStateMeta, groupSessionsByState } from '@shared/utils/sessionState';
+import {
+  sessionStateMeta,
+  groupSessionsByState,
+  buildSessionBoardColumns,
+  isSessionsViewMode,
+  type SessionsViewMode,
+} from '@shared/utils/sessionState';
 import {
   ALL_OWNERS,
   ownerKeyForUser,
@@ -60,8 +66,6 @@ import {
  * @param {(projectId: string) => void} [onOpenKanban] — open project board
  * @param {(projectId: string) => void} [onOpenPulls] — open project PR list
  * @param {(url: string) => void} [onOpenExternalUrl] — open GitHub etc. (Electron uses shell)
- * @param {(projectId: string, ticketId?: string | null) => void} [onOpenProjectSupport] — open a
- *   project's support queue, optionally focusing a specific ticket's detail on arrival
  */
 /** How often the dashboard silently re-polls while the tab is foregrounded. */
 const DASHBOARD_REFRESH_MS = 5000;
@@ -73,7 +77,6 @@ export default function DashboardView({
   onOpenKanban,
   onOpenPulls,
   onOpenExternalUrl,
-  onOpenProjectSupport,
 }: any) {
   const currentUser = getAuthRecord()?.user || null;
   const accountName = currentUser?.email || currentUser?.username || 'Account';
@@ -239,10 +242,6 @@ export default function DashboardView({
               prs={data.openPRs}
               onOpenPulls={onOpenPulls}
               onOpenExternalUrl={onOpenExternalUrl}
-            />
-            <SupportIssuesPanel
-              onOpenProjectSupport={onOpenProjectSupport}
-              onViewAll={onNavigate ? () => onNavigate('support-overview') : undefined}
             />
             <RecentActivity
               items={data.recentActivity}
@@ -659,6 +658,138 @@ function ActiveSessionRow({ session: s, onOpenSession }: any) {
   return <div className={rowClass}>{inner}</div>;
 }
 
+const SESSIONS_VIEW_STORAGE_KEY = 'dashboard.activeSessionsView';
+
+function loadSessionsViewMode(): SessionsViewMode {
+  try {
+    if (typeof localStorage === 'undefined') return 'list';
+    const raw = localStorage.getItem(SESSIONS_VIEW_STORAGE_KEY);
+    return isSessionsViewMode(raw) ? raw : 'list';
+  } catch {
+    return 'list';
+  }
+}
+
+function saveSessionsViewMode(mode: SessionsViewMode) {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(SESSIONS_VIEW_STORAGE_KEY, mode);
+  } catch {
+    // Private mode / quota: the toggle still works for this page load.
+  }
+}
+
+function SessionsViewToggle({ mode, onChange }: any) {
+  const options = [
+    { key: 'list', label: 'List', Icon: List },
+    { key: 'board', label: 'Board', Icon: SquareKanban },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label="Active sessions view"
+      className="inline-flex rounded-md border border-gray-700 overflow-hidden"
+    >
+      {options.map(({ key, label, Icon }) => {
+        const active = mode === key;
+        return (
+          <button
+            key={key}
+            type="button"
+            data-testid={`active-sessions-view-${key}`}
+            aria-pressed={active}
+            title={`${label} view`}
+            onClick={() => onChange(key)}
+            className={`inline-flex items-center gap-1 px-2 py-1 text-xs ${
+              active ? 'bg-gray-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            <Icon size={12} />
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ActiveSessionCard({ session: s, onOpenSession }: any) {
+  const actionable = Boolean(s.agentId && s.sessionId && onOpenSession);
+  const stamp = s.startedAt || s.lastActivityAt;
+  const cardClass = `w-full text-left rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2 ${
+    actionable ? 'hover:border-gray-600 hover:bg-gray-800/50 cursor-pointer' : ''
+  }`;
+  const inner = (
+    <>
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center">
+          <SessionStateIcon state={s.state} size={12} />
+        </span>
+        <div className="text-xs text-white line-clamp-2 break-words min-w-0">
+          {s.sessionName || 'Untitled session'}
+        </div>
+      </div>
+      <div className="mt-1 text-[11px] text-gray-500 truncate">
+        <span style={s.agentColor ? { color: s.agentColor } : undefined}>
+          {s.agentName || s.agentId}
+        </span>
+        {s.ownerName ? ` · ${s.ownerName}` : ''}
+      </div>
+      {stamp && <div className="mt-0.5 text-[10px] text-gray-600">{relativeTime(stamp)}</div>}
+    </>
+  );
+  if (actionable) {
+    return (
+      <button
+        type="button"
+        data-testid="active-session-card"
+        className={cardClass}
+        onClick={() => onOpenSession(String(s.agentId), String(s.sessionId))}
+      >
+        {inner}
+      </button>
+    );
+  }
+  return (
+    <div data-testid="active-session-card" className={cardClass}>
+      {inner}
+    </div>
+  );
+}
+
+function ActiveSessionsBoard({ sessions, onOpenSession }: any) {
+  const columns = buildSessionBoardColumns(sessions);
+  return (
+    <div data-testid="active-sessions-board" className="flex gap-3 overflow-x-auto pb-2">
+      {columns.map((col: any) => (
+        <div
+          key={col.state}
+          data-testid={`active-sessions-column-${col.state}`}
+          className="flex-shrink-0 w-60 bg-gray-900 border border-gray-800 rounded-xl flex flex-col max-h-[28rem]"
+        >
+          <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-gray-800">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <SessionStateIcon state={col.state} size={12} />
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 truncate">
+                {col.meta.label}
+              </h3>
+            </div>
+            <span className="text-[11px] text-gray-600">{col.sessions.length}</span>
+          </div>
+          <div className="p-2 space-y-2 overflow-y-auto">
+            {col.sessions.length === 0 ? (
+              <div className="px-1 py-3 text-center text-[11px] text-gray-700">None</div>
+            ) : (
+              col.sessions.map((s: any) => (
+                <ActiveSessionCard key={s.sessionId} session={s} onOpenSession={onOpenSession} />
+              ))
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ActiveSessionsPanel({ sessions = [], onOpenSession, currentUser = null }: any) {
   const list = Array.isArray(sessions) ? sessions : [];
   const currentUserKey = ownerKeyForUser(currentUser);
@@ -672,6 +803,11 @@ function ActiveSessionsPanel({ sessions = [], onOpenSession, currentUser = null 
   const filtered = filterSessionsByOwner(list, selected);
   const groups = groupSessionsByState(filtered);
   const filteredByOwner = selected !== ALL_OWNERS;
+  const [viewMode, setViewMode] = useState<SessionsViewMode>(loadSessionsViewMode);
+  const changeViewMode = (mode: SessionsViewMode) => {
+    setViewMode(mode);
+    saveSessionsViewMode(mode);
+  };
   return (
     <section aria-label="Active sessions" className="mb-8">
       <div className="flex items-baseline justify-between mb-3 gap-3">
@@ -679,6 +815,7 @@ function ActiveSessionsPanel({ sessions = [], onOpenSession, currentUser = null 
           Active sessions
         </h2>
         <div className="flex items-center gap-3">
+          <SessionsViewToggle mode={viewMode} onChange={changeViewMode} />
           {list.length > 0 && (
             <select
               data-testid="active-sessions-owner-filter"
@@ -706,6 +843,10 @@ function ActiveSessionsPanel({ sessions = [], onOpenSession, currentUser = null 
             ? 'No active sessions for the selected user.'
             : 'No active sessions. Everything has merged or there is no work in flight.'}
         </div>
+      ) : viewMode === 'board' ? (
+        <div data-testid="active-sessions">
+          <ActiveSessionsBoard sessions={filtered} onOpenSession={onOpenSession} />
+        </div>
       ) : (
         <div data-testid="active-sessions" className="space-y-4">
           {groups.map((group: any) => (
@@ -726,183 +867,6 @@ function ActiveSessionsPanel({ sessions = [], onOpenSession, currentUser = null 
         </div>
       )}
     </section>
-  );
-}
-
-// Support ticket severity → sort rank (most urgent first) and dot color.
-// Mirrors the server's ORDER BY so a client-side re-sort keeps the same order.
-const SUPPORT_SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 } as Record<string, any>;
-
-const SUPPORT_SEVERITY_DOT = {
-  critical: 'bg-red-500',
-  high: 'bg-orange-400',
-  medium: 'bg-amber-400',
-  low: 'bg-gray-500',
-} as Record<string, any>;
-
-// Severity-first, newest-within-severity. Exported for unit testing.
-function sortSupportBySeverity(list: any) {
-  return [...list].sort((a: any, b: any) => {
-    const sa = SUPPORT_SEVERITY_RANK[a.severity] ?? 4;
-    const sb = SUPPORT_SEVERITY_RANK[b.severity] ?? 4;
-    if (sa !== sb) return sa - sb;
-    return (b.created_at || '').localeCompare(a.created_at || '');
-  });
-}
-
-/**
- * Org-wide support issues, consolidated on the dashboard. Aggregates every
- * project's *new, unread* support tickets into one severity-ordered list
- * (critical → low) via `GET /support-tickets?status=new&unread=true`. This is a
- * "needs triage" inbox: once an operator opens a ticket (stamping `read_at`) or
- * moves it past `new`, it drops off the dashboard. Each row deep-links into
- * that project's support queue AND focuses the clicked ticket's detail through
- * `onOpenProjectSupport(projectId, ticketId)`.
- *
- * This is the single consolidated support surface — it replaces the former
- * top-level "Support Issues" sidebar entry. Per-project Support links (with
- * unread badges) stay in the sidebar for drill-in.
- *
- * @param {(projectId: string, ticketId?: string | null) => void} [onOpenProjectSupport]
- */
-function SupportIssuesPanel({ onOpenProjectSupport, onViewAll }: any) {
-  const [tickets, setTickets] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<any>(null);
-
-  // Generation guard keyed on commit order (see the main dashboard load and
-  // `@shared/utils/requestGeneration`): a result lands unless a strictly newer
-  // request has already committed replacement tickets, so a failing silent poll
-  // can't discard an older foreground load that later succeeds.
-  const mountedRef = useRef(true);
-  const genRef = useRef(createRequestGenerationState());
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  const load = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
-    const req = beginRequest(genRef.current, { silent });
-    if (!silent) {
-      setLoading(true);
-      setError(null);
-    }
-    let committed = false;
-    try {
-      const data = await api.getAllSupportTickets({ status: 'new', unread: true });
-      if (mountedRef.current && req.canCommit()) {
-        req.commit();
-        committed = true;
-        setTickets(Array.isArray(data?.tickets) ? data.tickets : []);
-        setError(null);
-      }
-    } catch (err: any) {
-      // Keep the last triage list (and any prior error) on a transient
-      // background-poll failure — only a foreground load surfaces a new error,
-      // and a silent failure commits nothing so it can't drop an older result.
-      if (!silent && mountedRef.current && req.canCommit()) {
-        req.commit();
-        committed = true;
-        setError(err.message || String(err));
-      }
-    } finally {
-      if (mountedRef.current && (committed || req.ownsLoading())) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  useVisibleIntervalRefresh(() => load({ silent: true }), DASHBOARD_REFRESH_MS);
-
-  const sorted = useMemo(() => sortSupportBySeverity(tickets), [tickets]);
-
-  return (
-    <section aria-label="Support issues" className="mb-8">
-      <div className="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
-        <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-          <LifeBuoy size={14} className="text-blue-400" />
-          New support issues
-        </h2>
-        {onViewAll ? (
-          <button
-            onClick={onViewAll}
-            className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
-          >
-            View all
-          </button>
-        ) : null}
-      </div>
-      <div
-        data-testid="support-issues"
-        className="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800"
-      >
-        {error ? (
-          <div className="px-4 py-6 text-center text-xs text-red-400">
-            Failed to load support issues: {error}
-          </div>
-        ) : loading ? (
-          <div className="px-4 py-6 text-center text-xs text-gray-600">Loading support issues…</div>
-        ) : sorted.length === 0 ? (
-          <div className="px-4 py-6 text-center text-xs text-gray-600">
-            No new support issues. Everything is triaged.
-          </div>
-        ) : (
-          sorted.map((t: any) => (
-            <SupportIssueRow key={t.id} ticket={t} onOpenProjectSupport={onOpenProjectSupport} />
-          ))
-        )}
-      </div>
-    </section>
-  );
-}
-
-function SupportIssueRow({ ticket, onOpenProjectSupport }: any) {
-  const actionable = Boolean(ticket.project_id && onOpenProjectSupport);
-  const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
-  const dot = SUPPORT_SEVERITY_DOT[ticket.severity] || SUPPORT_SEVERITY_DOT.low;
-  const rowClass = actionable
-    ? 'w-full text-left px-4 py-3 flex items-center gap-3 transition-colors hover:bg-gray-800/50 cursor-pointer group'
-    : 'px-4 py-3 flex items-center gap-3';
-  const inner = (
-    <>
-      <span
-        className={`h-2 w-2 rounded-full flex-shrink-0 ${dot}`}
-        title={`${ticket.severity} severity`}
-        aria-hidden
-      />
-      <div className="flex-1 min-w-0">
-        <div className="text-sm text-white truncate">{title}</div>
-        <div className="text-[11px] text-gray-500 truncate flex items-center gap-1">
-          <Folder size={10} className="flex-shrink-0" />
-          {ticket.project_name || ticket.project_id}
-          {ticket.status ? ` · ${ticket.status}` : ''}
-        </div>
-      </div>
-      <div className="text-[11px] text-gray-500 flex-shrink-0">
-        {ticket.created_at ? relativeTime(ticket.created_at) : ''}
-      </div>
-    </>
-  );
-  if (actionable) {
-    return (
-      <button
-        type="button"
-        data-testid="support-issue-row"
-        className={rowClass}
-        onClick={() => onOpenProjectSupport(String(ticket.project_id), ticket.id)}
-      >
-        {inner}
-      </button>
-    );
-  }
-  return (
-    <div data-testid="support-issue-row" className={rowClass}>
-      {inner}
-    </div>
   );
 }
 
@@ -1146,5 +1110,3 @@ function RecentActivity({
     </section>
   );
 }
-
-export { sortSupportBySeverity };

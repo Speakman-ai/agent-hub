@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useContext, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
 import {
   View,
   Text,
@@ -20,7 +20,8 @@ import { relativeTime } from '../utils/time';
 import { colors } from '../theme/colors';
 import SessionStateIcon from '../components/SessionStateIcon';
 import HubIcon from '../components/HubIcon';
-import { groupSessionsByState } from '@shared/utils/sessionState';
+import { groupSessionsByState, buildSessionBoardColumns } from '@shared/utils/sessionState';
+import { useSessionsViewMode } from '../hooks/useSessionsViewMode';
 import {
   ALL_OWNERS,
   ownerKeyForUser,
@@ -39,8 +40,6 @@ import {
   filterActivity,
   countByType,
   ACTIVITY_TYPE_KEYS,
-  sortSupportBySeverity,
-  SUPPORT_SEVERITY_DOT,
   PR_PRIORITY_DOT,
   resolveActivityTarget,
   activityIsActionable,
@@ -73,9 +72,7 @@ export default function DashboardScreen() {
   const [error, setError] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [supportTickets, setSupportTickets] = useState<any[]>([]);
-  const [supportLoading, setSupportLoading] = useState(true);
-  const [supportError, setSupportError] = useState<any>(null);
+  const [sessionsView, changeSessionsView] = useSessionsViewMode();
   const [calendarStatus, setCalendarStatus] = useState<any>(null);
   const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
   const [calendarLoading, setCalendarLoading] = useState(true);
@@ -99,7 +96,6 @@ export default function DashboardScreen() {
   // refresh that later succeeds.
   const mountedRef = useRef(true);
   const dashGenRef = useRef(createRequestGenerationState());
-  const supportGenRef = useRef(createRequestGenerationState());
   const calendarGenRef = useRef(createRequestGenerationState());
   useEffect(() => {
     mountedRef.current = true;
@@ -151,19 +147,6 @@ export default function DashboardScreen() {
         projectId,
         project: findProject(projectId),
         cardId: cardId || undefined,
-      });
-    },
-    [findProject, navigation],
-  );
-  const openProjectSupport = useCallback(
-    (projectId: any, ticketId: any) => {
-      if (!projectId) return;
-      navigation.navigate('CustomerSupport', {
-        projectId,
-        project: findProject(projectId),
-        // Support rows are ticket-specific; CustomerSupportScreen consumes
-        // `route.params.ticketId` to open that ticket's detail directly.
-        ticketId: ticketId || undefined,
       });
     },
     [findProject, navigation],
@@ -264,37 +247,6 @@ export default function DashboardScreen() {
       }
     }
   }, []);
-  const loadSupport = useCallback(async ({ silent }: any = {}) => {
-    const req = beginRequest(supportGenRef.current, { silent });
-    // Mirror the web path: only clear the error on a non-silent start or on
-    // success. Clearing it unconditionally would make a foreground support
-    // error blink away every 5s even when the background retry also fails.
-    if (!silent) {
-      setSupportLoading(true);
-      setSupportError(null);
-    }
-    let committed = false;
-    try {
-      const payload = await api.getAllSupportTickets({ status: 'new', unread: true });
-      if (mountedRef.current && req.canCommit()) {
-        req.commit();
-        committed = true;
-        setSupportTickets(Array.isArray(payload?.tickets) ? payload.tickets : []);
-        setSupportError(null);
-      }
-    } catch (err: any) {
-      // Keep the last triage list on a transient background-poll failure; a
-      // silent failure commits nothing so it can't drop an older result.
-      if (!silent && mountedRef.current && req.canCommit()) {
-        req.commit();
-        committed = true;
-        setSupportError(err.message || String(err));
-        setSupportTickets([]);
-      }
-    } finally {
-      if (mountedRef.current && (committed || req.ownsLoading())) setSupportLoading(false);
-    }
-  }, []);
   const loadCalendar = useCallback(async ({ silent }: any = {}) => {
     const req = beginRequest(calendarGenRef.current, { silent });
     if (!silent) {
@@ -335,9 +287,6 @@ export default function DashboardScreen() {
     load();
   }, [load]);
   useEffect(() => {
-    loadSupport();
-  }, [loadSupport]);
-  useEffect(() => {
     loadCalendar();
   }, [loadCalendar]);
   // `key` is the row's stable key (folds in the list index) so two same-titled
@@ -360,15 +309,9 @@ export default function DashboardScreen() {
   // Return the combined promise so the hook's in-flight guard waits for both
   // requests — a slow poll then skips the next 5s tick instead of stacking.
   useVisibleIntervalRefresh(
-    () =>
-      Promise.all([
-        load({ silent: true }),
-        loadSupport({ silent: true }),
-        loadCalendar({ silent: true }),
-      ]),
+    () => Promise.all([load({ silent: true }), loadCalendar({ silent: true })]),
     DASHBOARD_REFRESH_MS,
   );
-  const sortedSupport = useMemo<any>(() => sortSupportBySeverity(supportTickets), [supportTickets]);
   const allActivity = data?.recentActivity || [];
   const activity = filterActivity(allActivity, activeTypes);
   const activityCounts = countByType(allActivity);
@@ -404,7 +347,6 @@ export default function DashboardScreen() {
             refreshing={refreshing}
             onRefresh={() => {
               load({ asRefresh: true });
-              loadSupport();
               loadCalendar();
             }}
             tintColor={colors.gray400}
@@ -499,6 +441,27 @@ export default function DashboardScreen() {
                     title="Active sessions"
                     subtitle={`${sessions.length} in flight`}
                   />
+                  <View style={styles.viewToggle} testID="active-sessions-view-toggle">
+                    {(['list', 'board'] as const).map((mode) => {
+                      const active = sessionsView === mode;
+                      return (
+                        <TouchableOpacity
+                          key={mode}
+                          onPress={() => changeSessionsView(mode)}
+                          testID={`active-sessions-view-${mode}`}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: active }}
+                          style={[styles.viewToggleBtn, active && styles.viewToggleBtnActive]}
+                        >
+                          <Text
+                            style={[styles.ownerChipText, active && styles.ownerChipTextActive]}
+                          >
+                            {mode === 'list' ? 'List' : 'Board'}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                   {allSessions.length > 0 && (
                     <ScrollView
                       horizontal
@@ -535,6 +498,62 @@ export default function DashboardScreen() {
                           : 'No active sessions. Everything has merged or there is no work in flight.'}
                       </Text>
                     </View>
+                  ) : sessionsView === 'board' ? (
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.boardRow}
+                      testID="active-sessions-board"
+                    >
+                      {buildSessionBoardColumns(sessions as any).map((col: any) => (
+                        <View
+                          key={col.state}
+                          style={styles.boardColumn}
+                          testID={`active-sessions-column-${col.state}`}
+                        >
+                          <View style={styles.sessionGroupHeader}>
+                            <Text style={styles.sessionGroupLabel} numberOfLines={1}>
+                              {col.meta.label}
+                            </Text>
+                            <Text style={styles.sessionGroupCount}>{col.sessions.length}</Text>
+                          </View>
+                          {col.sessions.length === 0 ? (
+                            <Text style={styles.muted}>None</Text>
+                          ) : (
+                            col.sessions.map((s: any) => {
+                              const actionable = Boolean(s.agentId && s.sessionId);
+                              const Card = actionable ? TouchableOpacity : View;
+                              const stamp = s.startedAt || s.lastActivityAt;
+                              return (
+                                <Card
+                                  key={s.sessionId}
+                                  style={styles.boardCard}
+                                  testID="active-session-card"
+                                  {...(actionable
+                                    ? { onPress: () => openSession(s.agentId, s.sessionId) }
+                                    : {})}
+                                >
+                                  <View style={styles.boardCardTitleRow}>
+                                    <SessionStateIcon state={s.state} size={12} />
+                                    <Text style={styles.activityTitle} numberOfLines={2}>
+                                      {s.sessionName || 'Untitled session'}
+                                    </Text>
+                                  </View>
+                                  <Text style={styles.activityMeta} numberOfLines={1}>
+                                    {[s.agentName || s.agentId, s.ownerName]
+                                      .filter(Boolean)
+                                      .join(' · ')}
+                                  </Text>
+                                  {stamp ? (
+                                    <Text style={styles.activityTime}>{relativeTime(stamp)}</Text>
+                                  ) : null}
+                                </Card>
+                              );
+                            })
+                          )}
+                        </View>
+                      ))}
+                    </ScrollView>
                   ) : (
                     <View testID="active-sessions">
                       {groupSessionsByState(sessions as any).map((group: any) => (
@@ -650,52 +669,6 @@ export default function DashboardScreen() {
                       ) : null}
                       <Text style={styles.activityTime}>
                         {pr.updatedAt ? relativeTime(pr.updatedAt) : ''}
-                      </Text>
-                    </Row>
-                  );
-                })
-              )}
-            </View>
-
-            <SectionHeader title="New support issues" />
-            <View style={styles.card} testID="support-issues">
-              {supportError ? (
-                <Text style={styles.errorInline}>
-                  Failed to load support issues: {supportError}
-                </Text>
-              ) : supportLoading ? (
-                <Text style={styles.muted}>Loading support issues…</Text>
-              ) : sortedSupport.length === 0 ? (
-                <Text style={styles.muted}>No new support issues. Everything is triaged.</Text>
-              ) : (
-                sortedSupport.map((ticket: any) => {
-                  const actionable = Boolean(ticket.project_id);
-                  const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
-                  const dot = SUPPORT_SEVERITY_DOT[ticket.severity] || SUPPORT_SEVERITY_DOT.low;
-                  const Row = actionable ? TouchableOpacity : View;
-                  return (
-                    <Row
-                      key={ticket.id}
-                      style={styles.activityRow}
-                      testID="support-issue-row"
-                      {...(actionable
-                        ? {
-                            onPress: () => openProjectSupport(String(ticket.project_id), ticket.id),
-                          }
-                        : {})}
-                    >
-                      <View style={[styles.priorityDot, { backgroundColor: dot }]} />
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={styles.activityTitle} numberOfLines={1}>
-                          {title}
-                        </Text>
-                        <Text style={styles.activityMeta} numberOfLines={1}>
-                          {ticket.project_name || ticket.project_id}
-                          {ticket.status ? ` · ${ticket.status}` : ''}
-                        </Text>
-                      </View>
-                      <Text style={styles.activityTime}>
-                        {ticket.created_at ? relativeTime(ticket.created_at) : ''}
                       </Text>
                     </Row>
                   );
@@ -1081,6 +1054,50 @@ const styles = StyleSheet.create({
   ownerChipTextActive: {
     color: colors.white,
     fontWeight: '600',
+  },
+  viewToggle: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  viewToggleBtn: {
+    borderColor: colors.gray800,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: colors.gray900,
+  },
+  viewToggleBtnActive: {
+    borderColor: colors.blue500,
+    backgroundColor: colors.blue900_40,
+  },
+  boardRow: {
+    gap: 10,
+    paddingRight: 12,
+    marginBottom: 12,
+  },
+  boardColumn: {
+    width: 220,
+    backgroundColor: colors.gray900,
+    borderColor: colors.gray800,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+  },
+  boardCard: {
+    backgroundColor: colors.gray950,
+    borderColor: colors.gray800,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 8,
+    marginBottom: 8,
+    gap: 2,
+  },
+  boardCardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
   },
   sessionGroupHeader: {
     flexDirection: 'row',

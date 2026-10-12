@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react';
-import DashboardView, { sortSupportBySeverity } from './DashboardView';
+import DashboardView from './DashboardView';
 import { CALENDAR_EVENTS_SCOPE } from '../utils/googleSurface';
 
 const SAMPLE = {
@@ -209,8 +209,7 @@ describe('DashboardView', () => {
       expect(screen.getByText('Acme')).toBeInTheDocument();
     });
 
-    // The org dashboard payload is fetched exactly once (the support panel
-    // makes its own separate call to /support-tickets).
+    // The org dashboard payload is fetched exactly once.
     const dashCalls = (fetch as any).mock.calls.filter((c: any) =>
       /\/orgs\/org-1\/dashboard$/.test(String(c[0])),
     );
@@ -796,6 +795,65 @@ describe('DashboardView', () => {
     expect(all.indexOf(working)).toBeLessThan(all.indexOf(reviewing));
   });
 
+  it('does not render a support issues panel or fetch support tickets', async () => {
+    render(<DashboardView orgId="org-1" />);
+    await waitFor(() => {
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/New support issues/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('support-issues')).not.toBeInTheDocument();
+    const supportCalls = (fetch as any).mock.calls.filter((c: any) =>
+      String(c[0]).includes('/support-tickets'),
+    );
+    expect(supportCalls).toHaveLength(0);
+  });
+
+  it('switches active sessions to a kanban board with one column per status', async () => {
+    const onOpenSession = vi.fn();
+    const { container } = render(<DashboardView orgId="org-1" onOpenSession={onOpenSession} />);
+    await waitFor(() => {
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
+    });
+    // List view by default.
+    expect(screen.queryByTestId('active-sessions-board')).not.toBeInTheDocument();
+    expect(screen.getByTestId('active-sessions-view-list')).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByTestId('active-sessions-view-board'));
+
+    expect(screen.getByTestId('active-sessions-board')).toBeInTheDocument();
+    expect(screen.getByTestId('active-sessions-view-board')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    const working = container.querySelector('[data-testid="active-sessions-column-working"]');
+    const reviewing = container.querySelector('[data-testid="active-sessions-column-reviewing"]');
+    // Empty in-flight states still get a column so the layout is stable.
+    const pushed = container.querySelector('[data-testid="active-sessions-column-pushed"]');
+    expect(working!).toHaveTextContent('Refactor stream parser');
+    expect(reviewing!).toHaveTextContent('Awaiting review feedback');
+    expect(pushed!).toHaveTextContent('None');
+    expect(
+      container.querySelector('[data-testid="active-sessions-column-merged"]'),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(within(working as HTMLElement).getByTestId('active-session-card'));
+    expect(onOpenSession).toHaveBeenCalledWith('a1', 'sess-1');
+  });
+
+  it('remembers the board view across remounts', async () => {
+    const first = render(<DashboardView orgId="org-1" />);
+    await waitFor(() => {
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('active-sessions-view-board'));
+    first.unmount();
+
+    render(<DashboardView orgId="org-1" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('active-sessions-board')).toBeInTheDocument();
+    });
+  });
+
   it('defaults the active sessions filter to the current user and hides other owners', async () => {
     // SAMPLE owns sess-1 by u1 (alice) and sess-2 by u2 (bob).
     localStorage.setItem(
@@ -1077,120 +1135,10 @@ describe('DashboardView — 5s auto-refresh', () => {
   });
 });
 
-describe('sortSupportBySeverity', () => {
-  it('orders critical → high → medium → low, newest within a severity', () => {
-    const sorted = sortSupportBySeverity([
-      { id: 'a', severity: 'low', created_at: '2026-06-17T00:00:00Z' },
-      { id: 'b', severity: 'critical', created_at: '2026-06-17T00:00:00Z' },
-      { id: 'c', severity: 'high', created_at: '2026-06-17T00:00:00Z' },
-      { id: 'd', severity: 'critical', created_at: '2026-06-17T01:00:00Z' },
-    ]);
-    expect(sorted.map((t: any) => t.id)).toEqual(['d', 'b', 'c', 'a']);
-  });
-
-  it('does not mutate the input array', () => {
-    const input = [
-      { id: 'a', severity: 'low' },
-      { id: 'b', severity: 'critical' },
-    ];
-    sortSupportBySeverity(input);
-    expect(input.map((t: any) => t.id)).toEqual(['a', 'b']);
-  });
-});
-
-describe('DashboardView — Support issues panel', () => {
-  beforeEach(() => {
-    vi.stubGlobal('fetch', routedFetch());
-    try {
-      if (typeof localStorage !== 'undefined') localStorage.clear();
-    } catch {
-      /* ignore */
-    }
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it('renders aggregated tickets severity-first under the dashboard', async () => {
-    render(<DashboardView orgId="org-1" />);
-
-    let rows: any;
-    await waitFor(() => {
-      rows = screen.getAllByTestId('support-issue-row');
-      expect(rows!).toHaveLength(3);
-    });
-
-    // Critical first, then high, then low — independent of payload order.
-    expect(rows[0]).toHaveTextContent('Login is down for everyone');
-    expect(rows[1]).toHaveTextContent('Checkout throws 500');
-    expect(rows[2]).toHaveTextContent('Typo in footer');
-    // Project name + status surface on each row.
-    expect(rows[0]).toHaveTextContent('Hub Web');
-    expect(rows[0]).toHaveTextContent('new');
-  });
-
-  it('deep-links a row into that project support queue AND focuses the clicked ticket', async () => {
-    const onOpenProjectSupport = vi.fn();
-    render(<DashboardView orgId="org-1" onOpenProjectSupport={onOpenProjectSupport} />);
-
-    await waitFor(() => {
-      expect(screen.getAllByTestId('support-issue-row')).toHaveLength(3);
-    });
-
-    // Row 0 is the critical ticket (tkt-critical) in proj-dash after the
-    // severity sort. The panel must forward BOTH the project id and the ticket
-    // id so the support page opens that ticket's detail on arrival — a row that
-    // only passes the project id lands the user on the list ("the board")
-    // without opening the ticket, the reported bug.
-    fireEvent.click(screen.getAllByTestId('support-issue-row' as any)[0]);
-    expect(onOpenProjectSupport!).toHaveBeenCalledWith('proj-dash', 'tkt-critical');
-  });
-
-  it('fetches only new, unread tickets (the needs-triage inbox)', async () => {
-    render(<DashboardView orgId="org-1" />);
-
-    await waitFor(() => {
-      expect(screen.getAllByTestId('support-issue-row')).toHaveLength(3);
-    });
-
-    const supportCall = (fetch as any).mock.calls.find((c: any) =>
-      String(c[0]).includes('/support-tickets'),
-    );
-    expect(supportCall!).toBeTruthy();
-    const url = String(supportCall[0]);
-    expect(url).toContain('status=new');
-    expect(url).toContain('unread=true');
-  });
-
-  it('renders no status filter buttons (panel is strictly new+unread)', async () => {
-    render(<DashboardView orgId="org-1" />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('support-issues')).toBeInTheDocument();
-    });
-
-    const panel = screen.getByLabelText('Support issues');
-    for (const label of ['All', 'New', 'Investigating', 'Converted', 'Closed']) {
-      expect(within(panel).queryByRole('button', { name: label })).not.toBeInTheDocument();
-    }
-  });
-
-  it('shows an empty state when there are no new unread tickets', async () => {
-    vi.stubGlobal('fetch', routedFetch(SAMPLE, { tickets: [], projects: [] }));
-    render(<DashboardView orgId="org-1" />);
-
-    await waitFor(() => {
-      expect(screen.getByText(/No new support issues/i)).toBeInTheDocument();
-    });
-    expect(screen.queryAllByTestId('support-issue-row')).toHaveLength(0);
-  });
-});
-
 /**
- * The dashboard and Support panel both poll every 5s. These guard the contracts
+ * The dashboard polls every 5s. These guard the contracts
  * a reviewer flagged after the polling landed:
- *   1. A stale/superseded response (dashboard OR support) must not overwrite a
+ *   1. A stale/superseded response must not overwrite a
  *      newer one — the cancellation/generation guard on every load path.
  *   2. A silent background poll must not clear a foreground error unless it
  *      actually succeeds — so an error can't blink away every 5s.
@@ -1203,16 +1151,6 @@ describe('DashboardView — polling staleness guards', () => {
     });
     return { promise, resolve };
   }
-
-  const ticket = (id: any, subject: any, severity: any) => ({
-    id,
-    subject,
-    severity,
-    status: 'new',
-    project_id: 'proj-dash',
-    project_name: 'Hub Web',
-    created_at: '2026-06-25T00:00:00Z',
-  });
 
   // Resolve a deferred fetch and drain the chained microtasks (fetch → json →
   // setState → re-render) inside act so the panel commits before we assert.
@@ -1353,119 +1291,5 @@ describe('DashboardView — polling staleness guards', () => {
     await resolveAndFlush(dashDeferreds[0], { ...SAMPLE, orgName: 'ForegroundOrg' });
     expect(screen.getByText('ForegroundOrg')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-  });
-
-  it('commits a slow initial support load even if a silent support poll failed first', async () => {
-    const supportDeferreds: any[] = [];
-    let pollShouldFail = false;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((url: any) => {
-        const u = String(url);
-        if (u.includes('/support-tickets')) {
-          if (pollShouldFail) {
-            pollShouldFail = false;
-            return Promise.reject(new Error('support poll boom'));
-          }
-          const d = deferred();
-          supportDeferreds.push(d);
-          return d.promise;
-        }
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(SAMPLE) });
-      }),
-    );
-
-    render(<DashboardView orgId="org-1" />);
-
-    // Initial foreground support load is issued and stays pending.
-    await vi.advanceTimersByTimeAsync(0);
-    expect(supportDeferreds.length).toBe(1);
-
-    // The 5s silent support poll fires and fails — it commits nothing.
-    pollShouldFail = true;
-    await vi.advanceTimersByTimeAsync(5000);
-
-    // The initial load now succeeds and its tickets still land; the panel is
-    // neither stuck loading nor showing an error.
-    await resolveAndFlush(supportDeferreds[0], {
-      tickets: [ticket('init', 'Initial issue', 'high')],
-    });
-    expect(screen.getByText('Initial issue')).toBeInTheDocument();
-    expect(screen.queryByText(/Loading support issues/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Failed to load support issues/i)).not.toBeInTheDocument();
-  });
-
-  it('ignores a stale support response that resolves after a newer poll', async () => {
-    const supportDeferreds: any[] = [];
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((url: any) => {
-        const u = String(url);
-        if (u.includes('/support-tickets')) {
-          const d = deferred();
-          supportDeferreds.push(d);
-          return d.promise;
-        }
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(SAMPLE) });
-      }),
-    );
-
-    render(<DashboardView orgId="org-1" />);
-
-    // Mount issues support request #0 (still pending).
-    await vi.advanceTimersByTimeAsync(0);
-    expect(supportDeferreds.length).toBe(1);
-
-    // A 5s poll issues request #1 while #0 is still in flight.
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(supportDeferreds.length).toBeGreaterThanOrEqual(2);
-
-    // The newer request (#1) resolves first with fresh data.
-    await resolveAndFlush(supportDeferreds[1], {
-      tickets: [ticket('fresh', 'FRESH issue', 'critical')],
-    });
-    expect(screen.getByText('FRESH issue')).toBeInTheDocument();
-
-    // The older request (#0) resolves later with stale data — the generation
-    // guard must drop it so it can't overwrite the fresher list.
-    await resolveAndFlush(supportDeferreds[0], {
-      tickets: [ticket('stale', 'STALE issue', 'low')],
-    });
-    expect(screen.getByText('FRESH issue')).toBeInTheDocument();
-    expect(screen.queryByText('STALE issue')).not.toBeInTheDocument();
-  });
-
-  it('keeps a shown support error through a failing silent poll and clears it on success', async () => {
-    let mode: 'fail' | 'ok' = 'fail';
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((url: any) => {
-        const u = String(url);
-        if (u.includes('/support-tickets')) {
-          if (mode === 'fail') return Promise.reject(new Error('support boom'));
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({ tickets: [ticket('ok', 'Recovered issue', 'high')] }),
-          });
-        }
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(SAMPLE) });
-      }),
-    );
-
-    render(<DashboardView orgId="org-1" />);
-
-    // The non-silent mount load fails and surfaces an error.
-    await vi.advanceTimersByTimeAsync(0);
-    expect(screen.getByText(/Failed to load support issues/i)).toBeInTheDocument();
-
-    // A silent 5s poll also fails — the error must persist (not blink away).
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(screen.getByText(/Failed to load support issues/i)).toBeInTheDocument();
-
-    // A later silent poll succeeds — only now is the error cleared.
-    mode = 'ok';
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(screen.queryByText(/Failed to load support issues/i)).not.toBeInTheDocument();
-    expect(screen.getByText('Recovered issue')).toBeInTheDocument();
   });
 });
