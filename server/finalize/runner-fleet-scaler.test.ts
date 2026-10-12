@@ -2,8 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
+import type { ECSClient } from '@aws-sdk/client-ecs';
 import {
   __resetFleetScalerStateForTests,
+  __setFleetScalerEcsClientForTests,
+  readFleetPools,
+  reconcileFleetCapacity,
   queueDepthForScale,
   desiredAgents,
   desiredAgentsDynamic,
@@ -732,5 +736,130 @@ describe('reapDeadRunnerJobs (liveness backstop, card d8a76929)', () => {
       if (savedCluster !== undefined) process.env.FINALIZE_FLEET_ECS_CLUSTER = savedCluster;
       if (savedService !== undefined) process.env.FINALIZE_FLEET_ECS_SERVICE = savedService;
     }
+  });
+});
+
+describe('on-demand deploy pool (per-class scaling)', () => {
+  let dir: string;
+  const ENV_KEYS = [
+    'FINALIZE_FLEET_ECS_CLUSTER',
+    'FINALIZE_FLEET_ECS_SERVICE',
+    'FINALIZE_FLEET_ONDEMAND_ECS_CLUSTER',
+    'FINALIZE_FLEET_ONDEMAND_ECS_SERVICE',
+    'FINALIZE_FLEET_ONDEMAND_MAX_AGENTS',
+    'FINALIZE_FLEET_MIN_AGENTS',
+    'FINALIZE_FLEET_MAX_AGENTS',
+    'FINALIZE_FLEET_DYNAMIC_SCALE_DOWN',
+  ] as const;
+  const saved: Record<string, string | undefined> = {};
+  let sent: Array<{ service?: string; desiredCount?: number }>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(os.tmpdir(), 'fleet-pools-'));
+    setOrgsDbPathForTests(path.join(dir, 'orgs.db'));
+    initOrgsDb();
+    for (const k of ENV_KEYS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+    process.env.FINALIZE_FLEET_ECS_CLUSTER = 'hub-finalize-runner';
+    process.env.FINALIZE_FLEET_ECS_SERVICE = 'hub-finalize-runner-agent';
+    process.env.FINALIZE_FLEET_ONDEMAND_ECS_SERVICE = 'hub-finalize-runner-agent-ondemand';
+    process.env.FINALIZE_FLEET_MIN_AGENTS = '0';
+    process.env.FINALIZE_FLEET_MAX_AGENTS = '8';
+    __resetFleetScalerStateForTests();
+    sent = [];
+    __setFleetScalerEcsClientForTests({
+      send: async (cmd: {
+        input: { service?: string; services?: string[]; desiredCount?: number };
+      }) => {
+        if (cmd.input.services) return { services: [{ desiredCount: 0 }] };
+        sent.push({ service: cmd.input.service, desiredCount: cmd.input.desiredCount });
+        return {};
+      },
+    } as unknown as ECSClient);
+  });
+  afterEach(() => {
+    __resetFleetScalerStateForTests();
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    setOrgsDbPathForTests(null);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const enq = (jobId: string, runnerClass?: string): string =>
+    enqueueRunnerJob({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r1',
+      jobId,
+      matrixKey: '',
+      image: 'img:latest',
+      specJson: '{}',
+      now: 1_000,
+      ...(runnerClass ? { runnerClass } : {}),
+    });
+
+  it('reads both pools, the on-demand one defaulting to the Spot cluster and max 2', () => {
+    const pools = readFleetPools();
+    expect(pools.map((p) => [p.pool, p.cluster, p.service, p.max])).toEqual([
+      ['default', 'hub-finalize-runner', 'hub-finalize-runner-agent', 8],
+      ['ondemand', 'hub-finalize-runner', 'hub-finalize-runner-agent-ondemand', 2],
+    ]);
+  });
+
+  it('a queued deploy scales only the on-demand service, never the Spot one', async () => {
+    enq('production', 'ondemand');
+    await reconcileFleetCapacity(5_000);
+    expect(sent).toEqual([{ service: 'hub-finalize-runner-agent-ondemand', desiredCount: 1 }]);
+  });
+
+  it('Finalize jobs (default and macOS classes) scale only the Spot service', async () => {
+    enq('lint');
+    enq('e2e');
+    enq('mac', 'macos');
+    await reconcileFleetCapacity(5_000);
+    expect(sent).toEqual([{ service: 'hub-finalize-runner-agent', desiredCount: 3 }]);
+  });
+
+  it('each pool scales from its own backlog in the same tick', async () => {
+    enq('lint');
+    enq('production', 'ondemand');
+    enq('mobile-production', 'ondemand');
+    await reconcileFleetCapacity(5_000);
+    expect(sent).toEqual([
+      { service: 'hub-finalize-runner-agent', desiredCount: 1 },
+      { service: 'hub-finalize-runner-agent-ondemand', desiredCount: 2 },
+    ]);
+  });
+
+  it('a reaped on-demand deploy keeps the on-demand pool sized for its retry', async () => {
+    enq('production', 'ondemand');
+    const claimed = claimRunnerJob({
+      agentId: 'od-agent',
+      runnerClass: 'ondemand',
+      leaseMs: 10_000,
+      now: 2_000,
+    });
+    expect(claimed).not.toBeNull();
+    // Past the lease: the reconcile tick reaps it, so live depth reads 0, but the
+    // reaped deploy is credited to the on-demand pool for its imminent retry.
+    await reconcileFleetCapacity(20_000);
+    expect(runnerQueueDepth(undefined, { include: ['ondemand'] })).toBe(0);
+    expect(sent).toEqual([{ service: 'hub-finalize-runner-agent-ondemand', desiredCount: 1 }]);
+  });
+
+  it('class filters split depth and inflight counts', () => {
+    enq('lint');
+    enq('production', 'ondemand');
+    claimRunnerJob({ agentId: 'a', runnerClass: 'ondemand', leaseMs: 10_000, now: 2_000 });
+    expect(runnerQueueDepth()).toBe(2);
+    expect(runnerQueueDepth(undefined, { include: ['ondemand'] })).toBe(1);
+    expect(runnerQueueDepth(undefined, { exclude: ['ondemand'] })).toBe(1);
+    expect(runnerInflightCount(undefined, { include: ['ondemand'] })).toBe(1);
+    expect(runnerInflightCount(undefined, { exclude: ['ondemand'] })).toBe(0);
+    expect(runnerQueueDepth(undefined, { include: [] })).toBe(0);
   });
 });

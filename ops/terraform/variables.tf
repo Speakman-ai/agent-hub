@@ -511,6 +511,24 @@ variable "finalize_runner_use_spot" {
   description = "Run the Finalize fleet on Spot (interruptible, ~2/3 cheaper; lost jobs retry on a fresh agent). Set false for on-demand — guaranteed launch, no UnfulfillableCapacity during a region-wide Spot crunch, ~3x the fleet compute cost. Flip back to true once Spot capacity recovers if cost matters."
 }
 
+variable "finalize_deploy_ondemand_pool" {
+  type        = bool
+  default     = false
+  description = "Add an on-demand runner pool for deploys (runner class `ondemand`). The Hub then routes Linux deploy.yaml jobs there instead of the Spot fleet, so a Spot reclaim can't interrupt a release. Finalize CI stays on the Spot fleet. Counts against the On-Demand Standard vCPU quota (see the quota guard in finalize-runners.tf)."
+}
+
+variable "finalize_deploy_ondemand_max_size" {
+  type        = number
+  default     = 2
+  description = "Max on-demand deploy agents (FINALIZE_FLEET_ONDEMAND_MAX_AGENTS). One agent per instance; deploys are serialized per environment."
+}
+
+variable "finalize_deploy_ondemand_instance_types" {
+  type        = list(string)
+  default     = []
+  description = "On-demand deploy pool instance types, cheapest first (prioritized allocation). Must be host-sized for finalize_runner_task_memory_mib. Empty = reuse finalize_runner_instance_types."
+}
+
 variable "finalize_runner_ami_id" {
   type        = string
   default     = ""

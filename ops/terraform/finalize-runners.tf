@@ -30,6 +30,10 @@ module "finalize_runners" {
   agent_desired_count = var.finalize_agent_desired_count
   spot                = var.finalize_runner_use_spot
 
+  ondemand_pool           = var.finalize_deploy_ondemand_pool
+  ondemand_max_size       = var.finalize_deploy_ondemand_max_size
+  ondemand_instance_types = var.finalize_deploy_ondemand_instance_types
+
   task_protection_expiry_minutes = var.finalize_task_protection_expiry_minutes
 
   agent_image_uri = (
@@ -82,9 +86,12 @@ resource "aws_iam_role_policy" "hub_fleet_scale" {
       {
         Effect = "Allow"
         Action = ["ecs:UpdateService", "ecs:DescribeServices"]
-        Resource = [
-          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/${var.project_name}-finalize-runner/${var.project_name}-finalize-runner-agent",
-        ]
+        Resource = concat(
+          ["arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/${var.project_name}-finalize-runner/${var.project_name}-finalize-runner-agent"],
+          var.finalize_deploy_ondemand_pool
+          ? ["arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/${var.project_name}-finalize-runner/${var.project_name}-finalize-runner-agent-ondemand"]
+          : [],
+        )
       },
       {
         # Hub-driven task scale-in protection (hub-task-protection.ts): the Hub
@@ -109,9 +116,10 @@ resource "aws_iam_role_policy" "hub_fleet_scale" {
 # This reads the LIVE quota and FAILS the plan if finalize_runner_max_size would
 # exceed it — so a future bump past the approved quota is blocked at plan time,
 # not just discouraged by a comment. (Spot fleets draw from a different quota, so
-# the guard only applies when use_spot = false.)
+# the guard only counts the main fleet when use_spot = false; the on-demand
+# deploy pool always counts.)
 data "aws_servicequotas_service_quota" "finalize_ondemand_vcpu" {
-  count        = var.enable_finalize_runners && !var.finalize_runner_use_spot ? 1 : 0
+  count        = local.finalize_ondemand_agents_max > 0 ? 1 : 0
   service_code = "ec2"
   quota_code   = "L-1216C47A" # Running On-Demand Standard (A,C,D,H,I,M,R,T,Z) instances
 }
@@ -119,21 +127,27 @@ data "aws_servicequotas_service_quota" "finalize_ondemand_vcpu" {
 locals {
   finalize_worst_case_vcpu_per_agent = 8  # conservative margin: 2x the all-xlarge pool's 4 vCPU
   finalize_nonfleet_baseline_vcpu    = 16 # Hub + headroom for other on-demand usage
+  # Agents that draw from the On-Demand quota: the main fleet only when it isn't
+  # Spot, plus the deploy pool when enabled.
+  finalize_ondemand_agents_max = !var.enable_finalize_runners ? 0 : (
+    (var.finalize_runner_use_spot ? 0 : var.finalize_runner_max_size)
+    + (var.finalize_deploy_ondemand_pool ? var.finalize_deploy_ondemand_max_size : 0)
+  )
   finalize_fleet_worst_case_vcpu = (
-    var.finalize_runner_max_size * local.finalize_worst_case_vcpu_per_agent
+    local.finalize_ondemand_agents_max * local.finalize_worst_case_vcpu_per_agent
     + local.finalize_nonfleet_baseline_vcpu
   )
 }
 
 resource "terraform_data" "finalize_quota_guard" {
-  count = var.enable_finalize_runners && !var.finalize_runner_use_spot ? 1 : 0
+  count = local.finalize_ondemand_agents_max > 0 ? 1 : 0
 
   # No arguments: a marker whose only job is to carry the precondition, which
   # Terraform evaluates on every plan/apply (even with no resource changes).
   lifecycle {
     precondition {
       condition     = local.finalize_fleet_worst_case_vcpu <= data.aws_servicequotas_service_quota.finalize_ondemand_vcpu[0].value
-      error_message = "finalize_runner_max_size (${var.finalize_runner_max_size}) needs up to ${local.finalize_fleet_worst_case_vcpu} On-Demand Standard vCPUs worst-case (8 vCPU/agent + ${local.finalize_nonfleet_baseline_vcpu} baseline), but the live EC2 quota L-1216C47A in this account/region is only ${data.aws_servicequotas_service_quota.finalize_ondemand_vcpu[0].value}. Raise the AWS quota first (and wait for approval), or lower finalize_runner_max_size."
+      error_message = "The On-Demand Finalize agents (${local.finalize_ondemand_agents_max}: finalize_runner_max_size when not Spot, plus finalize_deploy_ondemand_max_size when the deploy pool is on) need up to ${local.finalize_fleet_worst_case_vcpu} On-Demand Standard vCPUs worst-case (8 vCPU/agent + ${local.finalize_nonfleet_baseline_vcpu} baseline), but the live EC2 quota L-1216C47A in this account/region is only ${data.aws_servicequotas_service_quota.finalize_ondemand_vcpu[0].value}. Raise the AWS quota first (and wait for approval), or lower those sizes."
     }
   }
 }

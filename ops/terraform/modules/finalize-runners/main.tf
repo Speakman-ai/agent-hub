@@ -204,9 +204,75 @@ resource "aws_ecs_capacity_provider" "fleet" {
   tags = var.tags
 }
 
+# ── On-demand deploy pool (optional) ─────────────────────────────────────────
+# A second, always-on-demand ASG + capacity provider for the `ondemand` runner
+# class. The Hub routes Linux deploys there (resolveDeployRunnerClass) so a Spot
+# reclaim can't interrupt a release; Finalize CI stays on the Spot pool above.
+# Same launch template, so the instances are identical apart from the market.
+resource "aws_autoscaling_group" "ondemand" {
+  count               = var.ondemand_pool ? 1 : 0
+  name_prefix         = "${local.name}-ondemand-"
+  vpc_zone_identifier = var.subnet_ids
+  min_size            = 0
+  max_size            = var.ondemand_max_size
+  # Owned by the capacity provider + the Hub's per-class scaler, as above.
+  wait_for_capacity_timeout = "0"
+
+  mixed_instances_policy {
+    launch_template {
+      launch_template_specification {
+        launch_template_id = aws_launch_template.runner.id
+        version            = "$Latest"
+      }
+      dynamic "override" {
+        for_each = local.ondemand_instance_types
+        content {
+          instance_type = override.value
+        }
+      }
+    }
+    instances_distribution {
+      # 100% on-demand. `prioritized` launches in list order, so keep the
+      # cheapest host-sized type first.
+      on_demand_base_capacity                  = var.ondemand_max_size
+      on_demand_percentage_above_base_capacity = 100
+      on_demand_allocation_strategy            = "prioritized"
+    }
+  }
+
+  protect_from_scale_in = true
+
+  tag {
+    key                 = "AmazonECSManaged"
+    value               = "true"
+    propagate_at_launch = true
+  }
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes        = [desired_capacity]
+  }
+}
+
+resource "aws_ecs_capacity_provider" "ondemand" {
+  count = var.ondemand_pool ? 1 : 0
+  name  = "${local.name}-ondemand"
+  auto_scaling_group_provider {
+    auto_scaling_group_arn         = aws_autoscaling_group.ondemand[0].arn
+    managed_termination_protection = "ENABLED"
+    managed_scaling {
+      status                    = "ENABLED"
+      target_capacity           = 100
+      minimum_scaling_step_size = 1
+      maximum_scaling_step_size = var.ondemand_max_size
+      instance_warmup_period    = 30
+    }
+  }
+  tags = var.tags
+}
+
 resource "aws_ecs_cluster_capacity_providers" "fleet" {
   cluster_name       = aws_ecs_cluster.fleet.name
-  capacity_providers = [aws_ecs_capacity_provider.fleet.name]
+  capacity_providers = concat([aws_ecs_capacity_provider.fleet.name], aws_ecs_capacity_provider.ondemand[*].name)
   default_capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.fleet.name
     weight            = 1
@@ -214,6 +280,50 @@ resource "aws_ecs_cluster_capacity_providers" "fleet" {
 }
 
 # ── Runner-agent service ─────────────────────────────────────────────────────
+# Runner-agent container, shared by the Spot service and the on-demand one. The
+# on-demand task adds FINALIZE_RUNNER_CLASS=ondemand so its agents claim only
+# deploy jobs; everything else is identical.
+locals {
+  ondemand_instance_types = length(var.ondemand_instance_types) > 0 ? var.ondemand_instance_types : var.instance_types
+
+  agent_environment = [
+    { name = "FINALIZE_RUNNER_HUB_URL", value = var.hub_url },
+    { name = "FINALIZE_RUNNER_WORKSPACE_DIR", value = "/finalize-ws" },
+    { name = "FINALIZE_RUNNER_ORG_SCOPE", value = "shared" },
+    # Task scale-in protection lease length. Must exceed the longest expected
+    # shard so a refresh-starved long job stays shielded through a dynamic
+    # mid-run scale-in (see ecs-task-protection.ts). Read by the runner-agent
+    # in the agent image — changing it requires the agent image to roll.
+    { name = "FINALIZE_TASK_PROTECTION_EXPIRY_MINUTES", value = tostring(var.task_protection_expiry_minutes) },
+  ]
+
+  agent_container = {
+    name              = "runner-agent"
+    image             = var.agent_image_uri
+    essential         = true
+    memoryReservation = var.task_memory_mib
+    # Override the image's default CMD (["daemon"], which starts an inner
+    # dockerd for JOB containers) so this task runs the pull-based agent loop.
+    command = ["agent"]
+    mountPoints = [
+      { sourceVolume = "docker-sock", containerPath = "/var/run/docker.sock" },
+      { sourceVolume = "workspace", containerPath = "/finalize-ws" },
+    ]
+    environment = local.agent_environment
+    secrets = [
+      { name = "FINALIZE_RUNNER_FLEET_TOKEN", valueFrom = var.fleet_token_secret_arn },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.runner.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "agent"
+      }
+    }
+  }
+}
+
 resource "aws_ecs_task_definition" "agent" {
   family                   = "${local.name}-agent"
   network_mode             = "bridge"
@@ -233,43 +343,8 @@ resource "aws_ecs_task_definition" "agent" {
     host_path = "/finalize-ws"
   }
 
-  container_definitions = jsonencode([
-    {
-      name              = "runner-agent"
-      image             = var.agent_image_uri
-      essential         = true
-      memoryReservation = var.task_memory_mib
-      # Override the image's default CMD (["daemon"], which starts an inner
-      # dockerd for JOB containers) so this task runs the pull-based agent loop.
-      command = ["agent"]
-      mountPoints = [
-        { sourceVolume = "docker-sock", containerPath = "/var/run/docker.sock" },
-        { sourceVolume = "workspace", containerPath = "/finalize-ws" },
-      ]
-      environment = [
-        { name = "FINALIZE_RUNNER_HUB_URL", value = var.hub_url },
-        { name = "FINALIZE_RUNNER_WORKSPACE_DIR", value = "/finalize-ws" },
-        { name = "FINALIZE_RUNNER_ORG_SCOPE", value = "shared" },
-        # Task scale-in protection lease length. Must exceed the longest expected
-        # shard so a refresh-starved long job stays shielded through a dynamic
-        # mid-run scale-in (see ecs-task-protection.ts). Read by the runner-agent
-        # in the agent image — changing it requires the agent image to roll.
-        { name = "FINALIZE_TASK_PROTECTION_EXPIRY_MINUTES", value = tostring(var.task_protection_expiry_minutes) },
-      ]
-      secrets = [
-        { name = "FINALIZE_RUNNER_FLEET_TOKEN", valueFrom = var.fleet_token_secret_arn },
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.runner.name
-          "awslogs-region"        = var.aws_region
-          "awslogs-stream-prefix" = "agent"
-        }
-      }
-    }
-  ])
-  tags = var.tags
+  container_definitions = jsonencode([local.agent_container])
+  tags                  = var.tags
 }
 
 resource "aws_ecs_service" "agent" {
@@ -295,6 +370,67 @@ resource "aws_ecs_service" "agent" {
   # The Hub's queue-depth autoscaler owns desiredCount at runtime (scales the
   # agent count to match active jobs, back to zero when idle). Don't let TF
   # reset it on apply.
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
+
+  tags = var.tags
+}
+
+# ── On-demand runner-agent service (optional) ────────────────────────────────
+resource "aws_ecs_task_definition" "agent_ondemand" {
+  count                    = var.ondemand_pool ? 1 : 0
+  family                   = "${local.name}-agent-ondemand"
+  network_mode             = "bridge"
+  requires_compatibilities = ["EC2"]
+  execution_role_arn       = aws_iam_role.task_execution.arn
+  task_role_arn            = aws_iam_role.task.arn
+
+  volume {
+    name      = "docker-sock"
+    host_path = "/var/run/docker.sock"
+  }
+  volume {
+    name      = "workspace"
+    host_path = "/finalize-ws"
+  }
+
+  container_definitions = jsonencode([merge(local.agent_container, {
+    environment = concat(local.agent_environment, [
+      { name = "FINALIZE_RUNNER_CLASS", value = "ondemand" },
+    ])
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.runner.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "agent-ondemand"
+      }
+    }
+  })])
+  tags = var.tags
+}
+
+resource "aws_ecs_service" "agent_ondemand" {
+  count           = var.ondemand_pool ? 1 : 0
+  name            = "${local.name}-agent-ondemand"
+  cluster         = aws_ecs_cluster.fleet.id
+  task_definition = aws_ecs_task_definition.agent_ondemand[0].arn
+  # The Hub scales this from queued `ondemand` jobs; start at zero.
+  desired_count = 0
+
+  capacity_provider_strategy {
+    capacity_provider = aws_ecs_capacity_provider.ondemand[0].name
+    weight            = 1
+  }
+
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 200
+
+  # ECS rejects a service whose capacity provider isn't associated with the
+  # cluster yet; without this the first apply can race the association update.
+  depends_on = [aws_ecs_cluster_capacity_providers.fleet]
+
   lifecycle {
     ignore_changes = [desired_count]
   }

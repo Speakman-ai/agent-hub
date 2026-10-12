@@ -10,6 +10,10 @@ output "agent_service" {
   value = aws_ecs_service.agent.name
 }
 
+output "ondemand_agent_service" {
+  value = var.ondemand_pool ? aws_ecs_service.agent_ondemand[0].name : null
+}
+
 output "log_group" {
   value = aws_cloudwatch_log_group.runner.name
 }

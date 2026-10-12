@@ -57,6 +57,7 @@ import type { SpawnedStep, SpawnStepFn } from '../finalize/step-runner.js';
 import { defaultSpawnStep } from '../finalize/step-runner.js';
 import {
   isHostRunsOn,
+  resolveDeployRunnerClass,
   isMacosRunsOn,
   macosRunnerMismatch,
   resolveRunsOnImage,
@@ -1160,6 +1161,9 @@ export async function runDeployment(
         // The remote backend keys the runner class (and native execution) off
         // this, so a macOS deploy only reaches a macOS agent.
         runsOn: envConfig.runsOn,
+        // Linux deploys go to the on-demand pool when one exists: a Spot reclaim
+        // mid-release is worse than paying on-demand for a few minutes.
+        ...(macosViaBackend ? {} : { runnerClass: resolveDeployRunnerClass() }),
         worktreePath,
         composeProjectName: deployComposeProjectName(deploymentId, environment),
         env: baseEnv,

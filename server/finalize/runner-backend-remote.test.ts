@@ -156,6 +156,72 @@ describe('createRemoteRunnerBackend', () => {
     await lease.release();
   });
 
+  it('routes a container job with runnerClass=ondemand to on-demand agents only', async () => {
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 2000 });
+    const acquireP = backend.acquire({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r-deploy',
+      jobId: 'production',
+      matrixKey: 'deploy',
+      image: 'img:latest',
+      runsOn: 'ubuntu-24.04',
+      runnerClass: 'ondemand',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'cp',
+      env: {},
+      labels: {},
+    });
+    // A Spot (default-class) agent must NOT claim the deploy.
+    expect(claimRunnerJob({ agentId: 'spot-1', leaseMs: 60_000, now: Date.now() })).toBeNull();
+    const claimed = claimRunnerJob({
+      agentId: 'od-1',
+      runnerClass: 'ondemand',
+      leaseMs: 60_000,
+      now: Date.now(),
+    });
+    expect(claimed).not.toBeNull();
+    getJobChannel(claimed!.id)!.attach();
+    const lease = await acquireP;
+    await lease.release();
+  });
+
+  it('ignores runnerClass for a macOS job (still needs a macOS agent)', async () => {
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 2000 });
+    const acquireP = backend.acquire({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r-mac-od',
+      jobId: 'ios',
+      matrixKey: '',
+      image: '',
+      runsOn: 'macos-14',
+      runnerClass: 'ondemand',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'cp',
+      env: {},
+      labels: {},
+    });
+    expect(
+      claimRunnerJob({
+        agentId: 'od-1',
+        runnerClass: 'ondemand',
+        leaseMs: 60_000,
+        now: Date.now(),
+      }),
+    ).toBeNull();
+    const claimed = claimRunnerJob({
+      agentId: 'mac-1',
+      runnerClass: 'macos',
+      leaseMs: 60_000,
+      now: Date.now(),
+    });
+    expect(claimed).not.toBeNull();
+    getJobChannel(claimed!.id)!.attach();
+    const lease = await acquireP;
+    await lease.release();
+  });
+
   // Stop Finalize: cancelRemoteJobsForRun must flip the queue row terminal,
   // settle the in-flight step in THIS process (so runStepsSequence unblocks and
   // the orchestrator reaches cancelTerminal), and dispose the channel so the

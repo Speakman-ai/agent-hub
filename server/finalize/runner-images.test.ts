@@ -6,6 +6,7 @@ import {
   isMacosRunsOn,
   macosRunnerMismatch,
   runnerClassForRunsOn,
+  resolveDeployRunnerClass,
   MACOS_RUNNER_CLASS,
   DEFAULT_RUNNER_CLASS,
   DEFAULT_UBUNTU_24_04_IMAGE,
@@ -180,5 +181,41 @@ describe('macosRunnerMismatch', () => {
     expect(macosRunnerMismatch('ubuntu-24.04', 'local', ['linux'])).toBeNull();
     expect(macosRunnerMismatch('host', 'local', ['linux'])).toBeNull();
     expect(macosRunnerMismatch('ubuntu-24.04', 'remote', [])).toBeNull();
+  });
+});
+
+describe('resolveDeployRunnerClass', () => {
+  it('stays on the default class when no on-demand pool is configured', () => {
+    expect(resolveDeployRunnerClass({})).toBe('default');
+    expect(resolveDeployRunnerClass({ FINALIZE_FLEET_ECS_CLUSTER: 'c' })).toBe('default');
+  });
+
+  it('routes to ondemand when an on-demand ECS service is configured', () => {
+    expect(
+      resolveDeployRunnerClass({
+        FINALIZE_FLEET_ECS_CLUSTER: 'c',
+        FINALIZE_FLEET_ONDEMAND_ECS_SERVICE: 'svc-od',
+      }),
+    ).toBe('ondemand');
+    expect(
+      resolveDeployRunnerClass({
+        FINALIZE_FLEET_ONDEMAND_ECS_CLUSTER: 'c-od',
+        FINALIZE_FLEET_ONDEMAND_ECS_SERVICE: 'svc-od',
+      }),
+    ).toBe('ondemand');
+  });
+
+  it('honours an explicit FINALIZE_DEPLOY_RUNNER_CLASS, but never macos', () => {
+    const od = { FINALIZE_FLEET_ECS_CLUSTER: 'c', FINALIZE_FLEET_ONDEMAND_ECS_SERVICE: 'svc-od' };
+    expect(resolveDeployRunnerClass({ ...od, FINALIZE_DEPLOY_RUNNER_CLASS: 'default' })).toBe(
+      'default',
+    );
+    expect(resolveDeployRunnerClass({ FINALIZE_DEPLOY_RUNNER_CLASS: 'OnDemand' })).toBe('ondemand');
+    expect(resolveDeployRunnerClass({ ...od, FINALIZE_DEPLOY_RUNNER_CLASS: 'macos' })).toBe(
+      'ondemand',
+    );
+    expect(resolveDeployRunnerClass({ FINALIZE_DEPLOY_RUNNER_CLASS: 'bad class!' })).toBe(
+      'default',
+    );
   });
 });

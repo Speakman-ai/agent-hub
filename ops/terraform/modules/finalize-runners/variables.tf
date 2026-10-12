@@ -54,6 +54,24 @@ variable "instance_types" {
   description = "Instance types for the mixed-instances Spot pool (all 32 GB; diversified across r/m families + generations to keep Spot fulfillable)."
 }
 
+variable "ondemand_pool" {
+  type        = bool
+  default     = false
+  description = "Add an on-demand ASG + ECS service for the `ondemand` runner class (deploys). Finalize CI stays on the main pool."
+}
+
+variable "ondemand_max_size" {
+  type        = number
+  default     = 2
+  description = "Max on-demand deploy agents (one per instance). Deploys are serialized per environment, so this is small."
+}
+
+variable "ondemand_instance_types" {
+  type        = list(string)
+  default     = []
+  description = "Instance types for the on-demand pool, cheapest first (prioritized allocation). Empty = reuse instance_types."
+}
+
 variable "min_size" {
   type        = number
   default     = 0 # scale-to-zero when idle

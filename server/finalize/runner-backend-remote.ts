@@ -158,8 +158,9 @@ export function createRemoteRunnerBackend(opts?: {
         worktreeRef = getUrl ? { ...baseRef, getUrl } : baseRef;
       }
       const runsOn = spec.runsOn ?? '';
-      const runnerClass = runnerClassForRunsOn(runsOn);
       const native = isMacosRunsOn(runsOn);
+      const runnerClass =
+        !native && spec.runnerClass ? spec.runnerClass : runnerClassForRunsOn(runsOn);
       const wire: RunnerJobWireSpec = {
         orgId: spec.orgId,
         projectId: spec.projectId,

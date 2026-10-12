@@ -106,6 +106,31 @@ export function isHostRunsOn(runsOn: string): boolean {
 export const MACOS_RUNNER_CLASS = 'macos';
 /** Default runner queue class (Linux DinD agents). */
 export const DEFAULT_RUNNER_CLASS = 'default';
+/**
+ * Linux DinD agents on on-demand (non-Spot) capacity. Deploys route here when an
+ * on-demand pool is configured so a Spot reclaim can't interrupt a release.
+ */
+export const ONDEMAND_RUNNER_CLASS = 'ondemand';
+
+/**
+ * Queue class for a Linux container deploy job.
+ *
+ * `FINALIZE_DEPLOY_RUNNER_CLASS` wins when it is a valid class name (set it to
+ * `default` to keep deploys on the Spot fleet, or `ondemand` for a static
+ * on-demand agent pool with no ECS scaler). Otherwise deploys go to `ondemand`
+ * only when an on-demand ECS pool is configured, and stay on `default` when it
+ * isn't, so a deploy never waits on a class no agent serves.
+ */
+export function resolveDeployRunnerClass(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.FINALIZE_DEPLOY_RUNNER_CLASS?.trim().toLowerCase();
+  if (explicit && explicit !== MACOS_RUNNER_CLASS && /^[a-z0-9_-]+$/.test(explicit)) {
+    return explicit;
+  }
+  const cluster =
+    env.FINALIZE_FLEET_ONDEMAND_ECS_CLUSTER?.trim() || env.FINALIZE_FLEET_ECS_CLUSTER?.trim();
+  const service = env.FINALIZE_FLEET_ONDEMAND_ECS_SERVICE?.trim();
+  return cluster && service ? ONDEMAND_RUNNER_CLASS : DEFAULT_RUNNER_CLASS;
+}
 
 /**
  * Map a `runs-on` label to the runner queue class that may claim it.

@@ -511,6 +511,54 @@ describe('triggerDeployment — happy path', () => {
     expect(fb.acquireCalls[0].runId).toBeTruthy();
   });
 
+  it('queues a Linux deploy on the on-demand runner class when that pool exists', async () => {
+    const saved = {
+      cluster: process.env.FINALIZE_FLEET_ECS_CLUSTER,
+      service: process.env.FINALIZE_FLEET_ONDEMAND_ECS_SERVICE,
+      explicit: process.env.FINALIZE_DEPLOY_RUNNER_CLASS,
+    };
+    delete process.env.FINALIZE_DEPLOY_RUNNER_CLASS;
+    try {
+      delete process.env.FINALIZE_FLEET_ONDEMAND_ECS_SERVICE;
+      const spot = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+      await triggerDeployment(
+        {
+          projectId: PROJECT,
+          environment: 'dev',
+          ref: 'r1',
+          worktreePath: WORKTREE,
+          config: CONFIG,
+        },
+        makeDeps(spot.backend),
+      );
+      expect(spot.acquireCalls[0].runnerClass).toBe('default');
+
+      process.env.FINALIZE_FLEET_ECS_CLUSTER = 'hub-finalize-runner';
+      process.env.FINALIZE_FLEET_ONDEMAND_ECS_SERVICE = 'hub-finalize-runner-agent-ondemand';
+      const od = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+      await triggerDeployment(
+        {
+          projectId: PROJECT,
+          environment: 'dev',
+          ref: 'r2',
+          worktreePath: WORKTREE,
+          config: CONFIG,
+        },
+        makeDeps(od.backend),
+      );
+      expect(od.acquireCalls[0].runnerClass).toBe('ondemand');
+    } finally {
+      for (const [k, v] of [
+        ['FINALIZE_FLEET_ECS_CLUSTER', saved.cluster],
+        ['FINALIZE_FLEET_ONDEMAND_ECS_SERVICE', saved.service],
+        ['FINALIZE_DEPLOY_RUNNER_CLASS', saved.explicit],
+      ] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it('starts from a minimal allowlisted env — never the Hub process.env', async () => {
     const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
     // Source env carries an allowlisted var AND Hub-only secrets that must NOT

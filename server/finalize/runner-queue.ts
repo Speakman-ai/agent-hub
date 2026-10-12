@@ -401,18 +401,53 @@ export function pruneOldestRunnerJobLogs(args: {
 }
 
 /**
- * In-flight depth (queued + claimed + running) — the autoscaler signal.
- * Pass orgId for a per-tenant metric; omit for the aggregate.
+ * Restricts a depth/inflight count to the runner classes one fleet pool serves.
+ * `include` counts only those classes; `exclude` counts everything else. Omit
+ * both for the aggregate across classes.
  */
-export function runnerQueueDepth(orgId?: string): number {
-  const where = orgId ? 'AND org_id=@orgId' : '';
+export interface RunnerClassFilter {
+  include?: readonly string[];
+  exclude?: readonly string[];
+}
+
+function countRunnerJobs(
+  states: readonly string[],
+  orgId: string | undefined,
+  filter: RunnerClassFilter | undefined,
+): number {
+  const clauses = [`state IN (${states.map((st) => `'${st}'`).join(',')})`];
+  const params: Record<string, unknown> = {};
+  if (orgId) {
+    clauses.push('org_id=@orgId');
+    params.orgId = orgId;
+  }
+  const classList = (key: 'inc' | 'exc', classes: readonly string[]): string =>
+    classes
+      .map((c, i) => {
+        params[`${key}${i}`] = c;
+        return `@${key}${i}`;
+      })
+      .join(',');
+  if (filter?.include) {
+    if (!filter.include.length) return 0;
+    clauses.push(`runner_class IN (${classList('inc', filter.include)})`);
+  }
+  if (filter?.exclude?.length) {
+    clauses.push(`runner_class NOT IN (${classList('exc', filter.exclude)})`);
+  }
   const row = getOrgsDb()
-    .prepare(
-      `SELECT COUNT(*) AS n FROM runner_jobs
-        WHERE state IN ('queued','claimed','running') ${where}`,
-    )
-    .get({ orgId: orgId ?? null }) as { n: number };
+    .prepare(`SELECT COUNT(*) AS n FROM runner_jobs WHERE ${clauses.join(' AND ')}`)
+    .get(params) as { n: number };
   return row.n;
+}
+
+/**
+ * In-flight depth (queued + claimed + running) — the autoscaler signal.
+ * Pass orgId for a per-tenant metric; omit for the aggregate. Pass a class
+ * filter to size one fleet pool (e.g. only the on-demand class).
+ */
+export function runnerQueueDepth(orgId?: string, filter?: RunnerClassFilter): number {
+  return countRunnerJobs(['queued', 'claimed', 'running'], orgId, filter);
 }
 
 /**
@@ -423,15 +458,8 @@ export function runnerQueueDepth(orgId?: string): number {
  * also counts `queued`) still drives scale-up so a backlog isn't starved.
  * Pass orgId for a per-tenant metric; omit for the aggregate.
  */
-export function runnerInflightCount(orgId?: string): number {
-  const where = orgId ? 'AND org_id=@orgId' : '';
-  const row = getOrgsDb()
-    .prepare(
-      `SELECT COUNT(*) AS n FROM runner_jobs
-        WHERE state IN ('claimed','running') ${where}`,
-    )
-    .get({ orgId: orgId ?? null }) as { n: number };
-  return row.n;
+export function runnerInflightCount(orgId?: string, filter?: RunnerClassFilter): number {
+  return countRunnerJobs(['claimed', 'running'], orgId, filter);
 }
 
 /**
@@ -504,6 +532,8 @@ export interface ReapedRunnerJob {
    * lease, blocking scale-in / deploy reclaim.
    */
   ecsTaskArn: string | null;
+  /** Queue class of the reaped job, so the scaler credits the retry to the right pool. */
+  runnerClass: string;
 }
 
 /**
@@ -526,12 +556,13 @@ export function reapExpiredRunnerLeases(now: number): ReapedRunnerJob[] {
               END
         WHERE state IN ('claimed','running') AND lease_expires_at IS NOT NULL
           AND lease_expires_at < @now
-        RETURNING id, spot_interruption_at, claimed_by`,
+        RETURNING id, spot_interruption_at, claimed_by, runner_class`,
     )
     .all({ now }) as Array<{
     id: string;
     spot_interruption_at: number | null;
     claimed_by: string | null;
+    runner_class: string | null;
   }>;
   if (!rows.length) return [];
   // Resolve each reaped agent's ECS task ARN (cached per agent) so the caller can
@@ -548,6 +579,11 @@ export function reapExpiredRunnerLeases(now: number): ReapedRunnerJob[] {
       }
       ecsTaskArn = arnByAgent.get(r.claimed_by) ?? null;
     }
-    return { id: r.id, spotReclaimed: r.spot_interruption_at != null, ecsTaskArn };
+    return {
+      id: r.id,
+      spotReclaimed: r.spot_interruption_at != null,
+      ecsTaskArn,
+      runnerClass: r.runner_class ?? 'default',
+    };
   });
 }

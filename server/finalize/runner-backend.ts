@@ -40,6 +40,12 @@ export interface JobClaimSpec {
    * back-compat; absent is treated as the default (Linux container) class.
    */
   runsOn?: string;
+  /**
+   * Explicit queue class for a Linux container job, overriding the class derived
+   * from `runsOn`. Ignored for macOS labels (those always need a macOS agent).
+   * The Deployment Module sets `ondemand` so deploys avoid the Spot fleet.
+   */
+  runnerClass?: string;
   /** Hub-local worktree path (local backend clones a per-job copy then bind-mounts it; remote ships a bundle). */
   worktreePath: string;
   composeProjectName: string;

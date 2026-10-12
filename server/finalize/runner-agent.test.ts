@@ -1198,6 +1198,13 @@ describe('resolveAgentMode', () => {
   it('defaults to the DinD (non-native) default class', () => {
     expect(resolveAgentMode({})).toEqual({ runnerClass: 'default', native: false });
   });
+
+  it('runs an on-demand agent as a DinD (non-native) agent in the ondemand class', () => {
+    expect(resolveAgentMode({ FINALIZE_RUNNER_CLASS: 'ondemand' })).toEqual({
+      runnerClass: 'ondemand',
+      native: false,
+    });
+  });
 });
 
 describe('assertNativeRunnerTenancy', () => {

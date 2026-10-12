@@ -99,7 +99,7 @@ describe('runner-queue', () => {
     expect(reapExpiredRunnerLeases(25_000)).toEqual([]);
     // expired by 40_000 — generic loss, no spot interruption reported
     expect(reapExpiredRunnerLeases(40_000)).toEqual([
-      { id: c.id, spotReclaimed: false, ecsTaskArn: null },
+      { id: c.id, spotReclaimed: false, ecsTaskArn: null, runnerClass: 'default' },
     ]);
     expect(runnerQueueDepth()).toBe(0); // 'lost' is terminal
   });
@@ -115,7 +115,7 @@ describe('runner-queue', () => {
     enq({ jobId: 'j', now: 1000 });
     const c = claimRunnerJob({ agentId: 'agent-x', leaseMs: 10_000, now: 2000 })!;
     expect(reapExpiredRunnerLeases(40_000)).toEqual([
-      { id: c.id, spotReclaimed: false, ecsTaskArn: arn },
+      { id: c.id, spotReclaimed: false, ecsTaskArn: arn, runnerClass: 'default' },
     ]);
   });
 
@@ -128,7 +128,7 @@ describe('runner-queue', () => {
     expect(markRunnerJobSpotInterruption({ jobId: c.id, agentId: 'a', now: 6000 })).toBe(false);
     // Instance dies → lease expires → reaper classifies it as a reclaim.
     expect(reapExpiredRunnerLeases(40_000)).toEqual([
-      { id: c.id, spotReclaimed: true, ecsTaskArn: null },
+      { id: c.id, spotReclaimed: true, ecsTaskArn: null, runnerClass: 'default' },
     ]);
     const row = getOrgsDb().prepare('SELECT detail FROM runner_jobs WHERE id=?').get(c.id) as {
       detail: string;
@@ -185,7 +185,7 @@ describe('runner-queue', () => {
       false,
     );
     expect(reapExpiredRunnerLeases(40_000)).toEqual([
-      { id: c.id, spotReclaimed: false, ecsTaskArn: null },
+      { id: c.id, spotReclaimed: false, ecsTaskArn: null, runnerClass: 'default' },
     ]);
   });
 

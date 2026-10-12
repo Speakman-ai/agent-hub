@@ -27,12 +27,18 @@
  *     only the idle tasks. This is what lets 50 idle runners collapse to ~2
  *     while the last 2 jobs finish, instead of holding all 50.
  *
- * No-op unless FINALIZE_FLEET_ECS_CLUSTER + FINALIZE_FLEET_ECS_SERVICE are set,
- * so the local backend and every non-fleet env are unaffected.
+ * Pools: the Spot service (FINALIZE_FLEET_ECS_*) is sized from every class
+ * except `ondemand`; an optional on-demand service
+ * (FINALIZE_FLEET_ONDEMAND_ECS_SERVICE) is sized from `ondemand` jobs only,
+ * which is where deploys queue when it exists. See `readFleetPools`.
+ *
+ * No-op unless at least one pool is configured, so the local backend and every
+ * non-fleet env are unaffected.
  */
 import { ECSClient, UpdateServiceCommand, DescribeServicesCommand } from '@aws-sdk/client-ecs';
 import { runnerQueueDepth, runnerInflightCount, reapExpiredRunnerLeases } from './runner-queue.js';
-import type { ReapedRunnerJob } from './runner-queue.js';
+import type { ReapedRunnerJob, RunnerClassFilter } from './runner-queue.js';
+import { DEFAULT_RUNNER_CLASS, ONDEMAND_RUNNER_CLASS } from './runner-images.js';
 import { clearHubTaskProtection, loadHubTaskProtectionConfig } from './hub-task-protection.js';
 import { getJobChannel } from './runner-job-channel.js';
 import { spotReclaimDetail } from './spot-interruption.js';
@@ -41,6 +47,8 @@ import { runnerLostDetail } from './runner-lost.js';
 import { DEFAULT_FLEET_MAX_AGENTS, DEFAULT_FLEET_MIN_AGENTS } from './runner-fleet-constants.js';
 
 interface FleetScalerConfig {
+  /** Pool label for logs and per-pool state (`default` or `ondemand`). */
+  pool: string;
   cluster: string;
   service: string;
   min: number;
@@ -50,7 +58,12 @@ interface FleetScalerConfig {
   dynamicScaleDown: boolean;
   /** Warm spares to keep above in-flight work in dynamic mode (0 = none). */
   warmHeadroom: number;
+  /** Runner classes whose jobs this pool's agents claim. */
+  classes: RunnerClassFilter;
 }
+
+/** Default max for the on-demand deploy pool: deploys are few and serialized per env. */
+export const DEFAULT_ONDEMAND_FLEET_MAX_AGENTS = 2;
 
 function intEnv(name: string, dflt: number): number {
   const n = Number.parseInt(process.env[name]?.trim() ?? '', 10);
@@ -62,19 +75,53 @@ function boolEnv(name: string): boolean {
   return v === '1' || v === 'true' || v === 'on' || v === 'yes';
 }
 
-function readConfig(): FleetScalerConfig | null {
+/**
+ * The scaled fleet pools. The Spot pool (FINALIZE_FLEET_ECS_*) serves every
+ * class except `ondemand`; the optional on-demand pool
+ * (FINALIZE_FLEET_ONDEMAND_ECS_SERVICE, same cluster unless
+ * FINALIZE_FLEET_ONDEMAND_ECS_CLUSTER is set) serves only `ondemand`, so a
+ * queued deploy scales on-demand capacity and never a Spot instance.
+ */
+export function readFleetPools(): FleetScalerConfig[] {
+  const pools: FleetScalerConfig[] = [];
+  const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION;
+  const dynamicScaleDown = boolEnv('FINALIZE_FLEET_DYNAMIC_SCALE_DOWN');
   const cluster = process.env.FINALIZE_FLEET_ECS_CLUSTER?.trim();
   const service = process.env.FINALIZE_FLEET_ECS_SERVICE?.trim();
-  if (!cluster || !service) return null;
-  return {
-    cluster,
-    service,
-    min: intEnv('FINALIZE_FLEET_MIN_AGENTS', DEFAULT_FLEET_MIN_AGENTS),
-    max: intEnv('FINALIZE_FLEET_MAX_AGENTS', DEFAULT_FLEET_MAX_AGENTS),
-    region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION,
-    dynamicScaleDown: boolEnv('FINALIZE_FLEET_DYNAMIC_SCALE_DOWN'),
-    warmHeadroom: intEnv('FINALIZE_FLEET_WARM_HEADROOM', 0),
-  };
+  if (cluster && service) {
+    pools.push({
+      pool: DEFAULT_RUNNER_CLASS,
+      cluster,
+      service,
+      min: intEnv('FINALIZE_FLEET_MIN_AGENTS', DEFAULT_FLEET_MIN_AGENTS),
+      max: intEnv('FINALIZE_FLEET_MAX_AGENTS', DEFAULT_FLEET_MAX_AGENTS),
+      region,
+      dynamicScaleDown,
+      warmHeadroom: intEnv('FINALIZE_FLEET_WARM_HEADROOM', 0),
+      classes: { exclude: [ONDEMAND_RUNNER_CLASS] },
+    });
+  }
+  const odCluster = process.env.FINALIZE_FLEET_ONDEMAND_ECS_CLUSTER?.trim() || cluster;
+  const odService = process.env.FINALIZE_FLEET_ONDEMAND_ECS_SERVICE?.trim();
+  if (odCluster && odService) {
+    pools.push({
+      pool: ONDEMAND_RUNNER_CLASS,
+      cluster: odCluster,
+      service: odService,
+      min: intEnv('FINALIZE_FLEET_ONDEMAND_MIN_AGENTS', 0),
+      max: intEnv('FINALIZE_FLEET_ONDEMAND_MAX_AGENTS', DEFAULT_ONDEMAND_FLEET_MAX_AGENTS),
+      region,
+      dynamicScaleDown,
+      warmHeadroom: 0,
+      classes: { include: [ONDEMAND_RUNNER_CLASS] },
+    });
+  }
+  return pools;
+}
+
+function poolServesClass(pool: FleetScalerConfig, runnerClass: string): boolean {
+  if (pool.classes.include) return pool.classes.include.includes(runnerClass);
+  return !(pool.classes.exclude ?? []).includes(runnerClass);
 }
 
 /** Target agent count for a given queue depth. */
@@ -239,16 +286,35 @@ export function planFleetChange(args: {
   return { target, state: { emptySinceMs: 0, lastReapAtMs } };
 }
 
+interface PoolRuntimeState {
+  /** Last desiredCount we set, cached so we don't hammer UpdateService (-1 = unknown). */
+  lastSetDesired: number;
+  hysteresis: ScalerHysteresis;
+}
+
 let client: ECSClient | null = null;
-let lastSetDesired = -1; // cached so we don't hammer UpdateService
-let scalerState: ScalerHysteresis = { emptySinceMs: 0, lastReapAtMs: 0 };
+const poolState = new Map<string, PoolRuntimeState>();
 let reconciling = false;
+
+function stateFor(pool: FleetScalerConfig): PoolRuntimeState {
+  const key = `${pool.cluster}/${pool.service}`;
+  let st = poolState.get(key);
+  if (!st) {
+    st = { lastSetDesired: -1, hysteresis: { emptySinceMs: 0, lastReapAtMs: 0 } };
+    poolState.set(key, st);
+  }
+  return st;
+}
+
+/** Test-only: inject the ECS client the reconcile loop sends commands through. */
+export function __setFleetScalerEcsClientForTests(c: ECSClient | null): void {
+  client = c;
+}
 
 /** Test-only: reset module-level scaler state so reconcile-level tests isolate. */
 export function __resetFleetScalerStateForTests(): void {
   client = null;
-  lastSetDesired = -1;
-  scalerState = { emptySinceMs: 0, lastReapAtMs: 0 };
+  poolState.clear();
   reconciling = false;
   if (timer) {
     clearInterval(timer);
@@ -262,7 +328,8 @@ function ecs(cfg: FleetScalerConfig): ECSClient {
 }
 
 async function currentDesired(cfg: FleetScalerConfig): Promise<number> {
-  if (lastSetDesired >= 0) return lastSetDesired;
+  const cached = stateFor(cfg).lastSetDesired;
+  if (cached >= 0) return cached;
   const res = await ecs(cfg).send(
     new DescribeServicesCommand({ cluster: cfg.cluster, services: [cfg.service] }),
   );
@@ -343,55 +410,76 @@ export function reapDeadRunnerJobs(now: number = Date.now()): ReapedRunnerJob[] 
 }
 
 /**
- * Bring the agent fleet size in line with the current queue depth. Safe to call
- * frequently (deduped against the last value it set; scale-down gated).
+ * Bring each fleet pool's size in line with the queue depth of the classes it
+ * serves. Safe to call frequently (deduped against the last value it set;
+ * scale-down gated). Leases are reaped once per tick, then each pool plans
+ * independently so one pool's backlog never scales the other.
  */
 export async function reconcileFleetCapacity(now: number = Date.now()): Promise<void> {
-  const cfg = readConfig();
-  if (!cfg || reconciling) return;
+  const pools = readFleetPools();
+  if (!pools.length || reconciling) return;
   reconciling = true;
   try {
     const reaped = reapDeadRunnerJobs(now);
-    // Include just-reaped jobs: they re-enqueue immediately, and the post-reap
-    // COUNT would otherwise under-scale (no replacement agent for the retry).
-    const depth = queueDepthForScale(runnerQueueDepth(), reaped.length);
-    // claimed+running only — the floor a dynamic shrink must never cross. Cheap
-    // extra COUNT, so only taken when dynamic scale-down is actually enabled.
-    const inflight = cfg.dynamicScaleDown ? runnerInflightCount() : depth;
-    const current = await currentDesired(cfg);
-    const plan = planFleetChange({
-      depth,
-      inflight,
-      current,
-      min: cfg.min,
-      max: cfg.max,
-      reapedThisTick: reaped.length,
-      now,
-      state: scalerState,
-      dynamicScaleDown: cfg.dynamicScaleDown,
-      warmHeadroom: cfg.warmHeadroom,
-    });
-    scalerState = plan.state;
-    if (plan.target === null) return;
-
-    await ecs(cfg).send(
-      new UpdateServiceCommand({
-        cluster: cfg.cluster,
-        service: cfg.service,
-        desiredCount: plan.target,
-      }),
-    );
-    lastSetDesired = plan.target;
-    const shrunkMidRun = plan.target < current && depth > 0;
-    console.log(
-      `[fleet-scaler] queue depth=${depth} → agents ${current}→${plan.target}` +
-        (shrunkMidRun ? ' (dynamic mid-run shrink; idle tasks reaped, busy protected)' : ''),
-    );
+    for (const pool of pools) {
+      try {
+        await reconcilePool(pool, reaped, now);
+      } catch (err) {
+        console.error(
+          `[fleet-scaler] reconcile failed (${pool.pool} pool): ${(err as Error).message}`,
+        );
+      }
+    }
   } catch (err) {
     console.error(`[fleet-scaler] reconcile failed: ${(err as Error).message}`);
   } finally {
     reconciling = false;
   }
+}
+
+async function reconcilePool(
+  cfg: FleetScalerConfig,
+  reaped: ReapedRunnerJob[],
+  now: number,
+): Promise<void> {
+  const st = stateFor(cfg);
+  const reapedHere = reaped.filter((r) => poolServesClass(cfg, r.runnerClass)).length;
+  // Include just-reaped jobs: they re-enqueue immediately, and the post-reap
+  // COUNT would otherwise under-scale (no replacement agent for the retry).
+  const depth = queueDepthForScale(runnerQueueDepth(undefined, cfg.classes), reapedHere);
+  // claimed+running only — the floor a dynamic shrink must never cross. Cheap
+  // extra COUNT, so only taken when dynamic scale-down is actually enabled.
+  const inflight = cfg.dynamicScaleDown ? runnerInflightCount(undefined, cfg.classes) : depth;
+  const current = await currentDesired(cfg);
+  const plan = planFleetChange({
+    depth,
+    inflight,
+    current,
+    min: cfg.min,
+    max: cfg.max,
+    reapedThisTick: reapedHere,
+    now,
+    state: st.hysteresis,
+    dynamicScaleDown: cfg.dynamicScaleDown,
+    warmHeadroom: cfg.warmHeadroom,
+  });
+  st.hysteresis = plan.state;
+  if (plan.target === null) return;
+
+  await ecs(cfg).send(
+    new UpdateServiceCommand({
+      cluster: cfg.cluster,
+      service: cfg.service,
+      desiredCount: plan.target,
+    }),
+  );
+  st.lastSetDesired = plan.target;
+  const shrunkMidRun = plan.target < current && depth > 0;
+  const label = cfg.pool === DEFAULT_RUNNER_CLASS ? '' : ` [${cfg.pool} pool]`;
+  console.log(
+    `[fleet-scaler]${label} queue depth=${depth} → agents ${current}→${plan.target}` +
+      (shrunkMidRun ? ' (dynamic mid-run shrink; idle tasks reaped, busy protected)' : ''),
+  );
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -408,7 +496,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
  */
 export function startFleetScaler(intervalMs = 30_000): void {
   if (timer) return;
-  if (!readConfig()) {
+  if (!readFleetPools().length) {
     const reapTick = (): void => {
       try {
         reapDeadRunnerJobs();
