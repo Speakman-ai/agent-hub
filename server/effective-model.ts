@@ -216,3 +216,25 @@ export function resolveEffectiveModel(
   }
   return configuredDefault;
 }
+
+/**
+ * Engine + model for a user-initiated spawn of `agent`. The per-user engine
+ * override wins over the agent's shared engine, which is only a fallback (the
+ * shared field is no longer editable in the UI, so reading `agent.engine`
+ * directly silently pins a value the user cannot see or change).
+ */
+export function resolveAgentSpawnEngineAndModel(
+  cfg: AppConfig,
+  agent: { id: string; engine?: string | null; model?: string | null },
+  ownerUserId: string | null | undefined,
+  opts: { projectMode?: ProjectMode | null } = {},
+): { engine: string; model: string } {
+  const { engine, model } = resolveEffectiveEngineAndModel(cfg, {
+    agentId: agent.id,
+    agentEngine: agent.engine || 'claude-code',
+    agentModel: agent.model ?? null,
+    ownerUserId: ownerUserId ?? null,
+    projectMode: opts.projectMode,
+  });
+  return { engine, model };
+}

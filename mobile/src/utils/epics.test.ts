@@ -16,7 +16,6 @@ import {
   epicStateLabel,
   phaseFormToUpdateBody,
   autonomousModelOptions,
-  defaultAutonomousModel,
   epicBranchTogglePatch,
   featureBranchNameFromName,
   NO_EPIC_FILTER_ID,
@@ -391,16 +390,5 @@ describe('autonomous model helpers', () => {
   };
   it('flattens authenticated model options across engines', () => {
     expect(autonomousModelOptions(modelConfig)).toEqual(['claude-opus-4-8', 'gpt-5.5', 'gpt-5.4']);
-  });
-  it('uses the first configured engine default when no agent is preferred', () => {
-    expect(defaultAutonomousModel(modelConfig)).toBe('claude-opus-4-8');
-  });
-  it('uses the first advertised model when no engine default is available', () => {
-    expect(
-      defaultAutonomousModel({
-        engineDefaultModels: {},
-        engineValidModels: { 'cursor-agent': ['cursor-fallback', 'cursor-other'] },
-      }),
-    ).toBe('cursor-fallback');
   });
 });

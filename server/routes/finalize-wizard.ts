@@ -49,7 +49,7 @@ import { fileURLToPath } from 'url';
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { requireRole } from '../roles.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { collectFinalizeSetupDraft, type FinalizeSetupDraft } from '../finalize-setup-draft.js';
 import { parseCiConfig } from '../finalize/ci-config.js';
@@ -244,12 +244,11 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
       const draft = collectFinalizeSetupDraft(cwd);
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const sessionId = uuidv4();
-      const engine = agentLookup.agent.engine || 'claude-code';
-      const model = resolveEffectiveModel(config, engine, {
-        agentModel: agentLookup.agent.model,
-        ownerUserId: ownerUid,
-        agentId,
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        config,
+        agentLookup.agent,
+        ownerUid,
+      );
       const sessionName = `${SESSION_NAME_PREFIX} ${project.name || project.id}`;
       // use_worktree=1: the setup session runs like a normal coding
       // session. `ensureWorktree` provisions a dedicated clone on a fresh
@@ -417,12 +416,11 @@ export default function createFinalizeWizardRoutes(deps: RouteDeps): Router {
         const agentLookup = agentId ? findAgent(agentId) : null;
         if (agentId && agentLookup) {
           const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
-          const engine = agentLookup.agent.engine || 'claude-code';
-          const model = resolveEffectiveModel(config, engine, {
-            agentModel: agentLookup.agent.model,
-            ownerUserId: ownerUid,
-            agentId,
-          });
+          const { engine, model } = resolveAgentSpawnEngineAndModel(
+            config,
+            agentLookup.agent,
+            ownerUid,
+          );
           target = await createAndProvisionCommitTarget(
             { stmts, provisionSessionWorkspace: deps.provisionSessionWorkspace },
             {

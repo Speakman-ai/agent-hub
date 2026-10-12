@@ -9,7 +9,12 @@ vi.mock('./pr-list.js', () => ({
   parseRepoFullName: (value: string) => (value ? { owner: 'owner', repo: 'repo' } : null),
   resolveUserToken: vi.fn(),
 }));
-vi.mock('../effective-model.js', () => ({ resolveEffectiveModel: () => 'sonnet' }));
+vi.mock('../effective-model.js', () => ({
+  resolveAgentSpawnEngineAndModel: (_cfg: unknown, agent: { engine?: string }) => ({
+    engine: agent.engine || 'claude-code',
+    model: 'sonnet',
+  }),
+}));
 vi.mock('../session-ownership.js', () => ({
   resolveOwnerUserId: () => 'user-1',
   setSessionOwner: vi.fn(),

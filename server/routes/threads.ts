@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import type { RouteDeps, ThreadRow, ThreadEntryRow, SessionRow } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { buildForwardedSessionTitle } from '../session-title.js';
@@ -209,13 +209,12 @@ export default function createThreadRoutes(deps: RouteDeps): Router {
         sourceTitle: thread.name,
         fallback: `Forwarded from ${thread.name}`,
       });
-      const engine = targetAgent.engine || 'claude-code';
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
-      const model = resolveEffectiveModel(config, engine, {
-        agentModel: targetAgent.model,
-        ownerUserId: ownerUid,
-        agentId: targetAgentId,
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        config,
+        { id: targetAgentId, engine: targetAgent.engine, model: targetAgent.model },
+        ownerUid,
+      );
       const useWorktree = defaultSessionUseWorktreeFlag(targetFound.project);
       stmts.createSession.run(
         newSessionId,

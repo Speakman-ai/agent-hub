@@ -27,7 +27,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { requireRole } from '../roles.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { collectLogsSetupDraft, type LogsSetupDraft } from '../logs-setup-draft.js';
 import { listLogSources, type LogSourceRecord } from '../logs/log-sources-store.js';
@@ -189,12 +189,11 @@ export default function createLogsWizardRoutes(deps: RouteDeps): Router {
       const draft = buildDraft(project);
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const sessionId = uuidv4();
-      const engine = agentLookup.agent.engine || 'claude-code';
-      const model = resolveEffectiveModel(config, engine, {
-        agentModel: agentLookup.agent.model,
-        ownerUserId: ownerUid,
-        agentId,
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        config,
+        agentLookup.agent,
+        ownerUid,
+      );
       const sessionName = `[Logs Setup] ${project.name || project.id}`;
       // use_worktree=1: the wizard edits app code on its own branch and uses
       // Finalize Code Changes for review/push like any normal coding session.

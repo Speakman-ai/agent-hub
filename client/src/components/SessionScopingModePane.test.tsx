@@ -395,7 +395,7 @@ describe('SessionScopingModePane', () => {
     expect(screen.queryByTestId('scoping-open-epic' as any)).not.toBeInTheDocument();
   });
 
-  it('creates phases with the current session owner agent default model', async () => {
+  it('stamps the session model, not the agent shared engine, on new phases', async () => {
     (api.getBoard as any).mockResolvedValue(boardWith({ autonomous_running: 0 }));
 
     render(
@@ -403,7 +403,7 @@ describe('SessionScopingModePane', () => {
         sessionId="s1"
         projectId="p1"
         linkedEpicId="e1"
-        agent={{ id: 'agent-a', engine: 'codex-cli' }}
+        agent={{ id: 'agent-a', engine: 'cursor-agent' }}
         sessionEngine="codex-cli"
         sessionModel="gpt-5.4"
         onLinkEpic={vi.fn()}

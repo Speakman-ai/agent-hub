@@ -14,12 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../utils/api';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
-import {
-  phaseFormToUpdateBody,
-  autonomousModelOptions,
-  defaultAutonomousModel,
-  epicStateLabel,
-} from '../utils/epics';
+import { phaseFormToUpdateBody, autonomousModelOptions, epicStateLabel } from '../utils/epics';
 import {
   columnNameById,
   isColumnDone,
@@ -645,12 +640,8 @@ export default function EpicDetailScreen({ route, navigation }: any) {
     if (!newPhaseName.trim()) return;
     setCreatingPhase(true);
     try {
-      const autonomousModel = defaultAutonomousModel(modelConfig);
-      await api.createPhase(projectId, {
-        epicId,
-        name: newPhaseName.trim(),
-        ...(autonomousModel ? { autonomousModel } : {}),
-      });
+      // No model stamp: the phase runs each agent's effective engine/model.
+      await api.createPhase(projectId, { epicId, name: newPhaseName.trim() });
       setNewPhaseName('');
       setShowPhaseForm(false);
       await loadBoard();
@@ -659,7 +650,7 @@ export default function EpicDetailScreen({ route, navigation }: any) {
     } finally {
       setCreatingPhase(false);
     }
-  }, [projectId, epicId, newPhaseName, modelConfig, loadBoard]);
+  }, [projectId, epicId, newPhaseName, loadBoard]);
 
   const handleAssignTicket = useCallback(
     async (ticketId: string, phaseId: string) => {

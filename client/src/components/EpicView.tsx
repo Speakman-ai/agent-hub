@@ -3,7 +3,6 @@ import { ArrowLeft, LayoutGrid, List, MessagesSquare, Plus, Search, Trash2 } fro
 import { api } from '../utils/api';
 import {
   autonomousFormFromRow,
-  defaultAutonomousModel,
   epicFormToCreateBody,
   epicFormToUpdateBody,
   EPIC_STATE_LABELS,
@@ -545,12 +544,8 @@ export default function EpicView({
     if (!epicId || !name.trim() || creatingPhase) return;
     setCreatingPhase(true);
     try {
-      const autonomousModel = defaultAutonomousModel(modelConfig);
-      await api.createPhase(projectId, {
-        epicId,
-        name: name.trim(),
-        ...(autonomousModel ? { autonomousModel } : {}),
-      });
+      // No model stamp: the phase runs each agent's effective engine/model.
+      await api.createPhase(projectId, { epicId, name: name.trim() });
       await fetchBoard();
     } catch (err: any) {
       console.error('Failed to create phase:', err);

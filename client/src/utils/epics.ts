@@ -201,48 +201,26 @@ export function autonomousModelOptions(modelConfig: any) {
   return out;
 }
 
-export function defaultAutonomousModel(modelConfig: any, opts: any = {}) {
-  const options = new Set(autonomousModelOptions(modelConfig));
-  const preferredEngine =
-    typeof opts.agent?.engine === 'string' && opts.agent.engine.trim()
-      ? opts.agent.engine.trim()
-      : typeof opts.engine === 'string' && opts.engine.trim()
-        ? opts.engine.trim()
-        : '';
-  const defaults = modelConfig?.engineDefaultModels || {};
-  const preferredModels = preferredEngine
-    ? modelConfig?.engineValidModels?.[preferredEngine]
-    : null;
-  const modelAllowedForPreferredEngine = (model: string) => {
-    if (!model) return false;
-    if (!preferredEngine) return options.has(model);
-    return Array.isArray(preferredModels) && preferredModels.includes(model);
-  };
+/**
+ * Model to stamp on a phase created from a session. `opts.engine`/`opts.model`
+ * are the session's effective values. Returns '' when no engine is known, so
+ * the phase falls back to each agent's default instead of being pinned to
+ * whichever engine happens to be listed first.
+ */
+export function defaultAutonomousModel(
+  modelConfig: any,
+  opts: { engine?: string | null; model?: string | null } = {},
+) {
+  const preferredEngine = typeof opts.engine === 'string' ? opts.engine.trim() : '';
+  if (!preferredEngine) return '';
+  const models = modelConfig?.engineValidModels?.[preferredEngine];
+  if (!Array.isArray(models) || models.length === 0) return '';
 
   const candidate = typeof opts.model === 'string' ? opts.model.trim() : '';
-  if (modelAllowedForPreferredEngine(candidate)) return candidate;
+  if (candidate && models.includes(candidate)) return candidate;
 
-  const agentModel = typeof opts.agent?.model === 'string' ? opts.agent.model.trim() : '';
-  if (modelAllowedForPreferredEngine(agentModel)) return agentModel;
-
-  if (preferredEngine) {
-    const preferredDefault =
-      typeof defaults[preferredEngine] === 'string' ? defaults[preferredEngine].trim() : '';
-    if (
-      preferredDefault &&
-      Array.isArray(preferredModels) &&
-      preferredModels.includes(preferredDefault)
-    ) {
-      return preferredDefault;
-    }
-    if (Array.isArray(preferredModels) && preferredModels.length > 0) return preferredModels[0];
-  }
-
-  for (const [engine, models] of Object.entries(modelConfig?.engineValidModels || {}) as any[]) {
-    const engineDefault = typeof defaults[engine] === 'string' ? defaults[engine].trim() : '';
-    if (engineDefault && Array.isArray(models) && models.includes(engineDefault)) {
-      return engineDefault;
-    }
-  }
-  return autonomousModelOptions(modelConfig)[0] || '';
+  const engineDefault = modelConfig?.engineDefaultModels?.[preferredEngine];
+  const trimmedDefault = typeof engineDefault === 'string' ? engineDefault.trim() : '';
+  if (trimmedDefault && models.includes(trimmedDefault)) return trimmedDefault;
+  return models[0];
 }

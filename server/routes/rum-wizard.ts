@@ -40,7 +40,7 @@ import { promisify } from 'util';
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { requireRole } from '../roles.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { collectRumSetupDraft, type RumSetupDraft } from '../rum-setup-draft.js';
 import {
@@ -299,12 +299,11 @@ export default function createRumWizardRoutes(deps: RouteDeps): Router {
       });
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const sessionId = uuidv4();
-      const engine = agentLookup.agent.engine || 'claude-code';
-      const model = resolveEffectiveModel(config, engine, {
-        agentModel: agentLookup.agent.model,
-        ownerUserId: ownerUid,
-        agentId,
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        config,
+        agentLookup.agent,
+        ownerUid,
+      );
       const sessionName = `[RUM Setup] ${project.name || project.id}`;
       // use_worktree=1: the wizard authors the recorder init and CSP edits
       // on its own branch, then uses Finalize Code Changes for review/push
@@ -391,12 +390,11 @@ export default function createRumWizardRoutes(deps: RouteDeps): Router {
         const agentLookup = agentId ? findAgent(agentId) : null;
         if (agentId && agentLookup) {
           const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
-          const engine = agentLookup.agent.engine || 'claude-code';
-          const model = resolveEffectiveModel(config, engine, {
-            agentModel: agentLookup.agent.model,
-            ownerUserId: ownerUid,
-            agentId,
-          });
+          const { engine, model } = resolveAgentSpawnEngineAndModel(
+            config,
+            agentLookup.agent,
+            ownerUid,
+          );
           target = await createAndProvisionCommitTarget(
             { stmts, provisionSessionWorkspace: deps.provisionSessionWorkspace },
             {

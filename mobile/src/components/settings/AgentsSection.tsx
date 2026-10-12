@@ -24,6 +24,7 @@ import {
   settingsSelectedModelChip,
   settingsResolveModelChip,
   settingsEffectiveEngine,
+  settingsEngineHint,
   settingsModelOverrideIsStale,
   isAutonomyLocked,
   isAutonomyLockedOn,
@@ -115,6 +116,11 @@ function PerUserEngineModelPickers({
         <>
           <Text style={styles.fieldLabel}>Engine</Text>
           <ChipRow options={engines} selected={effectiveEngine} onSelect={onEngineOverride} />
+          {!engineOverride && (
+            <Text style={styles.perUserHint} testID="per-user-engine-hint">
+              {settingsEngineHint(engineOverride, sharedEngine)}
+            </Text>
+          )}
         </>
       )}
       {models.length > 0 && (

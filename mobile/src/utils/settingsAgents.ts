@@ -193,6 +193,15 @@ export function settingsEffectiveEngine(engineOverride: any, sharedEngine: any) 
   return engineOverride || sharedEngine || 'claude-code';
 }
 /**
+ * Caption under the engine picker ('' when the user has a pick). With no personal pick, says the agent's
+ * default engine is in use: that fallback is not editable anywhere else, so it
+ * must not look like the user's own choice.
+ */
+export function settingsEngineHint(engineOverride: any, sharedEngine: any) {
+  if (engineOverride) return '';
+  return `You haven't picked an engine, so the agent default (${sharedEngine || 'claude-code'}) is used. Choose one to change it for your sessions.`;
+}
+/**
  * True when a stored per-user model override is no longer valid for the
  * `effectiveEngine` (e.g. the user just switched their engine override, so a
  * model from the previous engine is now incompatible). Callers clear the

@@ -13,6 +13,7 @@ import {
   settingsSelectedModelChip,
   settingsResolveModelChip,
   settingsEffectiveEngine,
+  settingsEngineHint,
   settingsModelOverrideIsStale,
   isAutonomyLocked,
   isAutonomyLockedOn,
@@ -268,5 +269,15 @@ describe('agent autonomy flag (mobile)', () => {
     expect(agentAcceptsAutonomousTickets({ role: 'sub', isDev: false })).toBe(false);
     expect(agentAcceptsAutonomousTickets({ role: 'sub' })).toBe(true);
     expect(agentAcceptsAutonomousTickets(null)).toBe(false);
+  });
+});
+
+describe('settingsEngineHint', () => {
+  it('names the agent default engine when the user has no pick', () => {
+    expect(settingsEngineHint('', 'cursor-agent')).toContain('agent default (cursor-agent)');
+    expect(settingsEngineHint(null, null)).toContain('agent default (claude-code)');
+  });
+  it('is empty once the user has picked an engine', () => {
+    expect(settingsEngineHint('codex-cli', 'cursor-agent')).toBe('');
   });
 });

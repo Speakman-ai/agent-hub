@@ -268,8 +268,10 @@ export default function SessionScopingModePane({
     if (!projectId || !linkedEpicId || creatingPhase) return;
     setCreatingPhase(true);
     try {
+      // Phases created while scoping inherit this session's engine/model, which
+      // already reflects the user's own pick. The agent's shared engine is not
+      // consulted: it is only a fallback and the user cannot see or edit it.
       const autonomousModel = defaultAutonomousModel(modelConfig, {
-        agent,
         engine: sessionEngine,
         model: sessionModel,
       });

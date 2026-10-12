@@ -15,12 +15,21 @@ vi.mock('../config.js', () => ({
   buildSpawnEnv: () => ({}),
 }));
 
+const ownership = vi.hoisted(() => ({
+  ownerUid: null as string | null,
+  prefs: {} as Record<string, unknown>,
+}));
+
 vi.mock('../session-ownership.js', () => ({
   setSessionOwner: vi.fn(),
   getOrgOwnerUserId: vi.fn(() => null),
   inheritOwnerFromSession: vi.fn(),
-  resolveOwnerUserId: vi.fn(() => null),
+  resolveOwnerUserId: vi.fn(() => ownership.ownerUid),
   userOwnsSession: vi.fn(() => true),
+}));
+
+vi.mock('../user-preferences-store.js', () => ({
+  getUserPreferencesRow: vi.fn(() => ownership.prefs),
 }));
 
 import { detectKinds, latestChangesRequestedReviews, buildResolvePrompt } from './pr-resolve.js';
@@ -474,5 +483,60 @@ describe('POST /api/projects/:projectId/pulls/:number/resolve', () => {
       .post('/api/projects/p/pulls/999/resolve')
       .send({ agentId: 'a1' });
     expect(res.status).toBe(404);
+  });
+
+  it("spawns on the requester's engine override, not the agent's shared engine", async () => {
+    // Regression: Resolve PR read `agent.engine` directly, so an agent whose
+    // shared engine was cursor-agent always resolved on cursor regardless of
+    // the user's own engine pick.
+    ownership.ownerUid = 'user-1';
+    ownership.prefs = { agentEngineOverrides: { a1: { engine: 'codex-cli' } } };
+    try {
+      const { fetchPrDetail } = await import('../pr-detail-fetch.js');
+      (fetchPrDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+        source: 'github-app',
+        pr: { number: 7, title: 't', mergeable: true, mergeable_state: 'clean' },
+        reviews: [],
+        checks: [],
+        comments: [],
+      });
+      const createSessionRun = vi.fn();
+      const deps = buildDeps({
+        config: {
+          port: 3051,
+          dataDir: '/tmp',
+          engineValidModels: {
+            'cursor-agent': ['grok-4.7-high'],
+            'codex-cli': ['gpt-5.5'],
+          },
+          engineDefaultModels: { 'cursor-agent': 'grok-4.7-high', 'codex-cli': 'gpt-5.5' },
+        } as unknown as RouteDeps['config'],
+        findProject: vi.fn().mockReturnValue({ id: 'p', githubRepo: 'o/r' }),
+        findAgent: vi.fn().mockReturnValue({
+          project: { id: 'p' },
+          agent: { id: 'a1', engine: 'cursor-agent', model: 'grok-4.7-high' },
+        }),
+        stmts: {
+          createSession: { run: createSessionRun },
+          insertBackgroundTask: { run: vi.fn() },
+          updateSessionFinalizeAutomation: { run: vi.fn() },
+          setSessionResolvePrHeadBranch: { run: vi.fn() },
+          getSession: { get: vi.fn().mockReturnValue({ id: 'x' }) },
+        } as unknown as RouteDeps['stmts'],
+      });
+
+      const app = await mount(deps);
+      const res = await request(app)
+        .post('/api/projects/p/pulls/7/resolve')
+        .send({ agentId: 'a1' });
+
+      expect(res.status).toBe(201);
+      const [, , , engine, model] = createSessionRun.mock.calls[0];
+      expect(engine).toBe('codex-cli');
+      expect(model).toBe('gpt-5.5');
+    } finally {
+      ownership.ownerUid = null;
+      ownership.prefs = {};
+    }
   });
 });

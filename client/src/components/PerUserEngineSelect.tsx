@@ -9,7 +9,8 @@ import { Loader2 } from 'lucide-react';
  * (`/api/auth/me/agent-engine-overrides`); this component only renders the
  * `<select>` and calls `onSelect(engine)`. With no saved pick the select shows
  * the engine the agent was created with (`agentEngine`), which is what the
- * server falls back to.
+ * server falls back to, and the hint says so: that fallback is not editable
+ * anywhere else, so it must not look like the user's own choice.
  *
  * The model is NOT set here — the per-user model is chosen in
  * `PerUserModelSelect` and composes on top of whichever engine resolves.
@@ -70,7 +71,11 @@ export default function PerUserEngineSelect({
           </option>
         ))}
       </select>
-      <p className="mt-1 text-[11px] text-gray-500">Only changes your sessions.</p>
+      <p className="mt-1 text-[11px] text-gray-500" data-testid="per-user-engine-hint">
+        {value
+          ? 'Only changes your sessions.'
+          : `You haven't picked an engine, so the agent default (${agentEngine || 'claude-code'}) is used. Choose one to change it for your sessions.`}
+      </p>
     </div>
   );
 }

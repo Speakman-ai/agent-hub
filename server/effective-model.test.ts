@@ -5,7 +5,11 @@ vi.mock('./user-preferences-store.js', () => ({
   getUserPreferencesRow: vi.fn(() => ({})),
 }));
 
-import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
+import {
+  resolveAgentSpawnEngineAndModel,
+  resolveEffectiveEngineAndModel,
+  resolveEffectiveModel,
+} from './effective-model.js';
 import { getUserPreferencesRow } from './user-preferences-store.js';
 
 function makeCfg(): AppConfig {
@@ -414,5 +418,41 @@ describe('resolveEffectiveEngineAndModel', () => {
     expect(r.engine).toBe('claude-code');
     expect(r.model).toBe('wf-model');
     expect(r.overrideApplied).toBe(false);
+  });
+});
+
+describe('resolveAgentSpawnEngineAndModel', () => {
+  const mockGet = vi.mocked(getUserPreferencesRow);
+
+  beforeEach(() => {
+    mockGet.mockReset();
+    mockGet.mockReturnValue({});
+  });
+
+  it("uses the owner's engine override over the agent's shared engine", () => {
+    mockGet.mockReturnValue({ agentEngineOverrides: { a1: { engine: 'claude-code' } } });
+    expect(
+      resolveAgentSpawnEngineAndModel(
+        makeCfg(),
+        { id: 'a1', engine: 'cursor-agent', model: 'allowed-b' },
+        'user-1',
+      ),
+    ).toEqual({ engine: 'claude-code', model: makeCfg().engineDefaultModels['claude-code'] });
+  });
+
+  it('falls back to the shared engine without an owner', () => {
+    expect(
+      resolveAgentSpawnEngineAndModel(
+        makeCfg(),
+        { id: 'a1', engine: 'cursor-agent', model: 'allowed-b' },
+        null,
+      ),
+    ).toEqual({ engine: 'cursor-agent', model: 'allowed-b' });
+  });
+
+  it('defaults to claude-code when the agent has no engine', () => {
+    expect(resolveAgentSpawnEngineAndModel(makeCfg(), { id: 'a1' }, null).engine).toBe(
+      'claude-code',
+    );
   });
 });

@@ -24,7 +24,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { requireRole } from '../roles.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { abandonUnseededSession, kickoffSeededTurn } from '../seeded-session-kickoff.js';
 import { resolveVotingScaffolderFirstTurnPrompt } from '../voting-integration/scaffolder-session.js';
@@ -118,12 +118,11 @@ export default function createVotingWizardRoutes(deps: RouteDeps): Router {
 
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const sessionId = uuidv4();
-      const engine = agentLookup.agent.engine || 'claude-code';
-      const model = resolveEffectiveModel(config, engine, {
-        agentModel: agentLookup.agent.model,
-        ownerUserId: ownerUid,
-        agentId,
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        config,
+        agentLookup.agent,
+        ownerUid,
+      );
       // use_worktree=1: the scaffolder authors the voting page on its own
       // branch, then uses Finalize Code Changes like any coding session.
       stmts.createSession.run(sessionId, agentId, resolved.name, engine, model, 1, 0, 1);

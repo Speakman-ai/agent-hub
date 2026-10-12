@@ -21,7 +21,7 @@ import {
   listDesignFilesRecursive,
   patchDesignChatEngineModelSession,
 } from '../designs-store.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import {
   DESIGN_CHAT_ENGINES,
   isDesignChatEngine,
@@ -441,12 +441,11 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
       const newSessionId = uuidv4();
       const sessionName = `[Design Fwd] ${design.name}`.slice(0, 100);
       const fwdUid = resolveOwnerUserId(req as AuthenticatedRequest);
-      const engine = targetAgent.engine || 'claude-code';
-      const model = resolveEffectiveModel(config, engine, {
-        agentModel: targetAgent.model,
-        ownerUserId: fwdUid,
-        agentId: targetAgentId,
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        config,
+        { id: targetAgentId, engine: targetAgent.engine, model: targetAgent.model },
+        fwdUid,
+      );
       stmts.createSession.run(newSessionId, targetAgentId, sessionName, engine, model, 1, 0, 1);
       setSessionOwner(newSessionId, resolveOwnerUserId(req as AuthenticatedRequest));
 
@@ -541,13 +540,11 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
           provisionSessionWorkspace,
           resolveEngineModel: (agentId: string) => {
             const found = findAgent(agentId);
-            const engine = found?.agent?.engine || 'claude-code';
-            const model = resolveEffectiveModel(config, engine, {
-              agentModel: found?.agent?.model ?? null,
-              ownerUserId: ownerUid,
-              agentId,
-            });
-            return { engine, model };
+            return resolveAgentSpawnEngineAndModel(
+              config,
+              { id: agentId, engine: found?.agent?.engine, model: found?.agent?.model },
+              ownerUid,
+            );
           },
           setSessionOwner,
           ownerUserId: ownerUid,

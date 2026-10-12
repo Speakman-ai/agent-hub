@@ -22,7 +22,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import type { Agent, Project, RouteDeps } from '../types.js';
 import { getOrCreateBoard } from '../routes/board.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { setSessionOwner } from '../session-ownership.js';
 
@@ -135,17 +135,17 @@ export function kickoffInitialBuild(opts: InitialBuildOpts): void {
     // Build session in a worktree (pauses for Finalize at the end).
     const sessionId = uuidv4();
     const taskId = uuidv4();
-    const model = resolveEffectiveModel(deps.config, agent.engine || 'claude-code', {
-      agentModel: agent.model,
-      ownerUserId: opts.requestingUserId ?? null,
-      agentId: agent.id,
-    });
+    const { engine, model } = resolveAgentSpawnEngineAndModel(
+      deps.config,
+      agent,
+      opts.requestingUserId ?? null,
+    );
     const wt = defaultSessionUseWorktreeFlag(project);
     deps.stmts.createSession.run(
       sessionId,
       agent.id,
       `[Build] ${project.name} — initial version`.slice(0, 100),
-      agent.engine || 'claude-code',
+      engine,
       model,
       wt,
       0,

@@ -26,7 +26,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { requireRole } from '../roles.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { collectDevServerSetupDraft, type DevServerSetupDraft } from '../dev-server-setup-draft.js';
 import { buildPrEnvPatchFromWizardApply } from '../preview-setup-apply.js';
@@ -232,12 +232,11 @@ export default function createDevServerWizardRoutes(deps: RouteDeps): Router {
       });
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const sessionId = uuidv4();
-      const engine = agentLookup.agent.engine || 'claude-code';
-      const model = resolveEffectiveModel(config, engine, {
-        agentModel: agentLookup.agent.model,
-        ownerUserId: ownerUid,
-        agentId,
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        config,
+        agentLookup.agent,
+        ownerUid,
+      );
       const sessionName = `[Dev Server Setup] ${project.name || project.id}`;
       // use_worktree=1: consistent with the sibling setup wizards, and it lets
       // the user click Start preview on this session to boot the dev server and

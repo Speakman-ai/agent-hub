@@ -27,7 +27,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { Router, Request, Response } from 'express';
 import type { RouteDeps, SessionRow } from '../types.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
 import { parseRepoFullName, resolveUserToken } from './pr-list.js';
 import { AUTOFIX_KINDS, loadAutofixTemplate, type AutofixKind } from '../prompts/autofix/index.js';
@@ -300,13 +300,8 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
       const taskId = uuidv4();
       const sessionId = uuidv4();
 
-      const engine = found.agent.engine || 'claude-code';
       const resolverUid = resolveOwnerUserId(req as AuthenticatedRequest);
-      const model = resolveEffectiveModel(config, engine, {
-        agentModel: found.agent.model,
-        ownerUserId: resolverUid,
-        agentId,
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(config, found.agent, resolverUid);
       const title = typeof pr.title === 'string' ? pr.title : '';
       const sessionName = `[Resolve PR #${num}] ${title}`.slice(0, 100);
 

@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, SessionRow } from '../types.js';
 import { registry, z } from '../openapi/registry.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
 import { fetchPrDiff } from '../pr-read-fetch.js';
 import { parseRepoFullName, resolveUserToken } from './pr-list.js';
@@ -96,12 +96,7 @@ export default function createPrReviewSessionRoutes(deps: RouteDeps): Router {
     const sessionId = uuidv4();
     try {
       const ownerUserId = resolveOwnerUserId(req as AuthenticatedRequest);
-      const engine = agent.engine || 'claude-code';
-      const model = resolveEffectiveModel(deps.config, engine, {
-        agentModel: agent.model,
-        ownerUserId,
-        agentId: agent.id,
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(deps.config, agent, ownerUserId);
       deps.stmts.createSession.run(
         sessionId,
         agent.id,

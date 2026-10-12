@@ -24,6 +24,11 @@ vi.mock('./session-ship.js', () => ({
   markSessionFinalizeAutomation: vi.fn(),
 }));
 
+const userPrefs = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
+vi.mock('./user-preferences-store.js', () => ({
+  getUserPreferencesRow: vi.fn(() => userPrefs.current),
+}));
+
 vi.mock('./session-ownership.js', () => ({
   setSessionOwner: vi.fn(),
   getOrgOwnerUserId: vi.fn(() => null),
@@ -2035,6 +2040,51 @@ describe('runAutonomousLoop — dispatch', () => {
       0,
       1,
     );
+  });
+
+  it("dispatches on the epic owner's engine override, not the agent's shared engine", async () => {
+    // Regression: autonomous dispatch read `agent.engine` directly, so an agent
+    // whose shared engine was cursor-agent always ran epics on cursor.
+    userPrefs.current = { agentEngineOverrides: { 'dev-1': { engine: 'claude-code' } } };
+    try {
+      const card = makeCard();
+      const stmts = makeStmts({
+        getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+        getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+        getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+        getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+      });
+      const deps = makeDeps(stmts);
+      deps.findProject.mockReturnValue(
+        makeProject({
+          agents: [{ id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'cursor-agent' }],
+        } as Partial<Project>),
+      );
+      deps.getConfig.mockReturnValue({
+        engineValidModels: {
+          'claude-code': ['claude-opus-4-8'],
+          'cursor-agent': ['grok-4.7-high'],
+        },
+        engineDefaultModels: { 'claude-code': 'claude-opus-4-8', 'cursor-agent': 'grok-4.7-high' },
+      } as never);
+      mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+      initAutonomous(deps as never);
+
+      await runAutonomousLoop('proj-1');
+
+      expect(stmts.createSession.run).toHaveBeenCalledWith(
+        expect.any(String),
+        'dev-1',
+        'Build feature',
+        'claude-code',
+        'claude-opus-4-8',
+        1,
+        0,
+        1,
+      );
+    } finally {
+      userPrefs.current = {};
+    }
   });
 
   it('falls back to epic autonomous_model when card assign_model is not valid for the engine', async () => {

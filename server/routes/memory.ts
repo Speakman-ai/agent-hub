@@ -5,7 +5,8 @@ import path from 'path';
 import { runWikiMemorySync } from '../heartbeat.js';
 import { stmts } from '../db.js';
 import { findProject } from '../project-model.js';
-import { defaultModelForEngine } from '../config.js';
+import hubConfig from '../config.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import type { RouteDeps, NoteProcessingRow } from '../types.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -144,12 +145,16 @@ export default function createMemoryRoutes(routeDeps: RouteDeps = {} as RouteDep
 
     const processingId = uuidv4();
     const sessionId = uuidv4();
-    const engine = docsAgent.engine || 'claude-code';
-    const model = docsAgent.model || defaultModelForEngine(engine);
+    const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
+    const { engine, model } = resolveAgentSpawnEngineAndModel(
+      routeDeps.config || hubConfig,
+      docsAgent,
+      ownerUid,
+    );
     const sessionName = `[Note] ${date} → ${target}`;
 
     stmts!.createSession.run(sessionId, docsAgent.id, sessionName, engine, model, 1, 0, 1);
-    setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
+    setSessionOwner(sessionId, ownerUid);
 
     const taskId = uuidv4();
     stmts!.insertBackgroundTask.run(taskId, sessionId, docsAgent.id, prompt);

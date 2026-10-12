@@ -26,7 +26,7 @@ import type { SecurityFindingRow } from './findings-store.js';
 import { severityRank } from './severity.js';
 import type { Severity } from './types.js';
 import { agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { setSessionOwner } from '../session-ownership.js';
 import type { FinalizeAutomationLevel } from '../finalize/automation.js';
@@ -269,12 +269,11 @@ export function dispatchSecurityFixSession(
 
   const sessionId = uuidv4();
   const taskId = uuidv4();
-  const engine = found.agent.engine || 'claude-code';
-  const model = resolveEffectiveModel(deps.config, engine, {
-    agentModel: found.agent.model,
-    ownerUserId: args.ownerUserId ?? null,
-    agentId,
-  });
+  const { engine, model } = resolveAgentSpawnEngineAndModel(
+    deps.config,
+    found.agent,
+    args.ownerUserId ?? null,
+  );
 
   const count = args.findings.length;
   const sessionName =

@@ -36,7 +36,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { requireRole } from '../roles.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, Project, SessionRow } from '../types.js';
@@ -275,12 +275,11 @@ export default function createInfraWizardRoutes(deps: RouteDeps): Router {
       const draft = buildInfraSetupDraft(project);
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const sessionId = uuidv4();
-      const engine = agentLookup.agent.engine || 'claude-code';
-      const model = resolveEffectiveModel(config, engine, {
-        agentModel: agentLookup.agent.model,
-        ownerUserId: ownerUid,
-        agentId,
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        config,
+        agentLookup.agent,
+        ownerUid,
+      );
       const sessionName = `[Infra Setup] ${project.name || project.id}`;
       // use_worktree=1 to match the rest of the family: the session gets an
       // isolated checkout so its `aws` invocations and scratch files never touch

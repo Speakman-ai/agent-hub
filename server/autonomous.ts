@@ -19,7 +19,7 @@ import {
   loadChosenSpecItemsForEpic,
 } from './epic-spec.js';
 import { lastDispatchedReviewId } from './review-feedback-dedup.js';
-import { resolveEffectiveModel } from './effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from './effective-model.js';
 import {
   loadBoardBlockers,
   hasUnresolvedBlockers,
@@ -476,8 +476,10 @@ export function engineForModel(
  *      preserved, but the CLI spawn runs under the engine that actually
  *      owns the model. `chat.ts` reads `session.engine` from the DB row
  *      when spawning, so the override flows end-to-end.
- *   3. Otherwise → agent default engine + resolved model (`resolveEffectiveModel`
- *      using the autonomous session owner as `ownerUserId`).
+ *   3. Otherwise → the agent's effective engine + model for the autonomous
+ *      session owner (their per-user engine override, else the shared engine).
+ *
+ * "The agent's engine" in 1–2 is also the owner's effective engine.
  *
  * Card-level `assign_model` follows the same precedence but is resolved by
  * the dispatch loop directly (the function used to handle only the epic
@@ -490,7 +492,8 @@ function sessionEngineAndModelForAutonomousDispatch(
   cfg: AppConfig,
   ownerUserId: string | null,
 ): { engine: string; model: string } {
-  const agentEngine = agent.engine || 'claude-code';
+  const resolved = resolveAgentSpawnEngineAndModel(cfg, agent, ownerUserId);
+  const agentEngine = resolved.engine;
   const raw = typeof epic.autonomous_model === 'string' ? epic.autonomous_model.trim() : '';
   if (raw) {
     const agentAllowed = engineValidModels[agentEngine] || [];
@@ -498,14 +501,7 @@ function sessionEngineAndModelForAutonomousDispatch(
     const otherEngine = engineForModel(raw, engineValidModels);
     if (otherEngine) return { engine: otherEngine, model: raw };
   }
-  return {
-    engine: agentEngine,
-    model: resolveEffectiveModel(cfg, agentEngine, {
-      agentModel: agent.model,
-      ownerUserId,
-      agentId: agent.id,
-    }),
-  };
+  return resolved;
 }
 
 export function initAutonomous(d: AutonomousDeps): void {
@@ -1345,7 +1341,7 @@ async function runAutonomousLoopInner(
       const sessionId = crypto.randomUUID();
       const cfg = d.getConfig();
       const engineValidModels = cfg.engineValidModels || {};
-      const agentEngine = agent.engine || 'claude-code';
+      const agentEngine = resolveAgentSpawnEngineAndModel(cfg, agent, autonomousOwnerId).engine;
 
       // Resolve the (engine, model) pair for the spawn. Card-level
       // `assign_engine` (when set) hard-pins the engine; `assign_model` then

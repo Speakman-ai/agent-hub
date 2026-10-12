@@ -27,7 +27,7 @@ import type {
 } from './types.js';
 import { setSessionOwner, resolveWikiDocOwnerUserId } from './session-ownership.js';
 import { broadcastSessionCreated } from './session-checkpoint-rewind.js';
-import { resolveEffectiveModel } from './effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from './effective-model.js';
 
 /** Session name prefix stamped on every wiki-doc session (idempotency key). */
 export const WIKI_DOC_SESSION_PREFIX = '[Wiki]';
@@ -287,16 +287,23 @@ function kickWikiDocSession(
 ): WikiDocDispatchResult {
   const sessionId = uuidv4();
   const taskId = uuidv4();
-  const engine = args.docsAgent.engine || 'claude-code';
-  // An explicit override (e.g. from a scheduled background agent's config)
-  // wins; otherwise resolve the docs agent's effective model as usual.
-  const model =
-    args.modelOverride?.trim() ||
-    resolveEffectiveModel(deps.config, engine, {
-      agentModel: args.docsAgent.model,
-      ownerUserId: args.ownerUserId ?? null,
-      agentId: args.docsAgent.id,
-    });
+  const resolved = resolveAgentSpawnEngineAndModel(
+    deps.config,
+    args.docsAgent,
+    args.ownerUserId ?? null,
+  );
+  // An explicit model override (from the wiki background agent's config) wins.
+  // It is validated against the docs agent's shared engine, so pair it with
+  // that engine when the user's resolved engine does not accept it.
+  const modelOverride = args.modelOverride?.trim() || '';
+  const overrideFitsResolved =
+    !!modelOverride &&
+    (deps.config.engineValidModels?.[resolved.engine] || []).includes(modelOverride);
+  const engine =
+    modelOverride && !overrideFitsResolved
+      ? args.docsAgent.engine || 'claude-code'
+      : resolved.engine;
+  const model = modelOverride || resolved.model;
 
   // No worktree: docs write through the wiki API, and after merge the
   // project checkout already has the landed change. This also keeps

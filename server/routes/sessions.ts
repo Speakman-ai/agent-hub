@@ -3,7 +3,11 @@ import { spawn } from 'child_process';
 import { Router, Request, Response } from 'express';
 import type { z } from 'zod';
 import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from '../per-user-cli-spawn.js';
-import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from '../effective-model.js';
+import {
+  resolveAgentSpawnEngineAndModel,
+  resolveEffectiveEngineAndModel,
+  resolveEffectiveModel,
+} from '../effective-model.js';
 import {
   CreateSessionRequestSchema,
   PatchSessionRequestSchema,
@@ -3239,13 +3243,12 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const newSessionId = uuidv4();
-      const engine = coachAgent.engine || 'claude-code';
-      const model = resolveEffectiveModel(config, engine, {
-        agentModel: coachAgent.model,
-        ownerUserId: ownerUid,
-        agentId: coachAgentId,
-        projectMode: getProjectMode(project),
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        config,
+        { id: coachAgentId, engine: coachAgent.engine, model: coachAgent.model },
+        ownerUid,
+        { projectMode: getProjectMode(project) },
+      );
       const sessionName = buildExtractSkillSessionName(source.name);
       // No worktree: the coach saves skills via the write API, not git.
       stmts.createSession.run(newSessionId, coachAgentId, sessionName, engine, model, 0, 0, 1);
@@ -3637,7 +3640,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (overrideEngine && (config.engineValidModels?.[overrideEngine]?.length ?? 0) === 0) {
         return res.status(400).json({ error: `engine "${overrideEngine}" is not a valid engine` });
       }
-      const engine = overrideEngine || targetAgent.engine || 'claude-code';
+      const fwdOwnerUid = getSessionOwner(String(req.params.sessionId));
+      const engine =
+        overrideEngine ||
+        resolveAgentSpawnEngineAndModel(
+          config,
+          { id: targetAgentId, engine: targetAgent.engine, model: targetAgent.model },
+          fwdOwnerUid,
+        ).engine;
       // Optional per-fork model override (lets the user pick which model the new
       // copy of the agent runs). Validate against the resolved engine's
       // allowlist so a client cannot seed a session with an arbitrary model id;
@@ -3651,10 +3661,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
             .json({ error: `model "${overrideModel}" is not valid for engine ${engine}` });
         }
       }
-      const fwdOwnerUid = getSessionOwner(String(req.params.sessionId));
       const model = resolveEffectiveModel(config, engine, {
         explicitModel: overrideModel || undefined,
-        agentModel: targetAgent.model,
+        agentModel: engine === targetAgent.engine ? targetAgent.model : null,
         ownerUserId: fwdOwnerUid,
         agentId: targetAgentId,
         projectMode: getProjectMode(targetFound.project),
@@ -3839,14 +3848,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
       const targetAgent = targetFound.agent;
       const newSessionId = uuidv4();
-      const engine = targetAgent.engine || 'claude-code';
       const ownerUid = getSessionOwner(sourceSessionId);
-      const model = resolveEffectiveModel(config, engine, {
-        agentModel: targetAgent.model,
-        ownerUserId: ownerUid,
-        agentId: resolvedTargetAgentId,
-        projectMode: getProjectMode(targetFound.project),
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        config,
+        { id: resolvedTargetAgentId, engine: targetAgent.engine, model: targetAgent.model },
+        ownerUid,
+        { projectMode: getProjectMode(targetFound.project) },
+      );
       const wt = defaultSessionUseWorktreeFlag(targetFound.project);
       stmts.createSession.run(
         newSessionId,

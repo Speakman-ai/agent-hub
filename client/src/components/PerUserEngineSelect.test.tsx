@@ -94,4 +94,32 @@ describe('<PerUserEngineSelect>', () => {
     fireEvent.change(select, { target: { value: 'claude-code' } } as any);
     expect(onSelect).toHaveBeenCalledWith('claude-code');
   });
+
+  it('labels an unpicked engine as the agent default, not the user choice', () => {
+    render(
+      <PerUserEngineSelect
+        agentEngine="cursor-agent"
+        modelConfig={{ engineValidModels: { 'cursor-agent': ['grok'], 'codex-cli': ['gpt'] } }}
+        value=""
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('per-user-engine-hint')).toHaveTextContent(
+      "You haven't picked an engine, so the agent default (cursor-agent) is used.",
+    );
+  });
+
+  it('drops the fallback note once the user has picked', () => {
+    render(
+      <PerUserEngineSelect
+        agentEngine="cursor-agent"
+        modelConfig={{ engineValidModels: { 'cursor-agent': ['grok'], 'codex-cli': ['gpt'] } }}
+        value="codex-cli"
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('per-user-engine-hint')).toHaveTextContent(
+      'Only changes your sessions.',
+    );
+  });
 });

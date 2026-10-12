@@ -4,7 +4,7 @@ import { Router, type Request, type Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import type { AuthenticatedRequest } from '../auth.js';
 import { requireRole, type Role } from '../roles.js';
-import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 import type {
@@ -829,12 +829,11 @@ export default function createDeploymentRoutes(
 
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const sessionId = uuidv4();
-      const engine = agentLookup.agent.engine || 'claude-code';
-      const model = resolveEffectiveModel(deps.config, engine, {
-        agentModel: agentLookup.agent.model,
-        ownerUserId: ownerUid,
-        agentId,
-      });
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        deps.config,
+        agentLookup.agent,
+        ownerUid,
+      );
       const sessionName = `[Deploy Setup] ${project.name || project.id}`;
       const useWorktree = 1;
       const askMode = 0;
