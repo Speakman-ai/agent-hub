@@ -122,6 +122,54 @@ export function awsCpArgs(src, dst, profile) {
   return args;
 }
 
+function envSet(env, key) {
+  return typeof env[key] === 'string' && env[key].trim() !== '';
+}
+
+/**
+ * Whether the env carries a complete notarytool credential set. These are the
+ * three groups electron-builder's `notarizeIfProvided` recognises.
+ */
+export function hasNotarizeCredentials(env = process.env) {
+  const all = (...keys) => keys.every((k) => envSet(env, k));
+  return (
+    all('APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER') ||
+    all('APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID') ||
+    all('APPLE_KEYCHAIN', 'APPLE_KEYCHAIN_PROFILE')
+  );
+}
+
+/**
+ * Pick how the .app gets signed.
+ *
+ * - `developer-id`: a certificate is supplied (`CSC_LINK` / `CSC_NAME`), so
+ *   electron-builder signs with it under hardened runtime and notarizes.
+ * - `adhoc`: no certificate. We still sign with identity `-` because an
+ *   unsigned arm64 bundle carries Electron's stale linker signature, which
+ *   Apple Silicon rejects as "damaged" with no right-click → Open escape.
+ *   Ad-hoc gets users to the ordinary "unidentified developer" prompt.
+ *
+ * A certificate without notarization credentials throws: a Developer ID
+ * build that skips notarization is still blocked by Gatekeeper, so shipping
+ * it would only hide a misconfigured secret.
+ *
+ * @returns {'developer-id' | 'adhoc'}
+ */
+export function resolveMacSigningMode(env = process.env) {
+  if (!envSet(env, 'CSC_LINK') && !envSet(env, 'CSC_NAME')) {
+    return 'adhoc';
+  }
+  if (!hasNotarizeCredentials(env)) {
+    throw new Error(
+      'CSC_LINK/CSC_NAME is set but notarization credentials are missing. Set ' +
+        'APPLE_API_KEY + APPLE_API_KEY_ID + APPLE_API_ISSUER (or APPLE_ID + ' +
+        'APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID), or unset CSC_LINK to ' +
+        'build ad-hoc signed.'
+    );
+  }
+  return 'developer-id';
+}
+
 /**
  * Build the electron-builder arg list for our macOS DMG release.
  *
@@ -132,13 +180,17 @@ export function awsCpArgs(src, dst, profile) {
  * the `release` job using `RELEASE_PAT`, and DMG distribution is handled by
  * the subsequent `aws s3 cp` step in this script — not by electron-builder).
  *
- * Passing `--publish never` is also forward-compatible with electron-builder
- * v27, which removes the implicit-publish-on-CI behavior entirely.
+ * Ad-hoc mode turns off hardened runtime (library validation would reject
+ * Electron's frameworks under an ad-hoc identity) and notarization (Apple
+ * only notarizes Developer ID signatures). Developer ID mode forces code
+ * signing so a broken certificate fails the build instead of silently
+ * producing an unsigned DMG.
  *
+ * @param {'developer-id' | 'adhoc'} signingMode
  * @returns {string[]}
  */
-export function electronBuilderArgs() {
-  return [
+export function electronBuilderArgs(signingMode = 'adhoc') {
+  const args = [
     'electron-builder',
     '--mac',
     'dmg',
@@ -147,6 +199,12 @@ export function electronBuilderArgs() {
     '--publish',
     'never',
   ];
+  if (signingMode === 'developer-id') {
+    args.push('-c.forceCodeSigning=true');
+  } else {
+    args.push('-c.mac.identity=-', '-c.mac.hardenedRuntime=false', '-c.mac.notarize=false');
+  }
+  return args;
 }
 
 function requireMac() {
@@ -261,6 +319,7 @@ function installCrossPlatformEsbuildForServer() {
 
 export async function main() {
   requireMac();
+  const signingMode = resolveMacSigningMode();
   const version = readVersion();
   const { arm64, x64 } = dmgFilenames(PRODUCT_NAME, version);
 
@@ -276,8 +335,9 @@ export async function main() {
   //    The other macOS arch is needed so tsx works inside that arch's DMG.
   installCrossPlatformEsbuildForServer();
 
-  // 3. Build both DMGs in one electron-builder invocation
-  run('npx', electronBuilderArgs());
+  // 3. Build and sign both DMGs in one electron-builder invocation
+  console.log(`\nmacOS signing mode: ${signingMode}`);
+  run('npx', electronBuilderArgs(signingMode));
 
   // 4. Upload each DMG to S3
   const profile = resolveAwsProfile();

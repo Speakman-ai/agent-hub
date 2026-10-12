@@ -13,6 +13,8 @@ import {
   resolveAwsProfile,
   awsCpArgs,
   electronBuilderArgs,
+  hasNotarizeCredentials,
+  resolveMacSigningMode,
   resolveBucket,
   resolveRegion,
   DEFAULT_BUCKET,
@@ -248,6 +250,67 @@ describe('release-mac helpers', () => {
       const publishIdx = args.indexOf('--publish');
       expect(publishIdx).toBeGreaterThanOrEqual(0);
       expect(args[publishIdx + 1]).toBe('never');
+    });
+    it('ad-hoc signs by default so arm64 DMGs are not reported as "damaged"', () => {
+      // Regression: with no identity, electron-builder left Electron's stock
+      // linker signature in place. It no longer matched the packed bundle, so
+      // Apple Silicon refused to launch the app and showed "damaged".
+      const args = electronBuilderArgs();
+      expect(args).toContain('-c.mac.identity=-');
+      expect(args).toContain('-c.mac.hardenedRuntime=false');
+      expect(args).toContain('-c.mac.notarize=false');
+      expect(args).not.toContain('-c.forceCodeSigning=true');
+    });
+
+    it('leaves identity to the certificate and forces signing in developer-id mode', () => {
+      const args = electronBuilderArgs('developer-id');
+      expect(args).toContain('-c.forceCodeSigning=true');
+      expect(args.some((a) => a.startsWith('-c.mac.identity'))).toBe(false);
+      expect(args.some((a) => a.startsWith('-c.mac.hardenedRuntime'))).toBe(false);
+      expect(args.some((a) => a.startsWith('-c.mac.notarize'))).toBe(false);
+    });
+  });
+
+  describe('resolveMacSigningMode', () => {
+    const apiKey = {
+      APPLE_API_KEY: '/tmp/AuthKey.p8',
+      APPLE_API_KEY_ID: 'KEYID',
+      APPLE_API_ISSUER: 'issuer-uuid',
+    };
+
+    it('is adhoc when no certificate is configured', () => {
+      expect(resolveMacSigningMode({})).toBe('adhoc');
+      expect(resolveMacSigningMode({ CSC_LINK: '  ' })).toBe('adhoc');
+    });
+
+    it('is developer-id with a certificate and an App Store Connect API key', () => {
+      expect(resolveMacSigningMode({ CSC_LINK: 'base64p12', ...apiKey })).toBe('developer-id');
+    });
+
+    it('accepts CSC_NAME and Apple ID notarization credentials', () => {
+      expect(
+        resolveMacSigningMode({
+          CSC_NAME: 'Developer ID Application: Acme (TEAMID)',
+          APPLE_ID: 'a@b.c',
+          APPLE_APP_SPECIFIC_PASSWORD: 'pw',
+          APPLE_TEAM_ID: 'TEAMID',
+        }),
+      ).toBe('developer-id');
+    });
+
+    it('throws when a certificate is set without notarization credentials', () => {
+      expect(() => resolveMacSigningMode({ CSC_LINK: 'base64p12' })).toThrow(/notarization/);
+      expect(() =>
+        resolveMacSigningMode({ CSC_LINK: 'base64p12', APPLE_API_KEY_ID: 'KEYID' }),
+      ).toThrow(/notarization/);
+    });
+
+    it('hasNotarizeCredentials requires a complete group', () => {
+      expect(hasNotarizeCredentials(apiKey)).toBe(true);
+      expect(hasNotarizeCredentials({ ...apiKey, APPLE_API_ISSUER: '' })).toBe(false);
+      expect(hasNotarizeCredentials({ APPLE_KEYCHAIN: 'k', APPLE_KEYCHAIN_PROFILE: 'p' })).toBe(
+        true,
+      );
     });
   });
 
