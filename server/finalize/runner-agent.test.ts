@@ -224,6 +224,73 @@ describe('runAgentJob', () => {
     await jobP;
   });
 
+  it('kills the running step and skips its result when the Hub says the job is gone', async () => {
+    // A shard the Hub already requeued (spot notice, reaper, Stop) used to keep
+    // running here until the step exited or the instance died, beside its
+    // replacement. A 410 heartbeat now aborts the step right away.
+    const { transport, docker, results, events } = fakes(
+      [
+        { type: 'run_step', stepIndex: 0, run: 'long', env: {} },
+        { type: 'run_step', stepIndex: 1, run: 'never', env: {} },
+      ],
+      () => 0,
+    );
+    transport.heartbeat = async (_j, spot) => ({ gone: spot === true });
+    const ran: string[] = [];
+    docker.execStep = async (_c, run, _env, _onLog, signal) => {
+      ran.push(run);
+      await new Promise<void>((resolve) => {
+        if (signal?.aborted) resolve();
+        else signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return 143;
+    };
+
+    const { stepExits } = await runAgentJob({
+      jobId: 'j',
+      spec: wire(),
+      workspaceDir: '/ws',
+      ...noChown,
+      transport,
+      docker,
+      heartbeatMs: 100_000,
+      spotProbeMs: 5,
+      checkSpot: async () => true,
+    });
+
+    expect(ran).toEqual(['long']);
+    expect(stepExits).toEqual([{ stepIndex: 0, exitCode: 143 }]);
+    expect(results).toEqual([]);
+    expect(events).toEqual(['start:/ws/repo', 'stop:c1', 'finish']);
+  });
+
+  it('keeps running when heartbeats report the job live', async () => {
+    const { transport, docker, results } = fakes(
+      [{ type: 'run_step', stepIndex: 0, run: 'ok', env: {} }, { type: 'finish' }],
+      () => 0,
+    );
+    let beats = 0;
+    transport.heartbeat = async () => {
+      beats += 1;
+      return { gone: false };
+    };
+    docker.execStep = async () => {
+      await vi.waitFor(() => expect(beats).toBeGreaterThan(1));
+      return 0;
+    };
+    await runAgentJob({
+      jobId: 'j',
+      spec: wire(),
+      workspaceDir: '/ws',
+      ...noChown,
+      transport,
+      docker,
+      heartbeatMs: 5,
+      checkSpot: async () => false,
+    });
+    expect(results).toEqual([{ stepIndex: 0, exitCode: 0 }]);
+  });
+
   it('does not stack overlapping IMDS probes when the metadata service stalls', async () => {
     // Regression: with the probe decoupled onto its own fast (5ms here) interval,
     // a checkSpot() that outlasts spotProbeMs must NOT let ticks pile up unbounded
@@ -785,6 +852,20 @@ describe('httpTransport.heartbeat', () => {
     await transport.heartbeat('job-1');
     expect(JSON.parse(calls[0].init.body as string)).toEqual({});
   });
+
+  it('maps a 410 to gone and anything else to live', async () => {
+    let status = 410;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: status < 300, status }) as Response),
+    );
+    const transport = httpTransport('http://hub.test', 'tok');
+    await expect(transport.heartbeat('job-1')).resolves.toEqual({ gone: true });
+    status = 204;
+    await expect(transport.heartbeat('job-1')).resolves.toEqual({ gone: false });
+    status = 503;
+    await expect(transport.heartbeat('job-1')).resolves.toEqual({ gone: false });
+  });
 });
 
 describe('httpTransport.reportError (card #1184)', () => {
@@ -1074,6 +1155,29 @@ describe('agentIsDraining (claim-loop Spot guard)', () => {
       throw new Error('IMDS unreachable');
     };
     await expect(agentIsDraining(boom, yes)).resolves.toBe(true);
+  });
+
+  it('honors FINALIZE_RUNNER_DRAIN_ON_REBALANCE=0 with the default rebalance probe', async () => {
+    // Stubbed IMDS that DOES report a rebalance recommendation.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => ({
+        ok: true,
+        status: 200,
+        text: async () =>
+          url.endsWith('/api/token') ? 'tok' : '{"noticeTime":"2026-10-12T00:00:00Z"}',
+      })),
+    );
+    try {
+      await expect(agentIsDraining(async () => false)).resolves.toBe(true);
+      vi.stubEnv('FINALIZE_RUNNER_DRAIN_ON_REBALANCE', '0');
+      await expect(agentIsDraining(async () => false)).resolves.toBe(false);
+      // The 2-minute notice still drains with the switch off.
+      await expect(agentIsDraining(async () => true)).resolves.toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    }
   });
 });
 

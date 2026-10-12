@@ -28,7 +28,11 @@ import {
   noopTaskProtection,
   type TaskProtection,
 } from './ecs-task-protection.js';
-import { checkRebalanceRecommendation, checkSpotInterruption } from './spot-interruption.js';
+import {
+  checkRebalanceRecommendation,
+  checkSpotInterruption,
+  drainOnRebalanceEnabled,
+} from './spot-interruption.js';
 import {
   chownWorktreeForJobRunner,
   clearWorktreeDestForRematerialize,
@@ -42,6 +46,10 @@ export interface AgentLogFrame {
 }
 
 export type AgentPollResult = RunnerDirective | { type: 'idle' } | { type: 'gone' };
+
+export interface HeartbeatResult {
+  gone: boolean;
+}
 
 export interface AgentTransport {
   claim(): Promise<{ jobId: string; spec: RunnerJobWireSpec } | null>;
@@ -58,8 +66,12 @@ export interface AgentTransport {
    * `spotInterruption` is set true once the agent's IMDS poll detects a pending
    * EC2 Spot reclaim, so the Hub can stamp the job and later classify its lost
    * lease as `spot_reclaimed` rather than a generic crash.
+   *
+   * Resolves `{ gone: true }` when the Hub says the job is no longer live
+   * (requeued on a spot notice, reaped, or cancelled): the agent must kill the
+   * running step instead of finishing a duplicate whose result is discarded.
    */
-  heartbeat(jobId: string, spotInterruption?: boolean): Promise<void>;
+  heartbeat(jobId: string, spotInterruption?: boolean): Promise<HeartbeatResult | void>;
   /**
    * Report that this agent could not run the claimed job to completion (a throw
    * out of `runAgentJob` — worktree materialize error, inner dockerd never ready,
@@ -299,8 +311,24 @@ export async function runAgentJob(args: {
   // reports the latest sticky spot flag but NEVER awaits the IMDS probe: lease
   // renewal must not ride on a metadata round-trip that could stall and trigger
   // the spurious reaping this whole path exists to avoid.
+  // Set once a heartbeat comes back 410. The step in flight (if any) is killed
+  // through its AbortController and the directive loop exits, so a shard the
+  // Hub already requeued elsewhere doesn't keep running beside its replacement.
+  let jobGone = false;
+  let currentStep: AbortController | null = null;
+  const sendHeartbeat = (spot: boolean): void => {
+    void transport
+      .heartbeat(jobId, spot)
+      .then((r) => {
+        if (!r || !r.gone || jobGone) return;
+        jobGone = true;
+        console.log(`[runner-agent] Hub reports job ${jobId} is no longer live — stopping it`);
+        currentStep?.abort();
+      })
+      .catch(() => {});
+  };
   const heartbeat = setInterval(() => {
-    void transport.heartbeat(jobId, spotInterruption).catch(() => {});
+    sendHeartbeat(spotInterruption);
     void protection.set(true).catch(() => {});
   }, args.heartbeatMs ?? 30_000);
   unref(heartbeat);
@@ -327,7 +355,7 @@ export async function runAgentJob(args: {
       .then((pending) => {
         if (!pending || spotInterruption) return;
         spotInterruption = true;
-        void transport.heartbeat(jobId, true).catch(() => {});
+        sendHeartbeat(true);
       })
       .catch(() => {})
       .finally(() => {
@@ -373,6 +401,7 @@ export async function runAgentJob(args: {
     let seq = 0;
     try {
       for (;;) {
+        if (jobGone) break;
         const d = await transport.poll(jobId);
         if (d.type === 'idle') continue;
         if (d.type === 'finish' || d.type === 'gone') break;
@@ -397,6 +426,8 @@ export async function runAgentJob(args: {
         // the per-step ceiling effective for remote jobs. The AbortController is the
         // kill switch; execStep kills the exec child when it trips.
         const ac = new AbortController();
+        currentStep = ac;
+        if (jobGone) ac.abort();
         const deadlineMs =
           d.deadlineMs && d.deadlineMs > 0 ? d.deadlineMs : DEFAULT_STEP_DEADLINE_MS;
         let deadlineHit = false;
@@ -418,9 +449,16 @@ export async function runAgentJob(args: {
             ac.signal,
           );
         } finally {
+          currentStep = null;
           clearTimeout(deadline);
           clearInterval(timer);
           await flush();
+        }
+        // The Hub dropped the job mid-step: nobody is waiting on this result,
+        // so skip the step-result retries and go straight to teardown.
+        if (jobGone) {
+          stepExits.push({ stepIndex: d.stepIndex, exitCode });
+          break;
         }
         // A killed step reports a deterministic terminal code so the Hub's
         // runSingleStep resolves on the reported exit (instead of waiting on one
@@ -885,11 +923,12 @@ export function httpTransport(hubUrl: string, token: string): AgentTransport {
       if (!res.ok) throw new Error(`finish post failed: ${res.status}`);
     },
     async heartbeat(jobId, spotInterruption) {
-      await fetch(`${base}/api/runners/jobs/${jobId}/heartbeat`, {
+      const res = await fetch(`${base}/api/runners/jobs/${jobId}/heartbeat`, {
         method: 'POST',
         headers: auth,
         body: JSON.stringify(spotInterruption ? { spotInterruption: true } : {}),
       });
+      return { gone: res.status === 410 };
     },
     async reportError(jobId, detail) {
       await fetch(`${base}/api/runners/jobs/${jobId}/error`, {
@@ -1008,7 +1047,7 @@ export function assertNativeRunnerTenancy(native: boolean, orgScope: string): vo
 export async function agentIsDraining(
   checkSpot: () => Promise<boolean> = async () => (await checkSpotInterruption()).pending,
   checkRebalance: () => Promise<boolean> = async () =>
-    (await checkRebalanceRecommendation()).recommended,
+    drainOnRebalanceEnabled() && (await checkRebalanceRecommendation()).recommended,
 ): Promise<boolean> {
   const safe = async (probe: () => Promise<boolean>): Promise<boolean> => {
     try {

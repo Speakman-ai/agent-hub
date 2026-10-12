@@ -5,7 +5,7 @@ import path from 'path';
 import express, { type Express } from 'express';
 import request from 'supertest';
 import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
-import { enqueueRunnerJob, reapExpiredRunnerLeases } from './runner-queue.js';
+import { enqueueRunnerJob, reapExpiredRunnerLeases, reportRunnerJob } from './runner-queue.js';
 
 // Mock Hub-driven task protection: by default the arm/clear calls resolve
 // instantly ('skipped'), so every existing test is unaffected; the await-race
@@ -206,7 +206,8 @@ describe('runner-routes (HTTP control plane)', () => {
       .post(`/api/runners/jobs/${jobId}/heartbeat`)
       .set('Authorization', `Bearer ${token}`)
       .send({ spotInterruption: true });
-    expect(hb.status).toBe(204);
+    // 410 tells the agent to kill the step now instead of running a duplicate.
+    expect(hb.status).toBe(410);
 
     // The in-process channel fails right away with the spot_reclaimed marker, so
     // step-runner classifies the in-flight step as `spot_reclaimed` and the
@@ -224,14 +225,84 @@ describe('runner-routes (HTTP control plane)', () => {
     // Already terminal, so the reaper has nothing left to do for it.
     expect(reapExpiredRunnerLeases(Date.now() + 10 * 60_000)).toEqual([]);
 
-    // A repeat report (the agent keeps re-sending the sticky flag) is a no-op.
+    // A repeat report (the agent keeps re-sending the sticky flag) changes
+    // nothing and keeps answering gone.
     const again = await request(app)
       .post(`/api/runners/jobs/${jobId}/heartbeat`)
       .set('Authorization', `Bearer ${token}`)
       .send({ spotInterruption: true });
-    expect(again.status).toBe(204);
+    expect(again.status).toBe(410);
     expect(failSpy).toHaveBeenCalledTimes(1);
     removeJobChannel(jobId);
+  });
+
+  it('heartbeat answers 410 once the job is terminal so the agent stops its step', async () => {
+    const token = await register();
+    enqueueRunnerJob({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r1',
+      jobId: 'e2e',
+      matrixKey: '',
+      image: 'img:latest',
+      specJson: '{}',
+      now: Date.now(),
+    });
+    const claim = await request(app)
+      .post('/api/runners/claim')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    const jobId = claim.body.jobId as string;
+    const live = await request(app)
+      .post(`/api/runners/jobs/${jobId}/heartbeat`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    expect(live.status).toBe(204);
+
+    reportRunnerJob({ jobId, state: 'cancelled', detail: 'stopped', now: Date.now() });
+    const gone = await request(app)
+      .post(`/api/runners/jobs/${jobId}/heartbeat`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    expect(gone.status).toBe(410);
+  });
+
+  it('FINALIZE_SPOT_REQUEUE_ON_NOTICE=0 stamps the notice but keeps the job running', async () => {
+    vi.stubEnv('FINALIZE_SPOT_REQUEUE_ON_NOTICE', '0');
+    try {
+      const token = await register();
+      enqueueRunnerJob({
+        orgId: 'orgA',
+        projectId: 'p1',
+        runId: 'r1',
+        jobId: 'e2e',
+        matrixKey: '',
+        image: 'img:latest',
+        specJson: '{}',
+        now: Date.now(),
+      });
+      const claim = await request(app)
+        .post('/api/runners/claim')
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+      const jobId = claim.body.jobId as string;
+      const channel = createJobChannel(jobId);
+      const failSpy = vi.spyOn(channel, 'fail');
+      const hb = await request(app)
+        .post(`/api/runners/jobs/${jobId}/heartbeat`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ spotInterruption: true });
+      expect(hb.status).toBe(204);
+      expect(failSpy).not.toHaveBeenCalled();
+      const row = getOrgsDb()
+        .prepare('SELECT state, spot_interruption_at FROM runner_jobs WHERE id=?')
+        .get(jobId) as { state: string; spot_interruption_at: number | null };
+      expect(row.state).not.toBe('lost');
+      expect(row.spot_interruption_at).not.toBeNull();
+      removeJobChannel(jobId);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('heartbeat without the flag does not stamp a spot interruption', async () => {

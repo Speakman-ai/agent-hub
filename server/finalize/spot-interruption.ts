@@ -277,3 +277,31 @@ export function parseInstanceActionBody(body: string): SpotInterruptionStatus {
 }
 
 const KNOWN_RECLAIM_ACTIONS = new Set(['terminate', 'stop', 'hibernate']);
+
+/**
+ * Off-switch parse for the spot-handling behaviors below: unset or anything
+ * other than an explicit off value leaves the behavior on.
+ */
+function envSwitchOn(raw: string | undefined): boolean {
+  const v = raw?.trim().toLowerCase();
+  return !(v === '0' || v === 'false' || v === 'off' || v === 'no');
+}
+
+/**
+ * Hub-side: on the first 2-minute notice, mark the job lost and requeue the
+ * shard right away instead of waiting for the kill plus a lease expiry. Set
+ * `FINALIZE_SPOT_REQUEUE_ON_NOTICE=0` to fall back to stamp-only (the notice is
+ * still recorded and used for `spot_reclaimed` classification).
+ */
+export function spotRequeueOnNoticeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return envSwitchOn(env.FINALIZE_SPOT_REQUEUE_ON_NOTICE);
+}
+
+/**
+ * Agent-side: stop claiming new work once IMDS posts a rebalance
+ * recommendation. Set `FINALIZE_RUNNER_DRAIN_ON_REBALANCE=0` on the runner task
+ * to drain only on the 2-minute notice.
+ */
+export function drainOnRebalanceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return envSwitchOn(env.FINALIZE_RUNNER_DRAIN_ON_REBALANCE);
+}

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  drainOnRebalanceEnabled,
+  spotRequeueOnNoticeEnabled,
   checkRebalanceRecommendation,
   checkSpotInterruption,
   detailIsSpotReclaim,
@@ -189,5 +191,18 @@ describe('checkRebalanceRecommendation', () => {
       throw new Error('connect ECONNREFUSED 169.254.169.254:80');
     });
     expect((await checkRebalanceRecommendation({ fetchImpl })).recommended).toBe(false);
+  });
+});
+
+describe('spot handling off-switches', () => {
+  it('default on, off only for explicit off values', () => {
+    expect(spotRequeueOnNoticeEnabled({})).toBe(true);
+    expect(drainOnRebalanceEnabled({})).toBe(true);
+    for (const off of ['0', 'false', 'OFF', ' no ']) {
+      expect(spotRequeueOnNoticeEnabled({ FINALIZE_SPOT_REQUEUE_ON_NOTICE: off })).toBe(false);
+      expect(drainOnRebalanceEnabled({ FINALIZE_RUNNER_DRAIN_ON_REBALANCE: off })).toBe(false);
+    }
+    expect(spotRequeueOnNoticeEnabled({ FINALIZE_SPOT_REQUEUE_ON_NOTICE: '1' })).toBe(true);
+    expect(drainOnRebalanceEnabled({ FINALIZE_RUNNER_DRAIN_ON_REBALANCE: 'typo' })).toBe(true);
   });
 });

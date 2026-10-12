@@ -38,7 +38,7 @@ import {
   type AgentTokenPayload,
 } from './runner-auth.js';
 import { MACOS_RUNNER_CLASS } from './runner-images.js';
-import { spotReclaimDetail } from './spot-interruption.js';
+import { spotReclaimDetail, spotRequeueOnNoticeEnabled } from './spot-interruption.js';
 
 interface RunnerReq extends Request {
   agent?: AgentTokenPayload;
@@ -329,7 +329,11 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       const jobId = req.params.jobId as string;
       if (!authorizeJob(req.agent!, jobId, res)) return;
       const now = Date.now();
-      heartbeatRunnerJob({ jobId, agentId: req.agent!.agentId, leaseMs, now });
+      const live = heartbeatRunnerJob({ jobId, agentId: req.agent!.agentId, leaseMs, now });
+      const spotReported =
+        (req.body as { spotInterruption?: unknown } | undefined)?.spotInterruption === true;
+      const firstSpotReport =
+        spotReported && markRunnerJobSpotInterruption({ jobId, agentId: req.agent!.agentId, now });
       // The agent probes IMDS and sets `spotInterruption: true` once EC2 posts
       // the 2-minute reclaim notice. The instance is certain to die, so on the
       // FIRST report (the stamp is sticky and only lands once) give up on this
@@ -341,10 +345,8 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       // `context canceled` step result from ever being classified, since the
       // channel is already closed when it arrives. Scoped to the claiming agent
       // + a live state, so a stale or spoofed report can't touch other jobs.
-      if (
-        (req.body as { spotInterruption?: unknown } | undefined)?.spotInterruption === true &&
-        markRunnerJobSpotInterruption({ jobId, agentId: req.agent!.agentId, now })
-      ) {
+      // FINALIZE_SPOT_REQUEUE_ON_NOTICE=0 keeps the stamp but skips the requeue.
+      if (firstSpotReport && spotRequeueOnNoticeEnabled()) {
         reportRunnerJob({
           jobId,
           state: 'lost',
@@ -359,7 +361,16 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
           ),
         );
         void clearHubTaskProtection(agentTaskArn(req.agent!.agentId), taskProtectionCfg);
-        res.status(204).end();
+        res.status(410).json({ error: 'job requeued after spot interruption notice' });
+        return;
+      }
+      // The row is terminal (requeued on a spot notice, reaped, cancelled):
+      // whatever this agent is still running is a duplicate whose result the
+      // Hub ignores. 410 tells the agent to kill the step now rather than run
+      // it to completion (or until the instance dies) beside its replacement.
+      // Older agents ignore the heartbeat status, so this is backward compatible.
+      if (!live) {
+        res.status(410).json({ error: 'job is no longer live' });
         return;
       }
       // Re-arm scale-in protection off the SAME heartbeat that keeps the lease
