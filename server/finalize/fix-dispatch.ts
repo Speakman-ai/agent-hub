@@ -91,6 +91,22 @@ export const DISPATCH_TRAILER =
   'GET /api/projects/:projectId/finalize/:runId/steps/:stepIndex/output.) ' +
   'Do not re-run the full `.agent-hub/ci.yaml` suite locally — run only targeted tests for the failing case if needed.';
 
+/**
+ * Directive for a dispatch triggered by a CI step running past its time limit.
+ * A timeout is not proof of a test failure, so the agent is asked to find out
+ * why the step ran long before deciding whether a code change is needed. Ending
+ * the turn without a commit is a legitimate answer: the orchestrator re-runs
+ * the checks at the same commit once.
+ */
+export const TIMEOUT_INVESTIGATION_DIRECTIVE =
+  'This step hit its time limit, which does not by itself mean a test failed. Before the checks ' +
+  're-run, find out why it took so long: read the full step log (`finalize.sh failed`) and look ' +
+  'for a test or process that hung (a spec that never finished, a dev server or watcher left ' +
+  'running, a compile error the runner kept waiting on, an unclosed handle), a test that is ' +
+  'genuinely slow, or a shard that is simply overloaded. If the cause is in this branch, fix it ' +
+  'and commit. If nothing in the code explains it (a runner stall), say what you checked and end ' +
+  'your turn without a commit; the checks will re-run once at the same commit.';
+
 /** Trailer for reviewer-only dispatches — CI is deferred until approval. */
 export const DISPATCH_TRAILER_REVIEWER =
   'Please address the reviewer feedback and commit. When you finish your turn, review will run again; CI runs only after the reviewer approves. Do not re-run the full `.agent-hub/ci.yaml` suite locally unless you need a targeted check for a specific change.';
@@ -178,6 +194,12 @@ export interface FixDispatchTrigger {
     rounds: number;
     priorFindings: string[];
   } | null;
+  /**
+   * Set when the checks phase ended because a step ran past its time limit
+   * rather than failing. Switches the header to "timed out" and asks the agent
+   * to investigate why the step ran long before the automatic re-run.
+   */
+  stepTimedOut?: { limitMs: number; elapsedMs: number } | null;
 }
 
 /**
@@ -711,6 +733,10 @@ export function composeDispatchBody(trigger: FixDispatchTrigger): string {
     lines.push(
       `Finalize Code Changes: phase=${phase}, ${failedSteps.length} steps failed across CI jobs.`,
     );
+    if (trigger.stepTimedOut) {
+      lines.push('');
+      lines.push(TIMEOUT_INVESTIGATION_DIRECTIVE);
+    }
     failedSteps.forEach((f, i) => {
       lines.push('');
       const where = failedStepJobLabel(f);
@@ -721,6 +747,19 @@ export function composeDispatchBody(trigger: FixDispatchTrigger): string {
       );
       lines.push(...renderFailedStepEvidence(f));
     });
+  } else if (hasFailedStep && trigger.stepTimedOut) {
+    const f = failedSteps[0];
+    const { limitMs, elapsedMs } = trigger.stepTimedOut;
+    const secs = (ms: number) => Math.round(ms / 1000);
+    const where = failedStepJobLabel(f);
+    const timing = limitMs > 0 ? ` after ${secs(elapsedMs)}s (limit ${secs(limitMs)}s)` : '';
+    lines.push(
+      `Finalize Code Changes: phase=${f.phase}, ${where ? `${where}, ` : ''}step "${f.name}" ` +
+        `timed out${timing}.`,
+    );
+    lines.push('');
+    lines.push(TIMEOUT_INVESTIGATION_DIRECTIVE);
+    lines.push(...renderFailedStepEvidence(f));
   } else if (hasFailedStep) {
     const f = failedSteps[0];
     lines.push(

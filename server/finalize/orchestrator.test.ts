@@ -4079,3 +4079,104 @@ describe('runFinalize — decision trace', () => {
     expect(fixLines.some((l) => l.includes('phase=settled'))).toBe(true);
   });
 });
+
+// A CI step that hits its time limit (a hung Cypress shard, a leftover dev
+// server) used to park the run on the first occurrence, so an Auto Merge
+// session sat idle until a human re-triggered Finalize. The run now hands the
+// timeout to the session agent to investigate and re-runs the checks once.
+describe('runFinalize — step timeout retry', () => {
+  const TIMED_OUT: StepRunResult = {
+    status: 'timeout',
+    stepResults: [],
+    activeSecondsBilled: 5,
+    failedStep: {
+      index: 3,
+      name: 'component / Component tests (shard 3/6)',
+      run: 'npm run test:component',
+      exitCode: 124,
+      timeout: { limitMs: 3_600_000, elapsedMs: 3_603_800 },
+      outputTail: ['Running: field-crew-training-page.comp (92 of 109)'],
+    },
+  };
+  const GREEN: StepRunResult = { status: 'success', stepResults: [], activeSecondsBilled: 5 };
+
+  const timeoutMessages = (stmts: ReturnType<typeof makeDeps>['stmts']) =>
+    (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.filter((c) => {
+      try {
+        return JSON.parse((c[7] as string) ?? 'null')?.kind === 'finalize_timeout_dispatch';
+      } catch {
+        return false;
+      }
+    });
+
+  let prevSameSha: string | undefined;
+  beforeEach(() => {
+    // Prove the timeout rerun does not borrow the flaky same-SHA rerun budget.
+    prevSameSha = process.env.FINALIZE_MAX_SAME_SHA_RERUNS;
+    process.env.FINALIZE_MAX_SAME_SHA_RERUNS = '0';
+    process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES = '0';
+  });
+  afterEach(() => {
+    if (prevSameSha === undefined) delete process.env.FINALIZE_MAX_SAME_SHA_RERUNS;
+    else process.env.FINALIZE_MAX_SAME_SHA_RERUNS = prevSameSha;
+    delete process.env.FINALIZE_MAX_NO_PROGRESS_NUDGES;
+    delete process.env.FINALIZE_MAX_STEP_TIMEOUT_RETRIES;
+  });
+
+  it('dispatches an investigation turn and re-runs checks instead of parking', async () => {
+    const runSteps = vi
+      .fn()
+      .mockResolvedValueOnce(TIMED_OUT)
+      .mockResolvedValue(GREEN) as unknown as NonNullable<OrchestratorDeps['runJobPhase']>;
+    const { deps, stmts } = makeDeps({
+      runJobPhase: runSteps,
+      resolveHeadSha: vi.fn<(...args: unknown[]) => Promise<string>>().mockResolvedValue('same'),
+      budgetSeconds: 999_999_999,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(runSteps).toHaveBeenCalledTimes(2);
+    const dispatches = (deps.dispatchFixMessage as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0][1].trigger.stepTimedOut).toEqual({
+      limitMs: 3_600_000,
+      elapsedMs: 3_603_800,
+    });
+    expect(dispatches[0][1].trigger.failedStep.name).toBe(
+      'component / Component tests (shard 3/6)',
+    );
+    expect(timeoutMessages(stmts)).toHaveLength(0);
+  });
+
+  it('parks the run when the retry times out again', async () => {
+    const runSteps = fakeRunSteps(TIMED_OUT);
+    const { deps, stmts } = makeDeps({
+      runJobPhase: runSteps,
+      resolveHeadSha: vi.fn<(...args: unknown[]) => Promise<string>>().mockResolvedValue('same'),
+      budgetSeconds: 999_999_999,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') expect(result.status).toBe('timed_out');
+    expect(runSteps).toHaveBeenCalledTimes(2);
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
+    expect(timeoutMessages(stmts)).toHaveLength(1);
+  });
+
+  it('FINALIZE_MAX_STEP_TIMEOUT_RETRIES=0 parks on the first timeout', async () => {
+    process.env.FINALIZE_MAX_STEP_TIMEOUT_RETRIES = '0';
+    const runSteps = fakeRunSteps(TIMED_OUT);
+    const { deps } = makeDeps({ runJobPhase: runSteps, budgetSeconds: 999_999_999 });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') expect(result.status).toBe('timed_out');
+    expect(runSteps).toHaveBeenCalledTimes(1);
+    expect(deps.dispatchFixMessage).not.toHaveBeenCalled();
+  });
+});

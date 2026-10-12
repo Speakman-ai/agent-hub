@@ -215,6 +215,28 @@ export function resolveMaxSameShaReruns(): number {
 }
 
 /**
+ * How many times a run that hit a CI step time limit is retried instead of
+ * parked. Each retry first hands the timeout to the session agent to
+ * investigate (hung test, leftover process, slow shard) and, when the agent
+ * lands no commit, re-runs the checks once at the same commit. The checks
+ * phase gets a fresh pipeline budget on every round, so the retry is not
+ * starved by the round that timed out.
+ *
+ * Override with `FINALIZE_MAX_STEP_TIMEOUT_RETRIES` (non-negative integer;
+ * `0` restores "a step timeout parks the run immediately").
+ */
+export const DEFAULT_MAX_STEP_TIMEOUT_RETRIES = 1;
+
+export function resolveMaxStepTimeoutRetries(): number {
+  const raw = process.env.FINALIZE_MAX_STEP_TIMEOUT_RETRIES?.trim();
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 0 && String(n) === raw) return n;
+  }
+  return DEFAULT_MAX_STEP_TIMEOUT_RETRIES;
+}
+
+/**
  * How many CONSECUTIVE reviewer `changes_requested` rounds the fix loop will
  * run before halting early with `review_not_converging` instead of dispatching
  * yet another fix.
@@ -1052,6 +1074,14 @@ export async function runFinalize(
     // path so a session that never makes progress still terminates.
     const maxNoProgressNudges = resolveMaxNoProgressNudges();
     let noProgressNudgesUsed = 0;
+    // CI step timeouts retried this run (not reset by commits: a step that
+    // keeps hanging across fixes should still park eventually). The pending
+    // flag lets the timeout's own same-commit rerun skip the flaky-rerun
+    // budget, so an earlier flake retry can't turn the timeout retry into a
+    // `fix_no_progress` terminal.
+    const maxStepTimeoutRetries = resolveMaxStepTimeoutRetries();
+    let stepTimeoutRetriesUsed = 0;
+    let pendingTimeoutRerun = false;
     // Flake gate (fail-closed): set to false the moment any round's per-round
     // job-attempt history fails to persist. Without complete history, the
     // classifier can't tell a real fix from a laundered flake, so the gate must
@@ -1361,11 +1391,25 @@ export async function runFinalize(
       // Fail fast with a dedicated, non-retryable reason that names the
       // branch so the operator can see the fixer committed to the wrong
       // branch (or not at all).
+      const timeoutRerun = pendingTimeoutRerun;
+      pendingTimeoutRerun = false;
       if (prevValidatedHead !== null && headValidatedAgainst === prevValidatedHead) {
         // HEAD did not advance since the previous round — no code change. Give a
         // transient/flaky failure a bounded number of same-SHA reruns before
         // giving up, then terminate to avoid livelocking on a genuine red.
-        if (sameShaRerunsUsed < maxSameShaReruns) {
+        if (timeoutRerun) {
+          // The previous round timed out and the investigation turn found
+          // nothing to commit: re-run the checks as the timeout retry.
+          trace('same_sha_rerun', {
+            round: loopCount,
+            reason: 'step_timeout',
+            head: headValidatedAgainst,
+          });
+          log(
+            `[finalize-orchestrator] no code change after step-timeout investigation at ` +
+              `${headValidatedAgainst} — re-running checks for run=${runId}`,
+          );
+        } else if (sameShaRerunsUsed < maxSameShaReruns) {
           sameShaRerunsUsed += 1;
           trace('same_sha_rerun', {
             round: loopCount,
@@ -1894,7 +1938,27 @@ export async function runFinalize(
         // Step terminal classes: the runner already wrote `failed` /
         // `timed_out` to the row for those classes, but NOT for `infra_error`
         // (§10 leaves that to the orchestrator).
-        if (lastStepOutcome.status === 'timeout') {
+        if (
+          lastStepOutcome.status === 'timeout' &&
+          stepTimeoutRetriesUsed < maxStepTimeoutRetries &&
+          !runRowIsTerminal(deps, runId)
+        ) {
+          // Retry instead of parking: fall through to fix dispatch, which hands
+          // the timeout to the session agent to investigate; the next round
+          // re-runs the checks with a fresh pipeline budget.
+          stepTimeoutRetriesUsed += 1;
+          pendingTimeoutRerun = true;
+          trace('step_timeout_retry', {
+            round: loopCount,
+            used: stepTimeoutRetriesUsed,
+            max: maxStepTimeoutRetries,
+            step: lastStepOutcome.failedStep?.name ?? null,
+          });
+          log(
+            `[finalize-orchestrator] step "${lastStepOutcome.failedStep?.name ?? '?'}" timed out — ` +
+              `retry ${stepTimeoutRetriesUsed}/${maxStepTimeoutRetries} after investigation for run=${runId}`,
+          );
+        } else if (lastStepOutcome.status === 'timeout') {
           // A step/job ran past the per-run `timeout_minutes` WALL-CLOCK cap
           // (step execution bills only a flat tick to active time, so the §13
           // active-time budget is typically nowhere near exhausted here).
@@ -3220,6 +3284,19 @@ function isBranchFullyValidated(
  * outcomes. Pulls reviewer threads from the DB so the composer renders
  * the canonical row shape (not the input shape from `runReviewer`).
  */
+/**
+ * True when the run row already carries a terminal status (a sub-phase stamped
+ * it). Such a run cannot loop again; a lookup failure reads as not terminal.
+ */
+function runRowIsTerminal(deps: OrchestratorDeps, runId: string): boolean {
+  try {
+    const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+    return !!row && FINALIZE_TERMINAL_STATUSES.includes(row.status);
+  } catch {
+    return false;
+  }
+}
+
 function buildFixTrigger(
   deps: OrchestratorDeps,
   runId: string,
@@ -3239,6 +3316,9 @@ function buildFixTrigger(
   // misleading "reviewer approved" / "all checks passed" line in the
   // fix-dispatch message.
   if (phases.checksRequired && stepOutcome?.failedStep) {
+    if (stepOutcome.status === 'timeout') {
+      trigger.stepTimedOut = stepOutcome.failedStep.timeout ?? { limitMs: 0, elapsedMs: 0 };
+    }
     trigger.failedStep = {
       phase: 'tasks',
       name: stepOutcome.failedStep.name,

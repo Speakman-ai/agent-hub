@@ -17,6 +17,7 @@ import {
   DISPATCH_PHASE_ENTRY_ACTIVE_SECONDS,
   DISPATCH_TRAILER,
   DISPATCH_TRAILER_REVIEWER,
+  TIMEOUT_INVESTIGATION_DIRECTIVE,
   composeDispatchBody,
   dispatchFixMessage,
   type CancelSignal,
@@ -851,5 +852,51 @@ describe('dispatchFixMessage — uniform shape across live and autonomous', () =
     const liveBody = live.stmts.addMessage.run.mock.calls[0][3] as string;
     const autoBody = auto.stmts.addMessage.run.mock.calls[0][3] as string;
     expect(liveBody).toBe(autoBody);
+  });
+});
+
+describe('composeDispatchBody — step timeout', () => {
+  const failedStep = {
+    phase: 'tasks' as const,
+    name: 'Component tests (shard 3/6)',
+    exitCode: 124,
+    outputTail: ['Running: spec 92 of 109'],
+    jobId: 'component',
+    matrixKey: '3',
+  };
+
+  it('reports the timeout and asks the agent to investigate why the step ran long', () => {
+    const body = composeDispatchBody({
+      failedStep,
+      stepTimedOut: { limitMs: 3_600_000, elapsedMs: 3_603_800 },
+    });
+    expect(body.split('\n')[0]).toBe(
+      'Finalize Code Changes: phase=tasks, job "component" / shard "3", ' +
+        'step "Component tests (shard 3/6)" timed out after 3604s (limit 3600s).',
+    );
+    expect(body).toContain(TIMEOUT_INVESTIGATION_DIRECTIVE);
+    expect(body).toContain('Running: spec 92 of 109');
+    expect(body).not.toContain('failed (exit 124)');
+  });
+
+  it('omits timings when the limit is unknown', () => {
+    const body = composeDispatchBody({ failedStep, stepTimedOut: { limitMs: 0, elapsedMs: 0 } });
+    expect(body.split('\n')[0]).toMatch(/step "Component tests \(shard 3\/6\)" timed out\.$/);
+  });
+
+  it('adds the directive to a multi-failure dispatch that includes a timeout', () => {
+    const body = composeDispatchBody({
+      failedStep,
+      failedSteps: [failedStep, { ...failedStep, name: 'Lint', exitCode: 1, matrixKey: undefined }],
+      stepTimedOut: { limitMs: 60_000, elapsedMs: 61_000 },
+    });
+    expect(body).toContain('2 steps failed across CI jobs');
+    expect(body).toContain(TIMEOUT_INVESTIGATION_DIRECTIVE);
+  });
+
+  it('leaves an ordinary failure untouched', () => {
+    const body = composeDispatchBody({ failedStep });
+    expect(body).not.toContain(TIMEOUT_INVESTIGATION_DIRECTIVE);
+    expect(body).toContain('failed (exit 124)');
   });
 });
