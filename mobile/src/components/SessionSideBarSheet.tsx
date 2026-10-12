@@ -18,6 +18,7 @@ import { colors } from '../theme/colors';
 import { api } from '../utils/api';
 import { useApp } from '../context/AppContext';
 import { createUseSidebarChat, type SidebarChatApi } from '@shared/hooks/useSidebarChat';
+import { sidebarResponseStatus } from '@shared/utils/sessionSidebar';
 
 const useSidebarChat = createUseSidebarChat({
   useCallback,
@@ -90,6 +91,7 @@ export default function SessionSideBarSheet({
   }, [input, connected, canAsk, ask, setInput]);
 
   const ready = state.phase === 'ready';
+  const responseStatus = sidebarResponseStatus(state);
   const busyOp = state.pendingOp !== null;
   const canSend = connected && canAsk && input.trim().length > 0;
   const hasConversation = state.messages.length > 0 || !!state.sidebarId;
@@ -202,14 +204,24 @@ export default function SessionSideBarSheet({
                 ),
               )
             )}
-            {state.busy &&
-              (state.streamingContent ? (
-                <View testID="mobile-sidebar-streaming">
-                  <Markdown style={markdownStyles as any}>{state.streamingContent}</Markdown>
-                </View>
-              ) : (
-                <ActivityIndicator color={colors.gray500} />
-              ))}
+            {state.busy && state.streamingContent ? (
+              <View testID="mobile-sidebar-streaming">
+                <Markdown style={markdownStyles as any}>{state.streamingContent}</Markdown>
+              </View>
+            ) : null}
+            {responseStatus ? (
+              <View
+                testID="mobile-sidebar-responding"
+                accessibilityRole="progressbar"
+                accessibilityLabel={responseStatus}
+                style={styles.responding}
+              >
+                <ActivityIndicator size="small" color={colors.amber400} />
+                <Text style={styles.respondingText}>
+                  {agentName ? `${agentName} is ${responseStatus.toLowerCase()}` : responseStatus}
+                </Text>
+              </View>
+            ) : null}
             {state.error ? (
               <Text testID="mobile-sidebar-error" style={styles.errorText}>
                 {state.error}
@@ -262,7 +274,15 @@ export default function SessionSideBarSheet({
 }
 
 const markdownStyles = {
-  body: { color: colors.gray200, fontSize: 14 },
+  body: { color: colors.gray200, fontSize: 14, lineHeight: 21 },
+  paragraph: { marginTop: 4, marginBottom: 8 },
+  bullet_list: { marginVertical: 4 },
+  ordered_list: { marginVertical: 4 },
+  list_item: { marginVertical: 2 },
+  heading1: { fontSize: 18, fontWeight: '700', marginTop: 8, marginBottom: 4 },
+  heading2: { fontSize: 16, fontWeight: '700', marginTop: 8, marginBottom: 4 },
+  heading3: { fontSize: 15, fontWeight: '600', marginTop: 6, marginBottom: 2 },
+  strong: { color: colors.gray100, fontWeight: '600' },
   code_inline: { backgroundColor: colors.gray800, color: colors.gray200 },
   fence: { backgroundColor: colors.gray900, color: colors.gray200 },
 };
@@ -283,7 +303,9 @@ const styles = StyleSheet.create({
   title: { color: colors.gray200, fontSize: 14, fontWeight: '600' },
   subtitle: { color: colors.gray500, fontSize: 11 },
   iconButton: { padding: 6 },
-  messages: { padding: 12, gap: 12 },
+  messages: { padding: 14, gap: 14 },
+  responding: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  respondingText: { color: colors.amber400, fontSize: 12 },
   center: { alignItems: 'center', gap: 8 },
   empty: { color: colors.gray500, fontSize: 12, textAlign: 'center', paddingVertical: 24 },
   userBubble: {

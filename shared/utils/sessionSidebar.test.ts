@@ -6,6 +6,7 @@ import {
   initialSidebarPanelState,
   sidebarPanelReducer,
   sidebarView,
+  sidebarResponseStatus,
   type SidebarAction,
   type SidebarPanelState,
   SIDEBAR_REPLACED_ERROR,
@@ -975,5 +976,20 @@ describe('sidebarPanelReducer', () => {
       expect(canAskSidebar(s)).toBe(true);
       expect(view(s).error).toBe(SIDEBAR_REPLACED_ERROR);
     });
+  });
+});
+
+describe('sidebarResponseStatus', () => {
+  it('is null when no turn is running', () => {
+    expect(sidebarResponseStatus({ busy: false, streamingContent: '' })).toBeNull();
+    expect(sidebarResponseStatus({ busy: false, streamingContent: 'left over' })).toBeNull();
+  });
+
+  it('says Thinking before any text streams', () => {
+    expect(sidebarResponseStatus({ busy: true, streamingContent: '' })).toBe('Thinking…');
+  });
+
+  it('keeps an indicator up while text streams', () => {
+    expect(sidebarResponseStatus({ busy: true, streamingContent: 'Partial' })).toBe('Writing…');
   });
 });

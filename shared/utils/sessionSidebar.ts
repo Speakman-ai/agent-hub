@@ -295,6 +295,18 @@ export function sidebarView(state: SidebarPanelState): SidebarView {
   };
 }
 
+/**
+ * Label for the in-flight response indicator, or null when no turn is running.
+ * "Thinking" covers the gap before the first streamed text; "Writing" stays up
+ * while text streams so a pause mid-answer still reads as in progress.
+ */
+export function sidebarResponseStatus(
+  view: Pick<SidebarView, 'busy' | 'streamingContent'>,
+): string | null {
+  if (!view.busy) return null;
+  return view.streamingContent ? 'Writing…' : 'Thinking…';
+}
+
 /** Whether the user may ask a question right now. */
 export function canAskSidebar(state: SidebarPanelState): boolean {
   const view = sidebarView(state);

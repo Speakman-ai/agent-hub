@@ -93,6 +93,33 @@ describe('SessionSideBarPane', () => {
     expect(screen.getByTestId('sidebar-send')).toBeTruthy();
   });
 
+  it('shows a response indicator for the whole turn, including while text streams', async () => {
+    vi.mocked(api.getSessionSidebar).mockResolvedValue({ session: { id: 'sb-ind' } as never });
+    vi.mocked(api.getMessages).mockResolvedValue([]);
+    renderPane();
+    await waitFor(() => expect(screen.getByTestId('sidebar-input')).toBeTruthy());
+    await waitFor(() =>
+      expect((screen.getByTestId('sidebar-input') as HTMLTextAreaElement).disabled).toBe(false),
+    );
+    expect(screen.queryByTestId('sidebar-responding')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('sidebar-input'), { target: { value: 'q?' } });
+    fireEvent.click(screen.getByTestId('sidebar-send'));
+    expect(screen.getByTestId('sidebar-responding').textContent).toBe('Dev is thinking…');
+
+    ws({ type: 'stream', sessionId: 'sb-ind', content: 'Partial **answer**' });
+    expect(screen.getByTestId('sidebar-responding').textContent).toBe('Dev is writing…');
+    expect(screen.getByTestId('sidebar-streaming').className).toContain('markdown-content');
+
+    ws({
+      type: 'done',
+      sessionId: 'sb-ind',
+      message: { id: 'a1', role: 'assistant', content: 'Final answer' },
+    });
+    expect(screen.queryByTestId('sidebar-responding')).toBeNull();
+    expect(screen.getByTestId('sidebar-assistant-message').className).toContain('markdown-content');
+  });
+
   it('ignores stream events from the main session', async () => {
     vi.mocked(api.getSessionSidebar).mockResolvedValue({ session: { id: 'sb-3' } as never });
     renderPane();

@@ -12,7 +12,11 @@ import {
 import { api } from '../utils/api';
 import { useResizablePaneWidth } from '../hooks/useResizablePaneWidth';
 import { MarkdownContent, markdownComponentsCompact } from './MarkdownRenderer';
-import { SIDEBAR_WS_EVENT, isSidebarSubmitKey } from '@shared/utils/sessionSidebar';
+import {
+  SIDEBAR_WS_EVENT,
+  isSidebarSubmitKey,
+  sidebarResponseStatus,
+} from '@shared/utils/sessionSidebar';
 import { createUseSidebarChat, type SidebarChatApi } from '@shared/hooks/useSidebarChat';
 
 const useSidebarChat = createUseSidebarChat({
@@ -109,6 +113,7 @@ export default function SessionSideBarPane({
   const busyOp = state.pendingOp !== null;
   const hasConversation = state.messages.length > 0 || !!state.sidebarId;
   const inputEnabled = connected && ready;
+  const responseStatus = sidebarResponseStatus(state);
 
   // Below lg there is no room for a column, so the SideBar covers the chat.
   return (
@@ -184,7 +189,7 @@ export default function SessionSideBarPane({
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-3 py-3 text-sm">
+      <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-4 text-sm">
         {state.phase === 'load_error' ? (
           <div className="py-6 text-center text-xs text-red-300" data-testid="sidebar-load-error">
             <p>{state.loadError}</p>
@@ -209,9 +214,9 @@ export default function SessionSideBarPane({
         ) : (
           state.messages.map((m) =>
             m.role === 'user' ? (
-              <div key={m.id} className="ml-6">
+              <div key={m.id} className="ml-auto max-w-[85%]">
                 <div
-                  className={`whitespace-pre-wrap rounded-lg bg-gray-800 px-3 py-2 text-gray-100 ${
+                  className={`whitespace-pre-wrap break-words rounded-lg bg-gray-800 px-3 py-2 text-gray-100 ${
                     m.pending ? 'opacity-70' : ''
                   } ${m.failed ? 'border border-red-900' : ''}`}
                 >
@@ -236,25 +241,40 @@ export default function SessionSideBarPane({
                 )}
               </div>
             ) : (
-              <div key={m.id} className="text-gray-200" data-testid="sidebar-assistant-message">
+              <div
+                key={m.id}
+                className="markdown-content break-words text-gray-200"
+                data-testid="sidebar-assistant-message"
+              >
                 <MarkdownContent content={m.content} components={markdownComponentsCompact} />
               </div>
             ),
           )
         )}
-        {state.busy &&
-          (state.streamingContent ? (
-            <div className="text-gray-200">
-              <MarkdownContent
-                content={state.streamingContent}
-                components={markdownComponentsCompact}
-              />
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              <Loader2 size={12} className="animate-spin" /> Thinking…
-            </div>
-          ))}
+        {state.busy && state.streamingContent && (
+          <div
+            className="markdown-content break-words text-gray-200"
+            data-testid="sidebar-streaming"
+          >
+            <MarkdownContent
+              content={state.streamingContent}
+              components={markdownComponentsCompact}
+            />
+          </div>
+        )}
+        {responseStatus && (
+          <div
+            className="flex items-center gap-2 text-xs text-amber-300/90"
+            role="status"
+            aria-live="polite"
+            data-testid="sidebar-responding"
+          >
+            <Loader2 size={13} className="animate-spin" />
+            <span>
+              {agentName ? `${agentName} is ${responseStatus.toLowerCase()}` : responseStatus}
+            </span>
+          </div>
+        )}
         {state.error && (
           <div
             className="rounded border border-red-900 bg-red-950/40 px-2 py-1 text-xs text-red-300"

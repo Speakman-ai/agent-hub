@@ -149,6 +149,10 @@ describe('mobile SessionSideBarSheet', () => {
     });
     await emit({ type: 'stream', sessionId: 'sb-2', sidebarParentId: 'main-1', content: 'Y…' });
     expect(allText(r)).toContain('Y…');
+    expect(r.root.findAllByProps({ testID: 'mobile-sidebar-responding' }).length).toBeGreaterThan(
+      0,
+    );
+    expect(allText(r)).toContain('is writing…');
     await emit({
       type: 'done',
       sessionId: 'sb-2',
@@ -156,6 +160,7 @@ describe('mobile SessionSideBarSheet', () => {
       message: { id: 'a1', role: 'assistant', content: 'Y is done' },
     });
     expect(allText(r)).toContain('Y is done');
+    expect(r.root.findAllByProps({ testID: 'mobile-sidebar-responding' })).toHaveLength(0);
   });
 
   it('blocks sending until the lookup resolves', async () => {
