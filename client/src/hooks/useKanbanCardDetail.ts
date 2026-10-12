@@ -1,10 +1,32 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../utils/api';
 import { filterAgentsByProject } from '../utils/kanbanAgents';
 import {
   applyCardTemplateToDetailForm,
   type KanbanCardTemplate,
 } from '@shared/utils/kanbanCardTemplates';
+import { isPrematureDoneMoveError } from '@shared/utils/prematureDoneMove';
+
+const DONE_STATE_CONTRACT_MARKER = 'done_state_contract_violation';
+
+export type CardStatusError = {
+  /** Card the failed move targeted; errors never render for (or retry against) another card. */
+  cardId: string;
+  columnId: string;
+  message: string;
+  /** True when the server's premature-Done guard rejected the move and a `force` retry is allowed. */
+  canForce: boolean;
+};
+
+/** Append position for `cardId` at the end of `columnId`. */
+export function endOfColumnPosition(cards: any[], columnId: string, cardId?: string): number {
+  let max = -1;
+  for (const c of cards) {
+    if (c.column_id !== columnId || c.id === cardId) continue;
+    if (typeof c.position === 'number' && c.position > max) max = c.position;
+  }
+  return max + 1;
+}
 
 export function buildDetailFormFromCard(card: any) {
   return {
@@ -73,6 +95,12 @@ export function useKanbanCardDetail({
   const [blockerError, setBlockerError] = useState<any>(null);
   const [descriptionEditing, setDescriptionEditing] = useState(false);
   const [modelConfig, setModelConfig] = useState<any>(externalModelConfig ?? null);
+  const [statusMovingCardId, setStatusMovingCardId] = useState<string | null>(null);
+  const [statusErrorState, setStatusError] = useState<CardStatusError | null>(null);
+  // Read in async move handlers to tell whether the dialog still shows the
+  // card the request was made for.
+  const selectedCardIdRef = useRef<string | null>(null);
+  selectedCardIdRef.current = selectedCard?.id ?? null;
 
   useEffect(() => {
     if (externalModelConfig !== undefined) {
@@ -101,6 +129,7 @@ export function useKanbanCardDetail({
     setBlockerPickerQuery('');
     setBlockerError(null);
     setDescriptionEditing(false);
+    setStatusError(null);
   }, []);
 
   const openCreateDetail = useCallback(
@@ -120,6 +149,7 @@ export function useKanbanCardDetail({
       setComments([]);
       setCardReplay(null);
       setWatchingReplay(false);
+      setStatusError(null);
     },
     [],
   );
@@ -309,6 +339,73 @@ export function useKanbanCardDetail({
     }
   };
 
+  const moveCardToColumn = async (cardId: string, columnId: string, force: boolean) => {
+    setStatusMovingCardId(cardId);
+    setStatusError(null);
+    try {
+      const moved = await api.moveCard(projectId, cardId, {
+        columnId,
+        position: endOfColumnPosition(cards, columnId, cardId),
+        ...(force ? { force: true } : {}),
+      });
+      setSelectedCard((c: any) =>
+        c?.id === cardId ? { ...c, ...(moved || {}), column_id: columnId } : c,
+      );
+      await onRefresh?.();
+    } catch (err: any) {
+      // The user may have opened another card while this request was in
+      // flight; its error (and force retry) must not land in that dialog.
+      if (selectedCardIdRef.current !== cardId) return;
+      const raw = String(err?.message || '');
+      if (isPrematureDoneMoveError(err)) {
+        setStatusError({
+          cardId,
+          columnId,
+          canForce: true,
+          message:
+            'This card is linked to a session that has not pushed through Finalize yet. ' +
+            'The platform moves it to Done when the merge lands.',
+        });
+      } else if (raw.includes(DONE_STATE_CONTRACT_MARKER)) {
+        setStatusError({
+          cardId,
+          columnId,
+          canForce: false,
+          message:
+            'A [Spec]/[Partial] card needs a comment listing its follow-up card IDs before it can move to Done.',
+        });
+      } else {
+        setStatusError({ cardId, columnId, canForce: false, message: 'Failed to change status.' });
+      }
+    } finally {
+      setStatusMovingCardId((cur) => (cur === cardId ? null : cur));
+    }
+  };
+
+  // Status changes persist immediately (like the epic picker) rather than
+  // waiting for Save, so the dialog can mark a card Done in one step.
+  const handleChangeStatus = async (columnId: string) => {
+    if (!selectedCard || !columnId) return;
+    if (isDraftKanbanCard(selectedCard)) {
+      setSelectedCard((c: any) => ({ ...c, column_id: columnId }));
+      return;
+    }
+    if (columnId === selectedCard.column_id) return;
+    await moveCardToColumn(selectedCard.id, columnId, false);
+  };
+
+  const statusError =
+    statusErrorState && statusErrorState.cardId === selectedCard?.id ? statusErrorState : null;
+  const statusMoving = statusMovingCardId !== null && statusMovingCardId === selectedCard?.id;
+
+  // Replays the rejected move with `force` against the card that failed,
+  // and only while that card is still the one on screen.
+  const handleForceStatus = async () => {
+    const pending = statusError;
+    if (!pending?.canForce) return;
+    await moveCardToColumn(pending.cardId, pending.columnId, true);
+  };
+
   return {
     selectedCard,
     setSelectedCard,
@@ -355,6 +452,11 @@ export function useKanbanCardDetail({
     handleAddBlocker,
     handleRemoveBlocker,
     handleLinkCardEpic,
+    handleChangeStatus,
+    handleForceStatus,
+    statusMoving,
+    statusError,
+    setStatusError,
     onRefresh,
     onNavigateToSession,
     projectId,

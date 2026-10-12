@@ -904,9 +904,14 @@ export default function KanbanScreen({ route, navigation }: any) {
     },
     [projectId, reconcileBoard],
   );
+  // Keep an open detail sheet's Status row in sync after a successful move.
+  const markSelectedCardMoved = (cardId: any, targetColumnId: any) => {
+    setSelectedCard((c: any) => (c?.id === cardId ? { ...c, column_id: targetColumnId } : c));
+  };
   const commitMoveCard = async (cardId: any, targetColumnId: any) => {
     try {
       await api.moveKanbanCard(projectId, cardId, { columnId: targetColumnId });
+      markSelectedCardMoved(cardId, targetColumnId);
       await loadBoard();
     } catch (err) {
       // Premature-Done guard (server 409 premature_done_move): Done is
@@ -925,6 +930,7 @@ export default function KanbanScreen({ route, navigation }: any) {
                   columnId: targetColumnId,
                   force: true,
                 });
+                markSelectedCardMoved(cardId, targetColumnId);
                 await loadBoard();
               } catch {
                 Alert.alert('Error', 'Failed to move card');
@@ -1249,6 +1255,38 @@ export default function KanbanScreen({ route, navigation }: any) {
             {/* Linked-from todos — the caller's own personal todos that point
                 at this card (reverse of the todo's link badge). */}
             <LinkedTodosPanel targetType="card" entity={selectedCard} projectId={projectId} />
+
+            {/* Status — moves the card immediately (same path as the action sheet). */}
+            {columns.length > 0 ? (
+              <>
+                <Text style={styles.fieldLabel}>Status</Text>
+                <View style={styles.priorityRow} testID="card-status-row">
+                  {columns.map((col: any) => {
+                    const active = selectedCard.column_id === col.id;
+                    return (
+                      <TouchableOpacity
+                        key={col.id}
+                        testID={`card-status-${col.id}`}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: active }}
+                        style={[
+                          styles.priorityBtn,
+                          active && {
+                            backgroundColor: colors.blue600 + '33',
+                            borderColor: colors.blue600,
+                          },
+                        ]}
+                        onPress={() => handleMoveCardFor(selectedCard, col.id)}
+                      >
+                        <Text style={[styles.priorityBtnText, active && { color: colors.white }]}>
+                          {col.name}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </>
+            ) : null}
 
             {/* Priority */}
             <Text style={styles.fieldLabel}>Priority</Text>

@@ -74,6 +74,11 @@ export default function KanbanCardDetailModal({
     handleAddBlocker,
     handleRemoveBlocker,
     handleLinkCardEpic,
+    handleChangeStatus,
+    handleForceStatus,
+    statusMoving,
+    statusError,
+    setStatusError,
     openDetail,
     isCreating,
     cardTemplates,
@@ -230,18 +235,21 @@ export default function KanbanCardDetailModal({
                       </select>
                     </div>
                   ) : null}
-                  {isCreating && columns.length > 0 ? (
+                  {columns.length > 0 ? (
                     <div>
-                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
-                        Column
+                      <label
+                        htmlFor="card-status-select"
+                        className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2"
+                      >
+                        {isCreating ? 'Column' : 'Status'}
                       </label>
                       <select
+                        id="card-status-select"
                         value={selectedCard.column_id || ''}
-                        onChange={(e: any) =>
-                          setSelectedCard((c: any) => ({ ...c, column_id: e.target.value }))
-                        }
-                        data-testid="card-create-column"
-                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                        disabled={statusMoving}
+                        onChange={(e: any) => handleChangeStatus(e.target.value)}
+                        data-testid={isCreating ? 'card-create-column' : 'card-status-select'}
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500 disabled:opacity-60"
                       >
                         {columns.map((col: any) => (
                           <option key={col.id} value={col.id}>
@@ -249,6 +257,34 @@ export default function KanbanCardDetailModal({
                           </option>
                         ))}
                       </select>
+                      {statusError ? (
+                        <div
+                          className="mt-2 rounded-lg border border-amber-900/60 bg-amber-900/20 px-3 py-2 text-xs text-amber-300"
+                          data-testid="card-status-error"
+                        >
+                          <p>{statusError.message}</p>
+                          <div className="mt-2 flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setStatusError(null)}
+                              className="px-2 py-1 text-gray-400 hover:text-gray-200"
+                            >
+                              Dismiss
+                            </button>
+                            {statusError.canForce ? (
+                              <button
+                                type="button"
+                                data-testid="card-status-force"
+                                disabled={statusMoving}
+                                onClick={() => handleForceStatus()}
+                                className="px-2 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded font-medium"
+                              >
+                                Move anyway
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                   {/* Session replay (carried over from a converted bug ticket) */}

@@ -150,6 +150,7 @@ export default function EpicView({
     agents,
     epics,
     cards,
+    columns,
     modelConfig,
     cardTemplates,
     onRefresh: fetchBoard,
