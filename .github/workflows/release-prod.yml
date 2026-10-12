@@ -206,7 +206,9 @@ jobs:
         # the App Store Connect API key secrets set, the DMGs are Developer ID
         # signed and notarized. Without them they are ad-hoc signed, which
         # avoids the "damaged" error on Apple Silicon but still needs
-        # right-click > Open on first launch.
+        # right-click > Open on first launch. release-mac.mjs imports the
+        # .p12 into its own temp keychain (MAC_CSC_KEY_PASSWORD may be empty
+        # for a passwordless .p12) and hands electron-builder CSC_KEYCHAIN.
         env:
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}

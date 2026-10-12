@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { writeFileSync, mkdtempSync, mkdirSync } from 'fs';
+import { writeFileSync, mkdtempSync, mkdirSync, readdirSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -15,6 +15,11 @@ import {
   electronBuilderArgs,
   hasNotarizeCredentials,
   resolveMacSigningMode,
+  decodeCscLink,
+  keychainSetupCommands,
+  parseKeychainList,
+  electronBuilderSigningEnv,
+  prepareSigningKeychain,
   resolveBucket,
   resolveRegion,
   DEFAULT_BUCKET,
@@ -311,6 +316,146 @@ describe('release-mac helpers', () => {
       expect(hasNotarizeCredentials({ APPLE_KEYCHAIN: 'k', APPLE_KEYCHAIN_PROFILE: 'p' })).toBe(
         true,
       );
+    });
+  });
+
+  describe('signing keychain', () => {
+    const base = {
+      keychainPath: '/tmp/k/signing.keychain-db',
+      keychainPassword: 'KEYCHAIN-PW',
+      p12Path: '/tmp/k/cert.p12',
+      existingKeychains: ['/Users/runner/Library/Keychains/login.keychain-db'],
+    };
+
+    it('unlocks the partition list with the keychain password, not the .p12 password', () => {
+      // electron-builder passes the .p12 password to `-k`, which fails with a
+      // passwordless .p12 ("SecKeychainUnlock: ... passphrase ... not correct").
+      const cmds = keychainSetupCommands({ ...base, p12Password: undefined });
+      const partition = cmds.find((c) => c[0] === 'set-key-partition-list');
+      expect(partition).toBeDefined();
+      expect(partition![partition!.indexOf('-k') + 1]).toBe('KEYCHAIN-PW');
+      const imp = cmds.find((c) => c[0] === 'import')!;
+      expect(imp[imp.indexOf('-P') + 1]).toBe('');
+    });
+
+    it('imports with the .p12 password and creates/unlocks before importing', () => {
+      const cmds = keychainSetupCommands({ ...base, p12Password: 'p12pw' });
+      const order = cmds.map((c) => c[0]);
+      expect(order.indexOf('create-keychain')).toBeLessThan(order.indexOf('import'));
+      expect(order.indexOf('unlock-keychain')).toBeLessThan(order.indexOf('import'));
+      expect(order.indexOf('import')).toBeLessThan(order.indexOf('set-key-partition-list'));
+      const imp = cmds.find((c) => c[0] === 'import')!;
+      expect(imp[imp.indexOf('-P') + 1]).toBe('p12pw');
+    });
+
+    it('prepends the keychain to the user search list without duplicating it', () => {
+      const cmds = keychainSetupCommands({
+        ...base,
+        existingKeychains: [base.keychainPath, ...base.existingKeychains],
+      });
+      const list = cmds.find((c) => c[0] === 'list-keychains')!;
+      expect(list.slice(4)).toEqual([base.keychainPath, ...base.existingKeychains]);
+    });
+
+    it('parses security list-keychains output', () => {
+      expect(
+        parseKeychainList(
+          '    "/Users/runner/Library/Keychains/login.keychain-db"\n    "/Library/Keychains/System.keychain"\n',
+        ),
+      ).toEqual([
+        '/Users/runner/Library/Keychains/login.keychain-db',
+        '/Library/Keychains/System.keychain',
+      ]);
+    });
+
+    it('hands electron-builder the keychain and strips the cert link', () => {
+      const env = electronBuilderSigningEnv(
+        { CSC_LINK: 'abc', CSC_KEY_PASSWORD: 'pw', APPLE_API_KEY_ID: 'K' },
+        '/tmp/k.keychain-db',
+      );
+      expect(env).toEqual({ APPLE_API_KEY_ID: 'K', CSC_KEYCHAIN: '/tmp/k.keychain-db' });
+    });
+
+    it('decodes CSC_LINK from base64, data URLs, or a file path', () => {
+      const bytes = Buffer.from([0x30, 0x82, 0x01, 0xff]);
+      const b64 = bytes.toString('base64');
+      expect(decodeCscLink(`${b64.slice(0, 3)}\n${b64.slice(3)}`, () => false)).toEqual(bytes);
+      expect(decodeCscLink(`data:application/x-pkcs12;base64,${b64}`, () => false)).toEqual(bytes);
+      const dir = mkdtempSync(join(tmpdir(), 'csc-'));
+      const file = join(dir, 'cert.p12');
+      writeFileSync(file, bytes);
+      expect(decodeCscLink(file)).toEqual(bytes);
+    });
+
+    describe('prepareSigningKeychain', () => {
+      const env = { CSC_LINK: Buffer.from('fake-p12').toString('base64') };
+
+      it('removes the temp dir (and the .p12) when listing keychains fails', () => {
+        const root = mkdtempSync(join(tmpdir(), 'sign-root-'));
+        const calls: string[][] = [];
+        const runSecurity = (args: string[]) => {
+          calls.push(args);
+          if (args[0] === 'list-keychains') throw new Error('list-keychains failed');
+          return '';
+        };
+        expect(() => prepareSigningKeychain(env, { runSecurity, tmpRoot: root })).toThrow(
+          /list-keychains failed/,
+        );
+        expect(readdirSync(root)).toEqual([]);
+        // Nothing captured, nothing created: no search-list restore, no delete.
+        expect(calls).toEqual([['list-keychains', '-d', 'user']]);
+      });
+
+      it('removes the temp dir when CSC_LINK cannot be decoded', () => {
+        const root = mkdtempSync(join(tmpdir(), 'sign-root-'));
+        expect(() =>
+          prepareSigningKeychain(
+            { CSC_LINK: '/no/such/cert.p12' },
+            { runSecurity: () => '', tmpRoot: root },
+          ),
+        ).toThrow(/neither/);
+        expect(readdirSync(root)).toEqual([]);
+      });
+
+      it('restores the search list and deletes the keychain when import fails', () => {
+        const root = mkdtempSync(join(tmpdir(), 'sign-root-'));
+        const calls: string[][] = [];
+        const runSecurity = (args: string[], opts?: { capture?: boolean }) => {
+          calls.push(args);
+          if (opts?.capture) return '    "/Users/me/login.keychain-db"\n';
+          if (args[0] === 'import') throw new Error('import failed');
+          return '';
+        };
+        expect(() => prepareSigningKeychain(env, { runSecurity, tmpRoot: root })).toThrow(
+          /import failed/,
+        );
+        expect(readdirSync(root)).toEqual([]);
+        expect(calls).toContainEqual([
+          'list-keychains',
+          '-d',
+          'user',
+          '-s',
+          '/Users/me/login.keychain-db',
+        ]);
+        expect(calls.some((c) => c[0] === 'delete-keychain')).toBe(true);
+      });
+
+      it('drops the .p12 after import but keeps the keychain until cleanup', () => {
+        const root = mkdtempSync(join(tmpdir(), 'sign-root-'));
+        const runSecurity = () => '';
+        const { env: next, cleanup } = prepareSigningKeychain(env, { runSecurity, tmpRoot: root });
+        const [dir] = readdirSync(root);
+        expect(existsSync(join(root, dir, 'cert.p12'))).toBe(false);
+        expect(next.CSC_KEYCHAIN).toBe(join(root, dir, 'signing.keychain-db'));
+        cleanup();
+        expect(readdirSync(root)).toEqual([]);
+      });
+    });
+
+    it('rejects empty, URL, and non-base64 CSC_LINK values', () => {
+      expect(() => decodeCscLink('  ')).toThrow(/empty/);
+      expect(() => decodeCscLink('https://example.com/cert.p12', () => false)).toThrow(/URL/);
+      expect(() => decodeCscLink('/no/such/cert.p12', () => false)).toThrow(/neither/);
     });
   });
 

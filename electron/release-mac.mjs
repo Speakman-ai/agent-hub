@@ -18,9 +18,11 @@
  * its own infra without editing this script: set `AGENT_HUB_RELEASE_BUCKET` /
  * `AGENT_HUB_RELEASE_REGION`. They fall back to the reference release bucket.
  */
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { spawnSync } from 'child_process';
-import { resolve, dirname } from 'path';
+import { randomBytes } from 'crypto';
+import { tmpdir } from 'os';
+import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -207,6 +209,181 @@ export function electronBuilderArgs(signingMode = 'adhoc') {
   return args;
 }
 
+/**
+ * Turn `CSC_LINK` into .p12 bytes. Accepts a path to an existing file or the
+ * base64 blob GitHub secrets carry (optionally prefixed `data:...;base64,`).
+ *
+ * @returns {Buffer}
+ */
+export function decodeCscLink(cscLink, exists = existsSync, read = readFileSync) {
+  const raw = String(cscLink ?? '').trim();
+  if (!raw) {
+    throw new Error('CSC_LINK is empty');
+  }
+  const path = raw.startsWith('file://')
+    ? fileURLToPath(raw)
+    : raw.replace(/^~(?=\/)/, process.env.HOME || '~');
+  if (raw.length < 1024 && exists(path)) {
+    return read(path);
+  }
+  if (/^https?:\/\//.test(raw)) {
+    throw new Error(
+      'CSC_LINK as an http(s) URL is not supported; pass a base64 .p12 or a file path',
+    );
+  }
+  const b64 = raw.replace(/^data:[^,]*;base64,/, '').replace(/\s+/g, '');
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) {
+    throw new Error('CSC_LINK is neither an existing file nor base64 .p12 data');
+  }
+  return Buffer.from(b64, 'base64');
+}
+
+/**
+ * `security` argv lists that build a throwaway signing keychain.
+ *
+ * electron-builder's own import runs `set-key-partition-list -k <p12 password>`,
+ * but `-k` is the *keychain* password. That only works by accident, and with a
+ * passwordless .p12 it fails with "SecKeychainUnlock: The user name or
+ * passphrase you entered is not correct". We build the keychain ourselves and
+ * pass the right password, then hand electron-builder the keychain via
+ * `CSC_KEYCHAIN` so its import path never runs.
+ *
+ * @param {{ keychainPath: string, keychainPassword: string, p12Path: string, p12Password?: string, existingKeychains?: string[] }} opts
+ * @returns {string[][]}
+ */
+export function keychainSetupCommands({
+  keychainPath,
+  keychainPassword,
+  p12Path,
+  p12Password,
+  existingKeychains = [],
+}) {
+  return [
+    ['create-keychain', '-p', keychainPassword, keychainPath],
+    ['set-keychain-settings', '-lut', '21600', keychainPath],
+    ['unlock-keychain', '-p', keychainPassword, keychainPath],
+    [
+      'import',
+      p12Path,
+      '-k',
+      keychainPath,
+      '-f',
+      'pkcs12',
+      '-P',
+      p12Password ?? '',
+      '-T',
+      '/usr/bin/codesign',
+      '-T',
+      '/usr/bin/productbuild',
+    ],
+    [
+      'set-key-partition-list',
+      '-S',
+      'apple-tool:,apple:',
+      '-s',
+      '-k',
+      keychainPassword,
+      keychainPath,
+    ],
+    [
+      'list-keychains',
+      '-d',
+      'user',
+      '-s',
+      keychainPath,
+      ...existingKeychains.filter((k) => k !== keychainPath),
+    ],
+  ];
+}
+
+/** Parse `security list-keychains -d user` output into paths. */
+export function parseKeychainList(output) {
+  return String(output ?? '')
+    .split('\n')
+    .map((line) => line.trim().replace(/^"(.*)"$/, '$1'))
+    .filter(Boolean);
+}
+
+/**
+ * Env for electron-builder once our keychain holds the identity: drop the
+ * cert link and its password so electron-builder skips its own import, and
+ * point it at the keychain to discover the Developer ID identity in.
+ */
+export function electronBuilderSigningEnv(env, keychainPath) {
+  const next = { ...env, CSC_KEYCHAIN: keychainPath };
+  delete next.CSC_LINK;
+  delete next.CSC_KEY_PASSWORD;
+  return next;
+}
+
+/** Run `security`, never echoing argv (it carries passwords). */
+function security(args, { capture = false, allowFail = false } = {}) {
+  const result = spawnSync('/usr/bin/security', args, {
+    stdio: capture ? ['ignore', 'pipe', 'inherit'] : 'inherit',
+    encoding: 'utf8',
+  });
+  if (result.status !== 0 && !allowFail) {
+    throw new Error(`security ${args[0]} failed (exit ${result.status ?? 'signal'})`);
+  }
+  return result.stdout || '';
+}
+
+/**
+ * Import `CSC_LINK` into a fresh keychain. Returns the electron-builder env
+ * and a cleanup that deletes the keychain and restores the search list.
+ *
+ * Everything after the temp dir exists runs under cleanup: the dir may hold a
+ * passwordless signing key, so no failure path may leave it on disk.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @param {{ runSecurity?: (args: string[], opts?: { capture?: boolean, allowFail?: boolean }) => string, tmpRoot?: string }} [deps]
+ */
+export function prepareSigningKeychain(env = process.env, deps = {}) {
+  const runSecurity = deps.runSecurity || security;
+  const dir = mkdtempSync(join(deps.tmpRoot || tmpdir(), 'agent-hub-signing-'));
+  const keychainPath = join(dir, 'signing.keychain-db');
+  const p12Path = join(dir, 'cert.p12');
+  /** @type {string[] | null} */
+  let existingKeychains = null;
+  let keychainCreated = false;
+  const cleanup = () => {
+    try {
+      if (existingKeychains) {
+        runSecurity(['list-keychains', '-d', 'user', '-s', ...existingKeychains], {
+          allowFail: true,
+        });
+      }
+      if (keychainCreated) {
+        runSecurity(['delete-keychain', keychainPath], { allowFail: true });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  try {
+    writeFileSync(p12Path, decodeCscLink(env.CSC_LINK), { mode: 0o600 });
+    existingKeychains = parseKeychainList(
+      runSecurity(['list-keychains', '-d', 'user'], { capture: true }),
+    );
+    console.log('\nImporting signing certificate into a temporary keychain');
+    for (const cmd of keychainSetupCommands({
+      keychainPath,
+      keychainPassword: randomBytes(32).toString('base64'),
+      p12Path,
+      p12Password: env.CSC_KEY_PASSWORD,
+      existingKeychains,
+    })) {
+      if (cmd[0] === 'create-keychain') keychainCreated = true;
+      runSecurity(cmd);
+    }
+    rmSync(p12Path, { force: true });
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+  return { env: electronBuilderSigningEnv(env, keychainPath), cleanup };
+}
+
 function requireMac() {
   if (process.platform !== 'darwin') {
     console.error(
@@ -221,9 +398,14 @@ function requireMac() {
 
 function run(cmd, args, opts = {}) {
   console.log(`\n$ ${cmd} ${args.join(' ')}`);
-  const result = spawnSync(cmd, args, { stdio: 'inherit', cwd: opts.cwd || ROOT });
+  const result = spawnSync(cmd, args, {
+    stdio: 'inherit',
+    cwd: opts.cwd || ROOT,
+    env: opts.env || process.env,
+  });
   if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+    // Throw rather than exit so callers' finally blocks (keychain cleanup) run.
+    throw new Error(`${cmd} exited with ${result.status ?? 'signal'}`);
   }
 }
 
@@ -337,7 +519,15 @@ export async function main() {
 
   // 3. Build and sign both DMGs in one electron-builder invocation
   console.log(`\nmacOS signing mode: ${signingMode}`);
-  run('npx', electronBuilderArgs(signingMode));
+  const keychain =
+    signingMode === 'developer-id' && envSet(process.env, 'CSC_LINK')
+      ? prepareSigningKeychain()
+      : null;
+  try {
+    run('npx', electronBuilderArgs(signingMode), { env: keychain?.env });
+  } finally {
+    keychain?.cleanup();
+  }
 
   // 4. Upload each DMG to S3
   const profile = resolveAwsProfile();
