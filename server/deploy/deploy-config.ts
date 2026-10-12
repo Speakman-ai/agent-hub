@@ -46,6 +46,10 @@
  *     same-origin probe URL, or a path resolved against `origin`. Autopilot
  *     binds its local target to these fields at start; omitting them is valid
  *     for gated/cloud environments that Autopilot will not use.
+ *   - `preview` is an optional block declaring what a PR environment boots
+ *     (compose file, exposed service + port, post-up steps, health path,
+ *     preview-secret names). See `deploy-preview-config.ts`. When present,
+ *     `environments` may be omitted.
  *   - Unknown top-level / environment / step keys are HARD ERRORS — we never
  *     silently drop a directive an author believed they enabled.
  *
@@ -60,8 +64,10 @@ import {
   parseGithubWorkflowStepConfig,
   type GithubWorkflowStepSpec,
 } from './github-workflow-step.js';
+import { parsePreviewConfig, type PreviewConfig } from './deploy-preview-config.js';
 
 export { DeployConfigError } from './deploy-config-error.js';
+export type { PreviewConfig, PreviewStep } from './deploy-preview-config.js';
 
 /** Shell prefix the orchestrator uses to execute every `run` step. Matches Finalize. */
 export const DEPLOY_STEP_SHELL = 'bash -euo pipefail -c';
@@ -78,7 +84,7 @@ export const DEPLOY_TIMEOUT_MIN_MINUTES = 1;
 /** Default per-environment step budget when `timeout_minutes` is omitted. */
 export const DEPLOY_TIMEOUT_DEFAULT_MINUTES = 60;
 
-const SUPPORTED_TOP_LEVEL_KEYS = new Set(['version', 'environments']);
+const SUPPORTED_TOP_LEVEL_KEYS = new Set(['version', 'environments', 'preview']);
 const SUPPORTED_ENV_KEYS = new Set([
   'approval',
   'runs-on',
@@ -133,6 +139,8 @@ export interface DeployConfig {
   version: 1;
   /** Environment name → config. Insertion order preserved from the YAML map. */
   environments: Map<string, DeployEnvironmentConfig>;
+  /** PR environment contract from the `preview:` block; null when omitted. */
+  preview: PreviewConfig | null;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -369,11 +377,18 @@ export function parseDeployConfig(rawYaml: string): DeployConfig {
     );
   }
 
+  const preview = doc.preview === undefined ? null : parsePreviewConfig(doc.preview);
+
   const envsRaw = doc.environments;
+  // A preview-only file is valid: a project can declare its PR environment
+  // before it declares any deploy targets.
+  if (envsRaw === undefined && preview) {
+    return { version: 1, environments: new Map(), preview };
+  }
   if (!isPlainObject(envsRaw) || Object.keys(envsRaw).length === 0) {
     throw new DeployConfigError(
       'missing_environments',
-      'deploy.yaml: "environments" is required and must be a non-empty mapping.',
+      'deploy.yaml: "environments" must be a non-empty mapping (it may be omitted only when "preview" is declared).',
     );
   }
 
@@ -388,7 +403,7 @@ export function parseDeployConfig(rawYaml: string): DeployConfig {
     environments.set(envName, parseEnvironment(envName, envRaw));
   }
 
-  return { version: 1, environments };
+  return { version: 1, environments, preview };
 }
 
 /**

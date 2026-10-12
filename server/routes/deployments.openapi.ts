@@ -345,12 +345,32 @@ const DeployConfigEnvironmentSchema = registerComponent(
   }),
 );
 
+const DeployPreviewConfigSchema = registerComponent(
+  'DeployPreviewConfig',
+  z.object({
+    compose: z.string().describe('Repo-relative compose file the PR environment boots.'),
+    service: z.string().describe('Compose service whose container port is exposed.'),
+    port: z.number().int().describe('Container port on `service`.'),
+    health: z.string().describe('Health probe path on the exposed port.'),
+    steps: z
+      .array(z.object({ name: z.string(), run: z.string() }))
+      .describe('Build/seed steps run after `docker compose up`.'),
+    secrets: z.array(z.string()).describe('Preview-secret names injected as env.'),
+    missingSecrets: z
+      .array(z.string())
+      .describe('Names in `secrets` that the project secrets store does not hold.'),
+  }),
+);
+
 const DeployConfigResponseSchema = registerComponent(
   'DeployConfigResponse',
   z.object({
     projectId: z.string(),
     configPath: z.string(),
     environments: z.array(DeployConfigEnvironmentSchema),
+    preview: DeployPreviewConfigSchema.nullable().describe(
+      'PR environment contract from the deploy.yaml `preview:` block; null when absent.',
+    ),
   }),
 );
 
@@ -727,6 +747,30 @@ registerPath({
     },
     400: errorResponse('Invalid deploy.yaml.'),
     404: errorResponse('Project or deploy.yaml not found.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deploy/preview',
+  tags: ['Deployments'],
+  summary: 'Validate and read the deploy.yaml preview block',
+  description:
+    'Strict validation of the PR environment contract. Returns the parsed `preview:` block only when every referenced secret name exists in the project secrets store; an unknown name is a 400 that lists the missing names (never values).',
+  request: { params: projectParams },
+  responses: {
+    200: {
+      description: 'Valid preview block.',
+      content: jsonContent(
+        z.object({
+          projectId: z.string(),
+          configPath: z.string(),
+          preview: DeployPreviewConfigSchema.omit({ missingSecrets: true }),
+        }),
+      ),
+    },
+    400: errorResponse('Invalid deploy.yaml or unknown preview secret names.'),
+    404: errorResponse('Project, deploy.yaml, or preview block not found.'),
   },
 });
 

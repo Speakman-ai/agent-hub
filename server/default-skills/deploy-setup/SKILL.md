@@ -5,7 +5,7 @@ description: >-
   environments. Triggered by POST .../deploy/setup-wizard. Reads the target
   repo, asks which environments to configure, maps each environment to deploy
   commands and secrets, validates the schema, then commits the config locally.
-version: 1.0.0
+version: 1.1.0
 keep-coding-instructions: true
 ---
 
@@ -47,7 +47,7 @@ environments:
 Rules:
 
 - `version` must be `1`.
-- `environments` is a non-empty map.
+- `environments` is a non-empty map (optional only when `preview` is set).
 - Each environment needs `steps`, a non-empty list.
 - Each step needs EITHER a non-empty `run` string OR a `github_workflow` block
   (not both).
@@ -85,6 +85,49 @@ should run on.
 The workflow must declare `on: workflow_dispatch`. The dispatch runs as the
 triggering user (their GitHub token is injected) and targets the project's
 configured GitHub repo, so this works even for self-hosted-forge projects.
+
+### preview block (PR environments)
+
+A PR environment is the end-user build of a pull request. It boots the
+project's compose stack, not the `prEnv.devServer` dev server session previews
+use. Declare it with a top-level `preview:` block:
+
+```yaml
+version: 1
+preview:
+  compose: docker-compose.preview.yml # repo-relative (required)
+  service: app # compose service to expose (required)
+  port: 3000 # container port on that service (required)
+  health: /healthz # optional, default "/"
+  steps: # optional, run in order after `docker compose up`
+    - name: migrate
+      run: docker compose -f docker-compose.preview.yml exec -T app npm run db:migrate
+    - name: seed
+      run: docker compose -f docker-compose.preview.yml exec -T app npm run db:seed
+  secrets: # optional, names from the project secrets store
+    - POSTGRES_PASSWORD
+    - STRIPE_TEST_KEY
+```
+
+Rules:
+
+- `compose`, `service`, and `port` are required; missing ones fail with
+  `missing_preview_compose`, `missing_preview_service`, `missing_preview_port`.
+- `compose` must stay inside the repo (no absolute path, no `..`).
+- `secrets` lists names only, never values. Every name must already exist in
+  the project's secrets; an unknown name fails with `unknown_preview_secret`.
+  Reserved names (`AGENT_HUB_*`, `NODE_*`, `PATH`, `HOME`) are rejected.
+- The compose file reads secrets via `${NAME}` interpolation, so nothing
+  sensitive is committed.
+- `environments` may be omitted when `preview` is present.
+
+When the repo has a compose file with the app plus backing services (Postgres,
+Redis), offer to add `preview:`. Pick the web-facing service and its container
+port, turn migration and seed commands into `steps`, and list the env names the
+compose file interpolates as `secrets`. Check the names against the project's
+secrets (`GET /api/projects/<id>/deploy/preview` returns 400 naming any unknown
+secret once the config is on the default branch) and tell the operator which ones to add. Full worked example:
+`docs/guides/deploy-yaml.md`.
 
 ## Walkthrough
 

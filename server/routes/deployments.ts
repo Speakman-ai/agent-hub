@@ -21,6 +21,10 @@ import type {
   SessionRow,
 } from '../types.js';
 import {
+  findMissingPreviewSecrets,
+  validatePreviewSecretRefs,
+} from '../deploy/deploy-preview-secrets.js';
+import {
   DeployConfigError,
   loadDeployConfig,
   parseDeployConfig,
@@ -320,7 +324,9 @@ export function buildDeploySetupKickoffPrompt(
     '        run: ./scripts/deploy-production.sh',
     '```',
     '',
-    'Supported keys: top-level `version`, `environments`; environment keys `approval`, `runs-on`, `timeout_minutes`, `origin`, `readiness`, `steps`; step keys `name`, `run`. Unknown keys fail validation. `version` must be `1`; each environment needs at least one step with a non-empty `run` command. Optional `origin` and `readiness` name where that environment actually deploys so Autopilot can bind its local target.',
+    'Supported keys: top-level `version`, `environments`, `preview`; environment keys `approval`, `runs-on`, `timeout_minutes`, `origin`, `readiness`, `steps`; step keys `name`, `run`. Unknown keys fail validation. `version` must be `1`; each environment needs at least one step with a non-empty `run` command. Optional `origin` and `readiness` name where that environment actually deploys so Autopilot can bind its local target.',
+    '',
+    'Optional top-level `preview:` declares what a PR environment boots: `compose` (repo-relative compose file), `service` and `port` (the container port to expose), optional `health` path, optional `steps` run after `docker compose up` (migrate/seed), and optional `secrets` (names from the project secrets store, never values). See the deploy-setup skill for the worked example.',
     '',
     '## Required walkthrough order',
     '',
@@ -463,13 +469,24 @@ function configEnvironmentDto(
 function deployConfigDto(
   project: Project,
   config: DeployConfig,
-): { projectId: string; configPath: string; environments: Record<string, unknown>[] } {
+): {
+  projectId: string;
+  configPath: string;
+  environments: Record<string, unknown>[];
+  preview: Record<string, unknown> | null;
+} {
   return {
     projectId: project.id,
     configPath: '.agent-hub/deploy.yaml',
     environments: [...config.environments.values()].map((env) =>
       configEnvironmentDto(project.id, env),
     ),
+    preview: config.preview
+      ? {
+          ...config.preview,
+          missingSecrets: findMissingPreviewSecrets(config.preview, project.id),
+        }
+      : null,
   };
 }
 
@@ -569,7 +586,7 @@ async function withDeployConfig<T>(
     config = await readDeployConfig(project);
   } catch (err) {
     if (err instanceof DeployConfigError && err.reason === 'not_found') {
-      config = { version: 1, environments: new Map() };
+      config = { version: 1, environments: new Map(), preview: null };
     } else {
       throw err;
     }
@@ -885,6 +902,34 @@ export default function createDeploymentRoutes(
       });
     },
   );
+
+  // Strict check of the PR environment contract: unlike /deploy/config (which
+  // reports missingSecrets so the page still renders), any unknown secret name
+  // is a 400 here. Boot paths decrypt via resolvePreviewSecretEnv, which applies
+  // the same check.
+  router.get('/api/projects/:projectId/deploy/preview', async (req: Request, res: Response) => {
+    const projectId = req.params.projectId as string;
+    const project = deps.findProject(projectId);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    try {
+      const config = await readDeployConfig(project);
+      if (!config.preview) {
+        throw new DeployConfigError('not_found', 'deploy.yaml has no "preview" block.');
+      }
+      validatePreviewSecretRefs(config.preview, project.id);
+      return res.json({
+        projectId: project.id,
+        configPath: '.agent-hub/deploy.yaml',
+        preview: config.preview,
+      });
+    } catch (err) {
+      if (err instanceof DeployConfigError) return mapConfigError(err, res);
+      if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ error: message });
+    }
+  });
 
   router.get('/api/projects/:projectId/deploy/config', async (req: Request, res: Response) => {
     const projectId = req.params.projectId as string;

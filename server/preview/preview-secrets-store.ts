@@ -629,6 +629,49 @@ export function loadProjectEnvForSpawn(
   return env;
 }
 
+/**
+ * Key names stored for a project, without decrypting anything. Used to
+ * validate config that references secrets by name.
+ */
+export function listPreviewSecretKeys(projectId: string): string[] {
+  const rows = getDb()
+    .prepare(`SELECT key FROM worktree_preview_secrets WHERE project_id = ? ORDER BY key ASC`)
+    .all(projectId) as { key: string }[];
+  return rows.map((r) => r.key);
+}
+
+/**
+ * Decrypt only the named keys. Missing or corrupt keys are omitted from the
+ * result; callers that need every key present compare against `keys`. The
+ * audit row records the keys actually read, never the values.
+ */
+export function loadProjectEnvKeysForSpawn(
+  projectId: string,
+  keys: readonly string[],
+  context: { sessionId?: string | null } = {},
+): Record<string, string> {
+  // Null prototype: names like `__proto__` or `constructor` must become own
+  // properties, and callers check presence with Object.hasOwn.
+  const env: Record<string, string> = Object.create(null) as Record<string, string>;
+  if (keys.length === 0) return env;
+  const wanted = new Set(keys);
+  const rows = getDb()
+    .prepare(`SELECT * FROM worktree_preview_secrets WHERE project_id = ? ORDER BY key ASC`)
+    .all(projectId) as RawRow[];
+  const keysRead: string[] = [];
+  for (const row of rows) {
+    if (!wanted.has(row.key)) continue;
+    try {
+      env[row.key] = decryptSecret(row.value_ciphertext);
+      keysRead.push(row.key);
+    } catch {
+      // Corrupt row: leave it out so the caller reports it as unresolved.
+    }
+  }
+  appendAudit({ projectId, keys: keysRead, action: 'read', sessionId: context.sessionId ?? null });
+  return env;
+}
+
 // Test helpers (not part of the public surface)
 
 /**

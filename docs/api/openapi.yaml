@@ -4682,6 +4682,52 @@ components:
         - currentDeployment
         - lastDeployment
         - rollbackTarget
+    DeployPreviewConfig:
+      type: object
+      properties:
+        compose:
+          type: string
+          description: Repo-relative compose file the PR environment boots.
+        service:
+          type: string
+          description: Compose service whose container port is exposed.
+        port:
+          type: integer
+          description: Container port on `service`.
+        health:
+          type: string
+          description: Health probe path on the exposed port.
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              run:
+                type: string
+            required:
+              - name
+              - run
+          description: Build/seed steps run after `docker compose up`.
+        secrets:
+          type: array
+          items:
+            type: string
+          description: Preview-secret names injected as env.
+        missingSecrets:
+          type: array
+          items:
+            type: string
+          description: Names in `secrets` that the project secrets store does not hold.
+      required:
+        - compose
+        - service
+        - port
+        - health
+        - steps
+        - secrets
+        - missingSecrets
     DeployConfigResponse:
       type: object
       properties:
@@ -4693,10 +4739,16 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DeployConfigEnvironment"
+        preview:
+          allOf:
+            - $ref: "#/components/schemas/DeployPreviewConfig"
+            - nullable: true
+              description: PR environment contract from the deploy.yaml `preview:` block; null when absent.
       required:
         - projectId
         - configPath
         - environments
+        - preview
     EnvironmentRuntimeConfig:
       type: object
       properties:
@@ -27377,6 +27429,86 @@ paths:
                 $ref: "#/components/schemas/DeploymentErrorResponse"
         "404":
           description: Project or deploy.yaml not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deploy/preview:
+    get:
+      tags:
+        - Deployments
+      summary: Validate and read the deploy.yaml preview block
+      description: Strict validation of the PR environment contract. Returns the parsed `preview:` block only when every referenced secret name exists in the project secrets store; an unknown name is a 400 that lists the missing names (never values).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Valid preview block.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projectId:
+                    type: string
+                  configPath:
+                    type: string
+                  preview:
+                    type: object
+                    properties:
+                      compose:
+                        type: string
+                        description: Repo-relative compose file the PR environment boots.
+                      service:
+                        type: string
+                        description: Compose service whose container port is exposed.
+                      port:
+                        type: integer
+                        description: Container port on `service`.
+                      health:
+                        type: string
+                        description: Health probe path on the exposed port.
+                      steps:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            run:
+                              type: string
+                          required:
+                            - name
+                            - run
+                        description: Build/seed steps run after `docker compose up`.
+                      secrets:
+                        type: array
+                        items:
+                          type: string
+                        description: Preview-secret names injected as env.
+                    required:
+                      - compose
+                      - service
+                      - port
+                      - health
+                      - steps
+                      - secrets
+                required:
+                  - projectId
+                  - configPath
+                  - preview
+        "400":
+          description: Invalid deploy.yaml or unknown preview secret names.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project, deploy.yaml, or preview block not found.
           content:
             application/json:
               schema:

@@ -60,6 +60,7 @@ function scheduleRow(
 function configWith(...envs: string[]): DeployConfig {
   return {
     version: 1,
+    preview: null,
     environments: new Map(
       envs.map((name) => [
         name,

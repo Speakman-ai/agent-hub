@@ -7,6 +7,7 @@ import path from 'path';
 import { EventEmitter, Readable } from 'stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDb } from '../db.js';
+import { replacePreviewSecrets } from '../preview/preview-secrets-store.js';
 import { wipeTables } from '../test/destructive-db.js';
 import type { SpawnedStep } from '../finalize/step-runner.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
@@ -295,6 +296,8 @@ beforeEach(() => {
     'kanban_boards',
     'sessions',
     'support_tickets',
+    'worktree_preview_secrets',
+    'worktree_preview_secret_audit',
   ]);
 });
 
@@ -623,6 +626,79 @@ environments:
       name: 'production',
       approval: true,
       steps: [{ name: 'release', run: './release.sh' }],
+    });
+  });
+
+  it('returns the preview block with the secret names the store is missing', async () => {
+    replacePreviewSecrets(PROJECT_ID, [{ key: 'POSTGRES_PASSWORD', value: 'pg', kind: 'secret' }]);
+    const config = parseDeployConfig(`
+version: 1
+preview:
+  compose: docker-compose.preview.yml
+  service: app
+  port: 3000
+  secrets: [POSTGRES_PASSWORD, STRIPE_TEST_KEY]
+`);
+    const { app } = makeApp({ config });
+
+    const res = await request(app).get(`/api/projects/${PROJECT_ID}/deploy/config`).expect(200);
+
+    expect(res.body.environments).toEqual([]);
+    expect(res.body.preview).toEqual({
+      compose: 'docker-compose.preview.yml',
+      service: 'app',
+      port: 3000,
+      health: '/',
+      steps: [],
+      secrets: ['POSTGRES_PASSWORD', 'STRIPE_TEST_KEY'],
+      missingSecrets: ['STRIPE_TEST_KEY'],
+    });
+    expect(JSON.stringify(res.body)).not.toContain('"pg"');
+  });
+
+  describe('GET /deploy/preview (strict validation)', () => {
+    const previewYaml = `
+version: 1
+preview:
+  compose: docker-compose.preview.yml
+  service: app
+  port: 3000
+  secrets: [POSTGRES_PASSWORD, STRIPE_TEST_KEY]
+`;
+
+    it('returns the preview block when every secret name is stored', async () => {
+      replacePreviewSecrets(PROJECT_ID, [
+        { key: 'POSTGRES_PASSWORD', value: 'pg-value', kind: 'secret' },
+        { key: 'STRIPE_TEST_KEY', value: 'sk-value', kind: 'secret' },
+      ]);
+      const { app } = makeApp({ config: parseDeployConfig(previewYaml) });
+
+      const res = await request(app).get(`/api/projects/${PROJECT_ID}/deploy/preview`).expect(200);
+
+      expect(res.body.preview).toMatchObject({
+        service: 'app',
+        port: 3000,
+        secrets: ['POSTGRES_PASSWORD', 'STRIPE_TEST_KEY'],
+      });
+      expect(JSON.stringify(res.body)).not.toContain('pg-value');
+    });
+
+    it('rejects unknown secret names with a 400 naming them', async () => {
+      replacePreviewSecrets(PROJECT_ID, [
+        { key: 'POSTGRES_PASSWORD', value: 'pg-value', kind: 'secret' },
+      ]);
+      const { app } = makeApp({ config: parseDeployConfig(previewYaml) });
+
+      const res = await request(app).get(`/api/projects/${PROJECT_ID}/deploy/preview`).expect(400);
+
+      expect(res.body.error).toContain('"STRIPE_TEST_KEY"');
+      expect(res.body.error).not.toContain('POSTGRES_PASSWORD');
+      expect(res.body.error).not.toContain('pg-value');
+    });
+
+    it('404s when deploy.yaml has no preview block', async () => {
+      const { app } = makeApp();
+      await request(app).get(`/api/projects/${PROJECT_ID}/deploy/preview`).expect(404);
     });
   });
 
