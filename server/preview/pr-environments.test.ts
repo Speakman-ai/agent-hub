@@ -655,6 +655,101 @@ describe('builds interrupted by a Hub restart', () => {
     expect(await after.recoverPending()).toMatchObject({ reattached: 0, interrupted: 0 });
   });
 
+  it('a ready environment is re-watched after a restart, even when the PR read fails', async () => {
+    const c = setup();
+    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await flush();
+    c.reporters[0].building('runner-A');
+    c.reporters[0].ready('http://10.0.0.1:32000');
+
+    let adopted: PrEnvironmentReporter | null = null;
+    const runtime: PrEnvironmentRuntime = {
+      build: vi.fn(),
+      teardown: vi.fn(),
+      reattach: vi.fn(({ reporter }) => {
+        adopted = reporter;
+        return true;
+      }),
+    };
+    const after = createPrEnvironmentService({
+      store: createPrEnvironmentStore(c.db),
+      probePreviewConfig: async () => 'present',
+      findProject: (id) => (id === project.id ? project : null),
+      getRuntime: () => runtime,
+      readPrState: async () => {
+        throw new Error('hosted repo unavailable');
+      },
+      log: () => {},
+    });
+    expect(await after.recoverPending()).toMatchObject({ reattached: 1, interrupted: 0 });
+    expect(runtime.reattach).toHaveBeenCalledWith(
+      expect.objectContaining({ env: expect.objectContaining({ runnerRef: 'runner-A' }) }),
+    );
+    expect(after.get('p1', PR)).toMatchObject({ status: 'ready' });
+    expect(adopted).not.toBeNull();
+    expect(await after.recoverPending()).toMatchObject({ reattached: 0 });
+  });
+
+  it('a ready environment the runtime no longer has is failed and torn down', async () => {
+    const c = setup();
+    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await flush();
+    c.reporters[0].building('runner-A');
+    c.reporters[0].ready('http://10.0.0.1:32000');
+    const runtime: PrEnvironmentRuntime = {
+      build: vi.fn(),
+      teardown: vi.fn(),
+      reattach: vi.fn(() => false),
+    };
+    const after = restart(c.db, runtime);
+    expect(await after.recoverPending()).toMatchObject({ interrupted: 1 });
+    expect(after.get('p1', PR)).toMatchObject({
+      status: 'failed',
+      url: null,
+      cleanupPending: false,
+    });
+    expect(runtime.teardown).toHaveBeenCalledTimes(1);
+    expect(runtime.build).not.toHaveBeenCalled();
+  });
+
+  it('a runner loss with requeue tears down the old runner and rebuilds the same head', async () => {
+    const c = setup();
+    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await flush();
+    c.reporters[0].building('runner-A');
+    c.reporters[0].ready('http://10.0.0.1:32000');
+    c.reporters[0].lost('runner lost', { requeue: true });
+    for (let i = 0; i < 5; i++) await flush();
+    expect(c.runtime!.teardown).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(c.runtime!.teardown).mock.calls[0][0].env).toMatchObject({
+      runnerRef: 'runner-A',
+    });
+    expect(c.runtime!.build).toHaveBeenCalledTimes(2);
+    expect(c.service.get('p1', PR)).toMatchObject({
+      status: 'queued',
+      headSha: SHA_A,
+      error: 'runner lost',
+      cleanupPending: false,
+    });
+    // The lost generation's reporter is dead.
+    c.reporters[0].ready('http://stale');
+    expect(c.service.get('p1', PR)).toMatchObject({ status: 'queued' });
+    c.reporters[1].ready('http://10.0.0.2:32001');
+    expect(c.service.get('p1', PR)).toMatchObject({ status: 'ready', error: null });
+  });
+
+  it('a runner loss without requeue leaves the environment failed', async () => {
+    const c = setup();
+    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await flush();
+    c.reporters[0].building('runner-A');
+    c.reporters[0].lost('lost three times', { requeue: false });
+    for (let i = 0; i < 5; i++) await flush();
+    expect(c.service.get('p1', PR)).toMatchObject({ status: 'failed', error: 'lost three times' });
+    expect(c.runtime!.teardown).toHaveBeenCalledTimes(1);
+    expect(c.runtime!.build).toHaveBeenCalledTimes(1);
+  });
+
   it('builds dispatched in this process are not treated as interrupted', async () => {
     const c = setup();
     await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });

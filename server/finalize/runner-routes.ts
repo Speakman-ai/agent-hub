@@ -7,6 +7,7 @@
  *   POST /api/runners/jobs/:jobId/logs          stream stdout/stderr frames
  *   POST /api/runners/jobs/:jobId/step-result   report a step's exit code
  *   POST /api/runners/jobs/:jobId/finish        agent torn down
+ *   POST /api/runners/jobs/:jobId/environment   PR environment ready (host:port), failed, or lost
  *
  * Claim/poll are HTTP long-polls (held server-side, no busy client loop). A
  * job's stream endpoints are accepted ONLY from the agent that claimed it.
@@ -21,6 +22,7 @@ import {
   markRunnerJobRunning,
   markRunnerJobSpotInterruption,
   reportRunnerJob,
+  setRunnerEnvironmentEndpoint,
 } from './runner-queue.js';
 import { getJobChannel, removeJobChannel } from './runner-job-channel.js';
 import {
@@ -408,6 +410,15 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
     const jobId = req.params.jobId as string;
     if (!authorizeJob(req.agent!, jobId, res)) return;
     getJobChannel(jobId)?.onFinish();
+    // An environment is only torn down after the Hub ends its row. One that
+    // finishes while still live went down on its own: record it as lost so
+    // the Hub requeues it instead of routing to a dead upstream.
+    getOrgsDb()
+      .prepare(
+        `UPDATE runner_jobs SET state='lost', detail='environment runner exited', ended_at=?
+          WHERE id=? AND kind='environment' AND state IN ('claimed','running')`,
+      )
+      .run(Date.now(), jobId);
     // Per-job resource summary (best-effort — never fail the finish handshake).
     if (opts.onJobResources) {
       try {
@@ -456,6 +467,65 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
     void clearHubTaskProtection(agentTaskArn(req.agent!.agentId), taskProtectionCfg);
     res.status(204).end();
   });
+
+  // A PR environment job reports its outcome here instead of per-step
+  // results: ready with the host:port the Hub routes to, or failed. 410 when
+  // the row is no longer live (stopped or rebuilt meanwhile), which tells the
+  // agent to tear the stack down.
+  router.post(
+    '/api/runners/jobs/:jobId/environment',
+    requireAgent,
+    (req: RunnerReq, res: Response) => {
+      const jobId = req.params.jobId as string;
+      if (!authorizeJob(req.agent!, jobId, res)) return;
+      const body = (req.body ?? {}) as {
+        status?: unknown;
+        host?: unknown;
+        port?: unknown;
+        detail?: unknown;
+      };
+      const now = Date.now();
+      if (body.status === 'ready') {
+        const host = typeof body.host === 'string' ? body.host.trim() : '';
+        const port = typeof body.port === 'number' ? body.port : NaN;
+        if (
+          !/^[A-Za-z0-9.:-]{1,255}$/.test(host) ||
+          !Number.isInteger(port) ||
+          port < 1 ||
+          port > 65535
+        ) {
+          res.status(400).json({ error: 'host (string) and port (1-65535) required' });
+          return;
+        }
+        const ok = setRunnerEnvironmentEndpoint({
+          jobId,
+          agentId: req.agent!.agentId,
+          endpoint: { host, port },
+          now,
+        });
+        if (!ok) {
+          res.status(410).json({ error: 'environment job is no longer live' });
+          return;
+        }
+        res.status(204).end();
+        return;
+      }
+      if (body.status === 'failed' || body.status === 'lost') {
+        const detail =
+          typeof body.detail === 'string' && body.detail.trim()
+            ? body.detail.slice(0, 2000)
+            : body.status === 'lost'
+              ? 'environment stopped running'
+              : 'environment failed to start';
+        // `lost` (the stack died after it was ready) makes the Hub requeue it;
+        // `failed` (bring-up failed) does not.
+        reportRunnerJob({ jobId, state: body.status, detail, now });
+        res.status(204).end();
+        return;
+      }
+      res.status(400).json({ error: "status must be 'ready', 'failed' or 'lost'" });
+    },
+  );
 
   // The agent could not run the claimed job to completion (a throw out of
   // runAgentJob — bring-up failure before/around the first step). Fail the channel

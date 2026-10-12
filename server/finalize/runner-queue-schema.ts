@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS runner_jobs (
   attempt          INTEGER NOT NULL DEFAULT 0,
   exit_code        INTEGER,
   detail           TEXT,                     -- terminal reason (infra_error msg, etc.)
+  kind             TEXT NOT NULL DEFAULT 'job',  -- 'job' (one Finalize/deploy job) or 'environment' (long-lived PR env)
+  endpoint         TEXT,                     -- environment jobs: JSON {host, port} once the stack is healthy
   enqueued_at      INTEGER NOT NULL,
   claimed_at       INTEGER,
   ended_at         INTEGER
@@ -57,6 +59,15 @@ CREATE TABLE IF NOT EXISTS runner_agents (
 // file with its own connection + WAL — see server/finalize/runner-logs-db.ts
 // (RUNNER_JOB_LOGS_SCHEMA). initOrgsDb() migrates any legacy rows out of orgs.db
 // on startup.
+
+/**
+ * Queue job kinds. A `job` runs Finalize/deploy steps pushed over the
+ * in-process channel and ends when they do. An `environment` is a PR
+ * environment: the agent boots a compose stack itself, reports its endpoint,
+ * and keeps it up until the row goes terminal (stop/rebuild), independent of
+ * the Hub process, so it survives a Hub restart.
+ */
+export type RunnerJobKind = 'job' | 'environment';
 
 /** Terminal job states (a run leaving any of these needs no further work). */
 export const RUNNER_JOB_TERMINAL_STATES = ['succeeded', 'failed', 'cancelled', 'lost'] as const;

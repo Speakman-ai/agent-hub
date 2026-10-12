@@ -29,6 +29,7 @@ import {
 } from './worktree-bundle.js';
 import { isMacosRunsOn, runnerClassForRunsOn } from './runner-images.js';
 import { resolveFleetNativePlatforms } from './runner-fleet-constants.js';
+import type { RunnerEnvironmentSpec } from './runner-environment.js';
 
 // How long a dispatched job waits for an agent to claim it before it's marked
 // lost. With uncapped Hub dispatch (the remote default) every shard is enqueued
@@ -85,6 +86,15 @@ export interface RunnerJobWireSpec {
   minimalEnv?: boolean;
   /** Worktree bundle ref (git bundle in the shared store) the agent fetches. */
   worktreeRef?: WorktreeRef | null;
+  /**
+   * `environment` marks a long-lived PR environment job: the agent boots
+   * {@link RunnerJobWireSpec.environment} itself instead of waiting for step
+   * directives. Omitted for Finalize and deploy jobs.
+   */
+  kind?: 'environment';
+  environment?: RunnerEnvironmentSpec;
+  /** Commit the worktree bundle must be checked out at (environment jobs). */
+  headSha?: string;
 }
 
 function toEnvRecord(env: NodeJS.ProcessEnv | undefined): Record<string, string> {

@@ -137,7 +137,7 @@ let cached: RunnerBackend | null = null;
  *   - else FINALIZE_RUNNER_BUNDLE_DIR set → local dir (same-host dev / Phase-2a).
  *   - else null (no worktree shipped — control-plane smoke only).
  */
-function resolveBundleStore(): BundleStore | null {
+export function resolveBundleStore(): BundleStore | null {
   const bucket = process.env.FINALIZE_WORKTREE_BUCKET;
   if (bucket) {
     return new S3BundleStore({
@@ -158,9 +158,13 @@ function resolveBundleStore(): BundleStore | null {
  * fleet (worktree shipped via S3 when FINALIZE_WORKTREE_BUCKET is set, else the
  * local-dir store at FINALIZE_RUNNER_BUNDLE_DIR for single-host/2a).
  */
+export function resolveRunnerBackendKind(env: NodeJS.ProcessEnv = process.env): 'local' | 'remote' {
+  return (env.FINALIZE_RUNNER_BACKEND ?? 'local').toLowerCase() === 'remote' ? 'remote' : 'local';
+}
+
 export function resolveRunnerBackend(): RunnerBackend {
   if (cached) return cached;
-  if ((process.env.FINALIZE_RUNNER_BACKEND ?? 'local').toLowerCase() === 'remote') {
+  if (resolveRunnerBackendKind() === 'remote') {
     cached = createRemoteRunnerBackend({ store: resolveBundleStore() });
   } else {
     cached = createLocalRunnerBackend();

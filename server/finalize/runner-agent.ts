@@ -37,6 +37,11 @@ import {
   chownWorktreeForJobRunner,
   clearWorktreeDestForRematerialize,
 } from './worktree-job-ownership.js';
+import {
+  realEnvironmentDockerOps,
+  runAgentEnvironment,
+  type EnvironmentTransport,
+} from './runner-agent-environment.js';
 
 export interface AgentLogFrame {
   seq: number;
@@ -864,7 +869,10 @@ export function runExecStepChild(args: {
   });
 }
 
-export function httpTransport(hubUrl: string, token: string): AgentTransport {
+export function httpTransport(
+  hubUrl: string,
+  token: string,
+): AgentTransport & EnvironmentTransport {
   const base = hubUrl.replace(/\/$/, '');
   const auth = { Authorization: `Bearer ${token}`, 'content-type': 'application/json' };
   return {
@@ -929,6 +937,17 @@ export function httpTransport(hubUrl: string, token: string): AgentTransport {
         body: JSON.stringify(spotInterruption ? { spotInterruption: true } : {}),
       });
       return { gone: res.status === 410 };
+    },
+    async postEnvironment(jobId, report) {
+      const res = await fetch(`${base}/api/runners/jobs/${jobId}/environment`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify(report),
+        signal: AbortSignal.timeout(CRITICAL_POST_TIMEOUT_MS),
+      });
+      if (res.status === 410) return { gone: true };
+      if (!res.ok) throw new Error(`environment post failed: ${res.status}`);
+      return { gone: false };
     },
     async reportError(jobId, detail) {
       await fetch(`${base}/api/runners/jobs/${jobId}/error`, {
@@ -1137,13 +1156,29 @@ export async function runAgentMain(): Promise<void> {
   // Same-host 2a: no getUrl, so fall back to the local-dir store.
   const store: BundleStore | undefined = bundleDir ? new LocalDirBundleStore(bundleDir) : undefined;
   const materialize = (spec: RunnerJobWireSpec, dest: string) =>
-    materializeWorktree({ ref: spec.worktreeRef!, store, destPath: dest, rev: undefined });
+    materializeWorktree({ ref: spec.worktreeRef!, store, destPath: dest, rev: spec.headSha });
+  const environmentDocker = native ? null : realEnvironmentDockerOps();
 
   console.log(`[runner-agent] registered; polling ${hubUrl} (scope=${orgScope})`);
   await runAgentClaimLoop({
     transport,
-    runJob: (job) =>
-      runAgentJob({
+    runJob: (job) => {
+      // A PR environment holds this agent until the Hub stops it.
+      if (job.spec.kind === 'environment') {
+        if (!environmentDocker) {
+          throw new Error('environment jobs need a DinD (non-native) runner');
+        }
+        return runAgentEnvironment({
+          jobId: job.jobId,
+          spec: job.spec,
+          workspaceDir,
+          transport,
+          docker: environmentDocker,
+          materialize,
+          protection,
+        });
+      }
+      return runAgentJob({
         jobId: job.jobId,
         spec: job.spec,
         workspaceDir,
@@ -1151,7 +1186,8 @@ export async function runAgentMain(): Promise<void> {
         docker,
         materialize,
         protection,
-      }),
+      });
+    },
   });
 }
 

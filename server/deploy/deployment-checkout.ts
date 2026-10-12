@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 import { existsSync } from 'fs';
-import { mkdtemp, rm } from 'fs/promises';
+import { mkdir, mkdtemp, rm } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
@@ -176,13 +176,21 @@ export async function readDeployYamlAtCommit(args: {
 export async function prepareDeploymentCheckout(args: {
   project: Project;
   ref: string;
+  /** Clone here instead of a fresh temp dir. Must not exist yet. */
+  destDir?: string;
 }): Promise<{ worktreePath: string; resolvedRef: string }> {
   const source = projectWorkspace(args.project);
   if (!source) {
     throw new DeploymentCheckoutError('no_workspace', 'Project has no workspace configured.');
   }
 
-  const dest = await mkdtemp(path.join(os.tmpdir(), `agent-hub-deploy-${args.project.id}-`));
+  let dest: string;
+  if (args.destDir) {
+    await mkdir(path.dirname(args.destDir), { recursive: true });
+    dest = args.destDir;
+  } else {
+    dest = await mkdtemp(path.join(os.tmpdir(), `agent-hub-deploy-${args.project.id}-`));
+  }
   try {
     await git(['clone', '--quiet', '--no-hardlinks', source, dest]);
     await git(['checkout', '--quiet', '--detach', args.ref], dest);

@@ -186,6 +186,12 @@ export interface JobContainerOptions {
    * env via the `process.env` fallback). Default false (legacy behaviour).
    */
   baseEnvOnly?: boolean;
+  /**
+   * Container ports to publish on the host, each on a free host port docker
+   * picks (`docker port` reads it back). Only PR environment containers set
+   * this; Finalize and deploy jobs accept no inbound traffic.
+   */
+  publish?: Array<{ containerPort: number; hostIp?: string }>;
 }
 
 export interface ExecJobStepOptions {
@@ -230,6 +236,10 @@ export function buildStartJobContainerArgv(opts: JobContainerOptions): string[] 
 
   for (const [key, value] of Object.entries(opts.labels ?? {})) {
     args.push('--label', `${key}=${value}`);
+  }
+
+  for (const p of opts.publish ?? []) {
+    args.push('-p', p.hostIp ? `${p.hostIp}::${p.containerPort}` : String(p.containerPort));
   }
 
   args.push('-v', `${hostMount}:${FINALIZE_RUNNER_WORKSPACE}:rw`);

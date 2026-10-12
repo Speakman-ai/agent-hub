@@ -20,6 +20,11 @@ import {
   reapExpiredRunnerLeases,
   reportRunnerJob,
   runnerQueueDepth,
+  runnerLiveEnvironmentCount,
+  getRunnerJobStatus,
+  setRunnerEnvironmentEndpoint,
+  cancelRunnerJob,
+  readRunnerJobLogs,
 } from './runner-queue.js';
 
 describe('runner-queue', () => {
@@ -400,6 +405,67 @@ describe('runner-queue', () => {
       reportRunnerJob({ jobId: done, state: 'succeeded', now: 1100 });
       expect(cancelRunnerJobsForRun({ runId: 'run-Z', now: 2000 })).toEqual([]);
       expect(probeRunnerJobLoss(done, 2100)?.state).toBe('succeeded');
+    });
+  });
+
+  describe('environment jobs', () => {
+    it('records the endpoint only for the claiming agent of a live environment row', () => {
+      const env = enq({ kind: 'environment', jobId: 'pr-1' });
+      const plain = enq({ jobId: 'lint', now: 1001 });
+      expect(getRunnerJobStatus(env)).toMatchObject({ kind: 'environment', state: 'queued' });
+      expect(getRunnerJobStatus(plain)?.kind).toBe('job');
+      claimRunnerJob({ agentId: 'a1', leaseMs: 60_000, now: 2000 });
+      claimRunnerJob({ agentId: 'a2', leaseMs: 60_000, now: 2000 });
+      const endpoint = { host: '10.0.0.5', port: 32768 };
+      expect(setRunnerEnvironmentEndpoint({ jobId: env, agentId: 'a2', endpoint, now: 3000 })).toBe(
+        false,
+      );
+      expect(
+        setRunnerEnvironmentEndpoint({ jobId: plain, agentId: 'a2', endpoint, now: 3000 }),
+      ).toBe(false);
+      expect(setRunnerEnvironmentEndpoint({ jobId: env, agentId: 'a1', endpoint, now: 3000 })).toBe(
+        true,
+      );
+      expect(getRunnerJobStatus(env)).toMatchObject({ state: 'running', endpoint });
+      expect(runnerLiveEnvironmentCount()).toBe(1);
+    });
+
+    it('cancel is the stop signal and is idempotent', () => {
+      const env = enq({ kind: 'environment' });
+      claimRunnerJob({ agentId: 'a1', leaseMs: 60_000, now: 2000 });
+      expect(cancelRunnerJob({ jobId: env, now: 3000 })).toBe(true);
+      expect(cancelRunnerJob({ jobId: env, now: 3001 })).toBe(false);
+      expect(getRunnerJobStatus(env)?.state).toBe('cancelled');
+      expect(heartbeatRunnerJob({ jobId: env, agentId: 'a1', leaseMs: 1000, now: 3002 })).toBe(
+        false,
+      );
+      expect(runnerLiveEnvironmentCount()).toBe(0);
+      expect(
+        setRunnerEnvironmentEndpoint({
+          jobId: env,
+          agentId: 'a1',
+          endpoint: { host: 'h', port: 1 },
+          now: 3003,
+        }),
+      ).toBe(false);
+    });
+
+    it('reads log frames after a cursor', () => {
+      const env = enq({ kind: 'environment' });
+      for (let seq = 0; seq < 3; seq++) {
+        appendRunnerJobLog({
+          jobId: env,
+          seq,
+          stepIndex: 0,
+          stream: 'stdout',
+          data: `l${seq}\n`,
+          now: 1,
+        });
+      }
+      expect(readRunnerJobLogs({ jobId: env, afterSeq: 0 }).map((f) => f.data)).toEqual([
+        'l1\n',
+        'l2\n',
+      ]);
     });
   });
 });

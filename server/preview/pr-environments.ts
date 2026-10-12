@@ -183,8 +183,8 @@ export interface PrEnvironmentStore {
   listForProject(projectId: string): PrEnvironmentRow[];
   /**
    * Rows with work outstanding for a runtime: queued builds, builds that may
-   * have been interrupted, and unconfirmed teardowns (any status). Processed
-   * when a runtime registers.
+   * have been interrupted, ready environments to re-watch, and unconfirmed
+   * teardowns (any status). Processed when a runtime registers.
    */
   listPending(): PrEnvironmentRow[];
   /** Every row not fully stopped (anything running, queued, failed, or awaiting cleanup). */
@@ -209,7 +209,7 @@ function prepareStatements(db: Database.Database) {
     ),
     listPendingStmt: db.prepare(
       `SELECT * FROM pr_environments
-       WHERE status IN ('queued', 'building') OR cleanup_pending = 1
+       WHERE status IN ('queued', 'building', 'ready') OR cleanup_pending = 1
        ORDER BY updated_at ASC`,
     ),
     listStmt: db.prepare(
@@ -323,6 +323,11 @@ export interface PrEnvironmentReporter {
   building(runnerRef?: string | null): void;
   ready(url: string): void;
   failed(error: string): void;
+  /**
+   * The runner hosting this build died after it started. The environment is
+   * failed and torn down; with `requeue` it is rebuilt at the same head.
+   */
+  lost(error: string, opts?: { requeue?: boolean }): void;
   log(lines: string | string[]): void;
 }
 
@@ -339,10 +344,11 @@ export interface PrEnvironmentRuntime {
   }): void | Promise<void>;
   teardown(args: { project: Project; env: PrEnvironmentDto }): void | Promise<void>;
   /**
-   * Adopt a build that was in flight when the Hub stopped (its reporter is
-   * gone). Return true and report progress through the new reporter when the
-   * runtime still tracks it; false (or omit) and the build is failed and its
-   * leftovers torn down, so Retry rebuilds it.
+   * Adopt an environment from before a Hub restart (its reporter is gone): a
+   * build in flight, or a ready environment the runtime must keep watching.
+   * Return true and report through the new reporter when the runtime still
+   * tracks it. False (or omit) fails a build and tears down its leftovers so
+   * Retry rebuilds it; a ready environment is treated as lost.
    */
   reattach?(args: {
     project: Project;
@@ -571,6 +577,27 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
         apply({ type: 'runtime_building', generation, runnerRef: runnerRef ?? null }),
       ready: (url) => apply({ type: 'runtime_ready', generation, url }),
       failed: (error) => apply({ type: 'runtime_failed', generation, error }),
+      lost: (error, opts) => {
+        // Unlike progress reports, a loss has effects (teardown, rebuild), so
+        // it runs in the per-PR queue like any other event.
+        const row = deps.store.getById(envId);
+        if (!row || row.generation !== generation) return;
+        const pr = { source: row.source, prNumber: row.pr_number };
+        void serialize(keyOf(project.id, pr), () =>
+          applyEvent(project, pr, {
+            type: 'runtime_lost',
+            generation,
+            error,
+            requeue: opts?.requeue === true,
+          }),
+        ).catch((err: unknown) =>
+          logWarn(
+            `[pr-env] loss handling failed for ${project.id}#${row.pr_number}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+        );
+      },
       log: (lines) => {
         const row = deps.store.getById(envId);
         if (!row || row.generation !== generation) return;
@@ -731,12 +758,18 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
   }
 
   /** Hand an orphaned build to the runtime's `reattach`, if it has one. */
-  async function tryReattach(project: Project, row: PrEnvironmentRow): Promise<boolean> {
+  async function tryReattach(
+    project: Project,
+    row: PrEnvironmentRow,
+    opts: { checkWanted?: boolean } = {},
+  ): Promise<boolean> {
     const runtime = getRuntime();
     if (!runtime?.reattach) return false;
     // Adopt only a build its PR still wants; otherwise it is treated as
-    // interrupted (failed, and its leftovers torn down).
-    if (!(await prStillWants(project, row))) return false;
+    // interrupted (failed, and its leftovers torn down). A ready environment
+    // skips this: a PR read that fails must not take down a live stack, and
+    // catch-up's reconcile already stopped any environment whose PR moved on.
+    if (opts.checkWanted !== false && !(await prStillWants(project, row))) return false;
     const reporter = makeReporter(project, row.id, row.generation);
     try {
       const adopted = await runtime.reattach({ project, env: toPrEnvironmentDto(row), reporter });
@@ -990,6 +1023,27 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
             if (row.status === 'queued') {
               // ensureDispatched tears down first when cleanup is pending.
               if (await ensureDispatched(project, row)) totals.dispatched += 1;
+              return;
+            }
+            if (
+              row.status === 'ready' &&
+              row.cleanup_pending === 0 &&
+              !dispatched.has(dispatchKey(row))
+            ) {
+              // A ready environment from before a restart: the runtime keeps
+              // watching it (to notice a runner loss) or it is gone.
+              if (await tryReattach(project, row, { checkWanted: false })) {
+                totals.reattached += 1;
+                return;
+              }
+              if (!getRuntime()?.reattach) return;
+              await applyEvent(project, pr, {
+                type: 'runtime_lost',
+                generation: row.generation,
+                error: 'The environment was not running after the Hub restarted. Retry to rebuild.',
+                requeue: false,
+              });
+              totals.interrupted += 1;
               return;
             }
             if (row.status === 'building' && !dispatched.has(dispatchKey(row))) {

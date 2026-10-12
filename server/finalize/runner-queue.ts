@@ -20,7 +20,7 @@ import { randomUUID } from 'crypto';
 import { getOrgsDb } from '../orgs.js';
 import { getRunnerJobLogsDb, RUNNER_JOB_LOGS_CHECKPOINT_LABEL } from './runner-logs-db.js';
 import { isWalUnderPressureLabel } from '../db-checkpoint.js';
-import type { RunnerJobState } from './runner-queue-schema.js';
+import type { RunnerJobKind, RunnerJobState } from './runner-queue-schema.js';
 
 export interface EnqueueRunnerJobInput {
   orgId: string;
@@ -36,6 +36,8 @@ export interface EnqueueRunnerJobInput {
   /** 'shared' (any agent) or a specific org_id for a dedicated pool. */
   orgScope?: string;
   priority?: number;
+  /** Defaults to `job`. */
+  kind?: RunnerJobKind;
   now: number;
 }
 
@@ -75,10 +77,10 @@ export function enqueueRunnerJob(input: EnqueueRunnerJobInput): string {
     .prepare(
       `INSERT INTO runner_jobs
          (id, org_id, project_id, run_id, job_id, matrix_key, state, image,
-          runner_class, org_scope, priority, spec_json, secrets_ref, attempt, enqueued_at)
+          runner_class, org_scope, priority, spec_json, secrets_ref, attempt, enqueued_at, kind)
        VALUES
          (@id, @orgId, @projectId, @runId, @jobId, @matrixKey, 'queued', @image,
-          @runnerClass, @orgScope, @priority, @specJson, @secretsRef, 0, @now)`,
+          @runnerClass, @orgScope, @priority, @specJson, @secretsRef, 0, @now, @kind)`,
     )
     .run({
       id,
@@ -93,9 +95,133 @@ export function enqueueRunnerJob(input: EnqueueRunnerJobInput): string {
       priority: input.priority ?? 0,
       specJson: input.specJson,
       secretsRef: input.secretsRef ?? null,
+      kind: input.kind ?? 'job',
       now: input.now,
     });
   return id;
+}
+
+/** Host and port a ready environment job serves on (reachable from the Hub). */
+export interface RunnerEnvironmentEndpoint {
+  host: string;
+  port: number;
+}
+
+/** Durable view of one queue row, for watchers that outlive a Hub process. */
+export interface RunnerJobStatus {
+  id: string;
+  kind: RunnerJobKind;
+  state: RunnerJobState;
+  endpoint: RunnerEnvironmentEndpoint | null;
+  detail: string | null;
+  claimedBy: string | null;
+  enqueuedAt: number;
+  runnerClass: string;
+}
+
+function parseEndpoint(raw: string | null): RunnerEnvironmentEndpoint | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<RunnerEnvironmentEndpoint>;
+    return typeof v.host === 'string' && typeof v.port === 'number'
+      ? { host: v.host, port: v.port }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read one queue row, or null when it does not exist. */
+export function getRunnerJobStatus(jobId: string): RunnerJobStatus | null {
+  const row = getOrgsDb()
+    .prepare(
+      `SELECT id, kind, state, endpoint, detail, claimed_by, enqueued_at, runner_class
+         FROM runner_jobs WHERE id=?`,
+    )
+    .get(jobId) as
+    | {
+        id: string;
+        kind: RunnerJobKind | null;
+        state: RunnerJobState;
+        endpoint: string | null;
+        detail: string | null;
+        claimed_by: string | null;
+        enqueued_at: number;
+        runner_class: string | null;
+      }
+    | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    kind: row.kind ?? 'job',
+    state: row.state,
+    endpoint: parseEndpoint(row.endpoint),
+    detail: row.detail,
+    claimedBy: row.claimed_by,
+    enqueuedAt: row.enqueued_at,
+    runnerClass: row.runner_class ?? 'default',
+  };
+}
+
+/**
+ * Record the endpoint of a healthy environment job. Only the claiming agent of
+ * a live `environment` row may set it. Returns false otherwise (the row was
+ * stopped meanwhile, or the caller does not own it).
+ */
+export function setRunnerEnvironmentEndpoint(args: {
+  jobId: string;
+  agentId: string;
+  endpoint: RunnerEnvironmentEndpoint;
+  now: number;
+}): boolean {
+  const res = getOrgsDb()
+    .prepare(
+      `UPDATE runner_jobs
+          SET endpoint=@endpoint, state='running', heartbeat_at=@now
+        WHERE id=@jobId AND claimed_by=@agentId AND kind='environment'
+          AND state IN ('claimed','running')`,
+    )
+    .run({
+      jobId: args.jobId,
+      agentId: args.agentId,
+      endpoint: JSON.stringify(args.endpoint),
+      now: args.now,
+    });
+  return res.changes === 1;
+}
+
+/**
+ * Cancel one non-terminal row. For an environment job this is the stop
+ * signal: the agent's next heartbeat gets 410 and it tears the stack down.
+ * Idempotent; returns true only when this call moved the row.
+ */
+export function cancelRunnerJob(args: { jobId: string; detail?: string; now: number }): boolean {
+  const res = getOrgsDb()
+    .prepare(
+      `UPDATE runner_jobs SET state='cancelled', detail=@detail, ended_at=@now
+        WHERE id=@jobId AND state IN ('queued','claimed','running')`,
+    )
+    .run({ jobId: args.jobId, detail: args.detail ?? 'cancelled', now: args.now });
+  return res.changes === 1;
+}
+
+/** Log frames of one job after `afterSeq`, oldest first. */
+export function readRunnerJobLogs(args: {
+  jobId: string;
+  afterSeq: number;
+  limit?: number;
+}): Array<{ seq: number; stepIndex: number; stream: 'stdout' | 'stderr'; data: string }> {
+  return getRunnerJobLogsDb()
+    .prepare(
+      `SELECT seq, step_index AS stepIndex, stream, data FROM runner_job_logs
+        WHERE job_id=@jobId AND seq > @afterSeq ORDER BY seq ASC LIMIT @limit`,
+    )
+    .all({ jobId: args.jobId, afterSeq: args.afterSeq, limit: args.limit ?? 500 }) as Array<{
+    seq: number;
+    stepIndex: number;
+    stream: 'stdout' | 'stderr';
+    data: string;
+  }>;
 }
 
 /**
@@ -414,8 +540,10 @@ function countRunnerJobs(
   states: readonly string[],
   orgId: string | undefined,
   filter: RunnerClassFilter | undefined,
+  kind?: RunnerJobKind,
 ): number {
   const clauses = [`state IN (${states.map((st) => `'${st}'`).join(',')})`];
+  if (kind) clauses.push(`kind='${kind}'`);
   const params: Record<string, unknown> = {};
   if (orgId) {
     clauses.push('org_id=@orgId');
@@ -460,6 +588,15 @@ export function runnerQueueDepth(orgId?: string, filter?: RunnerClassFilter): nu
  */
 export function runnerInflightCount(orgId?: string, filter?: RunnerClassFilter): number {
   return countRunnerJobs(['claimed', 'running'], orgId, filter);
+}
+
+/**
+ * Environment jobs that currently hold an agent (claimed + running). Each pins
+ * its agent for the life of the PR environment, so the scaler treats them as
+ * standing capacity rather than a backlog that will drain.
+ */
+export function runnerLiveEnvironmentCount(orgId?: string, filter?: RunnerClassFilter): number {
+  return countRunnerJobs(['claimed', 'running'], orgId, filter, 'environment');
 }
 
 /**

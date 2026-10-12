@@ -82,7 +82,13 @@ export type PrEnvironmentEvent =
   | { type: 'teardown_done' }
   | { type: 'runtime_building'; generation: number; runnerRef: string | null }
   | { type: 'runtime_ready'; generation: number; url: string }
-  | { type: 'runtime_failed'; generation: number; error: string };
+  | { type: 'runtime_failed'; generation: number; error: string }
+  /**
+   * The runner hosting this generation died (instance reclaimed, agent
+   * crashed, container gone). The stack is down; tear down what may be left
+   * and, when `requeue`, build again at the same head.
+   */
+  | { type: 'runtime_lost'; generation: number; error: string; requeue: boolean };
 
 export interface PrEnvironmentEffects {
   /** Tear down whatever is running (or may still be running). */
@@ -368,6 +374,28 @@ export function transitionPrEnvironment(
         next: { ...current, status: 'ready', url: event.url, error: null },
         changed: true,
         effects: NO_EFFECTS,
+      };
+    }
+    case 'runtime_lost': {
+      if (!current || current.generation !== event.generation) return unchanged(current);
+      if (!isActivePrEnvironmentStatus(current.status)) return unchanged(current);
+      if (event.requeue) {
+        const t = queue(current, current.headSha, current.headBranch);
+        // Keep the reason visible while the replacement builds; a ready
+        // report clears it.
+        return { ...t, next: { ...t.next!, error: event.error } };
+      }
+      return {
+        next: {
+          ...current,
+          status: 'failed',
+          url: null,
+          error: event.error,
+          cleanupPending: true,
+          cleanupTarget: cleanupTargetFor(current),
+        },
+        changed: true,
+        effects: { teardown: true, build: false },
       };
     }
     case 'runtime_failed': {

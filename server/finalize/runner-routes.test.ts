@@ -5,7 +5,13 @@ import path from 'path';
 import express, { type Express } from 'express';
 import request from 'supertest';
 import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
-import { enqueueRunnerJob, reapExpiredRunnerLeases, reportRunnerJob } from './runner-queue.js';
+import {
+  cancelRunnerJob,
+  enqueueRunnerJob,
+  getRunnerJobStatus,
+  reapExpiredRunnerLeases,
+  reportRunnerJob,
+} from './runner-queue.js';
 
 // Mock Hub-driven task protection: by default the arm/clear calls resolve
 // instantly ('skipped'), so every existing test is unaffected; the await-race
@@ -124,6 +130,122 @@ describe('runner-routes (HTTP control plane)', () => {
     env: { FOO: 'bar' },
     labels: {},
   };
+
+  describe('environment jobs', () => {
+    const enqEnv = () =>
+      enqueueRunnerJob({
+        orgId: 'orgA',
+        projectId: 'p1',
+        runId: 'prenv-1',
+        jobId: 'pr-7',
+        matrixKey: 'environment',
+        image: 'img:latest',
+        specJson: JSON.stringify({ kind: 'environment' }),
+        kind: 'environment',
+        now: Date.now(),
+      });
+    const claim = async (token: string) => {
+      const r = await request(app)
+        .post('/api/runners/claim')
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+      expect(r.status).toBe(200);
+      return r.body.jobId as string;
+    };
+
+    it('records the reported upstream and survives the in-process channel being absent', async () => {
+      const token = await register();
+      const id = enqEnv();
+      expect(await claim(token)).toBe(id);
+      // No job channel exists (as after a Hub restart): heartbeats still land.
+      const hb = await request(app)
+        .post(`/api/runners/jobs/${id}/heartbeat`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+      expect(hb.status).toBe(204);
+      const ready = await request(app)
+        .post(`/api/runners/jobs/${id}/environment`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status: 'ready', host: '10.1.2.3', port: 32790 });
+      expect(ready.status).toBe(204);
+      expect(getRunnerJobStatus(id)).toMatchObject({
+        state: 'running',
+        endpoint: { host: '10.1.2.3', port: 32790 },
+      });
+    });
+
+    it('rejects a bad endpoint and answers 410 once the environment was stopped', async () => {
+      const token = await register();
+      const id = enqEnv();
+      await claim(token);
+      const bad = await request(app)
+        .post(`/api/runners/jobs/${id}/environment`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status: 'ready', host: 'x y', port: 0 });
+      expect(bad.status).toBe(400);
+      cancelRunnerJob({ jobId: id, now: Date.now() });
+      const gone = await request(app)
+        .post(`/api/runners/jobs/${id}/environment`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status: 'ready', host: '10.1.2.3', port: 32790 });
+      expect(gone.status).toBe(410);
+      const hb = await request(app)
+        .post(`/api/runners/jobs/${id}/heartbeat`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+      expect(hb.status).toBe(410);
+    });
+
+    it('records a failed bring-up, and a live environment whose agent finishes as lost', async () => {
+      const token = await register();
+      const failed = enqEnv();
+      await claim(token);
+      await request(app)
+        .post(`/api/runners/jobs/${failed}/environment`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status: 'failed', detail: 'compose up failed' })
+        .expect(204);
+      expect(getRunnerJobStatus(failed)).toMatchObject({
+        state: 'failed',
+        detail: 'compose up failed',
+      });
+      await request(app)
+        .post(`/api/runners/jobs/${failed}/finish`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({})
+        .expect(204);
+      expect(getRunnerJobStatus(failed)?.state).toBe('failed');
+
+      const live = enqEnv();
+      await claim(token);
+      await request(app)
+        .post(`/api/runners/jobs/${live}/finish`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({})
+        .expect(204);
+      expect(getRunnerJobStatus(live)?.state).toBe('lost');
+    });
+
+    it('an environment that dies after ready is recorded as lost', async () => {
+      const token = await register();
+      const id = enqEnv();
+      await claim(token);
+      await request(app)
+        .post(`/api/runners/jobs/${id}/environment`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status: 'ready', host: '10.1.2.3', port: 32790 })
+        .expect(204);
+      await request(app)
+        .post(`/api/runners/jobs/${id}/environment`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status: 'lost', detail: 'the environment container stopped' })
+        .expect(204);
+      expect(getRunnerJobStatus(id)).toMatchObject({
+        state: 'lost',
+        detail: 'the environment container stopped',
+      });
+    });
+  });
 
   it('claim AWAITS task protection before returning the job (closes the claim→protect race)', async () => {
     const mockedArm = vi.mocked(armHubTaskProtection);

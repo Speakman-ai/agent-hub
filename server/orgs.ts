@@ -329,6 +329,18 @@ export function initOrgsDb(): void {
     orgsDb.exec('ALTER TABLE runner_jobs ADD COLUMN spot_interruption_at INTEGER');
   }
 
+  // `kind` + `endpoint` on runner_jobs for long-lived PR environment jobs.
+  for (const col of [
+    { name: 'kind', ddl: "TEXT NOT NULL DEFAULT 'job'" },
+    { name: 'endpoint', ddl: 'TEXT' },
+  ]) {
+    try {
+      orgsDb.prepare(`SELECT ${col.name} FROM runner_jobs LIMIT 1`).get();
+    } catch {
+      orgsDb.exec(`ALTER TABLE runner_jobs ADD COLUMN ${col.name} ${col.ddl}`);
+    }
+  }
+
   // Add `ecs_task_arn` to runner_agents on installs predating Hub-driven task
   // scale-in protection. Nullable column — the agent reports its ECS task ARN at
   // registration so the Hub can arm UpdateTaskProtection on that exact task.

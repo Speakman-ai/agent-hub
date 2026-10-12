@@ -307,3 +307,69 @@ describe('transitionPrEnvironment', () => {
     ).toBe(false);
   });
 });
+
+describe('runtime_lost', () => {
+  it('requeues a lost ready environment at the same head, tearing down the old runner', () => {
+    const t = transitionPrEnvironment(state(), {
+      type: 'runtime_lost',
+      generation: 1,
+      error: 'runner lost',
+      requeue: true,
+    });
+    expect(t.next).toMatchObject({
+      status: 'queued',
+      headSha: SHA_A,
+      generation: 2,
+      url: null,
+      runnerRef: null,
+      error: 'runner lost',
+      cleanupPending: true,
+      cleanupTarget: { generation: 1, runnerRef: 'job-1' },
+    });
+    expect(t.effects).toEqual({ teardown: true, build: true });
+  });
+
+  it('fails without requeue once the budget is spent', () => {
+    const t = transitionPrEnvironment(state({ status: 'building' }), {
+      type: 'runtime_lost',
+      generation: 1,
+      error: 'lost again',
+      requeue: false,
+    });
+    expect(t.next).toMatchObject({
+      status: 'failed',
+      generation: 1,
+      error: 'lost again',
+      cleanupPending: true,
+    });
+    expect(t.effects).toEqual({ teardown: true, build: false });
+  });
+
+  it('ignores a loss from a superseded generation or an inactive row', () => {
+    const stale = transitionPrEnvironment(state({ generation: 3 }), {
+      type: 'runtime_lost',
+      generation: 2,
+      error: 'x',
+      requeue: true,
+    });
+    expect(stale.changed).toBe(false);
+    const stopped = transitionPrEnvironment(state({ status: 'stopped' }), {
+      type: 'runtime_lost',
+      generation: 1,
+      error: 'x',
+      requeue: true,
+    });
+    expect(stopped.changed).toBe(false);
+  });
+
+  it('a ready report after the requeue clears the loss message', () => {
+    const lost = transitionPrEnvironment(state(), {
+      type: 'runtime_lost',
+      generation: 1,
+      error: 'runner lost',
+      requeue: true,
+    }).next!;
+    const ready = transitionPrEnvironment(lost, { type: 'runtime_ready', generation: 2, url: 'u' });
+    expect(ready.next).toMatchObject({ status: 'ready', error: null });
+  });
+});

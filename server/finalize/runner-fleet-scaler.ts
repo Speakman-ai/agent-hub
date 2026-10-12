@@ -36,7 +36,12 @@
  * non-fleet env are unaffected.
  */
 import { ECSClient, UpdateServiceCommand, DescribeServicesCommand } from '@aws-sdk/client-ecs';
-import { runnerQueueDepth, runnerInflightCount, reapExpiredRunnerLeases } from './runner-queue.js';
+import {
+  runnerQueueDepth,
+  runnerInflightCount,
+  runnerLiveEnvironmentCount,
+  reapExpiredRunnerLeases,
+} from './runner-queue.js';
 import type { ReapedRunnerJob, RunnerClassFilter } from './runner-queue.js';
 import { DEFAULT_RUNNER_CLASS, ONDEMAND_RUNNER_CLASS } from './runner-images.js';
 import { clearHubTaskProtection, loadHubTaskProtectionConfig } from './hub-task-protection.js';
@@ -236,8 +241,18 @@ export function planFleetChange(args: {
   /** claimed+running (jobs that own an agent). Defaults to `depth` (conservative:
    *  treat everything as in-flight so nothing extra is trimmed). */
   inflight?: number;
+  /**
+   * Live PR environments (part of `depth` and `inflight`). They hold their
+   * agent until the PR closes, so they never "drain": the safe mode treats
+   * depth beyond them as the backlog that must reach zero before a shrink, and
+   * no target ever drops below them. Their tasks carry Hub-armed scale-in
+   * protection, re-armed off each heartbeat, so ECS only removes idle tasks.
+   */
+  pinned?: number;
 }): FleetPlan {
-  const { depth, current, min, max, reapedThisTick, now } = args;
+  const { current, min, max, reapedThisTick, now } = args;
+  const depth = args.depth;
+  const pinned = Math.max(0, Math.min(depth, args.pinned ?? 0));
   const dynamic = args.dynamicScaleDown ?? false;
   const headroom = dynamic ? Math.max(0, args.warmHeadroom ?? 0) : 0;
   // In-flight (claimed+running) is the floor a dynamic shrink must never cross.
@@ -248,9 +263,12 @@ export function planFleetChange(args: {
 
   // Dynamic mode separates queued backlog (scale-up) from in-flight work (the
   // shrink floor); legacy mode keeps the single depth-based target.
-  const target = dynamic
-    ? desiredAgentsDynamic(depth, inflight, headroom, min, max)
-    : desiredAgents(depth, min, max);
+  const target = Math.max(
+    dynamic
+      ? desiredAgentsDynamic(depth, inflight, headroom, min, max)
+      : desiredAgents(depth, min, max),
+    pinned,
+  );
 
   if (target === current) {
     if (depth > 0) emptySinceMs = 0;
@@ -258,8 +276,9 @@ export function planFleetChange(args: {
   }
 
   if (target < current) {
-    // SAFE mode: never shrink while work is queued/claimed/running.
-    if (!dynamic && depth > 0) {
+    // SAFE mode: never shrink while work other than live environments is
+    // queued/claimed/running.
+    if (!dynamic && depth - pinned > 0) {
       return { target: null, state: { emptySinceMs: 0, lastReapAtMs } };
     }
     // Anchor the shrink-debounce clock on the first shrinkable observation. In
@@ -450,10 +469,12 @@ async function reconcilePool(
   // claimed+running only — the floor a dynamic shrink must never cross. Cheap
   // extra COUNT, so only taken when dynamic scale-down is actually enabled.
   const inflight = cfg.dynamicScaleDown ? runnerInflightCount(undefined, cfg.classes) : depth;
+  const pinned = runnerLiveEnvironmentCount(undefined, cfg.classes);
   const current = await currentDesired(cfg);
   const plan = planFleetChange({
     depth,
     inflight,
+    pinned,
     current,
     min: cfg.min,
     max: cfg.max,

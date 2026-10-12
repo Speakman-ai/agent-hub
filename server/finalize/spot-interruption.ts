@@ -211,9 +211,9 @@ export function parseRebalanceBody(body: string): RebalanceRecommendationStatus 
  * 2xx, or null on every failure path (non-EC2 host, IMDS disabled, token
  * failure, network error/timeout, 404). Never throws.
  */
-async function getImdsMetadata(
+export async function getImdsMetadata(
   metadataPath: string,
-  opts: CheckSpotInterruptionOptions,
+  opts: CheckSpotInterruptionOptions = {},
 ): Promise<string | null> {
   if (metadataDisabled()) return null;
   const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as FetchLike | undefined);

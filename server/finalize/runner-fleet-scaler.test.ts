@@ -27,6 +27,8 @@ import {
   reapExpiredRunnerLeases,
   runnerInflightCount,
   runnerQueueDepth,
+  runnerLiveEnvironmentCount,
+  reportRunnerJob,
 } from './runner-queue.js';
 import { createJobChannel, removeJobChannel } from './runner-job-channel.js';
 import { detailIsHubUnavailable } from './hub-unavailable.js';
@@ -851,6 +853,32 @@ describe('on-demand deploy pool (per-class scaling)', () => {
     expect(sent).toEqual([{ service: 'hub-finalize-runner-agent-ondemand', desiredCount: 1 }]);
   });
 
+  it('a live PR environment holds its agent after other work drains', async () => {
+    enqueueRunnerJob({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'prenv-1',
+      jobId: 'pr-7',
+      matrixKey: 'environment',
+      image: 'img:latest',
+      specJson: '{}',
+      kind: 'environment',
+      now: 1_000,
+    });
+    const lint = enq('lint');
+    claimRunnerJob({ agentId: 'env-agent', leaseMs: 10_000_000, now: 1_500 });
+    claimRunnerJob({ agentId: 'lint-agent', leaseMs: 10_000_000, now: 1_500 });
+    await reconcileFleetCapacity(2_000);
+    expect(sent).toEqual([{ service: 'hub-finalize-runner-agent', desiredCount: 2 }]);
+    reportRunnerJob({ jobId: lint, state: 'succeeded', now: 3_000 });
+    sent = [];
+    // Past the drain cooldown: shrink to the environment, never to 0.
+    await reconcileFleetCapacity(3_000);
+    await reconcileFleetCapacity(3_000 + SCALE_DOWN_COOLDOWN_MS + 1);
+    expect(sent).toEqual([{ service: 'hub-finalize-runner-agent', desiredCount: 1 }]);
+    expect(runnerLiveEnvironmentCount()).toBe(1);
+  });
+
   it('class filters split depth and inflight counts', () => {
     enq('lint');
     enq('production', 'ondemand');
@@ -861,5 +889,68 @@ describe('on-demand deploy pool (per-class scaling)', () => {
     expect(runnerInflightCount(undefined, { include: ['ondemand'] })).toBe(1);
     expect(runnerInflightCount(undefined, { exclude: ['ondemand'] })).toBe(0);
     expect(runnerQueueDepth(undefined, { include: [] })).toBe(0);
+  });
+});
+
+describe('planFleetChange with live PR environments (pinned)', () => {
+  it('safe mode shrinks to the live environments once only they remain', () => {
+    // 2 envs live, 8 agents warm, nothing else queued/running: shrink to 2.
+    const p = planFleetChange({
+      depth: 2,
+      pinned: 2,
+      current: 8,
+      min: 0,
+      max: 16,
+      reapedThisTick: 0,
+      now: 1_000_000,
+      state: { emptySinceMs: 1_000_000 - SCALE_DOWN_COOLDOWN_MS - 1, lastReapAtMs: 0 },
+    });
+    expect(p.target).toBe(2);
+  });
+
+  it('safe mode still holds while non-environment work is in flight', () => {
+    const p = planFleetChange({
+      depth: 3,
+      pinned: 2,
+      current: 8,
+      min: 0,
+      max: 16,
+      reapedThisTick: 0,
+      now: 1_000_000,
+      state: { emptySinceMs: 1, lastReapAtMs: 0 },
+    });
+    expect(p.target).toBeNull();
+  });
+
+  it('never targets fewer agents than live environments, in either mode', () => {
+    for (const dynamicScaleDown of [false, true]) {
+      const p = planFleetChange({
+        depth: 5,
+        pinned: 5,
+        inflight: 5,
+        current: 5,
+        min: 0,
+        max: 3, // ceiling lowered under the envs
+        reapedThisTick: 0,
+        now: 1_000_000,
+        state: { emptySinceMs: 1, lastReapAtMs: 0 },
+        dynamicScaleDown,
+      });
+      expect(p.target).toBeNull(); // 5 stays: target == current
+    }
+  });
+
+  it('counts a new environment toward capacity (scales up for it)', () => {
+    const p = planFleetChange({
+      depth: 3,
+      pinned: 2,
+      current: 2,
+      min: 0,
+      max: 16,
+      reapedThisTick: 0,
+      now: 1_000,
+      state: FRESH,
+    });
+    expect(p.target).toBe(3);
   });
 });

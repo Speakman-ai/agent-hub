@@ -49,6 +49,7 @@ import {
 } from './preview/pr-environments.js';
 import { hasPreviewConfigAtSha, probePreviewConfigAtSha } from './preview/pr-environment-config.js';
 import { readNativePrState } from './preview/pr-environment-native.js';
+import { registerPrEnvironmentRuntime } from './preview/pr-environment-runtime-setup.js';
 import { bareRepoPath, hostedRepoExists } from './native-pr/host.js';
 import { revParse } from './native-pr/git-read.js';
 import { tryAutoMergeArmedNativePr } from './native-pr/auto-merge-armed.js';
@@ -979,6 +980,10 @@ onPrEnvironmentRuntimeRegistered(() => {
     );
   });
 });
+// Compose stacks on the runner fleet (or DinD on this host). Registering
+// triggers the catch-up above, which re-attaches environments from before a
+// restart.
+registerPrEnvironmentRuntime();
 
 /**
  * Sync a native PR's environment with the PR's current state (open + head
