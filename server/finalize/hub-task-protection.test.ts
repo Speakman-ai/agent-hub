@@ -111,6 +111,37 @@ describe('armHubTaskProtection', () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
+  // Real ECS echoes the short-form ARN (no cluster segment) in protectedTasks[]
+  // and failures[] even when the request used the long form. Matching on the
+  // raw string marked every successful arm unconfirmed, logged a warning on
+  // each heartbeat, and never armed the throttle.
+  it('confirms an arm when ECS echoes the short-form task ARN', async () => {
+    const shortArn = 'arn:aws:ecs:us-east-2:1:task/abc123';
+    const send = vi.fn(async () => ({
+      protectedTasks: [{ taskArn: shortArn, protectionEnabled: true }],
+      failures: [],
+    }));
+    const log = vi.fn();
+    let t = 1000;
+    expect(await armHubTaskProtection(ARN, CFG, { client: { send }, log, now: () => t })).toBe(
+      'armed',
+    );
+    expect(log).not.toHaveBeenCalled();
+    t += 60_000;
+    expect(await armHubTaskProtection(ARN, CFG, { client: { send }, log, now: () => t })).toBe(
+      'throttled',
+    );
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it('matches a short-form ARN in failures[] as a failure for the task', async () => {
+    const send = vi.fn(async () => ({
+      protectedTasks: [{ taskArn: 'arn:aws:ecs:us-east-2:1:task/abc123' }],
+      failures: [{ arn: 'arn:aws:ecs:us-east-2:1:task/abc123', reason: 'TASK_NOT_VALID' }],
+    }));
+    expect(await armHubTaskProtection(ARN, CFG, { client: { send }, log: vi.fn() })).toBe('error');
+  });
+
   it('returns error when the task is absent from protectedTasks (silent drop)', async () => {
     const send = vi.fn(async () => ({ protectedTasks: [{ taskArn: 'arn:other' }], failures: [] }));
     expect(await armHubTaskProtection(ARN, CFG, { client: { send }, log: vi.fn() })).toBe('error');

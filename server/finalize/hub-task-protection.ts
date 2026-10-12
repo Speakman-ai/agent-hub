@@ -134,6 +134,17 @@ interface UpdateTaskProtectionResult {
   failures?: Array<{ arn?: string; reason?: string; detail?: string }>;
 }
 
+/**
+ * ECS echoes the short-form task ARN (`…:task/<id>`) in UpdateTaskProtection
+ * responses even when the request used the long form
+ * (`…:task/<cluster>/<id>`), so compare on the task id alone.
+ */
+export function taskIdFromArn(arn: string | null | undefined): string | undefined {
+  if (!arn) return undefined;
+  const id = arn.slice(arn.lastIndexOf('/') + 1);
+  return id || undefined;
+}
+
 let client: EcsSend | null = null;
 function ecsClient(region?: string): EcsSend {
   if (!client) client = new ECSClient(region ? { region } : {}) as unknown as EcsSend;
@@ -196,8 +207,9 @@ export async function armHubTaskProtection(
     // actually came back protected with no matching failure. Otherwise the Hub
     // would believe protection is fresh and suppress retries for the throttle
     // window while the task is in fact exposed to scale-in.
-    const failure = resp?.failures?.find((f) => f?.arn === taskArn);
-    const confirmed = resp?.protectedTasks?.some((t) => t?.taskArn === taskArn);
+    const want = taskIdFromArn(taskArn);
+    const failure = resp?.failures?.find((f) => taskIdFromArn(f?.arn) === want);
+    const confirmed = resp?.protectedTasks?.some((t) => taskIdFromArn(t?.taskArn) === want);
     if (failure || !confirmed) {
       log(
         `[hub-task-protection] arm ${taskArn} NOT confirmed: ${
