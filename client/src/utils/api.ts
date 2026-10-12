@@ -364,6 +364,17 @@ export function isFetchTimeoutMessage(message: unknown): boolean {
   return typeof message === 'string' && /^Request timed out after \d+ms: \S+ \S/.test(message);
 }
 
+export type GoogleChatAttachmentDataRef = {
+  attachmentUploadToken: string;
+  resourceName?: string;
+};
+export type GoogleChatUploadedAttachment = {
+  attachmentDataRef: GoogleChatAttachmentDataRef;
+  contentName: string;
+  contentType: string;
+  size: number;
+};
+
 async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): Promise<T> {
   const base = getApiBase();
   const authHeaders = getAuthHeaders();
@@ -1179,7 +1190,29 @@ export const api = {
       `/google/chat/spaces/${encodeURIComponent(spaceId)}/messages${qs ? `?${qs}` : ''}`,
     );
   },
-  sendGoogleChatMessage: (spaceId: string, data: { text: string; threadName?: string }) =>
+  // Raw body upload; the server forwards it to Chat's media.upload and returns
+  // an opaque reference to pass in `attachments` on send.
+  uploadGoogleChatAttachment: (spaceId: string, file: File) =>
+    fetchJSON<GoogleChatUploadedAttachment>(
+      `/google/chat/spaces/${encodeURIComponent(spaceId)}/attachments`,
+      {
+        method: 'POST',
+        body: file,
+        headers: {
+          'Content-Type': file.type || 'application/octet-stream',
+          'X-Filename': encodeURIComponent(file.name || 'attachment'),
+        },
+        timeout: 180_000,
+      },
+    ),
+  sendGoogleChatMessage: (
+    spaceId: string,
+    data: {
+      text?: string;
+      threadName?: string;
+      attachments?: GoogleChatAttachmentDataRef[];
+    },
+  ) =>
     fetchJSON(`/google/chat/spaces/${encodeURIComponent(spaceId)}/messages`, {
       method: 'POST',
       body: JSON.stringify(data),

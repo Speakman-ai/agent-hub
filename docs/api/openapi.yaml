@@ -6962,6 +6962,37 @@ components:
           description: When the calling user last read the space. Messages created after it are unread. Google exposes no read state for other members.
       required:
         - lastReadTime
+    GoogleChatAttachmentDataRef:
+      type: object
+      properties:
+        attachmentUploadToken:
+          type: string
+          minLength: 1
+          maxLength: 8192
+        resourceName:
+          type: string
+          minLength: 1
+          maxLength: 4096
+      required:
+        - attachmentUploadToken
+      additionalProperties: false
+      description: Opaque reference returned by the attachment upload route. Pass it back unchanged when sending.
+    GoogleChatUploadedAttachment:
+      type: object
+      properties:
+        attachmentDataRef:
+          $ref: "#/components/schemas/GoogleChatAttachmentDataRef"
+        contentName:
+          type: string
+        contentType:
+          type: string
+        size:
+          type: integer
+      required:
+        - attachmentDataRef
+        - contentName
+        - contentType
+        - size
     GoogleChatMessageLink:
       type: object
       properties:
@@ -32386,12 +32417,18 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 4096
+                  description: Message text. Optional when attachments are included.
                 threadName:
                   type: string
                   pattern: ^spaces\/([A-Za-z0-9_-]{1,128})\/threads\/[A-Za-z0-9_.-]{1,256}$
                   description: Reply in this thread (`spaces/{space}/threads/{thread}`). Honored only when the space supports thread replies (see GoogleChatSpace.supportsThreadReplies); otherwise the message is sent as an ordinary message. Requires the spaces read scope.
-              required:
-                - text
+                attachments:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/GoogleChatAttachmentDataRef"
+                  minItems: 1
+                  maxItems: 10
+                  description: Files uploaded to this space with POST /api/google/chat/spaces/{spaceId}/attachments. Not accepted from agent sessions whose replies are held for approval.
               additionalProperties: false
       responses:
         "201":
@@ -32439,6 +32476,97 @@ paths:
                 $ref: "#/components/schemas/GoogleChatErrorResponse"
         "404":
           description: Space not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "429":
+          description: Google Chat rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "502":
+          description: Google Chat request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+  /api/google/chat/spaces/{spaceId}/attachments:
+    post:
+      tags:
+        - Google
+      summary: Upload a file to a Google Chat space as the calling user
+      description: Uploads the raw request body through the Chat media API and returns an attachment reference. Nothing is posted until the reference is sent with POST /api/google/chat/spaces/{spaceId}/messages. Bodies are capped at 25 MB; Google refuses some file types.
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{1,128}$
+          required: true
+          name: spaceId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 1024
+            description: URI-encoded file name, including the extension.
+          required: true
+          description: URI-encoded file name, including the extension.
+          name: x-filename
+          in: header
+        - schema:
+            type: string
+            maxLength: 255
+          required: false
+          name: content-type
+          in: header
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw file bytes.
+      responses:
+        "201":
+          description: The uploaded file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatUploadedAttachment"
+        "400":
+          description: Missing file name, empty body, or invalid space id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "403":
+          description: Required Chat send scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "404":
+          description: Space not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleChatErrorResponse"
+        "413":
+          description: File is larger than 25 MB.
           content:
             application/json:
               schema:

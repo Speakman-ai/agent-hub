@@ -7,6 +7,7 @@ vi.mock('../utils/api', () => ({
     listGoogleChatSpaces: vi.fn(),
     listGoogleChatMessages: vi.fn(),
     sendGoogleChatMessage: vi.fn(),
+    uploadGoogleChatAttachment: vi.fn(),
     startGoogleOAuth: vi.fn(),
     listGoogleChatMessageLinks: vi.fn(),
     createGoogleChatMessageLink: vi.fn(),
@@ -327,6 +328,155 @@ describe('GoogleChatPage', () => {
         text: 'On it',
         threadName: 'spaces/AAA/threads/T1',
       }),
+    );
+  });
+
+  it('uploads a picked file and sends it without text once the upload finishes', async () => {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE] });
+    mockApi.listGoogleChatMessages.mockResolvedValue({ messages: [] });
+    mockApi.sendGoogleChatMessage.mockResolvedValue({});
+    let finishUpload: (v: unknown) => void = () => {};
+    mockApi.uploadGoogleChatAttachment.mockReturnValue(
+      new Promise((resolve) => {
+        finishUpload = resolve;
+      }),
+    );
+
+    render(<GoogleChatPage />);
+    await screen.findByPlaceholderText('Message Acme support');
+    const file = new File(['%PDF'], 'report.pdf', { type: 'application/pdf' });
+    fireEvent.change(screen.getByTestId('chat-attachment-input'), { target: { files: [file] } });
+
+    expect(mockApi.uploadGoogleChatAttachment).toHaveBeenCalledWith('AAA', file);
+    expect(await screen.findByText('report.pdf')).toBeTruthy();
+    const sendButton = screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(true);
+
+    const ref = { attachmentUploadToken: 'tok-1' };
+    await act(async () => {
+      finishUpload({
+        attachmentDataRef: ref,
+        contentName: 'report.pdf',
+        contentType: 'application/pdf',
+        size: 4,
+      });
+    });
+    await waitFor(() => expect(sendButton.disabled).toBe(false));
+    fireEvent.click(sendButton);
+
+    await waitFor(() =>
+      expect(mockApi.sendGoogleChatMessage).toHaveBeenCalledWith('AAA', { attachments: [ref] }),
+    );
+    await waitFor(() => expect(screen.queryByText('report.pdf')).toBeNull());
+  });
+
+  it("keeps a failed send's attachments when a new message was started meanwhile", async () => {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE] });
+    mockApi.listGoogleChatMessages.mockResolvedValue({ messages: [] });
+    const ref = { attachmentUploadToken: 'tok-1' };
+    mockApi.uploadGoogleChatAttachment.mockResolvedValue({
+      attachmentDataRef: ref,
+      contentName: 'report.pdf',
+      contentType: 'application/pdf',
+      size: 4,
+    });
+    let rejectSend: (e: Error) => void = () => {};
+    mockApi.sendGoogleChatMessage.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectSend = reject;
+      }),
+    );
+
+    render(<GoogleChatPage />);
+    const box = await screen.findByPlaceholderText('Message Acme support');
+    const file = new File(['%PDF'], 'report.pdf', { type: 'application/pdf' });
+    fireEvent.change(screen.getByTestId('chat-attachment-input'), { target: { files: [file] } });
+    const sendButton = screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement;
+    await waitFor(() => expect(sendButton.disabled).toBe(false));
+    fireEvent.change(box, { target: { value: 'see attached' } });
+    fireEvent.click(sendButton);
+    await waitFor(() => expect(screen.queryByText('report.pdf')).toBeNull());
+
+    // A new message is started while the first send is still pending.
+    fireEvent.change(box, { target: { value: 'next thing' } });
+    await act(async () => {
+      rejectSend(new Error('Google Chat rate limit exceeded'));
+    });
+
+    expect(await screen.findByText('report.pdf')).toBeTruthy();
+    expect((box as HTMLTextAreaElement).value).toBe('next thing');
+    expect(
+      screen.getByText(
+        'Google Chat rate limit exceeded. Not sent: "see attached". 1 attachment was put back in the composer.',
+      ),
+    ).toBeTruthy();
+
+    mockApi.sendGoogleChatMessage.mockResolvedValue({});
+    fireEvent.click(sendButton);
+    await waitFor(() =>
+      expect(mockApi.sendGoogleChatMessage).toHaveBeenLastCalledWith('AAA', {
+        text: 'next thing',
+        attachments: [ref],
+      }),
+    );
+  });
+
+  it.each([
+    ['text plus a failed file', ['bad.pdf'], { text: 'see attached' }],
+    [
+      'a ready file plus a failed file',
+      ['good.pdf', 'bad.pdf'],
+      { attachments: [{ attachmentUploadToken: 'tok-good' }] },
+    ],
+  ])('blocks Send with %s until the failed file is removed', async (_label, names, expected) => {
+    mockApi.getGoogleStatus.mockResolvedValue({
+      connected: true,
+      grantedScopes: ALL_SCOPES,
+      serverConfigured: true,
+    });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [SPACE] });
+    mockApi.listGoogleChatMessages.mockResolvedValue({ messages: [] });
+    mockApi.sendGoogleChatMessage.mockResolvedValue({});
+    mockApi.uploadGoogleChatAttachment.mockImplementation((_space: string, file: File) =>
+      file.name === 'bad.pdf'
+        ? Promise.reject(new Error('Upload failed'))
+        : Promise.resolve({
+            attachmentDataRef: { attachmentUploadToken: 'tok-good' },
+            contentName: file.name,
+            contentType: 'application/pdf',
+            size: 4,
+          }),
+    );
+
+    render(<GoogleChatPage />);
+    const box = await screen.findByPlaceholderText('Message Acme support');
+    const files = names.map((n) => new File(['%PDF'], n, { type: 'application/pdf' }));
+    fireEvent.change(screen.getByTestId('chat-attachment-input'), { target: { files } });
+    if ('text' in expected) fireEvent.change(box, { target: { value: expected.text } });
+
+    expect(
+      await screen.findByText('Remove the attachments that failed to upload before sending.'),
+    ).toBeTruthy();
+    const sendButton = screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(true);
+    fireEvent.click(sendButton);
+    expect(mockApi.sendGoogleChatMessage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove bad.pdf' }));
+    await waitFor(() => expect(sendButton.disabled).toBe(false));
+    fireEvent.click(sendButton);
+    await waitFor(() =>
+      expect(mockApi.sendGoogleChatMessage).toHaveBeenCalledWith('AAA', expected),
     );
   });
 

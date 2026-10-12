@@ -847,6 +847,8 @@ const INFRA_HEALTH_INGEST_PATH_RE = /^\/api\/infra\/health\/ingest\/?$/;
 // Wiki file uploads read the raw body so a `.json` document is stored as
 // bytes, not parsed into an object by the global JSON parser.
 const WIKI_FILE_UPLOAD_PATH = /^\/api\/projects\/[^/]+\/wiki-files\/?$/;
+// Google Chat attachment uploads read the raw body for the same reason.
+const GOOGLE_CHAT_UPLOAD_PATH = /^\/api\/google\/chat\/spaces\/[^/]+\/attachments\/?$/;
 const globalJsonParser = express.json({
   limit: '20mb',
   verify: (req: Request, _res, buf: Buffer) => {
@@ -860,7 +862,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
       REPLAY_INGEST_PATH.test(req.path) ||
       LOG_INGEST_PATH.test(req.path) ||
       INFRA_HEALTH_INGEST_PATH_RE.test(req.path) ||
-      WIKI_FILE_UPLOAD_PATH.test(req.path))
+      WIKI_FILE_UPLOAD_PATH.test(req.path) ||
+      GOOGLE_CHAT_UPLOAD_PATH.test(req.path))
   ) {
     return next();
   }

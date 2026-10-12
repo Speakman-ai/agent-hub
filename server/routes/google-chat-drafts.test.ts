@@ -142,6 +142,16 @@ describe('Google Chat agent reply drafts', () => {
     expect(googleMock.messages.create).not.toHaveBeenCalled();
   });
 
+  it('refuses attachments from an agent whose replies are held for approval', async () => {
+    const res = await request(makeApp(human()))
+      .post('/api/google/chat/spaces/AAA/messages')
+      .set('X-Agent-Hub-Session-Id', 'sess-9')
+      .send({ text: 'see file', attachments: [{ attachmentUploadToken: 'tok' }] });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('google_chat_attachments_need_auto_send');
+    expect(googleMock.messages.create).not.toHaveBeenCalled();
+  });
+
   it('still sends immediately for the operator in the pane', async () => {
     const res = await request(makeApp(human()))
       .post('/api/google/chat/spaces/AAA/messages')

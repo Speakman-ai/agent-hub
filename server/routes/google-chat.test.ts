@@ -12,7 +12,7 @@ const googleMock = vi.hoisted(() => {
   const spaces = { list: vi.fn(), get: vi.fn() };
   const members = { list: vi.fn() };
   const messages = { list: vi.fn(), create: vi.fn(), get: vi.fn() };
-  const media = { download: vi.fn() };
+  const media = { download: vi.fn(), upload: vi.fn() };
   const setCredentials = vi.fn();
   return {
     spaces,
@@ -393,6 +393,112 @@ describe('Google Chat proxy routes', () => {
       );
     },
   );
+
+  describe('attachments', () => {
+    it('uploads the raw body to the space and returns the opaque reference', async () => {
+      googleMock.media.upload.mockResolvedValue({
+        data: { attachmentDataRef: { resourceName: 'res-1', attachmentUploadToken: 'tok-1' } },
+      });
+      const res = await request(makeApp())
+        .post('/api/google/chat/spaces/AAA/attachments')
+        .set('Content-Type', 'application/pdf')
+        .set('X-Filename', encodeURIComponent('Q3 report é.pdf'))
+        .send(Buffer.from('%PDF-1.4 hello'));
+
+      expect(res.status).toBe(201);
+      expect(res.body).toEqual({
+        attachmentDataRef: { attachmentUploadToken: 'tok-1', resourceName: 'res-1' },
+        contentName: 'Q3 report é.pdf',
+        contentType: 'application/pdf',
+        size: 14,
+      });
+      const [params, opts] = googleMock.media.upload.mock.calls[0];
+      expect(params.parent).toBe('spaces/AAA');
+      expect(params.requestBody).toEqual({ filename: 'Q3 report é.pdf' });
+      expect(params.media.mimeType).toBe('application/pdf');
+      const chunks: Buffer[] = [];
+      for await (const chunk of params.media.body as Readable) chunks.push(Buffer.from(chunk));
+      expect(Buffer.concat(chunks).toString()).toBe('%PDF-1.4 hello');
+      expect(opts).toEqual({ timeout: 120_000 });
+    });
+
+    it('keeps a JSON file as bytes instead of parsing it', async () => {
+      googleMock.media.upload.mockResolvedValue({
+        data: { attachmentDataRef: { attachmentUploadToken: 'tok-1' } },
+      });
+      const app = express();
+      app.use((req, _res, next) => {
+        (req as Request & { authUserId?: string }).authUserId = 'user-1';
+        next();
+      });
+      app.use(createGoogleChatRoutes(buildDeps()));
+      const res = await request(app)
+        .post('/api/google/chat/spaces/AAA/attachments')
+        .set('Content-Type', 'application/json')
+        .set('X-Filename', 'data.json')
+        .send('{"a":1}');
+      expect(res.status).toBe(201);
+      expect(res.body.size).toBe(7);
+    });
+
+    it('requires a file name and a non-empty body', async () => {
+      const noName = await request(makeApp())
+        .post('/api/google/chat/spaces/AAA/attachments')
+        .set('Content-Type', 'text/plain')
+        .send('hi');
+      expect(noName.status).toBe(400);
+      const empty = await request(makeApp())
+        .post('/api/google/chat/spaces/AAA/attachments')
+        .set('Content-Type', 'text/plain')
+        .set('X-Filename', 'a.txt')
+        .send('');
+      expect(empty.status).toBe(400);
+      expect(googleMock.media.upload).not.toHaveBeenCalled();
+    });
+
+    it('refuses uploads without the send scope', async () => {
+      connectionStoreMock.getGoogleConnectionStatus.mockReturnValue(
+        connected([SPACES_READONLY, MESSAGES_READONLY]),
+      );
+      const res = await request(makeApp())
+        .post('/api/google/chat/spaces/AAA/attachments')
+        .set('Content-Type', 'text/plain')
+        .set('X-Filename', 'a.txt')
+        .send('hi');
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('google_chat_send_scope_required');
+      expect(googleMock.media.upload).not.toHaveBeenCalled();
+    });
+
+    it('sends uploaded attachments with or without text', async () => {
+      googleMock.messages.create.mockResolvedValue({ data: { name: 'spaces/AAA/messages/NEW' } });
+      const ref = { attachmentUploadToken: 'tok-1', resourceName: 'res-1' };
+      const res = await request(makeApp())
+        .post('/api/google/chat/spaces/AAA/messages')
+        .send({ attachments: [ref] });
+      expect(res.status).toBe(201);
+      expect(googleMock.messages.create).toHaveBeenCalledWith(
+        {
+          parent: 'spaces/AAA',
+          requestBody: { attachment: [{ attachmentDataRef: ref }] },
+        },
+        { timeout: 30_000 },
+      );
+    });
+
+    it('requires text or attachments', async () => {
+      const res = await request(makeApp()).post('/api/google/chat/spaces/AAA/messages').send({});
+      expect(res.status).toBe(400);
+      expect(googleMock.messages.create).not.toHaveBeenCalled();
+    });
+
+    it('decodes and sanitizes upload file names', () => {
+      expect(mod.safeDecodeFilename('..%2F..%2Fetc%2Fpasswd')).toBe('passwd');
+      expect(mod.safeDecodeFilename('a%0Ab.txt')).toBe('ab.txt');
+      expect(mod.safeDecodeFilename('%E0%A4%A')).toBeNull();
+      expect(mod.safeDecodeFilename('%20')).toBeNull();
+    });
+  });
 
   it('plain sends never read the space', async () => {
     googleMock.messages.create.mockResolvedValue({ data: { name: 'spaces/AAA/messages/NEW' } });

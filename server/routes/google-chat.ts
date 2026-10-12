@@ -1,4 +1,5 @@
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
+import { Readable } from 'node:stream';
 import { google, type chat_v1 } from 'googleapis';
 import type { RouteDeps } from '../types.js';
 import {
@@ -290,15 +291,68 @@ export function buildMessagesFilter(opts: {
   return parts.length ? parts.join(' AND ') : undefined;
 }
 
+const MessageTextSchema = z.string().trim().min(1).max(4096);
+
+/** Google allows 200 MB, but the proxy buffers the body, so it caps lower. */
+export const MAX_CHAT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+export const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 10;
+
+const AttachmentDataRefSchema = registerComponent(
+  'GoogleChatAttachmentDataRef',
+  z
+    .object({
+      attachmentUploadToken: z.string().min(1).max(8192),
+      resourceName: z.string().min(1).max(4096).optional(),
+    })
+    .strict()
+    .openapi({
+      description:
+        'Opaque reference returned by the attachment upload route. Pass it back unchanged when sending.',
+    }),
+);
+
+const UploadedAttachmentSchema = registerComponent(
+  'GoogleChatUploadedAttachment',
+  z.object({
+    attachmentDataRef: AttachmentDataRefSchema,
+    contentName: z.string(),
+    contentType: z.string(),
+    size: z.number().int(),
+  }),
+);
+
+const UploadAttachmentHeadersSchema = z.object({
+  'x-filename': z
+    .string()
+    .min(1)
+    .max(1024)
+    .openapi({ description: 'URI-encoded file name, including the extension.' }),
+  'content-type': z.string().max(255).optional(),
+});
+
 const SendMessageBodySchema = z
   .object({
-    text: z.string().trim().min(1).max(4096),
+    text: MessageTextSchema.optional().openapi({
+      description: 'Message text. Optional when attachments are included.',
+    }),
     threadName: z.string().regex(THREAD_NAME_RE, 'invalid thread name').optional().openapi({
       description:
         'Reply in this thread (`spaces/{space}/threads/{thread}`). Honored only when the space supports thread replies (see GoogleChatSpace.supportsThreadReplies); otherwise the message is sent as an ordinary message. Requires the spaces read scope.',
     }),
+    attachments: z
+      .array(AttachmentDataRefSchema)
+      .min(1)
+      .max(MAX_CHAT_ATTACHMENTS_PER_MESSAGE)
+      .optional()
+      .openapi({
+        description:
+          'Files uploaded to this space with POST /api/google/chat/spaces/{spaceId}/attachments. Not accepted from agent sessions whose replies are held for approval.',
+      }),
   })
-  .strict();
+  .strict()
+  .refine((b) => !!b.text || !!b.attachments?.length, {
+    message: 'text or attachments is required',
+  });
 
 const MESSAGE_NAME_RE = /^spaces\/([A-Za-z0-9_-]{1,128})\/messages\/[A-Za-z0-9_.-]{1,256}$/;
 
@@ -419,13 +473,13 @@ const DraftRevisionSchema = z.number().int().min(1).openapi({
 });
 
 const EditDraftBodySchema = z
-  .object({ text: SendMessageBodySchema.shape.text, revision: DraftRevisionSchema })
+  .object({ text: MessageTextSchema, revision: DraftRevisionSchema })
   .strict();
 const DiscardDraftBodySchema = z.object({ revision: DraftRevisionSchema }).strict();
 const ApproveDraftBodySchema = z
   .object({
     revision: DraftRevisionSchema,
-    text: SendMessageBodySchema.shape.text.optional().openapi({
+    text: MessageTextSchema.optional().openapi({
       description:
         'Send this text instead of the stored draft text (edit and approve in one step).',
     }),
@@ -523,6 +577,35 @@ registerPath({
     400: errorResponse('Invalid body or space id.'),
     403: errorResponse('Required Chat send scope has not been granted.'),
     404: errorResponse('Space not found.'),
+    ...commonErrors,
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/google/chat/spaces/{spaceId}/attachments',
+  tags: ['Google'],
+  summary: 'Upload a file to a Google Chat space as the calling user',
+  description:
+    'Uploads the raw request body through the Chat media API and returns an attachment reference. Nothing is posted until the reference is sent with POST /api/google/chat/spaces/{spaceId}/messages. Bodies are capped at 25 MB; Google refuses some file types.',
+  request: {
+    params: SpaceParamsSchema,
+    headers: UploadAttachmentHeadersSchema,
+    body: {
+      content: {
+        'application/octet-stream': {
+          schema: z.string().openapi({ format: 'binary', description: 'Raw file bytes.' }),
+        },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    201: { description: 'The uploaded file.', content: jsonContent(UploadedAttachmentSchema) },
+    400: errorResponse('Missing file name, empty body, or invalid space id.'),
+    403: errorResponse('Required Chat send scope has not been granted.'),
+    404: errorResponse('Space not found.'),
+    413: errorResponse('File is larger than 25 MB.'),
     ...commonErrors,
   },
 });
@@ -1352,6 +1435,22 @@ function broadcastDraft(deps: RouteDeps, draft: GoogleChatDraft | null): void {
  * unconfirmed) instead of holding a draft in `sending` indefinitely.
  */
 export const CHAT_CALL_TIMEOUT_MS = 30_000;
+const CHAT_UPLOAD_TIMEOUT_MS = 120_000;
+
+/** Decode a URI-encoded upload file name; null when blank or malformed. */
+export function safeDecodeFilename(raw: string): string | null {
+  let name: string;
+  try {
+    name = decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+  // Keep only the base name and drop control characters.
+  // eslint-disable-next-line no-control-regex
+  const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+  name = name.split(/[\\/]/).pop()!.replace(CONTROL_CHARS, '').trim();
+  return name ? name.slice(0, 255) : null;
+}
 
 /**
  * The thread a reply goes in, or null to post to the conversation. DMs, group
@@ -1381,6 +1480,7 @@ async function createChatMessage(
   text: string,
   replyThread: string | null,
   requestId?: string,
+  attachments?: z.infer<typeof AttachmentDataRefSchema>[],
 ): Promise<chat_v1.Schema$Message> {
   const result = await chat.spaces.messages.create(
     {
@@ -1388,8 +1488,11 @@ async function createChatMessage(
       ...(requestId ? { requestId } : {}),
       ...(replyThread ? { messageReplyOption: 'REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD' } : {}),
       requestBody: {
-        text,
+        ...(text ? { text } : {}),
         ...(replyThread ? { thread: { name: replyThread } } : {}),
+        ...(attachments?.length
+          ? { attachment: attachments.map((attachmentDataRef) => ({ attachmentDataRef })) }
+          : {}),
       },
     },
     { timeout: CHAT_CALL_TIMEOUT_MS },
@@ -1629,12 +1732,23 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
     // a draft is only created when approving it can actually post.
     const agentSessionId = agentSessionIdFromRequest(req);
     if (agentSessionId && !getChatSettings(uid).autoSendAgentReplies) {
+      // Drafts hold text only, and an upload token is not meant to sit around
+      // waiting for an approval that may come days later.
+      if (body.data.attachments?.length) {
+        return bad(
+          res,
+          409,
+          'Attachments cannot be held for approval. Send the text only, or turn on auto-send for agent replies.',
+          'google_chat_attachments_need_auto_send',
+        );
+      }
+      const text = body.data.text ?? '';
       const draft = createChatDraft({
         userId: uid,
         sessionId: agentSessionId,
         spaceId,
         threadName: threadName ?? null,
-        text: body.data.text,
+        text,
       });
       broadcastDraft(deps, draft);
       return res.status(202).json({
@@ -1651,7 +1765,14 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
     try {
       const chat = createChatClient(token);
       const replyThread = await resolveReplyThread(chat, spaceId, threadName);
-      const message = await createChatMessage(chat, spaceId, body.data.text, replyThread);
+      const message = await createChatMessage(
+        chat,
+        spaceId,
+        body.data.text ?? '',
+        replyThread,
+        undefined,
+        body.data.attachments,
+      );
       const sent = shapeMessage(message);
       if (agentSessionId) recordAgentReply(agentSessionId, spaceId, sent);
       return res.status(201).json(sent);
@@ -1659,6 +1780,75 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
       return sendGoogleError(res, err);
     }
   });
+
+  router.post(
+    '/api/google/chat/spaces/:spaceId/attachments',
+    express.raw({ type: () => true, limit: MAX_CHAT_ATTACHMENT_BYTES }),
+    async (req: Request, res: Response) => {
+      const params = SpaceParamsSchema.safeParse(req.params);
+      if (!params.success) {
+        return bad(
+          res,
+          400,
+          params.error.issues[0]?.message || 'Invalid space id',
+          'invalid_request',
+        );
+      }
+      const headers = UploadAttachmentHeadersSchema.safeParse(req.headers);
+      const filename = headers.success ? safeDecodeFilename(headers.data['x-filename']) : null;
+      if (!filename) {
+        return bad(res, 400, 'X-Filename header is required', 'invalid_request');
+      }
+      const buf = req.body;
+      if (!Buffer.isBuffer(buf) || buf.length === 0) {
+        return bad(res, 400, 'Empty file body', 'invalid_request');
+      }
+      const uid = requireChatAccess(
+        req,
+        res,
+        deps,
+        hasChatMessagesCreateScope,
+        [CHAT_MESSAGES_CREATE_SCOPE],
+        'google_chat_send_scope_required',
+      );
+      if (!uid) return;
+      const token = await resolveChatToken(uid, deps, res);
+      if (!token) return;
+      const contentType =
+        (headers.data?.['content-type'] ?? '').split(';')[0].trim() || 'application/octet-stream';
+      try {
+        const chat = createChatClient(token);
+        const result = await chat.media.upload(
+          {
+            parent: `spaces/${params.data.spaceId}`,
+            requestBody: { filename },
+            media: { mimeType: contentType, body: Readable.from([buf]) },
+          },
+          { timeout: CHAT_UPLOAD_TIMEOUT_MS },
+        );
+        const ref = result.data.attachmentDataRef;
+        if (!ref?.attachmentUploadToken) {
+          return bad(
+            res,
+            502,
+            'Google did not return an attachment reference',
+            'google_chat_upload_failed',
+          );
+        }
+        return res.status(201).json({
+          attachmentDataRef: {
+            attachmentUploadToken: ref.attachmentUploadToken,
+            ...(ref.resourceName ? { resourceName: ref.resourceName } : {}),
+          },
+          contentName: filename,
+          contentType,
+          size: buf.length,
+        });
+      } catch (err: unknown) {
+        return sendGoogleError(res, err);
+      }
+    },
+  );
 
   router.get(
     '/api/google/chat/spaces/:spaceId/messages/:messageId/attachments/:attachmentId/content',

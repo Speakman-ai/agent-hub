@@ -78,6 +78,16 @@ import {
   newestTopLevelTime,
 } from '../utils/googleChatLayout';
 import { placeDrafts, useChatDrafts, type ChatDraft } from '../utils/googleChatDrafts';
+import {
+  attachmentRejection,
+  attachmentSlotsLeft,
+  canSendComposer,
+  failedSendNotice,
+  hasFailedAttachments,
+  readyAttachmentRefs,
+  restoreFailedAttachments,
+  type PendingChatAttachment,
+} from '../utils/googleChatComposer';
 import GoogleChatDraftCard from './GoogleChatDraftCard';
 import GoogleChatAttachments from './GoogleChatAttachments';
 import { DraftsLoadError } from './GoogleChatDraftsPanel';
@@ -166,6 +176,7 @@ type SpaceView = {
 type Composer = {
   text: string;
   replyTo: ChatMessage | null;
+  attachments: PendingChatAttachment[];
   /** Bumped on every user edit and on submit; see `send`. */
   rev: number;
   sending: boolean;
@@ -186,6 +197,7 @@ const EMPTY_VIEW: SpaceView = {
 const EMPTY_COMPOSER: Composer = {
   text: '',
   replyTo: null,
+  attachments: [],
   rev: 0,
   sending: false,
   error: null,
@@ -516,7 +528,16 @@ export default function GoogleChatPage({
   const [autoSendSaving, setAutoSendSaving] = useState(false);
   const autoSendWriteRef = useRef(false);
   const composer = (selectedId && composers[selectedId]) || EMPTY_COMPOSER;
-  const { text: draft, replyTo, sending, error: sendError } = composer;
+  const {
+    text: draft,
+    replyTo,
+    attachments: pendingAttachments,
+    sending,
+    error: sendError,
+  } = composer;
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentSeqRef = useRef(0);
+  const [dragOver, setDragOver] = useState(false);
 
   const addMessageToTodos = async (message: ChatMessage) => {
     const key = message.name;
@@ -1244,12 +1265,58 @@ export default function GoogleChatPage({
     }
   };
 
+  // Upload as soon as a file is picked, as Google Chat does, so Send is quick.
+  // Results land on the composer of the space the file was picked in, by id,
+  // so switching spaces mid-upload doesn't misfile them.
+  const addAttachments = (files: FileList | File[] | null) => {
+    const spaceId = selectedId;
+    if (!spaceId || !files) return;
+    const picked = Array.from(files).slice(0, attachmentSlotsLeft(composer.attachments));
+    if (!picked.length) return;
+    const added = picked.map((file) => {
+      const rejection = attachmentRejection(file);
+      const item: PendingChatAttachment = {
+        id: `att-${++attachmentSeqRef.current}`,
+        name: file.name || 'attachment',
+        size: file.size,
+        status: rejection ? 'error' : 'uploading',
+        ...(rejection ? { error: rejection } : {}),
+      };
+      return { file, item };
+    });
+    updateComposer(spaceId, (c) => ({
+      ...c,
+      attachments: [...c.attachments, ...added.map((a) => a.item)],
+      rev: c.rev + 1,
+    }));
+    const settle = (id: string, patch: Partial<PendingChatAttachment>) =>
+      updateComposer(spaceId, (c) => ({
+        ...c,
+        attachments: c.attachments.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+      }));
+    for (const { file, item } of added) {
+      if (item.status !== 'uploading') continue;
+      api
+        .uploadGoogleChatAttachment(spaceId, file)
+        .then((uploaded) => settle(item.id, { status: 'ready', ref: uploaded.attachmentDataRef }))
+        .catch((err: any) => {
+          if (err?.code === CHAT_SEND_SCOPE_ERROR) refreshStatus();
+          settle(item.id, { status: 'error', error: err?.message || 'Upload failed' });
+        });
+    }
+  };
+
+  const removeAttachment = (id: string) =>
+    editComposer({ attachments: composer.attachments.filter((a) => a.id !== id) });
+
   const send = async (event: React.FormEvent) => {
     event.preventDefault();
     const spaceId = selectedId;
     const submitted = composer;
     const text = submitted.text.trim();
-    if (!spaceId || !text || sendingRef.current.has(spaceId)) return;
+    if (!spaceId || !canSendComposer(text, submitted.attachments)) return;
+    if (sendingRef.current.has(spaceId)) return;
+    const attachments = readyAttachmentRefs(submitted.attachments);
     sendingRef.current.add(spaceId);
     // Clear on submit so anything typed while the request is pending is a new
     // message, not text the completion handler would wipe.
@@ -1258,13 +1325,15 @@ export default function GoogleChatPage({
       ...c,
       text: '',
       replyTo: null,
+      attachments: [],
       rev: clearedRev,
       sending: true,
       error: null,
     }));
     try {
       await api.sendGoogleChatMessage(spaceId, {
-        text,
+        ...(text ? { text } : {}),
+        ...(attachments.length ? { attachments } : {}),
         // The reply target only exists in spaces that support thread replies
         // (the button is gated on it); the proxy re-checks the space anyway.
         ...(submitted.replyTo?.threadName && selectedSpace?.supportsThreadReplies
@@ -1287,11 +1356,21 @@ export default function GoogleChatPage({
               ...c,
               text: submitted.text,
               replyTo: submitted.replyTo,
+              attachments: submitted.attachments,
               sending: false,
               error: reason,
             }
-          : // The user started a new message; keep it and keep the failed text visible.
-            { ...c, sending: false, error: `${reason}. Not sent: "${text}"` },
+          : // The user started a new message; keep it, show the failed text, and
+            // put the failed files back alongside it so they can be resent.
+            (() => {
+              const kept = restoreFailedAttachments(c.attachments, submitted.attachments);
+              return {
+                ...c,
+                attachments: kept.attachments,
+                sending: false,
+                error: failedSendNotice(reason, text, kept.restored, kept.dropped),
+              };
+            })(),
       );
     } finally {
       sendingRef.current.delete(spaceId);
@@ -2229,7 +2308,24 @@ export default function GoogleChatPage({
               </div>
             )}
             {selectedSpace && canSend && (
-              <form onSubmit={send} className="shrink-0 border-t border-gray-800 p-3">
+              <form
+                onSubmit={send}
+                onDragOver={(e) => {
+                  if (!e.dataTransfer.types.includes('Files')) return;
+                  e.preventDefault();
+                  setDragOver(true);
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  if (!e.dataTransfer.files.length) return;
+                  e.preventDefault();
+                  setDragOver(false);
+                  addAttachments(e.dataTransfer.files);
+                }}
+                className={`shrink-0 border-t p-3 ${
+                  dragOver ? 'border-blue-500 bg-blue-950/30' : 'border-gray-800'
+                }`}
+              >
                 {replyTo && (
                   <div className="mb-2 flex items-center justify-between gap-2 rounded bg-gray-900 px-2 py-1 text-xs text-gray-400">
                     <span className="truncate">
@@ -2247,9 +2343,73 @@ export default function GoogleChatPage({
                   </div>
                 )}
                 {sendError && <div className="mb-2 text-xs text-red-300">{sendError}</div>}
+                {hasFailedAttachments(pendingAttachments) && (
+                  <div className="mb-2 text-xs text-red-300">
+                    Remove the attachments that failed to upload before sending.
+                  </div>
+                )}
+                {pendingAttachments.length > 0 && (
+                  <ul className="mb-2 flex flex-wrap gap-2" aria-label="Attachments">
+                    {pendingAttachments.map((a) => (
+                      <li
+                        key={a.id}
+                        title={a.error || a.name}
+                        className={`flex max-w-[16rem] items-center gap-1.5 rounded border px-2 py-1 text-xs ${
+                          a.status === 'error'
+                            ? 'border-red-800 bg-red-950/40 text-red-200'
+                            : 'border-gray-700 bg-gray-900 text-gray-200'
+                        }`}
+                      >
+                        {a.status === 'uploading' ? (
+                          <Loader2 size={12} className="flex-shrink-0 animate-spin" />
+                        ) : a.status === 'error' ? (
+                          <AlertCircle size={12} className="flex-shrink-0" />
+                        ) : (
+                          <Paperclip size={12} className="flex-shrink-0" />
+                        )}
+                        <span className="truncate">{a.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(a.id)}
+                          aria-label={`Remove ${a.name}`}
+                          className="rounded p-0.5 hover:bg-gray-800 hover:text-white"
+                        >
+                          <X size={12} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 <div className="flex items-end gap-2">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    hidden
+                    data-testid="chat-attachment-input"
+                    onChange={(e) => {
+                      addAttachments(e.target.files);
+                      e.target.value = '';
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={attachmentSlotsLeft(pendingAttachments) === 0}
+                    aria-label="Attach files"
+                    title="Attach files"
+                    className="rounded p-2 text-gray-400 hover:bg-gray-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Paperclip size={16} />
+                  </button>
                   <textarea
                     value={draft}
+                    onPaste={(e) => {
+                      if (e.clipboardData.files.length) {
+                        e.preventDefault();
+                        addAttachments(e.clipboardData.files);
+                      }
+                    }}
                     onChange={(e) => editComposer({ text: e.target.value })}
                     onKeyDown={(e) => {
                       if (isSubmitEnter(e)) {
@@ -2263,7 +2423,7 @@ export default function GoogleChatPage({
                   />
                   <button
                     type="submit"
-                    disabled={!draft.trim() || sending}
+                    disabled={!canSendComposer(draft, pendingAttachments) || sending}
                     aria-label="Send"
                     className="inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
                   >
