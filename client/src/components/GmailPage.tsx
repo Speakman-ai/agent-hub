@@ -215,7 +215,12 @@ function ThreadModal({
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={subject || '(no subject)'}
+        className="flex max-h-full w-full flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-xl"
+      >
         <div className="flex items-center justify-between gap-2 border-b border-gray-800 px-4 py-3">
           <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-white">
             {subject || '(no subject)'}

@@ -195,4 +195,27 @@ describe('GmailPage', () => {
       });
     });
   });
+
+  it('opens a thread in a dialog that spans the page width', async () => {
+    const status = {
+      connected: true,
+      email: 'person@example.com',
+      grantedScopes: [GMAIL_MODIFY, GMAIL_SEND],
+      serverConfigured: true,
+    };
+    mockApi.getGoogleStatus.mockResolvedValue(status);
+    mockApi.listGoogleGmailThreads.mockResolvedValue({
+      threads: [{ id: 't1', snippet: 'Quarterly review', historyId: '9' }],
+    });
+    mockApi.getGoogleGmailThread.mockResolvedValueOnce({
+      messages: [{ id: 'm1', subject: 'Canceled event', from: 'a@example.com', bodyText: 'Body' }],
+    });
+
+    render(<GmailPage />);
+    fireEvent.click(await screen.findByText('Quarterly review'));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Canceled event' });
+    expect(dialog.className).toContain('w-full');
+    expect(dialog.className).not.toMatch(/\bmax-w-/);
+  });
 });
