@@ -647,6 +647,11 @@ describe('dependency security guards (high-severity advisory floors)', () => {
       advisory: 'GHSA-6qxp-vccf-f47h',
       only: ['server'],
     },
+    // Arbitrary JavaScript execution when opening a malicious PDF
+    // (>= 5.6.83, < 6.2.108). Direct client dependency for the attachment
+    // viewer; the 6.x getDocument/getPage/render surface PdfPages uses is
+    // unchanged, and the asset dirs pdfjsAssetsPlugin copies still ship.
+    { pkg: 'pdfjs-dist', min: '6.2.108', advisory: 'GHSA-hq66-cqwq-w95j', only: ['client'] },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
@@ -1538,17 +1543,18 @@ describe('unpatched advisories (containment guards)', () => {
       why: 'the fix exists only on 7.x and every parent (tailwindcss 3, postcss-nested 6, @tailwindcss/typography which pins 6.0.10 exactly) declares 6.x; the escape is a Tailwind 4 migration. Input is first-party CSS at build time and the copy is dev-only',
     },
     // Low severity: an *existing* prototype pollution elsewhere can bypass
-    // KaTeX's `trust` restrictions. Patched in 0.18.2, but mermaid (even 12.1,
-    // the newest) declares `^0.16.47`, so reaching it needs an override across
-    // two minor-as-major 0.x lines under mermaid's math rendering. Not
-    // exploitable on its own: it requires a separate pollution primitive.
+    // KaTeX's `trust` restrictions. Patched in 0.18.2. Mermaid 11 declares
+    // `^0.16.x`; mermaid 12.2 moved to `^0.18.0`, so the exit is a mermaid
+    // major upgrade rather than an override across two minor-as-major 0.x
+    // lines. Not exploitable on its own: it requires a separate pollution
+    // primitive.
     {
       workspace: 'client',
       pkg: 'katex',
       advisory: ['GHSA-238p-pmpm-9mq7'],
       vulnerableRange: '< 0.18.2',
       dependents: ['mermaid'],
-      why: 'the fix is on katex 0.18 and every mermaid release still declares ^0.16.x; the advisory is low severity and needs a pre-existing prototype pollution to matter, so forcing 0.18 under mermaid is the riskier change',
+      why: 'the fix is on katex 0.18 and mermaid 11 declares ^0.16.x (only the mermaid 12 major reaches 0.18); the advisory is low severity and needs a pre-existing prototype pollution to matter, so forcing 0.18 under mermaid is the riskier change',
     },
   ];
 
