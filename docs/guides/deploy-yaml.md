@@ -54,14 +54,19 @@ Each pull request gets at most one environment, keyed by the PR (project,
 source, number) and never by the chat session that wrote it, so any head
 branch name works. The `preview:` block is read at the PR's head commit.
 
-| Trigger                                                       | Effect                                         |
-| ------------------------------------------------------------- | ---------------------------------------------- |
-| PR opened or reopened                                         | Queue a build at the head commit               |
-| New commits on the PR head                                    | Tear down and rebuild at the new commit        |
-| PR merged or closed                                           | Tear down; status `stopped`                    |
-| Head commit drops the `preview:` block                        | Tear down; status `stopped`                    |
-| `POST /api/projects/{projectId}/pulls/{number}/preview/start` | Start or retry (rebuilds a failed/stopped one) |
-| `POST .../preview/stop`                                       | Tear down; new commits do not restart it       |
+Environments are opt-in. Opening a PR does not boot anything; someone clicks
+**Start environment** on the PR page (or calls `preview/start`). The rows below
+marked "once started" only apply to a PR that already has an environment.
+
+| Trigger                                                                               | Effect                                         |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| **Start environment** / `POST /api/projects/{projectId}/pulls/{number}/preview/start` | Start or retry (rebuilds a failed/stopped one) |
+| PR opened                                                                             | Nothing                                        |
+| New commits on the PR head (once started)                                             | Tear down and rebuild at the new commit        |
+| PR reopened (once started)                                                            | Rebuild at the head commit                     |
+| PR merged or closed                                                                   | Tear down; status `stopped`                    |
+| Head commit drops the `preview:` block                                                | Tear down; status `stopped`                    |
+| `POST .../preview/stop`                                                               | Tear down; new commits do not restart it       |
 
 Statuses are `queued`, `building`, `ready`, `failed`, and `stopped`. An environment
 stays `queued` until a runner backend picks it up; the build itself is done

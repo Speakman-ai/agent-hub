@@ -2106,28 +2106,30 @@ describe('native PR environments', () => {
     git(work, `push -u origin ${branch}`);
   }
 
-  it('opening a PR on a hand-named branch queues an environment with no session lookup', async () => {
+  it('opening a PR starts nothing; Start queues an environment with no session lookup', async () => {
     const { id, work } = await hostedProjectWithBranch();
     pushPreviewBranch(work, 'fix/login-redirect');
     await postPulls(id).send({ headBranch: 'fix/login-redirect', title: 'Fix login' }).expect(201);
 
     const headSha = execSync('git rev-parse HEAD', { cwd: work }).toString().trim();
-    await vi.waitFor(
-      async () => {
-        const res = await authedGet(`/api/projects/${id}/pulls/1/preview/state`).expect(200);
-        expect(res.body.environment).toMatchObject({
-          source: 'native',
-          prNumber: 1,
-          headSha,
-          headBranch: 'fix/login-redirect',
-          status: 'queued',
-        });
-      },
-      { timeout: 10_000 },
-    );
+    // Environments are opt-in: give the open hooks a moment, then confirm nothing was created.
+    await new Promise((r) => setTimeout(r, 200));
+    const before = await authedGet(`/api/projects/${id}/pulls/1/preview/state`).expect(200);
+    expect(before.body).toEqual({ environment: null });
 
     const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.preview_available).toBe(true);
+
+    const first = await authedPost(`/api/projects/${id}/pulls/1/preview/start`)
+      .send({})
+      .expect(200);
+    expect(first.body.environment).toMatchObject({
+      source: 'native',
+      prNumber: 1,
+      headSha,
+      headBranch: 'fix/login-redirect',
+      status: 'queued',
+    });
 
     // Manual stop, then start again.
     const stop = await authedPost(`/api/projects/${id}/pulls/1/preview/stop`).send({}).expect(200);

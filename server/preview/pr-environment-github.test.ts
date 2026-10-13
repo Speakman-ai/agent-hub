@@ -220,16 +220,30 @@ describe('GitHub-hosted PR environments', () => {
     expect(gh.comments.size).toBe(1);
   });
 
-  it('catch-up starts an environment for a new GitHub PR and posts the ready comment', async () => {
-    const { gh, reporters, runtime, service } = setup();
+  it('catch-up starts nothing for a GitHub PR nobody started; a started one tracks close and reopen', async () => {
+    const probe = vi.fn(async (): Promise<'present' | 'absent' | 'unresolved'> => 'present');
+    const { gh, reporters, runtime, service, readState } = setup({ probe });
+    const prReads = () =>
+      (gh.calls.mock.calls as Array<[string, RequestInit?]>).filter(([url]) =>
+        url.endsWith('/pulls/7'),
+      ).length;
 
-    // Nobody pressed Start: the periodic listing finds the open PR.
+    // Environments are opt-in: the periodic listing finds the open PR but
+    // neither reads it, probes it, nor creates anything.
     await service.catchUp();
+    await service.catchUp();
+    await flush();
+    expect(service.get('shop', PR)).toBeNull();
+    expect(service.get('shop', { source: 'github', prNumber: 8 })).toBeNull();
+    expect(runtime.build).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+    expect(prReads()).toBe(0);
+
+    // Someone presses Start: it builds and posts the ready comment.
+    await service.start(project, PR, readState);
     await flush();
     expect(service.get('shop', PR)).toMatchObject({ source: 'github', headSha: SHA_A });
     expect(runtime.build).toHaveBeenCalledTimes(1);
-    expect(service.get('shop', { source: 'github', prNumber: 8 })).toBeNull();
-
     reporters[0].ready('http://10.0.0.5:32801');
     await flush();
     expect([...gh.comments.values()]).toEqual([
@@ -252,57 +266,86 @@ describe('GitHub-hosted PR environments', () => {
     expect(runtime.build).toHaveBeenCalledTimes(2);
   });
 
-  it('a head with no preview block is probed once, and again after a push', async () => {
-    const probe = vi.fn(async () => 'absent' as const);
-    const { gh, runtime, service } = setup({ probe });
+  it('catch-up reconciles a PR with an environment: a push is probed and rebuilt', async () => {
+    const probe = vi.fn(async (): Promise<'present' | 'absent' | 'unresolved'> => 'present');
+    const { gh, runtime, service, readState } = setup({ probe });
 
+    await service.start(project, PR, readState);
+    await flush();
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+
+    // Same head: catch-up does not rebuild.
     await service.catchUp();
-    await service.catchUp();
-    expect(service.get('shop', PR)).toBeNull();
-    const probesAtA = probe.mock.calls.length;
-    expect(probesAtA).toBeGreaterThan(0);
-    await service.catchUp();
-    expect(probe.mock.calls.length).toBe(probesAtA);
+    await flush();
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+    const probesBeforePush = probe.mock.calls.length;
 
     gh.pr.head.sha = SHA_B;
-    probe.mockImplementation(async () => 'present' as never);
+    await service.catchUp();
+    await flush();
+    expect(probe.mock.calls.length).toBeGreaterThan(probesBeforePush);
+    expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_B });
+    expect(runtime.build).toHaveBeenCalledTimes(2);
+  });
+
+  it('an unresolved head is retried at the same sha', async () => {
+    const probe = vi.fn(async (): Promise<'present' | 'absent' | 'unresolved'> => 'unresolved');
+    const { gh, runtime, service, readState } = setup({ probe });
+
+    // Start at an unreadable head refuses without recording an environment.
+    expect(await service.start(project, PR, readState)).toMatchObject({
+      ok: false,
+      reason: 'unresolved_head',
+    });
+    expect(service.get('shop', PR)).toBeNull();
+    await service.catchUp();
+    expect(service.get('shop', PR)).toBeNull();
+    expect(runtime.build).not.toHaveBeenCalled();
+
+    // Readable now: start builds it.
+    probe.mockImplementation(async () => 'present');
+    expect(await service.start(project, PR, readState)).toMatchObject({ ok: true });
+    await flush();
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+
+    // A push whose head cannot be read yet is retried by the next catch-up.
+    gh.pr.head.sha = SHA_B;
+    probe.mockImplementation(async () => 'unresolved');
+    await service.catchUp();
+    await flush();
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+    probe.mockImplementation(async () => 'present');
     await service.catchUp();
     await flush();
     expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_B });
-    expect(runtime.build).toHaveBeenCalledTimes(1);
-  });
-
-  it('an unresolved head is retried at the same sha, not cached as absent', async () => {
-    const probe = vi.fn(async (): Promise<'present' | 'absent' | 'unresolved'> => 'unresolved');
-    const { runtime, service } = setup({ probe });
-
-    await service.catchUp();
-    expect(runtime.build).not.toHaveBeenCalled();
-
-    // Same head, now readable: the next catch-up builds it.
-    probe.mockImplementation(async () => 'present');
-    await service.catchUp();
-    await flush();
-    expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_A, status: 'queued' });
-    expect(runtime.build).toHaveBeenCalledTimes(1);
+    expect(runtime.build).toHaveBeenCalledTimes(2);
   });
 
   it('a probe that throws is retried at the same sha', async () => {
-    const probe = vi.fn(async (): Promise<'present' | 'absent' | 'unresolved'> => {
+    const probe = vi.fn(async (): Promise<'present' | 'absent' | 'unresolved'> => 'present');
+    const { gh, runtime, service, readState } = setup({ probe });
+    await service.start(project, PR, readState);
+    await flush();
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+
+    gh.pr.head.sha = SHA_B;
+    probe.mockImplementation(async () => {
       throw new Error('workspace busy');
     });
-    const { runtime, service } = setup({ probe });
-
     await service.catchUp();
     probe.mockImplementation(async () => 'present');
     await service.catchUp();
     await flush();
-    expect(runtime.build).toHaveBeenCalledTimes(1);
+    expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_B });
+    expect(runtime.build).toHaveBeenCalledTimes(2);
   });
 
-  it('a failed PR read before any environment exists is retried', async () => {
-    const probe = vi.fn(async (): Promise<'present' | 'absent' | 'unresolved'> => 'present');
-    const { gh, runtime, service } = setup({ probe });
+  it('a failed PR read after a push is retried', async () => {
+    const { gh, runtime, service, readState } = setup();
+    await service.start(project, PR, readState);
+    await flush();
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+
     const realFetch = gh.calls.getMockImplementation()!;
     let failReads = 1;
     gh.calls.mockImplementation(async (url: string, init: RequestInit = {}) => {
@@ -312,19 +355,24 @@ describe('GitHub-hosted PR environments', () => {
       }
       return realFetch(url, init);
     });
+    gh.pr.head.sha = SHA_B;
 
     await service.catchUp();
-    expect(service.get('shop', PR)).toBeNull();
-    expect(runtime.build).not.toHaveBeenCalled();
+    expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_A });
+    expect(runtime.build).toHaveBeenCalledTimes(1);
 
     await service.catchUp();
     await flush();
-    expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_A });
-    expect(runtime.build).toHaveBeenCalledTimes(1);
+    expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_B });
+    expect(runtime.build).toHaveBeenCalledTimes(2);
   });
 
   it('a PR read that briefly says not found is retried at the same sha', async () => {
-    const { gh, runtime, service } = setup();
+    const { gh, runtime, service, readState } = setup();
+    await service.start(project, PR, readState);
+    await flush();
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+
     const realFetch = gh.calls.getMockImplementation()!;
     let notFound = 1;
     gh.calls.mockImplementation(async (url: string, init: RequestInit = {}) => {
@@ -334,12 +382,14 @@ describe('GitHub-hosted PR environments', () => {
       }
       return realFetch(url, init);
     });
+    gh.pr.head.sha = SHA_B;
 
     await service.catchUp();
-    expect(service.get('shop', PR)).toBeNull();
+    expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_A });
     await service.catchUp();
     await flush();
-    expect(runtime.build).toHaveBeenCalledTimes(1);
+    expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_B });
+    expect(runtime.build).toHaveBeenCalledTimes(2);
   });
 
   it('a failed GitHub PR listing changes nothing', async () => {

@@ -79,9 +79,12 @@ describe('PrEnvironmentService', () => {
     ctx = setup();
   });
 
-  it('queues on PR open and hands the build to the runtime', async () => {
-    const env = await ctx.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: 'x' });
-    expect(env).toMatchObject({ status: 'queued', headSha: SHA_A, prNumber: 7, source: 'native' });
+  it('queues on manual start and hands the build to the runtime', async () => {
+    const res = await ctx.service.start(project, PR, openAt(SHA_A, 'x'));
+    expect(res).toMatchObject({
+      ok: true,
+      environment: { status: 'queued', headSha: SHA_A, prNumber: 7, source: 'native' },
+    });
     await flush();
     expect(ctx.runtime!.build).toHaveBeenCalledTimes(1);
     expect(ctx.broadcast).toHaveBeenCalledWith(
@@ -89,17 +92,29 @@ describe('PrEnvironmentService', () => {
     );
   });
 
-  it('does nothing when the head has no preview block', async () => {
-    const { service, runtime } = setup({ hasConfig: false });
+  it('a PR-open event creates nothing: environments are opt-in', async () => {
+    const { service, runtime, hasPreviewConfig } = setup();
     expect(await service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null })).toBe(
       null,
     );
+    await flush();
+    expect(hasPreviewConfig).not.toHaveBeenCalled();
+    expect(runtime!.build).not.toHaveBeenCalled();
+    expect(service.get('p1', PR)).toBeNull();
+  });
+
+  it('reconcile with no environment returns null without reading the PR', async () => {
+    const { service, runtime, hasPreviewConfig } = setup();
+    const read = vi.fn(openAt(SHA_A));
+    expect(await service.reconcile(project, PR, read)).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+    expect(hasPreviewConfig).not.toHaveBeenCalled();
     expect(runtime!.build).not.toHaveBeenCalled();
     expect(service.get('p1', PR)).toBeNull();
   });
 
   it('runtime progress lands on the row, with a capped log tail', async () => {
-    await ctx.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await ctx.service.start(project, PR, openAt(SHA_A));
     await flush();
     const reporter = ctx.reporters[0];
     reporter.building('runner-1');
@@ -116,7 +131,7 @@ describe('PrEnvironmentService', () => {
   it('calls onReady once per build that becomes ready, and never for a stale one', async () => {
     const onReady = vi.fn();
     const { service, reporters } = setup({ onReady });
-    await service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await service.start(project, PR, openAt(SHA_A));
     await flush();
     reporters[0].building();
     reporters[0].ready('http://a');
@@ -140,7 +155,7 @@ describe('PrEnvironmentService', () => {
       .mockRejectedValueOnce(new Error('GitHub 502'))
       .mockResolvedValue(undefined);
     const { service, reporters } = setup({ onReady });
-    await service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await service.start(project, PR, openAt(SHA_A));
     await flush();
     reporters[0].ready('http://a');
     await flush();
@@ -154,7 +169,7 @@ describe('PrEnvironmentService', () => {
   it('catch-up does not announce environments that are not ready', async () => {
     const onReady = vi.fn();
     const { service } = setup({ onReady });
-    await service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await service.start(project, PR, openAt(SHA_A));
     await flush();
     await service.catchUp();
     expect(onReady).not.toHaveBeenCalled();
@@ -166,7 +181,7 @@ describe('PrEnvironmentService', () => {
         throw new Error('boom');
       },
     });
-    await service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await service.start(project, PR, openAt(SHA_A));
     await flush();
     reporters[0].ready('http://a');
     await flush();
@@ -174,7 +189,7 @@ describe('PrEnvironmentService', () => {
   });
 
   it('a new head sha rebuilds and drops the old build’s late callbacks', async () => {
-    await ctx.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await ctx.service.start(project, PR, openAt(SHA_A));
     await flush();
     const oldReporter = ctx.reporters[0];
     oldReporter.log('old line');
@@ -192,7 +207,7 @@ describe('PrEnvironmentService', () => {
   });
 
   it('merge tears down and marks stopped', async () => {
-    await ctx.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await ctx.service.start(project, PR, openAt(SHA_A));
     const env = await ctx.service.onPrClosed(project, { ...PR, merged: true });
     expect(env).toMatchObject({ status: 'stopped', stopReason: 'merged' });
     expect(env!.stoppedAt).not.toBeNull();
@@ -200,7 +215,7 @@ describe('PrEnvironmentService', () => {
   });
 
   it('stops a running env when a new head drops the preview block', async () => {
-    await ctx.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await ctx.service.start(project, PR, openAt(SHA_A));
     ctx.hasPreviewConfig.mockResolvedValueOnce(false);
     const env = await ctx.service.onPrOpened(project, { ...PR, headSha: SHA_B, headBranch: null });
     expect(env).toMatchObject({ status: 'stopped', stopReason: 'no_preview_config' });
@@ -215,14 +230,14 @@ describe('PrEnvironmentService', () => {
         teardown: vi.fn(),
       },
     });
-    await service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await service.start(project, PR, openAt(SHA_A));
     await flush();
     expect(service.get('p1', PR)).toMatchObject({ status: 'failed', error: 'compose up failed' });
   });
 
   it('with no runtime registered the env stays queued', async () => {
     const { service } = setup({ runtime: null });
-    await service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await service.start(project, PR, openAt(SHA_A));
     await flush();
     expect(service.get('p1', PR)).toMatchObject({ status: 'queued' });
   });
@@ -239,7 +254,7 @@ describe('PrEnvironmentService', () => {
     ctx.hasPreviewConfig.mockImplementationOnce(
       () => new Promise<boolean | 'unresolved'>((r) => (release = r)),
     );
-    const opening = ctx.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    const opening = ctx.service.start(project, PR, openAt(SHA_A));
     const closing = ctx.service.onPrClosed(project, { ...PR, merged: false });
     await flush();
     release(true);
@@ -249,13 +264,8 @@ describe('PrEnvironmentService', () => {
   });
 
   it('keeps environments separate per PR and project', async () => {
-    await ctx.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
-    await ctx.service.onPrOpened(project, {
-      source: 'native',
-      prNumber: 8,
-      headSha: SHA_B,
-      headBranch: null,
-    });
+    await ctx.service.start(project, PR, openAt(SHA_A));
+    await ctx.service.start(project, { source: 'native', prNumber: 8 }, openAt(SHA_B));
     expect(ctx.service.get('p1', PR)!.headSha).toBe(SHA_A);
     expect(ctx.service.get('p1', { source: 'native', prNumber: 8 })!.headSha).toBe(SHA_B);
     expect(ctx.service.get('p2', PR)).toBeNull();
@@ -263,7 +273,7 @@ describe('PrEnvironmentService', () => {
   });
 
   it('a head that drops the preview block is recorded, and start then refuses it', async () => {
-    await ctx.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: 'x' });
+    await ctx.service.start(project, PR, openAt(SHA_A, 'x'));
     ctx.hasPreviewConfig.mockImplementation(async (_p: unknown, sha: unknown) => sha === SHA_A);
     const removed = await ctx.service.onPrOpened(project, {
       ...PR,
@@ -286,7 +296,7 @@ describe('PrEnvironmentService', () => {
   });
 
   it('an unreadable head is recorded as failed at that head, not guessed from another revision', async () => {
-    await ctx.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await ctx.service.start(project, PR, openAt(SHA_A));
     await flush();
     ctx.hasPreviewConfig.mockResolvedValue('unresolved');
     const env = await ctx.service.onPrOpened(project, { ...PR, headSha: SHA_B, headBranch: null });
@@ -312,13 +322,8 @@ describe('PrEnvironmentService', () => {
 
   it('rows queued with no runtime are dispatched once a runtime registers, exactly once', async () => {
     const c = setup({ runtime: null });
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
-    await c.service.onPrOpened(project, {
-      source: 'native',
-      prNumber: 8,
-      headSha: SHA_B,
-      headBranch: null,
-    });
+    await c.service.start(project, PR, openAt(SHA_A));
+    await c.service.start(project, { source: 'native', prNumber: 8 }, openAt(SHA_B));
     expect(await c.service.recoverPending()).toMatchObject({ tornDown: 0, dispatched: 0 }); // still no runtime
 
     const runtime = { build: vi.fn(), teardown: vi.fn() };
@@ -336,7 +341,7 @@ describe('PrEnvironmentService', () => {
 
   it('a same-sha start dispatches a row that was queued before the runtime existed', async () => {
     const c = setup({ runtime: null });
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     const runtime = { build: vi.fn(), teardown: vi.fn() };
     c.setRuntime(runtime);
     const res = await c.service.start(project, PR, openAt(SHA_A));
@@ -366,7 +371,7 @@ describe('setPrEnvironmentRuntime', () => {
 describe('teardown failures', () => {
   it('a teardown that fails once is retried by the next stop and then succeeds', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     (c.runtime!.teardown as any).mockRejectedValueOnce(new Error('docker daemon unreachable'));
 
     const first = await c.service.stop(project, PR);
@@ -384,7 +389,7 @@ describe('teardown failures', () => {
 
   it('a close retries a teardown that failed on an earlier stop', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     (c.runtime!.teardown as any).mockRejectedValueOnce(new Error('boom'));
     await c.service.stop(project, PR);
     const closed = await c.service.onPrClosed(project, { ...PR, merged: true });
@@ -394,7 +399,7 @@ describe('teardown failures', () => {
 
   it('a replacement build does not start over a failed teardown; Retry tears down then builds', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await flush();
     expect(c.runtime!.build).toHaveBeenCalledTimes(1);
 
@@ -438,7 +443,7 @@ describe('native reconcile vs. a racing close', () => {
     const read = () => readNativePrState(deps, 'p1', 7);
 
     // Env already running at A.
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: 'fix/x' });
+    await c.service.start(project, PR, openAt(SHA_A, 'fix/x'));
 
     // A push starts reconciling; its head lookup is slow.
     const pushSync = c.service.reconcile(project, PR, read);
@@ -468,7 +473,7 @@ describe('native reconcile vs. a racing close', () => {
     const lookup = deferred<string | null>();
     const read = () =>
       readNativePrState({ getPr: () => prRow, revParseHead: () => lookup.promise }, 'p1', 7);
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: 'fix/x' });
+    await c.service.start(project, PR, openAt(SHA_A, 'fix/x'));
 
     const pushSync = c.service.reconcile(project, PR, read);
     await flush();
@@ -488,6 +493,7 @@ describe('native reconcile vs. a racing close', () => {
       head_sha: SHA_A,
       status: 'open',
     } as PullRequestRow;
+    await c.service.start(project, PR, openAt(SHA_A, 'fix/x'));
     const env = await c.service.reconcile(project, PR, () =>
       readNativePrState({ getPr: () => prRow, revParseHead: async () => SHA_B }, 'p1', 7),
     );
@@ -498,7 +504,7 @@ describe('native reconcile vs. a racing close', () => {
 describe('recovery when the runtime comes back', () => {
   it('a close while the runtime is absent is torn down once a runtime registers', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await flush();
     expect(c.runtime!.build).toHaveBeenCalledTimes(1);
 
@@ -522,7 +528,7 @@ describe('recovery when the runtime comes back', () => {
 
   it('a teardown interrupted by a failure is retried on recovery', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     (c.runtime!.teardown as any).mockRejectedValueOnce(new Error('daemon restarting'));
     await c.service.stop(project, PR);
     expect(c.service.get('p1', PR)).toMatchObject({ cleanupPending: true });
@@ -555,7 +561,7 @@ describe('manual start reads PR state inside the queue', () => {
     let release!: (v: string | null) => void;
     const lookup = new Promise<string | null>((r) => (release = r));
     const deps = { getPr: () => prRow, revParseHead: vi.fn(() => lookup) };
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: 'fix/x' });
+    await c.service.start(project, PR, openAt(SHA_A, 'fix/x'));
     await c.service.stop(project, PR);
 
     const starting = c.service.start(project, PR, () => readNativePrState(deps, 'p1', 7));
@@ -577,7 +583,7 @@ describe('manual start reads PR state inside the queue', () => {
 describe('cleanup target survives the replacement row', () => {
   it('retries of a failed teardown receive the original runner reference', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await flush();
     c.reporters[0].building('runner-A');
 
@@ -605,7 +611,7 @@ describe('cleanup target survives the replacement row', () => {
 
   it('a head update while the runtime is absent tears down the old runner on recovery', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await flush();
     c.reporters[0].building('runner-A');
 
@@ -635,7 +641,7 @@ describe('manual stop intent over a no-preview stop', () => {
   it('config removed → manual stop → config restored does not rebuild', async () => {
     const c = setup();
     c.hasPreviewConfig.mockImplementation(async (_p: unknown, sha: unknown) => sha !== SHA_B);
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await c.service.onPrOpened(project, { ...PR, headSha: SHA_B, headBranch: null });
     expect(c.service.get('p1', PR)).toMatchObject({ stopReason: 'no_preview_config' });
 
@@ -668,7 +674,7 @@ describe('builds interrupted by a Hub restart', () => {
 
   it('a building row with no runtime reattach is failed, cleaned up, and Retry rebuilds', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await flush();
     c.reporters[0].building('runner-A');
     expect(c.service.get('p1', PR)).toMatchObject({ status: 'building' });
@@ -699,7 +705,7 @@ describe('builds interrupted by a Hub restart', () => {
 
   it('a runtime that still tracks the build adopts it and reports through a new reporter', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await flush();
     c.reporters[0].building('runner-A');
 
@@ -724,7 +730,7 @@ describe('builds interrupted by a Hub restart', () => {
 
   it('a ready environment is re-watched after a restart, even when the PR read fails', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await flush();
     c.reporters[0].building('runner-A');
     c.reporters[0].ready('http://10.0.0.1:32000');
@@ -759,7 +765,7 @@ describe('builds interrupted by a Hub restart', () => {
 
   it('a ready environment the runtime no longer has is failed and torn down', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await flush();
     c.reporters[0].building('runner-A');
     c.reporters[0].ready('http://10.0.0.1:32000');
@@ -781,7 +787,7 @@ describe('builds interrupted by a Hub restart', () => {
 
   it('a runner loss with requeue tears down the old runner and rebuilds the same head', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await flush();
     c.reporters[0].building('runner-A');
     c.reporters[0].ready('http://10.0.0.1:32000');
@@ -807,7 +813,7 @@ describe('builds interrupted by a Hub restart', () => {
 
   it('a runner loss without requeue leaves the environment failed', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await flush();
     c.reporters[0].building('runner-A');
     c.reporters[0].lost('lost three times', { requeue: false });
@@ -819,7 +825,7 @@ describe('builds interrupted by a Hub restart', () => {
 
   it('builds dispatched in this process are not treated as interrupted', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     await flush();
     c.reporters[0].building('runner-A');
     expect(await c.service.recoverPending()).toMatchObject({ interrupted: 0 });
@@ -907,21 +913,26 @@ describe('org switch while an operation is in flight', () => {
 
   it('a PR-open event pending across a switch does not touch an overlapping row in the other org', async () => {
     const o = twoOrgs();
+    const SHA_C = 'c'.repeat(40);
     // Org B already has an environment for the same project id and PR number.
     o.switchTo(o.dbB);
-    const seeding = o.service.onPrOpened(project, { ...PR, headSha: SHA_B, headBranch: null });
+    const seedingB = o.service.start(project, PR, openAt(SHA_B));
     await o.release();
-    await seeding;
+    await seedingB;
+    // So does org A, which then gets a push.
     o.switchTo(o.dbA);
+    const seedingA = o.service.start(project, PR, openAt(SHA_A));
+    await o.release();
+    await seedingA;
 
-    const opening = o.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    const opening = o.service.onPrOpened(project, { ...PR, headSha: SHA_C, headBranch: null });
     await flush();
     o.switchTo(o.dbB);
     await o.release();
     await opening;
 
     expect(o.rows(o.dbA)).toEqual([
-      { project_id: 'p1', pr_number: 7, status: 'queued', head_sha: SHA_A },
+      { project_id: 'p1', pr_number: 7, status: 'queued', head_sha: SHA_C },
     ]);
     expect(o.rows(o.dbB)).toEqual([
       { project_id: 'p1', pr_number: 7, status: 'queued', head_sha: SHA_B },
@@ -930,7 +941,7 @@ describe('org switch while an operation is in flight', () => {
 
   it("a build's progress reports land in its own org after a switch", async () => {
     const o = twoOrgs();
-    const opening = o.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    const opening = o.service.start(project, PR, openAt(SHA_A));
     await o.release();
     await opening;
     await flush();
@@ -948,7 +959,7 @@ describe('org switch while an operation is in flight', () => {
 
   it('recovery covers every org this process has touched, not only the active one', async () => {
     const o = twoOrgs();
-    const opening = o.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    const opening = o.service.start(project, PR, openAt(SHA_A));
     await o.release();
     await opening;
     // Org A's env is stopped while its teardown fails, then the user switches.
@@ -961,7 +972,7 @@ describe('org switch while an operation is in flight', () => {
 
   it("recovery of an inactive org's teardown uses that org's project, not the active org's", async () => {
     const o = twoOrgs();
-    const opening = o.service.onPrOpened(o.projectA, { ...PR, headSha: SHA_A, headBranch: null });
+    const opening = o.service.start(o.projectA, PR, openAt(SHA_A));
     await o.release();
     await opening;
     o.runtime.teardown.mockRejectedValueOnce(new Error('daemon down'));
@@ -977,7 +988,7 @@ describe('org switch while an operation is in flight', () => {
   it('pin() captures one org for a whole operation; reads through the pinned service stay there', async () => {
     const o = twoOrgs();
     const pinnedA = o.service.pin();
-    const opening = pinnedA.onPrOpened(o.projectA, { ...PR, headSha: SHA_A, headBranch: null });
+    const opening = pinnedA.start(o.projectA, PR, openAt(SHA_A));
     o.switchTo(o.dbB);
     await o.release();
     await opening;
@@ -1030,14 +1041,9 @@ describe('catch-up covers every trigger', () => {
       getRuntime: () => null,
       log: () => {},
     });
-    await before.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await before.start(project, PR, openAt(SHA_A));
     await before.onPrClosed(project, { ...PR, merged: true });
-    await before.onPrOpened(project, {
-      source: 'native',
-      prNumber: 8,
-      headSha: SHA_B,
-      headBranch: null,
-    });
+    await before.start(project, { source: 'native', prNumber: 8 }, openAt(SHA_B));
 
     const runtime = { build: vi.fn(), teardown: vi.fn() };
     let current = dbA;
@@ -1080,7 +1086,7 @@ describe('catch-up covers every trigger', () => {
       },
       log: () => {},
     });
-    await svc.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await svc.start(project, PR, openAt(SHA_A));
     runtime.teardown.mockRejectedValueOnce(new Error('docker daemon down'));
     await svc.onPrClosed(project, { ...PR, merged: true });
     expect(svc.get('p1', PR)).toMatchObject({ cleanupPending: true });
@@ -1114,10 +1120,10 @@ describe('catch-up re-checks environments against their PRs after a restart', ()
       log: () => {},
     });
     const n = (prNumber: number) => ({ source: 'native' as const, prNumber });
-    await before.onPrOpened(project, { ...n(7), headSha: SHA_A, headBranch: null });
+    await before.start(project, n(7), openAt(SHA_A));
     runtimeBefore = runtime1;
-    await before.onPrOpened(project, { ...n(8), headSha: SHA_A, headBranch: null });
-    await before.onPrOpened(project, { ...n(9), headSha: SHA_A, headBranch: null });
+    await before.start(project, n(8), openAt(SHA_A));
+    await before.start(project, n(9), openAt(SHA_A));
     await flush();
     reporters.forEach((r) => r.ready('http://pr.local'));
     expect(before.get('p1', n(7))).toMatchObject({ status: 'queued' });
@@ -1160,7 +1166,7 @@ describe('catch-up re-checks environments against their PRs after a restart', ()
 
   it('reconcile without an explicit reader uses readPrState', async () => {
     const c = setup();
-    await c.service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await c.service.start(project, PR, openAt(SHA_A));
     const svc = createPrEnvironmentService({
       store: createPrEnvironmentStore(c.db),
       probePreviewConfig: async () => 'present',
@@ -1194,7 +1200,7 @@ describe('catch-up finds PRs whose environment events were lost entirely', () =>
   }
   const n = (prNumber: number) => ({ source: 'native' as const, prNumber });
 
-  it('a PR created just before the restart (no environment row) gets one', async () => {
+  it('an open PR with no environment row is left alone: environments are opt-in', async () => {
     const db = new Database(':memory:');
     db.exec(PR_ENVIRONMENTS_SCHEMA);
     const { svc, runtime } = restartWith(
@@ -1204,7 +1210,28 @@ describe('catch-up finds PRs whose environment events were lost entirely', () =>
     expect(svc.get('p1', n(11))).toBeNull();
     await svc.catchUp();
     await flush();
-    expect(svc.get('p1', n(11))).toMatchObject({ status: 'queued', headSha: SHA_A });
+    expect(svc.get('p1', n(11))).toBeNull();
+    expect(runtime.build).not.toHaveBeenCalled();
+  });
+
+  it('an open PR whose environment exists is moved to its new head on catch-up', async () => {
+    const db = new Database(':memory:');
+    db.exec(PR_ENVIRONMENTS_SCHEMA);
+    const before = createPrEnvironmentService({
+      store: createPrEnvironmentStore(db),
+      probePreviewConfig: async () => 'present',
+      getRuntime: () => ({ build: vi.fn(), teardown: vi.fn() }),
+      log: () => {},
+    });
+    await before.start(project, n(11), openAt(SHA_A, 'fix/new'));
+
+    const { svc, runtime } = restartWith(
+      db,
+      new Map([[11, { status: 'open', headSha: SHA_B, headBranch: 'fix/new' }]]),
+    );
+    await svc.catchUp();
+    await flush();
+    expect(svc.get('p1', n(11))).toMatchObject({ status: 'queued', headSha: SHA_B });
     expect(runtime.build).toHaveBeenCalledTimes(1);
   });
 
@@ -1217,7 +1244,7 @@ describe('catch-up finds PRs whose environment events were lost entirely', () =>
       getRuntime: () => ({ build: vi.fn(), teardown: vi.fn() }),
       log: () => {},
     });
-    await before.onPrOpened(project, { ...n(12), headSha: SHA_A, headBranch: null });
+    await before.start(project, n(12), openAt(SHA_A));
     await before.onPrClosed(project, { ...n(12), merged: false });
     expect(before.get('p1', n(12))).toMatchObject({ status: 'stopped', cleanupPending: false });
 
@@ -1240,7 +1267,7 @@ describe('catch-up finds PRs whose environment events were lost entirely', () =>
       getRuntime: () => ({ build: vi.fn(), teardown: vi.fn() }),
       log: () => {},
     });
-    await before.onPrOpened(project, { ...n(13), headSha: SHA_A, headBranch: null });
+    await before.start(project, n(13), openAt(SHA_A));
     await before.stop(project, n(13));
 
     const { svc, runtime } = restartWith(
@@ -1277,25 +1304,38 @@ describe('the PR is re-checked after every await before anything is built', () =
       getRuntime: () => runtime,
       log: () => {},
     });
+    /** Let the operation reach its probe, then resolve it. */
+    const release = async () => {
+      await flush();
+      releaseProbe('present');
+    };
     return {
       svc,
       runtime,
       probe,
       setPr: (next: PrAuthoritativeState) => (pr = next),
-      /** Let the operation reach its probe, then resolve it. */
-      release: async () => {
+      /** Manually start an environment at the PR's current head. */
+      startNow: async () => {
+        const starting = svc.start(project, n, async () => pr);
+        await release();
+        const res = await starting;
         await flush();
-        releaseProbe('present');
+        return res;
       },
+      release,
     };
   }
 
   for (const merged of [false, true]) {
     it(`a ${merged ? 'merge' : 'close'} during the config probe: reconcile builds nothing and the PR ends stopped`, async () => {
       const h = harness();
+      // An env is running at A; a push to B starts reconciling.
+      expect(await h.startNow()).toMatchObject({ ok: true });
+      expect(h.runtime.build).toHaveBeenCalledTimes(1);
+      h.setPr({ status: 'open', headSha: SHA_B, headBranch: 'fix/x' });
       const syncing = h.svc.reconcile(project, n);
       await flush();
-      expect(h.probe).toHaveBeenCalledTimes(1);
+      expect(h.probe).toHaveBeenCalledTimes(2);
       // The PR row changes while the probe is pending; its own reconcile queues.
       h.setPr({ status: merged ? 'merged' : 'closed' });
       const closing = h.svc.reconcile(project, n);
@@ -1303,8 +1343,8 @@ describe('the PR is re-checked after every await before anything is built', () =
       await syncing;
       const final = await closing;
       await flush();
-      expect(h.runtime.build).not.toHaveBeenCalled();
-      expect(final === null || final.status === 'stopped').toBe(true);
+      expect(h.runtime.build).toHaveBeenCalledTimes(1); // B was never built
+      expect(final).toMatchObject({ status: 'stopped' });
     });
   }
 
@@ -1323,24 +1363,24 @@ describe('the PR is re-checked after every await before anything is built', () =
 
   it('a push during the config probe re-checks the new head instead of building the old one', async () => {
     const h = harness();
+    const SHA_C = 'c'.repeat(40);
+    await h.startNow(); // env at A
+    h.setPr({ status: 'open', headSha: SHA_B, headBranch: 'fix/x' });
     const syncing = h.svc.reconcile(project, n);
     await flush();
-    h.setPr({ status: 'open', headSha: SHA_B, headBranch: 'fix/x' });
-    await h.release(); // probe for A resolves; the PR is now at B
-    await h.release(); // probe for B resolves
+    h.setPr({ status: 'open', headSha: SHA_C, headBranch: 'fix/x' });
+    await h.release(); // probe for B resolves; the PR is now at C
+    await h.release(); // probe for C resolves
     const env = await syncing;
     await flush();
-    expect(env).toMatchObject({ status: 'queued', headSha: SHA_B });
-    expect(h.runtime.build.mock.calls.map((c) => c[0].env.headSha)).toEqual([SHA_B]);
+    expect(env).toMatchObject({ status: 'queued', headSha: SHA_C });
+    expect(h.runtime.build.mock.calls.map((c) => c[0].env.headSha)).toEqual([SHA_A, SHA_C]);
   });
 
   it('a close during a slow teardown blocks the dispatch that would follow it', async () => {
     const h = harness();
     // An env is running at A.
-    const first = h.svc.reconcile(project, n);
-    await h.release();
-    await first;
-    await flush();
+    await h.startNow();
     expect(h.runtime.build).toHaveBeenCalledTimes(1);
 
     // A push to B: the old stack's teardown is slow, and the PR closes meanwhile.
@@ -1373,7 +1413,7 @@ describe('the PR is re-checked after every await before anything is built', () =
       getRuntime: () => null,
       log: () => {},
     });
-    await before.onPrOpened(project, { ...n, headSha: SHA_A, headBranch: null });
+    await before.start(project, n, openAt(SHA_A));
 
     const runtime = { build: vi.fn(), teardown: vi.fn() };
     let fail = true;
@@ -1416,7 +1456,7 @@ describe('the PR is re-checked after every await before anything is built', () =
       }),
       log: () => {},
     });
-    await before.onPrOpened(project, { ...n, headSha: SHA_A, headBranch: null });
+    await before.start(project, n, openAt(SHA_A));
     await flush();
     reporters[0].building('runner-A');
 

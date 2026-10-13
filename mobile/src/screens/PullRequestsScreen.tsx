@@ -444,7 +444,7 @@ export function PrDetail({
   // nor an unchanged response can stop it. Fast while queued/building, slower
   // otherwise, so a server-side rebuild (new head) or teardown shows up
   // without a reload. A head change restarts it with an immediate read.
-  // Nothing auto-starts here; the server queues environments itself.
+  // Polling never starts anything: environments start only from Start.
   const prHeadSha = detail?.headSha ?? null;
   const previewStatusRef = useRef(previewStatus);
   previewStatusRef.current = previewStatus;

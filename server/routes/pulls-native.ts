@@ -439,7 +439,7 @@ registerPath({
   tags: ['Projects'],
   summary: 'Start (or rebuild) the PR environment for a pull request',
   description:
-    "Queues the PR environment at the PR's current head commit. Environments are keyed by the pull request, not by any chat session, so any head branch works. Requires a `preview:` block in `.agent-hub/deploy.yaml` at the head commit. A failed or stopped environment is rebuilt; an active one at the same commit is returned unchanged. Works for Agent Hub-hosted PRs and for GitHub-hosted projects with `githubRepo` set (PR state read from the GitHub API with a project Owner's token). Hub-hosted PRs also queue automatically when they open or their head moves; GitHub-hosted environments start here, and a periodic re-check rebuilds them on new pushes and stops them on merge or close.",
+    "Queues the PR environment at the PR's current head commit. Environments are keyed by the pull request, not by any chat session, so any head branch works. Requires a `preview:` block in `.agent-hub/deploy.yaml` at the head commit. A failed or stopped environment is rebuilt; an active one at the same commit is returned unchanged. Works for Agent Hub-hosted PRs and for GitHub-hosted projects with `githubRepo` set (PR state read from the GitHub API with a project Owner's token). Environments are opt-in: opening a PR never starts one, only this call does. Once started, a new push rebuilds it (immediately for Hub-hosted PRs, on the periodic re-check for GitHub-hosted ones) and a merge or close stops it.",
   request: {
     params: z.object({ projectId: z.string(), number: z.string() }),
     body: {

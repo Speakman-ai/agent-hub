@@ -66,16 +66,31 @@ function setup(
   });
   const pr = (n: number) => ({ source: 'native' as const, prNumber: n });
 
-  /** Open PR `n` at `head` and bring its environment to ready. */
-  async function ready(n: number, head = sha('a')) {
-    prs.set(n, { status: 'open', headSha: head, headBranch: `b${n}` });
-    await service.onPrOpened(project, { ...pr(n), headSha: head, headBranch: `b${n}` });
+  /** Open PR `n` at `head` (if not already) and press Start on it. */
+  function start(n: number, head = sha('a')) {
+    if (!prs.has(n)) prs.set(n, { status: 'open', headSha: head, headBranch: `b${n}` });
+    return service.start(project, pr(n), async () => prs.get(n) ?? null);
+  }
+  /** Bring PR `n`'s latest build to ready. */
+  async function finishBuild(n: number) {
     await flush();
     const b = builds.filter((x) => x.prNumber === n).at(-1)!;
     b.reporter.building();
     b.reporter.ready(`http://127.0.0.1:${4000 + n}`);
   }
-  return { db, project, service, runtime, builds, clock, prs, pr, ready, gate };
+  /** Open PR `n` at `head`, start its environment, and bring it to ready. */
+  async function ready(n: number, head = sha('a')) {
+    prs.set(n, { status: 'open', headSha: head, headBranch: `b${n}` });
+    expect(await start(n, head)).toMatchObject({ ok: true });
+    await finishBuild(n);
+  }
+  /** Push `head` to PR `n` (whose environment exists) and bring the rebuild to ready. */
+  async function push(n: number, head: string) {
+    prs.set(n, { status: 'open', headSha: head, headBranch: `b${n}` });
+    await service.onPrOpened(project, { ...pr(n), headSha: head, headBranch: `b${n}` });
+    await finishBuild(n);
+  }
+  return { db, project, service, runtime, builds, clock, prs, pr, ready, push, start, gate };
 }
 
 describe('cap: eviction order on dispatch', () => {
@@ -122,7 +137,7 @@ describe('sweep: idle TTL and max lifetime', () => {
     const t = setup({ maxLifetimeDays: 3, idleTtlMinutes: 0 });
     await t.ready(1);
     t.clock.now += 2 * DAY;
-    await t.ready(1, sha('b')); // push: rebuild at a new head
+    await t.push(1, sha('b')); // push: rebuild at a new head
     t.clock.now += 2 * DAY;
     expect(await t.service.enforceLimits()).toEqual({ slept: 0, expired: 0 });
     t.clock.now += 2 * DAY;
@@ -266,10 +281,7 @@ describe('concurrent admissions', () => {
     const t = setup({ maxConcurrent: 1 });
     t.prs.set(1, { status: 'open', headSha: sha('a'), headBranch: 'b1' });
     t.prs.set(2, { status: 'open', headSha: sha('a'), headBranch: 'b2' });
-    await Promise.all([
-      t.service.onPrOpened(t.project, { ...t.pr(1), headSha: sha('a'), headBranch: 'b1' }),
-      t.service.onPrOpened(t.project, { ...t.pr(2), headSha: sha('a'), headBranch: 'b2' }),
-    ]);
+    await Promise.all([t.start(1), t.start(2)]);
     await flush();
     await flush();
     expect(live(t)).toHaveLength(1);
@@ -282,10 +294,7 @@ describe('concurrent admissions', () => {
     await t.ready(2); // puts PR 1 to sleep
     await flush();
     t.prs.set(3, { status: 'open', headSha: sha('a'), headBranch: 'b3' });
-    await Promise.all([
-      t.service.wake(t.project, t.pr(1)),
-      t.service.onPrOpened(t.project, { ...t.pr(3), headSha: sha('a'), headBranch: 'b3' }),
-    ]);
+    await Promise.all([t.service.wake(t.project, t.pr(1)), t.start(3)]);
     await flush();
     await flush();
     expect(live(t)).toHaveLength(1);
@@ -321,7 +330,7 @@ describe('cost stops are decided and applied in one step', () => {
     const release = hold(t, 1);
     const busy = t.service.reconcile(t.project, t.pr(1)); // will pick up the push
     t.prs.set(2, { status: 'open', headSha: sha('a'), headBranch: 'b2' });
-    await t.service.onPrOpened(t.project, { ...t.pr(2), headSha: sha('a'), headBranch: 'b2' });
+    await t.start(2);
     expect(t.service.get('p1', t.pr(1))).toMatchObject({ status: 'stopped', stopReason: 'idle' });
     release();
     await busy;
