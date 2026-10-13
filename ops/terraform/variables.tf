@@ -420,6 +420,12 @@ variable "enable_finalize_runners" {
   description = "Stand up the ECS-on-EC2 Finalize runner fleet in this env."
 }
 
+variable "enable_pr_environment_ingress" {
+  type        = bool
+  default     = true
+  description = "With the runner fleet enabled, let the Hub reach PR environment gateway ports (Docker's ephemeral range) on runner instances so pr-<n>--<project>.preview.<domain> can be proxied. Public access still goes through the ALB and the Hub only."
+}
+
 variable "manage_shared_finalize_infra" {
   type        = bool
   default     = false

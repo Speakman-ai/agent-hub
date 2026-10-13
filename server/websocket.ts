@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket as WsClient } from 'ws';
+import { isUpgradeClaimed } from './upgrade-claim.js';
 import type { Server } from 'http';
 import type { IncomingMessage } from 'http';
 import { authenticateWsDetailed } from './auth.js';
@@ -134,6 +135,7 @@ export default function createWebSocket(
     head: Buffer,
   ): void => {
     if (
+      isUpgradeClaimed(request) ||
       parsePreviewProxySessionId(request.url) ||
       parseTerminalWebSocketSessionId(request.url) ||
       parseBrowserScreencastWebSocketSessionId(request.url)

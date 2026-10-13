@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildPreviewSubdomainHost, parsePreviewSubdomainHost } from './preview-subdomain-host.js';
+import {
+  buildPrEnvironmentHost,
+  buildPrEnvironmentPublicUrl,
+  buildPreviewSubdomainHost,
+  parsePrEnvironmentHost,
+  parsePreviewSubdomainHost,
+} from './preview-subdomain-host.js';
 
 const SID = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
 const BASE = 'preview.agenthub.dev.example.com';
@@ -186,5 +192,80 @@ describe('buildPreviewSubdomainHost', () => {
       sessionId: SID,
       internalPort: 8787,
     });
+  });
+});
+
+describe('parsePrEnvironmentHost', () => {
+  it('parses pr-<n>--<project>.<base>', () => {
+    expect(parsePrEnvironmentHost(`pr-42--agent-hub.${BASE}`, BASE)).toEqual({
+      prNumber: 42,
+      projectLabel: 'agent-hub',
+    });
+  });
+
+  it('is case-insensitive and tolerates a port and a trailing dot', () => {
+    expect(parsePrEnvironmentHost(`PR-7--Agent-Hub.${BASE.toUpperCase()}.:443`, BASE)).toEqual({
+      prNumber: 7,
+      projectLabel: 'agent-hub',
+    });
+  });
+
+  it('splits at the first `--`, so a project id containing `--` survives', () => {
+    expect(parsePrEnvironmentHost(`pr-3--my--app.${BASE}`, BASE)).toEqual({
+      prNumber: 3,
+      projectLabel: 'my--app',
+    });
+  });
+
+  it('returns null when ingress is off (no base)', () => {
+    expect(parsePrEnvironmentHost(`pr-1--x.${BASE}`, undefined)).toBeNull();
+    expect(parsePrEnvironmentHost(`pr-1--x.${BASE}`, '')).toBeNull();
+  });
+
+  it.each([
+    [`pr-0--x.${BASE}`, 'PR number zero'],
+    [`pr-01--x.${BASE}`, 'leading zero'],
+    [`pr-1234567890--x.${BASE}`, 'PR number too long'],
+    [`pr-1-x.${BASE}`, 'single hyphen separator'],
+    [`pr-1--.${BASE}`, 'empty project'],
+    [`pr-1--x-.${BASE}`, 'label ends with a hyphen'],
+    [`pr-1--x_y.${BASE}`, 'underscore'],
+    [`a.pr-1--x.${BASE}`, 'nested label'],
+    [`pr-1--x.${BASE}.evil.com`, 'base not at the end'],
+    [`pr-1--x.other-${BASE}`, 'base suffix without a dot boundary'],
+    [BASE, 'bare base'],
+    [`pr-1--${'a'.repeat(60)}.${BASE}`, 'label over 63 chars'],
+    [`${'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d'}.${BASE}`, 'session preview label'],
+  ])('rejects %s (%s)', (host) => {
+    expect(parsePrEnvironmentHost(host, BASE)).toBeNull();
+  });
+
+  it('does not match as a session preview host', () => {
+    expect(parsePreviewSubdomainHost(`pr-42--agent-hub.${BASE}`, BASE)).toBeNull();
+  });
+});
+
+describe('buildPrEnvironmentHost / buildPrEnvironmentPublicUrl', () => {
+  it('round-trips with the parser, lower-casing the project id', () => {
+    const host = buildPrEnvironmentHost(12, 'Agent-Hub', BASE);
+    expect(host).toBe(`pr-12--agent-hub.${BASE}`);
+    expect(parsePrEnvironmentHost(host, BASE)).toEqual({ prNumber: 12, projectLabel: 'agent-hub' });
+  });
+
+  it('returns null without a base or when the label is not DNS-safe', () => {
+    expect(buildPrEnvironmentHost(1, 'x', null)).toBeNull();
+    expect(buildPrEnvironmentHost(1, 'x-', BASE)).toBeNull();
+    expect(buildPrEnvironmentHost(1, 'a'.repeat(60), BASE)).toBeNull();
+    expect(buildPrEnvironmentHost(0, 'x', BASE)).toBeNull();
+  });
+
+  it('uses https by default and follows the Hub public URL scheme and port', () => {
+    expect(buildPrEnvironmentPublicUrl(5, 'demo', BASE, null)).toBe(`https://pr-5--demo.${BASE}/`);
+    expect(buildPrEnvironmentPublicUrl(5, 'demo', BASE, 'https://agenthub.example.com')).toBe(
+      `https://pr-5--demo.${BASE}/`,
+    );
+    expect(
+      buildPrEnvironmentPublicUrl(5, 'demo', 'preview.hub.localhost', 'http://hub.localhost:3051'),
+    ).toBe('http://pr-5--demo.preview.hub.localhost:3051/');
   });
 });

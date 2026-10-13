@@ -33,6 +33,7 @@
  * so read-only shared visibility is not enough.
  */
 
+import { isUpgradeClaimed } from './upgrade-claim.js';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
@@ -218,6 +219,7 @@ export function attachBrowserScreencastWebSocket(
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxPayloadBytes });
 
   const onUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
+    if (isUpgradeClaimed(request)) return;
     const sessionId = parseBrowserScreencastWebSocketSessionId(request.url);
     if (!sessionId) return;
 

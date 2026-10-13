@@ -26,6 +26,7 @@
  * predicate before the HTTP upgrade is accepted.
  */
 
+import { isUpgradeClaimed } from '../upgrade-claim.js';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'node:http';
 import type { IncomingMessage } from 'node:http';
@@ -190,6 +191,7 @@ export function attachTerminalWebSocket(
   const wss = new WebSocketServer({ noServer: true, maxPayload: maxPayloadBytes });
 
   const onUpgrade = (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
+    if (isUpgradeClaimed(request)) return;
     const sessionId = parseTerminalWebSocketSessionId(request.url);
     if (!sessionId) return;
 

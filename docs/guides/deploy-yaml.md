@@ -72,6 +72,27 @@ the PR page on web and mobile renders the same.
 
 PR environments cover Agent Hub-hosted PRs.
 
+### URL
+
+With wildcard preview ingress configured (`AGENT_HUB_PREVIEW_SUBDOMAIN_BASE`,
+which Terraform sets when `enable_preview_subdomain = true`), each environment
+is served at `https://pr-<n>--<project>.<previewBase>/`. The Hub proxies that
+host to the environment's runner, so the app runs at `/` (absolute asset paths
+work with no base-path config) and websockets are proxied. The URL is stable
+across rebuilds of the same PR. It needs no Hub login; the app's own auth
+applies. A queued, building, failed, stopped, or unknown environment answers
+with a status page instead of a proxy error. So does an app that does not send response headers within 55 seconds (just under
+the ALB's 60-second idle timeout; override with `AGENT_HUB_PR_ENV_RESPONSE_TIMEOUT_MS`).
+Only the headers are bounded; a response that has started can stream for as long as it needs.
+
+Without a preview base (a local or dev Hub), the URL is the direct upstream,
+`http://localhost:<port>`.
+
+On the runner fleet, the Hub reaches environments on the runners' private IPs.
+Terraform opens Docker's ephemeral port range (32768-60999) on the runner
+security group to the Hub's security group only
+(`enable_pr_environment_ingress`, on by default with the fleet).
+
 ### Secrets
 
 `secrets` lists names only. Values live in the project secrets store

@@ -34,6 +34,31 @@ resource "aws_security_group" "runner" {
   tags = merge(var.tags, { Name = "${local.name}-sg" })
 }
 
+# PR environments: the Hub proxies `pr-<n>--<project>.preview.<domain>` to the
+# gateway port an environment container publishes on its runner's private IP.
+# Standalone rule (not inline): the SG above declares no inline ingress, so
+# Terraform leaves ingress unmanaged there and this rule is not revoked.
+resource "aws_vpc_security_group_ingress_rule" "runner_environment_from_hub" {
+  # count on a plan-time bool (not for_each over the SG id) so a fresh apply,
+  # where the Hub SG id is still unknown, can plan.
+  count = var.environment_ingress_enabled ? 1 : 0
+
+  security_group_id            = aws_security_group.runner.id
+  description                  = "PR environment gateway ports from the Hub"
+  ip_protocol                  = "tcp"
+  from_port                    = var.environment_port_range.from
+  to_port                      = var.environment_port_range.to
+  referenced_security_group_id = var.hub_security_group_id
+  tags                         = var.tags
+
+  lifecycle {
+    precondition {
+      condition     = trimspace(var.hub_security_group_id) != ""
+      error_message = "environment_ingress_enabled requires hub_security_group_id."
+    }
+  }
+}
+
 resource "aws_ecs_cluster" "fleet" {
   name = local.name
   setting {

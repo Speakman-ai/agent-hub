@@ -48,6 +48,11 @@ module "finalize_runners" {
   )
   fleet_token_secret_arn = local.finalize_fleet_token_secret_arn_effective
 
+  # PR environments: the Hub proxies pr-<n>--<project>.preview.<domain> to
+  # gateway ports published on runner private IPs.
+  environment_ingress_enabled = var.enable_pr_environment_ingress
+  hub_security_group_id       = aws_security_group.instance.id
+
   manage_shared_finalize_infra = var.manage_shared_finalize_infra
   cache_bucket_name            = var.finalize_cache_bucket_name
   worktree_bucket_name         = var.finalize_worktree_bucket_name

@@ -176,3 +176,110 @@ export function buildPreviewSubdomainHost(
   if (parsePortPrefix(String(internalPort)) === null) return null;
   return `${internalPort}${PORT_SEPARATOR}${label}.${cleanBase}`;
 }
+
+/**
+ * PR environment hostnames: `pr-<n>--<project>.<base>`.
+ *
+ * Same wildcard base as session previews, so one certificate and one DNS
+ * record serve both. The `pr-` prefix can never collide with a session label
+ * (those are a UUID, optionally `<port>--<uuid>`). The PR number is digits
+ * only, so the first `--` is always the separator even when the project id
+ * itself contains `--`.
+ *
+ * Project ids are `[A-Za-z0-9-]+`; hostnames are case-insensitive, so the
+ * parsed project label is lower-case and the caller resolves it against
+ * project ids case-insensitively.
+ */
+const PR_ENV_LABEL_RE = /^pr-([1-9][0-9]{0,8})--([a-z0-9-]+)$/;
+
+/** DNS label limit (RFC 1035). */
+const MAX_DNS_LABEL = 63;
+
+/** Which PR environment a hostname addresses. */
+export interface PrEnvironmentHostTarget {
+  prNumber: number;
+  /** Lower-cased project id as it appears in the hostname. */
+  projectLabel: string;
+}
+
+function cleanSubdomainBase(base: string | undefined | null): string | null {
+  if (!base) return null;
+  const clean = stripPort(base.trim().toLowerCase()).replace(/^\.+|\.+$/g, '');
+  return clean || null;
+}
+
+function isValidPrEnvironmentLabel(label: string): boolean {
+  return label.length <= MAX_DNS_LABEL && !label.endsWith('-') && PR_ENV_LABEL_RE.test(label);
+}
+
+/**
+ * Resolve `host` to the PR environment it addresses, or `null` when it is not
+ * a PR environment hostname under `base` (or `base` is unset). Same strictness
+ * as {@link parsePreviewSubdomainHost}: exactly one label under the base.
+ */
+export function parsePrEnvironmentHost(
+  host: string | string[] | undefined | null,
+  base: string | undefined | null,
+): PrEnvironmentHostTarget | null {
+  const cleanBase = cleanSubdomainBase(base);
+  if (!cleanBase) return null;
+  if (typeof host !== 'string' || host.length === 0) return null;
+  const cleanHost = stripPort(host.trim().toLowerCase()).replace(/\.+$/, '');
+  if (cleanHost.length <= cleanBase.length + 1) return null;
+  if (!cleanHost.endsWith(`.${cleanBase}`)) return null;
+  const label = cleanHost.slice(0, cleanHost.length - cleanBase.length - 1);
+  if (label.includes('.')) return null;
+  if (!isValidPrEnvironmentLabel(label)) return null;
+  const m = label.match(PR_ENV_LABEL_RE);
+  if (!m?.[1] || !m[2]) return null;
+  return { prNumber: Number(m[1]), projectLabel: m[2] };
+}
+
+/**
+ * Build `pr-<n>--<project>.<base>`. Returns `null` when the base is unset or
+ * the label would not be a valid DNS label (project id too long, or ending in
+ * a hyphen); callers then fall back to the direct upstream URL.
+ */
+export function buildPrEnvironmentHost(
+  prNumber: number,
+  projectId: string,
+  base: string | undefined | null,
+): string | null {
+  const cleanBase = cleanSubdomainBase(base);
+  if (!cleanBase) return null;
+  if (!Number.isInteger(prNumber) || prNumber < 1) return null;
+  const label = `pr-${prNumber}--${projectId.toLowerCase()}`;
+  if (!isValidPrEnvironmentLabel(label)) return null;
+  return `${label}.${cleanBase}`;
+}
+
+/**
+ * Public URL for a PR environment: `<scheme>://pr-<n>--<project>.<base>/`.
+ * The scheme and any non-default port follow the Hub's public URL (a local
+ * Docker Hub on `http://hub.localhost:3051` keeps http and :3051); with no
+ * public URL the scheme is https. `null` when no hostname can be built.
+ */
+export function buildPrEnvironmentPublicUrl(
+  prNumber: number,
+  projectId: string,
+  base: string | undefined | null,
+  publicUrl: string | undefined | null,
+): string | null {
+  const host = buildPrEnvironmentHost(prNumber, projectId, base);
+  if (!host) return null;
+  let scheme = 'https:';
+  let port = '';
+  const raw = typeof publicUrl === 'string' ? publicUrl.trim() : '';
+  if (raw) {
+    try {
+      const u = new URL(raw);
+      if (u.protocol === 'http:' || u.protocol === 'https:') {
+        scheme = u.protocol;
+        port = u.port;
+      }
+    } catch {
+      // Unparseable public URL: keep https with no port.
+    }
+  }
+  return `${scheme}//${host}${port ? `:${port}` : ''}/`;
+}

@@ -4596,6 +4596,14 @@ export interface RouteDeps {
    * work stays in the org the request started in.
    */
   prEnvironments?: import('./preview/pr-environments.js').OrgScopedPrEnvironmentService<Stmts>;
+  /**
+   * Swap an environment's internal upstream URL for its public
+   * `pr-<n>--<project>.<previewBase>` URL before it leaves the server.
+   * Identity when wildcard ingress is not configured.
+   */
+  presentPrEnvironment?: (
+    env: import('./preview/pr-environments.js').PrEnvironmentDto,
+  ) => import('./preview/pr-environments.js').PrEnvironmentDto;
   findProject: (projectId: string) => Project | null;
   findAgent: (agentId: string) => AgentLookup | null;
   getEnrichedAgent: (agentId: string) => EnrichedAgent | null;

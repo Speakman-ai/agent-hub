@@ -15,6 +15,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { Project, PullRequestRow, RouteDeps } from '../types.js';
 import { readNativePrState } from '../preview/pr-environment-native.js';
+import type { PrEnvironmentDto } from '../preview/pr-environments.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { isAgentHubHosted, bareRepoPath, hostedRepoExists } from '../native-pr/host.js';
 import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
@@ -402,7 +403,12 @@ const PrEnvironmentSchema = z.object({
   headSha: z.string(),
   headBranch: z.string().nullable(),
   status: z.enum(['queued', 'building', 'ready', 'failed', 'stopped']),
-  url: z.string().nullable(),
+  url: z
+    .string()
+    .nullable()
+    .describe(
+      'Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.',
+    ),
   error: z.string().nullable(),
   stopReason: z.enum(['merged', 'closed', 'manual', 'no_preview_config']).nullable(),
   runnerRef: z.string().nullable(),
@@ -1131,6 +1137,10 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
   // state and head come from the PR row and the hosted ref.
   type PreviewCtx = { project: Project; number: number; source: 'native'; pr: PullRequestRow };
 
+  // Clients get the public environment URL, never the internal upstream.
+  const present = (env: PrEnvironmentDto): PrEnvironmentDto =>
+    deps.presentPrEnvironment ? deps.presentPrEnvironment(env) : env;
+
   const resolvePreviewContext = (req: Request, res: Response): PreviewCtx | null => {
     const ctx = resolveActionContext(req, res);
     if (!ctx) return null;
@@ -1180,7 +1190,7 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
             .status(result.reason === 'not_found' ? 404 : 409)
             .json({ error: result.error });
         }
-        return res.json({ ok: true, environment: result.environment });
+        return res.json({ ok: true, environment: present(result.environment) });
       } catch (err: unknown) {
         return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -1198,7 +1208,11 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       try {
         const environment = await service.stop(ctx.project, pr);
         const stopped = Boolean(before && before.status !== 'stopped');
-        return res.json({ ok: true, stopped, environment });
+        return res.json({
+          ok: true,
+          stopped,
+          environment: environment ? present(environment) : environment,
+        });
       } catch (err: unknown) {
         return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -1214,7 +1228,7 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
         source: ctx.source,
         prNumber: ctx.number,
       });
-      return res.json({ environment });
+      return res.json({ environment: environment ? present(environment) : null });
     },
   );
 

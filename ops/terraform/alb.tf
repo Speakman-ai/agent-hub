@@ -410,3 +410,26 @@ resource "aws_route53_record" "preview_wildcard_alias" {
     aws_acm_certificate_validation.preview_wildcard,
   ]
 }
+
+# Explicit host-header rule for the preview wildcard. Today the listener's
+# default action already forwards to the Hub, so this is behavior-neutral; it
+# pins `*.preview.<alb_fqdn>` (session previews and PR environments at
+# `pr-<n>--<project>.preview.<alb_fqdn>`) to the Hub if the default action ever
+# changes. The Hub dispatches by Host header from there.
+resource "aws_lb_listener_rule" "preview_wildcard" {
+  count = local.preview_subdomain_create ? 1 : 0
+
+  listener_arn = aws_lb_listener.agenthub_https[0].arn
+  priority     = 100
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.agenthub[0].arn
+  }
+
+  condition {
+    host_header {
+      values = [local.preview_wildcard_fqdn]
+    }
+  }
+}

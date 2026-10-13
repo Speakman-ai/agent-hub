@@ -45,7 +45,13 @@ beforeEach(() => {
 const SHA = 'd'.repeat(40);
 const SHA2 = 'e'.repeat(40);
 
-function setup(opts: { hasConfig?: boolean; prStatus?: string } = {}) {
+function setup(
+  opts: {
+    hasConfig?: boolean;
+    prStatus?: string;
+    presentPrEnvironment?: RouteDeps['presentPrEnvironment'];
+  } = {},
+) {
   const db = new Database(':memory:');
   db.exec(PR_ENVIRONMENTS_SCHEMA);
   const runtime = { build: vi.fn(), teardown: vi.fn() };
@@ -91,6 +97,7 @@ function setup(opts: { hasConfig?: boolean; prStatus?: string } = {}) {
     stmts,
     broadcast: vi.fn(),
     config: {},
+    presentPrEnvironment: opts.presentPrEnvironment,
   } as unknown as RouteDeps;
   const app = express();
   app.use(express.json());
@@ -99,6 +106,30 @@ function setup(opts: { hasConfig?: boolean; prStatus?: string } = {}) {
 }
 
 describe('native PR environment routes', () => {
+  it('serves the public wildcard URL, never the runner upstream', async () => {
+    const { presentPrEnvironmentUrl } = await import('../preview/pr-environment-proxy.js');
+    const { app, runtime } = setup({
+      presentPrEnvironment: (env) =>
+        presentPrEnvironmentUrl(
+          env,
+          'preview.agenthub.example.com',
+          'https://agenthub.example.com',
+        ),
+    });
+    await request(app).post('/api/projects/hosted/pulls/5/preview/start').send({});
+    await new Promise((r) => setTimeout(r, 0));
+    const reporter = runtime.build.mock.calls[0]![0].reporter;
+    reporter.building('ref-1');
+    reporter.ready('http://10.0.3.7:41234');
+
+    const state = await request(app).get('/api/projects/hosted/pulls/5/preview/state');
+    expect(state.body.environment).toMatchObject({
+      status: 'ready',
+      url: 'https://pr-5--hosted.preview.agenthub.example.com/',
+    });
+    expect(JSON.stringify(state.body)).not.toContain('10.0.3.7');
+  });
+
   it('start queues an env for a hand-named head branch (no session involved)', async () => {
     const { app, runtime } = setup();
     const res = await request(app).post('/api/projects/hosted/pulls/5/preview/start').send({});

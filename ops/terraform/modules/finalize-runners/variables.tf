@@ -156,3 +156,24 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+# ── PR environments (Hub → runner upstream reachability) ────────────────────
+variable "environment_ingress_enabled" {
+  type        = bool
+  default     = false
+  description = "Allow the Hub to reach PR environment gateway ports published on runner instances. false = the fleet stays egress-only."
+}
+
+variable "hub_security_group_id" {
+  type        = string
+  default     = ""
+  description = "Security group of the Hub instance (source of the PR environment ingress rule). Required when environment_ingress_enabled."
+}
+
+variable "environment_port_range" {
+  type = object({ from = number, to = number })
+  # Docker publishes `-p <port>` (no host port) on the kernel's ephemeral
+  # range, net.ipv4.ip_local_port_range, which defaults to 32768-60999.
+  default     = { from = 32768, to = 60999 }
+  description = "Host port range PR environment gateway ports are published on."
+}

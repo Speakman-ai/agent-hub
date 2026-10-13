@@ -43870,6 +43870,7 @@ paths:
                       url:
                         type: string
                         nullable: true
+                        description: Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.
                       error:
                         type: string
                         nullable: true
@@ -44028,6 +44029,7 @@ paths:
                       url:
                         type: string
                         nullable: true
+                        description: Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.
                       error:
                         type: string
                         nullable: true
@@ -44170,6 +44172,7 @@ paths:
                       url:
                         type: string
                         nullable: true
+                        description: Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.
                       error:
                         type: string
                         nullable: true

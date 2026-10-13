@@ -6,6 +6,7 @@
  * WebSocket upgrades (Vite HMR, Angular live reload) are tunneled on the
  * same path prefix.
  */
+import { isUpgradeClaimed } from '../upgrade-claim.js';
 import http from 'node:http';
 import type { Server } from 'node:http';
 import net from 'node:net';
@@ -456,6 +457,7 @@ export function attachPreviewProxyUpgrade(
   opts?: { subdomainBase?: string | null },
 ): void {
   server.prependListener('upgrade', (req, socket, head) => {
+    if (isUpgradeClaimed(req)) return;
     // Subdomain dispatch — only fires when `opts.subdomainBase` is set
     // AND the Host matches `<uuid>.<base>`. Mirrors the HTTP middleware
     // in server/index.ts (same parser, same rewrite shape) so the WS

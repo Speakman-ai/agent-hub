@@ -44,6 +44,7 @@ import {
   createOrgScopedPrEnvironmentService,
   createPrEnvironmentService,
   type PrEnvironmentOrgContext,
+  type PrEnvironmentDto,
   createPrEnvironmentStore,
   onPrEnvironmentRuntimeRegistered,
 } from './preview/pr-environments.js';
@@ -373,6 +374,13 @@ import { attachTerminalWebSocket } from './terminal/terminal-websocket.js';
 import { attachBrowserScreencastWebSocket } from './browser-screencast-websocket.js';
 import { effectiveBrowserToolsEnabled } from './browser-agent-settings.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
+import {
+  attachPrEnvironmentUpgrade,
+  createPrEnvironmentProxyMiddleware,
+  presentPrEnvironmentUrl,
+  responseHeaderTimeoutFromEnv,
+  type PrEnvironmentProxyDeps,
+} from './preview/pr-environment-proxy.js';
 import { previewSubdomainRewrittenUrl } from './preview/preview-public-url.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import {
@@ -722,6 +730,32 @@ app.set('trust proxy', trustProxyValueFromEnv());
 // before they reach the router, where Express's `decode_param` would
 // throw an unhandled `URIError`. See ./uri-error-handler.ts.
 app.use(uriDecodeGuard);
+
+// PR environment ingress: `pr-<n>--<project>.<previewSubdomainBase>` is
+// reverse-proxied to the environment's upstream. Before CORS and the body
+// parsers, so the PR app's own preflights and request bodies pass through
+// untouched. Public by design; see server/preview/pr-environment-proxy.ts.
+const prEnvironmentProxyDeps: PrEnvironmentProxyDeps = {
+  getBase: () => config.previewSubdomainBase,
+  responseHeaderTimeoutMs: responseHeaderTimeoutFromEnv(),
+  lookup: ({ projectLabel, prNumber }) => {
+    // Hostnames are lower-case; project ids may not be.
+    const project =
+      findProject(projectLabel) ??
+      getProjects().find((p) => p.id.toLowerCase() === projectLabel) ??
+      null;
+    if (!project) return null;
+    const env = prEnvironments.get(project.id, { source: 'native', prNumber });
+    if (!env) return null;
+    return {
+      projectId: project.id,
+      status: env.status,
+      upstreamUrl: env.url,
+      stopReason: env.stopReason,
+    };
+  },
+};
+app.use(createPrEnvironmentProxyMiddleware(prEnvironmentProxyDeps));
 app.use(cors(corsOptions));
 
 let _broadcast: BroadcastFn;
@@ -959,7 +993,20 @@ const prEnvironments = createOrgScopedPrEnvironmentService({
             .prepare("SELECT project_id, number FROM pull_requests WHERE status = 'open'")
             .all() as Array<{ project_id: string; number: number }>
         ).map((r) => ({ projectId: r.project_id, prNumber: r.number })),
-      broadcast,
+      // Clients get the public `pr-<n>--<project>` URL, not the upstream.
+      broadcast: (data) =>
+        broadcast(
+          data.type === 'pr_environment_update' && data.environment
+            ? {
+                ...data,
+                environment: presentPrEnvironmentUrl(
+                  data.environment as PrEnvironmentDto,
+                  config.previewSubdomainBase,
+                  config.publicUrl,
+                ),
+              }
+            : data,
+        ),
     }),
 });
 // Catch up on what the active org owes from before a restart (environment
@@ -1974,6 +2021,8 @@ export const routeDeps: RouteDeps = {
   broadcast,
   nativePr,
   prEnvironments,
+  presentPrEnvironment: (env) =>
+    presentPrEnvironmentUrl(env, config.previewSubdomainBase, config.publicUrl),
   findProject,
   findAgent,
   getEnrichedAgent,
@@ -2433,6 +2482,9 @@ attachDefaultPreviewProxyUpgrade(
   },
   { subdomainBase: config.previewSubdomainBase },
 );
+// Prepended after the session-preview listener so it runs first and claims
+// PR environment sockets before any path-routed handler sees them.
+attachPrEnvironmentUpgrade(server, prEnvironmentProxyDeps);
 
 const chatHandler = createChatHandler({
   broadcast,
