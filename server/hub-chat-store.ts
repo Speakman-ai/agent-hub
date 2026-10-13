@@ -429,3 +429,22 @@ export function getChannelSummary(channelId: string, userId: string): HubChatCha
     .get(channelId, userId) as HubChatChannelSummary | undefined;
   return row ?? null;
 }
+
+/** Highest seq in the channel, 0 when empty. */
+export function getChannelTailSeq(channelId: string): number {
+  return lastSeq(db(), channelId);
+}
+
+/** Public, unarchived channels in an org that the user has not joined. */
+export function listJoinableChannels(orgId: string, userId: string): HubChatChannelRow[] {
+  return db()
+    .prepare(
+      `SELECT c.* FROM hub_chat_channels c
+       WHERE c.org_id = ? AND c.is_private = 0 AND c.archived_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM hub_chat_members m WHERE m.channel_id = c.id AND m.user_id = ?
+         )
+       ORDER BY c.name COLLATE NOCASE, c.id`,
+    )
+    .all(orgId, userId) as HubChatChannelRow[];
+}

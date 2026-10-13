@@ -7508,6 +7508,213 @@ components:
       required:
         - error
       description: Error envelope for hook routes.
+    HubChatErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+      required:
+        - error
+      description: Error envelope for chat routes.
+    HubChatChannel:
+      type: object
+      properties:
+        id:
+          type: string
+        orgId:
+          type: string
+        kind:
+          type: string
+          enum:
+            - dm
+            - group
+            - channel
+            - trigger
+            - agent
+            - summary
+        name:
+          type: string
+          description: Empty for DMs; render the peer instead.
+        topic:
+          type: string
+          nullable: true
+        isPrivate:
+          type: boolean
+        projectId:
+          type: string
+          nullable: true
+        agentId:
+          type: string
+          nullable: true
+        dmPeerUserId:
+          type: string
+          nullable: true
+          description: For DMs, the other participant's user id (the caller's own id for a self-DM).
+        createdByUserId:
+          type: string
+          nullable: true
+        archivedAt:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        lastSeq:
+          type: integer
+          description: Highest message seq in the channel.
+        membership:
+          type: object
+          nullable: true
+          properties:
+            role:
+              type: string
+              enum:
+                - owner
+                - member
+            lastReadSeq:
+              type: integer
+            notifyLevel:
+              type: string
+              enum:
+                - all
+                - mentions
+                - none
+            mutedUntil:
+              type: string
+              nullable: true
+          required:
+            - role
+            - lastReadSeq
+            - notifyLevel
+            - mutedUntil
+          description: Null when the caller is not a member (a public channel they can join).
+        unreadCount:
+          type: integer
+        mentionCount:
+          type: integer
+      required:
+        - id
+        - orgId
+        - kind
+        - name
+        - topic
+        - isPrivate
+        - projectId
+        - agentId
+        - dmPeerUserId
+        - createdByUserId
+        - archivedAt
+        - createdAt
+        - lastSeq
+        - membership
+        - unreadCount
+        - mentionCount
+      description: A chat channel as seen by the caller, with their unread state.
+    HubChatMember:
+      type: object
+      properties:
+        userId:
+          type: string
+        username:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum:
+            - owner
+            - member
+        joinedAt:
+          type: string
+      required:
+        - userId
+        - username
+        - role
+        - joinedAt
+    HubChatMessage:
+      type: object
+      properties:
+        id:
+          type: string
+        channelId:
+          type: string
+        seq:
+          type: integer
+        authorKind:
+          type: string
+          enum:
+            - user
+            - agent
+            - system
+            - trigger
+        authorUserId:
+          type: string
+          nullable: true
+        authorAgentId:
+          type: string
+          nullable: true
+        body:
+          type: string
+          description: Markdown. Empty once deleted.
+        refs:
+          type: array
+          items:
+            type: object
+            properties:
+              kind:
+                type: string
+                enum:
+                  - user
+                  - agent
+                  - session
+                  - card
+                  - ticket
+                  - pr
+              targetId:
+                type: string
+              projectId:
+                type: string
+                nullable: true
+            required:
+              - kind
+              - targetId
+        payload:
+          nullable: true
+          description: Structured card payload for trigger and summary messages.
+        editedAt:
+          type: string
+          nullable: true
+        deletedAt:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+      required:
+        - id
+        - channelId
+        - seq
+        - authorKind
+        - authorUserId
+        - authorAgentId
+        - body
+        - refs
+        - editedAt
+        - deletedAt
+        - createdAt
+      description: One chat message. Deleted messages keep their seq.
+    HubChatOrgMember:
+      type: object
+      properties:
+        userId:
+          type: string
+        username:
+          type: string
+        role:
+          type: string
+      required:
+        - userId
+        - username
+        - role
     InfraAlertRoutingEntry:
       type: object
       properties:
@@ -35065,6 +35272,925 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HooksErrorResponse"
+  /api/chat/members:
+    get:
+      tags:
+        - Hub Chat
+      summary: List org members (DM and invite picker)
+      responses:
+        "200":
+          description: Members of the active org.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatOrgMember"
+                required:
+                  - members
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels:
+    get:
+      tags:
+        - Hub Chat
+      summary: List the caller's channels with unread and mention counts
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+          required: false
+          name: includeArchived
+          in: query
+      responses:
+        "200":
+          description: Channels the caller belongs to in the active org.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channels:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatChannel"
+                required:
+                  - channels
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+    post:
+      tags:
+        - Hub Chat
+      summary: Create a channel or group
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                kind:
+                  type: string
+                  enum:
+                    - channel
+                    - group
+                  default: channel
+                name:
+                  type: string
+                  maxLength: 80
+                topic:
+                  type: string
+                  nullable: true
+                  maxLength: 250
+                isPrivate:
+                  type: boolean
+                  description: Channels only; groups are always private.
+                memberUserIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  maxItems: 100
+              additionalProperties: false
+      responses:
+        "201":
+          description: Created; the caller is the owner.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channel:
+                    $ref: "#/components/schemas/HubChatChannel"
+                required:
+                  - channel
+        "400":
+          description: Validation failed, or a member is not in the org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/browse:
+    get:
+      tags:
+        - Hub Chat
+      summary: List public channels the caller can join
+      responses:
+        "200":
+          description: Public, unarchived channels in the active org the caller has not joined.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channels:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatChannel"
+                required:
+                  - channels
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/dms:
+    post:
+      tags:
+        - Hub Chat
+      summary: Open (get or create) a DM with an org member
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId:
+                  type: string
+                  minLength: 1
+              required:
+                - userId
+              additionalProperties: false
+      responses:
+        "200":
+          description: The existing DM.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channel:
+                    $ref: "#/components/schemas/HubChatChannel"
+                required:
+                  - channel
+        "201":
+          description: A new DM.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channel:
+                    $ref: "#/components/schemas/HubChatChannel"
+                required:
+                  - channel
+        "400":
+          description: The user is not a member of the org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/{channelId}:
+    get:
+      tags:
+        - Hub Chat
+      summary: Get a channel and its members
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+      responses:
+        "200":
+          description: The channel.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channel:
+                    $ref: "#/components/schemas/HubChatChannel"
+                  members:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatMember"
+                required:
+                  - channel
+                  - members
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/{channelId}/join:
+    post:
+      tags:
+        - Hub Chat
+      summary: Join a public channel
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+      responses:
+        "200":
+          description: Joined (idempotent).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channel:
+                    $ref: "#/components/schemas/HubChatChannel"
+                required:
+                  - channel
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: The channel is archived.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/{channelId}/members:
+    post:
+      tags:
+        - Hub Chat
+      summary: Add members to a channel or group
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  minItems: 1
+                  maxItems: 100
+              required:
+                - userIds
+              additionalProperties: false
+      responses:
+        "200":
+          description: The updated member list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatMember"
+                required:
+                  - members
+        "400":
+          description: A user is not in the org, or the channel is a DM.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/{channelId}/members/{userId}:
+    delete:
+      tags:
+        - Hub Chat
+      summary: Leave a channel, or remove a member (channel owners only)
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+        - schema:
+            type: string
+            description: User id.
+          required: true
+          description: User id.
+          name: userId
+          in: path
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: DM membership cannot change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/{channelId}/messages:
+    get:
+      tags:
+        - Hub Chat
+      summary: Page messages by seq
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+        - schema:
+            type: integer
+            minimum: 1
+            description: Return the messages immediately before this seq (scroll back).
+          required: false
+          description: Return the messages immediately before this seq (scroll back).
+          name: before
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            description: Return the messages immediately after this seq (catch up).
+          required: false
+          description: Return the messages immediately after this seq (catch up).
+          name: after
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            description: Page size, 1..100 (default 50).
+          required: false
+          description: Page size, 1..100 (default 50).
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Messages in ascending seq. hasMore says whether another page exists in the requested direction.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatMessage"
+                  hasMore:
+                    type: boolean
+                required:
+                  - messages
+                  - hasMore
+        "400":
+          description: Invalid pagination query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+    post:
+      tags:
+        - Hub Chat
+      summary: Post a message
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body:
+                  type: string
+                  maxLength: 20000
+              required:
+                - body
+              additionalProperties: false
+      responses:
+        "201":
+          description: Posted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    $ref: "#/components/schemas/HubChatMessage"
+                required:
+                  - message
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: The channel is archived, or the caller has not joined it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/messages/{messageId}:
+    patch:
+      tags:
+        - Hub Chat
+      summary: Edit your own message
+      parameters:
+        - schema:
+            type: string
+            description: Message id.
+          required: true
+          description: Message id.
+          name: messageId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body:
+                  type: string
+                  maxLength: 20000
+              required:
+                - body
+              additionalProperties: false
+      responses:
+        "200":
+          description: Edited.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    $ref: "#/components/schemas/HubChatMessage"
+                required:
+                  - message
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Not in the active org, or the message was written by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Message not found, already deleted, or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+    delete:
+      tags:
+        - Hub Chat
+      summary: Delete your own message (soft delete)
+      parameters:
+        - schema:
+            type: string
+            description: Message id.
+          required: true
+          description: Message id.
+          name: messageId
+          in: path
+      responses:
+        "200":
+          description: Deleted; the row keeps its seq.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    $ref: "#/components/schemas/HubChatMessage"
+                required:
+                  - message
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Not in the active org, or the message was written by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Message not found, already deleted, or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/{channelId}/read:
+    post:
+      tags:
+        - Hub Chat
+      summary: Mark a channel read
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                seq:
+                  type: integer
+                  minimum: 0
+                  description: Read up to this seq. Defaults to the channel tail. Never moves backwards.
+              additionalProperties: false
+      responses:
+        "200":
+          description: The resulting read pointer.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lastReadSeq:
+                    type: integer
+                required:
+                  - lastReadSeq
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/{channelId}/notify-level:
+    put:
+      tags:
+        - Hub Chat
+      summary: Set the notification level for a channel
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notifyLevel:
+                  type: string
+                  enum:
+                    - all
+                    - mentions
+                    - none
+              required:
+                - notifyLevel
+              additionalProperties: false
+      responses:
+        "200":
+          description: Updated membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  membership:
+                    type: object
+                    properties:
+                      role:
+                        type: string
+                        enum:
+                          - owner
+                          - member
+                      lastReadSeq:
+                        type: integer
+                      notifyLevel:
+                        type: string
+                        enum:
+                          - all
+                          - mentions
+                          - none
+                      mutedUntil:
+                        type: string
+                        nullable: true
+                    required:
+                      - role
+                      - lastReadSeq
+                      - notifyLevel
+                      - mutedUntil
+                    description: The caller's membership in the channel.
+                required:
+                  - membership
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/{channelId}/mute:
+    put:
+      tags:
+        - Hub Chat
+      summary: Mute a channel until a time, or unmute it
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mutedUntil:
+                  type: string
+                  nullable: true
+                  format: date-time
+                  description: ISO timestamp the mute expires; null unmutes.
+              required:
+                - mutedUntil
+              additionalProperties: false
+      responses:
+        "200":
+          description: Updated membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  membership:
+                    type: object
+                    properties:
+                      role:
+                        type: string
+                        enum:
+                          - owner
+                          - member
+                      lastReadSeq:
+                        type: integer
+                      notifyLevel:
+                        type: string
+                        enum:
+                          - all
+                          - mentions
+                          - none
+                      mutedUntil:
+                        type: string
+                        nullable: true
+                    required:
+                      - role
+                      - lastReadSeq
+                      - notifyLevel
+                      - mutedUntil
+                    description: The caller's membership in the channel.
+                required:
+                  - membership
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
   /api/projects/{projectId}/infra/alert-routing:
     get:
       tags:
