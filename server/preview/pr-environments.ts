@@ -481,6 +481,15 @@ export interface PrEnvironmentServiceDeps {
    * environment hook never ran) still gets its environment.
    */
   listOpenPrs?: () => Array<{ projectId: string; prNumber: number }>;
+  /**
+   * Open PRs of this org's GitHub-hosted projects, read from GitHub. GitHub
+   * sends no events to the Hub, so this listing is how `catchUp` notices a PR
+   * that was opened, reopened, or pushed to. A project whose list cannot be
+   * read is left out (the implementation logs it).
+   */
+  listOpenGithubPrs?: () => Promise<
+    Array<{ projectId: string; prNumber: number; headSha: string }>
+  >;
   broadcast?: (data: Record<string, unknown>) => void;
   /**
    * An environment build just became ready (first ready of a generation),
@@ -991,11 +1000,14 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
     headSha: string,
     pr: PrIdentity,
   ): Promise<'present' | 'absent' | 'unresolved'> {
+    let result: PreviewConfigProbeResult;
     try {
-      return await deps.probePreviewConfig(project, headSha, pr);
+      result = await deps.probePreviewConfig(project, headSha, pr);
     } catch {
-      return 'unresolved';
+      result = 'unresolved';
     }
+    if (result === 'absent') confirmedAbsent.add(`${keyOf(project.id, pr)}|${headSha}`);
+    return result;
   }
 
   const unresolvedError = (headSha: string) =>
@@ -1104,6 +1116,12 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
   }
 
   const waking = new Set<string>();
+  // GitHub PR -> head sha that has no environment (no `preview:` block), so
+  // the periodic listing does not re-probe it until the PR is pushed to.
+  const noPreviewHeads = new Map<string, string>();
+  // `key|sha` pairs a probe confirmed have no `preview:` block, filled during a
+  // catch-up so only confirmed absence (not a failed read or probe) is cached.
+  const confirmedAbsent = new Set<string>();
 
   const self: PrEnvironmentService = {
     onPrOpened(project, pr) {
@@ -1284,11 +1302,55 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
         for (const open of deps.listOpenPrs?.() ?? []) {
           add(open.projectId, { source: 'native', prNumber: open.prNumber });
         }
+        // GitHub PRs whose environment may need to start or move: no row yet,
+        // a new head, or a reopen. Unsettled rows are already listed above,
+        // and a head known to have no `preview:` block is not probed again.
+        confirmedAbsent.clear();
+        const githubHeads = new Map<string, string>();
+        let githubOpen: Array<{ projectId: string; prNumber: number; headSha: string }> = [];
+        try {
+          githubOpen = (await deps.listOpenGithubPrs?.()) ?? [];
+        } catch (err: unknown) {
+          logWarn(
+            `[pr-env] listing open GitHub PRs failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+        const listed = new Set(
+          githubOpen.map((o) => keyOf(o.projectId, { source: 'github', prNumber: o.prNumber })),
+        );
+        for (const key of noPreviewHeads.keys()) if (!listed.has(key)) noPreviewHeads.delete(key);
+        for (const open of githubOpen) {
+          const pr: PrIdentity = { source: 'github', prNumber: open.prNumber };
+          const key = keyOf(open.projectId, pr);
+          const row = deps.store.get(open.projectId, 'github', open.prNumber);
+          if (!row && noPreviewHeads.get(key) === open.headSha) continue;
+          if (
+            row &&
+            row.head_sha === open.headSha &&
+            !(
+              row.status === 'stopped' &&
+              (row.stop_reason === 'closed' || row.stop_reason === 'merged')
+            )
+          ) {
+            continue;
+          }
+          githubHeads.set(key, open.headSha);
+          add(open.projectId, pr);
+        }
         for (const { projectId, pr } of targets.values()) {
           const project = deps.findProject?.(projectId);
           if (!project) continue;
           try {
-            await self.reconcile(project, pr);
+            const env = await self.reconcile(project, pr);
+            const key = keyOf(projectId, pr);
+            const listedHead = githubHeads.get(key);
+            if (listedHead && !env && confirmedAbsent.has(`${key}|${listedHead}`)) {
+              noPreviewHeads.set(key, listedHead);
+            } else {
+              noPreviewHeads.delete(key);
+            }
           } catch (err: unknown) {
             logWarn(
               `[pr-env] reconcile during catch-up failed for ${projectId}#${pr.prNumber}: ${

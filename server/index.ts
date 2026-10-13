@@ -393,6 +393,7 @@ import { createPrEnvironmentReadyHandler } from './preview/pr-environment-commen
 import { buildPrEnvironmentPublicUrl } from './preview/preview-subdomain-host.js';
 import {
   githubRepoOf,
+  listOpenGithubPrs,
   prEnvironmentSourceFor,
   readGithubPrState,
 } from './preview/pr-environment-github.js';
@@ -1059,6 +1060,34 @@ const prEnvironments = createOrgScopedPrEnvironmentService({
             .prepare("SELECT project_id, number FROM pull_requests WHERE status = 'open'")
             .all() as Array<{ project_id: string; number: number }>
         ).map((r) => ({ projectId: r.project_id, prNumber: r.number })),
+      // GitHub sends the Hub no PR events: list each GitHub-hosted project's
+      // open PRs instead, so new PRs and pushes get environments.
+      listOpenGithubPrs: async () => {
+        const projects =
+          getDb() === org.db
+            ? getProjects()
+            : [...(prEnvProjectSnapshots.get(org.db)?.values() ?? [])];
+        const out: Array<{ projectId: string; prNumber: number; headSha: string }> = [];
+        for (const project of projects) {
+          if (prEnvironmentSourceFor(project) !== 'github') continue;
+          const repo = githubRepoOf(project)!;
+          // No Owner token reaches the repo: nothing to discover, and not
+          // worth a warning every five minutes.
+          const token = await resolveOrgOwnerGithubToken(config, repo);
+          if (!token) continue;
+          try {
+            const prs = await listOpenGithubPrs({ repo, getToken: async () => token });
+            for (const pr of prs) out.push({ projectId: project.id, ...pr });
+          } catch (err: unknown) {
+            console.warn(
+              `[pr-env] listing open PRs of ${repo} failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        }
+        return out;
+      },
       // One PR comment with the public URL: posted on first ready, edited on
       // every rebuild (native PR conversation, or a GitHub issue comment).
       onReady: (() => {
@@ -1093,8 +1122,9 @@ const prEnvironments = createOrgScopedPrEnvironmentService({
 });
 // Catch up on what the active org owes from before a restart (environment
 // work, once a runtime exists).
-// GitHub-hosted PRs have no webhook into the Hub: re-read every unsettled
-// environment's PR on a timer so merges, closes, and new pushes are applied.
+// GitHub-hosted PRs have no webhook into the Hub: on a timer, list each
+// project's open PRs (new PRs, pushes, reopens) and re-read every unsettled
+// environment's PR (merges, closes).
 // Hub-hosted PRs are event-driven; for them this is a cheap safety net.
 cron.schedule(
   '*/5 * * * *',

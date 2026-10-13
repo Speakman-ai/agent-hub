@@ -18,6 +18,7 @@ import {
 } from './pr-environment-comment.js';
 import {
   githubPrPreviewAvailable,
+  listOpenGithubPrs,
   prEnvironmentSourceFor,
   readGithubPrState,
 } from './pr-environment-github.js';
@@ -34,12 +35,28 @@ const flush = async () => {
 
 /** Just enough of GitHub: one PR and its issue comments. */
 function fakeGithub() {
-  const pr = { state: 'open', merged: false, head: { sha: SHA_A, ref: 'feature/x' } };
+  const pr = {
+    number: 7,
+    state: 'open',
+    merged: false,
+    head: { sha: SHA_A, ref: 'feature/x', repo: { full_name: 'acme/shop' } },
+  };
+  // An open PR from a fork: never discovered automatically.
+  const forkPr = {
+    number: 8,
+    state: 'open',
+    merged: false,
+    head: { sha: 'f'.repeat(40), ref: 'patch-1', repo: { full_name: 'stranger/shop' } },
+  };
   const comments = new Map<number, string>();
   let nextId = 5000;
   const fetchImpl = vi.fn(async (url: string, init: RequestInit = {}) => {
     const auth = (init.headers as Record<string, string> | undefined)?.Authorization;
     if (auth !== 'Bearer gh-token') return new Response('{}', { status: 401 });
+    if (url === 'https://api.github.com/repos/acme/shop/pulls?state=open&per_page=100&page=1') {
+      const open = [pr, forkPr].filter((p) => p.state === 'open');
+      return new Response(JSON.stringify(open), { status: 200 });
+    }
     if (url === 'https://api.github.com/repos/acme/shop/pulls/7' && !init.method) {
       return new Response(JSON.stringify(pr), { status: 200 });
     }
@@ -67,7 +84,7 @@ function fakeGithub() {
   return { pr, comments, fetchImpl: fetchImpl as unknown as typeof fetch, calls: fetchImpl };
 }
 
-function setup() {
+function setup(opts: { probe?: () => Promise<'present' | 'absent' | 'unresolved'> } = {}) {
   const db = new Database(':memory:');
   db.exec(PR_ENVIRONMENTS_SCHEMA);
   db.exec(PR_ENVIRONMENT_COMMENTS_SCHEMA);
@@ -98,9 +115,17 @@ function setup() {
   let clock = Date.parse('2026-10-13T01:00:00.000Z');
   const service = createPrEnvironmentService({
     store: createPrEnvironmentStore(db),
-    probePreviewConfig: async () => 'present',
+    probePreviewConfig: opts.probe ?? (async () => 'present'),
     findProject: (id) => (id === project.id ? project : null),
     readPrState: (_project, pr) => (pr.prNumber === 7 ? readState() : Promise.resolve(null)),
+    listOpenGithubPrs: async () =>
+      (
+        await listOpenGithubPrs({
+          repo: 'acme/shop',
+          getToken: async () => 'gh-token',
+          fetchImpl: gh.fetchImpl,
+        })
+      ).map((p) => ({ projectId: project.id, ...p })),
     getRuntime: () => runtime,
     onReady: async (p, env) => {
       await announce(p, env);
@@ -195,6 +220,138 @@ describe('GitHub-hosted PR environments', () => {
     expect(gh.comments.size).toBe(1);
   });
 
+  it('catch-up starts an environment for a new GitHub PR and posts the ready comment', async () => {
+    const { gh, reporters, runtime, service } = setup();
+
+    // Nobody pressed Start: the periodic listing finds the open PR.
+    await service.catchUp();
+    await flush();
+    expect(service.get('shop', PR)).toMatchObject({ source: 'github', headSha: SHA_A });
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+    expect(service.get('shop', { source: 'github', prNumber: 8 })).toBeNull();
+
+    reporters[0].ready('http://10.0.0.5:32801');
+    await flush();
+    expect([...gh.comments.values()]).toEqual([
+      expect.stringContaining('https://pr-7--shop.preview.hub.example.com/'),
+    ]);
+
+    // Nothing changed on GitHub: later catch-ups do not rebuild.
+    await service.catchUp();
+    await flush();
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+
+    // Closed, then reopened at the same head: the reopen rebuilds it.
+    gh.pr.state = 'closed';
+    await service.catchUp();
+    await flush();
+    expect(service.get('shop', PR)).toMatchObject({ status: 'stopped', stopReason: 'closed' });
+    gh.pr.state = 'open';
+    await service.catchUp();
+    await flush();
+    expect(runtime.build).toHaveBeenCalledTimes(2);
+  });
+
+  it('a head with no preview block is probed once, and again after a push', async () => {
+    const probe = vi.fn(async () => 'absent' as const);
+    const { gh, runtime, service } = setup({ probe });
+
+    await service.catchUp();
+    await service.catchUp();
+    expect(service.get('shop', PR)).toBeNull();
+    const probesAtA = probe.mock.calls.length;
+    expect(probesAtA).toBeGreaterThan(0);
+    await service.catchUp();
+    expect(probe.mock.calls.length).toBe(probesAtA);
+
+    gh.pr.head.sha = SHA_B;
+    probe.mockImplementation(async () => 'present' as never);
+    await service.catchUp();
+    await flush();
+    expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_B });
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unresolved head is retried at the same sha, not cached as absent', async () => {
+    const probe = vi.fn(async (): Promise<'present' | 'absent' | 'unresolved'> => 'unresolved');
+    const { runtime, service } = setup({ probe });
+
+    await service.catchUp();
+    expect(runtime.build).not.toHaveBeenCalled();
+
+    // Same head, now readable: the next catch-up builds it.
+    probe.mockImplementation(async () => 'present');
+    await service.catchUp();
+    await flush();
+    expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_A, status: 'queued' });
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('a probe that throws is retried at the same sha', async () => {
+    const probe = vi.fn(async (): Promise<'present' | 'absent' | 'unresolved'> => {
+      throw new Error('workspace busy');
+    });
+    const { runtime, service } = setup({ probe });
+
+    await service.catchUp();
+    probe.mockImplementation(async () => 'present');
+    await service.catchUp();
+    await flush();
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed PR read before any environment exists is retried', async () => {
+    const probe = vi.fn(async (): Promise<'present' | 'absent' | 'unresolved'> => 'present');
+    const { gh, runtime, service } = setup({ probe });
+    const realFetch = gh.calls.getMockImplementation()!;
+    let failReads = 1;
+    gh.calls.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      if (url.endsWith('/pulls/7') && failReads > 0) {
+        failReads -= 1;
+        return new Response('{}', { status: 502 });
+      }
+      return realFetch(url, init);
+    });
+
+    await service.catchUp();
+    expect(service.get('shop', PR)).toBeNull();
+    expect(runtime.build).not.toHaveBeenCalled();
+
+    await service.catchUp();
+    await flush();
+    expect(service.get('shop', PR)).toMatchObject({ headSha: SHA_A });
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('a PR read that briefly says not found is retried at the same sha', async () => {
+    const { gh, runtime, service } = setup();
+    const realFetch = gh.calls.getMockImplementation()!;
+    let notFound = 1;
+    gh.calls.mockImplementation(async (url: string, init: RequestInit = {}) => {
+      if (url.endsWith('/pulls/7') && notFound > 0) {
+        notFound -= 1;
+        return new Response('{}', { status: 404 });
+      }
+      return realFetch(url, init);
+    });
+
+    await service.catchUp();
+    expect(service.get('shop', PR)).toBeNull();
+    await service.catchUp();
+    await flush();
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed GitHub PR listing changes nothing', async () => {
+    const { gh, runtime, service } = setup();
+    (gh.calls as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => new Response('{}', { status: 502 }),
+    );
+    await service.catchUp();
+    expect(service.get('shop', PR)).toBeNull();
+    expect(runtime.build).not.toHaveBeenCalled();
+  });
+
   it('a failed GitHub read changes nothing', async () => {
     const { service, readState, reporters, gh } = setup();
     await service.start(project, PR, readState);
@@ -237,6 +394,56 @@ describe('readGithubPrState', () => {
   it('throws when it cannot read the PR', async () => {
     await expect(read(7, null).run()).rejects.toThrow(/No GitHub token/);
     await expect(read(7, 'wrong').run()).rejects.toThrow(/HTTP 401/);
+  });
+});
+
+describe('listOpenGithubPrs', () => {
+  it('lists same-repo open PRs and leaves forks out', async () => {
+    const gh = fakeGithub();
+    const list = () =>
+      listOpenGithubPrs({
+        repo: 'acme/shop',
+        getToken: async () => 'gh-token',
+        fetchImpl: gh.fetchImpl,
+      });
+    expect(await list()).toEqual([{ prNumber: 7, headSha: SHA_A, headBranch: 'feature/x' }]);
+    gh.pr.state = 'closed';
+    expect(await list()).toEqual([]);
+  });
+
+  it('follows pages until a short one', async () => {
+    const page = (n: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        number: n * 1000 + i,
+        head: { sha: SHA_A, ref: `b${i}`, repo: { full_name: 'Acme/Shop' } },
+      }));
+    const fetchImpl = vi.fn(async (url: string) => {
+      const n = Number(new URL(url).searchParams.get('page'));
+      return new Response(JSON.stringify(page(n, n < 7 ? 100 : 3)), { status: 200 });
+    });
+    const prs = await listOpenGithubPrs({
+      repo: 'acme/shop',
+      getToken: async () => 'gh-token',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    // More than 500 open PRs: the oldest, past page 5, are still listed.
+    expect(prs).toHaveLength(603);
+    expect(prs.map((p) => p.prNumber)).toContain(7002);
+    expect(fetchImpl).toHaveBeenCalledTimes(7);
+  });
+
+  it('throws when it cannot list', async () => {
+    const gh = fakeGithub();
+    await expect(
+      listOpenGithubPrs({ repo: 'acme/shop', getToken: async () => null, fetchImpl: gh.fetchImpl }),
+    ).rejects.toThrow(/No GitHub token/);
+    await expect(
+      listOpenGithubPrs({
+        repo: 'acme/shop',
+        getToken: async () => 'bad',
+        fetchImpl: gh.fetchImpl,
+      }),
+    ).rejects.toThrow(/HTTP 401/);
   });
 });
 
