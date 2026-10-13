@@ -121,6 +121,10 @@ import {
   useChatMutesSync,
 } from './utils/googleChatMutes';
 import { getOpenChatSpace, requestOpenChatSpace } from './utils/googleChatNotifications';
+import { useHubChatUnread } from './hooks/useHubChatUnread';
+import { combinedChatBadge } from './utils/hubChatUnread';
+import { effectiveChatPaneSide, getChatPaneSide, setChatPaneSide } from './utils/chatPaneSide';
+import { getHubChatSession, updateHubChatSession } from './utils/hubChatSession';
 import DeploymentsPage from './components/DeploymentsPage';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
@@ -3922,6 +3926,46 @@ export default function App({ initialView }: any = {}) {
     },
   });
 
+  // Agent Hub chat: badge counts and desktop notices for DMs and mentions.
+  const chatEnabledRef = useRef(chatEnabled);
+  chatEnabledRef.current = chatEnabled;
+  const openHubChatChannel = useCallback((channelId: string) => {
+    setChatPaneSide('hub');
+    updateHubChatSession((s) => (s.selectedId === channelId ? s : { ...s, selectedId: channelId }));
+    setCurrentView('hub');
+    setHubPane('chat');
+    setHubMobileTab('chat');
+  }, []);
+  // Latched on the first socket connect (the user is signed in by then); a
+  // later drop keeps the counts and the reconnect event refetches them.
+  const [hubChatReady, setHubChatReady] = useState(false);
+  useEffect(() => {
+    if (connected) setHubChatReady(true);
+  }, [connected]);
+  const hubChatUnread = useHubChatUnread({
+    enabled: hubChatReady,
+    userId: chatUserId,
+    isViewingChannel: (channelId) =>
+      chatPaneOpenRef.current &&
+      effectiveChatPaneSide(getChatPaneSide(), chatEnabledRef.current) === 'hub' &&
+      document.visibilityState !== 'hidden' &&
+      getHubChatSession().selectedId === channelId,
+    onNotify: (notice) => {
+      setToasts((prev: any) => [
+        ...prev,
+        {
+          id: `hub-chat-${notice.messageId}`,
+          type: 'info',
+          message: `${notice.title}: ${notice.body}`,
+          duration: 10000,
+          onClick: () => openHubChatChannel(notice.channelId),
+        },
+      ]);
+      notify({ title: notice.title, body: notice.body });
+    },
+  });
+  const chatButtonBadge = combinedChatBadge(hubChatUnread.badge, googleChatBadge);
+
   const handleCancel = useCallback(() => {
     if (activeSessionId) {
       const tailId = streamingMsgIdRef.current;
@@ -6586,18 +6630,14 @@ export default function App({ initialView }: any = {}) {
                 : null
             }
             onDismissDesktopUpdateHint={versionCheck.dismiss}
-            onOpenGoogleChat={
-              googleStatus?.connected && chatConsent(googleStatus).canRead
-                ? () => {
-                    setCurrentView('hub');
-                    setHubPane('chat');
-                    setHubMobileTab('chat');
-                    setSidebarOpen(false);
-                  }
-                : undefined
-            }
-            googleChatActive={currentView === 'hub' && hubPane === 'chat'}
-            googleChatUnread={googleChatBadge}
+            onOpenChat={() => {
+              setCurrentView('hub');
+              setHubPane('chat');
+              setHubMobileTab('chat');
+              setSidebarOpen(false);
+            }}
+            chatActive={currentView === 'hub' && hubPane === 'chat'}
+            chatUnread={chatButtonBadge}
             onCollapseSidebar={() => setSidebarCollapsed(true)}
             isLoading={sidebarDataLoading}
             projects={projects}
@@ -7276,14 +7316,18 @@ export default function App({ initialView }: any = {}) {
                   }
                   chat={
                     <ChatPane
+                      hubUnread={hubChatUnread.badge}
+                      googleUnread={googleChatBadge}
                       google={
-                        <GoogleChatPage
-                          onOpenAccountSettings={() => setCurrentView('settings:account')}
-                          onSessionStarted={handleOpenCreatedSession}
-                          onOpenSession={({ sessionId, agentId }) =>
-                            focusAgentSession(agentId, sessionId)
-                          }
-                        />
+                        chatEnabled ? (
+                          <GoogleChatPage
+                            onOpenAccountSettings={() => setCurrentView('settings:account')}
+                            onSessionStarted={handleOpenCreatedSession}
+                            onOpenSession={({ sessionId, agentId }) =>
+                              focusAgentSession(agentId, sessionId)
+                            }
+                          />
+                        ) : undefined
                       }
                     />
                   }
@@ -7298,7 +7342,7 @@ export default function App({ initialView }: any = {}) {
                     />
                   }
                   assistant={hubAssistantChat}
-                  paneBadges={{ chat: googleChatBadge }}
+                  paneBadges={{ chat: chatButtonBadge }}
                 />
               ) : currentView === 'deployments' && deploymentsProjectId ? (
                 <DeploymentsPage

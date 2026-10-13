@@ -1830,25 +1830,27 @@ describe('Sidebar — workflow projects collapse like multi-agent ones', () => {
   });
 });
 
-describe('Sidebar Google Chat link', () => {
-  it('is hidden when Google Chat is not enabled', () => {
+describe('Sidebar Chat link', () => {
+  it('is hidden when chat is not available', () => {
     render(<Sidebar {...buildProps()} />);
-    expect(screen.queryByTestId('sidebar-google-chat')).toBeNull();
+    expect(screen.queryByTestId('sidebar-chat')).toBeNull();
   });
 
   it('renders under Settings, opens the pane, and shows the unread badge', () => {
-    const onOpenGoogleChat = vi.fn();
-    render(<Sidebar {...buildProps({ onOpenGoogleChat, googleChatUnread: 120 })} />);
-    const link = screen.getByTestId('sidebar-google-chat');
+    const onOpenChat = vi.fn();
+    render(<Sidebar {...buildProps({ onOpenChat, chatUnread: 120 })} />);
+    const link = screen.getByTestId('sidebar-chat');
+    expect(link).toHaveTextContent(/^Chat/);
+    expect(link).not.toHaveTextContent('Google');
     expect(link.previousElementSibling).toHaveTextContent('Settings');
-    expect(screen.getByTestId('sidebar-google-chat-badge')).toHaveTextContent('99+');
+    expect(screen.getByTestId('sidebar-chat-badge')).toHaveTextContent('99+');
     fireEvent.click(link);
-    expect(onOpenGoogleChat).toHaveBeenCalledTimes(1);
+    expect(onOpenChat).toHaveBeenCalledTimes(1);
   });
 
   it('omits the badge when nothing is unread', () => {
-    render(<Sidebar {...buildProps({ onOpenGoogleChat: vi.fn(), googleChatUnread: 0 })} />);
-    expect(screen.getByTestId('sidebar-google-chat')).toBeInTheDocument();
-    expect(screen.queryByTestId('sidebar-google-chat-badge')).toBeNull();
+    render(<Sidebar {...buildProps({ onOpenChat: vi.fn(), chatUnread: 0 })} />);
+    expect(screen.getByTestId('sidebar-chat')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-chat-badge')).toBeNull();
   });
 });

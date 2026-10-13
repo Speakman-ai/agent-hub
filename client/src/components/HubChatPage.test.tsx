@@ -27,6 +27,7 @@ import { api } from '../utils/api';
 import { requestOpenChatSpace, takePendingOpenChatSpace } from '../utils/googleChatNotifications';
 import type { HubChatChannel, HubChatMessage } from '../utils/hubChat';
 import { resetHubChatSessionForTests } from '../utils/hubChatSession';
+import { CHAT_PANE_SIDE_KEY, resetChatPaneSideForTests } from '../utils/chatPaneSide';
 
 const chat = (api as unknown as { hubChat: Record<string, ReturnType<typeof vi.fn>> }).hubChat;
 
@@ -82,6 +83,8 @@ function wsEvent(type: string, detail: Record<string, unknown>) {
 beforeEach(() => {
   vi.clearAllMocks();
   resetHubChatSessionForTests();
+  window.localStorage.removeItem(CHAT_PANE_SIDE_KEY);
+  resetChatPaneSideForTests();
   chat.members.mockResolvedValue({
     members: [
       { userId: 'alice', username: 'alice', role: 'User' },
@@ -1092,5 +1095,40 @@ describe('ChatPane', () => {
     act(() => requestOpenChatSpace('AAAA'));
     expect(screen.getByTestId('google-side')).toBeTruthy();
     takePendingOpenChatSpace();
+  });
+
+  it('shows each side its own unread badge', async () => {
+    render(
+      <ChatPane google={<div data-testid="google-side" />} hubUnread={3} googleUnread={120} />,
+    );
+    expect(screen.getByTestId('chat-pane-hub-badge').textContent).toBe('3');
+    expect(screen.getByTestId('chat-pane-google-badge').textContent).toBe('99+');
+    await screen.findByTestId('hub-chat-page');
+  });
+
+  it('hides badges at zero', async () => {
+    render(<ChatPane google={<div data-testid="google-side" />} />);
+    expect(screen.queryByTestId('chat-pane-hub-badge')).toBeNull();
+    expect(screen.queryByTestId('chat-pane-google-badge')).toBeNull();
+    await screen.findByTestId('hub-chat-page');
+  });
+
+  it('hides the Google side when Google Chat is not connected', async () => {
+    window.localStorage.setItem(CHAT_PANE_SIDE_KEY, 'google');
+    resetChatPaneSideForTests();
+    render(<ChatPane hubUnread={2} />);
+    expect(screen.queryByTestId('chat-pane-google')).toBeNull();
+    await screen.findByTestId('hub-chat-page');
+  });
+
+  it('remembers the last side chosen', async () => {
+    const first = render(<ChatPane google={<div data-testid="google-side" />} />);
+    fireEvent.click(screen.getByTestId('chat-pane-google'));
+    expect(window.localStorage.getItem(CHAT_PANE_SIDE_KEY)).toBe('google');
+    first.unmount();
+    resetChatPaneSideForTests();
+    render(<ChatPane google={<div data-testid="google-side" />} />);
+    expect(screen.getByTestId('chat-pane-google').getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByTestId('google-side')).toBeTruthy();
   });
 });

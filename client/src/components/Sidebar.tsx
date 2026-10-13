@@ -208,10 +208,11 @@ export default function Sidebar({
   onDismissAiSignInGuide,
   desktopUpdateHintVersion = null,
   onDismissDesktopUpdateHint,
-  /** Opens the Hub's Google Chat pane. The link renders only when provided. */
-  onOpenGoogleChat,
-  googleChatActive = false,
-  googleChatUnread = 0,
+  /** Opens the Hub's Chat pane. The link renders only when provided. */
+  onOpenChat,
+  chatActive = false,
+  /** Agent Hub plus Google Chat unread, shown as one badge. */
+  chatUnread = 0,
   /** Kanban board: project id when `currentView` is `kanban:<id>`. */
   kanbanProjectId = null,
   kanbanProjectName = null,
@@ -1963,26 +1964,26 @@ export default function Sidebar({
             <span>Settings</span>
           </span>
         </button>
-        {onOpenGoogleChat && (
+        {onOpenChat && (
           <button
             type="button"
-            data-testid="sidebar-google-chat"
-            onClick={onOpenGoogleChat}
+            data-testid="sidebar-chat"
+            onClick={onOpenChat}
             className={`w-full text-left px-3 py-3 md:py-2 rounded-lg flex items-center gap-2 text-sm transition-colors min-h-[44px] ${
-              googleChatActive
+              chatActive
                 ? 'bg-gray-800 text-white'
                 : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
             }`}
           >
             <MessagesSquare size={16} />
-            <span>Google Chat</span>
-            {googleChatUnread > 0 && (
+            <span>Chat</span>
+            {chatUnread > 0 && (
               <span
-                data-testid="sidebar-google-chat-badge"
-                aria-label={`${googleChatUnread} unread`}
+                data-testid="sidebar-chat-badge"
+                aria-label={`${chatUnread} unread`}
                 className="ml-auto min-w-[1.25rem] rounded-full bg-blue-600 px-1.5 text-center text-[11px] font-semibold leading-5 text-white"
               >
-                {formatUnreadCount(googleChatUnread)}
+                {formatUnreadCount(chatUnread)}
               </span>
             )}
           </button>
