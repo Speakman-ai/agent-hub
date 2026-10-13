@@ -1,0 +1,1325 @@
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  BellOff,
+  Bot,
+  Compass,
+  Loader2,
+  Lock,
+  Pencil,
+  Plus,
+  Send,
+  Settings,
+  Sparkles,
+  Trash2,
+} from 'lucide-react';
+import { api } from '../utils/api';
+import { isSubmitEnter } from '../utils/keyboard';
+import { formatDateTime, formatTime } from '../utils/time';
+import { avatarInitials } from '../utils/googleChatLayout';
+import { MarkdownContent, markdownComponentsCompact } from './MarkdownRenderer';
+import {
+  clearSentDraft,
+  setPendingSend,
+  updateHubChatSession,
+  useHubChatSession,
+  nextAttempt,
+  getHubChatSession,
+  type HubChatEditState,
+} from '../utils/hubChatSession';
+import {
+  BrowseChannelsDialog,
+  ChannelSettingsDialog,
+  NewChannelDialog,
+  NewDmDialog,
+} from './HubChatDialogs';
+import {
+  RAIL_SECTIONS,
+  applyMessageToChannels,
+  applyReadToChannels,
+  authorLabel,
+  channelLabel,
+  isChannelMuted,
+  layoutHubChatMessages,
+  mergeIntoWindow,
+  railUnread,
+  changedGroups,
+  reconcileChannel,
+  reconcileMembership,
+  reconcileChannels,
+  sectionChannels,
+  type HubChatChannel,
+  type HubChatMessage,
+  type HubChatOrgMember,
+  type HubChatMembership,
+  type MessageWindow,
+  type ChannelFieldGroup,
+} from '../utils/hubChat';
+
+const PAGE = 50;
+/** Reconnect catch-up pages forward this many times, then reloads the latest page. */
+const CATCHUP_PAGE = 100;
+const MAX_CATCHUP_PAGES = 10;
+
+// Literal class names so Tailwind keeps them in the build.
+const AVATAR_COLORS = [
+  'bg-rose-600',
+  'bg-orange-600',
+  'bg-amber-600',
+  'bg-lime-700',
+  'bg-emerald-600',
+  'bg-teal-600',
+  'bg-cyan-700',
+  'bg-sky-600',
+  'bg-indigo-600',
+  'bg-violet-600',
+];
+
+function avatarColorFor(key: string): string {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err ?? 'Request failed');
+}
+
+function isPageVisible(): boolean {
+  return typeof document === 'undefined' || document.visibilityState !== 'hidden';
+}
+
+interface View extends MessageWindow {
+  channelId: string;
+  /**
+   * Which opening of the channel this is. A channel can be left and reopened,
+   * so responses are matched to the opening that asked, never by channel id.
+   */
+  generation: number;
+  loading: boolean;
+  loaded: boolean;
+  error: string | null;
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  /** Read position when the channel was opened; keeps the Unread line still while reading. */
+  dividerSeq: number | null;
+}
+
+function emptyView(channelId: string, dividerSeq: number | null, generation: number): View {
+  return {
+    channelId,
+    generation,
+    messages: [],
+    revisions: {},
+    loading: true,
+    loaded: false,
+    error: null,
+    hasOlder: false,
+    loadingOlder: false,
+    dividerSeq,
+  };
+}
+
+type DialogKind = 'channel' | 'dm' | 'browse' | 'settings' | null;
+
+export default function HubChatPage() {
+  // Channel list, open view and viewer id each live in a ref that every
+  // write updates synchronously; React state only mirrors the ref for
+  // rendering. Writes are applied to the latest value, never to a snapshot
+  // from the last render, so several writes before a render all land, and
+  // any decision made between writes sees the ones before it.
+  const channelsRef = useRef<HubChatChannel[]>([]);
+  const [channels, setChannelsState] = useState<HubChatChannel[]>([]);
+  const setChannels = useCallback(
+    (next: HubChatChannel[] | ((prev: HubChatChannel[]) => HubChatChannel[])) => {
+      const value = typeof next === 'function' ? next(channelsRef.current) : next;
+      if (value === channelsRef.current) return;
+      channelsRef.current = value;
+      setChannelsState(value);
+    },
+    [],
+  );
+  const viewerRef = useRef<string | null>(null);
+  const [viewerUserId, setViewerUserIdState] = useState<string | null>(null);
+  const setViewerUserId = useCallback((id: string | null) => {
+    viewerRef.current = id;
+    setViewerUserIdState(id);
+  }, []);
+  const [orgMembers, setOrgMembers] = useState<HubChatOrgMember[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const viewRef = useRef<View | null>(null);
+  const [view, setViewState] = useState<View | null>(null);
+  const setView = useCallback((next: View | null | ((prev: View | null) => View | null)) => {
+    const value = typeof next === 'function' ? next(viewRef.current) : next;
+    if (value === viewRef.current) return;
+    viewRef.current = value;
+    setViewState(value);
+  }, []);
+  // Per-channel drafts, sends and the open edit outlive this page (see
+  // hubChatSession.ts), so late responses and remounts never lose user input.
+  const { selectedId, drafts, pendingSends, sendErrors, editing } = useHubChatSession();
+  const setSelectedId = (id: string | null) =>
+    updateHubChatSession((s) => (s.selectedId === id ? s : { ...s, selectedId: id }));
+  const setEditing = (
+    next: HubChatEditState | null | ((cur: HubChatEditState | null) => HubChatEditState | null),
+  ) =>
+    updateHubChatSession((s) => ({
+      ...s,
+      editing: typeof next === 'function' ? next(s.editing) : next,
+    }));
+  const setSendError = (channelId: string, error: string | null) =>
+    updateHubChatSession((s) => {
+      const { [channelId]: _old, ...rest } = s.sendErrors;
+      return { ...s, sendErrors: error ? { ...rest, [channelId]: error } : rest };
+    });
+  const [dialog, setDialog] = useState<DialogKind>(null);
+
+  // Work that outlives the page (a history load, reconnect catch-up) must
+  // not act on a view nobody sees. Unmounting drops the current view from the
+  // ref, so every generation check fails and late responses are ignored.
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      viewRef.current = null;
+    };
+  }, []);
+
+  // The session store updates synchronously, so it is read directly.
+  const currentSelectedId = () => getHubChatSession().selectedId;
+  const listEndRef = useRef<HTMLDivElement | null>(null);
+
+  const usernames = useMemo(
+    () => new Map(orgMembers.map((m) => [m.userId, m.username])),
+    [orgMembers],
+  );
+  const sections = useMemo(
+    () => sectionChannels(channels, usernames, viewerUserId),
+    [channels, usernames, viewerUserId],
+  );
+  const selected = channels.find((c) => c.id === selectedId) ?? null;
+
+  // The channel list is a server snapshot, while live events and the
+  // user's own actions change channels in between. Local changes stamp the
+  // field group they touch; reconcileChannels keeps those groups and merges
+  // the rest, and asks for one more fetch when a count had to be estimated.
+  // Fetches run one at a time, and any request made meanwhile becomes one
+  // follow-up, so the latest fetch always started after every change it
+  // must account for.
+  const channelClockRef = useRef({
+    now: 0,
+    touched: new Map<string, number>(),
+  });
+  const stampChannel = useCallback((channelId: string, groups: ChannelFieldGroup[]) => {
+    const clock = channelClockRef.current;
+    clock.now += 1;
+    for (const g of groups) clock.touched.set(`${channelId}:${g}`, clock.now);
+  }, []);
+  /**
+   * Server state the client applies is newer than every request issued
+   * before it. Stamp each field group a refresh or response actually changed
+   * (including a channel appearing or disappearing), so a delayed response
+   * to an older request cannot overwrite it, whatever its source.
+   */
+  const stampApplied = useCallback(
+    (before: HubChatChannel[], after: HubChatChannel[]) => {
+      const prevById = new Map(before.map((c) => [c.id, c]));
+      const nextById = new Map(after.map((c) => [c.id, c]));
+      for (const id of new Set([...prevById.keys(), ...nextById.keys()])) {
+        const groups = changedGroups(prevById.get(id), nextById.get(id));
+        if (groups.length) stampChannel(id, groups);
+      }
+    },
+    [stampChannel],
+  );
+  const changeChannels = useCallback(
+    (
+      channelId: string,
+      groups: ChannelFieldGroup[],
+      fn: (prev: HubChatChannel[]) => HubChatChannel[],
+    ) => {
+      if (groups.length) stampChannel(channelId, groups);
+      setChannels(fn);
+    },
+    [stampChannel, setChannels],
+  );
+  // Server-confirmed read pointers, and the one write in flight per channel.
+  // Snapshots merge against these, not the optimistic pointer the rail shows.
+  const readRef = useRef({
+    confirmed: new Map<string, number>(),
+    pending: new Map<string, number>(),
+  });
+  const localRead = useCallback((channelId: string) => {
+    const { confirmed, pending } = readRef.current;
+    return Math.max(confirmed.get(channelId) ?? 0, pending.get(channelId) ?? 0);
+  }, []);
+  const confirmRead = useCallback((channelId: string, seq: number) => {
+    const { confirmed } = readRef.current;
+    if (seq > (confirmed.get(channelId) ?? 0)) confirmed.set(channelId, seq);
+  }, []);
+  /** Records the read pointer of a channel object that came from the server. */
+  const confirmChannel = useCallback(
+    (c: HubChatChannel) => {
+      if (c.membership) confirmRead(c.id, c.membership.lastReadSeq);
+    },
+    [confirmRead],
+  );
+
+  const clockNow = useCallback(() => channelClockRef.current.now, []);
+
+  const refreshStateRef = useRef({ running: false, again: false });
+  const refreshChannels = useCallback(async () => {
+    const state = refreshStateRef.current;
+    if (state.running) {
+      state.again = true;
+      return;
+    }
+    state.running = true;
+    // Estimates converge in a follow-up; bound it so steady traffic cannot
+    // keep the loop busy.
+    let estimateRetries = 2;
+    try {
+      do {
+        state.again = false;
+        const issuedAt = channelClockRef.current.now;
+        try {
+          const res = await api.hubChat.channels();
+          const { touched } = channelClockRef.current;
+          const changedSince = (id: string, g: ChannelFieldGroup) =>
+            (touched.get(`${id}:${g}`) ?? 0) > issuedAt;
+          const fresh: HubChatChannel[] = res.channels ?? [];
+          fresh.forEach(confirmChannel);
+          const { channels: merged, exact } = reconcileChannels(
+            fresh,
+            channelsRef.current,
+            changedSince,
+            localRead,
+          );
+          stampApplied(channelsRef.current, merged);
+          setChannels(merged);
+          if (!exact && estimateRetries-- > 0) state.again = true;
+          if (res.viewerUserId) setViewerUserId(res.viewerUserId);
+          setLoadError(null);
+        } catch (err) {
+          setLoadError(errorText(err));
+        }
+      } while (state.again);
+    } finally {
+      state.running = false;
+      setLoading(false);
+    }
+  }, [confirmChannel, localRead, setChannels, setViewerUserId, stampApplied]);
+
+  /**
+   * The one way a single server channel object enters the rail (settings,
+   * join, create and DM responses). It reconciles like a list refresh: the
+   * response wins except for field groups changed locally after `issuedAt`,
+   * sequences only move forward, and an estimated count triggers a refresh.
+   * `own` are the groups this response is the result of; stamping them keeps
+   * an older refresh still in flight from undoing it.
+   */
+  const ingestChannel = useCallback(
+    (fresh: HubChatChannel, issuedAt: number, own: ChannelFieldGroup[]) => {
+      confirmChannel(fresh);
+      // Decide which groups changed locally since the request before this
+      // response stamps its own groups, or it would count itself as newer.
+      const { touched } = channelClockRef.current;
+      const changedBefore: Record<ChannelFieldGroup, boolean> = {
+        presence: (touched.get(`${fresh.id}:presence`) ?? 0) > issuedAt,
+        meta: (touched.get(`${fresh.id}:meta`) ?? 0) > issuedAt,
+        membership: (touched.get(`${fresh.id}:membership`) ?? 0) > issuedAt,
+      };
+      const changed = (g: ChannelFieldGroup) => changedBefore[g];
+      // A response superseded by a local removal is dropped whole: nothing is
+      // stamped, inserted or opened.
+      const r = reconcileChannel(
+        fresh,
+        channelsRef.current.find((c) => c.id === fresh.id),
+        changed,
+        localRead(fresh.id),
+      );
+      const channel = r.channel;
+      if (!channel) return null;
+      stampApplied(
+        channelsRef.current.filter((c) => c.id === fresh.id),
+        [channel],
+      );
+      changeChannels(fresh.id, own, (prev) =>
+        prev.some((c) => c.id === fresh.id)
+          ? prev.map((c) => (c.id === fresh.id ? channel : c))
+          : [...prev, channel],
+      );
+      if (!r.exact) void refreshChannels();
+      return channel;
+    },
+    [changeChannels, confirmChannel, localRead, refreshChannels, stampApplied],
+  );
+
+  /** The same, for a membership object (settings response or live event). */
+  const ingestMembership = useCallback(
+    (channelId: string, membership: HubChatMembership, issuedAt: number) => {
+      confirmRead(channelId, membership.lastReadSeq);
+      const changedSince =
+        (channelClockRef.current.touched.get(`${channelId}:membership`) ?? 0) > issuedAt;
+      changeChannels(channelId, ['membership'], (prev) =>
+        prev.map((c) =>
+          c.id === channelId
+            ? reconcileMembership(c, membership, changedSince, localRead(channelId))
+            : c,
+        ),
+      );
+    },
+    [changeChannels, confirmRead, localRead],
+  );
+
+  const membersRequestRef = useRef(0);
+  const refreshMembers = useCallback(async () => {
+    // Only the latest request may set the list; an earlier one can resolve last.
+    const request = ++membersRequestRef.current;
+    try {
+      const res = await api.hubChat.members();
+      if (request !== membersRequestRef.current) return;
+      setOrgMembers(res.members ?? []);
+    } catch {
+      // Names fall back to "Unknown user"; the rail still works.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshChannels();
+    void refreshMembers();
+  }, [refreshChannels, refreshMembers]);
+
+  /** Moves the read pointer to `seq` when the viewer is looking at the channel. */
+  /**
+   * Moves the read pointer when the viewer is looking at the channel. The
+   * rail shows it at once, but it counts as read progress only once the
+   * server confirms (see readRef). A rejected write is dropped, the refresh
+   * restores the server's pointer, and the next view of the channel (open,
+   * new message, focus, reconnect) writes it again.
+   */
+  const markRead = useCallback(
+    (channelId: string, seq: number) => {
+      // Only a mounted page is showing anything; never mark read otherwise.
+      if (!mountedRef.current) return;
+      const channel = channelsRef.current.find((c) => c.id === channelId);
+      if (!channel?.membership || seq <= localRead(channelId)) return;
+      const { pending } = readRef.current;
+      pending.set(channelId, seq);
+      changeChannels(channelId, [], (prev) => applyReadToChannels(prev, channelId, seq) ?? prev);
+      api.hubChat
+        .markRead(channelId, seq)
+        .then((res: { lastReadSeq?: number }) => {
+          confirmRead(channelId, typeof res?.lastReadSeq === 'number' ? res.lastReadSeq : seq);
+          if (pending.get(channelId) === seq) pending.delete(channelId);
+        })
+        .catch(() => {
+          if (pending.get(channelId) === seq) pending.delete(channelId);
+          void refreshChannels();
+        });
+    },
+    [changeChannels, confirmRead, localRead, refreshChannels],
+  );
+
+  // Every response that writes into the view (history pages, reconcile,
+  // send) goes through updateView with the generation it was requested for,
+  // so a reply meant for an earlier opening is dropped. Live events describe
+  // the channel as it is now and stay keyed by channel id.
+  const generationRef = useRef(0);
+  const isCurrentView = useCallback(
+    (generation: number) => viewRef.current?.generation === generation,
+    [],
+  );
+  const updateView = useCallback(
+    (generation: number, fn: (v: View) => View) => {
+      setView((v) => (v && v.generation === generation ? fn(v) : v));
+    },
+    [setView],
+  );
+
+  const loadMessages = useCallback(
+    async (channelId: string, generation: number) => {
+      try {
+        const res = await api.hubChat.messages(channelId, { limit: PAGE });
+        if (!isCurrentView(generation)) return;
+        const messages: HubChatMessage[] = res.messages ?? [];
+        updateView(generation, (v) => ({
+          ...v,
+          ...mergeIntoWindow(v, messages, true),
+          loading: false,
+          loaded: true,
+          error: null,
+          hasOlder: !!res.hasMore,
+        }));
+        const tail = messages[messages.length - 1];
+        if (tail && isPageVisible()) markRead(channelId, tail.seq);
+      } catch (err) {
+        updateView(generation, (v) => ({ ...v, loading: false, error: errorText(err) }));
+      }
+    },
+    [isCurrentView, markRead, updateView],
+  );
+
+  const openChannel = useCallback(
+    (channelId: string, known?: HubChatChannel) => {
+      const channel = known ?? channelsRef.current.find((c) => c.id === channelId);
+      setSelectedId(channelId);
+      generationRef.current += 1;
+      const generation = generationRef.current;
+      const next = emptyView(channelId, channel?.membership?.lastReadSeq ?? null, generation);
+      setView(next);
+      void loadMessages(channelId, generation);
+    },
+    [loadMessages, setView],
+  );
+
+  // The open conversation is always one in the channel list. When the list
+  // arrives, reopen the channel the user had (it survives a remount), else
+  // the first. When the open channel leaves the list (left, removed, gone
+  // from a refresh), move to the first remaining one.
+  useEffect(() => {
+    if (loading) return;
+    const open = viewRef.current;
+    if (open && channels.some((c) => c.id === open.channelId)) return;
+    const kept = !open && selectedId ? channels.find((c) => c.id === selectedId) : undefined;
+    const pick = kept ?? RAIL_SECTIONS.map((s) => sections[s.id][0]).find(Boolean);
+    if (pick) {
+      openChannel(pick.id, pick);
+    } else if (open) {
+      setView(null);
+      setSelectedId(null);
+    }
+  }, [loading, view, selectedId, channels, sections, openChannel, setView]);
+
+  /**
+   * Brings the open conversation back in line with the server after the
+   * socket was down. Re-reads the whole loaded window from its first seq, not
+   * just what came after the tail, so edits and deletions missed while
+   * offline are picked up along with new messages. Past MAX_CATCHUP_PAGES it
+   * reloads the latest page instead, which keeps the list contiguous and
+   * leaves the rest to Load older.
+   */
+  const reconcileView = useCallback(async () => {
+    const open = viewRef.current;
+    if (!open) return;
+    const { channelId, generation } = open;
+    const stillOpen = () => isCurrentView(generation);
+    try {
+      if (!open.messages.length) {
+        await loadMessages(channelId, generation);
+        return;
+      }
+      let cursor = open.messages[0].seq - 1;
+      const fetched: HubChatMessage[] = [];
+      for (let page = 0; page < MAX_CATCHUP_PAGES; page++) {
+        const res = await api.hubChat.messages(channelId, {
+          after: cursor,
+          limit: CATCHUP_PAGE,
+        });
+        if (!stillOpen()) return;
+        const batch: HubChatMessage[] = res.messages ?? [];
+        fetched.push(...batch);
+        const tail = batch[batch.length - 1];
+        if (!res.hasMore || !tail) {
+          updateView(generation, (cur) => ({ ...cur, ...mergeIntoWindow(cur, fetched, true) }));
+          const newest = fetched[fetched.length - 1];
+          if (newest && isPageVisible()) markRead(channelId, newest.seq);
+          return;
+        }
+        cursor = tail.seq;
+      }
+      const res = await api.hubChat.messages(channelId, { limit: PAGE });
+      if (!stillOpen()) return;
+      const latest: HubChatMessage[] = res.messages ?? [];
+      updateView(generation, (cur) => ({
+        ...cur,
+        // Drop the stale head; revisions keep live edits that landed during
+        // the request.
+        ...mergeIntoWindow(
+          {
+            messages: cur.messages.filter((m) => latest.length > 0 && m.seq >= latest[0].seq),
+            revisions: cur.revisions,
+          },
+          latest,
+          true,
+        ),
+        hasOlder: !!res.hasMore,
+      }));
+      const newest = latest[latest.length - 1];
+      if (newest && isPageVisible()) markRead(channelId, newest.seq);
+    } catch {
+      // The next reconnect or channel open retries.
+    }
+  }, [isCurrentView, loadMessages, markRead, updateView]);
+
+  const loadOlder = async () => {
+    const v = viewRef.current;
+    if (!v || v.loadingOlder || !v.messages.length) return;
+    const { channelId, generation } = v;
+    updateView(generation, (cur) => ({ ...cur, loadingOlder: true }));
+    try {
+      const res = await api.hubChat.messages(channelId, {
+        before: v.messages[0].seq,
+        limit: PAGE,
+      });
+      updateView(generation, (cur) => ({
+        ...cur,
+        ...mergeIntoWindow(cur, res.messages ?? [], true),
+        hasOlder: !!res.hasMore,
+        loadingOlder: false,
+      }));
+    } catch (err) {
+      updateView(generation, (cur) => ({ ...cur, loadingOlder: false, error: errorText(err) }));
+    }
+  };
+
+  // Live updates. App.tsx re-dispatches the membership-filtered WS events on
+  // window, so this pane never holds its own socket.
+  useEffect(() => {
+    const onMessage = (e: Event) => {
+      const data = (e as CustomEvent).detail ?? {};
+      const message = data.message as HubChatMessage | undefined;
+      if (!message?.channelId) return;
+      const viewing = currentSelectedId() === message.channelId && isPageVisible();
+      if (!channelsRef.current.some((c) => c.id === message.channelId)) {
+        void refreshChannels();
+        return;
+      }
+      changeChannels(message.channelId, [], (prev) =>
+        applyMessageToChannels(prev, message, {
+          viewerUserId: viewerRef.current,
+          viewingChannelId: viewing ? message.channelId : null,
+        }),
+      );
+      if (currentSelectedId() === message.channelId) {
+        setView((v) =>
+          v && v.channelId === message.channelId
+            ? { ...v, ...mergeIntoWindow(v, [message], true) }
+            : v,
+        );
+        if (viewing) markRead(message.channelId, message.seq);
+      }
+    };
+    const onMessageUpdate = (e: Event) => {
+      const message = (e as CustomEvent).detail?.message as HubChatMessage | undefined;
+      if (!message?.channelId) return;
+      setView((v) =>
+        // Recorded even when the message is not loaded yet, so a history page
+        // still in flight cannot show the old body when it lands.
+        v && v.channelId === message.channelId
+          ? { ...v, ...mergeIntoWindow(v, [message], false) }
+          : v,
+      );
+    };
+    const onRead = (e: Event) => {
+      const { channelId, lastReadSeq } = (e as CustomEvent).detail ?? {};
+      if (typeof channelId !== 'string' || typeof lastReadSeq !== 'number') return;
+      confirmRead(channelId, lastReadSeq);
+      // A read short of the tail needs the server for the remaining count.
+      const reachesTail = applyReadToChannels(channelsRef.current, channelId, lastReadSeq);
+      if (!reachesTail) {
+        void refreshChannels();
+        return;
+      }
+      changeChannels(
+        channelId,
+        [],
+        (prev) => applyReadToChannels(prev, channelId, lastReadSeq) ?? prev,
+      );
+    };
+    const onChannelUpdate = (e: Event) => {
+      const data = (e as CustomEvent).detail ?? {};
+      const removedMe =
+        data.reason === 'member_removed' &&
+        Array.isArray(data.userIds) &&
+        data.userIds.includes(viewerRef.current);
+      // Drop it from the rail now, stamped so a refresh already in flight
+      // cannot bring it back; the selection effect then moves the view.
+      if (removedMe && data.channelId) {
+        changeChannels(data.channelId, ['presence'], (prev) =>
+          prev.filter((c) => c.id !== data.channelId),
+        );
+      }
+      if (data.reason === 'membership' && data.membership && data.channelId) {
+        // A live event is the server's current value, newer than any change
+        // stamped so far.
+        ingestMembership(data.channelId, data.membership, clockNow());
+        return;
+      }
+      void refreshChannels();
+      if (data.reason === 'member_added' || data.reason === 'created') void refreshMembers();
+    };
+    const onReconnect = () => {
+      void refreshChannels();
+      const v = viewRef.current;
+      if (v) void reconcileView();
+    };
+    const onVisible = () => {
+      if (!isPageVisible()) return;
+      const v = viewRef.current;
+      const last = v?.messages[v.messages.length - 1];
+      if (v && last) markRead(v.channelId, last.seq);
+    };
+    window.addEventListener('hub_chat_message', onMessage);
+    window.addEventListener('hub_chat_message_update', onMessageUpdate);
+    window.addEventListener('hub_chat_read', onRead);
+    window.addEventListener('hub_chat_channel_update', onChannelUpdate);
+    window.addEventListener('agenthub:ws_reconnected', onReconnect);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('hub_chat_message', onMessage);
+      window.removeEventListener('hub_chat_message_update', onMessageUpdate);
+      window.removeEventListener('hub_chat_read', onRead);
+      window.removeEventListener('hub_chat_channel_update', onChannelUpdate);
+      window.removeEventListener('agenthub:ws_reconnected', onReconnect);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [
+    changeChannels,
+    clockNow,
+    ingestMembership,
+    confirmRead,
+    reconcileView,
+    markRead,
+    refreshChannels,
+    refreshMembers,
+    setView,
+  ]);
+
+  const messageCount = view?.messages.length ?? 0;
+  const lastMessageId = view?.messages[messageCount - 1]?.id;
+  useEffect(() => {
+    listEndRef.current?.scrollIntoView?.({ block: 'end' });
+  }, [lastMessageId, selectedId]);
+
+  const send = async () => {
+    const channelId = selectedId;
+    if (!channelId) return;
+    const body = drafts[channelId] ?? '';
+    if (!body.trim() || pendingSends.has(channelId)) return;
+    setPendingSend(channelId, true);
+    setSendError(channelId, null);
+    // The opening this was sent from; if the channel was reopened since, the
+    // new opening's load or the live echo shows the post instead.
+    const sentFrom = viewRef.current?.channelId === channelId ? viewRef.current.generation : -1;
+    try {
+      const res = await api.hubChat.post(channelId, body);
+      const message = res.message as HubChatMessage;
+      // Keep anything typed while the request was in flight.
+      clearSentDraft(channelId, body);
+      updateView(sentFrom, (v) => ({ ...v, ...mergeIntoWindow(v, [message], true) }));
+      changeChannels(channelId, [], (prev) =>
+        applyMessageToChannels(prev, message, {
+          viewerUserId: viewerRef.current,
+          viewingChannelId: channelId,
+        }),
+      );
+    } catch (err) {
+      setSendError(channelId, errorText(err));
+    } finally {
+      setPendingSend(channelId, false);
+    }
+  };
+
+  /** Merges a message into the view only if that view is still its channel. */
+  const mergeIntoOwnChannel = (message: HubChatMessage) =>
+    setView((v) =>
+      v && v.channelId === message.channelId
+        ? { ...v, ...mergeIntoWindow(v, [message], false) }
+        : v,
+    );
+
+  const saveEdit = async () => {
+    if (!editing || !editing.text.trim()) return;
+    const { id, text } = editing;
+    const attempt = nextAttempt();
+    setEditing({ ...editing, saving: true, error: null, attempt });
+    try {
+      const res = await api.hubChat.edit(id, text);
+      // The saved revision applies whatever editor is open now.
+      mergeIntoOwnChannel(res.message as HubChatMessage);
+      setEditing((cur) => (cur?.attempt === attempt ? null : cur));
+    } catch (err) {
+      setEditing((cur) =>
+        cur?.attempt === attempt ? { ...cur, saving: false, error: errorText(err) } : cur,
+      );
+    }
+  };
+
+  const deleteMessage = async (message: HubChatMessage) => {
+    if (typeof window !== 'undefined' && !window.confirm('Delete this message?')) return;
+    const generation = viewRef.current?.generation ?? -1;
+    try {
+      const res = await api.hubChat.remove(message.id);
+      mergeIntoOwnChannel(res.message as HubChatMessage);
+    } catch (err) {
+      updateView(generation, (v) => ({ ...v, error: errorText(err) }));
+    }
+  };
+
+  const joinSelected = async () => {
+    if (!selectedId) return;
+    const issuedAt = clockNow();
+    try {
+      const res = await api.hubChat.join(selectedId);
+      ingestChannel(res.channel, issuedAt, ['presence']);
+    } catch (err) {
+      setSendError(selectedId, errorText(err));
+    }
+  };
+
+  const adoptChannel = (channel: HubChatChannel, issuedAt: number) => {
+    setDialog(null);
+    const adopted = ingestChannel(channel, issuedAt, ['presence']);
+    if (adopted) openChannel(adopted.id, adopted);
+  };
+
+  const rows = useMemo(
+    () =>
+      view
+        ? layoutHubChatMessages(view.messages, {
+            viewerUserId,
+            lastReadSeq: view.dividerSeq,
+          })
+        : [],
+    [view, viewerUserId],
+  );
+
+  const renderChannelRow = (c: HubChatChannel) => {
+    const { count, bold } = railUnread(c);
+    const muted = isChannelMuted(c);
+    const active = c.id === selectedId;
+    return (
+      <button
+        key={c.id}
+        type="button"
+        onClick={() => openChannel(c.id)}
+        data-testid={`hub-chat-channel-${c.id}`}
+        className={`flex w-full items-center gap-2 px-4 py-1.5 text-left text-sm ${
+          active ? 'bg-gray-800 text-white' : 'text-gray-300 hover:bg-gray-800/50'
+        }`}
+      >
+        <span
+          className={`min-w-0 flex-1 truncate ${bold && !active ? 'font-semibold text-white' : ''}`}
+        >
+          {channelLabel(c, usernames, viewerUserId)}
+        </span>
+        {c.isPrivate && c.kind === 'channel' && (
+          <Lock size={11} aria-label="Private" className="shrink-0 text-gray-500" />
+        )}
+        {muted && (
+          <BellOff
+            size={12}
+            aria-label="Muted"
+            data-testid={`hub-chat-channel-muted-${c.id}`}
+            className="shrink-0 text-gray-500"
+          />
+        )}
+        {count > 0 && !active && (
+          <span
+            data-testid={`hub-chat-unread-${c.id}`}
+            aria-label={`${count} unread`}
+            className="shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
+          >
+            {count > 99 ? '99+' : count}
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  const sectionAction: Partial<Record<string, { label: string; onClick: () => void }>> = {
+    dms: { label: 'New direct message', onClick: () => setDialog('dm') },
+    channels: { label: 'New channel', onClick: () => setDialog('channel') },
+  };
+
+  if (loading) {
+    return (
+      <div className="m-4 flex items-center gap-2 rounded-lg border border-gray-800 bg-gray-900 p-4 text-sm text-gray-400">
+        <Loader2 size={16} className="animate-spin" />
+        Loading chat...
+      </div>
+    );
+  }
+
+  const canPost = !!selected?.membership && !selected.archivedAt;
+  const draft = selectedId ? (drafts[selectedId] ?? '') : '';
+  const sending = !!selectedId && pendingSends.has(selectedId);
+  const sendError = selectedId ? (sendErrors[selectedId] ?? null) : null;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col md:flex-row" data-testid="hub-chat-page">
+      <nav
+        aria-label="Chat channels"
+        className="max-h-56 shrink-0 overflow-y-auto border-b border-gray-800 py-2 md:max-h-none md:w-64 md:border-b-0 md:border-r"
+      >
+        {loadError && (
+          <div className="mx-2 mb-2 flex items-center gap-2 text-xs text-amber-300">
+            <AlertCircle size={12} className="shrink-0" />
+            {loadError}
+          </div>
+        )}
+        <div className="px-4 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+          Agent Hub
+        </div>
+        <div
+          className="flex items-center gap-2 px-4 py-1.5 text-sm text-gray-500"
+          data-testid="hub-chat-assistant-placeholder"
+          title="The Agent Hub assistant is coming to Chat soon."
+        >
+          <Sparkles size={13} className="shrink-0" />
+          <span className="truncate">Assistant (coming soon)</span>
+        </div>
+        {RAIL_SECTIONS.map((section) => {
+          const items = sections[section.id];
+          const action = sectionAction[section.id];
+          // Triggers and summaries are created elsewhere; hide them until they exist.
+          if (!items.length && !action) return null;
+          return (
+            <div key={section.id} className="mt-3" data-testid={`hub-chat-section-${section.id}`}>
+              <div className="flex items-center justify-between px-4 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                {section.label}
+                <span className="flex items-center gap-1">
+                  {section.id === 'channels' && (
+                    <button
+                      type="button"
+                      onClick={() => setDialog('browse')}
+                      title="Browse channels"
+                      aria-label="Browse channels"
+                      className="rounded p-0.5 text-gray-500 hover:bg-gray-800 hover:text-white"
+                    >
+                      <Compass size={13} />
+                    </button>
+                  )}
+                  {action && (
+                    <button
+                      type="button"
+                      onClick={action.onClick}
+                      title={action.label}
+                      aria-label={action.label}
+                      className="rounded p-0.5 text-gray-500 hover:bg-gray-800 hover:text-white"
+                    >
+                      <Plus size={13} />
+                    </button>
+                  )}
+                </span>
+              </div>
+              {items.map(renderChannelRow)}
+              {!items.length && (
+                <p className="px-4 py-1 text-xs text-gray-600">
+                  {section.id === 'dms' ? 'No conversations yet.' : 'No channels yet.'}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </nav>
+
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {!selected ? (
+          <div className="m-4 rounded-lg border border-gray-800 bg-gray-900 p-6">
+            <h3 className="text-lg font-semibold text-white">Agent Hub chat</h3>
+            <p className="mt-2 max-w-xl text-sm text-gray-400">
+              Message people in your organization directly or in shared channels.
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setDialog('dm')}
+                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500"
+              >
+                New direct message
+              </button>
+              <button
+                type="button"
+                onClick={() => setDialog('channel')}
+                className="rounded border border-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-800"
+              >
+                New channel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex shrink-0 items-center gap-2 border-b border-gray-800 px-4 py-2">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-gray-200">
+                  {channelLabel(selected, usernames, viewerUserId)}
+                </div>
+                {selected.topic && (
+                  <div className="truncate text-xs text-gray-500" data-testid="hub-chat-topic">
+                    {selected.topic}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setDialog('settings')}
+                aria-label="Channel settings"
+                title="Channel settings"
+                data-testid="hub-chat-settings-button"
+                className="rounded p-1 text-gray-400 hover:bg-gray-800 hover:text-white"
+              >
+                <Settings size={14} />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {view?.error && view.loaded && (
+                <div className="mb-3 flex items-center gap-2 text-xs text-amber-300">
+                  <AlertCircle size={14} className="shrink-0" />
+                  {view.error}
+                </div>
+              )}
+              {!view || (view.loading && !view.loaded) ? (
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <Loader2 size={16} className="animate-spin" />
+                  Loading messages...
+                </div>
+              ) : view.error && !view.loaded ? (
+                <div className="flex items-start gap-2 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+                  <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                  {view.error}
+                </div>
+              ) : !view.messages.length ? (
+                <p className="text-sm text-gray-500">No messages yet. Say hello.</p>
+              ) : (
+                <>
+                  {view.hasOlder ? (
+                    <div className="mb-3 flex justify-center">
+                      <button
+                        type="button"
+                        onClick={() => void loadOlder()}
+                        disabled={view.loadingOlder}
+                        className="inline-flex items-center gap-2 rounded border border-gray-700 px-3 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+                      >
+                        {view.loadingOlder && <Loader2 size={12} className="animate-spin" />}
+                        Load older messages
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="mb-3 text-center text-xs text-gray-600">Start of conversation</p>
+                  )}
+                  <ul className="pb-2">
+                    {rows.map(({ message, own, showHeader, dayLabel, unreadDivider }) => {
+                      const label = authorLabel(message, usernames);
+                      const deleted = !!message.deletedAt;
+                      const isEditing = editing?.id === message.id;
+                      const bot = message.authorKind !== 'user';
+                      return (
+                        <Fragment key={message.id}>
+                          {dayLabel && (
+                            <li
+                              role="separator"
+                              data-testid="hub-chat-day-divider"
+                              className="my-4 flex items-center gap-3 text-xs font-medium text-gray-400"
+                            >
+                              <span className="h-px flex-1 bg-gray-800" />
+                              {dayLabel}
+                              <span className="h-px flex-1 bg-gray-800" />
+                            </li>
+                          )}
+                          {unreadDivider && (
+                            <li
+                              role="separator"
+                              data-testid="hub-chat-unread-divider"
+                              className="my-3 flex items-center gap-3 text-xs font-medium text-red-400"
+                            >
+                              <span className="h-px flex-1 bg-red-500/50" />
+                              Unread
+                              <span className="h-px flex-1 bg-red-500/50" />
+                            </li>
+                          )}
+                          <li
+                            data-testid="hub-chat-message"
+                            data-own={own ? 'true' : undefined}
+                            data-header={showHeader ? 'true' : undefined}
+                            className={`group relative flex gap-2 rounded-lg px-1 py-0.5 hover:bg-white/[0.02] ${
+                              own ? 'flex-row-reverse' : ''
+                            } ${showHeader ? 'mt-3' : ''}`}
+                          >
+                            {!own && (
+                              <div className="w-8 shrink-0" aria-hidden="true">
+                                {showHeader &&
+                                  (bot ? (
+                                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-700 text-gray-200">
+                                      <Bot size={16} />
+                                    </div>
+                                  ) : (
+                                    <div
+                                      className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold text-white ${avatarColorFor(
+                                        message.authorUserId ?? label,
+                                      )}`}
+                                    >
+                                      {avatarInitials(label)}
+                                    </div>
+                                  ))}
+                              </div>
+                            )}
+                            <div
+                              className={`flex min-w-0 max-w-[80%] flex-col ${
+                                own ? 'items-end' : 'items-start'
+                              }`}
+                            >
+                              {showHeader && (
+                                <div className="mb-1 flex items-baseline gap-2 px-1 text-xs">
+                                  {!own && (
+                                    <span className="font-semibold text-gray-100">{label}</span>
+                                  )}
+                                  <span
+                                    className="text-gray-500"
+                                    title={formatDateTime(message.createdAt)}
+                                  >
+                                    {formatTime(message.createdAt, {
+                                      hour: 'numeric',
+                                      minute: '2-digit',
+                                    })}
+                                  </span>
+                                </div>
+                              )}
+                              {isEditing && editing ? (
+                                <form
+                                  className="flex w-full min-w-[16rem] flex-col gap-1"
+                                  onSubmit={(e) => {
+                                    e.preventDefault();
+                                    void saveEdit();
+                                  }}
+                                >
+                                  <textarea
+                                    aria-label="Edit message"
+                                    autoFocus
+                                    rows={Math.min(8, Math.max(2, editing.text.split('\n').length))}
+                                    value={editing.text}
+                                    disabled={editing.saving}
+                                    onChange={(e) =>
+                                      setEditing((cur) =>
+                                        cur ? { ...cur, text: e.target.value, error: null } : cur,
+                                      )
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Escape') {
+                                        e.preventDefault();
+                                        setEditing(null);
+                                      } else if (isSubmitEnter(e)) {
+                                        e.preventDefault();
+                                        e.currentTarget.form?.requestSubmit();
+                                      }
+                                    }}
+                                    className="w-full resize-y rounded-xl border border-blue-500/60 bg-gray-900 px-3 py-2 text-sm text-gray-100 focus:outline-none"
+                                  />
+                                  <div className="flex items-center justify-end gap-2 text-xs">
+                                    {editing.error && (
+                                      <span role="alert" className="mr-auto text-red-300">
+                                        {editing.error}
+                                      </span>
+                                    )}
+                                    <span className="text-gray-500">Esc to cancel</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditing(null)}
+                                      className="rounded px-2 py-1 text-gray-300 hover:bg-gray-800"
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      type="submit"
+                                      disabled={editing.saving || !editing.text.trim()}
+                                      className="inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                                    >
+                                      {editing.saving && (
+                                        <Loader2 size={12} className="animate-spin" />
+                                      )}
+                                      Save
+                                    </button>
+                                  </div>
+                                </form>
+                              ) : (
+                                <div
+                                  title={showHeader ? undefined : formatDateTime(message.createdAt)}
+                                  className={`break-words rounded-2xl px-3 py-2 text-sm ${
+                                    own
+                                      ? 'bg-blue-600/30 text-blue-50'
+                                      : 'bg-gray-800 text-gray-100'
+                                  } ${showHeader ? (own ? 'rounded-tr-md' : 'rounded-tl-md') : ''}`}
+                                >
+                                  {deleted ? (
+                                    <span className="italic text-gray-500">Message deleted</span>
+                                  ) : (
+                                    <div className="markdown-content" data-testid="hub-chat-body">
+                                      <MarkdownContent
+                                        content={message.body}
+                                        components={markdownComponentsCompact}
+                                        rehypePlugins={[]}
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              {!deleted && message.editedAt && !isEditing && (
+                                <span
+                                  className="px-1 text-[11px] text-gray-500"
+                                  title={`Edited ${formatDateTime(message.editedAt)}`}
+                                >
+                                  Edited
+                                </span>
+                              )}
+                            </div>
+                            {own && !deleted && !isEditing && (
+                              <div className="flex items-start gap-1 pt-1 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEditing({
+                                      id: message.id,
+                                      channelId: message.channelId,
+                                      text: message.body,
+                                      saving: false,
+                                      error: null,
+                                      attempt: 0,
+                                    })
+                                  }
+                                  aria-label="Edit message"
+                                  title="Edit"
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-700 hover:text-white"
+                                >
+                                  <Pencil size={13} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void deleteMessage(message)}
+                                  aria-label="Delete message"
+                                  title="Delete"
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-700 hover:text-red-300"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
+                            )}
+                          </li>
+                        </Fragment>
+                      );
+                    })}
+                  </ul>
+                  <div ref={listEndRef} />
+                </>
+              )}
+            </div>
+
+            <div className="shrink-0 border-t border-gray-800 p-3">
+              {sendError && (
+                <p role="alert" className="mb-2 text-xs text-red-300">
+                  {sendError}
+                </p>
+              )}
+              {!selected.membership ? (
+                <div className="flex items-center justify-between gap-2 text-sm text-gray-400">
+                  You are viewing this channel.
+                  <button
+                    type="button"
+                    onClick={() => void joinSelected()}
+                    className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500"
+                  >
+                    Join channel
+                  </button>
+                </div>
+              ) : (
+                <form
+                  className="flex items-end gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void send();
+                  }}
+                >
+                  <textarea
+                    value={draft}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      if (selectedId)
+                        updateHubChatSession((st) => ({
+                          ...st,
+                          drafts: { ...st.drafts, [selectedId]: value },
+                        }));
+                    }}
+                    onKeyDown={(e) => {
+                      if (isSubmitEnter(e)) {
+                        e.preventDefault();
+                        void send();
+                      }
+                    }}
+                    disabled={!canPost}
+                    rows={Math.min(8, Math.max(1, draft.split('\n').length))}
+                    placeholder={
+                      canPost
+                        ? `Message ${channelLabel(selected, usernames, viewerUserId)} (Markdown)`
+                        : 'This channel is archived'
+                    }
+                    aria-label="Message"
+                    data-testid="hub-chat-composer"
+                    className="min-h-[2.5rem] flex-1 resize-none rounded-xl border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500 disabled:opacity-50"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!canPost || sending || !draft.trim()}
+                    aria-label="Send"
+                    data-testid="hub-chat-send"
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50"
+                  >
+                    {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                  </button>
+                </form>
+              )}
+            </div>
+          </>
+        )}
+      </section>
+
+      {dialog === 'channel' && (
+        <NewChannelDialog
+          members={orgMembers}
+          viewerUserId={viewerUserId}
+          clock={clockNow}
+          onClose={() => setDialog(null)}
+          onCreated={adoptChannel}
+        />
+      )}
+      {dialog === 'dm' && (
+        <NewDmDialog
+          members={orgMembers}
+          clock={clockNow}
+          onClose={() => setDialog(null)}
+          onOpened={adoptChannel}
+        />
+      )}
+      {dialog === 'browse' && (
+        <BrowseChannelsDialog
+          clock={clockNow}
+          onClose={() => setDialog(null)}
+          onJoined={adoptChannel}
+        />
+      )}
+      {dialog === 'settings' && selected && (
+        <ChannelSettingsDialog
+          key={selected.id}
+          channel={selected}
+          usernames={usernames}
+          orgMembers={orgMembers}
+          viewerUserId={viewerUserId}
+          onClose={() => setDialog(null)}
+          clock={clockNow}
+          onChanged={(channel, issuedAt) => ingestChannel(channel, issuedAt, ['meta'])}
+          onMembershipChanged={ingestMembership}
+          onLeft={(channelId) => {
+            setDialog(null);
+            changeChannels(channelId, ['presence'], (prev) =>
+              prev.filter((c) => c.id !== channelId),
+            );
+            setSelectedId(null);
+            setView(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}

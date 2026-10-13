@@ -138,6 +138,29 @@ export function getOrCreateDm(
     .immediate();
 }
 
+/** Renames a channel or changes its topic. Fields left undefined are kept. */
+export function updateChannel(
+  channelId: string,
+  patch: { name?: string; topic?: string | null },
+): HubChatChannelRow | null {
+  const sets: string[] = [];
+  const args: (string | null)[] = [];
+  if (patch.name !== undefined) {
+    sets.push('name = ?');
+    args.push(patch.name);
+  }
+  if (patch.topic !== undefined) {
+    sets.push('topic = ?');
+    args.push(patch.topic);
+  }
+  if (sets.length > 0) {
+    db()
+      .prepare(`UPDATE hub_chat_channels SET ${sets.join(', ')} WHERE id = ?`)
+      .run(...args, channelId);
+  }
+  return getChannel(channelId);
+}
+
 export function archiveChannel(channelId: string): boolean {
   const r = db()
     .prepare(

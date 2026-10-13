@@ -35329,8 +35329,12 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/HubChatChannel"
+                  viewerUserId:
+                    type: string
+                    description: The user the caller acts as, for telling own messages apart.
                 required:
                   - channels
+                  - viewerUserId
         "401":
           description: Authentication required, or the caller has no user identity.
           content:
@@ -35539,6 +35543,75 @@ paths:
                 $ref: "#/components/schemas/HubChatErrorResponse"
         "404":
           description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+    patch:
+      tags:
+        - Hub Chat
+      summary: Rename a channel or change its topic
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 80
+                topic:
+                  type: string
+                  nullable: true
+                  maxLength: 250
+              additionalProperties: false
+      responses:
+        "200":
+          description: The updated channel.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channel:
+                    $ref: "#/components/schemas/HubChatChannel"
+                required:
+                  - channel
+        "400":
+          description: Validation failed, or the channel is a DM.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: The caller has not joined the channel.
           content:
             application/json:
               schema:

@@ -96,6 +96,7 @@ import SupportOverviewPage from './components/SupportOverviewPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
 import GoogleChatPage from './components/GoogleChatPage';
+import ChatPane from './components/ChatPane';
 import { useGoogleChatPush, useGoogleChatPushBootstrap } from './utils/googleChatPush';
 import TodosPage from './components/TodosPage';
 import PersonalDashboard from './components/PersonalDashboard';
@@ -3406,6 +3407,14 @@ export default function App({ initialView }: any = {}) {
         // Google Chat push (Workspace Events API). The server sends these only
         // to the user whose Google account they belong to. Bridged so the
         // unread store and the open Chat pane react without a WS dependency.
+        // Agent Hub chat. The server sends these only to channel members.
+        case 'hub_chat_message':
+        case 'hub_chat_message_update':
+        case 'hub_chat_read':
+        case 'hub_chat_channel_update':
+          window.dispatchEvent(new CustomEvent(data.type, { detail: data }));
+          break;
+
         case 'google_chat_message':
         case 'google_chat_unread':
         case 'google_chat_events_status':
@@ -7266,11 +7275,15 @@ export default function App({ initialView }: any = {}) {
                     />
                   }
                   chat={
-                    <GoogleChatPage
-                      onOpenAccountSettings={() => setCurrentView('settings:account')}
-                      onSessionStarted={handleOpenCreatedSession}
-                      onOpenSession={({ sessionId, agentId }) =>
-                        focusAgentSession(agentId, sessionId)
+                    <ChatPane
+                      google={
+                        <GoogleChatPage
+                          onOpenAccountSettings={() => setCurrentView('settings:account')}
+                          onSessionStarted={handleOpenCreatedSession}
+                          onOpenSession={({ sessionId, agentId }) =>
+                            focusAgentSession(agentId, sessionId)
+                          }
+                        />
                       }
                     />
                   }

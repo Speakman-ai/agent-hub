@@ -46,6 +46,7 @@ import {
   markRead,
   removeMember,
   softDeleteMessage,
+  updateChannel,
   updateMemberPrefs,
 } from '../hub-chat-store.js';
 import {
@@ -59,6 +60,7 @@ import {
   MuteRequestSchema,
   NotifyLevelRequestSchema,
   PostMessageRequestSchema,
+  UpdateChannelRequestSchema,
 } from './hub-chat.openapi.js';
 import {
   HUB_CHAT_CHANNEL_UPDATE_EVENT,
@@ -320,7 +322,10 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     const rows = listChannelsForUser(caller.orgId, caller.userId, {
       includeArchived: q.includeArchived === 'true',
     });
-    res.json({ channels: rows.map((r) => shapeChannel(r, caller.userId, r)) });
+    res.json({
+      channels: rows.map((r) => shapeChannel(r, caller.userId, r)),
+      viewerUserId: caller.userId,
+    });
   });
 
   router.get('/api/chat/channels/browse', (req: Request, res: Response) => {
@@ -377,6 +382,29 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       channel: channelBody(caller, v.channel),
       members: listMembers(v.channel.id).map(shapeMember),
     });
+  });
+
+  router.patch('/api/chat/channels/:channelId', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const m = memberChannel(caller, String(req.params.channelId), res);
+    if (!m) return;
+    const body = parse(UpdateChannelRequestSchema, req.body, res);
+    if (!body) return;
+    if (m.channel.kind === 'dm') {
+      bad(res, 400, 'A DM has no name or topic', 'dm_fixed');
+      return;
+    }
+    const updated = updateChannel(m.channel.id, {
+      name: body.name,
+      topic: body.topic === '' ? null : body.topic,
+    });
+    if (!updated) {
+      bad(res, 404, 'Channel not found', 'channel_not_found');
+      return;
+    }
+    emitChannelUpdate(updated, 'updated');
+    res.json({ channel: channelBody(caller, updated) });
   });
 
   router.post('/api/chat/channels/:channelId/join', (req: Request, res: Response) => {

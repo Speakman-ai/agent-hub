@@ -362,3 +362,46 @@ describe('read state, notify level and mute', () => {
       .expect(400);
   });
 });
+
+describe('channel settings', () => {
+  it('lets a member rename a channel and set or clear its topic', async () => {
+    const ch = await makeChannel(alice, { name: 'general', memberUserIds: [bob] });
+    const res = await request(as({ userId: bob }))
+      .patch(`/api/chat/channels/${ch.id}`)
+      .send({ name: 'lobby', topic: 'Say hi' })
+      .expect(200);
+    expect(res.body.channel).toMatchObject({ name: 'lobby', topic: 'Say hi' });
+    const cleared = await request(as({ userId: alice }))
+      .patch(`/api/chat/channels/${ch.id}`)
+      .send({ topic: '' })
+      .expect(200);
+    expect(cleared.body.channel).toMatchObject({ name: 'lobby', topic: null });
+  });
+
+  it('refuses non-members, DMs and empty patches', async () => {
+    const ch = await makeChannel(alice, { name: 'general' });
+    await request(as({ userId: carol }))
+      .patch(`/api/chat/channels/${ch.id}`)
+      .send({ name: 'x' })
+      .expect(409);
+    await request(as({ userId: alice }))
+      .patch(`/api/chat/channels/${ch.id}`)
+      .send({})
+      .expect(400);
+    const dm = await request(as({ userId: alice }))
+      .post('/api/chat/dms')
+      .send({ userId: bob })
+      .expect(201);
+    await request(as({ userId: alice }))
+      .patch(`/api/chat/channels/${dm.body.channel.id}`)
+      .send({ name: 'x' })
+      .expect(400);
+  });
+
+  it('returns the viewer id with the channel list', async () => {
+    const res = await request(as({ userId: alice }))
+      .get('/api/chat/channels')
+      .expect(200);
+    expect(res.body.viewerUserId).toBe(alice);
+  });
+});

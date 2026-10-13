@@ -25,6 +25,7 @@ export const HUB_CHAT_EVENT_TYPES: ReadonlySet<string> = new Set([
 
 export type HubChatChannelUpdateReason =
   | 'created'
+  | 'updated'
   | 'member_added'
   | 'member_removed'
   | 'membership';

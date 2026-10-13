@@ -336,6 +336,10 @@ export function requestOpenChatSpace(spaceId: string): void {
   globalThis.window?.dispatchEvent(new CustomEvent(OPEN_CHAT_SPACE_EVENT, { detail: { spaceId } }));
 }
 
+export function hasPendingOpenChatSpace(): boolean {
+  return pendingOpenSpaceId !== null;
+}
+
 export function takePendingOpenChatSpace(): string | null {
   const id = pendingOpenSpaceId;
   pendingOpenSpaceId = null;

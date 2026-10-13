@@ -123,6 +123,16 @@ export const CreateChannelRequestSchema = z
     path: ['name'],
   });
 
+export const UpdateChannelRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(MAX_NAME).optional(),
+    topic: z.string().trim().max(MAX_TOPIC).nullable().optional(),
+  })
+  .strict()
+  .refine((v) => v.name !== undefined || v.topic !== undefined, {
+    message: 'Pass name or topic',
+  });
+
 export const CreateDmRequestSchema = z.object({ userId: z.string().min(1) }).strict();
 
 export const AddMembersRequestSchema = z
@@ -229,7 +239,14 @@ registerPath({
   responses: {
     200: {
       description: 'Channels the caller belongs to in the active org.',
-      content: jsonContent(z.object({ channels: z.array(HubChatChannelComponent) })),
+      content: jsonContent(
+        z.object({
+          channels: z.array(HubChatChannelComponent),
+          viewerUserId: z.string().openapi({
+            description: 'The user the caller acts as, for telling own messages apart.',
+          }),
+        }),
+      ),
     },
     ...common,
   },
@@ -293,6 +310,21 @@ registerPath({
       ),
     },
     404: notFound,
+    ...common,
+  },
+});
+
+registerPath({
+  method: 'patch',
+  path: '/api/chat/channels/{channelId}',
+  tags: [TAG],
+  summary: 'Rename a channel or change its topic',
+  request: { params: channelParams, body: { content: jsonContent(UpdateChannelRequestSchema) } },
+  responses: {
+    200: { description: 'The updated channel.', content: jsonContent(channelEnvelope) },
+    400: errorResponse('Validation failed, or the channel is a DM.'),
+    404: notFound,
+    409: errorResponse('The caller has not joined the channel.'),
     ...common,
   },
 });
