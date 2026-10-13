@@ -24,6 +24,7 @@ import createSecurityAuditRoutes from './routes/security-audit.js';
 import createCiRunsRoutes from './routes/ci-runs.js';
 import createProjectStatsRoutes from './routes/project-stats.js';
 import createPullsNativeRoutes from './routes/pulls-native.js';
+import createPrEnvironmentShareRoutes from './routes/pr-environment-share.js';
 import { refreshGitHostNotifyConfigs } from './git-host/lifecycle.js';
 import { hostedBarePathForProject } from './git-host/repo-store.js';
 import { notifyMirrorPush } from './git-host/mirror.js';
@@ -51,7 +52,7 @@ import {
 import { hasPreviewConfigAtSha, probePreviewConfigAtSha } from './preview/pr-environment-config.js';
 import { readNativePrState } from './preview/pr-environment-native.js';
 import { registerPrEnvironmentRuntime } from './preview/pr-environment-runtime-setup.js';
-import { bareRepoPath, hostedRepoExists } from './native-pr/host.js';
+import { bareRepoPath, hostedRepoExists, isAgentHubHosted } from './native-pr/host.js';
 import { revParse } from './native-pr/git-read.js';
 import { tryAutoMergeArmedNativePr } from './native-pr/auto-merge-armed.js';
 import { startScheduledAutoMergeTicker } from './native-pr/scheduled-auto-merge.js';
@@ -323,6 +324,7 @@ import {
   setTriggerAutoSessionShip,
   setTriggerUncommittedCommitNudge,
   resolveUserGithubToken,
+  resolveOrgOwnerGithubToken,
 } from './auto-git.js';
 import {
   triggerSessionShip,
@@ -379,8 +381,22 @@ import {
   createPrEnvironmentProxyMiddleware,
   presentPrEnvironmentUrl,
   responseHeaderTimeoutFromEnv,
+  sendStatusPage,
   type PrEnvironmentProxyDeps,
 } from './preview/pr-environment-proxy.js';
+import {
+  createPrEnvironmentAccessGate,
+  prEnvironmentShareStoreFor,
+} from './preview/pr-environment-share.js';
+import { createPrEnvironmentReadyHandler } from './preview/pr-environment-comment.js';
+import { buildPrEnvironmentPublicUrl } from './preview/preview-subdomain-host.js';
+import {
+  githubRepoOf,
+  prEnvironmentSourceFor,
+  readGithubPrState,
+} from './preview/pr-environment-github.js';
+import { buildNativePrUrl } from './native-pr/url.js';
+import { verifyPassword as verifySharePassword } from './password.js';
 import { previewSubdomainRewrittenUrl } from './preview/preview-public-url.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import {
@@ -734,10 +750,21 @@ app.use(uriDecodeGuard);
 // PR environment ingress: `pr-<n>--<project>.<previewSubdomainBase>` is
 // reverse-proxied to the environment's upstream. Before CORS and the body
 // parsers, so the PR app's own preflights and request bodies pass through
-// untouched. Public by design; see server/preview/pr-environment-proxy.ts.
+// untouched. Hub members get in with a ticket from the PR page, everyone
+// else with a share link; see server/preview/pr-environment-share.ts.
 const prEnvironmentProxyDeps: PrEnvironmentProxyDeps = {
   getBase: () => config.previewSubdomainBase,
   responseHeaderTimeoutMs: responseHeaderTimeoutFromEnv(),
+  gate: createPrEnvironmentAccessGate({
+    // Same org as `lookup` below: the active one.
+    store: () => prEnvironmentShareStoreFor(getDb()),
+    sendPage: sendStatusPage,
+    hubPrUrl: ({ projectId, prNumber }) => {
+      const base = config.publicUrl?.trim().replace(/\/+$/, '');
+      return base ? `${base}${buildNativePrUrl(projectId, prNumber)}` : null;
+    },
+    verifyPassword: verifySharePassword,
+  }),
   lookup: ({ projectLabel, prNumber }) => {
     // Hostnames are lower-case; project ids may not be.
     const project =
@@ -745,7 +772,9 @@ const prEnvironmentProxyDeps: PrEnvironmentProxyDeps = {
       getProjects().find((p) => p.id.toLowerCase() === projectLabel) ??
       null;
     if (!project) return null;
-    const env = prEnvironments.get(project.id, { source: 'native', prNumber });
+    const source = prEnvironmentSourceFor(project);
+    if (!source) return null;
+    const env = prEnvironments.get(project.id, { source, prNumber });
     if (!env) return null;
     return {
       projectId: project.id,
@@ -963,6 +992,21 @@ function currentPrEnvironmentOrg(): PrEnvironmentOrgContext<NonNullable<typeof s
   };
 }
 
+/**
+ * A GitHub-hosted PR's state, read with a project Owner's token that can
+ * reach the repo. Throws when it cannot be read; the service then changes
+ * nothing.
+ */
+function readGithubPrStateFor(project: Project, prNumber: number) {
+  const repo = githubRepoOf(project);
+  if (!repo) return Promise.reject(new Error(`Project ${project.id} has no githubRepo`));
+  return readGithubPrState({
+    repo,
+    prNumber,
+    getToken: () => resolveOrgOwnerGithubToken(config, repo),
+  });
+}
+
 const prEnvironments = createOrgScopedPrEnvironmentService({
   currentOrg: currentPrEnvironmentOrg,
   // One service per org: everything an operation does stays in the org it
@@ -975,24 +1019,42 @@ const prEnvironments = createOrgScopedPrEnvironmentService({
       // The PR row and hosted ref are durable, so every reconcile (live
       // hooks and catch-up after a restart) reads the same truth, in this org.
       readPrState: (project, pr) =>
-        readNativePrState(
-          {
-            getPr: (projectId, n) =>
-              org.stmts.getPullRequestByNumber.get(projectId, n) as PullRequestRow | undefined,
-            revParseHead: async (projectId, branch) =>
-              hostedRepoExists(projectId)
-                ? revParse(bareRepoPath(projectId), `refs/heads/${branch}`)
-                : null,
-          },
-          project.id,
-          pr.prNumber,
-        ),
+        pr.source === 'github'
+          ? readGithubPrStateFor(project, pr.prNumber)
+          : readNativePrState(
+              {
+                getPr: (projectId, n) =>
+                  org.stmts.getPullRequestByNumber.get(projectId, n) as PullRequestRow | undefined,
+                revParseHead: async (projectId, branch) =>
+                  hostedRepoExists(projectId)
+                    ? revParse(bareRepoPath(projectId), `refs/heads/${branch}`)
+                    : null,
+              },
+              project.id,
+              pr.prNumber,
+            ),
       listOpenPrs: () =>
         (
           org.db
             .prepare("SELECT project_id, number FROM pull_requests WHERE status = 'open'")
             .all() as Array<{ project_id: string; number: number }>
         ).map((r) => ({ projectId: r.project_id, prNumber: r.number })),
+      // One PR comment with the public URL: posted on first ready, edited on
+      // every rebuild (native PR conversation, or a GitHub issue comment).
+      onReady: (() => {
+        const announce = createPrEnvironmentReadyHandler({
+          db: org.db,
+          getBase: () => config.previewSubdomainBase,
+          getPublicUrl: () => config.publicUrl,
+          isHubHosted: (project) => isAgentHubHosted(project as Project),
+          broadcast,
+          getGithubToken: (repo) => resolveOrgOwnerGithubToken(config, repo),
+          buildUrl: buildPrEnvironmentPublicUrl,
+        });
+        return async (project: Project, env: PrEnvironmentDto) => {
+          await announce(project, env);
+        };
+      })(),
       // Clients get the public `pr-<n>--<project>` URL, not the upstream.
       broadcast: (data) =>
         broadcast(
@@ -1011,6 +1073,20 @@ const prEnvironments = createOrgScopedPrEnvironmentService({
 });
 // Catch up on what the active org owes from before a restart (environment
 // work, once a runtime exists).
+// GitHub-hosted PRs have no webhook into the Hub: re-read every unsettled
+// environment's PR on a timer so merges, closes, and new pushes are applied.
+// Hub-hosted PRs are event-driven; for them this is a cheap safety net.
+cron.schedule(
+  '*/5 * * * *',
+  () => {
+    void prEnvironments.catchUp().catch((err: unknown) => {
+      console.warn(
+        `[pr-env] periodic catch-up failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  },
+  { name: 'pr-environment-catch-up', noOverlap: true },
+);
 void prEnvironments.catchUp().catch((err: unknown) => {
   console.warn(
     `[pr-env] startup catch-up failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -2023,6 +2099,7 @@ export const routeDeps: RouteDeps = {
   prEnvironments,
   presentPrEnvironment: (env) =>
     presentPrEnvironmentUrl(env, config.previewSubdomainBase, config.publicUrl),
+  readGithubPrState: readGithubPrStateFor,
   findProject,
   findAgent,
   getEnrichedAgent,
@@ -2274,6 +2351,7 @@ app.use(createSecurityAuditRoutes(routeDeps));
 app.use(createCiRunsRoutes(routeDeps));
 app.use(createProjectStatsRoutes(routeDeps));
 app.use(createPullsNativeRoutes(routeDeps));
+app.use(createPrEnvironmentShareRoutes(routeDeps));
 app.use(createPreviewSecretsRoutes(routeDeps));
 app.use(createProjectAwsRoutes(routeDeps));
 app.use(createInfraRoutes(routeDeps));

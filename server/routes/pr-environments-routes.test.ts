@@ -50,6 +50,7 @@ function setup(
     hasConfig?: boolean;
     prStatus?: string;
     presentPrEnvironment?: RouteDeps['presentPrEnvironment'];
+    readGithubPrState?: RouteDeps['readGithubPrState'];
   } = {},
 ) {
   const db = new Database(':memory:');
@@ -61,6 +62,7 @@ function setup(
   const projects: Record<string, any> = {
     hosted: { id: 'hosted', gitHost: 'agenthub' },
     bare: { id: 'bare' },
+    gh: { id: 'gh', githubRepo: 'acme/app' },
   };
   const prRow = {
     number: 5,
@@ -98,6 +100,7 @@ function setup(
     broadcast: vi.fn(),
     config: {},
     presentPrEnvironment: opts.presentPrEnvironment,
+    readGithubPrState: opts.readGithubPrState,
   } as unknown as RouteDeps;
   const app = express();
   app.use(express.json());
@@ -215,5 +218,41 @@ describe('native PR environment routes', () => {
     );
     expect((await request(app).get('/api/projects/bare/pulls/5/preview/state')).status).toBe(400);
     expect((await request(app).get('/api/projects/nope/pulls/5/preview/state')).status).toBe(404);
+  });
+});
+
+describe('GitHub-hosted PR environment routes', () => {
+  it('starts from GitHub PR state, reports it, and stops it', async () => {
+    const readGithubPrState = vi.fn(async () => ({
+      status: 'open' as const,
+      headSha: SHA,
+      headBranch: 'feature/x',
+    }));
+    const { app, runtime } = setup({ readGithubPrState });
+    const start = await request(app).post('/api/projects/gh/pulls/12/preview/start').send({});
+    expect(start.status).toBe(200);
+    expect(start.body.environment).toMatchObject({
+      source: 'github',
+      prNumber: 12,
+      headSha: SHA,
+      status: 'queued',
+    });
+    expect(readGithubPrState).toHaveBeenCalledWith(expect.objectContaining({ id: 'gh' }), 12);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(runtime.build).toHaveBeenCalledTimes(1);
+
+    const state = await request(app).get('/api/projects/gh/pulls/12/preview/state');
+    expect(state.body.environment).toMatchObject({ source: 'github', prNumber: 12 });
+
+    const stop = await request(app).post('/api/projects/gh/pulls/12/preview/stop');
+    expect(stop.body).toMatchObject({ ok: true, stopped: true });
+  });
+
+  it('refuses a closed GitHub PR and a project without a GitHub repo', async () => {
+    const { app } = setup({ readGithubPrState: async () => ({ status: 'merged' as const }) });
+    const closed = await request(app).post('/api/projects/gh/pulls/12/preview/start').send({});
+    expect(closed.status).toBe(409);
+    const bare = await request(app).post('/api/projects/bare/pulls/12/preview/start').send({});
+    expect(bare.status).toBe(400);
   });
 });

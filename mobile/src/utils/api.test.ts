@@ -1137,4 +1137,38 @@ describe('api PR preview helpers — URL + method + body parity with web client'
     expect(url).toBe('https://example.test/api/projects/p1/pulls/7/preview/state');
     expect(init?.method ?? 'GET').toBe('GET');
   });
+  it('errors keep the HTTP status and server code (web parity)', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: 'needs ingress', code: 'pr_env_ingress_not_configured' }),
+    });
+    const err = await api.listPrEnvironmentShareLinks('p1', 7).catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 400, code: 'pr_env_ingress_not_configured' });
+  });
+  it('PR environment share links and access hit the same routes as web', async () => {
+    const calls: Array<[string, string, unknown]> = [];
+    const run = async (fn: () => Promise<unknown>) => {
+      mockFetch.mockClear();
+      await fn();
+      const [url, init] = lastCall();
+      calls.push([
+        url.replace('https://example.test/api', ''),
+        init?.method ?? 'GET',
+        init?.body ? JSON.parse(init.body) : undefined,
+      ]);
+    };
+    await run(() => api.listPrEnvironmentShareLinks('p1', 7));
+    await run(() => api.createPrEnvironmentShareLink('p1', 7, { expiresInHours: 24, label: 'QA' }));
+    await run(() => api.revokePrEnvironmentShareLink('p1', 7, 'l/1'));
+    await run(() => api.openPrEnvironmentAccess('p1', 7));
+    await run(() => api.setPrEnvironmentSharePassword('p1', null));
+    expect(calls).toEqual([
+      ['/projects/p1/pulls/7/preview/share-links', 'GET', undefined],
+      ['/projects/p1/pulls/7/preview/share-links', 'POST', { expiresInHours: 24, label: 'QA' }],
+      ['/projects/p1/pulls/7/preview/share-links/l%2F1', 'DELETE', undefined],
+      ['/projects/p1/pulls/7/preview/access', 'POST', undefined],
+      ['/projects/p1/preview-share/password', 'PUT', { password: null }],
+    ]);
+  });
 });

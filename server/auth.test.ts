@@ -227,6 +227,32 @@ describe('authMiddleware (API key)', () => {
     expect(res.statusCode).toBe(401);
   });
 
+  it('does not accept a PR environment share token or access cookie on any Hub /api route', () => {
+    config.apiKey = 'secret-key';
+    const share = 'ahs_3f1c2a9e-1111-4222-8333-944455556666.c2lnbmF0dXJl';
+    const member = 'ahm_eyJwIjoiZGVtbyJ9.c2ln';
+    for (const path of [
+      '/api/projects/demo/pulls/7/preview/state',
+      '/api/projects/demo/pulls/7/preview/share-links',
+      '/api/sessions/s1/preview/proxy/',
+      '/api/agents',
+    ]) {
+      const next = vi.fn();
+      const res = mockRes();
+      authMiddleware(
+        mockReq({
+          path,
+          query: { share, token: share },
+          headers: { cookie: `ah_pr_env=${member}; ah_pr_env_pw=x`, 'x-api-key': '' },
+        }),
+        res as unknown as Response,
+        next,
+      );
+      expect(next, path).not.toHaveBeenCalled();
+      expect(res.statusCode, path).toBe(401);
+    }
+  });
+
   it('returns 401 when key is required but not provided', () => {
     config.apiKey = 'secret-key';
     const next = vi.fn();

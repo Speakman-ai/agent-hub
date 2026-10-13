@@ -425,6 +425,13 @@ export interface PrEnvironmentServiceDeps {
    */
   listOpenPrs?: () => Array<{ projectId: string; prNumber: number }>;
   broadcast?: (data: Record<string, unknown>) => void;
+  /**
+   * An environment build just became ready (first ready of a generation),
+   * and again for every ready environment on each catch-up, so a failed
+   * announcement is retried. Must be idempotent per build. Errors are logged
+   * and swallowed; the lifecycle never waits on this.
+   */
+  onReady?: (project: Project, env: PrEnvironmentDto) => void | Promise<void>;
   /** Defaults to the registered process-wide runtime. */
   getRuntime?: () => PrEnvironmentRuntime | null;
   now?: () => number;
@@ -571,6 +578,18 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
         now(),
       );
       broadcastRow(saved);
+      if (saved.status === 'ready' && row.status !== 'ready' && deps.onReady) {
+        const env = toPrEnvironmentDto(saved);
+        void Promise.resolve()
+          .then(() => deps.onReady!(project, env))
+          .catch((err: unknown) =>
+            logWarn(
+              `[pr-env] ready hook failed for ${project.id}#${saved.pr_number}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            ),
+          );
+      }
     };
     return {
       building: (runnerRef) =>
@@ -607,6 +626,30 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
         deps.store.appendLog(envId, list, now());
       },
     };
+  }
+
+  /**
+   * Re-run `onReady` for every ready environment. The ready transition fires
+   * it once; if that announcement failed (a GitHub blip, a restart mid-post)
+   * nothing else would ask again for an unchanged build. The hook is
+   * idempotent per build, so an announced build costs a lookup and no post.
+   */
+  async function reannounceReady(): Promise<void> {
+    if (!deps.onReady) return;
+    for (const row of deps.store.listUnsettled()) {
+      if (row.status !== 'ready' || row.cleanup_pending === 1) continue;
+      const project = deps.findProject?.(row.project_id);
+      if (!project) continue;
+      try {
+        await deps.onReady(project, toPrEnvironmentDto(row));
+      } catch (err: unknown) {
+        logWarn(
+          `[pr-env] ready announcement retry failed for ${row.project_id}#${row.pr_number}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
   }
 
   /** Persist a transition (if it changed anything) and run its effects. */
@@ -1007,6 +1050,7 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
         }
       }
       await self.recoverPending();
+      await reannounceReady();
     },
     async recoverPending() {
       const totals = { tornDown: 0, dispatched: 0, reattached: 0, interrupted: 0 };

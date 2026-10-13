@@ -24,6 +24,8 @@ import { Pencil, Check, X, Sparkles, SquareKanban, Layers } from 'lucide-react';
 import { api } from '../utils/api';
 import FileDiffView from './FileDiffView';
 import ScheduleAutoMergeButton from './ScheduleAutoMergeButton';
+import PrEnvironmentShareLinks from './PrEnvironmentShareLinks';
+import { resolvePrEnvironmentOpenUrl } from '@shared/utils/prEnvironmentShare';
 import { MarkdownContent } from './MarkdownRenderer';
 import { RunRow } from './CiRunsSection';
 import {
@@ -728,6 +730,34 @@ function PrDetail({
     }
   }, [projectId, pr?.number, refreshPreview, onToast]);
 
+  // Environments behind wildcard ingress are private: open them with a
+  // single-use member ticket. The tab is opened synchronously so the popup
+  // blocker sees a user gesture. The plain URL is used only where access
+  // links do not apply; any other failure closes the tab and says why.
+  const handleOpenPreview = useCallback(
+    (e: React.MouseEvent<HTMLAnchorElement>) => {
+      const plainUrl = e.currentTarget.href;
+      if (!pr?.number) return;
+      const number = pr.number;
+      e.preventDefault();
+      const tab = window.open('', '_blank');
+      if (tab) tab.opener = null;
+      void resolvePrEnvironmentOpenUrl(
+        () => api.openPrEnvironmentAccess(projectId, number),
+        plainUrl,
+      ).then((result) => {
+        if ('error' in result) {
+          tab?.close();
+          onToast?.(`Could not open the PR environment: ${result.error}`, 'error');
+          return;
+        }
+        if (tab) tab.location.href = result.url;
+        else window.open(result.url, '_blank', 'noopener,noreferrer');
+      });
+    },
+    [projectId, pr?.number, onToast],
+  );
+
   // One polling loop per (PR, head): reads immediately, then re-reads after
   // every request settles, success or failure, so neither a transient error
   // nor an unchanged response can stop it. Fast while queued/building, slower
@@ -1399,6 +1429,7 @@ function PrDetail({
                     href={previewView.url}
                     target="_blank"
                     rel="noopener noreferrer"
+                    onClick={handleOpenPreview}
                     className="flex items-center gap-1.5 text-sm text-emerald-300 hover:text-emerald-100 transition-colors"
                   >
                     <ExternalLink size={14} />
@@ -1434,6 +1465,12 @@ function PrDetail({
             )}
           </div>
 
+          {/* Independent of build status: stopping or failing does not revoke
+              links, so they stay manageable here. */}
+          {pr?.number ? (
+            <PrEnvironmentShareLinks projectId={projectId} prNumber={pr.number} onToast={onToast} />
+          ) : null}
+
           {previewView.status === 'failed' && (
             <div
               data-testid="pr-preview-error"
@@ -1456,6 +1493,17 @@ function PrDetail({
           )}
         </div>
       )}
+
+      {!previewAvailable && pr?.number ? (
+        <div data-testid="pr-share-links-orphan" className="mb-3">
+          <PrEnvironmentShareLinks
+            projectId={projectId}
+            prNumber={pr.number}
+            onToast={onToast}
+            showWhenEmpty={false}
+          />
+        </div>
+      ) : null}
 
       {editable && !editing && (
         <button

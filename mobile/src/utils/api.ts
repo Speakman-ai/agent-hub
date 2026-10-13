@@ -49,7 +49,15 @@ async function fetchJSON(url: any, options: any = {}) {
     if (deadSession && getJwt()) {
       await clearToken().catch(() => {});
     }
-    throw new Error(errorDetail(errBody, res.status));
+    // Keep the HTTP status and the server's machine-readable code on the
+    // error (web parity) so callers can branch without parsing the message.
+    const error = new Error(errorDetail(errBody, res.status)) as Error & {
+      status?: number;
+      code?: string;
+    };
+    error.status = res.status;
+    if (typeof errBody?.code === 'string') error.code = errBody.code;
+    throw error;
   }
   return res.json();
 }
@@ -1802,6 +1810,31 @@ export const api = {
     fetchJSON(`/projects/${projectId}/pulls/${number}/preview/stop`, { method: 'POST' }),
   getPullPreviewState: (projectId: any, number: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/preview/state`),
+  // PR environment access (web parity): share links for people outside the
+  // Hub, and a single-use member ticket URL for opening it yourself.
+  listPrEnvironmentShareLinks: (projectId: string, number: number) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/preview/share-links`),
+  createPrEnvironmentShareLink: (
+    projectId: string,
+    number: number,
+    body: { expiresInHours?: number; label?: string },
+  ) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/preview/share-links`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  revokePrEnvironmentShareLink: (projectId: string, number: number, linkId: string) =>
+    fetchJSON(
+      `/projects/${projectId}/pulls/${number}/preview/share-links/${encodeURIComponent(linkId)}`,
+      { method: 'DELETE' },
+    ),
+  openPrEnvironmentAccess: (projectId: string, number: number) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/preview/access`, { method: 'POST' }),
+  setPrEnvironmentSharePassword: (projectId: string, password: string | null) =>
+    fetchJSON(`/projects/${projectId}/preview-share/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ password }),
+    }),
   // `data`: { event: 'APPROVE'|'REQUEST_CHANGES'|'COMMENT', body? }
   submitPullReview: (projectId: any, number: any, data: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/reviews`, {

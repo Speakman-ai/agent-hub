@@ -49,6 +49,8 @@ import {
   pagingAfterPage,
 } from '../utils/prPaging';
 import PrDiffView from '../components/PrDiffView';
+import PrEnvironmentShareLinks from '../components/PrEnvironmentShareLinks';
+import { resolvePrEnvironmentOpenUrl } from '@shared/utils/prEnvironmentShare';
 import PrReviewSheet from '../components/PrReviewSheet';
 import PrCommentSheet from '../components/PrCommentSheet';
 import PrEditSheet from '../components/PrEditSheet';
@@ -400,6 +402,26 @@ export function PrDetail({
     }
   }, [projectId, prNumber, refreshPreview]);
 
+  // Environments behind wildcard ingress are private: open with a single-use
+  // member ticket. The plain URL is used only where access links do not
+  // apply; any other failure is reported instead of opening the access page.
+  const handleOpenPreview = useCallback(
+    async (plainUrl: string) => {
+      if (!prNumber) return;
+      const number = prNumber;
+      const result = await resolvePrEnvironmentOpenUrl(
+        () => api.openPrEnvironmentAccess(projectId, number) as Promise<{ url?: string }>,
+        plainUrl,
+      );
+      if ('error' in result) {
+        Alert.alert('Could not open the PR environment', result.error);
+        return;
+      }
+      void Linking.openURL(result.url);
+    },
+    [projectId, prNumber],
+  );
+
   const handleStopPreview = useCallback(async () => {
     if (!prNumber) return;
     const requested = prNumber;
@@ -716,7 +738,7 @@ export function PrDetail({
               <View style={styles.previewStatusRow}>
                 <TouchableOpacity
                   style={styles.prActionButton}
-                  onPress={() => previewView.url && Linking.openURL(previewView.url)}
+                  onPress={() => previewView.url && handleOpenPreview(previewView.url)}
                   disabled={!previewView.url}
                   accessibilityLabel="Open environment"
                 >
@@ -748,6 +770,15 @@ export function PrDetail({
               {previewView.url}
             </Text>
           ) : null}
+          {/* Independent of build status: stopping or failing does not revoke
+              links, so they stay manageable here. */}
+          {prNumber ? (
+            <PrEnvironmentShareLinks
+              projectId={projectId}
+              prNumber={prNumber}
+              onMessage={(msg) => Alert.alert('Share links', msg)}
+            />
+          ) : null}
           {previewView.status === 'idle' && previewView.reason ? (
             <Text style={styles.previewStatusText}>{previewView.reason}</Text>
           ) : null}
@@ -762,6 +793,15 @@ export function PrDetail({
             </Text>
           ) : null}
         </View>
+      ) : null}
+
+      {!caps.canPreview && prNumber ? (
+        <PrEnvironmentShareLinks
+          projectId={projectId}
+          prNumber={prNumber}
+          onMessage={(msg) => Alert.alert('Share links', msg)}
+          showWhenEmpty={false}
+        />
       ) : null}
 
       {/* PR actions: diff, review, comment, edit, reopen */}

@@ -48,6 +48,13 @@ import { api } from '../utils/api';
     startNativePrPreview: vi.fn(),
     stopNativePrPreview: vi.fn(),
     getNativePrPreviewState: vi.fn(),
+    listPrEnvironmentShareLinks: vi.fn(async () => ({
+      links: [],
+      passwordRequired: false,
+      canManage: true,
+      canSetPassword: false,
+    })),
+    revokePrEnvironmentShareLink: vi.fn(),
   },
 }));
 
@@ -1650,6 +1657,69 @@ describe('PR environment panel', () => {
     await openPreviewDetail();
     expect(await screen.findByTestId('pr-preview-stopped')).toHaveTextContent('Stopped');
     expect(screen.getByTestId('pr-preview-enable')).toBeTruthy();
+  });
+
+  const sharedLink = {
+    id: 'l1',
+    projectId: 'proj-1',
+    prNumber: 123,
+    label: 'QA vendor',
+    url: 'https://pr-123--proj-1.preview.example.com/?share=ahs_x',
+    status: 'active',
+    createdBy: 'u1',
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 86400_000).toISOString(),
+    revokedAt: null,
+    canRevoke: true,
+  };
+
+  it.each(['stopped', 'failed'] as const)(
+    'keeps share links manageable while the environment is %s',
+    async (status) => {
+      (api.listPrEnvironmentShareLinks as any).mockResolvedValueOnce({
+        links: [sharedLink],
+        passwordRequired: false,
+        canManage: true,
+        canSetPassword: false,
+      });
+      (api.revokePrEnvironmentShareLink as any).mockResolvedValue({});
+      (api.getNativePrPreviewState as any).mockResolvedValue(
+        env({ status, stopReason: status === 'stopped' ? 'manual' : null, error: 'boom' }),
+      );
+      await openPreviewDetail();
+      expect(await screen.findByText('QA vendor')).toBeTruthy();
+      fireEvent.click(screen.getByTestId('pr-share-revoke'));
+      await waitFor(() =>
+        expect(api.revokePrEnvironmentShareLink).toHaveBeenCalledWith('proj-1', 123, 'l1'),
+      );
+    },
+  );
+
+  it('shows existing links even where the environment panel is hidden, and nothing when there are none', async () => {
+    (api.listPrEnvironmentShareLinks as any).mockResolvedValueOnce({
+      links: [sharedLink],
+      passwordRequired: false,
+      canManage: true,
+      canSetPassword: false,
+    });
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
+    (api.getProjectPullDetail as any).mockResolvedValue({
+      ...detailResponse,
+      source: 'agenthub',
+      preview_available: false,
+    });
+    const { unmount } = render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click((await screen.findByText('Fix the flaky test')) as any);
+    expect(await screen.findByText('QA vendor')).toBeTruthy();
+    expect(screen.queryByTestId('pr-preview-panel')).toBeNull();
+    unmount();
+
+    (api.listPrEnvironmentShareLinks as any).mockClear();
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click((await screen.findByText('Fix the flaky test')) as any);
+    await screen.findByText(/#123/);
+    await waitFor(() => expect(api.listPrEnvironmentShareLinks).toHaveBeenCalled());
+    expect(screen.queryByTestId('pr-share-links')).toBeNull();
   });
 
   it('offers Retry teardown when cleanup did not finish, and it calls stop', async () => {

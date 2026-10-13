@@ -79,14 +79,54 @@ which Terraform sets when `enable_preview_subdomain = true`), each environment
 is served at `https://pr-<n>--<project>.<previewBase>/`. The Hub proxies that
 host to the environment's runner, so the app runs at `/` (absolute asset paths
 work with no base-path config) and websockets are proxied. The URL is stable
-across rebuilds of the same PR. It needs no Hub login; the app's own auth
-applies. A queued, building, failed, stopped, or unknown environment answers
+across rebuilds of the same PR. A queued, building, failed, stopped, or unknown environment answers
 with a status page instead of a proxy error. So does an app that does not send response headers within 55 seconds (just under
 the ALB's 60-second idle timeout; override with `AGENT_HUB_PR_ENV_RESPONSE_TIMEOUT_MS`).
 Only the headers are bounded; a response that has started can stream for as long as it needs.
 
 Without a preview base (a local or dev Hub), the URL is the direct upstream,
 `http://localhost:<port>`.
+
+### GitHub-hosted projects
+
+Projects whose PRs live on GitHub (`githubRepo` set, not hosted on Agent Hub)
+get PR environments too. The build is the same; what differs is where PR
+state comes from: the GitHub API, read with the token of a project Owner who
+can reach the repo. There is no GitHub webhook into the Hub, so an
+environment starts from the PR environment panel, and every 5 minutes the Hub
+re-reads each running environment's PR: a new push rebuilds it, a merge or
+close stops it. Share links work the same way; Admins and Owners manage them,
+since a GitHub author is not a Hub user.
+
+### Access and share links
+
+Behind wildcard ingress an environment is private. Anyone without access gets
+an access page, never the app:
+
+- **Hub members** open it from the PR environment panel on the PR page. The
+  Open link fetches a single-use ticket (60 seconds) and the browser gets a
+  12-hour session for that environment.
+- **People outside Agent Hub** use a share link. Admins, Owners, and the PR
+  author create links from the same panel with an expiry of 1 to 30 days and
+  an optional label. Project members can copy active links; Admins, Owners,
+  the PR author, and the link's creator can revoke them.
+  Opening a link sets an HttpOnly cookie on that environment's host only, and
+  revoking it locks out browsers that already hold the cookie. A link opens
+  exactly one environment and is not accepted by any Hub API route.
+- **Project password (optional).** An Admin or Owner can set a share password
+  for the project. Share-link visitors then enter it once per browser (12
+  hours); members are not asked. Changing or removing it signs out everyone
+  who unlocked with the old one.
+
+The app never sees these credentials: the ingress strips its `ah_pr_env*`
+cookies before proxying. The path `/__agent-hub/unlock` on an environment host
+belongs to the ingress (the password form).
+
+When an environment first becomes ready, Agent Hub posts a comment on the PR
+with its URL and edits that same comment on every rebuild. On an Agent Hub-hosted
+project this is a PR conversation comment; on a GitHub-hosted project it is a
+GitHub issue comment posted with a project Owner's GitHub token (skipped when no
+Owner's token can reach `githubRepo`).
 
 On the runner fleet, the Hub reaches environments on the runners' private IPs.
 Terraform opens Docker's ephemeral port range (32768-60999) on the runner

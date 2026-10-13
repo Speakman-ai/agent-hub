@@ -17,7 +17,12 @@ import {
   dropComposePreviewColumns,
 } from './preview/preview-schema.js';
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
-import { PR_ENVIRONMENTS_SCHEMA } from './preview/pr-environments-schema.js';
+import {
+  PR_ENVIRONMENTS_SCHEMA,
+  migratePrEnvironmentsSourceCheck,
+} from './preview/pr-environments-schema.js';
+import { PR_ENVIRONMENT_SHARE_SCHEMA } from './preview/pr-environment-share.js';
+import { PR_ENVIRONMENT_COMMENTS_SCHEMA } from './preview/pr-environment-comment.js';
 import { BACKGROUND_SHELLS_SCHEMA } from './background-shells/background-shell-schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
@@ -3703,6 +3708,11 @@ function initDb(dataDir: string): void {
 
   // PR environments: lifecycle rows keyed by pull request (not session).
   db.exec(PR_ENVIRONMENTS_SCHEMA);
+  migratePrEnvironmentsSourceCheck(db);
+  // Share links / password for PR environment ingress, and the PR comment
+  // that carries the environment URL.
+  db.exec(PR_ENVIRONMENT_SHARE_SCHEMA);
+  db.exec(PR_ENVIRONMENT_COMMENTS_SCHEMA);
 
   // Hub-owned background shells: long-running commands that outlive the
   // per-turn CLI so they can be monitored across turns. Distinct from the

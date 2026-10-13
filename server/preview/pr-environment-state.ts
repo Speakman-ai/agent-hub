@@ -15,8 +15,8 @@
  * teardown and a replacement build is not started.
  */
 
-/** Agent Hub-hosted PRs. Part of the row key so other sources can be added. */
-export type PrEnvironmentSource = 'native';
+/** Where the PR lives: the Hub's own forge, or GitHub for GitHub-hosted projects. */
+export type PrEnvironmentSource = 'native' | 'github';
 export type PrEnvironmentStatus = 'queued' | 'building' | 'ready' | 'failed' | 'stopped';
 export type PrEnvironmentStopReason = 'merged' | 'closed' | 'manual' | 'no_preview_config';
 

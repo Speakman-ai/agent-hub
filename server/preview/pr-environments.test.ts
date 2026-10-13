@@ -22,7 +22,13 @@ const SHA_B = 'b'.repeat(40);
 const project = { id: 'p1' } as Project;
 const PR = { source: 'native' as const, prNumber: 7 };
 
-function setup(opts: { hasConfig?: boolean; runtime?: PrEnvironmentRuntime | null } = {}) {
+function setup(
+  opts: {
+    hasConfig?: boolean;
+    runtime?: PrEnvironmentRuntime | null;
+    onReady?: (project: Project, env: { status: string; headSha: string }) => void;
+  } = {},
+) {
   const db = new Database(':memory:');
   db.exec(PR_ENVIRONMENTS_SCHEMA);
   const reporters: PrEnvironmentReporter[] = [];
@@ -50,6 +56,7 @@ function setup(opts: { hasConfig?: boolean; runtime?: PrEnvironmentRuntime | nul
     },
     findProject: (id) => (id === project.id ? project : null),
     broadcast,
+    onReady: opts.onReady,
     getRuntime: () => currentRuntime,
     now: () => (clock += 1),
     log: () => {},
@@ -104,6 +111,66 @@ describe('PrEnvironmentService', () => {
     expect(env.readyAt).not.toBeNull();
     expect(env.logTail).toHaveLength(PR_ENVIRONMENT_LOG_TAIL_LINES);
     expect(env.logTail.at(-1)).toBe(`l${PR_ENVIRONMENT_LOG_TAIL_LINES + 4}`);
+  });
+
+  it('calls onReady once per build that becomes ready, and never for a stale one', async () => {
+    const onReady = vi.fn();
+    const { service, reporters } = setup({ onReady });
+    await service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await flush();
+    reporters[0].building();
+    reporters[0].ready('http://a');
+    reporters[0].ready('http://a');
+    await flush();
+    expect(onReady).toHaveBeenCalledTimes(1);
+    expect(onReady.mock.calls[0][1]).toMatchObject({ status: 'ready', headSha: SHA_A });
+
+    await service.onPrOpened(project, { ...PR, headSha: SHA_B, headBranch: null });
+    await flush();
+    reporters[0].ready('http://stale');
+    reporters[1].ready('http://b');
+    await flush();
+    expect(onReady).toHaveBeenCalledTimes(2);
+    expect(onReady.mock.calls[1][1]).toMatchObject({ headSha: SHA_B });
+  });
+
+  it('catch-up re-runs onReady for ready environments, so a failed announcement is retried', async () => {
+    const onReady = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('GitHub 502'))
+      .mockResolvedValue(undefined);
+    const { service, reporters } = setup({ onReady });
+    await service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await flush();
+    reporters[0].ready('http://a');
+    await flush();
+    expect(onReady).toHaveBeenCalledTimes(1);
+    await service.catchUp();
+    expect(onReady).toHaveBeenCalledTimes(2);
+    expect(onReady.mock.calls[1][1]).toMatchObject({ status: 'ready', headSha: SHA_A });
+    expect(service.get('p1', PR)).toMatchObject({ status: 'ready' });
+  });
+
+  it('catch-up does not announce environments that are not ready', async () => {
+    const onReady = vi.fn();
+    const { service } = setup({ onReady });
+    await service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await flush();
+    await service.catchUp();
+    expect(onReady).not.toHaveBeenCalled();
+  });
+
+  it('a throwing onReady does not break the lifecycle', async () => {
+    const { service, reporters } = setup({
+      onReady: () => {
+        throw new Error('boom');
+      },
+    });
+    await service.onPrOpened(project, { ...PR, headSha: SHA_A, headBranch: null });
+    await flush();
+    reporters[0].ready('http://a');
+    await flush();
+    expect(service.get('p1', PR)).toMatchObject({ status: 'ready' });
   });
 
   it('a new head sha rebuilds and drops the old build’s late callbacks', async () => {

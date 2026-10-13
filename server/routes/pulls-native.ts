@@ -15,6 +15,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { Project, PullRequestRow, RouteDeps } from '../types.js';
 import { readNativePrState } from '../preview/pr-environment-native.js';
+import { githubRepoOf } from '../preview/pr-environment-github.js';
 import type { PrEnvironmentDto } from '../preview/pr-environments.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { isAgentHubHosted, bareRepoPath, hostedRepoExists } from '../native-pr/host.js';
@@ -426,7 +427,7 @@ registerPath({
   tags: ['Projects'],
   summary: 'Start (or rebuild) the PR environment for a pull request',
   description:
-    "Queues the PR environment at the PR's current head commit. Environments are keyed by the pull request, not by any chat session, so any head branch works. Requires a `preview:` block in `.agent-hub/deploy.yaml` at the head commit. A failed or stopped environment is rebuilt; an active one at the same commit is returned unchanged. Agent Hub-hosted PRs only. Environments are also queued automatically when a PR opens or its head moves.",
+    "Queues the PR environment at the PR's current head commit. Environments are keyed by the pull request, not by any chat session, so any head branch works. Requires a `preview:` block in `.agent-hub/deploy.yaml` at the head commit. A failed or stopped environment is rebuilt; an active one at the same commit is returned unchanged. Works for Agent Hub-hosted PRs and for GitHub-hosted projects with `githubRepo` set (PR state read from the GitHub API with a project Owner's token). Hub-hosted PRs also queue automatically when they open or their head moves; GitHub-hosted environments start here, and a periodic re-check rebuilds them on new pushes and stops them on merge or close.",
   request: {
     params: z.object({ projectId: z.string(), number: z.string() }),
     body: {
@@ -441,7 +442,8 @@ registerPath({
       content: jsonContent(z.object({ ok: z.literal(true), environment: PrEnvironmentSchema })),
     },
     400: {
-      description: 'Not Hub-hosted or invalid PR number.',
+      description:
+        'Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.',
       content: jsonContent(PrErrorSchema),
     },
     404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
@@ -477,7 +479,8 @@ registerPath({
       ),
     },
     400: {
-      description: 'Not Hub-hosted or invalid PR number.',
+      description:
+        'Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.',
       content: jsonContent(PrErrorSchema),
     },
     404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
@@ -502,7 +505,8 @@ registerPath({
       content: jsonContent(z.object({ environment: PrEnvironmentSchema.nullable() })),
     },
     400: {
-      description: 'Not Hub-hosted or invalid PR number.',
+      description:
+        'Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.',
       content: jsonContent(PrErrorSchema),
     },
     404: { description: 'Unknown project/PR.', content: jsonContent(PrErrorSchema) },
@@ -1133,15 +1137,31 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
 
   // PR environments
   // Keyed by pull request (`pr_environments`), never by the authoring session,
-  // so a PR on any head branch can have one. Agent Hub-hosted PRs only; open
-  // state and head come from the PR row and the hosted ref.
-  type PreviewCtx = { project: Project; number: number; source: 'native'; pr: PullRequestRow };
+  // so a PR on any head branch can have one. For Agent Hub-hosted PRs, open
+  // state and head come from the PR row and the hosted ref; GitHub-hosted
+  // projects use the same routes with state read from the GitHub API.
+  type PreviewCtx =
+    | { project: Project; number: number; source: 'native'; pr: PullRequestRow }
+    | { project: Project; number: number; source: 'github' };
 
   // Clients get the public environment URL, never the internal upstream.
   const present = (env: PrEnvironmentDto): PrEnvironmentDto =>
     deps.presentPrEnvironment ? deps.presentPrEnvironment(env) : env;
 
   const resolvePreviewContext = (req: Request, res: Response): PreviewCtx | null => {
+    const project = deps.findProject(req.params.projectId as string) as Project | null;
+    if (project && !isAgentHubHosted(project) && githubRepoOf(project)) {
+      const number = Number.parseInt(String(req.params.number), 10);
+      if (!Number.isFinite(number) || number <= 0) {
+        res.status(400).json({ error: 'Invalid PR number' });
+        return null;
+      }
+      if (!deps.prEnvironments || !deps.readGithubPrState) {
+        res.status(501).json({ error: 'PR environments are not available on this deployment.' });
+        return null;
+      }
+      return { project, number, source: 'github' };
+    }
     const ctx = resolveActionContext(req, res);
     if (!ctx) return null;
     if (!deps.prEnvironments) {
@@ -1171,18 +1191,24 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       const orgStmts = service.org.stmts;
       // Read inside the service's per-PR queue: a close/merge that lands while
       // the head lookup is in flight is seen before anything is queued.
-      const readState = () =>
-        readNativePrState(
-          {
-            getPr: (id, n) =>
-              orgStmts.getPullRequestByNumber.get(id, n) as PullRequestRow | undefined,
-            // The hosted ref is the truth; the row's sha only moves on PR create/refresh.
-            revParseHead: async (id, branch) =>
-              hostedRepoExists(id) ? revParse(bareRepoPath(id), `refs/heads/${branch}`) : null,
-          },
-          projectId,
-          ctx.number,
-        );
+      const readGithub = deps.readGithubPrState;
+      const readState =
+        ctx.source === 'github'
+          ? () => readGithub!(ctx.project, ctx.number)
+          : () =>
+              readNativePrState(
+                {
+                  getPr: (id, n) =>
+                    orgStmts.getPullRequestByNumber.get(id, n) as PullRequestRow | undefined,
+                  // The hosted ref is the truth; the row's sha only moves on PR create/refresh.
+                  revParseHead: async (id, branch) =>
+                    hostedRepoExists(id)
+                      ? revParse(bareRepoPath(id), `refs/heads/${branch}`)
+                      : null,
+                },
+                projectId,
+                ctx.number,
+              );
       try {
         const result = await service.start(ctx.project, pr, readState);
         if (!result.ok) {

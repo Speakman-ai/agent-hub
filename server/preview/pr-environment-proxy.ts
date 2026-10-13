@@ -7,10 +7,11 @@
  * `pr_environments` row once it is ready). The app is served at `/`, so
  * absolute asset paths work with no per-app base-path config.
  *
- * This ingress is deliberately unauthenticated: a PR environment is a
- * shareable link to the PR's app, and the app owns its own auth. It never
- * reaches Hub routes or Hub cookies (different host), and anything that is
- * not ready gets a status page instead of a bare 502.
+ * Access is gated by `./pr-environment-share.ts` when a gate is passed: Hub
+ * members arrive with a ticket from the PR page, external testers with a
+ * share link. Requests on an environment host never reach Hub routes or Hub
+ * cookies (different host), and anything that is not ready gets a status
+ * page instead of a bare 502.
  *
  * The middleware must be mounted before CORS and body parsers: the app's
  * own preflights and request bodies have to reach the upstream untouched.
@@ -27,6 +28,11 @@ import {
   type PrEnvironmentHostTarget,
 } from './preview-subdomain-host.js';
 import { claimUpgrade } from '../upgrade-claim.js';
+import {
+  stripAccessCookies,
+  type AccessPage,
+  type PrEnvironmentAccessGate,
+} from './pr-environment-share.js';
 
 /** What the lifecycle table says about the addressed environment. */
 export interface PrEnvironmentIngressRecord {
@@ -51,6 +57,8 @@ export interface PrEnvironmentProxyDeps {
    * that has started may stream for as long as it likes.
    */
   responseHeaderTimeoutMs?: number;
+  /** Who may use an environment. Without one the ingress is open. */
+  gate?: PrEnvironmentAccessGate;
 }
 
 /**
@@ -109,6 +117,8 @@ export interface StatusPage {
   message: string;
   /** Auto-reload interval; set while the environment is still coming up. */
   refreshSeconds: number | null;
+  link?: AccessPage['link'];
+  passwordForm?: AccessPage['passwordForm'];
 }
 
 /**
@@ -198,14 +208,31 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0f1115;color:#e6
 main{max-width:32rem;padding:2rem;text-align:center}
 h1{font-size:1.25rem;margin:0 0 .75rem}
 p{color:#a8adb7;line-height:1.5;margin:0}
+a{color:#7cb3ff}
+form{margin-top:1.25rem;display:flex;gap:.5rem;justify-content:center}
+input{padding:.5rem .75rem;border-radius:.375rem;border:1px solid #333a45;background:#171a21;color:#e6e6e6}
+button{padding:.5rem 1rem;border-radius:.375rem;border:0;background:#2563eb;color:#fff;cursor:pointer}
+.err{color:#f87171;margin-top:.75rem}
 </style>
 </head>
-<body><main><h1>${escapeHtml(page.title)}</h1><p>${escapeHtml(page.message)}</p></main></body>
+<body><main><h1>${escapeHtml(page.title)}</h1><p>${escapeHtml(page.message)}</p>${extras(page)}</main></body>
 </html>
 `;
 }
 
-function sendStatusPage(res: Response, page: StatusPage): void {
+function extras(page: StatusPage): string {
+  let out = '';
+  if (page.passwordForm) {
+    out += `<form method="post" action="${escapeHtml(page.passwordForm.action)}"><input type="password" name="password" autocomplete="current-password" aria-label="Password" required autofocus><button type="submit">Continue</button></form>`;
+    if (page.passwordForm.error) out += `<p class="err">${escapeHtml(page.passwordForm.error)}</p>`;
+  }
+  if (page.link) {
+    out += `<p style="margin-top:1rem"><a href="${escapeHtml(page.link.href)}">${escapeHtml(page.link.label)}</a></p>`;
+  }
+  return out;
+}
+
+export function sendStatusPage(res: Response, page: StatusPage): void {
   res.statusCode = page.status;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
@@ -247,6 +274,12 @@ export function upstreamHeaders(
     if (value === undefined) continue;
     const lower = key.toLowerCase();
     if (HOP_BY_HOP.has(lower) || connectionTokens.has(lower)) continue;
+    if (lower === 'cookie') {
+      // The ingress's own access cookies carry share tokens; the app never needs them.
+      const kept = stripAccessCookies(value);
+      if (kept) out.cookie = kept;
+      continue;
+    }
     out[lower] = value;
   }
   const priorXff = firstHeader(req.headers['x-forwarded-for']);
@@ -273,16 +306,28 @@ function responseHeaders(res: IncomingMessage): Record<string, string | string[]
 function resolve(
   deps: PrEnvironmentProxyDeps,
   host: string | undefined,
-): { target: PrEnvironmentHostTarget; record: PrEnvironmentIngressRecord | null } | null {
+):
+  | { target: PrEnvironmentHostTarget; record: PrEnvironmentIngressRecord | null }
+  | { target: PrEnvironmentHostTarget; lookupFailed: true }
+  | null {
   const target = parsePrEnvironmentHost(host, deps.getBase());
   if (!target) return null;
-  let record: PrEnvironmentIngressRecord | null = null;
   try {
-    record = deps.lookup(target);
+    return { target, record: deps.lookup(target) };
   } catch {
-    record = null;
+    // A failed read is not "no environment": say so and let the page retry.
+    return { target, lookupFailed: true };
   }
-  return { target, record };
+}
+
+/** The lookup or the access check failed (database error). Retryable. */
+function unavailablePage(target: PrEnvironmentHostTarget): StatusPage {
+  return {
+    status: 503,
+    title: 'Temporarily unavailable',
+    message: `Agent Hub could not look up the environment for PR #${target.prNumber}. This page reloads automatically.`,
+    refreshSeconds: STARTING_REFRESH_SECONDS,
+  };
 }
 
 /** Express middleware: proxy PR environment hosts, pass everything else on. */
@@ -290,7 +335,25 @@ export function createPrEnvironmentProxyMiddleware(deps: PrEnvironmentProxyDeps)
   return (req: Request, res: Response, next: NextFunction) => {
     const resolved = resolve(deps, req.headers.host);
     if (!resolved) return next();
+    if ('lookupFailed' in resolved) {
+      sendStatusPage(res, unavailablePage(resolved.target));
+      return;
+    }
     const { target, record } = resolved;
+    if (record && deps.gate) {
+      let verdict: 'proceed' | 'handled';
+      try {
+        verdict = deps.gate.http(req, res, {
+          target,
+          projectId: record.projectId,
+          prNumber: target.prNumber,
+        });
+      } catch {
+        if (!res.headersSent) sendStatusPage(res, unavailablePage(target));
+        return;
+      }
+      if (verdict === 'handled') return;
+    }
     const page = statusPageFor(target, record);
     if (page) {
       sendStatusPage(res, page);
@@ -388,7 +451,27 @@ export function attachPrEnvironmentUpgrade(server: Server, deps: PrEnvironmentPr
     const resolved = resolve(deps, req.headers.host);
     if (!resolved) return;
     claimUpgrade(req);
+    if ('lookupFailed' in resolved) {
+      denyUpgrade(socket, 'HTTP/1.1 503 Service Unavailable');
+      return;
+    }
     const { target, record } = resolved;
+    if (record && deps.gate) {
+      let allowed: boolean;
+      try {
+        allowed = deps.gate.upgrade(req, {
+          projectId: record.projectId,
+          prNumber: target.prNumber,
+        });
+      } catch {
+        denyUpgrade(socket, 'HTTP/1.1 503 Service Unavailable');
+        return;
+      }
+      if (!allowed) {
+        denyUpgrade(socket, 'HTTP/1.1 401 Unauthorized');
+        return;
+      }
+    }
     const page = statusPageFor(target, record);
     if (page) {
       denyUpgrade(

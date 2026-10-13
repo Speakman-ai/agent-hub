@@ -4596,6 +4596,11 @@ export interface RouteDeps {
    * work stays in the org the request started in.
    */
   prEnvironments?: import('./preview/pr-environments.js').OrgScopedPrEnvironmentService<Stmts>;
+  /** A GitHub-hosted PR's state for PR environments (GitHub REST, project Owner token). */
+  readGithubPrState?: (
+    project: Project,
+    prNumber: number,
+  ) => Promise<import('./preview/pr-environments.js').PrAuthoritativeState>;
   /**
    * Swap an environment's internal upstream URL for its public
    * `pr-<n>--<project>.<previewBase>` URL before it leaves the server.

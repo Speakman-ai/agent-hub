@@ -11,6 +11,8 @@
  * continue to live in pr-actions.ts so that write surfaces stay consolidated.
  */
 
+import { githubPrPreviewAvailable } from '../preview/pr-environment-github.js';
+import { hasPreviewConfigAtSha } from '../preview/pr-environment-config.js';
 import { Router, Request, Response } from 'express';
 import type { RouteDeps, AppConfig } from '../types.js';
 import { githubUserApiRequest } from '../github-oauth.js';
@@ -295,9 +297,24 @@ export default function createPrListRoutes(deps: RouteDeps): Router {
         const detail = await fetchPrDetail(config, repo, num, {
           userAccessToken: userToken,
         });
+        // PR environments work for GitHub-hosted projects too; the panel
+        // follows the same visibility rule as Hub-hosted PRs.
+        const env = deps.prEnvironments
+          ? deps.prEnvironments.get(project.id, { source: 'github', prNumber: num })
+          : null;
+        const preview_available = deps.prEnvironments
+          ? await githubPrPreviewAvailable({
+              env,
+              prOpen:
+                String(detail.pr.state ?? '').toLowerCase() === 'open' && !detail.pr.merged_at,
+              headSha: detail.headSha,
+              probe: (sha) => hasPreviewConfigAtSha(project, sha),
+            })
+          : false;
         return res.json({
           repo: `${repo.owner}/${repo.repo}`,
           ...detail,
+          preview_available,
         });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

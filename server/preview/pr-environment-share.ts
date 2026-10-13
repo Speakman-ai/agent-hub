@@ -1,0 +1,703 @@
+/**
+ * Access control for PR environment ingress (`pr-<n>--<project>.<base>`).
+ *
+ * An environment is private by default. A browser gets in one of two ways:
+ *
+ *  - **Share link** (external testers). `?share=ahs_<linkId>.<sig>` names a
+ *    row in `pr_environment_share_links`; the signature is an HMAC over the
+ *    link id, environment (project + PR) and expiry, so a token cannot be
+ *    forged or moved to another environment, and revoking or expiring the
+ *    row kills it. With a project share password set, a share-link visitor
+ *    also has to unlock with that password.
+ *  - **Hub member.** The PR page asks the Hub API (normal Hub auth plus a
+ *    project visibility check) for a single-use, 60 s ticket and opens the
+ *    environment with `?share=aht_<ticket>`. The ticket is swapped for a
+ *    signed member session good for 12 hours. Members skip the password.
+ *
+ * Either way the credential ends up in an HttpOnly cookie with no `Domain`
+ * attribute, so the browser only ever sends it to that one environment host.
+ * The token itself is also bound to the environment, so a cookie planted for
+ * another host is rejected. None of these credentials are accepted anywhere
+ * on the Hub's own `/api` surface: the Hub auth middleware never reads them,
+ * and requests on an environment host never reach Hub routes.
+ */
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import type { IncomingMessage } from 'node:http';
+import type Database from 'better-sqlite3';
+import type { Request, Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import { parseCookieHeader } from '../preview-auth.js';
+import type { PrEnvironmentHostTarget } from './preview-subdomain-host.js';
+
+export const PR_ENVIRONMENT_SHARE_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS pr_environment_share_links (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL,
+    pr_number   INTEGER NOT NULL,
+    label       TEXT,
+    created_by  TEXT,
+    created_at  INTEGER NOT NULL,
+    expires_at  INTEGER NOT NULL,
+    revoked_at  INTEGER,
+    revoked_by  TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_pr_env_share_links_pr
+    ON pr_environment_share_links(project_id, pr_number);
+  -- Optional per-project password a share-link visitor must also enter.
+  CREATE TABLE IF NOT EXISTS pr_environment_share_settings (
+    project_id          TEXT PRIMARY KEY,
+    password_hash       TEXT,
+    password_updated_at INTEGER
+  );
+  -- HMAC key for share tokens and access cookies, one per org database.
+  CREATE TABLE IF NOT EXISTS pr_environment_share_secret (
+    id     INTEGER PRIMARY KEY CHECK (id = 1),
+    secret TEXT NOT NULL
+  );
+`;
+
+/** Cookie holding the share token or the member session. */
+export const ACCESS_COOKIE = 'ah_pr_env';
+/** Cookie proving the project share password was entered. */
+export const PASSWORD_COOKIE = 'ah_pr_env_pw';
+/** Every cookie this module sets starts with this; stripped before the upstream. */
+export const ACCESS_COOKIE_PREFIX = 'ah_pr_env';
+/** Path on the environment host that takes the password form. */
+export const UNLOCK_PATH = '/__agent-hub/unlock';
+
+const SHARE_PREFIX = 'ahs_';
+const TICKET_PREFIX = 'aht_';
+const MEMBER_PREFIX = 'ahm_';
+const UNLOCK_PREFIX = 'ahp_';
+
+export const MEMBER_TICKET_TTL_MS = 60_000;
+export const MEMBER_SESSION_TTL_MS = 12 * 60 * 60_000;
+export const PASSWORD_UNLOCK_TTL_MS = 12 * 60 * 60_000;
+export const SHARE_LINK_DEFAULT_HOURS = 24 * 7;
+export const SHARE_LINK_MAX_HOURS = 24 * 30;
+
+export interface PrEnvironmentRef {
+  projectId: string;
+  prNumber: number;
+}
+
+export interface ShareLinkRow {
+  id: string;
+  project_id: string;
+  pr_number: number;
+  label: string | null;
+  created_by: string | null;
+  created_at: number;
+  expires_at: number;
+  revoked_at: number | null;
+  revoked_by: string | null;
+}
+
+export type ShareLinkStatus = 'active' | 'expired' | 'revoked';
+
+export interface PrEnvironmentShareStore {
+  /** The org's HMAC key, created on first use. */
+  secret(): Buffer;
+  create(args: {
+    projectId: string;
+    prNumber: number;
+    label: string | null;
+    createdBy: string | null;
+    expiresAt: number;
+    now: number;
+  }): ShareLinkRow;
+  get(id: string): ShareLinkRow | null;
+  list(ref: PrEnvironmentRef): ShareLinkRow[];
+  /** Null when the link does not exist; an already-revoked link is returned as is. */
+  revoke(id: string, by: string | null, now: number): ShareLinkRow | null;
+  getPassword(projectId: string): { hash: string; updatedAt: number } | null;
+  setPassword(projectId: string, hash: string | null, now: number): void;
+}
+
+const stores = new WeakMap<Database.Database, PrEnvironmentShareStore>();
+
+/** One store per database handle (the schema is created by `initDb`). */
+export function prEnvironmentShareStoreFor(db: Database.Database): PrEnvironmentShareStore {
+  let store = stores.get(db);
+  if (!store) {
+    store = createPrEnvironmentShareStore(db);
+    stores.set(db, store);
+  }
+  return store;
+}
+
+export function createPrEnvironmentShareStore(db: Database.Database): PrEnvironmentShareStore {
+  const insertLink = db.prepare(
+    `INSERT INTO pr_environment_share_links
+       (id, project_id, pr_number, label, created_by, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const getLink = db.prepare('SELECT * FROM pr_environment_share_links WHERE id = ?');
+  const listLinks = db.prepare(
+    `SELECT * FROM pr_environment_share_links
+      WHERE project_id = ? AND pr_number = ?
+      ORDER BY created_at DESC`,
+  );
+  const revokeLink = db.prepare(
+    `UPDATE pr_environment_share_links SET revoked_at = ?, revoked_by = ?
+      WHERE id = ? AND revoked_at IS NULL`,
+  );
+  const getSettings = db.prepare(
+    'SELECT password_hash, password_updated_at FROM pr_environment_share_settings WHERE project_id = ?',
+  );
+  const upsertSettings = db.prepare(
+    `INSERT INTO pr_environment_share_settings (project_id, password_hash, password_updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(project_id) DO UPDATE SET
+       password_hash = excluded.password_hash,
+       password_updated_at = excluded.password_updated_at`,
+  );
+  const insertSecret = db.prepare(
+    'INSERT OR IGNORE INTO pr_environment_share_secret (id, secret) VALUES (1, ?)',
+  );
+  const readSecret = db.prepare('SELECT secret FROM pr_environment_share_secret WHERE id = 1');
+  let cachedSecret: Buffer | null = null;
+
+  return {
+    secret() {
+      if (cachedSecret) return cachedSecret;
+      insertSecret.run(randomBytes(32).toString('hex'));
+      const row = readSecret.get() as { secret: string };
+      cachedSecret = Buffer.from(row.secret, 'hex');
+      return cachedSecret;
+    },
+    create({ projectId, prNumber, label, createdBy, expiresAt, now }) {
+      const id = uuidv4();
+      insertLink.run(id, projectId, prNumber, label, createdBy, now, expiresAt);
+      return getLink.get(id) as ShareLinkRow;
+    },
+    get(id) {
+      return (getLink.get(id) as ShareLinkRow | undefined) ?? null;
+    },
+    list(ref) {
+      return listLinks.all(ref.projectId, ref.prNumber) as ShareLinkRow[];
+    },
+    revoke(id, by, now) {
+      revokeLink.run(now, by, id);
+      return (getLink.get(id) as ShareLinkRow | undefined) ?? null;
+    },
+    getPassword(projectId) {
+      const row = getSettings.get(projectId) as
+        | { password_hash: string | null; password_updated_at: number | null }
+        | undefined;
+      if (!row?.password_hash) return null;
+      return { hash: row.password_hash, updatedAt: row.password_updated_at ?? 0 };
+    },
+    setPassword(projectId, hash, now) {
+      upsertSettings.run(projectId, hash, now);
+    },
+  };
+}
+
+export function shareLinkStatus(row: ShareLinkRow, now: number): ShareLinkStatus {
+  if (row.revoked_at != null) return 'revoked';
+  if (row.expires_at <= now) return 'expired';
+  return 'active';
+}
+
+// Signing
+
+function b64url(buf: Buffer | string): string {
+  return Buffer.from(buf).toString('base64url');
+}
+
+function sign(secret: Buffer, kind: string, payload: string): string {
+  return createHmac('sha256', secret).update(`${kind}\n${payload}`).digest('base64url');
+}
+
+function sameSig(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
+function shareSigPayload(
+  row: Pick<ShareLinkRow, 'id' | 'project_id' | 'pr_number' | 'expires_at'>,
+) {
+  return `${row.id}|${row.project_id}|${row.pr_number}|${row.expires_at}`;
+}
+
+/** The token that goes in `?share=`. Deterministic, so a live link can be copied again. */
+export function shareTokenFor(secret: Buffer, row: ShareLinkRow): string {
+  return `${SHARE_PREFIX}${row.id}.${sign(secret, 'share', shareSigPayload(row))}`;
+}
+
+export type ShareVerifyResult =
+  | { ok: true; link: ShareLinkRow }
+  | { ok: false; reason: 'invalid' | 'expired' | 'revoked' | 'wrong_environment' };
+
+export function verifyShareToken(
+  store: PrEnvironmentShareStore,
+  token: string | null | undefined,
+  env: PrEnvironmentRef,
+  now: number,
+): ShareVerifyResult {
+  if (!token || !token.startsWith(SHARE_PREFIX)) return { ok: false, reason: 'invalid' };
+  const body = token.slice(SHARE_PREFIX.length);
+  const dot = body.indexOf('.');
+  if (dot <= 0) return { ok: false, reason: 'invalid' };
+  const id = body.slice(0, dot);
+  const sig = body.slice(dot + 1);
+  const row = store.get(id);
+  if (!row) return { ok: false, reason: 'invalid' };
+  if (!sameSig(sig, sign(store.secret(), 'share', shareSigPayload(row)))) {
+    return { ok: false, reason: 'invalid' };
+  }
+  if (row.project_id !== env.projectId || row.pr_number !== env.prNumber) {
+    return { ok: false, reason: 'wrong_environment' };
+  }
+  const status = shareLinkStatus(row, now);
+  if (status !== 'active') return { ok: false, reason: status };
+  return { ok: true, link: row };
+}
+
+function mintSigned(secret: Buffer, prefix: string, kind: string, claims: object): string {
+  const payload = b64url(JSON.stringify(claims));
+  return `${prefix}${payload}.${sign(secret, kind, payload)}`;
+}
+
+function readSigned<T>(secret: Buffer, prefix: string, kind: string, token: string): T | null {
+  if (!token.startsWith(prefix)) return null;
+  const body = token.slice(prefix.length);
+  const dot = body.indexOf('.');
+  if (dot <= 0) return null;
+  const payload = body.slice(0, dot);
+  if (!sameSig(body.slice(dot + 1), sign(secret, kind, payload))) return null;
+  try {
+    return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as T;
+  } catch {
+    return null;
+  }
+}
+
+interface MemberClaims {
+  p: string;
+  n: number;
+  u: string | null;
+  e: number;
+}
+
+export function mintMemberSession(
+  secret: Buffer,
+  env: PrEnvironmentRef,
+  userId: string | null,
+  now: number,
+): string {
+  const claims: MemberClaims = {
+    p: env.projectId,
+    n: env.prNumber,
+    u: userId,
+    e: now + MEMBER_SESSION_TTL_MS,
+  };
+  return mintSigned(secret, MEMBER_PREFIX, 'member', claims);
+}
+
+export function verifyMemberSession(
+  secret: Buffer,
+  token: string,
+  env: PrEnvironmentRef,
+  now: number,
+): boolean {
+  const c = readSigned<MemberClaims>(secret, MEMBER_PREFIX, 'member', token);
+  return Boolean(c && c.p === env.projectId && c.n === env.prNumber && c.e > now);
+}
+
+interface UnlockClaims {
+  p: string;
+  /** `password_updated_at` when unlocked; changing the password invalidates it. */
+  v: number;
+  e: number;
+}
+
+export function mintPasswordUnlock(
+  secret: Buffer,
+  projectId: string,
+  passwordUpdatedAt: number,
+  now: number,
+): string {
+  const claims: UnlockClaims = {
+    p: projectId,
+    v: passwordUpdatedAt,
+    e: now + PASSWORD_UNLOCK_TTL_MS,
+  };
+  return mintSigned(secret, UNLOCK_PREFIX, 'unlock', claims);
+}
+
+export function verifyPasswordUnlock(
+  secret: Buffer,
+  token: string | null | undefined,
+  projectId: string,
+  passwordUpdatedAt: number,
+  now: number,
+): boolean {
+  if (!token) return false;
+  const c = readSigned<UnlockClaims>(secret, UNLOCK_PREFIX, 'unlock', token);
+  return Boolean(c && c.p === projectId && c.v === passwordUpdatedAt && c.e > now);
+}
+
+// Member tickets: single-use, short-lived, in memory (like preview tickets).
+// The map is process-wide, so each ticket remembers the org (its share store,
+// one per org database) that issued it. Two orgs can both have a project
+// `demo` with a PR #7; a ticket from one must not open the other's.
+
+interface TicketRecord extends PrEnvironmentRef {
+  org: PrEnvironmentShareStore;
+  userId: string | null;
+  expiresAt: number;
+}
+
+const tickets = new Map<string, TicketRecord>();
+
+export function mintMemberTicket(
+  org: PrEnvironmentShareStore,
+  env: PrEnvironmentRef,
+  userId: string | null,
+  now: number,
+): string {
+  for (const [k, v] of tickets) if (v.expiresAt <= now) tickets.delete(k);
+  const ticket = `${TICKET_PREFIX}${randomBytes(24).toString('hex')}`;
+  tickets.set(ticket, { ...env, org, userId, expiresAt: now + MEMBER_TICKET_TTL_MS });
+  return ticket;
+}
+
+/** Single use: the ticket is gone after the first call, whatever the outcome. */
+export function consumeMemberTicket(
+  org: PrEnvironmentShareStore,
+  ticket: string,
+  env: PrEnvironmentRef,
+  now: number,
+): { userId: string | null } | null {
+  const rec = tickets.get(ticket);
+  if (!rec) return null;
+  tickets.delete(ticket);
+  if (rec.expiresAt <= now) return null;
+  if (rec.org !== org) return null;
+  if (rec.projectId !== env.projectId || rec.prNumber !== env.prNumber) return null;
+  return { userId: rec.userId };
+}
+
+export function resetMemberTicketsForTest(): void {
+  tickets.clear();
+}
+
+// Cookies
+
+/**
+ * Host-only (no `Domain`), so the browser sends it to this environment host
+ * and nowhere else. `SameSite=Lax` because testers arrive by following a link
+ * from mail or chat, a cross-site navigation that `Strict` would strip.
+ */
+export function buildAccessSetCookie(
+  name: string,
+  value: string,
+  opts: { secure: boolean; maxAgeMs: number },
+): string {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    'Path=/',
+    `Max-Age=${Math.max(0, Math.floor(opts.maxAgeMs / 1000))}`,
+    'HttpOnly',
+    'SameSite=Lax',
+  ];
+  if (opts.secure) parts.push('Secure');
+  return parts.join('; ');
+}
+
+/** The Cookie header with this module's cookies removed (the app never sees them). */
+export function stripAccessCookies(header: string | string[] | undefined): string | undefined {
+  if (header === undefined) return undefined;
+  const raw = Array.isArray(header) ? header.join('; ') : header;
+  const kept = raw
+    .split(';')
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0 && !p.startsWith(ACCESS_COOKIE_PREFIX));
+  return kept.length > 0 ? kept.join('; ') : undefined;
+}
+
+// Access resolution
+
+export type AccessDecision =
+  | { ok: true; kind: 'member' | 'share' }
+  | { ok: false; reason: 'none' | 'invalid' | 'expired' | 'revoked' | 'password' };
+
+/** Who the request's cookies say it is, for this environment. */
+export function decideAccess(
+  store: PrEnvironmentShareStore,
+  cookieHeader: string | undefined,
+  env: PrEnvironmentRef,
+  now: number,
+): AccessDecision {
+  const cookies = parseCookieHeader(cookieHeader);
+  const token = cookies[ACCESS_COOKIE];
+  if (!token) return { ok: false, reason: 'none' };
+  if (token.startsWith(MEMBER_PREFIX)) {
+    return verifyMemberSession(store.secret(), token, env, now)
+      ? { ok: true, kind: 'member' }
+      : { ok: false, reason: 'expired' };
+  }
+  const share = verifyShareToken(store, token, env, now);
+  if (!share.ok) {
+    return {
+      ok: false,
+      reason: share.reason === 'wrong_environment' ? 'invalid' : share.reason,
+    };
+  }
+  const pw = store.getPassword(env.projectId);
+  if (
+    pw &&
+    !verifyPasswordUnlock(
+      store.secret(),
+      cookies[PASSWORD_COOKIE],
+      env.projectId,
+      pw.updatedAt,
+      now,
+    )
+  ) {
+    return { ok: false, reason: 'password' };
+  }
+  return { ok: true, kind: 'share' };
+}
+
+// The ingress gate
+
+export interface AccessPage {
+  status: number;
+  title: string;
+  message: string;
+  refreshSeconds: null;
+  link?: { href: string; label: string };
+  passwordForm?: { action: string; error?: string };
+}
+
+export interface PrEnvironmentAccessGate {
+  /**
+   * Gate one HTTP request on an environment host. `proceed` lets it through
+   * to the status page / upstream; `handled` means a response was sent.
+   */
+  http(
+    req: Request,
+    res: Response,
+    env: PrEnvironmentRef & { target: PrEnvironmentHostTarget },
+  ): 'proceed' | 'handled';
+  /** Whether a WebSocket upgrade may be tunneled. */
+  upgrade(req: IncomingMessage, env: PrEnvironmentRef): boolean;
+}
+
+export interface PrEnvironmentAccessGateDeps {
+  /** The share store of the org that owns the environment. */
+  store: () => PrEnvironmentShareStore;
+  /** Render and send an access page. */
+  sendPage: (res: Response, page: AccessPage) => void;
+  /** The PR's page in the Hub UI, for members who land without a ticket. */
+  hubPrUrl?: (env: PrEnvironmentRef) => string | null;
+  verifyPassword: (password: string, hash: string) => Promise<boolean>;
+  now?: () => number;
+}
+
+/** Password attempts per client and project per window. */
+const UNLOCK_ATTEMPTS = 10;
+const UNLOCK_WINDOW_MS = 60_000;
+const MAX_UNLOCK_BODY = 4096;
+
+function readSmallBody(req: IncomingMessage): Promise<string | null> {
+  return new Promise((resolve) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    let done = false;
+    const finish = (v: string | null) => {
+      if (done) return;
+      done = true;
+      resolve(v);
+    };
+    req.on('data', (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_UNLOCK_BODY) {
+        finish(null);
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => finish(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', () => finish(null));
+  });
+}
+
+export function createPrEnvironmentAccessGate(
+  deps: PrEnvironmentAccessGateDeps,
+): PrEnvironmentAccessGate {
+  const now = deps.now ?? (() => Date.now());
+  const attempts = new Map<string, { count: number; resetAt: number }>();
+
+  const denyPage = (
+    env: PrEnvironmentRef,
+    reason: Exclude<AccessDecision, { ok: true }>['reason'],
+  ): AccessPage => {
+    const hub = deps.hubPrUrl?.(env) ?? null;
+    const link = hub ? { href: hub, label: `Open PR #${env.prNumber} in Agent Hub` } : undefined;
+    if (reason === 'none') {
+      return {
+        status: 401,
+        title: 'Access required',
+        message: `This environment for PR #${env.prNumber} is private. Open it with a share link, or from the pull request in Agent Hub if you are a member.`,
+        refreshSeconds: null,
+        link,
+      };
+    }
+    return {
+      status: 403,
+      title: reason === 'invalid' ? 'Link not valid' : 'Link expired',
+      message:
+        reason === 'revoked'
+          ? 'This share link was revoked. Ask the person who shared it for a new link.'
+          : reason === 'invalid'
+            ? 'This share link is not valid for this environment. Ask the person who shared it for a new link.'
+            : 'This link has expired. Ask the person who shared it for a new link.',
+      refreshSeconds: null,
+      link,
+    };
+  };
+
+  const passwordPage = (env: PrEnvironmentRef, error?: string): AccessPage => ({
+    status: 401,
+    title: 'Password required',
+    message: `Enter the password for this environment (PR #${env.prNumber}).`,
+    refreshSeconds: null,
+    passwordForm: { action: UNLOCK_PATH, error },
+  });
+
+  const secure = (req: Request) => req.protocol === 'https';
+
+  async function unlock(req: Request, res: Response, env: PrEnvironmentRef): Promise<void> {
+    const store = deps.store();
+    const t = now();
+    const decision = decideAccess(store, req.headers.cookie, env, t);
+    if (decision.ok) {
+      res.redirect(303, '/');
+      return;
+    }
+    if (decision.reason !== 'password') {
+      deps.sendPage(res, denyPage(env, decision.reason));
+      return;
+    }
+    const key = `${req.ip ?? req.socket.remoteAddress ?? '?'}|${env.projectId}`;
+    const slot = attempts.get(key);
+    if (slot && slot.resetAt > t && slot.count >= UNLOCK_ATTEMPTS) {
+      deps.sendPage(res, {
+        ...passwordPage(env, 'Too many attempts. Wait a minute and try again.'),
+        status: 429,
+      });
+      return;
+    }
+    if (!slot || slot.resetAt <= t) attempts.set(key, { count: 1, resetAt: t + UNLOCK_WINDOW_MS });
+    else slot.count += 1;
+
+    const raw = await readSmallBody(req);
+    const password = raw == null ? '' : (new URLSearchParams(raw).get('password') ?? '');
+    const pw = store.getPassword(env.projectId);
+    if (!pw) {
+      res.redirect(303, '/');
+      return;
+    }
+    let ok = false;
+    try {
+      ok = password.length > 0 && (await deps.verifyPassword(password, pw.hash));
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      deps.sendPage(res, passwordPage(env, 'Wrong password.'));
+      return;
+    }
+    attempts.delete(key);
+    res.setHeader(
+      'Set-Cookie',
+      buildAccessSetCookie(
+        PASSWORD_COOKIE,
+        mintPasswordUnlock(store.secret(), env.projectId, pw.updatedAt, now()),
+        {
+          secure: secure(req),
+          maxAgeMs: PASSWORD_UNLOCK_TTL_MS,
+        },
+      ),
+    );
+    res.redirect(303, '/');
+  }
+
+  return {
+    http(req, res, env) {
+      const ref: PrEnvironmentRef = { projectId: env.projectId, prNumber: env.prNumber };
+      const url = new URL(req.originalUrl || req.url || '/', 'http://env.invalid');
+
+      if (url.pathname === UNLOCK_PATH) {
+        if (req.method !== 'POST') {
+          res.redirect(303, '/');
+          return 'handled';
+        }
+        void unlock(req, res, ref).catch(() => {
+          if (!res.headersSent)
+            deps.sendPage(res, passwordPage(ref, 'Something went wrong. Try again.'));
+        });
+        return 'handled';
+      }
+
+      const shareParam = url.searchParams.get('share');
+      if (shareParam !== null) {
+        const store = deps.store();
+        const t = now();
+        let cookie: string;
+        if (shareParam.startsWith(TICKET_PREFIX)) {
+          const ticket = consumeMemberTicket(store, shareParam, ref, t);
+          if (!ticket) {
+            deps.sendPage(res, denyPage(ref, 'expired'));
+            return 'handled';
+          }
+          cookie = buildAccessSetCookie(
+            ACCESS_COOKIE,
+            mintMemberSession(store.secret(), ref, ticket.userId, t),
+            {
+              secure: secure(req),
+              maxAgeMs: MEMBER_SESSION_TTL_MS,
+            },
+          );
+        } else {
+          const v = verifyShareToken(store, shareParam, ref, t);
+          if (!v.ok) {
+            deps.sendPage(
+              res,
+              denyPage(ref, v.reason === 'wrong_environment' ? 'invalid' : v.reason),
+            );
+            return 'handled';
+          }
+          cookie = buildAccessSetCookie(ACCESS_COOKIE, shareParam, {
+            secure: secure(req),
+            maxAgeMs: v.link.expires_at - t,
+          });
+        }
+        // Drop the token from the address bar (and from any Referer the app sends).
+        url.searchParams.delete('share');
+        res.setHeader('Set-Cookie', cookie);
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Referrer-Policy', 'no-referrer');
+        res.redirect(303, `${url.pathname}${url.search}`);
+        return 'handled';
+      }
+
+      const decision = decideAccess(deps.store(), req.headers.cookie, ref, now());
+      if (decision.ok) return 'proceed';
+      deps.sendPage(
+        res,
+        decision.reason === 'password' ? passwordPage(ref) : denyPage(ref, decision.reason),
+      );
+      return 'handled';
+    },
+    upgrade(req, env) {
+      return decideAccess(deps.store(), req.headers.cookie, env, now()).ok;
+    },
+  };
+}

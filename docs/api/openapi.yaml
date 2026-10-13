@@ -41774,6 +41774,565 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/pulls/{number}/preview/share-links:
+    get:
+      tags:
+        - Projects
+      summary: List share links for a PR environment
+      description: Every share link created for this PR environment, newest first, with its status. Active links include their URL so it can be copied again.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      responses:
+        "200":
+          description: Links and permissions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  links:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        projectId:
+                          type: string
+                        prNumber:
+                          type: integer
+                        label:
+                          type: string
+                          nullable: true
+                        url:
+                          type: string
+                          nullable: true
+                          description: The environment URL with `?share=<token>`. Opening it sets an HttpOnly cookie on that environment host only. Null once the link is revoked or expired.
+                        status:
+                          type: string
+                          enum:
+                            - active
+                            - expired
+                            - revoked
+                        createdBy:
+                          type: string
+                          nullable: true
+                        createdAt:
+                          type: string
+                        expiresAt:
+                          type: string
+                        revokedAt:
+                          type: string
+                          nullable: true
+                        canRevoke:
+                          type: boolean
+                          description: "Whether the caller may revoke this link: it is active and the caller is an Admin/Owner, the PR author, or the link creator."
+                      required:
+                        - id
+                        - projectId
+                        - prNumber
+                        - label
+                        - url
+                        - status
+                        - createdBy
+                        - createdAt
+                        - expiresAt
+                        - revokedAt
+                        - canRevoke
+                  passwordRequired:
+                    type: boolean
+                  canManage:
+                    type: boolean
+                    description: Whether the caller may create and revoke links (Admin/Owner or the PR author).
+                  canSetPassword:
+                    type: boolean
+                    description: Whether the caller may set the project password (Admin/Owner).
+                required:
+                  - links
+                  - passwordRequired
+                  - canManage
+                  - canSetPassword
+        "400":
+          description: Not Hub-hosted, invalid PR number, or wildcard preview ingress is not configured.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+    post:
+      tags:
+        - Projects
+      summary: Create a share link for a PR environment
+      description: Mints a signed, expiring, revocable link that lets someone without an Agent Hub account open this PR environment (and only this one). When the project has a share password, the visitor must also enter it. Admin/Owner or the PR author.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expiresInHours:
+                  type: integer
+                  minimum: 1
+                  maximum: 720
+                  description: Lifetime in hours, 1 to 720. Default 168.
+                label:
+                  type: string
+                  maxLength: 120
+                  description: Who the link is for, shown in the list.
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  link:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      projectId:
+                        type: string
+                      prNumber:
+                        type: integer
+                      label:
+                        type: string
+                        nullable: true
+                      url:
+                        type: string
+                        nullable: true
+                        description: The environment URL with `?share=<token>`. Opening it sets an HttpOnly cookie on that environment host only. Null once the link is revoked or expired.
+                      status:
+                        type: string
+                        enum:
+                          - active
+                          - expired
+                          - revoked
+                      createdBy:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      expiresAt:
+                        type: string
+                      revokedAt:
+                        type: string
+                        nullable: true
+                      canRevoke:
+                        type: boolean
+                        description: "Whether the caller may revoke this link: it is active and the caller is an Admin/Owner, the PR author, or the link creator."
+                    required:
+                      - id
+                      - projectId
+                      - prNumber
+                      - label
+                      - url
+                      - status
+                      - createdBy
+                      - createdAt
+                      - expiresAt
+                      - revokedAt
+                      - canRevoke
+                required:
+                  - link
+        "400":
+          description: Not Hub-hosted, invalid PR number, or wildcard preview ingress is not configured.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+        "403":
+          description: Not Admin/Owner or the PR author.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+        "409":
+          description: The PR is not open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/preview/share-links/{linkId}:
+    delete:
+      tags:
+        - Projects
+      summary: Revoke a PR environment share link
+      description: "Revokes the link immediately: its next request, including from a browser that already holds the cookie, gets the access page. Idempotent. Admin/Owner, the PR author, or the link creator."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: linkId
+          in: path
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  link:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      projectId:
+                        type: string
+                      prNumber:
+                        type: integer
+                      label:
+                        type: string
+                        nullable: true
+                      url:
+                        type: string
+                        nullable: true
+                        description: The environment URL with `?share=<token>`. Opening it sets an HttpOnly cookie on that environment host only. Null once the link is revoked or expired.
+                      status:
+                        type: string
+                        enum:
+                          - active
+                          - expired
+                          - revoked
+                      createdBy:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      expiresAt:
+                        type: string
+                      revokedAt:
+                        type: string
+                        nullable: true
+                      canRevoke:
+                        type: boolean
+                        description: "Whether the caller may revoke this link: it is active and the caller is an Admin/Owner, the PR author, or the link creator."
+                    required:
+                      - id
+                      - projectId
+                      - prNumber
+                      - label
+                      - url
+                      - status
+                      - createdBy
+                      - createdAt
+                      - expiresAt
+                      - revokedAt
+                      - canRevoke
+                required:
+                  - link
+        "400":
+          description: Not Hub-hosted, invalid PR number, or wildcard preview ingress is not configured.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+        "403":
+          description: Not allowed to revoke this link.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR/link.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/preview/access:
+    post:
+      tags:
+        - Projects
+      summary: Open a PR environment as a Hub member
+      description: Returns the environment URL with a single-use ticket valid for 60 seconds. Opening it gives this browser a 12-hour session on that environment host. Any caller who can view the project.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      responses:
+        "200":
+          description: URL to open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                required:
+                  - url
+        "400":
+          description: Not Hub-hosted, invalid PR number, or wildcard preview ingress is not configured.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+  /api/projects/{projectId}/preview-share/password:
+    put:
+      tags:
+        - Projects
+      summary: Set or clear the project share password for PR environments
+      description: When set, a visitor arriving with a share link must also enter this password. Hub members are not asked. Changing or clearing it signs out every share-link visitor who unlocked with the old one. Admin/Owner.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password:
+                  type: string
+                  nullable: true
+                  minLength: 4
+                  maxLength: 200
+                  description: New project share password, or null to remove it.
+              required:
+                - password
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  passwordRequired:
+                    type: boolean
+                required:
+                  - passwordRequired
+        "400":
+          description: Invalid body or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+        "403":
+          description: Not Admin/Owner.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
+        "404":
+          description: Unknown project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                    enum:
+                      - pr_env_ingress_not_configured
+                      - pr_env_not_hosted
+                    description: Set when share links cannot exist here at all; clients hide the panel.
+                required:
+                  - error
   /api/projects/{projectId}/pulls:
     get:
       tags:
@@ -43806,7 +44365,7 @@ paths:
       tags:
         - Projects
       summary: Start (or rebuild) the PR environment for a pull request
-      description: Queues the PR environment at the PR's current head commit. Environments are keyed by the pull request, not by any chat session, so any head branch works. Requires a `preview:` block in `.agent-hub/deploy.yaml` at the head commit. A failed or stopped environment is rebuilt; an active one at the same commit is returned unchanged. Agent Hub-hosted PRs only. Environments are also queued automatically when a PR opens or its head moves.
+      description: Queues the PR environment at the PR's current head commit. Environments are keyed by the pull request, not by any chat session, so any head branch works. Requires a `preview:` block in `.agent-hub/deploy.yaml` at the head commit. A failed or stopped environment is rebuilt; an active one at the same commit is returned unchanged. Works for Agent Hub-hosted PRs and for GitHub-hosted projects with `githubRepo` set (PR state read from the GitHub API with a project Owner's token). Hub-hosted PRs also queue automatically when they open or their head moves; GitHub-hosted environments start here, and a periodic re-check rebuilds them on new pushes and stops them on merge or close.
       parameters:
         - schema:
             type: string
@@ -43924,7 +44483,7 @@ paths:
                   - ok
                   - environment
         "400":
-          description: Not Hub-hosted or invalid PR number.
+          description: Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.
           content:
             application/json:
               schema:
@@ -44084,7 +44643,7 @@ paths:
                   - stopped
                   - environment
         "400":
-          description: Not Hub-hosted or invalid PR number.
+          description: Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.
           content:
             application/json:
               schema:
@@ -44225,7 +44784,7 @@ paths:
                 required:
                   - environment
         "400":
-          description: Not Hub-hosted or invalid PR number.
+          description: Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.
           content:
             application/json:
               schema:

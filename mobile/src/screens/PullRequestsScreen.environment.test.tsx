@@ -32,6 +32,8 @@ vi.mock('../components/PrReviewSheet', () => ({ default: () => null }));
 vi.mock('../components/PrCommentSheet', () => ({ default: () => null }));
 vi.mock('../components/PrEditSheet', () => ({ default: () => null }));
 vi.mock('../components/PrDismissSheet', () => ({ default: () => null }));
+// Rendered as a host element so the screen's placement and props are visible.
+vi.mock('../components/PrEnvironmentShareLinks', () => ({ default: 'ShareLinks' }));
 
 const { PrDetail } = await import('./PullRequestsScreen');
 const { api } = await import('../utils/api');
@@ -214,5 +216,26 @@ describe('PR environment panel on mobile', () => {
     await act(async () => {
       tree.unmount();
     });
+  });
+
+  it.each(['stopped', 'failed'] as const)(
+    'keeps share-link management in the panel while the environment is %s',
+    async (status) => {
+      vi.mocked(api.getPullPreviewState).mockResolvedValue({
+        environment: { status, error: 'boom', stopReason: 'manual', logTail: [] },
+      });
+      const tree = await render(detail());
+      const share = tree.root.findAllByType('ShareLinks' as any);
+      expect(share).toHaveLength(1);
+      expect(share[0].props).toMatchObject({ projectId: 'p1', prNumber: 42 });
+      expect(share[0].props.showWhenEmpty).not.toBe(false);
+    },
+  );
+
+  it('outside the panel, share links show only when some exist', async () => {
+    const tree = await render(detail({ preview_available: false }));
+    const share = tree.root.findAllByType('ShareLinks' as any);
+    expect(share).toHaveLength(1);
+    expect(share[0].props).toMatchObject({ prNumber: 42, showWhenEmpty: false });
   });
 });
