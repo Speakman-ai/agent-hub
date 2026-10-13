@@ -54,6 +54,11 @@ import {
   formatThreadsForDispatchBody,
   runReviewerDispatch,
   formatReviewerDiffCorpus,
+  ATTACHED_SPEC_HEADING,
+  buildReviewerCorpus,
+  formatReviewerCardSpecCorpus,
+  renderAttachedSpecNotice,
+  REVIEWER_ATTACHED_SPEC_BYTE_LIMIT,
   orderUnifiedDiffForReviewCorpus,
   type ReviewerDispatchDeps,
   type ReviewerLocalDiffInputs,
@@ -1805,6 +1810,7 @@ describe('CARD_SPEC_NOTICE_RESERVE_BYTES dominates every notice variant', () => 
     ],
     ['prose trimmed only', () => renderSpecTruncationNotice(0, Number.MAX_SAFE_INTEGER)],
     ['no checklist to protect', () => renderProseTruncationNotice(Number.MAX_SAFE_INTEGER)],
+    ['full text attached', () => renderAttachedSpecNotice(Number.MAX_SAFE_INTEGER)],
   ])('reserves at least the worst case for: %s', (_label, render) => {
     expect(CARD_SPEC_NOTICE_RESERVE_BYTES).toBeGreaterThanOrEqual(
       Buffer.byteLength(render(), 'utf8'),
@@ -2375,5 +2381,82 @@ describe('buildLocalDiffReviewerPrompt — partial-input disclosure', () => {
     });
     expect(prompt).toContain('Partial input');
     expect(prompt).toContain('per-file summary');
+  });
+});
+
+// Regression: a card converted from a long support ticket (~10 KB) failed
+// Finalize on every run. The reviewer clipped the description to the 6 KB argv
+// budget and the truncation directive forced a score-6 "truncated spec" finding
+// that no code change could clear.
+describe('long card spec rides the review corpus instead of blocking', () => {
+  // The directives wrap across `> ` quote lines, so match the score loosely.
+  const SCORED_SIX = /scored\s+(?:>\s+)?\*\*6\*\*/;
+  const longTicket =
+    `### Reporter Context\n${'- **Source URL:** https://example.test/#/chat\n'.repeat(150)}` +
+    `\n## Acceptance criteria\n- [ ] the converted card finalizes\n` +
+    `\nTAIL-MARKER-ONLY-IN-FULL-TEXT`;
+
+  it('attaches the complete description ahead of the diff', () => {
+    expect(Buffer.byteLength(longTicket, 'utf8')).toBeGreaterThan(REVIEWER_CARD_SPEC_BYTE_BUDGET);
+    const { corpus, fullSpecAttached } = buildReviewerCorpus({
+      unifiedDiff: fakeInputs.unifiedDiff,
+      cardDescription: longTicket,
+    });
+    expect(fullSpecAttached).toBe(true);
+    expect(corpus).toContain(`## ${ATTACHED_SPEC_HEADING}`);
+    expect(corpus).toContain('TAIL-MARKER-ONLY-IN-FULL-TEXT');
+    expect(corpus).toMatch(/BEGIN-CARD-SPEC-[0-9a-f]{12}/);
+    expect(corpus.indexOf(ATTACHED_SPEC_HEADING)).toBeLessThan(
+      corpus.indexOf('## Review corpus — unified diff'),
+    );
+  });
+
+  it('does not demand a blocking truncation finding when the full spec is attached', () => {
+    const prompt = buildLocalDiffReviewerPrompt({
+      inputs: fakeInputs,
+      card: { ...fakeCard, description: longTicket },
+      project: fakeProject,
+      embedDiff: false,
+      fullSpecAttached: true,
+    });
+    expect(prompt).toContain('The full ticket is attached');
+    expect(prompt).not.toContain('raise this as a finding scored 6');
+    expect(prompt).not.toMatch(SCORED_SIX);
+    expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThan(SAFE_ARG_STRLEN_BYTES);
+  });
+
+  it('still blocks when the spec is clipped and nothing is attached', () => {
+    const prompt = buildLocalDiffReviewerPrompt({
+      inputs: fakeInputs,
+      card: { ...fakeCard, description: longTicket },
+      project: fakeProject,
+      embedDiff: false,
+    });
+    expect(prompt).toMatch(SCORED_SIX);
+  });
+
+  it('attaches nothing when the description fits inline', () => {
+    expect(formatReviewerCardSpecCorpus('- [ ] ship it')).toBeNull();
+    expect(
+      buildReviewerCorpus({ unifiedDiff: fakeInputs.unifiedDiff, cardDescription: 'short' })
+        .fullSpecAttached,
+    ).toBe(false);
+  });
+
+  it('keeps blocking past the attached-spec ceiling', () => {
+    const huge = 'z'.repeat(REVIEWER_ATTACHED_SPEC_BYTE_LIMIT + 1);
+    expect(formatReviewerCardSpecCorpus(huge)).toBeNull();
+    expect(
+      buildReviewerCorpus({ unifiedDiff: fakeInputs.unifiedDiff, cardDescription: huge })
+        .fullSpecAttached,
+    ).toBe(false);
+  });
+
+  it('keeps the inline excerpt within the spec byte budget', () => {
+    const out = renderCardSpec(longTicket, { fullTextAttached: true });
+    expect(out.truncated).toBe(true);
+    expect(out.fullTextAttached).toBe(true);
+    expect(Buffer.byteLength(out.text, 'utf8')).toBeLessThanOrEqual(REVIEWER_CARD_SPEC_BYTE_BUDGET);
+    expect(buildSpecTruncationDirective(out)).not.toMatch(SCORED_SIX);
   });
 });

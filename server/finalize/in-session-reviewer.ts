@@ -61,7 +61,7 @@ import {
 import { TRANSIENT_TURN_ERROR_MAX_RETRIES } from '../turn-error.js';
 import {
   buildLocalDiffReviewerPrompt,
-  formatReviewerDiffCorpus,
+  buildReviewerCorpus,
   type ReviewerCancelSignal,
   type ReviewerRunResult,
   type RunReviewerOnLocalDiff,
@@ -380,13 +380,17 @@ export async function runReviewerTurn(
     // the patch body. The unified diff rides `reviewCorpus` on an unbounded
     // channel. We do not feed prior review messages back in (avoid context
     // snowball across iterations).
+    const { corpus: reviewCorpus, fullSpecAttached } = buildReviewerCorpus({
+      unifiedDiff: inputs.unifiedDiff,
+      cardDescription: card.description,
+    });
     let userPrompt = buildLocalDiffReviewerPrompt({
       inputs,
       card,
       project,
       embedDiff: false,
+      fullSpecAttached,
     });
-    const reviewCorpus = formatReviewerDiffCorpus(inputs.unifiedDiff);
 
     const enrichedSystem = deps.buildEnrichedPrompt(reviewer);
     const systemPrompt = composeReviewerSystemPrompt(enrichedSystem, project, card);
