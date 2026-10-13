@@ -7,6 +7,7 @@ import {
   writeFinalizeCiAbsentTimeline,
   writeFinalizeFlakeRecoveredTimeline,
   writeFinalizeRebaseResultTimeline,
+  annotateFinalizeRebaseReusedJobs,
   writeFinalizeReviewRoundTimeline,
   writeFinalizeRunTerminalTimeline,
   writeFinalizeTimelineMessage,
@@ -267,6 +268,45 @@ describe('timeline-message', () => {
     expect(String(content)).toContain('re-validating after the base branch advanced');
     const metadata = JSON.parse(String(metadataJson));
     expect(metadata.reloopReason).toBe('base_branch_moved');
+  });
+
+  it('annotateFinalizeRebaseReusedJobs rewrites the rebase row and re-broadcasts it', () => {
+    const row = { id: 'mr1', session_id: 'sess-1', role: 'system' };
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => row) },
+      updateMessageContentAndMetadata: { run: vi.fn() },
+    };
+    const broadcast = vi.fn();
+    const rebase = {
+      sessionId: 'sess-1',
+      runId: 'run-1',
+      round: 2,
+      ok: true,
+      reloopReason: 'base_branch_moved' as const,
+    };
+    const deps = { stmts: stmts as never, broadcast, newId: () => 'mr1' };
+    expect(writeFinalizeRebaseResultTimeline(deps, rebase)).toBe('mr1');
+    expect(JSON.parse(String(stmts.addMessage.run.mock.calls[0][7])).reusedJobs).toBeNull();
+
+    expect(
+      annotateFinalizeRebaseReusedJobs(deps, { messageId: 'mr1', rebase, reusedJobs: ['e2e'] }),
+    ).toBe(true);
+    const [content, metadataJson, id] = stmts.updateMessageContentAndMetadata.run.mock.calls[0];
+    expect(id).toBe('mr1');
+    expect(String(content)).toContain('re-validating after the base branch advanced');
+    expect(String(content)).toContain('keeping the earlier passing result for e2e');
+    expect(JSON.parse(String(metadataJson))).toMatchObject({
+      kind: 'finalize_rebase_result',
+      reloopReason: 'base_branch_moved',
+      reusedJobs: ['e2e'],
+    });
+    expect(broadcast).toHaveBeenLastCalledWith({
+      type: 'message',
+      sessionId: 'sess-1',
+      message: row,
+    });
   });
 
   it('writeFinalizeRebaseResultTimeline explains a head-moved re-loop', () => {

@@ -97,6 +97,9 @@ export function parseFinalizeRebaseMetadata(metadataString: any) {
     headSha: typeof parsed.headSha === 'string' ? parsed.headSha : null,
     detail: typeof parsed.detail === 'string' ? parsed.detail : null,
     reloopReason,
+    reusedJobs: Array.isArray(parsed.reusedJobs)
+      ? parsed.reusedJobs.filter((j: unknown): j is string => typeof j === 'string')
+      : [],
   };
 }
 

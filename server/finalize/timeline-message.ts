@@ -174,36 +174,47 @@ function reloopReasonText(reason: FinalizeRebaseReloopReason): string {
     : 're-validating after a new commit landed';
 }
 
-export function writeFinalizeRebaseResultTimeline(
-  deps: TimelineMessageDeps,
-  args: {
-    sessionId: string | null | undefined;
-    runId: string;
-    round: number;
-    ok: boolean;
-    conflict?: boolean;
-    headSha?: string | null;
-    detail?: string | null;
-    /**
-     * Set when this round was triggered by a push-gate re-loop rather than a
-     * reviewer/checks fix. Annotates the message so the user sees why a fresh
-     * round appeared even though nothing they did changed.
-     */
-    reloopReason?: FinalizeRebaseReloopReason | null;
-  },
-): string | null {
+export interface FinalizeRebaseResultArgs {
+  sessionId: string | null | undefined;
+  runId: string;
+  round: number;
+  ok: boolean;
+  conflict?: boolean;
+  headSha?: string | null;
+  detail?: string | null;
+  /**
+   * Set when this round was triggered by a push-gate re-loop rather than a
+   * reviewer/checks fix. Annotates the message so the user sees why a fresh
+   * round appeared even though nothing they did changed.
+   */
+  reloopReason?: FinalizeRebaseReloopReason | null;
+  /**
+   * Jobs keeping their previous round's passing result (base-drift `fast`
+   * policy). Never passed at write time: the round's ci config is not known
+   * yet. {@link annotateFinalizeRebaseReusedJobs} adds it once reuse is
+   * confirmed.
+   */
+  reusedJobs?: string[] | null;
+}
+
+function buildRebaseResultMessage(args: FinalizeRebaseResultArgs): {
+  content: string;
+  payload: Record<string, unknown>;
+} {
   const label = args.ok
     ? args.conflict
       ? 'Rebase completed (conflicts resolved)'
       : 'Rebase completed'
     : 'Rebase failed';
   const roundLabel = args.round > 0 ? `${label} · round ${args.round}` : label;
+  const reusedJobs = args.reusedJobs?.length ? args.reusedJobs : null;
+  const reuseNote = reusedJobs
+    ? ` · keeping the earlier passing result for ${reusedJobs.join(', ')}`
+    : '';
   const content = args.reloopReason
-    ? `${roundLabel} · ${reloopReasonText(args.reloopReason)}`
+    ? `${roundLabel} · ${reloopReasonText(args.reloopReason)}${reuseNote}`
     : roundLabel;
-  return writeFinalizeTimelineMessage(deps, {
-    sessionId: args.sessionId,
-    kind: 'finalize_rebase_result',
+  return {
     content,
     payload: {
       runId: args.runId,
@@ -213,8 +224,57 @@ export function writeFinalizeRebaseResultTimeline(
       headSha: args.headSha ?? null,
       detail: args.detail ?? null,
       reloopReason: args.reloopReason ?? null,
+      reusedJobs,
     },
+  };
+}
+
+export function writeFinalizeRebaseResultTimeline(
+  deps: TimelineMessageDeps,
+  args: FinalizeRebaseResultArgs,
+): string | null {
+  const { content, payload } = buildRebaseResultMessage({ ...args, reusedJobs: null });
+  return writeFinalizeTimelineMessage(deps, {
+    sessionId: args.sessionId,
+    kind: 'finalize_rebase_result',
+    content,
+    payload,
   });
+}
+
+/**
+ * Rewrite a round's rebase message to name the jobs that kept their earlier
+ * result, then re-broadcast it so open clients replace the row in place.
+ * Called only after the round confirmed the reuse against its ci config.
+ */
+export function annotateFinalizeRebaseReusedJobs(
+  deps: TimelineMessageDeps & {
+    stmts: Pick<Stmts, 'updateMessageContentAndMetadata'>;
+  },
+  args: { messageId: string; rebase: FinalizeRebaseResultArgs; reusedJobs: string[] },
+): boolean {
+  if (!args.rebase.sessionId || args.reusedJobs.length === 0) return false;
+  const { content, payload } = buildRebaseResultMessage({
+    ...args.rebase,
+    reusedJobs: args.reusedJobs,
+  });
+  const metadata = JSON.stringify({ kind: 'finalize_rebase_result', ...payload });
+  const log = deps.log ?? (() => {});
+  try {
+    deps.stmts.updateMessageContentAndMetadata.run(content, metadata, args.messageId);
+    const updated = deps.stmts.getMessageById.get(args.messageId) as MessageRow | undefined;
+    if (updated) {
+      deps.broadcast({ type: 'message', sessionId: args.rebase.sessionId, message: updated });
+    }
+    return true;
+  } catch (err) {
+    log(
+      `[finalize-timeline] rebase reuse annotation failed message=${args.messageId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return false;
+  }
 }
 
 export function writeFinalizeReviewRoundTimeline(

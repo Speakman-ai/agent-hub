@@ -72,6 +72,7 @@ import {
   inspectBaseDrift,
   type GitRunner,
 } from './base-drift.js';
+import { resolveBaseDriftPolicy } from './base-drift-policy.js';
 import {
   acquirePushLock,
   PUSH_LOCK_BUSY_ERROR,
@@ -1120,8 +1121,11 @@ async function runFinalizePushInner(args: RunFinalizePushArgs): Promise<Finalize
       onWarn: (message) =>
         console.warn(`[finalize-push] base drift check degraded run=${run.id}: ${message}`),
     });
+    // A project whose base-drift policy is `off` has accepted shipping over
+    // overlapping base movement; treat it like a forced push for this check.
+    const driftAccepted = resolveBaseDriftPolicy(project.baseDrift).mode === 'off';
     if (drift.kind === 'stale') {
-      if (!force) {
+      if (!force && !driftAccepted) {
         console.warn(`[finalize-push] refused push run=${run.id}: ${drift.detail}`);
         return {
           ok: false,
@@ -1132,7 +1136,8 @@ async function runFinalizePushInner(args: RunFinalizePushArgs): Promise<Finalize
       }
       baseDrifted = true;
       console.warn(
-        `[finalize-push] forced push run=${run.id} proceeding over base drift: ${drift.detail}`,
+        `[finalize-push] ${force ? 'forced push' : 'push (base drift policy off)'} run=${run.id} ` +
+          `proceeding over base drift: ${drift.detail}`,
       );
     }
 

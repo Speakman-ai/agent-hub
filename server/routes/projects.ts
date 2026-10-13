@@ -94,6 +94,7 @@ import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js
 import { resolveProjectSkillsDir } from '../project-model.js';
 import { getProjectMode, getWorkflowWorkspaceDir } from '../project-mode.js';
 import { isHubSystemProject } from '../../shared/utils/hub.js';
+import { parseBaseDriftPatch } from '../finalize/base-drift-policy.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
 
@@ -2333,6 +2334,15 @@ This workspace has no git repo and no PR automation — your job is planning, or
           ...(project.ciOnPush ?? {}),
           ...(enabled !== undefined ? { enabled } : {}),
         };
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'baseDrift')) {
+      const parsed = parseBaseDriftPatch((req.body as Record<string, unknown>).baseDrift);
+      if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+      if (parsed.value === null) {
+        delete (project as Record<string, unknown>).baseDrift;
+      } else {
+        project.baseDrift = { ...(project.baseDrift ?? {}), ...parsed.value };
       }
     }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'pushConcurrency')) {

@@ -40,6 +40,18 @@ describe('finalizeTimeline utils', () => {
       }),
     );
     expect(baseDrift?.reloopReason).toBe('base_branch_moved');
+    expect(baseDrift?.reusedJobs).toEqual([]);
+
+    const fast = parseFinalizeRebaseMetadata(
+      JSON.stringify({
+        kind: 'finalize_rebase_result',
+        round: 2,
+        ok: true,
+        reloopReason: 'base_branch_moved',
+        reusedJobs: ['e2e', 7],
+      }),
+    );
+    expect(fast?.reusedJobs).toEqual(['e2e']);
 
     const headMoved = parseFinalizeRebaseMetadata(
       JSON.stringify({

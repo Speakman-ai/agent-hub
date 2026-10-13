@@ -77,6 +77,10 @@ export type BaseDriftOutcome =
       kind: 'stale';
       /** Directories (or exact files) both sides touched, sorted, deduped. */
       overlap: string[];
+      /** Paths changed on the base since the validated sha. */
+      basePaths: string[];
+      /** Paths this branch changes relative to the validated sha. */
+      branchPaths: string[];
       detail: string;
     };
 
@@ -152,6 +156,8 @@ export function evaluateBaseDrift(facts: BaseDriftFacts): BaseDriftOutcome {
   return {
     kind: 'stale',
     overlap: sorted,
+    basePaths: facts.basePaths,
+    branchPaths: facts.branchPaths,
     detail:
       `base moved ${facts.validatedBaseSha} → ${facts.currentBaseSha} onto ground this ` +
       `branch also changes (${sorted.slice(0, 5).join(', ')}${

@@ -22,6 +22,17 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+// Pass-through by default (the harness worktree has no git, so the real
+// functions fail open); base-drift policy tests script specific outcomes.
+vi.mock('./base-drift.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./base-drift.js')>();
+  return {
+    ...actual,
+    inspectBaseDrift: vi.fn(actual.inspectBaseDrift),
+    resolveBaseSha: vi.fn(actual.resolveBaseSha),
+  };
+});
+
 import type { FinalizeRunRow, KanbanCardRow, Project, ReviewerThreadRow } from '../types.js';
 import {
   computeIdempotencyKey,
@@ -35,6 +46,7 @@ import {
   type PushAndCreatePrResult,
 } from './orchestrator.js';
 import type { CiConfig } from './ci-config.js';
+import { jobInstanceKey } from './base-drift-policy.js';
 import type { RebasePhaseOutcome } from './rebase.js';
 import type { ReviewerDispatchOutcome } from './reviewer-dispatch.js';
 import type { StepRunResult } from './step-runner.js';
@@ -343,6 +355,9 @@ function makeStmts(): {
     upsertFinalizeRunJob: {
       run: vi.fn(),
     } as unknown as OrchestratorDeps['stmts']['upsertFinalizeRunJob'],
+    updateMessageContentAndMetadata: {
+      run: vi.fn(),
+    } as unknown as OrchestratorDeps['stmts']['updateMessageContentAndMetadata'],
     listFinalizeRunJobsForRun: {
       all: vi.fn(() => []),
     } as unknown as OrchestratorDeps['stmts']['listFinalizeRunJobsForRun'],
@@ -4178,5 +4193,160 @@ describe('runFinalize — step timeout retry', () => {
     if (result.kind === 'failed') expect(result.status).toBe('timed_out');
     expect(runSteps).toHaveBeenCalledTimes(1);
     expect(deps.dispatchFixMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('runFinalize — base drift policy', () => {
+  const STALE = {
+    kind: 'stale' as const,
+    overlap: ['app/views/'],
+    basePaths: ['app/views/a.py'],
+    branchPaths: ['app/views/b.py'],
+    detail: 'base moved base1 → base2 onto app/views/',
+  };
+
+  async function driftOnce() {
+    const drift = await import('./base-drift.js');
+    vi.mocked(drift.resolveBaseSha).mockResolvedValue('base1');
+    vi.mocked(drift.inspectBaseDrift)
+      .mockResolvedValueOnce(STALE)
+      .mockResolvedValue({ kind: 'clear', reason: 'no_drift', detail: 'still at base2' });
+  }
+
+  afterEach(async () => {
+    const drift = await import('./base-drift.js');
+    vi.mocked(drift.inspectBaseDrift).mockReset();
+    vi.mocked(drift.resolveBaseSha).mockReset();
+    const actual = await vi.importActual<typeof import('./base-drift.js')>('./base-drift.js');
+    vi.mocked(drift.inspectBaseDrift).mockImplementation(actual.inspectBaseDrift);
+    vi.mocked(drift.resolveBaseSha).mockImplementation(actual.resolveBaseSha);
+  });
+
+  function timelineMetas(stmts: ReturnType<typeof makeDeps>['stmts']) {
+    return (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => JSON.parse(call[7] as string) as Record<string, unknown>,
+    );
+  }
+
+  function passedJobs(stmts: ReturnType<typeof makeDeps>['stmts']) {
+    (stmts.stmts.listFinalizeRunJobsForRun.all as ReturnType<typeof vi.fn>).mockReturnValue([
+      { run_id: 'run-1', job_id: 'build', matrix_key: '', state: 'passed', exit_code: 0 },
+      { run_id: 'run-1', job_id: 'e2e', matrix_key: 'shard-1', state: 'passed', exit_code: 0 },
+      { run_id: 'run-1', job_id: 'e2e', matrix_key: 'shard-2', state: 'passed', exit_code: 0 },
+    ]);
+  }
+
+  it('full (default) re-runs every job after overlapping drift', async () => {
+    await driftOnce();
+    const steps = vi.fn().mockResolvedValue(STEPS_OK) as unknown as NonNullable<
+      OrchestratorDeps['runJobPhase']
+    >;
+    const { deps, stmts } = makeDeps({ runJobPhase: steps });
+    passedJobs(stmts);
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'full' }));
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(steps).toHaveBeenCalledTimes(2);
+    const round2 = (steps as unknown as ReturnType<typeof vi.fn>).mock.calls[1][1];
+    expect(round2.reuseInstances).toBeUndefined();
+  });
+
+  it('fast keeps the listed jobs from the previous round and re-runs the rest', async () => {
+    await driftOnce();
+    const steps = vi.fn().mockResolvedValue(STEPS_OK) as unknown as NonNullable<
+      OrchestratorDeps['runJobPhase']
+    >;
+    const { deps, stmts } = makeDeps({ runJobPhase: steps });
+    passedJobs(stmts);
+
+    const result = await runFinalize(
+      deps,
+      baseOpts({
+        mode: 'full',
+        project: { ...fakeProject, baseDrift: { mode: 'fast', reuseJobs: ['e2e'] } },
+      }),
+    );
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(deps.runRebasePhase).toHaveBeenCalledTimes(2);
+    expect(steps).toHaveBeenCalledTimes(2);
+    const calls = (steps as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[0][1].reuseInstances).toBeUndefined();
+    expect([...calls[1][1].reuseInstances].sort()).toEqual([
+      jobInstanceKey('e2e', 'shard-1'),
+      jobInstanceKey('e2e', 'shard-2'),
+    ]);
+
+    // Written without reuse (the round's ci config is not parsed yet), then
+    // rewritten in place once the reuse is confirmed.
+    const rebaseMsgs = timelineMetas(stmts).filter((m) => m.kind === 'finalize_rebase_result');
+    expect(rebaseMsgs[1].reloopReason).toBe('base_branch_moved');
+    expect(rebaseMsgs[1].reusedJobs).toBeNull();
+    const updates = (stmts.stmts.updateMessageContentAndMetadata.run as ReturnType<typeof vi.fn>)
+      .mock.calls;
+    expect(updates).toHaveLength(1);
+    expect(String(updates[0][0])).toContain('keeping the earlier passing result for e2e');
+    expect(JSON.parse(String(updates[0][1]))).toMatchObject({
+      kind: 'finalize_rebase_result',
+      round: 2,
+      reloopReason: 'base_branch_moved',
+      reusedJobs: ['e2e'],
+    });
+  });
+
+  it('drops reuse and reports none when the rebase changed the ci config', async () => {
+    await driftOnce();
+    const steps = vi.fn().mockResolvedValue(STEPS_OK) as unknown as NonNullable<
+      OrchestratorDeps['runJobPhase']
+    >;
+    const changedCi = {
+      ...CI_OK,
+      config: { ...CI_OK.config, timeoutMinutes: 30 as const },
+    } as unknown as typeof CI_OK;
+    const loadCi = vi
+      .fn()
+      .mockResolvedValueOnce(CI_OK)
+      .mockResolvedValue(changedCi) as unknown as NonNullable<
+      OrchestratorDeps['loadCiConfigFromFile']
+    >;
+    const { deps, stmts } = makeDeps({ runJobPhase: steps, loadCiConfigFromFile: loadCi });
+    passedJobs(stmts);
+
+    const result = await runFinalize(
+      deps,
+      baseOpts({
+        mode: 'full',
+        project: { ...fakeProject, baseDrift: { mode: 'fast', reuseJobs: ['e2e'] } },
+      }),
+    );
+
+    expect(result.kind).toBe('ready_to_push');
+    const calls = (steps as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[1][1].reuseInstances).toBeUndefined();
+    expect(
+      (stmts.stmts.updateMessageContentAndMetadata.run as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(0);
+    const rebaseMsgs = timelineMetas(stmts).filter((m) => m.kind === 'finalize_rebase_result');
+    expect(rebaseMsgs.every((m) => m.reusedJobs === null)).toBe(true);
+  });
+
+  it('off pushes over overlapping drift without another round', async () => {
+    await driftOnce();
+    const steps = vi.fn().mockResolvedValue(STEPS_OK) as unknown as NonNullable<
+      OrchestratorDeps['runJobPhase']
+    >;
+    const { deps, stmts } = makeDeps({ runJobPhase: steps });
+    passedJobs(stmts);
+
+    const result = await runFinalize(
+      deps,
+      baseOpts({ mode: 'full', project: { ...fakeProject, baseDrift: { mode: 'off' } } }),
+    );
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(steps).toHaveBeenCalledTimes(1);
+    expect(deps.runRebasePhase).toHaveBeenCalledTimes(1);
   });
 });

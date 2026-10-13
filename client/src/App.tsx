@@ -285,6 +285,7 @@ import { indexSessionsById, resolveChatAccentColor } from './utils/chatAccentCol
 import { notifyFinalizeRunFromTimelineMessage } from './utils/finalizeTimelineLive';
 import { deriveSessionState } from './utils/deriveSessionState';
 import { resolveDeepLinkTarget, upsertSessionRow } from './utils/sessionDeepLinkTarget';
+import { mergeIncomingMessage } from './utils/mergeIncomingMessage';
 import { deriveSessionTimelineMarkers } from '@shared/utils/sessionTimeline';
 import { shouldAutoPresentArtifact } from '@shared/utils/artifactView';
 
@@ -2056,10 +2057,7 @@ export default function App({ initialView }: any = {}) {
               msg.role === 'system' ||
               (msg.role === 'assistant' && msg.agent_id);
             if (appendable) {
-              setMessages((prev: any) => {
-                if (prev.some((m: any) => m.id === msg.id)) return prev;
-                return [...prev, msg];
-              });
+              setMessages((prev: any) => mergeIncomingMessage(prev, msg));
               if (msg.role === 'assistant' && msg.agent_id) {
                 // Advisor turn — executor messages arrive on `done` instead.
                 setThinking(false);

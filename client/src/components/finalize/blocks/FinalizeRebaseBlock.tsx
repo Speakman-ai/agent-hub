@@ -9,11 +9,15 @@ export default function FinalizeRebaseBlock({ message }: any) {
 
   const roundLabel = meta.round > 0 ? `Rebase · round ${meta.round}` : 'Rebase';
   const reloopNote =
-    meta.reloopReason === 'base_branch_moved'
-      ? 'Re-running because the base branch advanced — the previous review and checks were validated against older code.'
-      : meta.reloopReason === 'head_sha_moved'
-        ? 'Re-running because a new commit landed — the previous review and checks were validated against an older commit.'
-        : null;
+    meta.reloopReason === 'base_branch_moved' && meta.reusedJobs.length > 0
+      ? `Re-running because the base branch advanced. ${meta.reusedJobs.join(', ')} ${
+          meta.reusedJobs.length === 1 ? 'keeps its' : 'keep their'
+        } passing result from the previous round; review and the other checks run again.`
+      : meta.reloopReason === 'base_branch_moved'
+        ? 'Re-running because the base branch advanced — the previous review and checks were validated against older code.'
+        : meta.reloopReason === 'head_sha_moved'
+          ? 'Re-running because a new commit landed — the previous review and checks were validated against an older commit.'
+          : null;
   const Icon = meta.ok ? CheckCircle2 : XCircle;
   const tone = meta.ok ? 'text-emerald-300' : 'text-red-300';
   const border = meta.ok

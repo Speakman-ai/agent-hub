@@ -5599,6 +5599,9 @@ function initDb(dataDir: string): void {
        WHERE id = ? AND session_id = ? AND role = 'user' RETURNING *`,
     ),
     updateMessageContent: db.prepare('UPDATE messages SET content = ? WHERE id = ?'),
+    updateMessageContentAndMetadata: db.prepare(
+      'UPDATE messages SET content = ?, metadata = ? WHERE id = ?',
+    ),
     getAllQueuedSessions: db.prepare('SELECT DISTINCT session_id FROM message_queue'),
 
     // Cron sessions

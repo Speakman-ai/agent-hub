@@ -451,6 +451,36 @@ describe('CiRunsSection', () => {
     );
   });
 
+  it('base drift mode select PATCHes baseDrift.mode', async () => {
+    (api.updateProject as any).mockResolvedValue({});
+    render(<CiRunsSection project={{ id: 'proj-2', name: 'P2', gitHost: 'github' }} />);
+    const mode = (await screen.findByTestId('base-drift-mode')) as HTMLSelectElement;
+    expect(mode.value).toBe('full');
+    expect(screen.queryByTestId('base-drift-reuse-jobs')).toBeNull();
+    fireEvent.change(mode, { target: { value: 'off' } });
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('proj-2', { baseDrift: { mode: 'off' } }),
+    );
+  });
+
+  it('fast mode saves the reused jobs and hazard globs as lists', async () => {
+    (api.updateProject as any).mockResolvedValue({});
+    render(<CiRunsSection project={{ ...hostedProject, baseDrift: { mode: 'fast' } }} />);
+    const reuse = await screen.findByTestId('base-drift-reuse-jobs');
+    const hazard = screen.getByTestId('base-drift-hazard-paths') as HTMLInputElement;
+    expect(hazard.value).toBe('**/migrations/**, **/db/migrate/**');
+    fireEvent.change(reuse, { target: { value: 'e2e, smoke' } });
+    fireEvent.click(screen.getByTestId('base-drift-save'));
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('proj-1', {
+        baseDrift: {
+          reuseJobs: ['e2e', 'smoke'],
+          hazardPaths: ['**/migrations/**', '**/db/migrate/**'],
+        },
+      }),
+    );
+  });
+
   it('hides the toggle for GitHub-hosted projects but still shows history', async () => {
     render(<CiRunsSection project={{ id: 'proj-2', name: 'P2', gitHost: 'github' }} />);
     expect(await screen.findByTestId('ci-run-run-1')).toBeInTheDocument();

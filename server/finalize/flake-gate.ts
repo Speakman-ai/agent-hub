@@ -22,6 +22,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { CiConfig } from './ci-config.js';
 import type { FinalizeRunJobAttemptRow, FinalizeRunJobRow, Stmts } from '../types.js';
+import { jobInstanceKey } from './base-drift-policy.js';
 import {
   blockedGateResult,
   classifyJobRetryHistory,
@@ -83,7 +84,18 @@ export function recordJobAttemptsForRound(
     now?: () => number;
     log?: (msg: string) => void;
   },
-  args: { runId: string; round: number; headSha: string | null },
+  args: {
+    runId: string;
+    round: number;
+    headSha: string | null;
+    /**
+     * Instances (keyed by `jobInstanceKey`) that carried an earlier round's
+     * result instead of running. They get no row for this round: recording
+     * their old `passed` against this round's head would claim a pass that
+     * never happened on it.
+     */
+    excludeInstances?: ReadonlySet<string>;
+  },
 ): boolean {
   const now = deps.now ?? Date.now;
   let jobs: FinalizeRunJobRow[];
@@ -99,6 +111,7 @@ export function recordJobAttemptsForRound(
   }
   let allPersisted = true;
   for (const job of jobs) {
+    if (args.excludeInstances?.has(jobInstanceKey(job.job_id, job.matrix_key))) continue;
     try {
       deps.stmts.upsertFinalizeRunJobAttempt.run(
         args.runId,

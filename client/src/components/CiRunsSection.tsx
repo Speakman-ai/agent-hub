@@ -626,6 +626,119 @@ export function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
   );
 }
 
+const BASE_DRIFT_OPTIONS = [
+  { value: 'full', label: 'Full: re-run review and every job' },
+  { value: 'fast', label: 'Fast: re-run review, keep slow job results' },
+  { value: 'off', label: 'Off: push without re-running' },
+];
+
+const DEFAULT_HAZARD_PATHS = ['**/migrations/**', '**/db/migrate/**'];
+
+function splitList(text: string): string[] {
+  return text
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * What Finalize does when main moves onto files this branch also touches
+ * while review and checks run. Mirrors `server/finalize/base-drift-policy.ts`.
+ */
+export function BaseDriftSettings({ value, onSave, saving }: any) {
+  const mode = value?.mode === 'fast' || value?.mode === 'off' ? value.mode : 'full';
+  const storedReuse = (value?.reuseJobs ?? []).join(', ');
+  const storedHazard = (
+    Array.isArray(value?.hazardPaths) ? value.hazardPaths : DEFAULT_HAZARD_PATHS
+  ).join(', ');
+  const [reuseText, setReuseText] = useState(storedReuse);
+  const [hazardText, setHazardText] = useState(storedHazard);
+
+  useEffect(() => setReuseText(storedReuse), [storedReuse]);
+  useEffect(() => setHazardText(storedHazard), [storedHazard]);
+
+  const dirty = reuseText !== storedReuse || hazardText !== storedHazard;
+
+  return (
+    <div className="space-y-2" data-testid="base-drift-settings">
+      <div>
+        <span className="text-sm text-gray-200">
+          When main changes the same files during checks
+        </span>
+        <p className="text-xs text-gray-500">
+          Finalize normally rebases and re-runs review and every job, because the earlier results
+          were checked against older code.
+        </p>
+      </div>
+      <select
+        value={mode}
+        disabled={saving}
+        onChange={(e) => onSave({ mode: e.target.value })}
+        data-testid="base-drift-mode"
+        className="w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-gray-200 disabled:opacity-50"
+      >
+        {BASE_DRIFT_OPTIONS.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+      {mode === 'off' && (
+        <p className="text-xs text-amber-400/80">
+          Changes that only break in combination with main can merge. The next Finalize that rebases
+          will see the failure.
+        </p>
+      )}
+      {mode === 'fast' && (
+        <div className="space-y-2">
+          <label className="block text-xs">
+            <span className="text-gray-300">Jobs that keep their earlier result</span>
+            <input
+              type="text"
+              value={reuseText}
+              disabled={saving}
+              onChange={(e) => setReuseText(e.target.value)}
+              placeholder="e2e"
+              data-testid="base-drift-reuse-jobs"
+              className="mt-1 w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-gray-200 disabled:opacity-50"
+            />
+            <span className="text-gray-500">
+              Job ids from ci.yaml, comma separated. Everything else re-runs. With none listed, fast
+              behaves like full.
+            </span>
+          </label>
+          <label className="block text-xs">
+            <span className="text-gray-300">Always re-run everything when these paths overlap</span>
+            <input
+              type="text"
+              value={hazardText}
+              disabled={saving}
+              onChange={(e) => setHazardText(e.target.value)}
+              data-testid="base-drift-hazard-paths"
+              className="mt-1 w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-gray-200 disabled:opacity-50"
+            />
+            <span className="text-gray-500">
+              Globs, comma separated. A file changed on both main and this branch also triggers a
+              full re-run.
+            </span>
+          </label>
+          <button
+            type="button"
+            disabled={saving || !dirty}
+            onClick={() =>
+              onSave({ reuseJobs: splitList(reuseText), hazardPaths: splitList(hazardText) })
+            }
+            data-testid="base-drift-save"
+            className="px-3 py-1 rounded-lg text-xs bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-40"
+          >
+            Save
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const PUSH_CONCURRENCY_OPTIONS = [
   { value: 'queue', label: 'Queue after the running one' },
   { value: 'cancel', label: 'Cancel the running one' },
@@ -756,6 +869,19 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
     }
   };
 
+  const updateBaseDrift = async (patch: Record<string, unknown>) => {
+    if (!projectId) return;
+    setSavingToggle(true);
+    try {
+      await api.updateProject(projectId, { baseDrift: patch });
+      if (onProjectsChange) onProjectsChange();
+    } catch (err: any) {
+      if (showToast) showToast(String(err?.message || err || 'Failed to update'), 'error');
+    } finally {
+      setSavingToggle(false);
+    }
+  };
+
   if (!projectId) return null;
 
   return (
@@ -796,6 +922,12 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
           saving={savingToggle}
         />
       )}
+
+      <BaseDriftSettings
+        value={project?.baseDrift}
+        onSave={updateBaseDrift}
+        saving={savingToggle}
+      />
 
       <RunnerStats
         stats={stats}

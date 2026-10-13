@@ -2419,6 +2419,7 @@ export interface Stmts {
   prioritizeQueuedMessage: Stmt;
   promoteQueuedMessage: Stmt;
   updateMessageContent: Stmt;
+  updateMessageContentAndMetadata: Stmt;
   getAllQueuedSessions: Stmt;
 
   // Cron sessions
@@ -3491,6 +3492,18 @@ export interface Project {
    * `server/git-host/push-ci.ts` and the Runners settings section.
    */
   ciOnPush?: { enabled?: boolean };
+  /**
+   * What Finalize does when the base branch moves onto files this branch also
+   * touches while review and checks run. `full` (default) re-runs everything,
+   * `fast` re-runs review and every job except `reuseJobs` unless the overlap
+   * is a same-file or `hazardPaths` collision, `off` pushes without
+   * re-validating. See `server/finalize/base-drift-policy.ts`.
+   */
+  baseDrift?: {
+    mode?: 'full' | 'fast' | 'off';
+    reuseJobs?: string[];
+    hazardPaths?: string[];
+  };
   /**
    * What a new push to a branch does to CI / auto-review work still running
    * (or waiting) for an older head of that same branch. `queue` (default)

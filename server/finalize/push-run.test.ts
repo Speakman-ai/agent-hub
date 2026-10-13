@@ -1020,6 +1020,25 @@ describe('runFinalizePush base drift', () => {
     expect(pushAndCreatePr).not.toHaveBeenCalled();
   });
 
+  it('pushes over overlapping base drift when the project policy is off', async () => {
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project: { ...project, baseDrift: { mode: 'off' } },
+      run: { ...baseRun(), validated_head_sha: 'abc123', validated_base_sha: 'base1' },
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+      inspectBaseDriftGit: driftGit(['backend/jobs/views_a.py'], ['backend/jobs/views_b.py']),
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(pushAndCreatePr).toHaveBeenCalled();
+  });
+
   it('pushes when the base moved somewhere the branch does not touch', async () => {
     const { deps } = makeDeps();
     const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' });

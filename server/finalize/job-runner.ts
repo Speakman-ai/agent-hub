@@ -38,6 +38,7 @@ import {
 import { classifyFailureReason } from './infra-retry.js';
 import { isWorktreeBundleFailureMessage } from './worktree-bundle.js';
 import type { CancelSignal } from './fix-dispatch.js';
+import { jobInstanceKey } from './base-drift-policy.js';
 
 /** Default max parallel job shards (override with FINALIZE_MAX_PARALLEL_JOBS). */
 export const DEFAULT_MAX_PARALLEL_JOBS = 4;
@@ -61,6 +62,13 @@ export interface JobRunnerOptions {
    * of blocking until every test finishes on its own.
    */
   signal?: CancelSignal;
+  /**
+   * Instances (keyed by `jobInstanceKey`) whose passing result from the
+   * previous round carries over: they do not run, and their job + step rows
+   * are left exactly as that round wrote them. Set only by the base-drift
+   * `fast` policy.
+   */
+  reuseInstances?: ReadonlySet<string>;
 }
 
 interface PlannedStep {
@@ -815,6 +823,9 @@ export async function runJobPhase(
     );
   }
 
+  const isReused = (instance: JobInstance): boolean =>
+    opts.reuseInstances?.has(jobInstanceKey(instance.jobId, instance.matrixKey)) ?? false;
+
   let stepIndex = 0;
   const planned: PlannedStep[] = [];
   for (const instance of instances) {
@@ -830,6 +841,7 @@ export async function runJobPhase(
         namePrefix,
       });
     }
+    if (isReused(instance)) continue;
     persistJobState(
       deps,
       opts.runId,
@@ -850,6 +862,7 @@ export async function runJobPhase(
   // global step_index, so the live `finalize_run_step_state` updates and the
   // per-step upserts (ON CONFLICT run_id+step_index) overwrite it in place.
   for (const p of planned) {
+    if (isReused(p.instance)) continue;
     try {
       deps.stmts.upsertFinalizeRunStep.run(
         opts.runId,
@@ -915,6 +928,12 @@ export async function runJobPhase(
   };
 
   const runInstance = async (instance: JobInstance): Promise<JobInstanceOutcome> => {
+    if (isReused(instance)) {
+      return {
+        instance,
+        result: { status: 'success' as const, stepResults: [], activeSecondsBilled: 0 },
+      };
+    }
     if (failFastCancelledJobs.has(instance.jobId)) {
       return markSkipped(instance);
     }

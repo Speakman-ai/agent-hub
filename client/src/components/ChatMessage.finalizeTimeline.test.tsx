@@ -20,6 +20,28 @@ describe('ChatMessage finalize timeline routing', () => {
     expect(container!.firstChild).toBeNull();
   });
 
+  it('names the jobs a fast base-drift round kept on the rebase block', () => {
+    render(
+      <ChatMessage
+        message={{
+          role: 'system',
+          metadata: JSON.stringify({
+            kind: 'finalize_rebase_result',
+            runId: 'run-1',
+            round: 2,
+            ok: true,
+            reloopReason: 'base_branch_moved',
+            reusedJobs: ['e2e'],
+          }),
+          content: 'Rebase completed · round 2',
+        }}
+      />,
+    );
+    expect(screen.getByTestId('finalize-rebase-block')).toHaveTextContent(
+      'e2e keeps its passing result from the previous round',
+    );
+  });
+
   it('renders finalize review round block', () => {
     render(
       <ChatMessage

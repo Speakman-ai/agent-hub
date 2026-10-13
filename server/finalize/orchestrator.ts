@@ -48,6 +48,7 @@ import type {
   FinalizeRunMode,
   FinalizeRunPhase,
   FinalizeRunRow,
+  FinalizeRunJobRow,
   FinalizeRunStatus,
   KanbanCardRow,
   Project,
@@ -124,6 +125,8 @@ import {
   writeFinalizeFlakeRecoveredTimeline,
   writeFinalizeReadyToPushTimeline,
   writeFinalizeRebaseResultTimeline,
+  annotateFinalizeRebaseReusedJobs,
+  type FinalizeRebaseResultArgs,
   writeFinalizeRunStartedTimeline,
   writeFinalizeRunTerminalTimeline,
   writeFinalizeTimelineMessage,
@@ -143,6 +146,11 @@ import { loadActiveQuarantine, recordRunTestHistory } from './quarantine-gate.js
 import { applyQuarantineToGate, describeExcused } from './quarantine.js';
 import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finalize-keys.js';
 import { inspectBaseDrift, resolveBaseSha } from './base-drift.js';
+import {
+  decideBaseDriftAction,
+  jobInstanceKey,
+  resolveBaseDriftPolicy,
+} from './base-drift-policy.js';
 
 export { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH };
 
@@ -414,6 +422,8 @@ export interface OrchestratorDeps {
     | 'insertFinalizeMetric'
     // Server-stored ci.yaml fallback — read when resolving the config source.
     | 'getFinalizeServerCi'
+    // Rewrites a round's rebase timeline row once base-drift job reuse is confirmed.
+    | 'updateMessageContentAndMetadata'
   >;
   broadcast: BroadcastFn;
   /**
@@ -1062,6 +1072,13 @@ export async function runFinalize(
     // cleared when the next round writes its rebase timeline message so the
     // user sees why a fresh round appeared with no action on their part.
     let pendingReloopReason: 'base_branch_moved' | 'head_sha_moved' | null = null;
+    // Base-drift `fast` policy: job instances whose passing result carries
+    // into the next round instead of re-running. Bound to the ci.yaml the
+    // results came from, and consumed by exactly one round: any later round
+    // (a fix, another reloop) starts from a full job set again.
+    let pendingJobReuse: { keys: Set<string>; jobIds: string[]; ciFingerprint: string } | null =
+      null;
+    const baseDriftPolicy = resolveBaseDriftPolicy(opts.project.baseDrift);
     // §6 no-progress reruns: how many same-SHA reruns we've already spent this
     // streak. Reset to 0 whenever HEAD advances (a real commit landed). Bounds
     // the relaxed fix_no_progress path so a stuck run can't livelock.
@@ -1133,6 +1150,11 @@ export async function runFinalize(
 
     while (loopCount < MAX_FIX_DISPATCH_LOOPS) {
       loopCount += 1;
+      const roundJobReuse = pendingJobReuse;
+      pendingJobReuse = null;
+      // This round's rebase timeline message, so a confirmed job reuse can be
+      // written onto it once the round's ci config is known.
+      let roundRebaseMessage: { id: string; args: FinalizeRebaseResultArgs } | null = null;
 
       try {
         deps.stmts.updateFinalizeRunLoopRound.run(loopCount, runId);
@@ -1370,7 +1392,7 @@ export async function runFinalize(
         );
       }
 
-      writeFinalizeRebaseResultTimeline(orchestratorTimelineDeps(deps), {
+      const rebaseArgs: FinalizeRebaseResultArgs = {
         sessionId,
         runId,
         round: loopCount,
@@ -1378,7 +1400,12 @@ export async function runFinalize(
         conflict: (rebaseOutcome.conflictsDispatchedCount ?? 0) > 0,
         headSha: headValidatedAgainst,
         reloopReason: pendingReloopReason,
-      });
+      };
+      const rebaseMessageId = writeFinalizeRebaseResultTimeline(
+        orchestratorTimelineDeps(deps),
+        rebaseArgs,
+      );
+      if (rebaseMessageId) roundRebaseMessage = { id: rebaseMessageId, args: rebaseArgs };
       // Consumed by this round's rebase message; clear so a later fix-driven
       // round is not mislabeled as a push-gate re-loop.
       pendingReloopReason = null;
@@ -1821,6 +1848,7 @@ export async function runFinalize(
         setPhase(deps, runId, sessionId, 'tasks', 'running', log);
 
         // Phase 4: tasks
+        let reuseInstances: ReadonlySet<string> | undefined;
         try {
           // Tenant identity for the remote runner queue (local backend ignores
           // it). getActiveOrgId throws before an org is selected — default to
@@ -1830,6 +1858,28 @@ export async function runFinalize(
             orgId = getActiveOrgId();
           } catch {
             /* no active org — fine for the local backend */
+          }
+          // A ci.yaml that changed since the reused results were produced
+          // (a rebase can pull one in) invalidates them: step indexes and job
+          // definitions may no longer line up.
+          if (roundJobReuse && roundJobReuse.ciFingerprint !== JSON.stringify(parsedCi)) {
+            log(
+              `[finalize-orchestrator] ci config changed since round ${loopCount - 1} for ` +
+                `run=${runId}; dropping reuse of ${roundJobReuse.jobIds.join(', ')}`,
+            );
+            reuseInstances = undefined;
+          } else if (roundJobReuse) {
+            reuseInstances = roundJobReuse.keys;
+            if (roundRebaseMessage) {
+              annotateFinalizeRebaseReusedJobs(
+                { ...orchestratorTimelineDeps(deps), stmts: deps.stmts, log },
+                {
+                  messageId: roundRebaseMessage.id,
+                  rebase: roundRebaseMessage.args,
+                  reusedJobs: roundJobReuse.jobIds,
+                },
+              );
+            }
           }
           lastStepOutcome = await runJobs(
             {
@@ -1848,6 +1898,7 @@ export async function runFinalize(
               orgId,
               projectId: opts.project.id,
               ...(opts.signal ? { signal: opts.signal } : {}),
+              ...(reuseInstances ? { reuseInstances } : {}),
             },
           );
         } catch (err) {
@@ -1918,7 +1969,12 @@ export async function runFinalize(
         }
         const persisted = recordJobAttemptsForRound(
           { stmts: deps.stmts, now, log },
-          { runId, round: loopCount, headSha: headValidatedAgainst },
+          {
+            runId,
+            round: loopCount,
+            headSha: headValidatedAgainst,
+            ...(reuseInstances ? { excludeInstances: reuseInstances } : {}),
+          },
         );
         if (!persisted) attemptHistoryPersisted = false;
         // Refresh this run's cross-run flake-history rows from the snapshot
@@ -2110,16 +2166,38 @@ export async function runFinalize(
           onWarn: (message) =>
             log(`[finalize-orchestrator] base drift check degraded for run=${runId}: ${message}`),
         });
-        if (baseDrift.kind === 'stale') {
+        const driftAction =
+          baseDrift.kind === 'stale' ? decideBaseDriftAction(baseDrift, baseDriftPolicy) : null;
+        if (baseDrift.kind === 'stale' && driftAction?.kind === 'proceed') {
+          trace('push_gate', {
+            round: loopCount,
+            decision: 'base_drift_accepted',
+            overlap: baseDrift.overlap.slice(0, 10),
+          });
+          log(`[finalize-orchestrator] run=${runId}: ${driftAction.detail}`);
+        }
+        if (baseDrift.kind === 'stale' && driftAction && driftAction.kind !== 'proceed') {
+          const reuse =
+            driftAction.kind === 'rerun_fast'
+              ? collectJobReuse(deps.stmts, runId, driftAction.reuseJobs, parsedCi)
+              : null;
+          pendingJobReuse = reuse;
           trace('push_gate', {
             round: loopCount,
             decision: 'refuse',
             refusalCode: 'base_branch_moved',
             overlap: baseDrift.overlap.slice(0, 10),
+            driftPolicy: baseDriftPolicy.mode,
+            rerun: reuse ? 'fast' : 'full',
+            ...(driftAction.kind === 'rerun_full' ? { rerunReason: driftAction.reason } : {}),
+            ...(reuse ? { reusedJobs: reuse.jobIds } : {}),
           });
           log(
             `[finalize-orchestrator] base drift refused push for run=${runId}: ` +
-              `${baseDrift.detail}; re-entering rebase`,
+              `${reuse ? driftAction.detail : baseDrift.detail}; re-entering rebase` +
+              (driftAction.kind === 'rerun_full' && driftAction.reason !== 'policy_full'
+                ? ` (${driftAction.detail})`
+                : ''),
           );
           // Annotate the next round's rebase message so the user sees why a
           // fresh review/checks round appeared: the base branch advanced.
@@ -3515,3 +3593,34 @@ export const __test = {
 // re-exported here so callers of the orchestrator can construct
 // reviewer-driver inputs without importing the sub-module directly.
 export type { ReviewerLocalDiffInputs };
+
+/**
+ * Job instances eligible to carry their result into the next round under the
+ * base-drift `fast` policy: listed in `reuseJobs` and `passed` on the round
+ * that just went green. Null when nothing qualifies, which the caller treats
+ * as a full re-run.
+ */
+function collectJobReuse(
+  stmts: Pick<Stmts, 'listFinalizeRunJobsForRun'>,
+  runId: string,
+  reuseJobs: string[],
+  parsedCi: CiConfig | null,
+): { keys: Set<string>; jobIds: string[]; ciFingerprint: string } | null {
+  if (!parsedCi) return null;
+  let rows: FinalizeRunJobRow[];
+  try {
+    rows = stmts.listFinalizeRunJobsForRun.all(runId) as FinalizeRunJobRow[];
+  } catch {
+    return null;
+  }
+  const wanted = new Set(reuseJobs);
+  const keys = new Set<string>();
+  const jobIds = new Set<string>();
+  for (const row of rows) {
+    if (!wanted.has(row.job_id) || row.state !== 'passed') continue;
+    keys.add(jobInstanceKey(row.job_id, row.matrix_key));
+    jobIds.add(row.job_id);
+  }
+  if (keys.size === 0) return null;
+  return { keys, jobIds: [...jobIds].sort(), ciFingerprint: JSON.stringify(parsedCi) };
+}
