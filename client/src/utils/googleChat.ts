@@ -62,6 +62,87 @@ export function isPreviewableImage(attachment: ChatAttachment): boolean {
   return attachment.downloadable && PREVIEWABLE_IMAGE_TYPES.has(type);
 }
 
+export type AttachmentViewKind = 'image' | 'pdf' | 'video' | 'audio' | 'text';
+
+const VIEWABLE_TYPES: Record<string, AttachmentViewKind> = {
+  'image/png': 'image',
+  'image/jpeg': 'image',
+  'image/gif': 'image',
+  'image/webp': 'image',
+  'application/pdf': 'pdf',
+  'video/mp4': 'video',
+  'video/webm': 'video',
+  'video/quicktime': 'video',
+  'audio/mpeg': 'audio',
+  'audio/mp4': 'audio',
+  'audio/wav': 'audio',
+  'audio/x-wav': 'audio',
+  'audio/ogg': 'audio',
+  'audio/webm': 'audio',
+  'text/plain': 'text',
+  'text/csv': 'text',
+  'text/markdown': 'text',
+  'text/x-log': 'text',
+  'application/json': 'text',
+};
+
+const VIEWABLE_EXTENSIONS: Record<string, AttachmentViewKind> = {
+  png: 'image',
+  jpg: 'image',
+  jpeg: 'image',
+  gif: 'image',
+  webp: 'image',
+  pdf: 'pdf',
+  mp4: 'video',
+  webm: 'video',
+  mov: 'video',
+  mp3: 'audio',
+  m4a: 'audio',
+  wav: 'audio',
+  ogg: 'audio',
+  txt: 'text',
+  csv: 'text',
+  md: 'text',
+  log: 'text',
+  json: 'text',
+};
+
+/** MIME type the viewer re-labels the downloaded bytes with, per kind. */
+const KIND_FALLBACK_TYPE: Record<AttachmentViewKind, string> = {
+  image: 'image/png',
+  pdf: 'application/pdf',
+  video: 'video/mp4',
+  audio: 'audio/mpeg',
+  text: 'text/plain',
+};
+
+function normalizedType(attachment: ChatAttachment): string {
+  return (attachment.contentType ?? '').toLowerCase().split(';')[0].trim();
+}
+
+/**
+ * How the in-app viewer can show this attachment, or null when it can only be
+ * downloaded. HTML and SVG are deliberately absent: a blob URL shares the app
+ * origin, so rendering either would run the sender's script inside the Hub.
+ */
+export function attachmentViewKind(attachment: ChatAttachment): AttachmentViewKind | null {
+  if (!attachment.downloadable) return null;
+  const type = normalizedType(attachment);
+  if (type && VIEWABLE_TYPES[type]) return VIEWABLE_TYPES[type];
+  if (type && type !== 'application/octet-stream') return null;
+  const ext = (attachment.contentName ?? '').split('.').pop()?.toLowerCase() ?? '';
+  return VIEWABLE_EXTENSIONS[ext] ?? null;
+}
+
+/**
+ * The server streams non-image bytes as octet-stream, so the viewer re-types
+ * the blob before handing it to <iframe>/<video>/<audio>.
+ */
+export function viewerMimeType(attachment: ChatAttachment, kind: AttachmentViewKind): string {
+  const type = normalizedType(attachment);
+  return VIEWABLE_TYPES[type] === kind ? type : KIND_FALLBACK_TYPE[kind];
+}
+
 export type ChatReaction = {
   /** Unicode emoji, or `:name:` for a custom emoji. */
   emoji: string;

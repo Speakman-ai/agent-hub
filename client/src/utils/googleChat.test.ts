@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   bumpSpaceActivity,
+  attachmentViewKind,
+  viewerMimeType,
   newestCreateTime,
   applyLinksResult,
   dispatchWarningFor,
@@ -335,5 +337,43 @@ describe('push helpers', () => {
         { createTime: null },
       ] as any),
     ).toBe('2026-10-08T10:00:00.100001Z');
+  });
+});
+
+describe('attachmentViewKind', () => {
+  const att = (contentName: string | null, contentType: string | null, downloadable = true) => ({
+    id: 'A',
+    contentName,
+    contentType,
+    source: 'UPLOADED_CONTENT' as const,
+    downloadable,
+    driveUrl: null,
+  });
+
+  it('classifies viewable types by MIME type', () => {
+    expect(attachmentViewKind(att('a.pdf', 'application/pdf'))).toBe('pdf');
+    expect(attachmentViewKind(att('a', 'video/mp4'))).toBe('video');
+    expect(attachmentViewKind(att('a', 'audio/mpeg'))).toBe('audio');
+    expect(attachmentViewKind(att('a', 'text/plain; charset=utf-8'))).toBe('text');
+    expect(attachmentViewKind(att('a', 'IMAGE/PNG'))).toBe('image');
+  });
+
+  it('falls back to the extension only when the type is missing or generic', () => {
+    expect(attachmentViewKind(att('notes.md', null))).toBe('text');
+    expect(attachmentViewKind(att('Report.PDF', 'application/octet-stream'))).toBe('pdf');
+    // A declared, non-viewable type wins over a misleading extension.
+    expect(attachmentViewKind(att('evil.pdf', 'text/html'))).toBeNull();
+  });
+
+  it('never views script-capable or non-downloadable content', () => {
+    expect(attachmentViewKind(att('x.svg', 'image/svg+xml'))).toBeNull();
+    expect(attachmentViewKind(att('x.html', 'text/html'))).toBeNull();
+    expect(attachmentViewKind(att('x.html', null))).toBeNull();
+    expect(attachmentViewKind(att('a.pdf', 'application/pdf', false))).toBeNull();
+  });
+
+  it('re-types the bytes with a type matching the view kind', () => {
+    expect(viewerMimeType(att('a.pdf', 'application/octet-stream'), 'pdf')).toBe('application/pdf');
+    expect(viewerMimeType(att('a.webm', 'video/webm'), 'video')).toBe('video/webm');
   });
 });

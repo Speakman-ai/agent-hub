@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { resolveBuildVersion } from './src/utils/resolveBuildVersion';
 import { buildPreviewServerConfig, isPreviewMode } from './src/utils/previewServerConfig';
+import { pdfjsAssetsPlugin } from './src/utils/pdfjsAssetsPlugin';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,7 +44,7 @@ if (!gitHash) {
 }
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), pdfjsAssetsPlugin(path.resolve(__dirname, 'node_modules/pdfjs-dist'))],
   resolve: {
     alias: {
       '@shared': path.resolve(__dirname, '../shared'),
