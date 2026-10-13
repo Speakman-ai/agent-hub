@@ -36,6 +36,7 @@ import { DEPLOYMENT_ENV_SCHEDULE_SCHEMA } from './deploy/deployment-schedule-sch
 import { DEPLOYMENT_ENV_NOTIFICATION_ROUTING_SCHEMA } from './deploy/deployment-notification-routing-schema.js';
 import { DEPLOYMENT_ENV_RELEASE_GATE_SCHEMA } from './deploy/deployment-release-gate-schema.js';
 import { RELEASE_NOTIFICATION_SETTINGS_SCHEMA } from './release-notification-settings.js';
+import { HUB_CHAT_SCHEMA } from './hub-chat-schema.js';
 import {
   SECURITY_AUDIT_SCHEMA,
   migrateSecurityFindingsAddLastScanId,
@@ -1357,6 +1358,9 @@ function initDb(dataDir: string): void {
   // Per-project release notification settings. Stores only operator guidance;
   // release digest generation remains bounded by the fixed server template.
   db.exec(RELEASE_NOTIFICATION_SETTINGS_SCHEMA);
+
+  // Agent Hub chat: channels, members, messages, refs. See hub-chat-schema.ts.
+  db.exec(HUB_CHAT_SCHEMA);
 
   // Native pull requests — DB-backed PRs for Agent Hub-hosted projects
   // (Project.gitHost === 'agenthub'). The PR's git side (diff, files,

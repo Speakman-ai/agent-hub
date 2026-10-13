@@ -4829,3 +4829,76 @@ export interface OrgRow {
   created_at: string;
   updated_at: string;
 }
+
+// ── Agent Hub chat (hub-chat-schema.ts / hub-chat-store.ts) ──
+
+export type HubChatChannelKind = 'dm' | 'group' | 'channel' | 'trigger' | 'agent' | 'summary';
+export type HubChatMemberRole = 'owner' | 'member';
+export type HubChatNotifyLevel = 'all' | 'mentions' | 'none';
+export type HubChatAuthorKind = 'user' | 'agent' | 'system' | 'trigger';
+export type HubChatRefKind = 'user' | 'agent' | 'session' | 'card' | 'ticket' | 'pr';
+
+export interface HubChatChannelRow {
+  id: string;
+  org_id: string;
+  kind: HubChatChannelKind;
+  name: string;
+  topic: string | null;
+  is_private: number;
+  project_id: string | null;
+  agent_id: string | null;
+  dm_key: string | null;
+  created_by_user_id: string | null;
+  archived_at: string | null;
+  created_at: string;
+}
+
+export interface HubChatMemberRow {
+  channel_id: string;
+  user_id: string;
+  role: HubChatMemberRole;
+  last_read_seq: number;
+  notify_level: HubChatNotifyLevel;
+  muted_until: string | null;
+  joined_at: string;
+}
+
+export interface HubChatMessageRow {
+  id: string;
+  channel_id: string;
+  seq: number;
+  author_kind: HubChatAuthorKind;
+  author_user_id: string | null;
+  author_agent_id: string | null;
+  body: string;
+  refs_json: string | null;
+  payload_json: string | null;
+  edited_at: string | null;
+  deleted_at: string | null;
+  created_at: string;
+}
+
+export interface HubChatRefRow {
+  message_id: string;
+  kind: HubChatRefKind;
+  target_id: string;
+  project_id: string | null;
+}
+
+/** A reference resolved from a message body token `@[label](kind:id)`. */
+export interface HubChatRefInput {
+  kind: HubChatRefKind;
+  targetId: string;
+  projectId?: string | null;
+}
+
+/** A channel as seen by one member, with that member's unread state. */
+export interface HubChatChannelSummary extends HubChatChannelRow {
+  role: HubChatMemberRole;
+  last_read_seq: number;
+  notify_level: HubChatNotifyLevel;
+  muted_until: string | null;
+  last_seq: number;
+  unread_count: number;
+  mention_count: number;
+}
