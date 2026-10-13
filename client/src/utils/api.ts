@@ -1221,6 +1221,10 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify({ mutedUntil }),
       }),
+    searchRefs: (trigger: '@' | '#', q: string) =>
+      fetchJSON(`/chat/refs/search?${new URLSearchParams({ trigger, q }).toString()}`),
+    resolveRefs: (refs: { kind: string; targetId: string }[]) =>
+      fetchJSON('/chat/refs/resolve', { method: 'POST', body: JSON.stringify({ refs }) }),
   },
   // Google Chat proxy (user-scoped). Tokens stay server-side.
   listGoogleChatSpaces: ({

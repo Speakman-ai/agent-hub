@@ -7715,6 +7715,83 @@ components:
         - userId
         - username
         - role
+    HubChatRefSuggestion:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum:
+            - user
+            - agent
+            - session
+            - card
+            - ticket
+            - pr
+        targetId:
+          type: string
+        label:
+          type: string
+          description: Text the composer inserts after the trigger.
+        detail:
+          type: string
+          nullable: true
+        projectId:
+          type: string
+          nullable: true
+      required:
+        - kind
+        - targetId
+        - label
+        - detail
+        - projectId
+      description: One composer autocomplete row.
+    HubChatResolvedRef:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum:
+            - user
+            - agent
+            - session
+            - card
+            - ticket
+            - pr
+        targetId:
+          type: string
+        visible:
+          type: boolean
+          description: False when the caller cannot open the target; render the label only.
+        projectId:
+          type: string
+          nullable: true
+        label:
+          type: string
+          nullable: true
+        title:
+          type: string
+          nullable: true
+        status:
+          type: string
+          nullable: true
+          description: Card column, PR status, session state or ticket status.
+        agentId:
+          type: string
+          nullable: true
+        number:
+          type: integer
+          nullable: true
+      required:
+        - kind
+        - targetId
+        - visible
+        - projectId
+        - label
+        - title
+        - status
+        - agentId
+        - number
+      description: Live detail for one message ref, as the caller sees it.
     InfraAlertRoutingEntry:
       type: object
       properties:
@@ -35872,6 +35949,7 @@ paths:
       tags:
         - Hub Chat
       summary: Post a message
+      description: "The body may carry `@[label](kind:id)` refs (kinds user, agent, session, card, ticket, pr; a PR id is `project#number`). The server resolves each as the author: refs the author cannot see are flattened to their label, the rest are stored and returned in `refs`. A user ref counts as a mention for that user."
       parameters:
         - schema:
             type: string
@@ -35939,6 +36017,7 @@ paths:
       tags:
         - Hub Chat
       summary: Edit your own message
+      description: Refs in the new body are re-resolved the same way as on post.
       parameters:
         - schema:
             type: string
@@ -36260,6 +36339,131 @@ paths:
                 $ref: "#/components/schemas/HubChatErrorResponse"
         "404":
           description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/refs/search:
+    get:
+      tags:
+        - Hub Chat
+      summary: "Autocomplete mentions and #references for the composer"
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - "@"
+              - "#"
+            description: "`@` finds users and agents; `#` finds cards, sessions, support tickets and PRs."
+          required: true
+          description: "`@` finds users and agents; `#` finds cards, sessions, support tickets and PRs."
+          name: trigger
+          in: query
+        - schema:
+            type: string
+            maxLength: 200
+            description: Typed text after the trigger. Cards match `PREFIX-N`; PRs match `project#N`.
+          required: false
+          description: Typed text after the trigger. Cards match `PREFIX-N`; PRs match `project#N`.
+          name: q
+          in: query
+      responses:
+        "200":
+          description: Suggestions limited to what the caller can see.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatRefSuggestion"
+                required:
+                  - suggestions
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/refs/resolve:
+    post:
+      tags:
+        - Hub Chat
+      summary: Resolve message refs to live chip detail for the caller
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refs:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      kind:
+                        type: string
+                        enum:
+                          - user
+                          - agent
+                          - session
+                          - card
+                          - ticket
+                          - pr
+                      targetId:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                    required:
+                      - kind
+                      - targetId
+                    additionalProperties: false
+                  maxItems: 200
+              required:
+                - refs
+              additionalProperties: false
+      responses:
+        "200":
+          description: One entry per requested ref, in request order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  refs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatResolvedRef"
+                required:
+                  - refs
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
           content:
             application/json:
               schema:

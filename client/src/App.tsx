@@ -7318,6 +7318,23 @@ export default function App({ initialView }: any = {}) {
                     <ChatPane
                       hubUnread={hubChatUnread.badge}
                       googleUnread={googleChatBadge}
+                      onOpenRef={(ref) => {
+                        if (!ref.visible) return;
+                        if (ref.kind === 'card' && ref.projectId) {
+                          setKanbanFocusCardId(ref.targetId);
+                          setCurrentView(`kanban:${ref.projectId}`);
+                          setSidebarOpen(false);
+                        } else if (ref.kind === 'session') {
+                          focusAgentSession(ref.agentId, ref.targetId);
+                        } else if (ref.kind === 'pr' && ref.projectId && ref.number) {
+                          handleOpenPrDetail(ref.projectId, ref.number);
+                        } else if (ref.kind === 'ticket' && ref.projectId) {
+                          setSupportProjectId(ref.projectId);
+                          setSupportTicketId(ref.targetId);
+                          setCurrentView('support');
+                          setSidebarOpen(false);
+                        }
+                      }}
                       google={
                         chatEnabled ? (
                           <GoogleChatPage

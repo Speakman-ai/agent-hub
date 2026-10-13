@@ -221,6 +221,7 @@ export function MarkdownContent({
   components: componentsProp,
   className,
   rehypePlugins: rehypePluginsProp,
+  remarkPlugins: extraRemarkPlugins,
   imageSrcTransform,
 }: any) {
   const rehypePlugins = rehypePluginsProp !== undefined ? rehypePluginsProp : [rehypeHighlight];
@@ -242,7 +243,7 @@ export function MarkdownContent({
   }
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={extraRemarkPlugins ? [remarkGfm, ...extraRemarkPlugins] : [remarkGfm]}
       rehypePlugins={rehypePlugins}
       components={components}
       className={className}

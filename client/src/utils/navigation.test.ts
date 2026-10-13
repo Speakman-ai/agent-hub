@@ -213,6 +213,15 @@ describe('path deep links', () => {
     });
   });
 
+  it('resolves a support ticket deep link with the ticket focused', () => {
+    expect(parseNavigationPath('/projects/web/support', '?ticket=tk-1')?.state).toEqual({
+      view: 'support',
+      projectId: 'web',
+      prNumber: null,
+      ticketId: 'tk-1',
+    });
+  });
+
   it('resolves the board card deep link to the kanban view with the card focused', () => {
     expect(parseNavigationPath('/projects/surveytracker/board', '?card=card-abc')).toEqual({
       state: {

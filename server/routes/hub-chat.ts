@@ -60,8 +60,18 @@ import {
   MuteRequestSchema,
   NotifyLevelRequestSchema,
   PostMessageRequestSchema,
+  ResolveRefsRequestSchema,
+  SearchRefsQuerySchema,
   UpdateChannelRequestSchema,
 } from './hub-chat.openapi.js';
+import {
+  buildRefViewer,
+  resolveBodyRefs,
+  resolveRef,
+  searchRefs,
+  type RefLookups,
+  type RefViewer,
+} from '../hub-chat-refs.js';
 import {
   HUB_CHAT_CHANNEL_UPDATE_EVENT,
   HUB_CHAT_MESSAGE_EVENT,
@@ -91,6 +101,8 @@ function parse<T extends z.ZodTypeAny>(
 interface Caller {
   userId: string;
   orgId: string;
+  /** Single-tenant local server: one user, so no project ACLs apply to refs. */
+  localBypass: boolean;
 }
 
 function dmPeer(row: HubChatChannelRow, userId: string): string | null {
@@ -244,7 +256,16 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       bad(res, 403, 'Membership of this org required', 'org_membership_required');
       return null;
     }
-    return { userId, orgId };
+    return { userId, orgId, localBypass: Boolean(areq.authLocalOrgBypass) };
+  }
+
+  const refLookups: RefLookups = {
+    findProject: (id) => deps.findProject?.(id) ?? null,
+    getProjects: () => deps.getProjects?.() ?? [],
+  };
+
+  function refViewer(caller: Caller): RefViewer {
+    return buildRefViewer(caller.userId, caller.orgId, caller.localBypass);
   }
 
   function isOrgMember(userId: string, orgId: string): boolean {
@@ -312,6 +333,25 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       role: m.role,
     }));
     res.json({ members });
+  });
+
+  router.get('/api/chat/refs/search', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const q = parse(SearchRefsQuerySchema, req.query, res);
+    if (!q) return;
+    res.json({ suggestions: searchRefs(refLookups, refViewer(caller), q.trigger, q.q ?? '') });
+  });
+
+  router.post('/api/chat/refs/resolve', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const body = parse(ResolveRefsRequestSchema, req.body, res);
+    if (!body) return;
+    const viewer = refViewer(caller);
+    res.json({
+      refs: body.refs.map((r) => resolveRef(refLookups, viewer, r.kind, r.targetId)),
+    });
   });
 
   router.get('/api/chat/channels', (req: Request, res: Response) => {
@@ -496,11 +536,13 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       bad(res, 409, 'This channel is archived', 'channel_archived');
       return;
     }
+    const resolved = resolveBodyRefs(refLookups, refViewer(caller), body.body);
     const message = appendMessage({
       channelId: m.channel.id,
       authorKind: 'user',
       authorUserId: caller.userId,
-      body: body.body,
+      body: resolved.body,
+      refs: resolved.refs,
     });
     emitMessage(HUB_CHAT_MESSAGE_EVENT, m.channel, message);
     // The author's read pointer moved past their own message.
@@ -515,7 +557,8 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     if (!body) return;
     const msg = ownMessage(caller, String(req.params.messageId), res);
     if (!msg) return;
-    const updated = editMessage(msg.id, { body: body.body });
+    const resolved = resolveBodyRefs(refLookups, refViewer(caller), body.body);
+    const updated = editMessage(msg.id, { body: resolved.body, refs: resolved.refs });
     if (!updated) {
       bad(res, 404, 'Message not found', 'message_not_found');
       return;

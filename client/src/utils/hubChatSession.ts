@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import type { ComposerMention } from '@shared/utils/hubChatRefs';
 
 /**
  * What the user has in progress in Agent Hub chat: the open channel, unsent
@@ -11,6 +12,8 @@ export interface HubChatEditState {
   id: string;
   channelId: string;
   text: string;
+  /** Mentions shown as `@name` in `text`, swapped back to tokens on save. */
+  mentions: ComposerMention[];
   saving: boolean;
   error: string | null;
   /**
@@ -24,6 +27,8 @@ export interface HubChatEditState {
 export interface HubChatSessionState {
   selectedId: string | null;
   drafts: Readonly<Record<string, string>>;
+  /** Mentions picked into each channel's draft, encoded as tokens on send. */
+  draftMentions: Readonly<Record<string, ComposerMention[]>>;
   pendingSends: ReadonlySet<string>;
   sendErrors: Readonly<Record<string, string>>;
   editing: HubChatEditState | null;
@@ -32,6 +37,7 @@ export interface HubChatSessionState {
 const INITIAL: HubChatSessionState = {
   selectedId: null,
   drafts: {},
+  draftMentions: {},
   pendingSends: new Set(),
   sendErrors: {},
   editing: null,
@@ -70,9 +76,11 @@ export function useHubChatSession(): HubChatSessionState {
 
 /** Clears a channel's draft only if it still holds the text that was sent. */
 export function clearSentDraft(channelId: string, sent: string): void {
-  updateHubChatSession((s) =>
-    s.drafts[channelId] === sent ? { ...s, drafts: { ...s.drafts, [channelId]: '' } } : s,
-  );
+  updateHubChatSession((s) => {
+    if (s.drafts[channelId] !== sent) return s;
+    const { [channelId]: _sent, ...draftMentions } = s.draftMentions;
+    return { ...s, drafts: { ...s.drafts, [channelId]: '' }, draftMentions };
+  });
 }
 
 export function setPendingSend(channelId: string, pending: boolean): void {

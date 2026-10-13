@@ -208,11 +208,16 @@ export function parseNavigationPath(
 
   if (!PROJECT_SCOPED_VIEWS.has(view)) return null;
 
+  const ticketId =
+    view === 'support'
+      ? cleanSegment(new URLSearchParams(typeof search === 'string' ? search : '').get('ticket'))
+      : null;
   return {
     state: {
       view,
       projectId,
       prNumber: view === 'pulls' ? parsePositiveInt(extra) : null,
+      ...(ticketId ? { ticketId } : {}),
     },
     basePath,
   };

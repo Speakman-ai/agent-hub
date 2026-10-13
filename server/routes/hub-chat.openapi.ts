@@ -6,6 +6,7 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
+import { HUB_CHAT_REF_MAX_ID } from '../../shared/utils/hubChatRefTokens.js';
 
 const TAG = 'Hub Chat';
 
@@ -187,6 +188,61 @@ export const MuteRequestSchema = z
     }),
   })
   .strict();
+
+export const SearchRefsQuerySchema = z.object({
+  trigger: z.enum(['@', '#']).openapi({
+    description: '`@` finds users and agents; `#` finds cards, sessions, support tickets and PRs.',
+  }),
+  q: z.string().max(200).optional().openapi({
+    description: 'Typed text after the trigger. Cards match `PREFIX-N`; PRs match `project#N`.',
+  }),
+});
+
+export const ResolveRefsRequestSchema = z
+  .object({
+    refs: z
+      .array(
+        z
+          .object({ kind: RefKindSchema, targetId: z.string().min(1).max(HUB_CHAT_REF_MAX_ID) })
+          .strict(),
+      )
+      .max(200),
+  })
+  .strict();
+
+const RefSuggestionComponent = registerComponent(
+  'HubChatRefSuggestion',
+  z
+    .object({
+      kind: RefKindSchema,
+      targetId: z.string(),
+      label: z.string().openapi({ description: 'Text the composer inserts after the trigger.' }),
+      detail: z.string().nullable(),
+      projectId: z.string().nullable(),
+    })
+    .openapi({ description: 'One composer autocomplete row.' }),
+);
+
+const ResolvedRefComponent = registerComponent(
+  'HubChatResolvedRef',
+  z
+    .object({
+      kind: RefKindSchema,
+      targetId: z.string(),
+      visible: z.boolean().openapi({
+        description: 'False when the caller cannot open the target; render the label only.',
+      }),
+      projectId: z.string().nullable(),
+      label: z.string().nullable(),
+      title: z.string().nullable(),
+      status: z.string().nullable().openapi({
+        description: 'Card column, PR status, session state or ticket status.',
+      }),
+      agentId: z.string().nullable(),
+      number: z.number().int().nullable(),
+    })
+    .openapi({ description: 'Live detail for one message ref, as the caller sees it.' }),
+);
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
@@ -399,6 +455,8 @@ registerPath({
   path: '/api/chat/channels/{channelId}/messages',
   tags: [TAG],
   summary: 'Post a message',
+  description:
+    'The body may carry `@[label](kind:id)` refs (kinds user, agent, session, card, ticket, pr; a PR id is `project#number`). The server resolves each as the author: refs the author cannot see are flattened to their label, the rest are stored and returned in `refs`. A user ref counts as a mention for that user.',
   request: { params: channelParams, body: { content: jsonContent(PostMessageRequestSchema) } },
   responses: {
     201: { description: 'Posted.', content: jsonContent(messageEnvelope) },
@@ -414,6 +472,7 @@ registerPath({
   path: '/api/chat/messages/{messageId}',
   tags: [TAG],
   summary: 'Edit your own message',
+  description: 'Refs in the new body are re-resolved the same way as on post.',
   request: { params: messageParams, body: { content: jsonContent(EditMessageRequestSchema) } },
   responses: {
     200: { description: 'Edited.', content: jsonContent(messageEnvelope) },
@@ -478,6 +537,38 @@ registerPath({
     200: { description: 'Updated membership.', content: jsonContent(membershipEnvelope) },
     400: errorResponse('Validation failed.'),
     404: notFound,
+    ...common,
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/chat/refs/search',
+  tags: [TAG],
+  summary: 'Autocomplete mentions and #references for the composer',
+  request: { query: SearchRefsQuerySchema },
+  responses: {
+    200: {
+      description: 'Suggestions limited to what the caller can see.',
+      content: jsonContent(z.object({ suggestions: z.array(RefSuggestionComponent) })),
+    },
+    400: errorResponse('Validation failed.'),
+    ...common,
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/chat/refs/resolve',
+  tags: [TAG],
+  summary: 'Resolve message refs to live chip detail for the caller',
+  request: { body: { content: jsonContent(ResolveRefsRequestSchema) } },
+  responses: {
+    200: {
+      description: 'One entry per requested ref, in request order.',
+      content: jsonContent(z.object({ refs: z.array(ResolvedRefComponent) })),
+    },
+    400: errorResponse('Validation failed.'),
     ...common,
   },
 });

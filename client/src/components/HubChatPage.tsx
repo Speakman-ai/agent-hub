@@ -17,7 +17,9 @@ import { api } from '../utils/api';
 import { isSubmitEnter } from '../utils/keyboard';
 import { formatDateTime, formatTime } from '../utils/time';
 import { avatarInitials } from '../utils/googleChatLayout';
-import { MarkdownContent, markdownComponentsCompact } from './MarkdownRenderer';
+import { HubChatMentionInput, HubChatMessageBody, type HubChatRefOpenHandler } from './HubChatRefs';
+import { decodeToComposer, encodeComposerMentions } from '@shared/utils/hubChatRefs';
+import { locateChatMarkdownCode } from '../utils/hubChatMarkdown';
 import {
   clearSentDraft,
   setPendingSend,
@@ -122,7 +124,7 @@ function emptyView(channelId: string, dividerSeq: number | null, generation: num
 
 type DialogKind = 'channel' | 'dm' | 'browse' | 'settings' | null;
 
-export default function HubChatPage() {
+export default function HubChatPage({ onOpenRef }: { onOpenRef?: HubChatRefOpenHandler } = {}) {
   // Channel list, open view and viewer id each live in a ref that every
   // write updates synchronously; React state only mirrors the ref for
   // rendering. Writes are applied to the latest value, never to a snapshot
@@ -158,7 +160,8 @@ export default function HubChatPage() {
   }, []);
   // Per-channel drafts, sends and the open edit outlive this page (see
   // hubChatSession.ts), so late responses and remounts never lose user input.
-  const { selectedId, drafts, pendingSends, sendErrors, editing } = useHubChatSession();
+  const { selectedId, drafts, draftMentions, pendingSends, sendErrors, editing } =
+    useHubChatSession();
   const setSelectedId = (id: string | null) =>
     updateHubChatSession((s) => (s.selectedId === id ? s : { ...s, selectedId: id }));
   const setEditing = (
@@ -697,8 +700,13 @@ export default function HubChatPage() {
   const send = async () => {
     const channelId = selectedId;
     if (!channelId) return;
-    const body = drafts[channelId] ?? '';
-    if (!body.trim() || pendingSends.has(channelId)) return;
+    const draftText = drafts[channelId] ?? '';
+    if (!draftText.trim() || pendingSends.has(channelId)) return;
+    const body = encodeComposerMentions(
+      draftText,
+      draftMentions[channelId] ?? [],
+      locateChatMarkdownCode,
+    );
     setPendingSend(channelId, true);
     setSendError(channelId, null);
     // The opening this was sent from; if the channel was reopened since, the
@@ -708,7 +716,7 @@ export default function HubChatPage() {
       const res = await api.hubChat.post(channelId, body);
       const message = res.message as HubChatMessage;
       // Keep anything typed while the request was in flight.
-      clearSentDraft(channelId, body);
+      clearSentDraft(channelId, draftText);
       updateView(sentFrom, (v) => ({ ...v, ...mergeIntoWindow(v, [message], true) }));
       changeChannels(channelId, [], (prev) =>
         applyMessageToChannels(prev, message, {
@@ -733,11 +741,14 @@ export default function HubChatPage() {
 
   const saveEdit = async () => {
     if (!editing || !editing.text.trim()) return;
-    const { id, text } = editing;
+    const { id, text, mentions } = editing;
     const attempt = nextAttempt();
     setEditing({ ...editing, saving: true, error: null, attempt });
     try {
-      const res = await api.hubChat.edit(id, text);
+      const res = await api.hubChat.edit(
+        id,
+        encodeComposerMentions(text, mentions, locateChatMarkdownCode),
+      );
       // The saved revision applies whatever editor is open now.
       mergeIntoOwnChannel(res.message as HubChatMessage);
       setEditing((cur) => (cur?.attempt === attempt ? null : cur));
@@ -1087,15 +1098,16 @@ export default function HubChatPage() {
                                     void saveEdit();
                                   }}
                                 >
-                                  <textarea
+                                  <HubChatMentionInput
                                     aria-label="Edit message"
                                     autoFocus
                                     rows={Math.min(8, Math.max(2, editing.text.split('\n').length))}
                                     value={editing.text}
                                     disabled={editing.saving}
-                                    onChange={(e) =>
+                                    mentions={editing.mentions}
+                                    onChange={(text, mentions) =>
                                       setEditing((cur) =>
-                                        cur ? { ...cur, text: e.target.value, error: null } : cur,
+                                        cur ? { ...cur, text, mentions, error: null } : cur,
                                       )
                                     }
                                     onKeyDown={(e) => {
@@ -1148,10 +1160,9 @@ export default function HubChatPage() {
                                     <span className="italic text-gray-500">Message deleted</span>
                                   ) : (
                                     <div className="markdown-content" data-testid="hub-chat-body">
-                                      <MarkdownContent
-                                        content={message.body}
-                                        components={markdownComponentsCompact}
-                                        rehypePlugins={[]}
+                                      <HubChatMessageBody
+                                        body={message.body}
+                                        onOpenRef={onOpenRef}
                                       />
                                     </div>
                                   )}
@@ -1170,16 +1181,21 @@ export default function HubChatPage() {
                               <div className="flex items-start gap-1 pt-1 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100">
                                 <button
                                   type="button"
-                                  onClick={() =>
+                                  onClick={() => {
+                                    const decoded = decodeToComposer(
+                                      message.body,
+                                      locateChatMarkdownCode,
+                                    );
                                     setEditing({
                                       id: message.id,
                                       channelId: message.channelId,
-                                      text: message.body,
+                                      text: decoded.text,
+                                      mentions: decoded.mentions,
                                       saving: false,
                                       error: null,
                                       attempt: 0,
-                                    })
-                                  }
+                                    });
+                                  }}
                                   aria-label="Edit message"
                                   title="Edit"
                                   className="inline-flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-700 hover:text-white"
@@ -1232,14 +1248,16 @@ export default function HubChatPage() {
                     void send();
                   }}
                 >
-                  <textarea
+                  <HubChatMentionInput
+                    wrapperClassName="flex flex-1"
                     value={draft}
-                    onChange={(e) => {
-                      const value = e.target.value;
+                    mentions={selectedId ? (draftMentions[selectedId] ?? []) : []}
+                    onChange={(value, mentions) => {
                       if (selectedId)
                         updateHubChatSession((st) => ({
                           ...st,
                           drafts: { ...st.drafts, [selectedId]: value },
+                          draftMentions: { ...st.draftMentions, [selectedId]: mentions },
                         }));
                     }}
                     onKeyDown={(e) => {

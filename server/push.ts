@@ -28,6 +28,8 @@ import { getActiveOrgId } from './orgs.js';
 import { getMembershipRole } from './memberships-store.js';
 import type { Role } from './roles.js';
 import { shouldNotifyUserForProject } from '../shared/utils/notificationProjectScope.js';
+import { hubChatRefsToPlainText } from '../shared/utils/hubChatRefTokens.js';
+import { locateChatMarkdownCode } from './hub-chat-markdown.js';
 import { chatPushRecipients, HUB_CHAT_MESSAGE_EVENT, mentionedUserIds } from './hub-chat-events.js';
 import { getChannel, listMembers } from './hub-chat-store.js';
 
@@ -220,9 +222,8 @@ export function chatMessagePush(args: {
   body?: string;
 }): { title: string; body: string } {
   const author = args.authorName || 'Someone';
-  // Mention tokens are `@[label](kind:id)`; a lock screen shows the label.
-  const preview = (args.body || '')
-    .replace(/@\[([^\]]*)\]\([a-z]+:[^)]*\)/g, '@$1')
+  // Mention tokens render as `@alice` / `#WEB-12` on a lock screen.
+  const preview = hubChatRefsToPlainText(args.body || '', locateChatMarkdownCode)
     .replace(/\s+/g, ' ')
     .trim();
   const trimmed = preview.length > 120 ? preview.slice(0, 120) + '…' : preview;
