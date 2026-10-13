@@ -213,6 +213,35 @@ describe('runAgentEnvironment', () => {
     expect(h.transport.postFinish).toHaveBeenCalledWith('job-1', 1, null);
   });
 
+  it('reports a thrown setup error as lost before finishing, then rethrows', async () => {
+    const h = harness();
+    const order: string[] = [];
+    const post = h.transport.postEnvironment;
+    h.transport.postEnvironment = async (id, report) => {
+      order.push(`environment:${report.status}`);
+      return post(id, report);
+    };
+    h.transport.postFinish = vi.fn(async () => {
+      order.push('finish');
+    });
+    await expect(
+      run(h, {
+        materialize: async () => {
+          throw new Error('bundle fetch failed: 403');
+        },
+        spec: { ...SPEC, worktreeRef: { key: 'k' } as RunnerJobWireSpec['worktreeRef'] },
+        ensureJobWorktreeOwnership: async () => {},
+      }),
+    ).rejects.toThrow('bundle fetch failed: 403');
+    expect(h.reports).toEqual([{ status: 'lost', detail: 'bundle fetch failed: 403' }]);
+    expect(order).toEqual(['environment:lost', 'finish']);
+    const logged = (h.transport.postLogs as ReturnType<typeof vi.fn>).mock.calls
+      .flatMap((c) => c[1] as Array<{ data: string }>)
+      .map((f) => f.data)
+      .join('');
+    expect(logged).toContain('!! bundle fetch failed: 403');
+  });
+
   it('tears down when the Hub already stopped it before the ready report', async () => {
     const h = harness();
     h.transport.postEnvironment = async () => ({ gone: true });

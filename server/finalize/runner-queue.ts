@@ -233,10 +233,13 @@ export function claimRunnerJob(args: {
   agentId: string;
   runnerClass?: string;
   orgId?: string | null;
+  /** False for agents that did not declare the environment capability. */
+  canRunEnvironments?: boolean;
   leaseMs: number;
   now: number;
 }): ClaimedRunnerJob | null {
   const orgFilter = args.orgId ? 'AND org_id = @orgId' : '';
+  const kindFilter = args.canRunEnvironments === false ? "AND kind != 'environment'" : '';
   const row = getOrgsDb()
     .prepare(
       `UPDATE runner_jobs
@@ -244,7 +247,7 @@ export function claimRunnerJob(args: {
               lease_expires_at=@now + @leaseMs, heartbeat_at=@now, attempt=attempt+1
         WHERE id = (
           SELECT id FROM runner_jobs
-           WHERE state='queued' AND runner_class=@runnerClass ${orgFilter}
+           WHERE state='queued' AND runner_class=@runnerClass ${orgFilter} ${kindFilter}
            ORDER BY priority DESC, enqueued_at ASC
            LIMIT 1
         ) AND state='queued'

@@ -70,6 +70,29 @@ describe('runner-queue', () => {
     expect(runnerQueueDepth()).toBe(2); // both in-flight (claimed)
   });
 
+  it('an agent without the environment capability skips environment jobs', () => {
+    const env = enq({ kind: 'environment', jobId: 'pr-1', now: 1000 });
+    const ci = enq({ jobId: 'ci', now: 1001 });
+    const stale = claimRunnerJob({
+      agentId: 'old',
+      canRunEnvironments: false,
+      leaseMs: 1000,
+      now: 2000,
+    });
+    expect(stale?.id).toBe(ci);
+    expect(
+      claimRunnerJob({ agentId: 'old', canRunEnvironments: false, leaseMs: 1000, now: 2001 }),
+    ).toBeNull();
+    expect(getRunnerJobStatus(env)?.state).toBe('queued');
+    const capable = claimRunnerJob({
+      agentId: 'new',
+      canRunEnvironments: true,
+      leaseMs: 1000,
+      now: 2002,
+    });
+    expect(capable?.id).toBe(env);
+  });
+
   it('priority outranks enqueue order', () => {
     enq({ jobId: 'low', now: 1000, priority: 0 });
     const hi = enq({ jobId: 'high', now: 1001, priority: 5 });

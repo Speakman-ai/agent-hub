@@ -22,6 +22,7 @@ import {
 } from './job-resource-sampler.js';
 import type { RunnerDirective } from './runner-job-channel.js';
 import type { RunnerJobWireSpec } from './runner-backend-remote.js';
+import { ENVIRONMENT_CAPABILITY } from './runner-fleet-constants.js';
 import { LocalDirBundleStore, materializeWorktree, type BundleStore } from './worktree-bundle.js';
 import {
   ecsTaskProtection,
@@ -993,6 +994,7 @@ export async function registerAgent(
   fleetToken: string,
   orgScope: string,
   runnerClass?: string,
+  capabilities: string[] = [],
 ): Promise<{ agentId: string; token: string }> {
   const ecsTaskArn = await resolveEcsTaskArn();
   const res = await fetch(`${hubUrl.replace(/\/$/, '')}/api/runners/register`, {
@@ -1003,6 +1005,7 @@ export async function registerAgent(
       orgScope,
       ...(runnerClass ? { runnerClass } : {}),
       ...(ecsTaskArn ? { ecsTaskArn } : {}),
+      ...(capabilities.length ? { capabilities } : {}),
     }),
   });
   if (!res.ok) throw new Error(`register failed: ${res.status}`);
@@ -1143,7 +1146,9 @@ export async function runAgentMain(): Promise<void> {
   // runners should prefer FINALIZE_RUNNER_FLEET_TOKEN_FILE so the token never
   // enters the env block in the first place.
   scrubAgentProcessEnvSecrets();
-  const { token } = await registerAgent(hubUrl, fleetToken, orgScope, runnerClass);
+  // Only DinD agents can host a PR environment (see runJob below).
+  const capabilities = native ? [] : [ENVIRONMENT_CAPABILITY];
+  const { token } = await registerAgent(hubUrl, fleetToken, orgScope, runnerClass, capabilities);
   const transport = httpTransport(hubUrl, token);
   // A native (macOS) runner runs steps directly on the host; a default runner
   // uses the Linux DinD container executor.

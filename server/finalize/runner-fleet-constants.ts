@@ -43,3 +43,19 @@ export function resolveFleetNativePlatforms(
     .filter(Boolean) as NodeJS.Platform[];
   return parsed;
 }
+
+/**
+ * Capability a runner-agent declares at register when it can run PR
+ * environment jobs. The Hub only hands environment jobs to agents that declared
+ * it, so a fleet still on an image that predates environments leaves them
+ * queued instead of running them as CI jobs that exit silently.
+ */
+export const ENVIRONMENT_CAPABILITY = 'environment';
+
+const KNOWN_AGENT_CAPABILITIES: readonly string[] = [ENVIRONMENT_CAPABILITY];
+
+/** Keep only known capability names from an untrusted register body. */
+export function parseAgentCapabilities(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.filter((c): c is string => KNOWN_AGENT_CAPABILITIES.includes(c)))];
+}

@@ -40,6 +40,7 @@ import {
   type AgentTokenPayload,
 } from './runner-auth.js';
 import { MACOS_RUNNER_CLASS } from './runner-images.js';
+import { ENVIRONMENT_CAPABILITY, parseAgentCapabilities } from './runner-fleet-constants.js';
 import { spotReclaimDetail, spotRequeueOnNoticeEnabled } from './spot-interruption.js';
 
 interface RunnerReq extends Request {
@@ -157,11 +158,12 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       res.status(404).json({ error: 'runner fleet not enabled' });
       return;
     }
-    const { fleetToken, orgScope, ecsTaskArn, runnerClass } = (req.body ?? {}) as {
+    const { fleetToken, orgScope, ecsTaskArn, runnerClass, capabilities } = (req.body ?? {}) as {
       fleetToken?: string;
       orgScope?: string;
       ecsTaskArn?: string;
       runnerClass?: string;
+      capabilities?: unknown;
     };
     const auth = authenticateFleetToken(fleetToken);
     if (!auth.ok) {
@@ -217,7 +219,12 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       .run(agentId, scope, taskArn, now, now);
     res.json({
       agentId,
-      token: signAgentToken({ agentId, orgScope: scope, runnerClass: runnerClassValid }),
+      token: signAgentToken({
+        agentId,
+        orgScope: scope,
+        runnerClass: runnerClassValid,
+        capabilities: parseAgentCapabilities(capabilities),
+      }),
     });
   });
 
@@ -231,6 +238,7 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
         agentId: agent.agentId,
         orgId,
         runnerClass: agent.runnerClass ?? 'default',
+        canRunEnvironments: agent.capabilities?.includes(ENVIRONMENT_CAPABILITY) ?? false,
         leaseMs,
         now: Date.now(),
       });

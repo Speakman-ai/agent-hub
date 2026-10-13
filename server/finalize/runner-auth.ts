@@ -30,6 +30,12 @@ export interface AgentTokenPayload {
    * ever picks up jobs of its own class. Absent on legacy tokens → `default`.
    */
   runnerClass?: string;
+  /**
+   * Job kinds beyond ordinary CI this agent can run, as declared at register.
+   * An agent built before environment jobs existed sends none, so the claim
+   * route never hands it a PR environment it would run as a CI job.
+   */
+  capabilities?: string[];
   iat: number;
   exp: number;
 }
@@ -121,7 +127,7 @@ export function verifyFleetToken(provided: string | undefined): boolean {
 }
 
 export function signAgentToken(
-  args: { agentId: string; orgScope: string; runnerClass?: string },
+  args: { agentId: string; orgScope: string; runnerClass?: string; capabilities?: string[] },
   opts?: { now?: number; ttlMs?: number },
 ): string {
   const now = opts?.now ?? Date.now();
@@ -129,6 +135,7 @@ export function signAgentToken(
     agentId: args.agentId,
     orgScope: args.orgScope,
     ...(args.runnerClass ? { runnerClass: args.runnerClass } : {}),
+    ...(args.capabilities?.length ? { capabilities: args.capabilities } : {}),
     iat: now,
     exp: now + (opts?.ttlMs ?? DEFAULT_AGENT_TOKEN_TTL_MS),
   };

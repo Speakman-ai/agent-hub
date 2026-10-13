@@ -112,8 +112,10 @@ describe('runner-routes (HTTP control plane)', () => {
     delete process.env.FINALIZE_RUNNER_TOKEN_SECRET;
   });
 
-  const register = async (): Promise<string> => {
-    const r = await request(app).post('/api/runners/register').send({ fleetToken: FLEET });
+  const register = async (capabilities?: string[]): Promise<string> => {
+    const r = await request(app)
+      .post('/api/runners/register')
+      .send({ fleetToken: FLEET, ...(capabilities ? { capabilities } : {}) });
     expect(r.status).toBe(200);
     return r.body.token as string;
   };
@@ -153,8 +155,19 @@ describe('runner-routes (HTTP control plane)', () => {
       return r.body.jobId as string;
     };
 
+    it('does not hand an environment job to an agent without the capability', async () => {
+      const stale = await register(['bogus']);
+      const id = enqEnv();
+      const r = await request(app)
+        .post('/api/runners/claim')
+        .set('Authorization', `Bearer ${stale}`)
+        .send({});
+      expect(r.status).toBe(204);
+      expect(await claim(await register(['environment']))).toBe(id);
+    });
+
     it('records the reported upstream and survives the in-process channel being absent', async () => {
-      const token = await register();
+      const token = await register(['environment']);
       const id = enqEnv();
       expect(await claim(token)).toBe(id);
       // No job channel exists (as after a Hub restart): heartbeats still land.
@@ -175,7 +188,7 @@ describe('runner-routes (HTTP control plane)', () => {
     });
 
     it('rejects a bad endpoint and answers 410 once the environment was stopped', async () => {
-      const token = await register();
+      const token = await register(['environment']);
       const id = enqEnv();
       await claim(token);
       const bad = await request(app)
@@ -197,7 +210,7 @@ describe('runner-routes (HTTP control plane)', () => {
     });
 
     it('records a failed bring-up, and a live environment whose agent finishes as lost', async () => {
-      const token = await register();
+      const token = await register(['environment']);
       const failed = enqEnv();
       await claim(token);
       await request(app)
@@ -227,7 +240,7 @@ describe('runner-routes (HTTP control plane)', () => {
     });
 
     it('an environment that dies after ready is recorded as lost', async () => {
-      const token = await register();
+      const token = await register(['environment']);
       const id = enqEnv();
       await claim(token);
       await request(app)

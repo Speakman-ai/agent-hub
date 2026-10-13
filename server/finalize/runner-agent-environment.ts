@@ -435,6 +435,21 @@ export async function runAgentEnvironment(args: {
         ).catch(() => {});
       }
     }
+  } catch (err) {
+    // Report the cause before `finish` below: a finish with no report reads as
+    // a silent runner exit and the real error is lost. `lost` keeps the Hub's
+    // requeue-and-cap behavior for what is usually a runner-side failure.
+    error = err instanceof Error ? err.message : String(err);
+    log(`!! ${error}`);
+    await flush();
+    await deliverCritical(
+      `environment lost (job=${jobId})`,
+      async () => {
+        await transport.postEnvironment(jobId, { status: 'lost', detail: error! });
+      },
+      args.delivery,
+    ).catch(() => {});
+    throw err;
   } finally {
     clearInterval(flusher);
     await flush();
