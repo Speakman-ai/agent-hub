@@ -28,6 +28,8 @@ import { getActiveOrgId } from './orgs.js';
 import { getMembershipRole } from './memberships-store.js';
 import type { Role } from './roles.js';
 import { shouldNotifyUserForProject } from '../shared/utils/notificationProjectScope.js';
+import { chatPushRecipients, HUB_CHAT_MESSAGE_EVENT, mentionedUserIds } from './hub-chat-events.js';
+import { getChannel, listMembers } from './hub-chat-store.js';
 
 // Event types that can trigger a push
 export const PUSH_EVENT_TYPES = [
@@ -39,6 +41,7 @@ export const PUSH_EVENT_TYPES = [
   'review_assigned_to_you',
   'pr_merged',
   'infra_alert',
+  'chat_message',
 ] as const;
 
 export type PushEventType = (typeof PUSH_EVENT_TYPES)[number];
@@ -210,6 +213,24 @@ export function infraHealthEventPush(args: {
   };
 }
 
+export function chatMessagePush(args: {
+  channelKind?: string;
+  channelName?: string;
+  authorName?: string;
+  body?: string;
+}): { title: string; body: string } {
+  const author = args.authorName || 'Someone';
+  // Mention tokens are `@[label](kind:id)`; a lock screen shows the label.
+  const preview = (args.body || '')
+    .replace(/@\[([^\]]*)\]\([a-z]+:[^)]*\)/g, '@$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const trimmed = preview.length > 120 ? preview.slice(0, 120) + '…' : preview;
+  if (args.channelKind === 'dm') return { title: author, body: trimmed || 'New message' };
+  const where = args.channelName ? `#${args.channelName}` : 'Chat';
+  return { title: where, body: trimmed ? `${author}: ${trimmed}` : `New message from ${author}` };
+}
+
 // Preference filtering
 
 /**
@@ -296,6 +317,26 @@ export interface PushDispatchDeps {
   getSessionAgentIdById?: (sessionId: string) => string | null;
   /** Injectable user-role lookup for tests; defaults to active-org membership. */
   getUserRoleById?: (userId: string) => Role | null;
+  /**
+   * Hub users who should get a phone push for a `hub_chat_message` broadcast
+   * (DMs, mentions, `notify_level=all`; never muted). Defaults to reading the
+   * channel's current membership.
+   */
+  getChatPushUserIds?: (data: BroadcastData) => string[];
+}
+
+/** Default `getChatPushUserIds`: current channel membership and prefs. */
+export function chatPushUserIdsFromStore(data: BroadcastData): string[] {
+  const channelId = typeof data.channelId === 'string' ? data.channelId : null;
+  const channel = channelId ? getChannel(channelId) : null;
+  if (!channel) return [];
+  const message = (data.message ?? {}) as { authorUserId?: unknown; refs?: unknown };
+  return chatPushRecipients({
+    channelKind: channel.kind,
+    members: listMembers(channel.id),
+    authorUserId: typeof message.authorUserId === 'string' ? message.authorUserId : null,
+    mentioned: mentionedUserIds(message.refs),
+  });
 }
 
 function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
@@ -329,6 +370,7 @@ function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
           return null;
         }
       }),
+    getChatPushUserIds: deps?.getChatPushUserIds ?? chatPushUserIdsFromStore,
   };
 }
 
@@ -540,11 +582,21 @@ export async function handleBroadcastForPush(
       if (agentId) mapped.payload.data.agentId = agentId;
     }
   }
-  const tokens = filterTokensForSessionOwner(
-    filterTokensForBroadcastVisibility(d.getAllTokens(), data, d),
-    data,
-    d,
-  ).filter((t) => tokenAcceptsEvent(t, mapped.event));
+  let candidates: DeviceTokenRowWithPrefs[];
+  if (data.type === HUB_CHAT_MESSAGE_EVENT) {
+    // Chat is addressed to specific users, not to a project's audience, so
+    // the project and session filters do not apply. Unattributed tokens never
+    // match, even on the local bundled server.
+    const userIds = new Set(d.getChatPushUserIds(data));
+    candidates = d.getAllTokens().filter((t) => !!t.user_id && userIds.has(t.user_id));
+  } else {
+    candidates = filterTokensForSessionOwner(
+      filterTokensForBroadcastVisibility(d.getAllTokens(), data, d),
+      data,
+      d,
+    );
+  }
+  const tokens = candidates.filter((t) => tokenAcceptsEvent(t, mapped.event));
   if (!tokens.length) return 0;
   const msgs = buildMessages(tokens, mapped.payload);
   return sendExpoPush(msgs, deps);
@@ -801,6 +853,29 @@ export function mapBroadcastToPush(data: BroadcastData): {
             fromState: data.fromState,
             toState: data.toState,
             type: 'infra_alert',
+          },
+        },
+      };
+    }
+
+    case HUB_CHAT_MESSAGE_EVENT: {
+      const message = (data.message ?? {}) as { id?: unknown; body?: unknown; deletedAt?: unknown };
+      if (message.deletedAt) return null;
+      const { title, body } = chatMessagePush({
+        channelKind: typeof data.channelKind === 'string' ? data.channelKind : undefined,
+        channelName: typeof data.channelName === 'string' ? data.channelName : undefined,
+        authorName: typeof data.authorName === 'string' ? data.authorName : undefined,
+        body: typeof message.body === 'string' ? message.body : undefined,
+      });
+      return {
+        event: 'chat_message',
+        payload: {
+          title,
+          body,
+          data: {
+            channelId: data.channelId,
+            messageId: message.id,
+            type: 'chat_message',
           },
         },
       };

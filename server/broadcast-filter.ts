@@ -32,6 +32,7 @@ import { canViewProject, type VisibilityCaller } from './project-visibility.js';
 import type { Project } from './types.js';
 import type { BroadcastEvent } from './event-project-resolver.js';
 import type { WsVisibilityStamp } from './session-ownership.js';
+import { HUB_CHAT_EVENT_TYPES } from './hub-chat-events.js';
 
 export interface BroadcastFilterDeps {
   /** Resolve a projectId from the broadcast payload; null when unresolvable. */
@@ -177,6 +178,14 @@ export function shouldDeliverBroadcast(
     const owner =
       typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
     return !!owner && stamp.userId === owner;
+  }
+
+  // 3b-hubchat. Agent Hub chat events go only to the channel members stamped
+  //    in `recipientUserIds` at broadcast time. No admin override, and a
+  //    missing or malformed list denies: a DM must never fan out.
+  if (typeof data.type === 'string' && HUB_CHAT_EVENT_TYPES.has(data.type)) {
+    const ids = data.recipientUserIds;
+    return !!stamp.userId && Array.isArray(ids) && ids.includes(stamp.userId);
   }
 
   // 3b-note. Private project notes go only to their owner, with no Owner-role

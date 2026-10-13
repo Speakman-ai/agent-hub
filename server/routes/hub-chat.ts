@@ -60,6 +60,14 @@ import {
   NotifyLevelRequestSchema,
   PostMessageRequestSchema,
 } from './hub-chat.openapi.js';
+import {
+  HUB_CHAT_CHANNEL_UPDATE_EVENT,
+  HUB_CHAT_MESSAGE_EVENT,
+  HUB_CHAT_MESSAGE_UPDATE_EVENT,
+  HUB_CHAT_READ_EVENT,
+  recipientsOf,
+  type HubChatChannelUpdateReason,
+} from '../hub-chat-events.js';
 
 const DEFAULT_PAGE = 50;
 
@@ -168,6 +176,47 @@ export function shapeMessage(m: HubChatMessageRow) {
 
 export default function createHubChatRoutes(deps: RouteDeps): Router {
   const router = Router();
+
+  function emit(type: string, recipientUserIds: string[], payload: Record<string, unknown>) {
+    if (recipientUserIds.length === 0) return;
+    deps.broadcast?.({ type, recipientUserIds, ...payload });
+  }
+
+  /**
+   * Channel bodies are per-viewer (unread, membership, DM peer), so the event
+   * only names the channel and why it changed; clients refetch it.
+   */
+  function emitChannelUpdate(
+    channel: HubChatChannelRow,
+    reason: HubChatChannelUpdateReason,
+    extraRecipients: string[] = [],
+    extra: Record<string, unknown> = {},
+  ) {
+    emit(HUB_CHAT_CHANNEL_UPDATE_EVENT, recipientsOf(listMembers(channel.id), extraRecipients), {
+      orgId: channel.org_id,
+      channelId: channel.id,
+      reason,
+      ...extra,
+    });
+  }
+
+  function emitMessage(type: string, channel: HubChatChannelRow, message: HubChatMessageRow) {
+    emit(type, recipientsOf(listMembers(channel.id)), {
+      orgId: channel.org_id,
+      channelId: channel.id,
+      channelKind: channel.kind,
+      channelName: channel.name,
+      authorName: message.author_user_id
+        ? (getUserById(message.author_user_id)?.username ?? null)
+        : null,
+      message: shapeMessage(message),
+    });
+  }
+
+  /** Read state is the caller's alone; this syncs their other clients. */
+  function emitRead(caller: Caller, channelId: string, lastReadSeq: number) {
+    emit(HUB_CHAT_READ_EVENT, [caller.userId], { orgId: caller.orgId, channelId, lastReadSeq });
+  }
 
   function trustedCaller(req: Request): boolean {
     const areq = req as AuthenticatedRequest;
@@ -301,6 +350,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       createdByUserId: caller.userId,
       memberUserIds: others,
     });
+    emitChannelUpdate(channel, 'created');
     res.status(201).json({ channel: channelBody(caller, channel) });
   });
 
@@ -314,6 +364,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       return;
     }
     const { channel, created } = getOrCreateDm(caller.orgId, caller.userId, body.userId);
+    if (created) emitChannelUpdate(channel, 'created');
     res.status(created ? 201 : 200).json({ channel: channelBody(caller, channel) });
   });
 
@@ -339,6 +390,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
         return;
       }
       addMember(v.channel.id, caller.userId);
+      emitChannelUpdate(v.channel, 'member_added', [], { userIds: [caller.userId] });
     }
     res.json({ channel: channelBody(caller, v.channel) });
   });
@@ -359,7 +411,10 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       bad(res, 400, `User ${outsider} is not a member of this org`, 'member_not_in_org');
       return;
     }
-    for (const id of new Set(body.userIds)) addMember(m.channel.id, id);
+    const before = new Set(listMembers(m.channel.id).map((x) => x.user_id));
+    const added = [...new Set(body.userIds)].filter((id) => !before.has(id));
+    for (const id of added) addMember(m.channel.id, id);
+    if (added.length > 0) emitChannelUpdate(m.channel, 'member_added', [], { userIds: added });
     res.json({ members: listMembers(m.channel.id).map(shapeMember) });
   });
 
@@ -381,6 +436,8 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       bad(res, 404, 'Not a member of this channel', 'member_not_found');
       return;
     }
+    // The removed user hears it too, so their clients drop the channel.
+    emitChannelUpdate(m.channel, 'member_removed', [target], { userIds: [target] });
     res.json({ ok: true });
   });
 
@@ -417,6 +474,9 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       authorUserId: caller.userId,
       body: body.body,
     });
+    emitMessage(HUB_CHAT_MESSAGE_EVENT, m.channel, message);
+    // The author's read pointer moved past their own message.
+    emitRead(caller, m.channel.id, message.seq);
     res.status(201).json({ message: shapeMessage(message) });
   });
 
@@ -432,6 +492,8 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       bad(res, 404, 'Message not found', 'message_not_found');
       return;
     }
+    const channel = getChannel(updated.channel_id);
+    if (channel) emitMessage(HUB_CHAT_MESSAGE_UPDATE_EVENT, channel, updated);
     res.json({ message: shapeMessage(updated) });
   });
 
@@ -445,6 +507,8 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       bad(res, 404, 'Message not found', 'message_not_found');
       return;
     }
+    const channel = getChannel(deleted.channel_id);
+    if (channel) emitMessage(HUB_CHAT_MESSAGE_UPDATE_EVENT, channel, deleted);
     res.json({ message: shapeMessage(deleted) });
   });
 
@@ -455,8 +519,9 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     if (!m) return;
     const body = parse(MarkReadRequestSchema, req.body, res);
     if (!body) return;
-    const lastReadSeq = markRead(m.channel.id, caller.userId, body.seq);
-    res.json({ lastReadSeq: lastReadSeq ?? m.member.last_read_seq });
+    const lastReadSeq = markRead(m.channel.id, caller.userId, body.seq) ?? m.member.last_read_seq;
+    emitRead(caller, m.channel.id, lastReadSeq);
+    res.json({ lastReadSeq });
   });
 
   router.put('/api/chat/channels/:channelId/notify-level', (req: Request, res: Response) => {
@@ -469,7 +534,14 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     const updated = updateMemberPrefs(m.channel.id, caller.userId, {
       notifyLevel: body.notifyLevel,
     });
-    res.json({ membership: shapeMembership(updated ?? m.member) });
+    const membership = shapeMembership(updated ?? m.member);
+    emit(HUB_CHAT_CHANNEL_UPDATE_EVENT, [caller.userId], {
+      orgId: caller.orgId,
+      channelId: m.channel.id,
+      reason: 'membership',
+      membership,
+    });
+    res.json({ membership });
   });
 
   router.put('/api/chat/channels/:channelId/mute', (req: Request, res: Response) => {
@@ -481,7 +553,14 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     if (!body) return;
     const mutedUntil = body.mutedUntil === null ? null : new Date(body.mutedUntil).toISOString();
     const updated = updateMemberPrefs(m.channel.id, caller.userId, { mutedUntil });
-    res.json({ membership: shapeMembership(updated ?? m.member) });
+    const membership = shapeMembership(updated ?? m.member);
+    emit(HUB_CHAT_CHANNEL_UPDATE_EVENT, [caller.userId], {
+      orgId: caller.orgId,
+      channelId: m.channel.id,
+      reason: 'membership',
+      membership,
+    });
+    res.json({ membership });
   });
 
   return router;

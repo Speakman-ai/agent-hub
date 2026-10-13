@@ -1,7 +1,7 @@
 /**
  * Notification-tap routing.
  *
- * @typedef {'awaiting_feedback'|'ready_to_push'|'pushed'|'support_ticket_created'|'thread_message'|'review_assigned_to_you'|'pr_merged'|'infra_alert'} EventKey
+ * @typedef {'awaiting_feedback'|'ready_to_push'|'pushed'|'support_ticket_created'|'thread_message'|'review_assigned_to_you'|'pr_merged'|'infra_alert'|'chat_message'} EventKey
  *
  * @typedef {{ kind: 'chat', agentId: string | null, sessionId: string }} ChatRoute
  * @typedef {{ kind: 'kanban', projectId: string | null, cardId: string | null }} KanbanRoute

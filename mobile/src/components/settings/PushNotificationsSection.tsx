@@ -25,6 +25,11 @@ export const PUSH_EVENT_OPTIONS = [
   },
   { key: 'pr_merged', label: 'PR merged', desc: 'Linked PR was merged' },
   { key: 'infra_alert', label: 'Infrastructure alerts', desc: 'AWS monitoring state changes' },
+  {
+    key: 'chat_message',
+    label: 'Chat messages',
+    desc: 'Direct messages, mentions, and channels set to all',
+  },
 ];
 const PERMISSION_LABEL: Record<string, any> = {
   granted: 'Granted',
