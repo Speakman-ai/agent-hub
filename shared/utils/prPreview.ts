@@ -36,6 +36,8 @@ const STOP_REASONS: Record<string, string> = {
   closed: 'Stopped: the pull request was closed.',
   manual: 'Stopped.',
   no_preview_config: 'Stopped: the head commit has no `preview:` block in deploy.yaml.',
+  idle: 'Asleep: no one opened it for a while. Opening its URL wakes it.',
+  expired: 'Stopped: the pull request had no new commits for a while. Push or start it again.',
 };
 
 /** `pending: true` means Start was just clicked and no state has arrived. */

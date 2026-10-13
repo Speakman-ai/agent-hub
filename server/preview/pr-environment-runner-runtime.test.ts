@@ -38,6 +38,8 @@ function env(over: Partial<PrEnvironmentDto> = {}): PrEnvironmentDto {
     updatedAt: '',
     readyAt: null,
     stoppedAt: null,
+    lastHitAt: null,
+    renewedAt: '',
     ...over,
   };
 }

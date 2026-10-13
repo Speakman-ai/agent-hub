@@ -322,7 +322,8 @@ export default function createPrEnvironmentShareRoutes(deps: ShareDeps): Router 
         project,
         number,
         authorUserId: null,
-        open: Boolean(env && env.status !== 'stopped'),
+        // A sleeping env (stopped as idle) still belongs to an open PR.
+        open: Boolean(env && (env.status !== 'stopped' || env.stopReason === 'idle')),
         envUrl,
         store,
       };

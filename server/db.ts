@@ -20,6 +20,7 @@ import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schem
 import {
   PR_ENVIRONMENTS_SCHEMA,
   migratePrEnvironmentsSourceCheck,
+  migratePrEnvironmentsUsageColumns,
 } from './preview/pr-environments-schema.js';
 import { PR_ENVIRONMENT_SHARE_SCHEMA } from './preview/pr-environment-share.js';
 import { PR_ENVIRONMENT_COMMENTS_SCHEMA } from './preview/pr-environment-comment.js';
@@ -3709,6 +3710,7 @@ function initDb(dataDir: string): void {
   // PR environments: lifecycle rows keyed by pull request (not session).
   db.exec(PR_ENVIRONMENTS_SCHEMA);
   migratePrEnvironmentsSourceCheck(db);
+  migratePrEnvironmentsUsageColumns(db);
   // Share links / password for PR environment ingress, and the PR comment
   // that carries the environment URL.
   db.exec(PR_ENVIRONMENT_SHARE_SCHEMA);

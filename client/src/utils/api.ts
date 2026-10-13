@@ -3614,6 +3614,18 @@ export const api = {
 
   // Session previews (project-scoped list + teardown)
   getProjectPreviews: (projectId: any) => fetchJSON(`/projects/${projectId}/previews`),
+  // PR environments of a project (Settings) and their cost controls. Stop one
+  // with stopNativePrPreview(projectId, prNumber).
+  getProjectPrEnvironments: (projectId: string) =>
+    fetchJSON(`/projects/${projectId}/pr-environments`),
+  updateProjectPrEnvironmentLimits: (
+    projectId: string,
+    limits: Partial<Record<'maxConcurrent' | 'idleTtlMinutes' | 'maxLifetimeDays', number | null>>,
+  ) =>
+    fetchJSON(`/projects/${projectId}/pr-environments/limits`, {
+      method: 'PUT',
+      body: JSON.stringify(limits),
+    }),
   purgeAllProjectPreviews: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/previews/purge`, {
       method: 'POST',

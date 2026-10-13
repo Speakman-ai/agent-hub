@@ -13,6 +13,9 @@ import { SECRET_MASK } from '@shared/utils/devServerConfig';
     getProjectPreviews: vi.fn().mockResolvedValue({ previews: [] }),
     purgeAllProjectPreviews: vi.fn(),
     stopPreview: vi.fn(),
+    getProjectPrEnvironments: vi.fn().mockResolvedValue({ environments: [] }),
+    updateProjectPrEnvironmentLimits: vi.fn(),
+    stopNativePrPreview: vi.fn(),
   },
 }));
 

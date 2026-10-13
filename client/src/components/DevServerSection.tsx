@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api';
 import RunningPreviewsPanel from './RunningPreviewsPanel';
+import PrEnvironmentsPanel from './PrEnvironmentsPanel';
 import {
   buildDevServerConfig,
   buildSecretsPutPayload,
@@ -678,6 +679,7 @@ export default function DevServerSection({ projects = [], onProjectsChange, onOp
       </section>
 
       {projectId && <RunningPreviewsPanel projectId={projectId} onOpenSession={onOpenSession} />}
+      {projectId && <PrEnvironmentsPanel projectId={projectId} />}
 
       <div className="fixed bottom-0 left-0 right-0 md:left-64 z-20 flex items-center gap-3 px-6 py-4 bg-gray-950/95 border-t border-gray-800 backdrop-blur">
         <button

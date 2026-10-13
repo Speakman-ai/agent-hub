@@ -373,3 +373,85 @@ describe('runtime_lost', () => {
     expect(ready.next).toMatchObject({ status: 'ready', error: null });
   });
 });
+
+describe('cost-control stops (sleep, expire, wake)', () => {
+  const asleep = (over: Partial<PrEnvironmentState> = {}) =>
+    state({
+      status: 'stopped',
+      url: null,
+      stopReason: 'idle',
+      cleanupPending: false,
+      ...over,
+    });
+
+  it('idle_stop puts a live env to sleep and tears it down', () => {
+    for (const status of ['queued', 'building', 'ready'] as const) {
+      const t = transitionPrEnvironment(state({ status }), { type: 'idle_stop' });
+      expect(t.next).toMatchObject({ status: 'stopped', stopReason: 'idle', cleanupPending: true });
+      expect(t.effects).toEqual({ teardown: true, build: false });
+    }
+  });
+
+  it('idle_stop leaves a failed or already stopped env alone', () => {
+    expect(
+      transitionPrEnvironment(state({ status: 'failed' }), { type: 'idle_stop' }).changed,
+    ).toBe(false);
+    const manual = asleep({ stopReason: 'manual' });
+    expect(transitionPrEnvironment(manual, { type: 'idle_stop' }).changed).toBe(false);
+  });
+
+  it('a replayed open does not rebuild a sleeping env; a push moves its head and keeps it asleep', () => {
+    const cur = asleep();
+    expect(
+      transitionPrEnvironment(cur, { type: 'pr_open', headSha: SHA_A, headBranch: null }).changed,
+    ).toBe(false);
+    const pushed = transitionPrEnvironment(cur, {
+      type: 'pr_open',
+      headSha: SHA_B,
+      headBranch: null,
+    });
+    expect(pushed.next).toMatchObject({ status: 'stopped', stopReason: 'idle', headSha: SHA_B });
+    expect(pushed.effects).toEqual({ teardown: false, build: false });
+  });
+
+  it('a push revives an expired env as sleeping, so a request can wake it', () => {
+    const t = transitionPrEnvironment(asleep({ stopReason: 'expired' }), {
+      type: 'pr_open',
+      headSha: SHA_B,
+      headBranch: null,
+    });
+    expect(t.next).toMatchObject({ status: 'stopped', stopReason: 'idle', headSha: SHA_B });
+  });
+
+  it('wake rebuilds a sleeping env at the given head; it does not wake other stops', () => {
+    const t = transitionPrEnvironment(asleep({ generation: 3 }), {
+      type: 'wake',
+      headSha: SHA_B,
+      headBranch: 'b',
+    });
+    expect(t.next).toMatchObject({ status: 'queued', headSha: SHA_B, generation: 4 });
+    expect(t.effects).toEqual({ teardown: false, build: true });
+    for (const stopReason of ['manual', 'merged', 'closed', 'expired'] as const) {
+      const cur = asleep({ stopReason });
+      expect(
+        transitionPrEnvironment(cur, { type: 'wake', headSha: SHA_A, headBranch: null }).changed,
+      ).toBe(false);
+    }
+  });
+
+  it('expire marks a sleeping env, and decisions about the PR replace cost reasons', () => {
+    expect(transitionPrEnvironment(asleep(), { type: 'expire' }).next).toMatchObject({
+      stopReason: 'expired',
+    });
+    expect(
+      transitionPrEnvironment(asleep(), { type: 'pr_closed', merged: true }).next,
+    ).toMatchObject({ stopReason: 'merged' });
+    expect(transitionPrEnvironment(asleep(), { type: 'manual_stop' }).next).toMatchObject({
+      stopReason: 'manual',
+    });
+    // A cost reason never replaces a decision.
+    expect(
+      transitionPrEnvironment(asleep({ stopReason: 'manual' }), { type: 'expire' }).changed,
+    ).toBe(false);
+  });
+});

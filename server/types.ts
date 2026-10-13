@@ -3684,6 +3684,11 @@ export interface Project {
    */
   prEnv?: PrEnvProjectConfig;
   /**
+   * PR environment cost controls (cap, idle TTL, max lifetime). Unset fields
+   * use the defaults in `server/preview/pr-environment-limits.ts`.
+   */
+  prEnvironmentLimits?: import('./preview/pr-environment-limits.js').StoredPrEnvironmentLimits;
+  /**
    * Per-project wall-clock windows that gate the fix-dispatch stall
    * watchdog (`server/finalize/stall-watchdog.ts`). Both fields are
    * **starting points** — the design doc names 60 min / 24 hr as defaults

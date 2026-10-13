@@ -25,6 +25,7 @@ import createCiRunsRoutes from './routes/ci-runs.js';
 import createProjectStatsRoutes from './routes/project-stats.js';
 import createPullsNativeRoutes from './routes/pulls-native.js';
 import createPrEnvironmentShareRoutes from './routes/pr-environment-share.js';
+import createPrEnvironmentSettingsRoutes from './routes/pr-environment-settings.js';
 import { refreshGitHostNotifyConfigs } from './git-host/lifecycle.js';
 import { hostedBarePathForProject } from './git-host/repo-store.js';
 import { notifyMirrorPush } from './git-host/mirror.js';
@@ -783,6 +784,23 @@ const prEnvironmentProxyDeps: PrEnvironmentProxyDeps = {
       stopReason: env.stopReason,
     };
   },
+  recordHit: ({ projectId, prNumber }) => {
+    const project = findProject(projectId);
+    const source = project ? prEnvironmentSourceFor(project) : null;
+    if (source) prEnvironments.recordHit(projectId, { source, prNumber });
+  },
+  wake: ({ projectId, prNumber }) => {
+    const project = findProject(projectId);
+    const source = project ? prEnvironmentSourceFor(project) : null;
+    if (!project || !source) return;
+    void prEnvironments.wake(project, { source, prNumber }).catch((err: unknown) => {
+      console.warn(
+        `[pr-env] wake failed for ${projectId}#${prNumber}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
+  },
 };
 app.use(createPrEnvironmentProxyMiddleware(prEnvironmentProxyDeps));
 app.use(cors(corsOptions));
@@ -1016,6 +1034,8 @@ const prEnvironments = createOrgScopedPrEnvironmentService({
       store: createPrEnvironmentStore(org.db),
       probePreviewConfig: (project, headSha) => probePreviewConfigAtSha(project, headSha),
       findProject: org.findProject,
+      // Only the wildcard ingress sees requests and can wake a sleeping env.
+      wakeOnRequest: () => Boolean(config.previewSubdomainBase),
       // The PR row and hosted ref are durable, so every reconcile (live
       // hooks and catch-up after a restart) reads the same truth, in this org.
       readPrState: (project, pr) =>
@@ -2352,6 +2372,7 @@ app.use(createCiRunsRoutes(routeDeps));
 app.use(createProjectStatsRoutes(routeDeps));
 app.use(createPullsNativeRoutes(routeDeps));
 app.use(createPrEnvironmentShareRoutes(routeDeps));
+app.use(createPrEnvironmentSettingsRoutes(routeDeps));
 app.use(createPreviewSecretsRoutes(routeDeps));
 app.use(createProjectAwsRoutes(routeDeps));
 app.use(createInfraRoutes(routeDeps));

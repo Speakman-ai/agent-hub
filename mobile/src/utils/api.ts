@@ -1810,6 +1810,17 @@ export const api = {
     fetchJSON(`/projects/${projectId}/pulls/${number}/preview/stop`, { method: 'POST' }),
   getPullPreviewState: (projectId: any, number: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/preview/state`),
+  // PR environments of a project (Settings) and their cost controls.
+  getProjectPrEnvironments: (projectId: string) =>
+    fetchJSON(`/projects/${projectId}/pr-environments`),
+  updateProjectPrEnvironmentLimits: (
+    projectId: string,
+    limits: Partial<Record<'maxConcurrent' | 'idleTtlMinutes' | 'maxLifetimeDays', number | null>>,
+  ) =>
+    fetchJSON(`/projects/${projectId}/pr-environments/limits`, {
+      method: 'PUT',
+      body: JSON.stringify(limits),
+    }),
   // PR environment access (web parity): share links for people outside the
   // Hub, and a single-use member ticket URL for opening it yourself.
   listPrEnvironmentShareLinks: (projectId: string, number: number) =>

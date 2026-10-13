@@ -41774,6 +41774,2225 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/pulls:
+    post:
+      tags:
+        - Projects
+      summary: Create (or reuse) a native pull request on an Agent Hub-hosted project
+      description: Creates a DB-backed Hub PR for a branch already pushed to the hosted repo. Idempotent per open head branch. 400 for projects not hosted on Agent Hub — use gh pr create there.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                headBranch:
+                  type: string
+                baseBranch:
+                  type: string
+                  description: Defaults to the default branch.
+                title:
+                  type: string
+                  minLength: 1
+                body:
+                  type: string
+                sessionId:
+                  type: string
+                  nullable: true
+                  description: Acting session id used to attribute the PR author to the session owner when the caller has no per-user identity (e.g. the global break-glass apiKey). Falls back to the X-Agent-Hub-Session-Id header / spawn-creds key.
+              required:
+                - headBranch
+                - title
+      responses:
+        "201":
+          description: PR created (or reused when one was already open for the branch).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prUrl:
+                    type: string
+                  number:
+                    type: number
+                  created:
+                    type: boolean
+                required:
+                  - prUrl
+                  - number
+                  - created
+        "400":
+          description: Not Hub-hosted, invalid branch, or missing fields.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or head branch not pushed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    get:
+      tags:
+        - PR Actions
+      summary: List a project’s pull requests (paginated)
+      description: Returns one page of pull requests for the project, ordered by most recent activity. Agent Hub-hosted projects are served from the native PR table; GitHub-backed projects are proxied through the caller’s connected GitHub account. Page through with `page`; `hasMore` says whether to offer a next page.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - open
+              - closed
+              - all
+            description: Which PRs to include. Defaults to `open`; unknown values fall back to `open`.
+          required: false
+          description: Which PRs to include. Defaults to `open`; unknown values fall back to `open`.
+          name: state
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            description: Page size. Defaults to 30, clamped to 100.
+          required: false
+          description: Page size. Defaults to 30, clamped to 100.
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            description: 1-based page number. Defaults to 1; invalid values fall back to 1.
+          required: false
+          description: 1-based page number. Defaults to 1; invalid values fall back to 1.
+          name: page
+          in: query
+      responses:
+        "200":
+          description: One page of pull requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PullRequestListResponse"
+        "400":
+          description: Project has no `githubRepo` configured (GitHub-backed path only).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  hint:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  hint:
+                    type: string
+                required:
+                  - error
+        "412":
+          description: 'Caller has not connected a GitHub account (`code: "github_not_connected"`).'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  hint:
+                    type: string
+                required:
+                  - error
+        "502":
+          description: GitHub rejected or failed the list request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  hint:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/branch-changes:
+    post:
+      tags:
+        - Projects
+      summary: Preview branch changes for a native pull request
+      description: Returns file-level changes for a branch pushed to an Agent Hub-hosted repo before creating a native PR. Base defaults to the hosted repo default branch.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                headBranch:
+                  type: string
+                baseBranch:
+                  type: string
+              required:
+                - headBranch
+      responses:
+        "200":
+          description: Branch file changes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  headBranch:
+                    type: string
+                  baseBranch:
+                    type: string
+                  stats:
+                    type: object
+                    properties:
+                      changedFiles:
+                        type: number
+                      additions:
+                        type: number
+                      deletions:
+                        type: number
+                    required:
+                      - changedFiles
+                      - additions
+                      - deletions
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        filename:
+                          type: string
+                        status:
+                          type: string
+                          enum:
+                            - added
+                            - removed
+                            - modified
+                            - renamed
+                        additions:
+                          type: number
+                        deletions:
+                          type: number
+                      required:
+                        - filename
+                        - status
+                        - additions
+                        - deletions
+                  truncated:
+                    type: boolean
+                required:
+                  - headBranch
+                  - baseBranch
+                  - stats
+                  - files
+                  - truncated
+        "400":
+          description: Invalid branch or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "502":
+          description: Git diff failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}:
+    patch:
+      tags:
+        - Projects
+      summary: Edit the title/body/base branch of an open native pull request
+      description: Agent Hub-hosted projects only. Closed/merged PRs are immutable (409). At least one of title/body/baseBranch must be supplied. baseBranch retargets the PR onto a different base that exists on the hosted repo (the diff recomputes on the next read).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                body:
+                  type: string
+                baseBranch:
+                  type: string
+                  minLength: 1
+      responses:
+        "200":
+          description: Updated PR summary (same shape as the list rows).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - pr
+        "400":
+          description: Invalid input or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is not open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/reopen:
+    post:
+      tags:
+        - Projects
+      summary: Reopen a closed native pull request
+      description: Closed → open. Merged PRs are immutable (409). Agent Hub-hosted projects only.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      responses:
+        "200":
+          description: Reopened PR summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - pr
+        "400":
+          description: Not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is merged or already open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/auto-merge:
+    post:
+      tags:
+        - Projects
+      summary: Arm or disarm auto-merge on a native pull request
+      description: "Arms (or disarms) auto-merge on an open Agent Hub-hosted PR. An armed PR merges once its head checks pass and it is otherwise mergeable; if it is already green and mergeable, it merges immediately (response `merged: true`). Same behaviour as `git push -o automerge`. Agent Hub-hosted projects only; merged/closed PRs are rejected (409)."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required:
+                - enabled
+      responses:
+        "200":
+          description: The updated PR summary plus whether an immediate merge fired.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                  merged:
+                    type: boolean
+                required:
+                  - pr
+                  - merged
+        "400":
+          description: Not Hub-hosted or invalid body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is merged or closed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/auto-merge/schedule:
+    put:
+      tags:
+        - Projects
+      summary: Schedule auto-merge on a native pull request for a date and time
+      description: Schedules auto-merge for a browser-local date/time; the server converts it to UTC using the given IANA zone. Until that time the PR is not armed, so checks passing early do not merge it. At the scheduled time the Hub arms auto-merge and merges if the PR is mergeable; otherwise it stays armed and merges once checks pass. Arming or disarming via `POST .../auto-merge` cancels the schedule. Agent Hub-hosted projects only; the time must be in the future and within one year.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                localDateTime:
+                  type: string
+                  nullable: true
+                  description: Wall-clock time the user picked in their browser, `YYYY-MM-DDTHH:mm`. `null` clears the schedule.
+                  example: 2026-10-13T09:30
+                timeZone:
+                  type: string
+                  description: The browser's IANA time zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Required unless clearing.
+                  example: America/Chicago
+              required:
+                - localDateTime
+      responses:
+        "200":
+          description: The updated PR summary; `pr.auto_merge_at` is the scheduled UTC instant.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                  autoMergeAt:
+                    type: string
+                    nullable: true
+                    description: Scheduled time, UTC ISO 8601.
+                required:
+                  - pr
+                  - autoMergeAt
+        "400":
+          description: Not Hub-hosted, invalid time/zone, or time not in the future.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is merged or closed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/revert:
+    post:
+      tags:
+        - Projects
+      summary: Revert a merged native pull request
+      description: Commits the inverse of the PR's merge commit on its base branch and pushes the moved branch to the GitHub mirror, so the change is undone on both. History is not rewritten — a revert commit is added, matching `git revert` and GitHub's Revert button. Merged PRs only, once per PR.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      responses:
+        "200":
+          description: The revert commit sha and the updated PR summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revertSha:
+                    type: string
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - revertSha
+                  - pr
+        "400":
+          description: Not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR, or the merge commit is gone from the repo.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is not merged, was already reverted, is no longer on the base branch, or the revert conflicts with later commits.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "503":
+          description: The base branch kept moving; retry.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/preview/start:
+    post:
+      tags:
+        - Projects
+      summary: Start (or rebuild) the PR environment for a pull request
+      description: Queues the PR environment at the PR's current head commit. Environments are keyed by the pull request, not by any chat session, so any head branch works. Requires a `preview:` block in `.agent-hub/deploy.yaml` at the head commit. A failed or stopped environment is rebuilt; an active one at the same commit is returned unchanged. Works for Agent Hub-hosted PRs and for GitHub-hosted projects with `githubRepo` set (PR state read from the GitHub API with a project Owner's token). Hub-hosted PRs also queue automatically when they open or their head moves; GitHub-hosted environments start here, and a periodic re-check rebuilds them on new pushes and stops them on merge or close.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                route:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Environment queued (or already active at this commit).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  environment:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      projectId:
+                        type: string
+                      source:
+                        type: string
+                        enum:
+                          - native
+                          - github
+                      prNumber:
+                        type: integer
+                      headSha:
+                        type: string
+                      headBranch:
+                        type: string
+                        nullable: true
+                      status:
+                        type: string
+                        enum:
+                          - queued
+                          - building
+                          - ready
+                          - failed
+                          - stopped
+                      url:
+                        type: string
+                        nullable: true
+                        description: Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.
+                      error:
+                        type: string
+                        nullable: true
+                      stopReason:
+                        type: string
+                        nullable: true
+                        enum:
+                          - merged
+                          - closed
+                          - manual
+                          - no_preview_config
+                          - idle
+                          - expired
+                          - null
+                        description: "`idle`: asleep after the idle TTL or evicted by the project cap; the next request to its URL wakes it. `expired`: the head went unchanged past the max lifetime; a push or Start brings it back."
+                      runnerRef:
+                        type: string
+                        nullable: true
+                      cleanupPending:
+                        type: boolean
+                      logTail:
+                        type: array
+                        items:
+                          type: string
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      readyAt:
+                        type: string
+                        nullable: true
+                      stoppedAt:
+                        type: string
+                        nullable: true
+                      lastHitAt:
+                        type: string
+                        nullable: true
+                        description: Last request through the environment URL, recorded at most once a minute.
+                      renewedAt:
+                        type: string
+                        description: "Start of the max-lifetime clock: created, head moved, or started manually."
+                    required:
+                      - id
+                      - projectId
+                      - source
+                      - prNumber
+                      - headSha
+                      - headBranch
+                      - status
+                      - url
+                      - error
+                      - stopReason
+                      - runnerRef
+                      - cleanupPending
+                      - logTail
+                      - createdAt
+                      - updatedAt
+                      - readyAt
+                      - stoppedAt
+                      - lastHitAt
+                      - renewedAt
+                required:
+                  - ok
+                  - environment
+        "400":
+          description: Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The PR is not open, its head has no `preview:` block, or its head commit could not be read (retry later).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "501":
+          description: PR environments are not available on this deployment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/preview/stop:
+    post:
+      tags:
+        - Projects
+      summary: Stop the PR environment for a pull request
+      description: "Tears down the PR environment and marks it `stopped` (reason `manual`). When an earlier teardown failed (`cleanupPending`), stopping again retries it. New commits do not restart a manually stopped environment until it is started again. Idempotent: `stopped` is false when nothing was running. Environments also stop automatically when the PR merges or closes."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      responses:
+        "200":
+          description: Stop processed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  stopped:
+                    type: boolean
+                  environment:
+                    type: object
+                    nullable: true
+                    properties:
+                      id:
+                        type: string
+                      projectId:
+                        type: string
+                      source:
+                        type: string
+                        enum:
+                          - native
+                          - github
+                      prNumber:
+                        type: integer
+                      headSha:
+                        type: string
+                      headBranch:
+                        type: string
+                        nullable: true
+                      status:
+                        type: string
+                        enum:
+                          - queued
+                          - building
+                          - ready
+                          - failed
+                          - stopped
+                      url:
+                        type: string
+                        nullable: true
+                        description: Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.
+                      error:
+                        type: string
+                        nullable: true
+                      stopReason:
+                        type: string
+                        nullable: true
+                        enum:
+                          - merged
+                          - closed
+                          - manual
+                          - no_preview_config
+                          - idle
+                          - expired
+                          - null
+                        description: "`idle`: asleep after the idle TTL or evicted by the project cap; the next request to its URL wakes it. `expired`: the head went unchanged past the max lifetime; a push or Start brings it back."
+                      runnerRef:
+                        type: string
+                        nullable: true
+                      cleanupPending:
+                        type: boolean
+                      logTail:
+                        type: array
+                        items:
+                          type: string
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      readyAt:
+                        type: string
+                        nullable: true
+                      stoppedAt:
+                        type: string
+                        nullable: true
+                      lastHitAt:
+                        type: string
+                        nullable: true
+                        description: Last request through the environment URL, recorded at most once a minute.
+                      renewedAt:
+                        type: string
+                        description: "Start of the max-lifetime clock: created, head moved, or started manually."
+                    required:
+                      - id
+                      - projectId
+                      - source
+                      - prNumber
+                      - headSha
+                      - headBranch
+                      - status
+                      - url
+                      - error
+                      - stopReason
+                      - runnerRef
+                      - cleanupPending
+                      - logTail
+                      - createdAt
+                      - updatedAt
+                      - readyAt
+                      - stoppedAt
+                      - lastHitAt
+                      - renewedAt
+                required:
+                  - ok
+                  - stopped
+                  - environment
+        "400":
+          description: Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "501":
+          description: PR environments are not available on this deployment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/preview/state:
+    get:
+      tags:
+        - Projects
+      summary: Read the PR environment for a pull request
+      description: "Returns the PR environment row (status queued/building/ready/failed/stopped, url, error, log tail), or `environment: null` when the PR never had one."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      responses:
+        "200":
+          description: Environment (or null).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  environment:
+                    type: object
+                    nullable: true
+                    properties:
+                      id:
+                        type: string
+                      projectId:
+                        type: string
+                      source:
+                        type: string
+                        enum:
+                          - native
+                          - github
+                      prNumber:
+                        type: integer
+                      headSha:
+                        type: string
+                      headBranch:
+                        type: string
+                        nullable: true
+                      status:
+                        type: string
+                        enum:
+                          - queued
+                          - building
+                          - ready
+                          - failed
+                          - stopped
+                      url:
+                        type: string
+                        nullable: true
+                        description: Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.
+                      error:
+                        type: string
+                        nullable: true
+                      stopReason:
+                        type: string
+                        nullable: true
+                        enum:
+                          - merged
+                          - closed
+                          - manual
+                          - no_preview_config
+                          - idle
+                          - expired
+                          - null
+                        description: "`idle`: asleep after the idle TTL or evicted by the project cap; the next request to its URL wakes it. `expired`: the head went unchanged past the max lifetime; a push or Start brings it back."
+                      runnerRef:
+                        type: string
+                        nullable: true
+                      cleanupPending:
+                        type: boolean
+                      logTail:
+                        type: array
+                        items:
+                          type: string
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      readyAt:
+                        type: string
+                        nullable: true
+                      stoppedAt:
+                        type: string
+                        nullable: true
+                      lastHitAt:
+                        type: string
+                        nullable: true
+                        description: Last request through the environment URL, recorded at most once a minute.
+                      renewedAt:
+                        type: string
+                        description: "Start of the max-lifetime clock: created, head moved, or started manually."
+                    required:
+                      - id
+                      - projectId
+                      - source
+                      - prNumber
+                      - headSha
+                      - headBranch
+                      - status
+                      - url
+                      - error
+                      - stopReason
+                      - runnerRef
+                      - cleanupPending
+                      - logTail
+                      - createdAt
+                      - updatedAt
+                      - readyAt
+                      - stoppedAt
+                      - lastHitAt
+                      - renewedAt
+                required:
+                  - environment
+        "400":
+          description: Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "501":
+          description: PR environments are not available on this deployment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/request-review:
+    post:
+      tags:
+        - Projects
+      summary: Request a review on a native pull request (human flag and/or agent)
+      description: "With requested=true: kind='human' flips the human-review flag only; kind='agent' dispatches the project Reviewer agent only, leaving the flag untouched; kind='both' (the default when omitted) does both, preserving legacy behavior. requested=false always clears the human-review flag and never dispatches, regardless of kind."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                requested:
+                  type: boolean
+                kind:
+                  type: string
+                  enum:
+                    - agent
+                    - human
+                    - both
+      responses:
+        "200":
+          description: Updated PR summary. agent_review_dispatched is true only when a Reviewer agent session was actually dispatched (present only for agent/both requests).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                  agent_review_dispatched:
+                    type: boolean
+                  agent_review_reason:
+                    type: string
+                    description: Why an agent dispatch did not occur, e.g. 'already_in_flight', 'no_reviewer', 'engine_unavailable'.
+                required:
+                  - pr
+        "400":
+          description: Not Hub-hosted, or kind is not one of 'agent' | 'human' | 'both'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is not open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/reviews:
+    post:
+      tags:
+        - Projects
+      summary: Submit a human review on a native pull request
+      description: "state: approved | changes_requested | commented. A verdict (approve/request changes) clears any outstanding review-request flag. Reviews render in the PR detail and feed the Autofix context."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                state:
+                  type: string
+                  enum:
+                    - approved
+                    - changes_requested
+                    - commented
+                body:
+                  type: string
+                reviewer:
+                  type: string
+                  description: Reviewer-name override (agent reviews).
+                session_id:
+                  type: string
+                  nullable: true
+                  description: Acting session id (also accepted via the X-Agent-Hub-Session-Id header). A verdict clears the in-flight agent-review claim only when this matches the session that owns it.
+              required:
+                - state
+      responses:
+        "201":
+          description: The recorded review (GitHub review-object shape).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  review:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - review
+        "400":
+          description: Invalid state or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is not open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/reviews/{reviewId}/dismiss:
+    post:
+      tags:
+        - Projects
+      summary: Dismiss a submitted review on a native pull request
+      description: 'GitHub-style "Dismiss review": the review row is kept for history but its verdict stops counting toward the review decision and renders collapsed with the dismissal note. Only approved / changes_requested reviews can be dismissed (a comment review has no verdict). A reason is required. Allowed on closed and merged PRs.'
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: reviewId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  description: Why the review is being dismissed.
+              required:
+                - reason
+      responses:
+        "200":
+          description: The dismissed review (GitHub review-object shape).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  review:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - review
+        "400":
+          description: Missing reason, comment review, or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR/review.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Review is already dismissed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/comments:
+    post:
+      tags:
+        - Projects
+      summary: Add an inline (per-line) diff comment to a native pull request
+      description: Anchored to a file + line in the PR diff. side 'new' = post-image line number (additions/context), 'old' = pre-image (deletions). Rendered inside the Files-changed diff and included in the Autofix context.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filePath:
+                  type: string
+                  minLength: 1
+                line:
+                  type: integer
+                  minimum: 1
+                side:
+                  type: string
+                  enum:
+                    - old
+                    - new
+                body:
+                  type: string
+                  minLength: 1
+              required:
+                - filePath
+                - line
+                - body
+      responses:
+        "201":
+          description: The recorded comment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  comment:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - comment
+        "400":
+          description: Invalid input or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is not open.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/comment-threads/resolve:
+    post:
+      tags:
+        - Projects
+      summary: Resolve or unresolve an inline comment thread on a native pull request
+      description: A thread is the set of inline comments sharing an anchor (filePath + line + side); resolution is stored against that anchor, so a later reply joins an already-resolved thread. Resolved threads render collapsed in the Files-changed diff. Allowed on closed and merged PRs.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filePath:
+                  type: string
+                  minLength: 1
+                line:
+                  type: integer
+                  minimum: 1
+                side:
+                  type: string
+                  enum:
+                    - old
+                    - new
+                resolved:
+                  type: boolean
+              required:
+                - filePath
+                - line
+                - resolved
+      responses:
+        "200":
+          description: The thread anchor and its new resolution state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  thread:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - thread
+        "400":
+          description: Invalid input or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR, or no comment at that anchor.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/{number}/comments/{commentId}:
+    delete:
+      tags:
+        - Projects
+      summary: Delete an inline diff comment from a native pull request
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: commentId
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: Not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR/comment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/generate-description:
+    post:
+      tags:
+        - Projects
+      summary: Generate a PR title and description from a branch diff (AI)
+      description: Runs the configured model over the branch diff + commit subjects and returns a suggested title and body. Used by the optional "Generate" button on the PR creation form — fields stay editable.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                headBranch:
+                  type: string
+                baseBranch:
+                  type: string
+              required:
+                - headBranch
+      responses:
+        "200":
+          description: Suggested PR text.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  title:
+                    type: string
+                  body:
+                    type: string
+                required:
+                  - title
+                  - body
+        "400":
+          description: Invalid branch or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "502":
+          description: Model invocation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pr-environments:
+    get:
+      tags:
+        - Projects
+      summary: List PR environments and their cost controls
+      description: Admin+. Every PR environment of the project (status, age, last request) plus the cap, idle TTL, and max lifetime in effect.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Environments and limits.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projectId:
+                    type: string
+                  limits:
+                    type: object
+                    properties:
+                      maxConcurrent:
+                        type: integer
+                        description: Live environments (queued, building, ready) the project may hold. Starting one more puts the least recently used to sleep. 0 = no cap.
+                      idleTtlMinutes:
+                        type: integer
+                        description: A ready environment with no requests for this long is put to sleep; the next request wakes it. 0 = never.
+                      maxLifetimeDays:
+                        type: integer
+                        description: An environment whose PR head has not moved (and that was not started manually) for this long is stopped and no longer woken by requests. 0 = never.
+                    required:
+                      - maxConcurrent
+                      - idleTtlMinutes
+                      - maxLifetimeDays
+                    description: Effective limits (overrides applied over the defaults).
+                  wakeOnRequest:
+                    type: boolean
+                    description: Whether a request to a sleeping environment wakes it. Needs wildcard preview ingress (`AGENT_HUB_PREVIEW_SUBDOMAIN_BASE`); without it idle sleep is not enforced.
+                  enforced:
+                    type: object
+                    properties:
+                      maxConcurrent:
+                        type: integer
+                        description: Live environments (queued, building, ready) the project may hold. Starting one more puts the least recently used to sleep. 0 = no cap.
+                      idleTtlMinutes:
+                        type: integer
+                        description: A ready environment with no requests for this long is put to sleep; the next request wakes it. 0 = never.
+                      maxLifetimeDays:
+                        type: integer
+                        description: An environment whose PR head has not moved (and that was not started manually) for this long is stopped and no longer woken by requests. 0 = never.
+                    required:
+                      - maxConcurrent
+                      - idleTtlMinutes
+                      - maxLifetimeDays
+                    description: "Limits actually applied: `limits`, with `idleTtlMinutes` 0 when `wakeOnRequest` is false."
+                  overrides:
+                    type: object
+                    properties:
+                      maxConcurrent:
+                        type: integer
+                        description: Live environments (queued, building, ready) the project may hold. Starting one more puts the least recently used to sleep. 0 = no cap.
+                      idleTtlMinutes:
+                        type: integer
+                        description: A ready environment with no requests for this long is put to sleep; the next request wakes it. 0 = never.
+                      maxLifetimeDays:
+                        type: integer
+                        description: An environment whose PR head has not moved (and that was not started manually) for this long is stopped and no longer woken by requests. 0 = never.
+                    description: Values the project sets; the rest use defaults.
+                  defaults:
+                    type: object
+                    properties:
+                      maxConcurrent:
+                        type: integer
+                        description: Live environments (queued, building, ready) the project may hold. Starting one more puts the least recently used to sleep. 0 = no cap.
+                      idleTtlMinutes:
+                        type: integer
+                        description: A ready environment with no requests for this long is put to sleep; the next request wakes it. 0 = never.
+                      maxLifetimeDays:
+                        type: integer
+                        description: An environment whose PR head has not moved (and that was not started manually) for this long is stopped and no longer woken by requests. 0 = never.
+                    required:
+                      - maxConcurrent
+                      - idleTtlMinutes
+                      - maxLifetimeDays
+                  bounds:
+                    type: object
+                    properties:
+                      maxConcurrent:
+                        type: object
+                        properties:
+                          min:
+                            type: integer
+                          max:
+                            type: integer
+                        required:
+                          - min
+                          - max
+                      idleTtlMinutes:
+                        type: object
+                        properties:
+                          min:
+                            type: integer
+                          max:
+                            type: integer
+                        required:
+                          - min
+                          - max
+                      maxLifetimeDays:
+                        type: object
+                        properties:
+                          min:
+                            type: integer
+                          max:
+                            type: integer
+                        required:
+                          - min
+                          - max
+                    required:
+                      - maxConcurrent
+                      - idleTtlMinutes
+                      - maxLifetimeDays
+                  environments:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        projectId:
+                          type: string
+                        source:
+                          type: string
+                          enum:
+                            - native
+                            - github
+                        prNumber:
+                          type: integer
+                        headSha:
+                          type: string
+                        headBranch:
+                          type: string
+                          nullable: true
+                        status:
+                          type: string
+                          enum:
+                            - queued
+                            - building
+                            - ready
+                            - failed
+                            - stopped
+                        url:
+                          type: string
+                          nullable: true
+                          description: Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.
+                        error:
+                          type: string
+                          nullable: true
+                        stopReason:
+                          type: string
+                          nullable: true
+                          enum:
+                            - merged
+                            - closed
+                            - manual
+                            - no_preview_config
+                            - idle
+                            - expired
+                            - null
+                          description: "`idle`: asleep after the idle TTL or evicted by the project cap; the next request to its URL wakes it. `expired`: the head went unchanged past the max lifetime; a push or Start brings it back."
+                        runnerRef:
+                          type: string
+                          nullable: true
+                        cleanupPending:
+                          type: boolean
+                        logTail:
+                          type: array
+                          items:
+                            type: string
+                        createdAt:
+                          type: string
+                        updatedAt:
+                          type: string
+                        readyAt:
+                          type: string
+                          nullable: true
+                        stoppedAt:
+                          type: string
+                          nullable: true
+                        lastHitAt:
+                          type: string
+                          nullable: true
+                          description: Last request through the environment URL, recorded at most once a minute.
+                        renewedAt:
+                          type: string
+                          description: "Start of the max-lifetime clock: created, head moved, or started manually."
+                      required:
+                        - id
+                        - projectId
+                        - source
+                        - prNumber
+                        - headSha
+                        - headBranch
+                        - status
+                        - url
+                        - error
+                        - stopReason
+                        - runnerRef
+                        - cleanupPending
+                        - logTail
+                        - createdAt
+                        - updatedAt
+                        - readyAt
+                        - stoppedAt
+                        - lastHitAt
+                        - renewedAt
+                    description: Every environment the project has had, most recently updated first.
+                required:
+                  - projectId
+                  - limits
+                  - wakeOnRequest
+                  - enforced
+                  - overrides
+                  - defaults
+                  - bounds
+                  - environments
+        "404":
+          description: Unknown project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pr-environments/limits:
+    put:
+      tags:
+        - Projects
+      summary: Update PR environment cost controls
+      description: Admin+. Set any of `maxConcurrent`, `idleTtlMinutes`, `maxLifetimeDays`; `null` resets a field to its default, an omitted field is left alone, and `0` turns a control off. The next sweep (within 5 minutes) applies lowered limits to running environments.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                maxConcurrent:
+                  type: integer
+                  nullable: true
+                idleTtlMinutes:
+                  type: integer
+                  nullable: true
+                maxLifetimeDays:
+                  type: integer
+                  nullable: true
+              additionalProperties: false
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projectId:
+                    type: string
+                  limits:
+                    type: object
+                    properties:
+                      maxConcurrent:
+                        type: integer
+                        description: Live environments (queued, building, ready) the project may hold. Starting one more puts the least recently used to sleep. 0 = no cap.
+                      idleTtlMinutes:
+                        type: integer
+                        description: A ready environment with no requests for this long is put to sleep; the next request wakes it. 0 = never.
+                      maxLifetimeDays:
+                        type: integer
+                        description: An environment whose PR head has not moved (and that was not started manually) for this long is stopped and no longer woken by requests. 0 = never.
+                    required:
+                      - maxConcurrent
+                      - idleTtlMinutes
+                      - maxLifetimeDays
+                    description: Effective limits (overrides applied over the defaults).
+                  wakeOnRequest:
+                    type: boolean
+                    description: Whether a request to a sleeping environment wakes it. Needs wildcard preview ingress (`AGENT_HUB_PREVIEW_SUBDOMAIN_BASE`); without it idle sleep is not enforced.
+                  enforced:
+                    type: object
+                    properties:
+                      maxConcurrent:
+                        type: integer
+                        description: Live environments (queued, building, ready) the project may hold. Starting one more puts the least recently used to sleep. 0 = no cap.
+                      idleTtlMinutes:
+                        type: integer
+                        description: A ready environment with no requests for this long is put to sleep; the next request wakes it. 0 = never.
+                      maxLifetimeDays:
+                        type: integer
+                        description: An environment whose PR head has not moved (and that was not started manually) for this long is stopped and no longer woken by requests. 0 = never.
+                    required:
+                      - maxConcurrent
+                      - idleTtlMinutes
+                      - maxLifetimeDays
+                    description: "Limits actually applied: `limits`, with `idleTtlMinutes` 0 when `wakeOnRequest` is false."
+                  overrides:
+                    type: object
+                    properties:
+                      maxConcurrent:
+                        type: integer
+                        description: Live environments (queued, building, ready) the project may hold. Starting one more puts the least recently used to sleep. 0 = no cap.
+                      idleTtlMinutes:
+                        type: integer
+                        description: A ready environment with no requests for this long is put to sleep; the next request wakes it. 0 = never.
+                      maxLifetimeDays:
+                        type: integer
+                        description: An environment whose PR head has not moved (and that was not started manually) for this long is stopped and no longer woken by requests. 0 = never.
+                    description: Values the project sets; the rest use defaults.
+                  defaults:
+                    type: object
+                    properties:
+                      maxConcurrent:
+                        type: integer
+                        description: Live environments (queued, building, ready) the project may hold. Starting one more puts the least recently used to sleep. 0 = no cap.
+                      idleTtlMinutes:
+                        type: integer
+                        description: A ready environment with no requests for this long is put to sleep; the next request wakes it. 0 = never.
+                      maxLifetimeDays:
+                        type: integer
+                        description: An environment whose PR head has not moved (and that was not started manually) for this long is stopped and no longer woken by requests. 0 = never.
+                    required:
+                      - maxConcurrent
+                      - idleTtlMinutes
+                      - maxLifetimeDays
+                  bounds:
+                    type: object
+                    properties:
+                      maxConcurrent:
+                        type: object
+                        properties:
+                          min:
+                            type: integer
+                          max:
+                            type: integer
+                        required:
+                          - min
+                          - max
+                      idleTtlMinutes:
+                        type: object
+                        properties:
+                          min:
+                            type: integer
+                          max:
+                            type: integer
+                        required:
+                          - min
+                          - max
+                      maxLifetimeDays:
+                        type: object
+                        properties:
+                          min:
+                            type: integer
+                          max:
+                            type: integer
+                        required:
+                          - min
+                          - max
+                    required:
+                      - maxConcurrent
+                      - idleTtlMinutes
+                      - maxLifetimeDays
+                  environments:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        projectId:
+                          type: string
+                        source:
+                          type: string
+                          enum:
+                            - native
+                            - github
+                        prNumber:
+                          type: integer
+                        headSha:
+                          type: string
+                        headBranch:
+                          type: string
+                          nullable: true
+                        status:
+                          type: string
+                          enum:
+                            - queued
+                            - building
+                            - ready
+                            - failed
+                            - stopped
+                        url:
+                          type: string
+                          nullable: true
+                          description: Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.
+                        error:
+                          type: string
+                          nullable: true
+                        stopReason:
+                          type: string
+                          nullable: true
+                          enum:
+                            - merged
+                            - closed
+                            - manual
+                            - no_preview_config
+                            - idle
+                            - expired
+                            - null
+                          description: "`idle`: asleep after the idle TTL or evicted by the project cap; the next request to its URL wakes it. `expired`: the head went unchanged past the max lifetime; a push or Start brings it back."
+                        runnerRef:
+                          type: string
+                          nullable: true
+                        cleanupPending:
+                          type: boolean
+                        logTail:
+                          type: array
+                          items:
+                            type: string
+                        createdAt:
+                          type: string
+                        updatedAt:
+                          type: string
+                        readyAt:
+                          type: string
+                          nullable: true
+                        stoppedAt:
+                          type: string
+                          nullable: true
+                        lastHitAt:
+                          type: string
+                          nullable: true
+                          description: Last request through the environment URL, recorded at most once a minute.
+                        renewedAt:
+                          type: string
+                          description: "Start of the max-lifetime clock: created, head moved, or started manually."
+                      required:
+                        - id
+                        - projectId
+                        - source
+                        - prNumber
+                        - headSha
+                        - headBranch
+                        - status
+                        - url
+                        - error
+                        - stopReason
+                        - runnerRef
+                        - cleanupPending
+                        - logTail
+                        - createdAt
+                        - updatedAt
+                        - readyAt
+                        - stoppedAt
+                        - lastHitAt
+                        - renewedAt
+                    description: Every environment the project has had, most recently updated first.
+                required:
+                  - projectId
+                  - limits
+                  - wakeOnRequest
+                  - enforced
+                  - overrides
+                  - defaults
+                  - bounds
+                  - environments
+        "400":
+          description: A value is out of bounds.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/pulls/{number}/preview/share-links:
     get:
       tags:
@@ -42331,180 +44550,6 @@ paths:
                       - pr_env_ingress_not_configured
                       - pr_env_not_hosted
                     description: Set when share links cannot exist here at all; clients hide the panel.
-                required:
-                  - error
-  /api/projects/{projectId}/pulls:
-    get:
-      tags:
-        - PR Actions
-      summary: List a project’s pull requests (paginated)
-      description: Returns one page of pull requests for the project, ordered by most recent activity. Agent Hub-hosted projects are served from the native PR table; GitHub-backed projects are proxied through the caller’s connected GitHub account. Page through with `page`; `hasMore` says whether to offer a next page.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-            enum:
-              - open
-              - closed
-              - all
-            description: Which PRs to include. Defaults to `open`; unknown values fall back to `open`.
-          required: false
-          description: Which PRs to include. Defaults to `open`; unknown values fall back to `open`.
-          name: state
-          in: query
-        - schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            description: Page size. Defaults to 30, clamped to 100.
-          required: false
-          description: Page size. Defaults to 30, clamped to 100.
-          name: limit
-          in: query
-        - schema:
-            type: integer
-            minimum: 1
-            description: 1-based page number. Defaults to 1; invalid values fall back to 1.
-          required: false
-          description: 1-based page number. Defaults to 1; invalid values fall back to 1.
-          name: page
-          in: query
-      responses:
-        "200":
-          description: One page of pull requests.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/PullRequestListResponse"
-        "400":
-          description: Project has no `githubRepo` configured (GitHub-backed path only).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                  hint:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Project not found.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                  hint:
-                    type: string
-                required:
-                  - error
-        "412":
-          description: 'Caller has not connected a GitHub account (`code: "github_not_connected"`).'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                  hint:
-                    type: string
-                required:
-                  - error
-        "502":
-          description: GitHub rejected or failed the list request.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                  hint:
-                    type: string
-                required:
-                  - error
-    post:
-      tags:
-        - Projects
-      summary: Create (or reuse) a native pull request on an Agent Hub-hosted project
-      description: Creates a DB-backed Hub PR for a branch already pushed to the hosted repo. Idempotent per open head branch. 400 for projects not hosted on Agent Hub — use gh pr create there.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                headBranch:
-                  type: string
-                baseBranch:
-                  type: string
-                  description: Defaults to the default branch.
-                title:
-                  type: string
-                  minLength: 1
-                body:
-                  type: string
-                sessionId:
-                  type: string
-                  nullable: true
-                  description: Acting session id used to attribute the PR author to the session owner when the caller has no per-user identity (e.g. the global break-glass apiKey). Falls back to the X-Agent-Hub-Session-Id header / spawn-creds key.
-              required:
-                - headBranch
-                - title
-      responses:
-        "201":
-          description: PR created (or reused when one was already open for the branch).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  prUrl:
-                    type: string
-                  number:
-                    type: number
-                  created:
-                    type: boolean
-                required:
-                  - prUrl
-                  - number
-                  - created
-        "400":
-          description: Not Hub-hosted, invalid branch, or missing fields.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project or head branch not pushed.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
                 required:
                   - error
   /api/projects/{projectId}/pulls/{number}/review-session:
@@ -43862,1508 +45907,6 @@ paths:
           description: Missing description or no connected Claude account.
         "502":
           description: Model invocation failed.
-  /api/projects/{projectId}/pulls/branch-changes:
-    post:
-      tags:
-        - Projects
-      summary: Preview branch changes for a native pull request
-      description: Returns file-level changes for a branch pushed to an Agent Hub-hosted repo before creating a native PR. Base defaults to the hosted repo default branch.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                headBranch:
-                  type: string
-                baseBranch:
-                  type: string
-              required:
-                - headBranch
-      responses:
-        "200":
-          description: Branch file changes.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  headBranch:
-                    type: string
-                  baseBranch:
-                    type: string
-                  stats:
-                    type: object
-                    properties:
-                      changedFiles:
-                        type: number
-                      additions:
-                        type: number
-                      deletions:
-                        type: number
-                    required:
-                      - changedFiles
-                      - additions
-                      - deletions
-                  files:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        filename:
-                          type: string
-                        status:
-                          type: string
-                          enum:
-                            - added
-                            - removed
-                            - modified
-                            - renamed
-                        additions:
-                          type: number
-                        deletions:
-                          type: number
-                      required:
-                        - filename
-                        - status
-                        - additions
-                        - deletions
-                  truncated:
-                    type: boolean
-                required:
-                  - headBranch
-                  - baseBranch
-                  - stats
-                  - files
-                  - truncated
-        "400":
-          description: Invalid branch or not Hub-hosted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project or branch.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "502":
-          description: Git diff failed.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}:
-    patch:
-      tags:
-        - Projects
-      summary: Edit the title/body/base branch of an open native pull request
-      description: Agent Hub-hosted projects only. Closed/merged PRs are immutable (409). At least one of title/body/baseBranch must be supplied. baseBranch retargets the PR onto a different base that exists on the hosted repo (the diff recomputes on the next read).
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                title:
-                  type: string
-                  minLength: 1
-                body:
-                  type: string
-                baseBranch:
-                  type: string
-                  minLength: 1
-      responses:
-        "200":
-          description: Updated PR summary (same shape as the list rows).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  pr:
-                    type: object
-                    additionalProperties:
-                      nullable: true
-                required:
-                  - pr
-        "400":
-          description: Invalid input or not Hub-hosted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project or PR.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "409":
-          description: PR is not open.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/reopen:
-    post:
-      tags:
-        - Projects
-      summary: Reopen a closed native pull request
-      description: Closed → open. Merged PRs are immutable (409). Agent Hub-hosted projects only.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      responses:
-        "200":
-          description: Reopened PR summary.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  pr:
-                    type: object
-                    additionalProperties:
-                      nullable: true
-                required:
-                  - pr
-        "400":
-          description: Not Hub-hosted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "409":
-          description: PR is merged or already open.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/auto-merge:
-    post:
-      tags:
-        - Projects
-      summary: Arm or disarm auto-merge on a native pull request
-      description: "Arms (or disarms) auto-merge on an open Agent Hub-hosted PR. An armed PR merges once its head checks pass and it is otherwise mergeable; if it is already green and mergeable, it merges immediately (response `merged: true`). Same behaviour as `git push -o automerge`. Agent Hub-hosted projects only; merged/closed PRs are rejected (409)."
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                enabled:
-                  type: boolean
-              required:
-                - enabled
-      responses:
-        "200":
-          description: The updated PR summary plus whether an immediate merge fired.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  pr:
-                    type: object
-                    additionalProperties:
-                      nullable: true
-                  merged:
-                    type: boolean
-                required:
-                  - pr
-                  - merged
-        "400":
-          description: Not Hub-hosted or invalid body.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "409":
-          description: PR is merged or closed.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/auto-merge/schedule:
-    put:
-      tags:
-        - Projects
-      summary: Schedule auto-merge on a native pull request for a date and time
-      description: Schedules auto-merge for a browser-local date/time; the server converts it to UTC using the given IANA zone. Until that time the PR is not armed, so checks passing early do not merge it. At the scheduled time the Hub arms auto-merge and merges if the PR is mergeable; otherwise it stays armed and merges once checks pass. Arming or disarming via `POST .../auto-merge` cancels the schedule. Agent Hub-hosted projects only; the time must be in the future and within one year.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                localDateTime:
-                  type: string
-                  nullable: true
-                  description: Wall-clock time the user picked in their browser, `YYYY-MM-DDTHH:mm`. `null` clears the schedule.
-                  example: 2026-10-13T09:30
-                timeZone:
-                  type: string
-                  description: The browser's IANA time zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Required unless clearing.
-                  example: America/Chicago
-              required:
-                - localDateTime
-      responses:
-        "200":
-          description: The updated PR summary; `pr.auto_merge_at` is the scheduled UTC instant.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  pr:
-                    type: object
-                    additionalProperties:
-                      nullable: true
-                  autoMergeAt:
-                    type: string
-                    nullable: true
-                    description: Scheduled time, UTC ISO 8601.
-                required:
-                  - pr
-                  - autoMergeAt
-        "400":
-          description: Not Hub-hosted, invalid time/zone, or time not in the future.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "409":
-          description: PR is merged or closed.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/revert:
-    post:
-      tags:
-        - Projects
-      summary: Revert a merged native pull request
-      description: Commits the inverse of the PR's merge commit on its base branch and pushes the moved branch to the GitHub mirror, so the change is undone on both. History is not rewritten — a revert commit is added, matching `git revert` and GitHub's Revert button. Merged PRs only, once per PR.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      responses:
-        "200":
-          description: The revert commit sha and the updated PR summary.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  revertSha:
-                    type: string
-                  pr:
-                    type: object
-                    additionalProperties:
-                      nullable: true
-                required:
-                  - revertSha
-                  - pr
-        "400":
-          description: Not Hub-hosted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR, or the merge commit is gone from the repo.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "409":
-          description: PR is not merged, was already reverted, is no longer on the base branch, or the revert conflicts with later commits.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "503":
-          description: The base branch kept moving; retry.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/preview/start:
-    post:
-      tags:
-        - Projects
-      summary: Start (or rebuild) the PR environment for a pull request
-      description: Queues the PR environment at the PR's current head commit. Environments are keyed by the pull request, not by any chat session, so any head branch works. Requires a `preview:` block in `.agent-hub/deploy.yaml` at the head commit. A failed or stopped environment is rebuilt; an active one at the same commit is returned unchanged. Works for Agent Hub-hosted PRs and for GitHub-hosted projects with `githubRepo` set (PR state read from the GitHub API with a project Owner's token). Hub-hosted PRs also queue automatically when they open or their head moves; GitHub-hosted environments start here, and a periodic re-check rebuilds them on new pushes and stops them on merge or close.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                route:
-                  type: string
-                reason:
-                  type: string
-      responses:
-        "200":
-          description: Environment queued (or already active at this commit).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  environment:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                      projectId:
-                        type: string
-                      source:
-                        type: string
-                        enum:
-                          - native
-                          - github
-                      prNumber:
-                        type: integer
-                      headSha:
-                        type: string
-                      headBranch:
-                        type: string
-                        nullable: true
-                      status:
-                        type: string
-                        enum:
-                          - queued
-                          - building
-                          - ready
-                          - failed
-                          - stopped
-                      url:
-                        type: string
-                        nullable: true
-                        description: Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.
-                      error:
-                        type: string
-                        nullable: true
-                      stopReason:
-                        type: string
-                        nullable: true
-                        enum:
-                          - merged
-                          - closed
-                          - manual
-                          - no_preview_config
-                          - null
-                      runnerRef:
-                        type: string
-                        nullable: true
-                      cleanupPending:
-                        type: boolean
-                      logTail:
-                        type: array
-                        items:
-                          type: string
-                      createdAt:
-                        type: string
-                      updatedAt:
-                        type: string
-                      readyAt:
-                        type: string
-                        nullable: true
-                      stoppedAt:
-                        type: string
-                        nullable: true
-                    required:
-                      - id
-                      - projectId
-                      - source
-                      - prNumber
-                      - headSha
-                      - headBranch
-                      - status
-                      - url
-                      - error
-                      - stopReason
-                      - runnerRef
-                      - cleanupPending
-                      - logTail
-                      - createdAt
-                      - updatedAt
-                      - readyAt
-                      - stoppedAt
-                required:
-                  - ok
-                  - environment
-        "400":
-          description: Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "409":
-          description: The PR is not open, its head has no `preview:` block, or its head commit could not be read (retry later).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "501":
-          description: PR environments are not available on this deployment.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/preview/stop:
-    post:
-      tags:
-        - Projects
-      summary: Stop the PR environment for a pull request
-      description: "Tears down the PR environment and marks it `stopped` (reason `manual`). When an earlier teardown failed (`cleanupPending`), stopping again retries it. New commits do not restart a manually stopped environment until it is started again. Idempotent: `stopped` is false when nothing was running. Environments also stop automatically when the PR merges or closes."
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      responses:
-        "200":
-          description: Stop processed.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    enum:
-                      - true
-                  stopped:
-                    type: boolean
-                  environment:
-                    type: object
-                    nullable: true
-                    properties:
-                      id:
-                        type: string
-                      projectId:
-                        type: string
-                      source:
-                        type: string
-                        enum:
-                          - native
-                          - github
-                      prNumber:
-                        type: integer
-                      headSha:
-                        type: string
-                      headBranch:
-                        type: string
-                        nullable: true
-                      status:
-                        type: string
-                        enum:
-                          - queued
-                          - building
-                          - ready
-                          - failed
-                          - stopped
-                      url:
-                        type: string
-                        nullable: true
-                        description: Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.
-                      error:
-                        type: string
-                        nullable: true
-                      stopReason:
-                        type: string
-                        nullable: true
-                        enum:
-                          - merged
-                          - closed
-                          - manual
-                          - no_preview_config
-                          - null
-                      runnerRef:
-                        type: string
-                        nullable: true
-                      cleanupPending:
-                        type: boolean
-                      logTail:
-                        type: array
-                        items:
-                          type: string
-                      createdAt:
-                        type: string
-                      updatedAt:
-                        type: string
-                      readyAt:
-                        type: string
-                        nullable: true
-                      stoppedAt:
-                        type: string
-                        nullable: true
-                    required:
-                      - id
-                      - projectId
-                      - source
-                      - prNumber
-                      - headSha
-                      - headBranch
-                      - status
-                      - url
-                      - error
-                      - stopReason
-                      - runnerRef
-                      - cleanupPending
-                      - logTail
-                      - createdAt
-                      - updatedAt
-                      - readyAt
-                      - stoppedAt
-                required:
-                  - ok
-                  - stopped
-                  - environment
-        "400":
-          description: Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "501":
-          description: PR environments are not available on this deployment.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/preview/state:
-    get:
-      tags:
-        - Projects
-      summary: Read the PR environment for a pull request
-      description: "Returns the PR environment row (status queued/building/ready/failed/stopped, url, error, log tail), or `environment: null` when the PR never had one."
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      responses:
-        "200":
-          description: Environment (or null).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  environment:
-                    type: object
-                    nullable: true
-                    properties:
-                      id:
-                        type: string
-                      projectId:
-                        type: string
-                      source:
-                        type: string
-                        enum:
-                          - native
-                          - github
-                      prNumber:
-                        type: integer
-                      headSha:
-                        type: string
-                      headBranch:
-                        type: string
-                        nullable: true
-                      status:
-                        type: string
-                        enum:
-                          - queued
-                          - building
-                          - ready
-                          - failed
-                          - stopped
-                      url:
-                        type: string
-                        nullable: true
-                        description: Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.
-                      error:
-                        type: string
-                        nullable: true
-                      stopReason:
-                        type: string
-                        nullable: true
-                        enum:
-                          - merged
-                          - closed
-                          - manual
-                          - no_preview_config
-                          - null
-                      runnerRef:
-                        type: string
-                        nullable: true
-                      cleanupPending:
-                        type: boolean
-                      logTail:
-                        type: array
-                        items:
-                          type: string
-                      createdAt:
-                        type: string
-                      updatedAt:
-                        type: string
-                      readyAt:
-                        type: string
-                        nullable: true
-                      stoppedAt:
-                        type: string
-                        nullable: true
-                    required:
-                      - id
-                      - projectId
-                      - source
-                      - prNumber
-                      - headSha
-                      - headBranch
-                      - status
-                      - url
-                      - error
-                      - stopReason
-                      - runnerRef
-                      - cleanupPending
-                      - logTail
-                      - createdAt
-                      - updatedAt
-                      - readyAt
-                      - stoppedAt
-                required:
-                  - environment
-        "400":
-          description: Neither Hub-hosted nor a GitHub-hosted project with githubRepo, or invalid PR number.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "501":
-          description: PR environments are not available on this deployment.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/request-review:
-    post:
-      tags:
-        - Projects
-      summary: Request a review on a native pull request (human flag and/or agent)
-      description: "With requested=true: kind='human' flips the human-review flag only; kind='agent' dispatches the project Reviewer agent only, leaving the flag untouched; kind='both' (the default when omitted) does both, preserving legacy behavior. requested=false always clears the human-review flag and never dispatches, regardless of kind."
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                requested:
-                  type: boolean
-                kind:
-                  type: string
-                  enum:
-                    - agent
-                    - human
-                    - both
-      responses:
-        "200":
-          description: Updated PR summary. agent_review_dispatched is true only when a Reviewer agent session was actually dispatched (present only for agent/both requests).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  pr:
-                    type: object
-                    additionalProperties:
-                      nullable: true
-                  agent_review_dispatched:
-                    type: boolean
-                  agent_review_reason:
-                    type: string
-                    description: Why an agent dispatch did not occur, e.g. 'already_in_flight', 'no_reviewer', 'engine_unavailable'.
-                required:
-                  - pr
-        "400":
-          description: Not Hub-hosted, or kind is not one of 'agent' | 'human' | 'both'.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "409":
-          description: PR is not open.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/reviews:
-    post:
-      tags:
-        - Projects
-      summary: Submit a human review on a native pull request
-      description: "state: approved | changes_requested | commented. A verdict (approve/request changes) clears any outstanding review-request flag. Reviews render in the PR detail and feed the Autofix context."
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                state:
-                  type: string
-                  enum:
-                    - approved
-                    - changes_requested
-                    - commented
-                body:
-                  type: string
-                reviewer:
-                  type: string
-                  description: Reviewer-name override (agent reviews).
-                session_id:
-                  type: string
-                  nullable: true
-                  description: Acting session id (also accepted via the X-Agent-Hub-Session-Id header). A verdict clears the in-flight agent-review claim only when this matches the session that owns it.
-              required:
-                - state
-      responses:
-        "201":
-          description: The recorded review (GitHub review-object shape).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  review:
-                    type: object
-                    additionalProperties:
-                      nullable: true
-                required:
-                  - review
-        "400":
-          description: Invalid state or not Hub-hosted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "409":
-          description: PR is not open.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/reviews/{reviewId}/dismiss:
-    post:
-      tags:
-        - Projects
-      summary: Dismiss a submitted review on a native pull request
-      description: 'GitHub-style "Dismiss review": the review row is kept for history but its verdict stops counting toward the review decision and renders collapsed with the dismissal note. Only approved / changes_requested reviews can be dismissed (a comment review has no verdict). A reason is required. Allowed on closed and merged PRs.'
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: reviewId
-          in: path
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                reason:
-                  type: string
-                  minLength: 1
-                  description: Why the review is being dismissed.
-              required:
-                - reason
-      responses:
-        "200":
-          description: The dismissed review (GitHub review-object shape).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  review:
-                    type: object
-                    additionalProperties:
-                      nullable: true
-                required:
-                  - review
-        "400":
-          description: Missing reason, comment review, or not Hub-hosted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR/review.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "409":
-          description: Review is already dismissed.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/comments:
-    post:
-      tags:
-        - Projects
-      summary: Add an inline (per-line) diff comment to a native pull request
-      description: Anchored to a file + line in the PR diff. side 'new' = post-image line number (additions/context), 'old' = pre-image (deletions). Rendered inside the Files-changed diff and included in the Autofix context.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                filePath:
-                  type: string
-                  minLength: 1
-                line:
-                  type: integer
-                  minimum: 1
-                side:
-                  type: string
-                  enum:
-                    - old
-                    - new
-                body:
-                  type: string
-                  minLength: 1
-              required:
-                - filePath
-                - line
-                - body
-      responses:
-        "201":
-          description: The recorded comment.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  comment:
-                    type: object
-                    additionalProperties:
-                      nullable: true
-                required:
-                  - comment
-        "400":
-          description: Invalid input or not Hub-hosted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "409":
-          description: PR is not open.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/comment-threads/resolve:
-    post:
-      tags:
-        - Projects
-      summary: Resolve or unresolve an inline comment thread on a native pull request
-      description: A thread is the set of inline comments sharing an anchor (filePath + line + side); resolution is stored against that anchor, so a later reply joins an already-resolved thread. Resolved threads render collapsed in the Files-changed diff. Allowed on closed and merged PRs.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                filePath:
-                  type: string
-                  minLength: 1
-                line:
-                  type: integer
-                  minimum: 1
-                side:
-                  type: string
-                  enum:
-                    - old
-                    - new
-                resolved:
-                  type: boolean
-              required:
-                - filePath
-                - line
-                - resolved
-      responses:
-        "200":
-          description: The thread anchor and its new resolution state.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  thread:
-                    type: object
-                    additionalProperties:
-                      nullable: true
-                required:
-                  - thread
-        "400":
-          description: Invalid input or not Hub-hosted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR, or no comment at that anchor.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/{number}/comments/{commentId}:
-    delete:
-      tags:
-        - Projects
-      summary: Delete an inline diff comment from a native pull request
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: number
-          in: path
-        - schema:
-            type: string
-          required: true
-          name: commentId
-          in: path
-      responses:
-        "200":
-          description: Deleted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                required:
-                  - ok
-        "400":
-          description: Not Hub-hosted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project/PR/comment.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-  /api/projects/{projectId}/pulls/generate-description:
-    post:
-      tags:
-        - Projects
-      summary: Generate a PR title and description from a branch diff (AI)
-      description: Runs the configured model over the branch diff + commit subjects and returns a suggested title and body. Used by the optional "Generate" button on the PR creation form — fields stay editable.
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: projectId
-          in: path
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                headBranch:
-                  type: string
-                baseBranch:
-                  type: string
-              required:
-                - headBranch
-      responses:
-        "200":
-          description: Suggested PR text.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  title:
-                    type: string
-                  body:
-                    type: string
-                required:
-                  - title
-                  - body
-        "400":
-          description: Invalid branch or not Hub-hosted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "404":
-          description: Unknown project or branch.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
-        "502":
-          description: Model invocation failed.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                required:
-                  - error
   /api/projects/{projectId}/release-notification-settings:
     get:
       tags:

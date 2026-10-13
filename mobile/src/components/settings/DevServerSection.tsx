@@ -11,6 +11,7 @@ import { api } from '../../utils/api';
 import { useApp } from '../../context/AppContext';
 import { colors } from '../../theme/colors';
 import HubIcon from '../HubIcon';
+import PrEnvironmentsPanel from './PrEnvironmentsPanel';
 import {
   buildDevServerConfig,
   buildSecretsPutPayload,
@@ -667,6 +668,7 @@ export default function DevServerSection({
         )}
       </TouchableOpacity>
       {saved && <Text style={styles.savedText}>Saved</Text>}
+      {projectId ? <PrEnvironmentsPanel projectId={projectId} /> : null}
     </View>
   );
 }

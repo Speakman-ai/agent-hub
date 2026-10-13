@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import express from 'express';
 import request from 'supertest';
 import { WebSocket, WebSocketServer } from 'ws';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   attachPrEnvironmentUpgrade,
   createPrEnvironmentProxyMiddleware,
@@ -392,5 +392,96 @@ describe('upgrade claims', () => {
     expect(isUpgradeClaimed(req)).toBe(false);
     claimUpgrade(req);
     expect(isUpgradeClaimed(req)).toBe(true);
+  });
+});
+
+describe('waking a sleeping environment', () => {
+  it('a request wakes it and gets the starting page; once ready, the reload lands on the app', async () => {
+    const woke: Array<{ projectId: string; prNumber: number }> = [];
+    const hits: number[] = [];
+    let record: PrEnvironmentIngressRecord = {
+      projectId: 'demo',
+      status: 'stopped',
+      upstreamUrl: null,
+      stopReason: 'idle',
+    };
+    const a = express();
+    a.use(
+      createPrEnvironmentProxyMiddleware({
+        getBase: () => BASE,
+        lookup: () => record,
+        recordHit: (env) => hits.push(env.prNumber),
+        wake: (env) => {
+          woke.push(env);
+          // The service queues a rebuild.
+          record = { ...record, status: 'queued', stopReason: null };
+        },
+      }),
+    );
+
+    const first = await request(a).get('/dashboard').set('Host', host(9));
+    expect(first.status).toBe(503);
+    expect(first.headers['retry-after']).toBeDefined();
+    expect(first.text).toContain('was asleep and is starting again');
+    expect(first.text).toContain('http-equiv="refresh"');
+    expect(woke).toEqual([{ projectId: 'demo', prNumber: 9 }]);
+
+    const building = await request(a).get('/dashboard').set('Host', host(9));
+    expect(building.status).toBe(503);
+    expect(building.text).toContain('Environment starting');
+    expect(woke).toHaveLength(1);
+
+    record = { ...record, status: 'ready', upstreamUrl };
+    const landed = await request(a).get('/').set('Host', host(9));
+    expect(landed.status).toBe(200);
+    expect(landed.text).toContain('/assets/app.js');
+    expect(hits).toEqual([9, 9, 9]);
+  });
+
+  it('an expired environment is not woken', async () => {
+    const wake = vi.fn();
+    const a = express();
+    a.use(
+      createPrEnvironmentProxyMiddleware({
+        getBase: () => BASE,
+        lookup: () => ({
+          projectId: 'demo',
+          status: 'stopped',
+          upstreamUrl: null,
+          stopReason: 'expired',
+        }),
+        wake,
+      }),
+    );
+    const res = await request(a).get('/').set('Host', host(9));
+    expect(res.status).toBe(410);
+    expect(res.text).toContain('no new commits');
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it('a visitor the gate turns away does not wake it', async () => {
+    const wake = vi.fn();
+    const a = express();
+    a.use(
+      createPrEnvironmentProxyMiddleware({
+        getBase: () => BASE,
+        lookup: () => ({
+          projectId: 'demo',
+          status: 'stopped',
+          upstreamUrl: null,
+          stopReason: 'idle',
+        }),
+        wake,
+        gate: {
+          http: (_req, res) => {
+            res.status(401).end();
+            return 'handled';
+          },
+          upgrade: () => false,
+        },
+      }),
+    );
+    expect((await request(a).get('/').set('Host', host(9))).status).toBe(401);
+    expect(wake).not.toHaveBeenCalled();
   });
 });

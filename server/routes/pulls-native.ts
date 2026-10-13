@@ -396,7 +396,7 @@ registerPath({
   },
 });
 
-const PrEnvironmentSchema = z.object({
+export const PrEnvironmentSchema = z.object({
   id: z.string(),
   projectId: z.string(),
   source: z.enum(['native', 'github']),
@@ -411,7 +411,12 @@ const PrEnvironmentSchema = z.object({
       'Where the environment is served once ready. With wildcard preview ingress configured this is `https://pr-<n>--<project>.<previewBase>/` (the app at `/`, websockets proxied); otherwise the direct upstream, `http://localhost:<port>` on a local Hub.',
     ),
   error: z.string().nullable(),
-  stopReason: z.enum(['merged', 'closed', 'manual', 'no_preview_config']).nullable(),
+  stopReason: z
+    .enum(['merged', 'closed', 'manual', 'no_preview_config', 'idle', 'expired'])
+    .nullable()
+    .describe(
+      '`idle`: asleep after the idle TTL or evicted by the project cap; the next request to its URL wakes it. `expired`: the head went unchanged past the max lifetime; a push or Start brings it back.',
+    ),
   runnerRef: z.string().nullable(),
   cleanupPending: z.boolean(),
   logTail: z.array(z.string()),
@@ -419,6 +424,13 @@ const PrEnvironmentSchema = z.object({
   updatedAt: z.string(),
   readyAt: z.string().nullable(),
   stoppedAt: z.string().nullable(),
+  lastHitAt: z
+    .string()
+    .nullable()
+    .describe('Last request through the environment URL, recorded at most once a minute.'),
+  renewedAt: z
+    .string()
+    .describe('Start of the max-lifetime clock: created, head moved, or started manually.'),
 });
 
 registerPath({

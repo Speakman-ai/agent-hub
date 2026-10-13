@@ -33,6 +33,11 @@ export const PR_ENVIRONMENTS_SCHEMA = `
     updated_at   INTEGER NOT NULL,
     ready_at     INTEGER,
     stopped_at   INTEGER,
+    -- Last request through the ingress proxy (throttled), for the idle TTL.
+    last_hit_at  INTEGER,
+    -- When the max-lifetime clock last restarted: created, head moved, or
+    -- started manually.
+    renewed_at   INTEGER,
     UNIQUE(project_id, source, pr_number)
   );
   CREATE INDEX IF NOT EXISTS idx_pr_environments_project_status
@@ -66,4 +71,21 @@ export function migratePrEnvironmentsSourceCheck(db: Database.Database): boolean
     db.exec('DROP TABLE pr_environments_source_migration');
   })();
   return true;
+}
+
+/**
+ * Add the cost-control columns to databases created before them. Existing
+ * rows start their lifetime clock at their last update, so a deploy does not
+ * expire every environment at once. Idempotent.
+ */
+export function migratePrEnvironmentsUsageColumns(db: Database.Database): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(pr_environments)').all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    ),
+  );
+  if (!cols.has('last_hit_at'))
+    db.exec('ALTER TABLE pr_environments ADD COLUMN last_hit_at INTEGER');
+  if (!cols.has('renewed_at')) db.exec('ALTER TABLE pr_environments ADD COLUMN renewed_at INTEGER');
+  db.exec('UPDATE pr_environments SET renewed_at = updated_at WHERE renewed_at IS NULL');
 }

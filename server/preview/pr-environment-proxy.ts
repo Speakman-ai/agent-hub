@@ -13,6 +13,12 @@
  * cookies (different host), and anything that is not ready gets a status
  * page instead of a bare 502.
  *
+ * A sleeping environment (stopped as `idle` by the cost controls in
+ * `./pr-environment-limits.ts`) is woken by the first request that passes
+ * the gate. That request, and every one after it until the stack is healthy,
+ * gets a "starting" page that reloads itself, so the browser lands on the app
+ * once it is ready.
+ *
  * The middleware must be mounted before CORS and body parsers: the app's
  * own preflights and request bodies have to reach the upstream untouched.
  */
@@ -59,6 +65,14 @@ export interface PrEnvironmentProxyDeps {
   responseHeaderTimeoutMs?: number;
   /** Who may use an environment. Without one the ingress is open. */
   gate?: PrEnvironmentAccessGate;
+  /** A request passed the gate (feeds the idle TTL). Must be cheap and not throw. */
+  recordHit?: (env: { projectId: string; prNumber: number }) => void;
+  /**
+   * Wake a sleeping environment. Fire and forget: the request gets the
+   * starting page and its reloads follow the rebuild. Without it a sleeping
+   * environment is shown as stopped.
+   */
+  wake?: (env: { projectId: string; prNumber: number }) => void;
 }
 
 /**
@@ -129,6 +143,7 @@ export interface StatusPage {
 export function statusPageFor(
   target: PrEnvironmentHostTarget,
   record: PrEnvironmentIngressRecord | null,
+  opts: { waking?: boolean } = {},
 ): StatusPage | null {
   const pr = `PR #${target.prNumber}`;
   if (!record) {
@@ -156,6 +171,22 @@ export function statusPageFor(
         refreshSeconds: null,
       };
     case 'stopped': {
+      if (record.stopReason === 'idle' && opts.waking) {
+        return {
+          status: 503,
+          title: 'Environment starting',
+          message: `The environment for ${pr} was asleep and is starting again. This page reloads automatically and opens the app when it is ready.`,
+          refreshSeconds: STARTING_REFRESH_SECONDS,
+        };
+      }
+      if (record.stopReason === 'expired') {
+        return {
+          status: 410,
+          title: 'Environment stopped',
+          message: `The environment for ${pr} was stopped because the pull request had no new commits for a while. Push a commit or start it from the pull request in Agent Hub.`,
+          refreshSeconds: null,
+        };
+      }
       const why =
         record.stopReason === 'merged'
           ? ' because the pull request was merged'
@@ -163,7 +194,9 @@ export function statusPageFor(
             ? ' because the pull request was closed'
             : record.stopReason === 'no_preview_config'
               ? ' because its head no longer declares a preview'
-              : '';
+              : record.stopReason === 'idle'
+                ? ' because it was idle'
+                : '';
       return {
         status: 410,
         title: 'Environment stopped',
@@ -330,6 +363,31 @@ function unavailablePage(target: PrEnvironmentHostTarget): StatusPage {
   };
 }
 
+/**
+ * Bookkeeping for a request that passed the gate: record the hit and, when
+ * the environment is asleep, ask for it to wake. Returns whether it is waking.
+ * Failures here must never break the request.
+ */
+function noteRequest(
+  deps: PrEnvironmentProxyDeps,
+  target: PrEnvironmentHostTarget,
+  record: PrEnvironmentIngressRecord,
+): boolean {
+  const env = { projectId: record.projectId, prNumber: target.prNumber };
+  try {
+    deps.recordHit?.(env);
+  } catch {
+    /* best effort */
+  }
+  if (record.status !== 'stopped' || record.stopReason !== 'idle' || !deps.wake) return false;
+  try {
+    deps.wake(env);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Express middleware: proxy PR environment hosts, pass everything else on. */
 export function createPrEnvironmentProxyMiddleware(deps: PrEnvironmentProxyDeps): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -354,7 +412,8 @@ export function createPrEnvironmentProxyMiddleware(deps: PrEnvironmentProxyDeps)
       }
       if (verdict === 'handled') return;
     }
-    const page = statusPageFor(target, record);
+    const waking = record ? noteRequest(deps, target, record) : false;
+    const page = statusPageFor(target, record, { waking });
     if (page) {
       sendStatusPage(res, page);
       return;
@@ -472,7 +531,8 @@ export function attachPrEnvironmentUpgrade(server: Server, deps: PrEnvironmentPr
         return;
       }
     }
-    const page = statusPageFor(target, record);
+    const waking = record ? noteRequest(deps, target, record) : false;
+    const page = statusPageFor(target, record, { waking });
     if (page) {
       denyUpgrade(
         socket,

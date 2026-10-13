@@ -18,7 +18,20 @@
 /** Where the PR lives: the Hub's own forge, or GitHub for GitHub-hosted projects. */
 export type PrEnvironmentSource = 'native' | 'github';
 export type PrEnvironmentStatus = 'queued' | 'building' | 'ready' | 'failed' | 'stopped';
-export type PrEnvironmentStopReason = 'merged' | 'closed' | 'manual' | 'no_preview_config';
+export type PrEnvironmentStopReason =
+  | 'merged'
+  | 'closed'
+  | 'manual'
+  | 'no_preview_config'
+  /** Asleep: no requests within the idle TTL, or evicted by the project cap. A request wakes it. */
+  | 'idle'
+  /** The PR head went unchanged past the max lifetime. A push or manual start revives it. */
+  | 'expired';
+
+/** Stopped by a cost control rather than by anyone's decision about the PR. */
+export function isCostStopReason(reason: PrEnvironmentStopReason | null): boolean {
+  return reason === 'idle' || reason === 'expired';
+}
 
 export const PR_ENVIRONMENT_ACTIVE_STATUSES: readonly PrEnvironmentStatus[] = [
   'queued',
@@ -62,6 +75,12 @@ export type PrEnvironmentEvent =
   /** PR merged or closed. */
   | { type: 'pr_closed'; merged: boolean }
   | { type: 'manual_stop' }
+  /** Cost control: idle past the TTL, or evicted to make room under the project cap. */
+  | { type: 'idle_stop' }
+  /** Cost control: the PR head went unchanged past the max lifetime. */
+  | { type: 'expire' }
+  /** A request reached a sleeping (`idle`) environment; rebuild it at the PR's current head. */
+  | { type: 'wake'; headSha: string; headBranch: string | null }
   /** The head moved to a commit whose deploy.yaml has no `preview:` block. */
   | { type: 'config_removed'; headSha: string; headBranch: string | null }
   /**
@@ -184,10 +203,17 @@ function stop(
     // later manual start on a GitHub PR knows the PR is gone. A manual stop
     // replaces a nonterminal reason (no_preview_config), so restoring the
     // preview block later does not override the operator's stop.
+    // Cost-control reasons are the weakest: any decision about the PR or its
+    // config replaces them, and they never replace one. `expired` may replace
+    // `idle` (a sleeping env whose PR went stale must stop answering wakes).
     const terminal = reason === 'merged' || reason === 'closed';
     const currentTerminal = current.stopReason === 'merged' || current.stopReason === 'closed';
     const replace =
-      current.stopReason !== reason && (terminal || (reason === 'manual' && !currentTerminal));
+      current.stopReason !== reason &&
+      (terminal ||
+        (reason === 'manual' && !currentTerminal) ||
+        (reason === 'no_preview_config' && isCostStopReason(current.stopReason)) ||
+        (reason === 'expired' && current.stopReason === 'idle'));
     const next = replace ? { ...current, stopReason: reason } : current;
     return {
       next,
@@ -236,6 +262,22 @@ export function transitionPrEnvironment(
           effects: NO_EFFECTS,
         };
       }
+      if (current && current.status === 'stopped' && isCostStopReason(current.stopReason)) {
+        // Asleep: a replayed open must not rebuild it, only a request does.
+        // A push moves the head and revives an expired env as sleeping, so the
+        // next request wakes it at the new commit.
+        if (current.headSha === event.headSha) return unchanged(current);
+        return {
+          next: {
+            ...current,
+            headSha: event.headSha,
+            headBranch: event.headBranch ?? current.headBranch,
+            stopReason: 'idle',
+          },
+          changed: true,
+          effects: NO_EFFECTS,
+        };
+      }
       return queue(current, event.headSha, event.headBranch);
     }
     case 'manual_start': {
@@ -253,6 +295,26 @@ export function transitionPrEnvironment(
       return stop(current, event.merged ? 'merged' : 'closed');
     case 'manual_stop':
       return stop(current, 'manual');
+    case 'idle_stop':
+    case 'expire': {
+      // Only a live environment is put to sleep; a failed one has nothing
+      // running worth paying for and keeps its error visible. `expire` also
+      // marks a sleeping one so requests stop waking it.
+      if (!current) return unchanged(null);
+      const reason = event.type === 'expire' ? 'expired' : 'idle';
+      if (current.status === 'stopped') {
+        if (reason === 'expired' && current.stopReason === 'idle') return stop(current, reason);
+        return unchanged(current);
+      }
+      if (!isActivePrEnvironmentStatus(current.status)) return unchanged(current);
+      return stop(current, reason);
+    }
+    case 'wake': {
+      if (!current || current.status !== 'stopped' || current.stopReason !== 'idle') {
+        return unchanged(current);
+      }
+      return queue(current, event.headSha, event.headBranch);
+    }
     case 'config_removed': {
       if (!current) return unchanged(null);
       const t = stop(current, 'no_preview_config');
@@ -273,10 +335,17 @@ export function transitionPrEnvironment(
     }
     case 'config_unresolved': {
       const headBranch = event.headBranch ?? current?.headBranch ?? null;
-      if (current && current.status === 'stopped' && current.stopReason === 'manual') {
+      if (
+        current &&
+        current.status === 'stopped' &&
+        (current.stopReason === 'manual' || isCostStopReason(current.stopReason))
+      ) {
+        // Nothing is running, and nothing should start until a start or a
+        // wake, both of which re-read the head.
         if (current.headSha === event.headSha) return unchanged(current);
+        const stopReason = current.stopReason === 'manual' ? 'manual' : 'idle';
         return {
-          next: { ...current, headSha: event.headSha, headBranch },
+          next: { ...current, headSha: event.headSha, headBranch, stopReason },
           changed: true,
           effects: NO_EFFECTS,
         };

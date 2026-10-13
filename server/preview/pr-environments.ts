@@ -15,6 +15,15 @@ import { v4 as uuidv4 } from 'uuid';
 import type Database from 'better-sqlite3';
 import type { Project } from '../types.js';
 import {
+  planPrEnvironmentSweep,
+  resolvePrEnvironmentLimits,
+  isExpired,
+  isLive,
+  selectEvictions,
+  enforcedPrEnvironmentLimits,
+  type PrEnvironmentUsage,
+} from './pr-environment-limits.js';
+import {
   UNRESOLVED_HEAD_ERROR_PREFIX,
   transitionPrEnvironment,
   type PrEnvironmentCleanupTarget,
@@ -50,6 +59,9 @@ export interface PrEnvironmentRow {
   updated_at: number;
   ready_at: number | null;
   stopped_at: number | null;
+  last_hit_at: number | null;
+  /** Start of the max-lifetime clock; null only on rows from before the column. */
+  renewed_at: number | null;
 }
 
 /** API shape served by the `/pulls/:number/preview/*` routes. */
@@ -72,6 +84,10 @@ export interface PrEnvironmentDto {
   updatedAt: string;
   readyAt: string | null;
   stoppedAt: string | null;
+  /** Last request through the ingress proxy (recorded at most once a minute). */
+  lastHitAt: string | null;
+  /** When the max-lifetime clock last restarted (created, head moved, manual start). */
+  renewedAt: string;
 }
 
 function parseLogTail(raw: string | null | undefined): string[] {
@@ -105,8 +121,27 @@ export function toPrEnvironmentDto(row: PrEnvironmentRow): PrEnvironmentDto {
     updatedAt: new Date(row.updated_at).toISOString(),
     readyAt: iso(row.ready_at),
     stoppedAt: iso(row.stopped_at),
+    lastHitAt: iso(row.last_hit_at),
+    renewedAt: new Date(row.renewed_at ?? row.created_at).toISOString(),
   };
 }
+
+/** The fields the cost controls look at. */
+export function prEnvironmentUsage(row: PrEnvironmentRow): PrEnvironmentUsage {
+  return {
+    id: row.id,
+    status: row.status,
+    stopReason: row.stop_reason,
+    cleanupPending: row.cleanup_pending === 1,
+    createdAt: row.created_at,
+    readyAt: row.ready_at,
+    lastHitAt: row.last_hit_at,
+    renewedAt: row.renewed_at ?? row.created_at,
+  };
+}
+
+/** Ingress hits closer together than this are not written to the row. */
+export const PR_ENVIRONMENT_HIT_THROTTLE_MS = 60_000;
 
 function rowToState(row: PrEnvironmentRow): PrEnvironmentState {
   return {
@@ -189,13 +224,17 @@ export interface PrEnvironmentStore {
   listPending(): PrEnvironmentRow[];
   /** Every row not fully stopped (anything running, queued, failed, or awaiting cleanup). */
   listUnsettled(): PrEnvironmentRow[];
+  /** Rows the cost-control sweep looks at: unsettled ones plus sleeping ones. */
+  listForSweep(): PrEnvironmentRow[];
   save(
     key: { projectId: string; source: PrEnvironmentSource; prNumber: number },
     prev: PrEnvironmentRow | null,
     next: PrEnvironmentState,
     now: number,
+    opts?: { renew?: boolean },
   ): PrEnvironmentRow;
   appendLog(id: string, lines: string[], now: number): void;
+  recordHit(id: string, at: number): void;
 }
 
 function prepareStatements(db: Database.Database) {
@@ -207,6 +246,12 @@ function prepareStatements(db: Database.Database) {
     listUnsettledStmt: db.prepare(
       "SELECT * FROM pr_environments WHERE status != 'stopped' OR cleanup_pending = 1",
     ),
+    listForSweepStmt: db.prepare(
+      `SELECT * FROM pr_environments
+       WHERE status != 'stopped' OR cleanup_pending = 1 OR stop_reason = 'idle'
+       ORDER BY project_id, created_at ASC`,
+    ),
+    setHitStmt: db.prepare('UPDATE pr_environments SET last_hit_at = ? WHERE id = ?'),
     listPendingStmt: db.prepare(
       `SELECT * FROM pr_environments
        WHERE status IN ('queued', 'building', 'ready') OR cleanup_pending = 1
@@ -219,11 +264,11 @@ function prepareStatements(db: Database.Database) {
     INSERT INTO pr_environments
       (id, project_id, source, pr_number, head_sha, head_branch, status, generation, url,
        runner_ref, error, stop_reason, log_tail, cleanup_pending, cleanup_target,
-       created_at, updated_at, ready_at, stopped_at)
+       created_at, updated_at, ready_at, stopped_at, last_hit_at, renewed_at)
     VALUES
       (@id, @project_id, @source, @pr_number, @head_sha, @head_branch, @status, @generation, @url,
        @runner_ref, @error, @stop_reason, @log_tail, @cleanup_pending, @cleanup_target,
-       @created_at, @updated_at, @ready_at, @stopped_at)
+       @created_at, @updated_at, @ready_at, @stopped_at, @last_hit_at, @renewed_at)
   `),
     updateStmt: db.prepare(`
     UPDATE pr_environments SET
@@ -232,7 +277,7 @@ function prepareStatements(db: Database.Database) {
       stop_reason = @stop_reason, log_tail = @log_tail, cleanup_pending = @cleanup_pending,
       cleanup_target = @cleanup_target,
       updated_at = @updated_at,
-      ready_at = @ready_at, stopped_at = @stopped_at
+      ready_at = @ready_at, stopped_at = @stopped_at, renewed_at = @renewed_at
     WHERE id = @id
   `),
     setLogStmt: db.prepare('UPDATE pr_environments SET log_tail = ?, updated_at = ? WHERE id = ?'),
@@ -267,7 +312,13 @@ export function createPrEnvironmentStore(db: Database.Database): PrEnvironmentSt
     listUnsettled() {
       return st().listUnsettledStmt.all() as PrEnvironmentRow[];
     },
-    save(key, prev, next, now) {
+    listForSweep() {
+      return st().listForSweepStmt.all() as PrEnvironmentRow[];
+    },
+    recordHit(id, at) {
+      st().setHitStmt.run(at, id);
+    },
+    save(key, prev, next, now, opts) {
       const rebuilt = prev ? next.generation !== prev.generation : true;
       const row: PrEnvironmentRow = {
         id: prev?.id ?? uuidv4(),
@@ -297,6 +348,12 @@ export function createPrEnvironmentStore(db: Database.Database): PrEnvironmentSt
               : (prev?.ready_at ?? null),
         stopped_at:
           next.status !== 'stopped' ? null : prev?.status === 'stopped' ? prev.stopped_at : now,
+        // Written only by recordHit; carried here so the insert has a value.
+        last_hit_at: prev?.last_hit_at ?? null,
+        renewed_at:
+          !prev || opts?.renew || prev.head_sha !== next.headSha
+            ? now
+            : (prev.renewed_at ?? prev.created_at),
       };
       if (prev) st().updateStmt.run(row);
       else st().insertStmt.run(row);
@@ -432,6 +489,12 @@ export interface PrEnvironmentServiceDeps {
    * and swallowed; the lifecycle never waits on this.
    */
   onReady?: (project: Project, env: PrEnvironmentDto) => void | Promise<void>;
+  /**
+   * Whether a request to a sleeping environment can wake it: true when the
+   * wildcard ingress (which records hits and wakes) serves environment URLs.
+   * When false, idle sleep is not enforced. Defaults to true.
+   */
+  wakeOnRequest?: () => boolean;
   /** Defaults to the registered process-wide runtime. */
   getRuntime?: () => PrEnvironmentRuntime | null;
   now?: () => number;
@@ -463,6 +526,8 @@ export type PrEnvironmentStartResult =
       reason: 'not_found' | 'not_open' | 'no_preview_config' | 'unresolved_head';
       error: string;
     };
+
+export type PrEnvironmentWakeResult = 'waking' | 'expired' | 'not_sleeping' | 'unavailable';
 
 export interface PrHead {
   headSha: string;
@@ -502,6 +567,23 @@ export interface PrEnvironmentService {
     readState: () => Promise<PrAuthoritativeState>,
   ): Promise<PrEnvironmentStartResult>;
   stop(project: Project, pr: PrIdentity): Promise<PrEnvironmentDto | null>;
+  /**
+   * A request reached the environment through the ingress. Recorded for the
+   * idle TTL, at most once per {@link PR_ENVIRONMENT_HIT_THROTTLE_MS}.
+   */
+  recordHit(projectId: string, pr: PrIdentity): void;
+  /**
+   * Wake a sleeping (`idle`) environment: rebuild it at the PR's current
+   * head, subject to the project cap. `expired` when it went stale meanwhile
+   * (it is marked so and stays down); `not_sleeping` when there is nothing to
+   * wake (already waking, running, or stopped for another reason).
+   */
+  wake(project: Project, pr: PrIdentity): Promise<PrEnvironmentWakeResult>;
+  /**
+   * Apply the cost controls: expire stale environments, put idle ones to
+   * sleep, and stop the least recently used ones over the project cap.
+   */
+  enforceLimits(): Promise<{ slept: number; expired: number }>;
   get(projectId: string, pr: PrIdentity): PrEnvironmentDto | null;
   list(projectId: string): PrEnvironmentDto[];
   /**
@@ -669,6 +751,8 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
         prev,
         t.next,
         now(),
+        // Someone asked for it: a stale PR gets a fresh max lifetime.
+        { renew: event.type === 'manual_start' },
       );
       broadcastRow(saved);
     }
@@ -777,7 +861,81 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
     if (!current || current.status !== 'queued' || current.generation !== row.generation) {
       return false;
     }
+    // No await between the re-read above, the cap decision, and dispatch: a
+    // concurrent admission that put this env to sleep is already visible
+    // here (status no longer queued), and the victims chosen now are stopped
+    // before anything else can run.
+    makeRoomFor(project, current);
     dispatchBuild(runtime, project, current);
+    return true;
+  }
+
+  /**
+   * Keep the project under its cap while `row` starts: put the least recently
+   * used live environments to sleep (as `idle`, so a request wakes them).
+   */
+  function makeRoomFor(project: Project, row: PrEnvironmentRow): void {
+    const { maxConcurrent } = limitsFor(project);
+    if (maxConcurrent <= 0) return;
+    const others = deps.store
+      .listForProject(project.id)
+      .filter((r) => r.id !== row.id && isLive(r));
+    for (const victim of selectEvictions(others.map(prEnvironmentUsage), maxConcurrent - 1)) {
+      const v = others.find((r) => r.id === victim.id)!;
+      logWarn(
+        `[pr-env] ${project.id}: at the cap of ${maxConcurrent}, putting ${v.source}#${v.pr_number} to sleep to start #${row.pr_number}`,
+      );
+      costStopNow(project, v, 'idle_stop');
+    }
+  }
+
+  /** Limits as enforced right now (idle sleep only with wake-capable ingress). */
+  function limitsFor(project: Project) {
+    return enforcedPrEnvironmentLimits(
+      resolvePrEnvironmentLimits(project),
+      deps.wakeOnRequest?.() ?? true,
+    );
+  }
+
+  /**
+   * Apply a cost-control stop to `row` right now. Callers decide from rows
+   * they read in the same synchronous step, so the decision and the state
+   * change cannot drift apart: nothing else runs in between. (The store is
+   * synchronous and every transition starts from the current row, which is
+   * also how runtime reports land.) In-flight work for the PR sees the new
+   * state when it next reads the row: a pending dispatch finds it no longer
+   * queued, a late ready report is ignored. Only the teardown waits, in the
+   * PR's queue, and it is idempotent: it runs if cleanup is still pending.
+   */
+  function costStopNow(
+    project: Project,
+    row: PrEnvironmentRow,
+    type: 'idle_stop' | 'expire',
+  ): boolean {
+    const t = transitionPrEnvironment(rowToState(row), { type });
+    if (!t.changed || !t.next) return false;
+    const saved = deps.store.save(
+      { projectId: project.id, source: row.source, prNumber: row.pr_number },
+      row,
+      t.next,
+      now(),
+    );
+    broadcastRow(saved);
+    if (t.effects.teardown) {
+      const pr = { source: row.source, prNumber: row.pr_number };
+      void serialize(keyOf(project.id, pr), async () => {
+        const current = deps.store.getById(saved.id);
+        if (current?.cleanup_pending === 1) {
+          await runEffects(project, null, current, { teardown: true, build: false });
+        }
+      }).catch((err: unknown) =>
+        logWarn(
+          `[pr-env] teardown after cost stop failed for ${project.id}#${row.pr_number}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        ),
+      );
+    }
     return true;
   }
 
@@ -945,6 +1103,8 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
     }, delay);
   }
 
+  const waking = new Set<string>();
+
   const self: PrEnvironmentService = {
     onPrOpened(project, pr) {
       return serialize(keyOf(project.id, pr), async () => dto(await applyOpen(project, pr)));
@@ -1012,6 +1172,95 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
         dto(await applyEvent(project, pr, { type: 'manual_stop' })),
       );
     },
+    recordHit(projectId, pr) {
+      const row = deps.store.get(projectId, pr.source, pr.prNumber);
+      if (!row) return;
+      const at = now();
+      if (row.last_hit_at != null && at - row.last_hit_at < PR_ENVIRONMENT_HIT_THROTTLE_MS) return;
+      deps.store.recordHit(row.id, at);
+    },
+    wake(project, pr) {
+      const key = keyOf(project.id, pr);
+      // Every request to a sleeping env asks; one wake in flight is enough.
+      if (waking.has(key)) return Promise.resolve('not_sleeping' as const);
+      waking.add(key);
+      return serialize(key, async (): Promise<PrEnvironmentWakeResult> => {
+        const asleep = (r: PrEnvironmentRow | null) =>
+          Boolean(r && r.status === 'stopped' && r.stop_reason === 'idle');
+        if (!asleep(deps.store.get(project.id, pr.source, pr.prNumber))) return 'not_sleeping';
+        // Decide from the PR as it is now, not the stored row: a push that
+        // has not been reconciled yet both moves the head and renews the
+        // lifetime, so it is recorded before expiry is judged.
+        let head: PrHead;
+        let stillWanted: StillWanted | undefined;
+        if (deps.readPrState) {
+          const res = await readStableOpenState(() => deps.readPrState!(project, pr), project, pr);
+          if (res.kind === 'closed') {
+            await applyClose(project, { ...pr, merged: res.merged });
+            return 'not_sleeping';
+          }
+          if (res.kind !== 'open') return 'unavailable';
+          if (res.config === 'absent') {
+            await applyEvent(project, pr, { type: 'config_removed', ...res.head });
+            return 'not_sleeping';
+          }
+          if (res.config === 'unresolved') return 'unavailable';
+          head = res.head;
+          stillWanted = res.stillWanted;
+        } else {
+          const r = deps.store.get(project.id, pr.source, pr.prNumber)!;
+          head = { headSha: r.head_sha, headBranch: r.head_branch };
+        }
+        // A sleeping env only tracks a new head (and renews) on pr_open.
+        await applyEvent(project, pr, { type: 'pr_open', ...head });
+        const row = deps.store.get(project.id, pr.source, pr.prNumber);
+        if (!row || !asleep(row)) return 'not_sleeping';
+        if (isExpired(prEnvironmentUsage(row), limitsFor(project), now())) {
+          await applyEvent(project, pr, { type: 'expire' });
+          return 'expired';
+        }
+        const woke = await applyEvent(project, pr, { type: 'wake', ...head }, stillWanted);
+        await ensureDispatched(project, woke, stillWanted);
+        return 'waking';
+      }).finally(() => waking.delete(key));
+    },
+    async enforceLimits() {
+      // Synchronous from read to write: each project's plan is made from the
+      // rows as they are and applied before anything else can change them.
+      const totals = { slept: 0, expired: 0 };
+      const byProject = new Map<string, PrEnvironmentRow[]>();
+      for (const row of deps.store.listForSweep()) {
+        const list = byProject.get(row.project_id) ?? [];
+        list.push(row);
+        byProject.set(row.project_id, list);
+      }
+      for (const [projectId, rows] of byProject) {
+        const project = deps.findProject?.(projectId);
+        if (!project) continue;
+        const byId = new Map(rows.map((r) => [r.id, r]));
+        const plan = planPrEnvironmentSweep(
+          rows.map(prEnvironmentUsage),
+          limitsFor(project),
+          now(),
+        );
+        for (const action of plan) {
+          const r = byId.get(action.id)!;
+          try {
+            if (costStopNow(project, r, action.action === 'expire' ? 'expire' : 'idle_stop')) {
+              if (action.action === 'expire') totals.expired += 1;
+              else totals.slept += 1;
+            }
+          } catch (err: unknown) {
+            logWarn(
+              `[pr-env] cost-control stop failed for ${projectId}#${r.pr_number}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        }
+      }
+      return totals;
+    },
     get(projectId, pr) {
       return dto(deps.store.get(projectId, pr.source, pr.prNumber));
     },
@@ -1050,6 +1299,7 @@ export function createPrEnvironmentService(deps: PrEnvironmentServiceDeps): PrEn
         }
       }
       await self.recoverPending();
+      await self.enforceLimits();
       await reannounceReady();
     },
     async recoverPending() {
@@ -1183,6 +1433,18 @@ export function createOrgScopedPrEnvironmentService<S>(opts: {
     reconcile: (project, pr, readState) => pin().reconcile(project, pr, readState),
     start: (project, pr, readState) => pin().start(project, pr, readState),
     stop: (project, pr) => pin().stop(project, pr),
+    recordHit: (projectId, pr) => pin().recordHit(projectId, pr),
+    wake: (project, pr) => pin().wake(project, pr),
+    async enforceLimits() {
+      pin();
+      const totals = { slept: 0, expired: 0 };
+      for (const entry of pinned.values()) {
+        const t = await entry.enforceLimits();
+        totals.slept += t.slept;
+        totals.expired += t.expired;
+      }
+      return totals;
+    },
     get: (projectId, pr) => pin().get(projectId, pr),
     list: (projectId) => pin().list(projectId),
     async catchUp() {
