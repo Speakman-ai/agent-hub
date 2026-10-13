@@ -249,6 +249,28 @@ describe('message pagination', () => {
     expect(tail.body.hasMore).toBe(false);
   });
 
+  it('looks up one message for a link, including deleted ones, only where visible', async () => {
+    const ch = await makeChannel(alice, { name: 'secret', isPrivate: true, memberUserIds: [bob] });
+    await post(alice, ch.id, 'first');
+    const msg = (await post(bob, ch.id, 'second')).body.message;
+    await request(as({ userId: bob }))
+      .delete(`/api/chat/messages/${msg.id}`)
+      .expect(200);
+
+    const found = await request(as({ userId: alice }))
+      .get(`/api/chat/messages/${msg.id}`)
+      .expect(200);
+    expect(found.body.message).toMatchObject({ id: msg.id, channelId: ch.id, seq: 2 });
+    expect(found.body.message.deletedAt).toBeTruthy();
+
+    await request(as({ userId: carol }))
+      .get(`/api/chat/messages/${msg.id}`)
+      .expect(404);
+    await request(as({ userId: alice }))
+      .get('/api/chat/messages/nope')
+      .expect(404);
+  });
+
   it('400s on bad paging input', async () => {
     const ch = await makeChannel(alice, { name: 'p' });
     const url = `/api/chat/channels/${ch.id}/messages`;

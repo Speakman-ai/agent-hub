@@ -468,6 +468,21 @@ registerPath({
 });
 
 registerPath({
+  method: 'get',
+  path: '/api/chat/messages/{messageId}',
+  tags: [TAG],
+  summary: 'Look up one message',
+  description:
+    'Resolves a message link to its channel and seq. Deleted messages are returned with `deletedAt` set, since they keep their place in the conversation.',
+  request: { params: messageParams },
+  responses: {
+    200: { description: 'The message.', content: jsonContent(messageEnvelope) },
+    404: errorResponse('Message not found, or its channel is not visible to the caller.'),
+    ...common,
+  },
+});
+
+registerPath({
   method: 'patch',
   path: '/api/chat/messages/{messageId}',
   tags: [TAG],

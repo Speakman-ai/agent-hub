@@ -1204,6 +1204,7 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ body }),
       }),
+    message: (messageId: string) => fetchJSON(`/chat/messages/${encodeURIComponent(messageId)}`),
     remove: (messageId: string) =>
       fetchJSON(`/chat/messages/${encodeURIComponent(messageId)}`, { method: 'DELETE' }),
     markRead: (channelId: string, seq?: number) =>

@@ -9,6 +9,7 @@ import {
 } from '../utils/chatPaneSide';
 import HubChatPage from './HubChatPage';
 import type { HubChatRefOpenHandler } from './HubChatRefs';
+import type { SessionWire } from '@shared/types';
 
 export type { ChatPaneSide } from '../utils/chatPaneSide';
 
@@ -23,12 +24,15 @@ export default function ChatPane({
   hubUnread = 0,
   googleUnread = 0,
   onOpenRef,
+  onSessionStarted,
 }: {
   google?: ReactNode;
   hubUnread?: number;
   googleUnread?: number;
   /** Opens the card, session, PR or ticket behind a clicked chat chip. */
   onOpenRef?: HubChatRefOpenHandler;
+  /** Opens the session a message's Send to agent started. */
+  onSessionStarted?: (session: SessionWire) => void;
 }) {
   const googleAvailable = google !== undefined && google !== null;
   const chosen = useChatPaneSide();
@@ -79,7 +83,11 @@ export default function ChatPane({
           </div>
         </div>
       )}
-      {side === 'hub' || !googleAvailable ? <HubChatPage onOpenRef={onOpenRef} /> : google}
+      {side === 'hub' || !googleAvailable ? (
+        <HubChatPage onOpenRef={onOpenRef} onSessionStarted={onSessionStarted} />
+      ) : (
+        google
+      )}
     </div>
   );
 }

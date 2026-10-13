@@ -178,7 +178,7 @@ export const KanbanCardComponent = registerComponent(
       }),
       source_type: CardSourceType.nullable().optional().openapi({
         description:
-          'Capture provenance (spec CAPTURE-PROVENANCE): the origin this card was captured from. `todo` means it was promoted from a personal todo; `email`/`calendar` a direct dashboard capture; `manual`/null a card with no tracked origin.',
+          'Capture provenance (spec CAPTURE-PROVENANCE): the origin this card was captured from. `todo` means it was promoted from a personal todo; `email`/`calendar`/`chat` a direct dashboard capture; `hub_chat` an Agent Hub chat message (source_meta carries channelId/messageId); `manual`/null a card with no tracked origin.',
       }),
       source_id: z.string().nullable().optional().openapi({
         description:

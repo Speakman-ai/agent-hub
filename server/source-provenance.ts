@@ -14,6 +14,7 @@
  *       - `email`    captured from a Gmail message
  *       - `calendar` captured from a Calendar event
  *       - `chat`     captured from a Google Chat message
+ *       - `hub_chat` (cards only) captured from an Agent Hub chat message
  *       - `todo`     (cards only) promoted from a personal todo
  *       - `log_issue` (cards only) created from a grouped application error
  *     A todo can never originate from another todo, so the todo surface uses the
@@ -31,6 +32,7 @@ export const CARD_SOURCE_TYPES = [
   'email',
   'calendar',
   'chat',
+  'hub_chat',
   'todo',
   'log_issue',
 ] as const;

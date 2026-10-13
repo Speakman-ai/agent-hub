@@ -32,6 +32,12 @@ export interface HubChatSessionState {
   pendingSends: ReadonlySet<string>;
   sendErrors: Readonly<Record<string, string>>;
   editing: HubChatEditState | null;
+  /**
+   * A message a link asked to show (Copy link, a card's origin). The page
+   * opens the channel, pages back until the message is loaded, scrolls to it
+   * and clears this.
+   */
+  focus: { channelId: string; messageId: string | null } | null;
 }
 
 const INITIAL: HubChatSessionState = {
@@ -41,6 +47,7 @@ const INITIAL: HubChatSessionState = {
   pendingSends: new Set(),
   sendErrors: {},
   editing: null,
+  focus: null,
 };
 
 let state: HubChatSessionState = INITIAL;
@@ -72,6 +79,11 @@ function subscribe(listener: () => void): () => void {
 
 export function useHubChatSession(): HubChatSessionState {
   return useSyncExternalStore(subscribe, getHubChatSession, getHubChatSession);
+}
+
+/** Asks the page to open a channel and show one of its messages. */
+export function focusHubChatMessage(channelId: string, messageId: string | null): void {
+  updateHubChatSession((s) => ({ ...s, selectedId: channelId, focus: { channelId, messageId } }));
 }
 
 /** Clears a channel's draft only if it still holds the text that was sent. */

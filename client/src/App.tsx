@@ -124,7 +124,11 @@ import { getOpenChatSpace, requestOpenChatSpace } from './utils/googleChatNotifi
 import { useHubChatUnread } from './hooks/useHubChatUnread';
 import { combinedChatBadge } from './utils/hubChatUnread';
 import { effectiveChatPaneSide, getChatPaneSide, setChatPaneSide } from './utils/chatPaneSide';
-import { getHubChatSession, updateHubChatSession } from './utils/hubChatSession';
+import {
+  focusHubChatMessage,
+  getHubChatSession,
+  updateHubChatSession,
+} from './utils/hubChatSession';
 import DeploymentsPage from './components/DeploymentsPage';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
@@ -256,7 +260,12 @@ import {
   shouldNotifyForAwaitingInput,
 } from './utils/awaitingInputState';
 import { getDefaultShortcuts } from './utils/shortcuts';
-import { buildNavigationHash, getInitialNavigation, parseNavigationPath } from './utils/navigation';
+import {
+  buildNavigationHash,
+  consumeChatFocusRoute,
+  getInitialNavigation,
+  parseNavigationPath,
+} from './utils/navigation';
 import { isSessionOwnedByOtherUser } from './utils/sessionNotificationOwnership';
 import {
   firstEngineWithAuthenticatedModels,
@@ -1048,6 +1057,11 @@ export default function App({ initialView }: any = {}) {
       const pane = parseHubPane(route?.hubPane || hubPaneFromLegacyView(view));
       setHubPane(pane);
       setHubMobileTab(pane);
+      if (pane === 'chat' && route?.chatChannelId) {
+        setChatPaneSide('hub');
+        focusHubChatMessage(route.chatChannelId, route.chatMessageId || null);
+        consumeChatFocusRoute();
+      }
     }
     if (view === 'wiki') setWikiProjectId(route?.projectId || null);
     if (view === 'notes') setNotesProjectId(route?.projectId || null);
@@ -1071,6 +1085,15 @@ export default function App({ initialView }: any = {}) {
     if (view === 'design') setActiveDesignId(route?.designId || null);
     setSidebarOpen(false);
   }, []);
+
+  // A Hub Chat message link opened in a fresh tab.
+  useEffect(() => {
+    const route = initialNavigationRef.current;
+    if (initialView || route?.hubPane !== 'chat' || !route?.chatChannelId) return;
+    setChatPaneSide('hub');
+    focusHubChatMessage(route.chatChannelId, route.chatMessageId || null);
+    consumeChatFocusRoute();
+  }, [initialView]);
 
   useEffect(() => {
     if (initialView) return;
@@ -7318,6 +7341,7 @@ export default function App({ initialView }: any = {}) {
                     <ChatPane
                       hubUnread={hubChatUnread.badge}
                       googleUnread={googleChatBadge}
+                      onSessionStarted={handleOpenCreatedSession}
                       onOpenRef={(ref) => {
                         if (!ref.visible) return;
                         if (ref.kind === 'card' && ref.projectId) {

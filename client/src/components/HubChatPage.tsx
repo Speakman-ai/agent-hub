@@ -3,22 +3,40 @@ import {
   AlertCircle,
   BellOff,
   Bot,
+  Check,
   Compass,
+  Link2,
   Loader2,
+  MessageSquarePlus,
   Lock,
   Pencil,
   Plus,
   Send,
   Settings,
   Sparkles,
+  Ticket,
   Trash2,
 } from 'lucide-react';
+import type { SessionWire } from '@shared/types';
+import type { CaptureCardDraft } from '@shared/utils/captureCard';
+import {
+  buildHubChatCardDraft,
+  buildHubChatSessionSeed,
+  hubChatMessageHash,
+  type HubChatCaptureInput,
+} from '@shared/utils/hubChatCapture';
+import StartSessionModal from './StartSessionModal';
+import CaptureToTicketModal from './CaptureToTicketModal';
 import { api } from '../utils/api';
 import { isSubmitEnter } from '../utils/keyboard';
 import { formatDateTime, formatTime } from '../utils/time';
 import { avatarInitials } from '../utils/googleChatLayout';
 import { HubChatMentionInput, HubChatMessageBody, type HubChatRefOpenHandler } from './HubChatRefs';
-import { decodeToComposer, encodeComposerMentions } from '@shared/utils/hubChatRefs';
+import {
+  decodeToComposer,
+  encodeComposerMentions,
+  refsToPlainText,
+} from '@shared/utils/hubChatRefs';
 import { locateChatMarkdownCode } from '../utils/hubChatMarkdown';
 import {
   clearSentDraft,
@@ -27,6 +45,7 @@ import {
   useHubChatSession,
   nextAttempt,
   getHubChatSession,
+  focusHubChatMessage,
   type HubChatEditState,
 } from '../utils/hubChatSession';
 import {
@@ -59,6 +78,45 @@ import {
 } from '../utils/hubChat';
 
 const PAGE = 50;
+const TOOL_BUTTON =
+  'inline-flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-700 hover:text-white';
+/** Page size when loading history back to a linked message (the server's max). */
+const SEEK_PAGE = 100;
+/**
+ * Pages one step of a link may load before asking the user to continue, so a
+ * link thousands of messages back cannot silently fetch the whole history.
+ */
+const SEEK_PAGES_PER_STEP = 10;
+const LINK_GONE = 'The linked message is no longer in this conversation.';
+
+/** Absolute URL that reopens a message in the Hub Chat pane. */
+export function hubChatMessageUrl(channelId: string, messageId: string): string | null {
+  const hash = hubChatMessageHash(channelId, messageId);
+  if (!hash || typeof window === 'undefined') return hash;
+  return `${window.location.origin}${window.location.pathname}${hash}`;
+}
+
+/** What Send to agent / Create ticket need from the picked messages. Exported for tests. */
+export function hubChatCaptureInput(
+  channelId: string,
+  channelName: string | null,
+  picked: HubChatMessage[],
+  usernames: ReadonlyMap<string, string>,
+): HubChatCaptureInput {
+  const first = picked[0];
+  return {
+    channelId,
+    channelLabel: channelName,
+    link: first ? hubChatMessageUrl(channelId, first.id) : null,
+    messages: picked.map((m) => ({
+      id: m.id,
+      sender: authorLabel(m, usernames),
+      createdAt: formatDateTime(m.createdAt),
+      body: m.body,
+      plainText: refsToPlainText(m.body, locateChatMarkdownCode),
+    })),
+  };
+}
 /** Reconnect catch-up pages forward this many times, then reloads the latest page. */
 const CATCHUP_PAGE = 100;
 const MAX_CATCHUP_PAGES = 10;
@@ -124,7 +182,14 @@ function emptyView(channelId: string, dividerSeq: number | null, generation: num
 
 type DialogKind = 'channel' | 'dm' | 'browse' | 'settings' | null;
 
-export default function HubChatPage({ onOpenRef }: { onOpenRef?: HubChatRefOpenHandler } = {}) {
+export default function HubChatPage({
+  onOpenRef,
+  onSessionStarted,
+}: {
+  onOpenRef?: HubChatRefOpenHandler;
+  /** Called with the session Send to agent started, so the app can open it. */
+  onSessionStarted?: (session: SessionWire) => void;
+} = {}) {
   // Channel list, open view and viewer id each live in a ref that every
   // write updates synchronously; React state only mirrors the ref for
   // rendering. Writes are applied to the latest value, never to a snapshot
@@ -160,7 +225,7 @@ export default function HubChatPage({ onOpenRef }: { onOpenRef?: HubChatRefOpenH
   }, []);
   // Per-channel drafts, sends and the open edit outlive this page (see
   // hubChatSession.ts), so late responses and remounts never lose user input.
-  const { selectedId, drafts, draftMentions, pendingSends, sendErrors, editing } =
+  const { selectedId, drafts, draftMentions, pendingSends, sendErrors, editing, focus } =
     useHubChatSession();
   const setSelectedId = (id: string | null) =>
     updateHubChatSession((s) => (s.selectedId === id ? s : { ...s, selectedId: id }));
@@ -177,6 +242,15 @@ export default function HubChatPage({ onOpenRef }: { onOpenRef?: HubChatRefOpenH
       return { ...s, sendErrors: error ? { ...rest, [channelId]: error } : rest };
     });
   const [dialog, setDialog] = useState<DialogKind>(null);
+  // Messages ticked for a bulk Send to agent / Create ticket, by id. Scoped to
+  // the open channel so one dispatch never mixes channels.
+  const [picked, setPicked] = useState<{ channelId: string; ids: ReadonlySet<string> } | null>(
+    null,
+  );
+  const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
+  const [dispatch, setDispatch] = useState<{ label: string; seed: string } | null>(null);
+  const [copied, setCopied] = useState<{ id: string; ok: boolean } | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
 
   // Work that outlives the page (a history load, reconnect catch-up) must
   // not act on a view nobody sees. Unmounting drops the current view from the
@@ -798,6 +872,247 @@ export default function HubChatPage({ onOpenRef }: { onOpenRef?: HubChatRefOpenH
     [view, viewerUserId],
   );
 
+  // A message link (Copy link, a card's origin) asked to show a message. The
+  // effect opens its channel; once that is loaded, seekMessage looks the
+  // message up to learn its seq, then loads exactly the history between the
+  // loaded window and that seq. A missing message is reported as such, never
+  // inferred from how far back the search went.
+  //
+  // Each link gets a token. Its async work (lookup, history pages, Keep
+  // loading) acts only while the token is current and the view is the one it
+  // started on; a newer link, Stop, or opening another channel supersedes it,
+  // so the latest navigation always wins.
+  const focusFetchRef = useRef<string | null>(null);
+  const linkRef = useRef<{ token: number; focus: unknown }>({ token: 0, focus: null });
+  /** A link whose message is further back than one step loads; offers Keep loading. */
+  const [seekPending, setSeekPending] = useState<{
+    token: number;
+    generation: number;
+    messageId: string;
+    seq: number;
+  } | null>(null);
+  const clearFocus = () => updateHubChatSession((st) => (st.focus ? { ...st, focus: null } : st));
+  const supersedeLink = () => {
+    linkRef.current = { token: linkRef.current.token + 1, focus: linkRef.current.focus };
+    setSeekPending(null);
+    return linkRef.current.token;
+  };
+  const linkLive = (token: number, generation: number) =>
+    linkRef.current.token === token && viewRef.current?.generation === generation;
+
+  /**
+   * Loads older pages until the window reaches `seq` or the step's page
+   * allowance is used. Returns whether the message is now loaded, or null if
+   * the link was superseded or a page failed.
+   */
+  const loadBackTo = async (
+    token: number,
+    generation: number,
+    seq: number,
+  ): Promise<boolean | null> => {
+    for (let page = 0; page < SEEK_PAGES_PER_STEP; page++) {
+      if (!linkLive(token, generation)) return null;
+      const v = viewRef.current as View;
+      const head = v.messages[0]?.seq;
+      if (head === undefined || head <= seq || !v.hasOlder) return true;
+      updateView(generation, (cur) => ({ ...cur, loadingOlder: true }));
+      try {
+        const res = await api.hubChat.messages(v.channelId, { before: head, limit: SEEK_PAGE });
+        // The page is contiguous history, so it is kept even when the link
+        // was superseded meanwhile; only the link's own follow-up stops.
+        updateView(generation, (cur) => ({
+          ...cur,
+          ...mergeIntoWindow(cur, res.messages ?? [], true),
+          hasOlder: !!res.hasMore,
+          loadingOlder: false,
+        }));
+      } catch (err) {
+        updateView(generation, (cur) => ({
+          ...cur,
+          loadingOlder: false,
+          ...(linkLive(token, generation) ? { error: errorText(err) } : {}),
+        }));
+        return null;
+      }
+    }
+    if (!linkLive(token, generation)) return null;
+    const v = viewRef.current as View;
+    const head = v.messages[0]?.seq;
+    return head === undefined || head <= seq || !v.hasOlder;
+  };
+
+  const finishSeek = async (token: number, generation: number, messageId: string, seq: number) => {
+    const done = await loadBackTo(token, generation, seq);
+    if (done === null || !linkLive(token, generation)) return;
+    if (!done) {
+      setSeekPending({ token, generation, messageId, seq });
+      return;
+    }
+    if ((viewRef.current as View).messages.some((m) => m.id === messageId)) {
+      setHighlightId(messageId);
+    } else {
+      updateView(generation, (cur) => ({ ...cur, error: LINK_GONE }));
+    }
+  };
+
+  const seekMessage = async (
+    token: number,
+    channelId: string,
+    generation: number,
+    messageId: string,
+  ) => {
+    let found: HubChatMessage | undefined;
+    try {
+      const res = await api.hubChat.message(messageId);
+      found = res?.message as HubChatMessage | undefined;
+    } catch (err) {
+      if (!linkLive(token, generation)) return;
+      const status = (err as { status?: number })?.status;
+      updateView(generation, (cur) => ({
+        ...cur,
+        error: status === 404 ? LINK_GONE : `Could not load the linked message: ${errorText(err)}`,
+      }));
+      return;
+    }
+    if (!linkLive(token, generation)) return;
+    if (!found) {
+      updateView(generation, (cur) => ({ ...cur, error: LINK_GONE }));
+      return;
+    }
+    if (found.channelId !== channelId) {
+      // The link named the wrong channel; follow the message.
+      focusHubChatMessage(found.channelId, messageId);
+      return;
+    }
+    await finishSeek(token, generation, messageId, found.seq);
+  };
+
+  const keepSeeking = () => {
+    const pending = seekPending;
+    if (!pending || !linkLive(pending.token, pending.generation)) return;
+    setSeekPending(null);
+    void finishSeek(pending.token, pending.generation, pending.messageId, pending.seq);
+  };
+
+  useEffect(() => {
+    if (!focus || loading) return;
+    // A new link supersedes whatever an earlier one is still doing, even
+    // before its own channel has loaded.
+    if (linkRef.current.focus !== focus) {
+      supersedeLink();
+      linkRef.current = { ...linkRef.current, focus };
+    }
+    const { channelId, messageId } = focus;
+    const v = viewRef.current;
+    if (!v || v.channelId !== channelId) {
+      const known = channelsRef.current.find((c) => c.id === channelId);
+      if (known) {
+        openChannel(channelId, known);
+        return;
+      }
+      // Not in the rail: a public channel the viewer has not joined, or one
+      // they cannot see (the server answers 404 and the link does nothing).
+      if (focusFetchRef.current === channelId) return;
+      focusFetchRef.current = channelId;
+      const issuedAt = clockNow();
+      const isThisLink = () => getHubChatSession().focus === focus;
+      api.hubChat
+        .channel(channelId)
+        .then((res: { channel?: HubChatChannel }) => {
+          if (!isThisLink()) return;
+          const adopted = res?.channel ? ingestChannel(res.channel, issuedAt, ['presence']) : null;
+          if (!adopted) {
+            clearFocus();
+            return;
+          }
+          openChannel(adopted.id, adopted);
+        })
+        .catch((err: unknown) => {
+          if (!isThisLink()) return;
+          clearFocus();
+          setLoadError(`Could not open the linked conversation: ${errorText(err)}`);
+        })
+        .finally(() => {
+          if (focusFetchRef.current === channelId) focusFetchRef.current = null;
+        });
+      return;
+    }
+    if (!v.loaded) return;
+    // Handled once; clearing the store lets the same link be opened again.
+    const token = linkRef.current.token;
+    clearFocus();
+    if (!messageId) return;
+    if (v.messages.some((m) => m.id === messageId)) {
+      setHighlightId(messageId);
+      return;
+    }
+    void seekMessage(token, channelId, v.generation, messageId);
+    // seekMessage is recreated every render and reads the view through refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus, loading, view, channels, openChannel, ingestChannel, clockNow]);
+
+  useEffect(() => {
+    if (!highlightId) return;
+    const el =
+      typeof document === 'undefined'
+        ? null
+        : document.querySelector(`[data-message-id="${CSS.escape(highlightId)}"]`);
+    el?.scrollIntoView?.({ block: 'center' });
+    const timer = setTimeout(() => setHighlightId(null), 4000);
+    return () => clearTimeout(timer);
+  }, [highlightId]);
+
+  const pickedIds: ReadonlySet<string> =
+    picked && picked.channelId === selectedId ? picked.ids : new Set<string>();
+  const pickedMessages = (view?.messages ?? []).filter((m) => pickedIds.has(m.id) && !m.deletedAt);
+  const togglePicked = (messageId: string) => {
+    if (!selectedId) return;
+    const next = new Set(pickedIds);
+    if (next.has(messageId)) next.delete(messageId);
+    else next.add(messageId);
+    setPicked(next.size ? { channelId: selectedId, ids: next } : null);
+  };
+  const captureFor = (chosen: HubChatMessage[]) =>
+    selected
+      ? hubChatCaptureInput(
+          selected.id,
+          channelLabel(selected, usernames, viewerUserId),
+          chosen,
+          usernames,
+        )
+      : null;
+  const openSendToAgent = (chosen: HubChatMessage[]) => {
+    const input = captureFor(chosen);
+    if (!input || !chosen.length) return;
+    const firstLine = refsToPlainText(chosen[0].body, locateChatMarkdownCode).split('\n')[0].trim();
+    const short = firstLine.length > 60 ? `${firstLine.slice(0, 59)}…` : firstLine;
+    setDispatch({
+      label:
+        chosen.length === 1
+          ? `Chat: ${short || input.channelLabel || 'message'}`
+          : `Chat: ${chosen.length} messages${input.channelLabel ? ` in ${input.channelLabel}` : ''}`,
+      seed: buildHubChatSessionSeed(input),
+    });
+  };
+  const openCreateTicket = (chosen: HubChatMessage[]) => {
+    const input = captureFor(chosen);
+    if (input && chosen.length) setTicketDraft(buildHubChatCardDraft(input));
+  };
+  const copyLink = async (message: HubChatMessage) => {
+    const url = hubChatMessageUrl(message.channelId, message.id);
+    let ok = false;
+    try {
+      if (url && navigator.clipboard) {
+        await navigator.clipboard.writeText(url);
+        ok = true;
+      }
+    } catch {
+      ok = false;
+    }
+    setCopied({ id: message.id, ok });
+    setTimeout(() => setCopied((cur) => (cur?.id === message.id ? null : cur)), 2000);
+  };
+
   const renderChannelRow = (c: HubChatChannel) => {
     const { count, bold } = railUnread(c);
     const muted = isChannelMuted(c);
@@ -977,7 +1292,68 @@ export default function HubChatPage({ onOpenRef }: { onOpenRef?: HubChatRefOpenH
               </button>
             </div>
 
+            {pickedMessages.length > 0 && (
+              <div
+                className="flex shrink-0 flex-wrap items-center gap-2 border-b border-gray-800 bg-gray-900 px-4 py-2 text-xs text-gray-300"
+                data-testid="hub-chat-selection-bar"
+              >
+                <span className="font-medium text-gray-200">{pickedMessages.length} selected</span>
+                <button
+                  type="button"
+                  onClick={() => openSendToAgent(pickedMessages)}
+                  title="Start one agent session with all selected messages"
+                  className="inline-flex items-center gap-1 rounded border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-blue-200 hover:bg-blue-500/20"
+                >
+                  <MessageSquarePlus size={13} />
+                  Send selected to agent
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openCreateTicket(pickedMessages)}
+                  title="Create one kanban ticket from all selected messages"
+                  className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 hover:bg-gray-800"
+                >
+                  <Ticket size={13} />
+                  Ticket from selected
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPicked(null)}
+                  className="ml-auto rounded px-2 py-1 text-gray-400 hover:bg-gray-800 hover:text-white"
+                >
+                  Clear selection
+                </button>
+              </div>
+            )}
+
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {seekPending && view && seekPending.generation === view.generation && (
+                <div
+                  data-testid="hub-chat-seek-pending"
+                  className="mb-3 flex items-center gap-2 rounded border border-gray-700 bg-gray-900 px-3 py-2 text-xs text-gray-300"
+                >
+                  <span className="flex-1">
+                    The linked message is{' '}
+                    {Math.max(1, (view.messages[0]?.seq ?? seekPending.seq) - seekPending.seq)}{' '}
+                    messages further back.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={keepSeeking}
+                    disabled={view.loadingOlder}
+                    className="rounded bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                  >
+                    Keep loading
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => supersedeLink()}
+                    className="rounded px-2 py-1 text-gray-400 hover:bg-gray-800 hover:text-white"
+                  >
+                    Stop
+                  </button>
+                </div>
+              )}
               {view?.error && view.loaded && (
                 <div className="mb-3 flex items-center gap-2 text-xs text-amber-300">
                   <AlertCircle size={14} className="shrink-0" />
@@ -1019,6 +1395,8 @@ export default function HubChatPage({ onOpenRef }: { onOpenRef?: HubChatRefOpenH
                       const deleted = !!message.deletedAt;
                       const isEditing = editing?.id === message.id;
                       const bot = message.authorKind !== 'user';
+                      const isPicked = pickedIds.has(message.id);
+                      const copyState = copied?.id === message.id ? copied : null;
                       return (
                         <Fragment key={message.id}>
                           {dayLabel && (
@@ -1045,12 +1423,34 @@ export default function HubChatPage({ onOpenRef }: { onOpenRef?: HubChatRefOpenH
                           )}
                           <li
                             data-testid="hub-chat-message"
+                            data-message-id={message.id}
                             data-own={own ? 'true' : undefined}
                             data-header={showHeader ? 'true' : undefined}
-                            className={`group relative flex gap-2 rounded-lg px-1 py-0.5 hover:bg-white/[0.02] ${
-                              own ? 'flex-row-reverse' : ''
-                            } ${showHeader ? 'mt-3' : ''}`}
+                            data-highlighted={highlightId === message.id ? 'true' : undefined}
+                            className={`group relative flex gap-2 rounded-lg px-1 py-0.5 ${
+                              highlightId === message.id
+                                ? 'bg-amber-500/15 ring-1 ring-amber-500/40'
+                                : isPicked
+                                  ? 'bg-blue-500/10'
+                                  : 'hover:bg-white/[0.02]'
+                            } ${own ? 'flex-row-reverse' : ''} ${showHeader ? 'mt-3' : ''}`}
                           >
+                            <div className="flex w-4 shrink-0 items-start pt-2">
+                              {!deleted && (
+                                <input
+                                  type="checkbox"
+                                  checked={isPicked}
+                                  onChange={() => togglePicked(message.id)}
+                                  aria-label={`Select message from ${own ? 'you' : label}`}
+                                  data-testid="hub-chat-message-select"
+                                  className={`h-3.5 w-3.5 cursor-pointer accent-blue-500 focus:opacity-100 group-hover:opacity-100 ${
+                                    isPicked || pickedIds.size > 0
+                                      ? ''
+                                      : '[@media(hover:hover)]:opacity-0'
+                                  }`}
+                                />
+                              )}
+                            </div>
                             {!own && (
                               <div className="w-8 shrink-0" aria-hidden="true">
                                 {showHeader &&
@@ -1177,40 +1577,94 @@ export default function HubChatPage({ onOpenRef }: { onOpenRef?: HubChatRefOpenH
                                 </span>
                               )}
                             </div>
-                            {own && !deleted && !isEditing && (
-                              <div className="flex items-start gap-1 pt-1 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100">
+                            {!deleted && !isEditing && (
+                              <div
+                                data-testid="hub-chat-message-actions"
+                                className={`flex items-start gap-0.5 pt-1 focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100 ${
+                                  copyState ? '' : '[@media(hover:hover)]:opacity-0'
+                                }`}
+                              >
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    const decoded = decodeToComposer(
-                                      message.body,
-                                      locateChatMarkdownCode,
-                                    );
-                                    setEditing({
-                                      id: message.id,
-                                      channelId: message.channelId,
-                                      text: decoded.text,
-                                      mentions: decoded.mentions,
-                                      saving: false,
-                                      error: null,
-                                      attempt: 0,
-                                    });
-                                  }}
-                                  aria-label="Edit message"
-                                  title="Edit"
-                                  className="inline-flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-700 hover:text-white"
+                                  onClick={() => openSendToAgent([message])}
+                                  aria-label="Send to agent"
+                                  title="Send to agent: start a session with this message as the task"
+                                  className={`${TOOL_BUTTON} text-blue-300`}
                                 >
-                                  <Pencil size={13} />
+                                  <MessageSquarePlus size={13} />
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => void deleteMessage(message)}
-                                  aria-label="Delete message"
-                                  title="Delete"
-                                  className="inline-flex h-7 w-7 items-center justify-center rounded-full text-gray-400 hover:bg-gray-700 hover:text-red-300"
+                                  onClick={() => openCreateTicket([message])}
+                                  aria-label="Create ticket"
+                                  title="Create a kanban ticket from this message"
+                                  className={TOOL_BUTTON}
                                 >
-                                  <Trash2 size={13} />
+                                  <Ticket size={13} />
                                 </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void copyLink(message)}
+                                  aria-label={
+                                    copyState
+                                      ? copyState.ok
+                                        ? 'Link copied'
+                                        : 'Could not copy link'
+                                      : 'Copy link'
+                                  }
+                                  title={
+                                    copyState
+                                      ? copyState.ok
+                                        ? 'Link copied'
+                                        : 'Could not copy link'
+                                      : 'Copy link to this message'
+                                  }
+                                  className={TOOL_BUTTON}
+                                >
+                                  {copyState?.ok ? (
+                                    <Check size={13} className="text-green-400" />
+                                  ) : copyState ? (
+                                    <AlertCircle size={13} className="text-red-300" />
+                                  ) : (
+                                    <Link2 size={13} />
+                                  )}
+                                </button>
+                                {own && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const decoded = decodeToComposer(
+                                          message.body,
+                                          locateChatMarkdownCode,
+                                        );
+                                        setEditing({
+                                          id: message.id,
+                                          channelId: message.channelId,
+                                          text: decoded.text,
+                                          mentions: decoded.mentions,
+                                          saving: false,
+                                          error: null,
+                                          attempt: 0,
+                                        });
+                                      }}
+                                      aria-label="Edit message"
+                                      title="Edit"
+                                      className={TOOL_BUTTON}
+                                    >
+                                      <Pencil size={13} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void deleteMessage(message)}
+                                      aria-label="Delete message"
+                                      title="Delete"
+                                      className={`${TOOL_BUTTON} hover:text-red-300`}
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </>
+                                )}
                               </div>
                             )}
                           </li>
@@ -1293,6 +1747,25 @@ export default function HubChatPage({ onOpenRef }: { onOpenRef?: HubChatRefOpenH
         )}
       </section>
 
+      {ticketDraft && (
+        <CaptureToTicketModal
+          draft={ticketDraft}
+          onClose={() => setTicketDraft(null)}
+          onCreated={() => setPicked(null)}
+        />
+      )}
+      {dispatch && (
+        <StartSessionModal
+          contextLabel={dispatch.label}
+          seedMessage={dispatch.seed}
+          defaultName={dispatch.label}
+          onClose={() => setDispatch(null)}
+          onStarted={(session) => {
+            setPicked(null);
+            onSessionStarted?.(session);
+          }}
+        />
+      )}
       {dialog === 'channel' && (
         <NewChannelDialog
           members={orgMembers}

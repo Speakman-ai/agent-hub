@@ -550,6 +550,20 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     res.status(201).json({ message: shapeMessage(message) });
   });
 
+  // Resolves a message link to its channel and seq, so a client can load the
+  // history up to it instead of guessing how far back it is.
+  router.get('/api/chat/messages/:messageId', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const msg = getMessage(String(req.params.messageId));
+    if (!msg) {
+      bad(res, 404, 'Message not found', 'message_not_found');
+      return;
+    }
+    if (!visibleChannel(caller, msg.channel_id, res)) return;
+    res.json({ message: shapeMessage(msg) });
+  });
+
   router.patch('/api/chat/messages/:messageId', (req: Request, res: Response) => {
     const caller = requireCaller(req, res);
     if (!caller) return;

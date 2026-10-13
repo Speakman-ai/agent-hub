@@ -2,6 +2,7 @@ import { afterEach, describe, it, expect } from 'vitest';
 import {
   DEFAULT_VIEW,
   buildNavigationHash,
+  consumeChatFocusRoute,
   getInitialNavigation,
   getInitialView,
   parseNavigationHash,
@@ -315,5 +316,31 @@ describe('path deep links', () => {
     window.history.replaceState(null, '', '/projects/p/pulls/306#/pulls/p?pr=99');
 
     expect(readNavigationStateFromLocation()?.prNumber).toBe(99);
+  });
+});
+
+describe('Hub Chat message links', () => {
+  it('reads the channel and message from a chat link', () => {
+    expect(parseNavigationHash('#/hub/chat?channel=gen&message=m1')).toMatchObject({
+      view: 'hub',
+      hubPane: 'chat',
+      chatChannelId: 'gen',
+      chatMessageId: 'm1',
+    });
+  });
+
+  it('ignores chat parameters on other panes', () => {
+    expect(parseNavigationHash('#/hub/mail?channel=gen')?.chatChannelId).toBeUndefined();
+  });
+
+  it('drops the one-shot parameters from the address bar without a history entry', () => {
+    window.history.replaceState(null, '', '/#/hub/chat?channel=gen&message=m1');
+    const length = window.history.length;
+    consumeChatFocusRoute();
+    expect(window.location.hash).toBe('#/hub/chat');
+    expect(window.history.length).toBe(length);
+    expect(buildNavigationHash({ view: 'hub', hubPane: 'chat', chatChannelId: 'gen' })).toBe(
+      '#/hub/chat',
+    );
   });
 });

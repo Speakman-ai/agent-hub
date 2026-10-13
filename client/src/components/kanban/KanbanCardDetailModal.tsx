@@ -8,7 +8,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { api } from '../../utils/api';
-import { cardOriginLabel, cardOriginDeepLink } from '@shared/utils/captureCard';
+import { cardOriginAppLink, cardOriginDeepLink, cardOriginLabel } from '@shared/utils/captureCard';
 import { hasUnresolvedBlockers } from '../../utils/blockers';
 import { MarkdownContent } from '../MarkdownRenderer';
 import ReplayPlayerModal from '../ReplayPlayerModal';
@@ -314,8 +314,23 @@ export default function KanbanCardDetailModal({
                       {(() => {
                         const label = cardOriginLabel(selectedCard);
                         const link = cardOriginDeepLink(selectedCard);
+                        const appLink = cardOriginAppLink(selectedCard);
                         const cls =
                           'inline-flex items-center gap-1 px-2 py-0.5 rounded border border-sky-800 bg-sky-900/30 text-sky-300 text-xs font-medium';
+                        // An in-app origin opens in place: the hash route
+                        // switches to the Hub Chat pane on that message.
+                        if (appLink) {
+                          return (
+                            <a
+                              href={appLink}
+                              data-testid="card-origin"
+                              className={`${cls} hover:bg-sky-900/50`}
+                            >
+                              {label}
+                              <MessageSquare size={11} />
+                            </a>
+                          );
+                        }
                         return link ? (
                           <a
                             href={link}

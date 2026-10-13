@@ -4,6 +4,7 @@
  */
 
 import type { CalendarEventLike } from './calendarEvents.js';
+import { hubChatMessageHash } from './hubChatCapture.js';
 import {
   buildCalendarTodoDraft,
   chatCaptureParts,
@@ -19,7 +20,8 @@ export type { CaptureSourceType, ChatCaptureInput, GmailCaptureInput };
 
 /** Capture triple stamped on a card by board create. */
 export interface CaptureCardSource {
-  sourceType: CaptureSourceType;
+  /** Cards also accept `hub_chat`, which has no todo counterpart. */
+  sourceType: CaptureSourceType | 'hub_chat';
   sourceId: string | null;
   sourceMeta: Record<string, unknown>;
 }
@@ -81,6 +83,8 @@ export function cardOriginLabel(card: CardOriginLike): string | null {
       return 'From calendar';
     case 'chat':
       return 'From Google Chat';
+    case 'hub_chat':
+      return 'From Agent Hub chat';
     default:
       return null;
   }
@@ -96,6 +100,15 @@ const DIRECT_CAPTURE_SOURCE_TYPES = new Set(['email', 'calendar', 'chat']);
 export function cardOriginDeepLink(card: CardOriginLike): string | null {
   if (!card.source_type || !DIRECT_CAPTURE_SOURCE_TYPES.has(card.source_type)) return null;
   return safeCaptureDeepLink(card.source_meta?.deepLink);
+}
+
+/**
+ * In-app hash route back to the origin, for origins that live inside Agent
+ * Hub (an Agent Hub chat message). Null for everything else.
+ */
+export function cardOriginAppLink(card: CardOriginLike): string | null {
+  if (card.source_type !== 'hub_chat') return null;
+  return hubChatMessageHash(card.source_meta?.channelId, card.source_meta?.messageId ?? null);
 }
 
 /**

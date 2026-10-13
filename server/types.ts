@@ -1214,7 +1214,7 @@ export interface KanbanCardRow {
    *  manual|email|calendar|todo (todo = promoted from a personal todo), NULL for
    *  cards with no tracked origin. `source_meta` is the raw JSON deep-link blob
    *  on the row; the API serializer parses it to an object. */
-  source_type?: 'manual' | 'email' | 'calendar' | 'chat' | 'todo' | 'log_issue' | null;
+  source_type?: 'manual' | 'email' | 'calendar' | 'chat' | 'hub_chat' | 'todo' | 'log_issue' | null;
   source_id?: string | null;
   source_meta?: string | null;
   pr_url: string | null;

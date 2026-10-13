@@ -41,6 +41,12 @@ export type NavigationState = {
   cardId?: string | null;
   /** Hub workspace pane when `view` is `hub`. */
   hubPane?: HubWorkspacePane | null;
+  /**
+   * Hub Chat pane only: a channel (and message) a link asked to open. Read
+   * once on navigation and never written back to the hash.
+   */
+  chatChannelId?: string | null;
+  chatMessageId?: string | null;
 };
 
 function cleanSegment(value: any) {
@@ -107,6 +113,9 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
   const explicitProject = cleanSegment(params.get('project'));
   if (explicitProject) projectId = explicitProject;
 
+  const chatChannelId =
+    view === 'hub' && hubPane === 'chat' ? cleanSegment(params.get('channel')) : null;
+
   return {
     view: view || DEFAULT_VIEW,
     projectId,
@@ -115,7 +124,25 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
     designId: cleanSegment(params.get('design')),
     ticketId: cleanSegment(params.get('ticket')),
     hubPane: view === 'hub' ? hubPane || DEFAULT_HUB_PANE : null,
+    ...(chatChannelId ? { chatChannelId, chatMessageId: cleanSegment(params.get('message')) } : {}),
   };
+}
+
+/**
+ * Drops the one-shot Hub Chat focus parameters from the address bar once
+ * they have been applied. Replacing (not pushing) keeps Back from landing on
+ * the link again, and a refresh from reopening a message the user moved on from.
+ */
+export function consumeChatFocusRoute(): void {
+  if (typeof window === 'undefined' || !window.history) return;
+  const route = parseNavigationHash(window.location.hash);
+  if (!route?.chatChannelId) return;
+  const hash = buildNavigationHash(route);
+  window.history.replaceState(
+    window.history.state,
+    '',
+    `${window.location.pathname}${window.location.search}${hash}`,
+  );
 }
 
 export function buildNavigationHash(state: NavigationState) {

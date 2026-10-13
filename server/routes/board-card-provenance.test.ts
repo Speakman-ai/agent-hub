@@ -90,6 +90,22 @@ describe('POST /board/cards — capture provenance', () => {
     expect(card.source_meta).toEqual({ kind: 'google-chat' });
   });
 
+  it('accepts an Agent Hub chat source ref that points back at the message', async () => {
+    const res = await post({
+      title: 'Provenance: from hub chat',
+      columnId,
+      source: {
+        sourceType: 'hub_chat',
+        sourceId: 'msg-1',
+        sourceMeta: { kind: 'hub-chat', channelId: 'chan-1', messageId: 'msg-1' },
+      },
+    }).expect(200);
+    const card = res.body as SerializedCard;
+    expect(card.source_type).toBe('hub_chat');
+    expect(card.source_id).toBe('msg-1');
+    expect(card.source_meta).toEqual({ kind: 'hub-chat', channelId: 'chan-1', messageId: 'msg-1' });
+  });
+
   it('leaves provenance null when no source ref is supplied', async () => {
     const res = await post({ title: 'Provenance: none', columnId }).expect(200);
     const card = res.body as SerializedCard;

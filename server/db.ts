@@ -825,7 +825,7 @@ function initDb(dataDir: string): void {
       -- with user_todos so a card can be traced back to the Gmail message /
       -- Calendar event / todo it was captured from. NULL for cards created
       -- without a tracked origin. source_meta is a JSON deep-link blob.
-      source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo','log_issue','chat')),
+      source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo','log_issue','chat','hub_chat')),
       source_id TEXT,
       source_meta TEXT,
       created_by TEXT,
@@ -2945,7 +2945,7 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT source_type FROM kanban_cards LIMIT 1').get();
   } catch {
     db.exec(
-      "ALTER TABLE kanban_cards ADD COLUMN source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo','log_issue','chat'))",
+      "ALTER TABLE kanban_cards ADD COLUMN source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo','log_issue','chat','hub_chat'))",
     );
   }
   try {
