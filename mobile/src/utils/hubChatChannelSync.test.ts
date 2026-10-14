@@ -226,3 +226,54 @@ describe('createChannelSync', () => {
     expect(resumedFrom).toBe(100);
   });
 });
+
+describe('loadBackTo (jump to a message)', () => {
+  it('loads older pages until the window reaches the seq', async () => {
+    const { api } = server(range(1, 1000));
+    const ctl = createChannelSync('c1', api, () => {});
+    await ctl.load();
+    expect(seqs(ctl)[0]).toBe(1000 - CHANNEL_PAGE + 1);
+    await expect(ctl.loadBackTo(700)).resolves.toBe(true);
+    const shown = seqs(ctl);
+    expect(shown[0]).toBeLessThanOrEqual(700);
+    // Still one contiguous run up to the tail.
+    expect(shown).toEqual(range(shown[0], 1000).map((m) => m.seq));
+  });
+
+  it('stops after its page allowance and reports the seq is not reached yet', async () => {
+    const { api } = server(range(1, 5000));
+    const ctl = createChannelSync('c1', api, () => {});
+    await ctl.load();
+    const before = api.messages.mock.calls.length;
+    await expect(ctl.loadBackTo(10, { maxPages: 2 })).resolves.toBe(false);
+    expect(api.messages.mock.calls.length - before).toBe(2);
+    await expect(ctl.loadBackTo(10, { maxPages: 100 })).resolves.toBe(true);
+    expect(seqs(ctl)[0]).toBe(1);
+  });
+
+  it('is done at once when the seq is already loaded or no history is left', async () => {
+    const { api } = server(range(1, 30));
+    const ctl = createChannelSync('c1', api, () => {});
+    await ctl.load();
+    const before = api.messages.mock.calls.length;
+    await expect(ctl.loadBackTo(5)).resolves.toBe(true);
+    expect(api.messages.mock.calls.length).toBe(before);
+  });
+
+  it('stops requesting pages once cancelled, and drops the page in flight', async () => {
+    const { api } = server(range(1, 2000));
+    const ctl = createChannelSync('c1', api, () => {});
+    await ctl.load();
+    const head = seqs(ctl)[0];
+    const page = deferred<ChannelPage>();
+    api.messages.mockImplementationOnce(() => page.promise);
+    let live = true;
+    const run = ctl.loadBackTo(10, { live: () => live });
+    await vi.waitFor(() => expect(api.messages).toHaveBeenCalledTimes(2));
+    live = false;
+    page.resolve({ messages: range(head - 100, head - 1), hasMore: true });
+    await expect(run).resolves.toBe(false);
+    expect(api.messages).toHaveBeenCalledTimes(2);
+    expect(seqs(ctl)[0]).toBe(head);
+  });
+});

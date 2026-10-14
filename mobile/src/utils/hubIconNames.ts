@@ -39,6 +39,7 @@ export const HUB_ICON_NAMES = [
   'Rocket',
   'ScanEye',
   'ScrollText',
+  'Search',
   'Server',
   'Settings',
   'ShieldAlert',

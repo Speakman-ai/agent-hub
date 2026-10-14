@@ -55,10 +55,22 @@ import { HubChatComposer, HubChatMessageBody } from '../components/HubChatRefs';
 import HubIcon from '../components/HubIcon';
 import HubChatTriggerCard from '../components/HubChatTriggerCard';
 import HubChatDigestSection from '../components/HubChatDigestSection';
+import HubChatSearch from '../components/HubChatSearch';
+import type { HubChatSearchResult } from '@shared/utils/hubChatSearch';
 import { readChatTriggerCard } from '@shared/utils/chatTriggers';
 import { colors } from '../theme/colors';
 
 type Side = 'hub' | 'google';
+
+/** A request to show one message in a channel; `token` makes each request distinct. */
+export interface HubChatFocus {
+  channelId: string;
+  messageId: string;
+  token: number;
+}
+
+const LINK_GONE = 'That message is no longer in this conversation.';
+const HIGHLIGHT_MS = 4000;
 
 function useUsernames(account: number): ReadonlyMap<string, string> & { list: HubChatOrgMember[] } {
   const [members, setMembers] = useState<HubChatOrgMember[]>([]);
@@ -120,6 +132,15 @@ export default function HubChatScreen({
   const { account } = useHubChatSnapshot();
   const usernames = useUsernames(account);
   const { handleOpenHandoffSession } = useApp();
+  const [focus, setFocus] = useState<HubChatFocus | null>(null);
+  const focusTokenRef = useRef(0);
+  const showMessage = useCallback(
+    (targetChannelId: string, messageId: string) => {
+      setFocus({ channelId: targetChannelId, messageId, token: ++focusTokenRef.current });
+      setChannelId(targetChannelId);
+    },
+    [setChannelId],
+  );
 
   useEffect(() => {
     if (initialChannelId) {
@@ -169,8 +190,13 @@ export default function HubChatScreen({
           key={`${account}:${channelId}`}
           channelId={channelId}
           usernames={usernames}
-          onBack={() => setChannelId(null)}
+          onBack={() => {
+            setFocus(null);
+            setChannelId(null);
+          }}
           onOpenRef={openRef}
+          focus={focus?.channelId === channelId ? focus : null}
+          onFollow={showMessage}
         />
       ) : (
         <ChannelRail
@@ -179,6 +205,7 @@ export default function HubChatScreen({
           usernames={usernames}
           onOpen={setChannelId}
           onOpenAssistant={onOpenAssistant}
+          onPickResult={(r) => showMessage(r.channel.id, r.message.id)}
         />
       )}
     </View>
@@ -257,10 +284,12 @@ function ChannelRail({
   usernames,
   onOpen,
   onOpenAssistant,
+  onPickResult,
 }: {
   usernames: ReturnType<typeof useUsernames>;
   onOpen: (channelId: string) => void;
   onOpenAssistant?: () => void;
+  onPickResult: (result: HubChatSearchResult) => void;
 }) {
   const snapshot = useHubChatSnapshot();
   const [dialog, setDialog] = useState<'dm' | 'channel' | 'browse' | null>(null);
@@ -277,52 +306,61 @@ function ChannelRail({
         <ActionButton label="Channel" onPress={() => setDialog('channel')} />
         <ActionButton label="Browse" onPress={() => setDialog('browse')} />
       </View>
-      <ScrollView style={styles.flex} contentContainerStyle={styles.railContent}>
-        {onOpenAssistant ? (
+      <HubChatSearch
+        account={snapshot.account}
+        usernames={usernames}
+        viewerUserId={snapshot.viewerUserId}
+        onPick={onPickResult}
+      >
+        <ScrollView style={styles.flex} contentContainerStyle={styles.railContent}>
+          {onOpenAssistant ? (
+            <TouchableOpacity
+              testID="hub-chat-assistant"
+              style={styles.row}
+              onPress={onOpenAssistant}
+              accessibilityRole="button"
+            >
+              <HubIcon name="Bot" size={14} color={colors.blue400} />
+              <Text style={[styles.rowLabel, styles.rowLabelBold]}>Agent Hub</Text>
+            </TouchableOpacity>
+          ) : null}
+          {!snapshot.loaded ? (
+            <ActivityIndicator color={colors.gray400} style={styles.pad} />
+          ) : null}
+          {RAIL_SECTIONS.map((section) => {
+            const list = sections[section.id];
+            if (list.length === 0) return null;
+            return (
+              <View key={section.id} style={styles.section}>
+                <Text style={styles.sectionLabel}>{section.label}</Text>
+                {list.map((c) => (
+                  <ChannelRow
+                    key={c.id}
+                    channel={c}
+                    label={channelLabel(c, usernames, snapshot.viewerUserId)}
+                    onPress={() => onOpen(c.id)}
+                  />
+                ))}
+              </View>
+            );
+          })}
+          {snapshot.loaded && snapshot.channels.length === 0 ? (
+            <Text style={[styles.muted, styles.pad]}>
+              No conversations yet. Start a message or join a channel.
+            </Text>
+          ) : null}
           <TouchableOpacity
-            testID="hub-chat-assistant"
-            style={styles.row}
-            onPress={onOpenAssistant}
-            accessibilityRole="button"
+            style={styles.refresh}
+            disabled={refreshing}
+            onPress={() => {
+              setRefreshing(true);
+              void hubChatStore.refresh().finally(() => setRefreshing(false));
+            }}
           >
-            <HubIcon name="Bot" size={14} color={colors.blue400} />
-            <Text style={[styles.rowLabel, styles.rowLabelBold]}>Agent Hub</Text>
+            <Text style={styles.muted}>{refreshing ? 'Refreshing…' : 'Refresh'}</Text>
           </TouchableOpacity>
-        ) : null}
-        {!snapshot.loaded ? <ActivityIndicator color={colors.gray400} style={styles.pad} /> : null}
-        {RAIL_SECTIONS.map((section) => {
-          const list = sections[section.id];
-          if (list.length === 0) return null;
-          return (
-            <View key={section.id} style={styles.section}>
-              <Text style={styles.sectionLabel}>{section.label}</Text>
-              {list.map((c) => (
-                <ChannelRow
-                  key={c.id}
-                  channel={c}
-                  label={channelLabel(c, usernames, snapshot.viewerUserId)}
-                  onPress={() => onOpen(c.id)}
-                />
-              ))}
-            </View>
-          );
-        })}
-        {snapshot.loaded && snapshot.channels.length === 0 ? (
-          <Text style={[styles.muted, styles.pad]}>
-            No conversations yet. Start a message or join a channel.
-          </Text>
-        ) : null}
-        <TouchableOpacity
-          style={styles.refresh}
-          disabled={refreshing}
-          onPress={() => {
-            setRefreshing(true);
-            void hubChatStore.refresh().finally(() => setRefreshing(false));
-          }}
-        >
-          <Text style={styles.muted}>{refreshing ? 'Refreshing…' : 'Refresh'}</Text>
-        </TouchableOpacity>
-      </ScrollView>
+        </ScrollView>
+      </HubChatSearch>
       <NewDmDialog
         visible={dialog === 'dm'}
         members={usernames.list}
@@ -371,11 +409,17 @@ function ChannelView({
   usernames,
   onBack,
   onOpenRef,
+  focus,
+  onFollow,
 }: {
   channelId: string;
   usernames: ReturnType<typeof useUsernames>;
   onBack: () => void;
   onOpenRef: (ref: HubChatResolvedRef) => void;
+  /** A message to scroll to and highlight once the channel has loaded. */
+  focus?: HubChatFocus | null;
+  /** The focused message lives in another channel: show it there. */
+  onFollow?: (channelId: string, messageId: string) => void;
 }) {
   const snapshot = useHubChatSnapshot();
   const listed = snapshot.channels.find((c) => c.id === channelId);
@@ -509,6 +553,118 @@ function ChannelView({
     );
   }, [visible, channel?.membership, channelId, newestSeq, readSeq]);
 
+  // Showing a message (a search result): look up its seq, load history back
+  // to it, then scroll to and highlight it. Each request gets a token; a newer
+  // request or Stop supersedes it, so only the latest one acts.
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [seekPending, setSeekPending] = useState<{
+    token: number;
+    messageId: string;
+    seq: number;
+  } | null>(null);
+  const [seekError, setSeekError] = useState<string | null>(null);
+  const [seeking, setSeeking] = useState(false);
+  const seekTokenRef = useRef(0);
+  const handledFocusRef = useRef<number | null>(null);
+  // While a seek or its highlight is on, new content must not pull the list
+  // back to the bottom.
+  const holdPositionRef = useRef(false);
+  const seekLive = (token: number) => mounted.current && seekTokenRef.current === token;
+  const inWindow = (messageId: string) =>
+    !!syncRef.current?.getState().window.messages.some((m) => m.id === messageId);
+
+  const stopSeek = () => {
+    seekTokenRef.current++;
+    setSeekPending(null);
+    setSeeking(false);
+    holdPositionRef.current = false;
+  };
+
+  const finishSeek = async (token: number, messageId: string, seq: number) => {
+    const ctl = syncRef.current;
+    if (!ctl) return;
+    setSeeking(true);
+    let done: boolean;
+    try {
+      done = await ctl.loadBackTo(seq, { live: () => seekLive(token) });
+    } catch (err) {
+      if (!seekLive(token)) return;
+      setSeeking(false);
+      holdPositionRef.current = false;
+      setSeekError(`Could not load earlier messages: ${errorText(err)}`);
+      return;
+    }
+    if (!seekLive(token)) return;
+    setSeeking(false);
+    if (!done) {
+      setSeekPending({ token, messageId, seq });
+      return;
+    }
+    if (inWindow(messageId)) setHighlightId(messageId);
+    else {
+      holdPositionRef.current = false;
+      setSeekError(LINK_GONE);
+    }
+  };
+
+  const seekMessage = async (token: number, messageId: string) => {
+    if (inWindow(messageId)) {
+      setHighlightId(messageId);
+      return;
+    }
+    let found: HubChatMessage | undefined;
+    setSeeking(true);
+    try {
+      const res = await api.hubChat.message(messageId);
+      found = res?.message as HubChatMessage | undefined;
+    } catch (err) {
+      if (!seekLive(token)) return;
+      setSeeking(false);
+      holdPositionRef.current = false;
+      const status = (err as { status?: number })?.status;
+      setSeekError(status === 404 ? LINK_GONE : `Could not load the message: ${errorText(err)}`);
+      return;
+    }
+    if (!seekLive(token)) return;
+    if (!found) {
+      setSeeking(false);
+      holdPositionRef.current = false;
+      setSeekError(LINK_GONE);
+      return;
+    }
+    if (found.channelId !== channelId) {
+      setSeeking(false);
+      holdPositionRef.current = false;
+      onFollow?.(found.channelId, messageId);
+      return;
+    }
+    await finishSeek(token, messageId, found.seq);
+  };
+
+  const keepSeeking = () => {
+    const pending = seekPending;
+    if (!pending || !seekLive(pending.token)) return;
+    setSeekPending(null);
+    void finishSeek(pending.token, pending.messageId, pending.seq);
+  };
+
+  useEffect(() => {
+    if (!focus || loading || handledFocusRef.current === focus.token) return;
+    // A failed first load leaves nothing to seek in; the request waits for
+    // the reload (back on screen, reconnect) instead of being used up.
+    if (loadError && win.messages.length === 0) return;
+    handledFocusRef.current = focus.token;
+    seekTokenRef.current++;
+    const token = seekTokenRef.current;
+    setSeekPending(null);
+    setSeekError(null);
+    holdPositionRef.current = true;
+    stickToBottomRef.current = false;
+    void seekMessage(token, focus.messageId);
+    // seekMessage is recreated every render and reads the window through the sync ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus, loading, loadError]);
+
   const loadOlder = () => {
     if (!win.messages[0]) return;
     stickToBottomRef.current = false;
@@ -585,7 +741,30 @@ function ChannelView({
     [win.messages, snapshot.viewerUserId, openedReadSeq],
   );
   const listRef = useRef<FlatList<any>>(null);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const label = channel ? channelLabel(channel, usernames, snapshot.viewerUserId) : '';
+
+  const scrollToMessage = (messageId: string, attempt = 0) => {
+    const index = rowsRef.current.findIndex((r) => r.message.id === messageId);
+    if (index < 0) return;
+    stickToBottomRef.current = false;
+    try {
+      listRef.current?.scrollToIndex({ index, viewPosition: 0.5, animated: attempt > 0 });
+    } catch {
+      // Not measured yet; onScrollToIndexFailed retries.
+    }
+  };
+
+  useEffect(() => {
+    if (!highlightId) return;
+    scrollToMessage(highlightId);
+    const timer = setTimeout(() => {
+      setHighlightId(null);
+      holdPositionRef.current = false;
+    }, HIGHLIGHT_MS);
+    return () => clearTimeout(timer);
+  }, [highlightId]);
 
   return (
     <KeyboardAvoidingView
@@ -642,6 +821,38 @@ function ChannelView({
           </TouchableOpacity>
         ) : null}
       </View>
+      {seeking ? (
+        <View style={styles.seekBar} testID="hub-chat-seeking">
+          <ActivityIndicator size="small" color={colors.gray400} />
+          <Text style={[styles.muted, styles.flex]}>Finding the message…</Text>
+          <TouchableOpacity onPress={stopSeek} accessibilityRole="button">
+            <Text style={styles.link}>Stop</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+      {seekPending && !seeking ? (
+        <View style={styles.seekBar} testID="hub-chat-seek-pending">
+          <Text style={[styles.muted, styles.flex]}>
+            The message is{' '}
+            {Math.max(1, (win.messages[0]?.seq ?? seekPending.seq) - seekPending.seq)} messages
+            further back.
+          </Text>
+          <TouchableOpacity onPress={keepSeeking} accessibilityRole="button">
+            <Text style={styles.link}>Keep loading</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={stopSeek} accessibilityRole="button">
+            <Text style={styles.link}>Stop</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+      {seekError ? (
+        <View style={styles.seekBar} testID="hub-chat-seek-error">
+          <Text style={[styles.error, styles.flex]}>{seekError}</Text>
+          <TouchableOpacity onPress={() => setSeekError(null)} accessibilityLabel="Dismiss">
+            <HubIcon name="X" size={14} color={colors.gray400} />
+          </TouchableOpacity>
+        </View>
+      ) : null}
       {loading && win.messages.length === 0 ? (
         <ActivityIndicator color={colors.gray400} style={styles.pad} />
       ) : loadError && win.messages.length === 0 ? (
@@ -666,7 +877,19 @@ function ChannelView({
             );
           }}
           onContentSizeChange={() => {
-            if (stickToBottomRef.current) listRef.current?.scrollToEnd({ animated: false });
+            if (stickToBottomRef.current && !holdPositionRef.current) {
+              listRef.current?.scrollToEnd({ animated: false });
+            }
+          }}
+          extraData={highlightId}
+          onScrollToIndexFailed={(info) => {
+            // The row is outside what has been laid out: jump near it, then retry.
+            listRef.current?.scrollToOffset({
+              offset: info.averageItemLength * info.index,
+              animated: false,
+            });
+            const id = highlightId;
+            if (id) setTimeout(() => mounted.current && scrollToMessage(id, 1), 100);
           }}
           ListHeaderComponent={
             hasMore ? (
@@ -679,6 +902,7 @@ function ChannelView({
           renderItem={({ item }) => (
             <MessageRow
               row={item}
+              highlighted={item.message.id === highlightId}
               usernames={usernames}
               onOpenRef={onOpenRef}
               onLongPress={item.own && !item.message.deletedAt ? onLongPress : undefined}
@@ -759,8 +983,10 @@ export function MessageRow({
   usernames,
   onOpenRef,
   onLongPress,
+  highlighted,
 }: {
   row: ReturnType<typeof layoutHubChatMessages>[number];
+  highlighted?: boolean;
   usernames: ReadonlyMap<string, string>;
   onOpenRef?: (ref: HubChatResolvedRef) => void;
   onLongPress?: (m: HubChatMessage) => void;
@@ -782,7 +1008,12 @@ export function MessageRow({
       <TouchableOpacity
         activeOpacity={onLongPress ? 0.7 : 1}
         onLongPress={onLongPress ? () => onLongPress(m) : undefined}
-        style={[styles.message, row.showHeader && styles.messageFirst]}
+        style={[
+          styles.message,
+          row.showHeader && styles.messageFirst,
+          highlighted && styles.messageHighlighted,
+        ]}
+        testID={highlighted ? 'hub-chat-message-highlighted' : undefined}
       >
         {row.showHeader ? (
           <View style={styles.messageHeader}>
@@ -1282,6 +1513,18 @@ const styles = StyleSheet.create({
   unreadLabel: { color: colors.red400, fontSize: 10, fontWeight: '700' },
   message: { paddingVertical: 1 },
   messageFirst: { marginTop: 8 },
+  messageHighlighted: { backgroundColor: 'rgba(234,179,8,0.15)', borderRadius: 4 },
+  seekBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 12,
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: colors.gray900,
+  },
   messageHeader: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginBottom: 2 },
   author: { color: colors.gray100, fontSize: 13, fontWeight: '700' },
   authorOwn: { color: colors.blue300 },

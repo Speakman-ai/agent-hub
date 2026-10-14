@@ -47,6 +47,7 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
   Rocket: { family: 'material', name: 'rocket-launch' },
   ScanEye: { family: 'feather', name: 'eye' },
   ScrollText: { family: 'material', name: 'script-text-outline' },
+  Search: { family: 'feather', name: 'search' },
   Server: { family: 'feather', name: 'server' },
   Settings: { family: 'feather', name: 'settings' },
   ShieldAlert: { family: 'material', name: 'shield-alert' },

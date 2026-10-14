@@ -44,6 +44,9 @@ export interface ChannelSyncState {
 export const CHANNEL_PAGE = 50;
 /** Pages fetched per batch; a longer sync continues in further batches. */
 export const MAX_PAGES_PER_BATCH = 40;
+/** Page size and per-step page allowance when loading back to a linked message. */
+export const SEEK_PAGE = 100;
+export const SEEK_PAGES_PER_STEP = 10;
 
 /**
  * Where a forward sync starts: after the newest message shown, or before the
@@ -242,6 +245,37 @@ export function createChannelSync(
       if (disposed) return;
       merge(res?.messages ?? [], true);
       set({ hasMore: !!res?.hasMore });
+    },
+    /**
+     * Loads older pages until the window reaches back to `seq`, no older
+     * history is left, or `maxPages` pages were fetched. Resolves whether the
+     * window now reaches `seq` (or holds everything there is). A failed page
+     * rejects; what loaded before it stays.
+     *
+     * `live` is checked before every request and after every response: once
+     * it returns false no further page is requested and a page still in
+     * flight is dropped.
+     */
+    async loadBackTo(
+      seq: number,
+      opts: { maxPages?: number; live?: () => boolean } = {},
+    ): Promise<boolean> {
+      const maxPages = opts.maxPages ?? SEEK_PAGES_PER_STEP;
+      const live = () => !disposed && (opts.live?.() ?? true);
+      const reached = () => {
+        const first = state.window.messages[0];
+        return !first || first.seq <= seq || !state.hasMore;
+      };
+      for (let page = 0; page < maxPages; page++) {
+        if (!live()) return false;
+        if (reached()) return true;
+        const first = state.window.messages[0];
+        const res = await api.messages(channelId, { before: first.seq, limit: SEEK_PAGE });
+        if (!live()) return false;
+        merge(res?.messages ?? [], true);
+        set({ hasMore: !!res?.hasMore });
+      }
+      return live() && reached();
     },
     dispose() {
       disposed = true;

@@ -130,6 +130,14 @@ describe('MessageRow', () => {
     expect(html).toContain('hello');
   });
 
+  it('marks the message a search jumped to', () => {
+    const [row] = layoutHubChatMessages([msg({})], { viewerUserId: 'u1', lastReadSeq: null });
+    const plain = renderToStaticMarkup(<MessageRow row={row} usernames={new Map()} />);
+    expect(plain).not.toContain('hub-chat-message-highlighted');
+    const html = renderToStaticMarkup(<MessageRow row={row} usernames={new Map()} highlighted />);
+    expect(html).toContain('hub-chat-message-highlighted');
+  });
+
   it('renders a deleted message as a placeholder', () => {
     const [row] = layoutHubChatMessages([msg({ deletedAt: '2026-10-13T10:05:00Z' })], {
       viewerUserId: 'u1',
