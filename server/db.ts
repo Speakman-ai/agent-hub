@@ -40,6 +40,7 @@ import {
   HUB_CHAT_COLUMN_MIGRATIONS,
   HUB_CHAT_POST_MIGRATION_SCHEMA,
   HUB_CHAT_SCHEMA,
+  migrateHubChatDigestsWindowStart,
   applyHubChatSearchIndex,
 } from './hub-chat-schema.js';
 import {
@@ -1336,6 +1337,7 @@ function initDb(dataDir: string): void {
       /* column already exists */
     }
   }
+  migrateHubChatDigestsWindowStart(db);
   db.exec(HUB_CHAT_POST_MIGRATION_SCHEMA);
   applyHubChatSearchIndex(db);
 

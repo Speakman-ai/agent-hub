@@ -194,6 +194,35 @@ export const HUB_CHAT_COLUMN_MIGRATIONS: ReadonlyArray<string> = [
   'ALTER TABLE hub_chat_messages ADD COLUMN meta_rev INTEGER NOT NULL DEFAULT 0',
 ];
 
+/**
+ * Adds `hub_chat_channel_digests.window_start` to a table created before the
+ * column existed. The reconciler in `schema-reconcile.ts` cannot add it: SQLite
+ * refuses `ADD COLUMN ... NOT NULL` without a default, so every digest save
+ * threw `no column named window_start`. The column gets an empty default and
+ * existing rows are backfilled to their last run, else one default lookback
+ * before now (the same start a new digest gets). Idempotent.
+ */
+export function migrateHubChatDigestsWindowStart(conn: Database.Database): void {
+  const cols = conn.prepare(`PRAGMA table_info('hub_chat_channel_digests')`).all() as Array<{
+    name: string;
+  }>;
+  if (cols.length === 0 || cols.some((c) => c.name === 'window_start')) return;
+  const lookbackStart = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+  const hasLastRun = cols.some((c) => c.name === 'last_run_at');
+  conn.transaction(() => {
+    conn.exec(
+      `ALTER TABLE hub_chat_channel_digests ADD COLUMN window_start TEXT NOT NULL DEFAULT ''`,
+    );
+    conn
+      .prepare(
+        `UPDATE hub_chat_channel_digests SET window_start = ${
+          hasLastRun ? 'COALESCE(last_run_at, ?)' : '?'
+        } WHERE window_start = ''`,
+      )
+      .run(lookbackStart);
+  })();
+}
+
 export const HUB_CHAT_POST_MIGRATION_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_hub_chat_channels_session
     ON hub_chat_channels(session_id) WHERE session_id IS NOT NULL;
