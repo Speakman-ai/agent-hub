@@ -1347,6 +1347,8 @@ export const api = {
       fetchJSON(`/chat/refs/search?${new URLSearchParams({ trigger, q }).toString()}`),
     resolveRefs: (refs: { kind: string; targetId: string }[]) =>
       fetchJSON('/chat/refs/resolve', { method: 'POST', body: JSON.stringify({ refs }) }),
+    backlinks: (kind: string, targetId: string) =>
+      fetchJSON(`/chat/backlinks?${new URLSearchParams({ kind, targetId }).toString()}`),
   },
   clearHubSession: () => fetchJSON('/me/hub-session/clear', { method: 'POST' }),
   getHubModel: () => fetchJSON('/me/hub-model'),

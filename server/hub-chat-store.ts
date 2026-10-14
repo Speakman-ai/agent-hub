@@ -19,6 +19,7 @@ import type {
   HubChatMessageRow,
   HubChatNotifyLevel,
   HubChatRefInput,
+  HubChatRefKind,
   HubChatRefRow,
 } from './types.js';
 
@@ -488,4 +489,53 @@ export function listAgentChannelsForSession(sessionId: string): HubChatChannelRo
        ORDER BY created_at, id`,
     )
     .all(sessionId) as HubChatChannelRow[];
+}
+
+/** A live message that references an entity, with the channel it was posted in. */
+export interface HubChatBacklinkRow {
+  message_id: string;
+  channel_id: string;
+  seq: number;
+  author_kind: HubChatAuthorKind;
+  author_user_id: string | null;
+  author_agent_id: string | null;
+  body: string;
+  created_at: string;
+  channel_kind: HubChatChannelKind;
+  channel_name: string;
+  dm_key: string | null;
+}
+
+/**
+ * Messages that reference `kind:targetId`, newest first, limited to channels
+ * `userId` can read in `orgId`: public channels and the ones they belong to.
+ * Trigger posts are left out since they are automated notices, not
+ * discussion; deleted messages and archived channels are left out too.
+ */
+export function listRefBacklinks(
+  orgId: string,
+  userId: string,
+  kind: HubChatRefKind,
+  targetId: string,
+  limit: number,
+): HubChatBacklinkRow[] {
+  return db()
+    .prepare(
+      `SELECT x.id AS message_id, x.channel_id, x.seq, x.author_kind, x.author_user_id,
+              x.author_agent_id, x.body, x.created_at,
+              c.kind AS channel_kind, c.name AS channel_name, c.dm_key
+       FROM hub_chat_refs r
+       JOIN hub_chat_messages x ON x.id = r.message_id
+       JOIN hub_chat_channels c ON c.id = x.channel_id
+       WHERE r.kind = ? AND r.target_id = ?
+         AND x.deleted_at IS NULL AND x.author_kind <> 'trigger'
+         AND c.org_id = ? AND c.archived_at IS NULL
+         AND (c.is_private = 0 OR EXISTS (
+           SELECT 1 FROM hub_chat_members m WHERE m.channel_id = c.id AND m.user_id = ?
+         ))
+       GROUP BY x.id
+       ORDER BY x.created_at DESC, x.seq DESC
+       LIMIT ?`,
+    )
+    .all(kind, targetId, orgId, userId, limit) as HubChatBacklinkRow[];
 }

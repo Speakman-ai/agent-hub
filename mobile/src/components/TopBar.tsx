@@ -1,6 +1,7 @@
 import React, { useState, useContext } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
 import AppIcon from './AppIcon';
+import HubChatBacklinks from './HubChatBacklinks';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import { SidebarContext } from '../context/SidebarContext';
@@ -15,7 +16,12 @@ import ForwardSessionModal, { filterForwardTargets } from './ForwardSessionModal
 import SessionStateIcon from './SessionStateIcon';
 import SessionEngineModelSheet from './SessionEngineModelSheet';
 import { truncateSessionId } from '../utils/sessionId';
-export default function TopBar() {
+type TopBarProps = {
+  /** Opens an Agent Hub chat channel (from the session's chat backlinks). */
+  onOpenChatChannel?: (channelId: string) => void;
+};
+
+export default function TopBar({ onOpenChatChannel }: TopBarProps = {}) {
   const {
     activeAgent,
     sessionEngine,
@@ -118,19 +124,27 @@ export default function TopBar() {
                 {activeAgent.name}
               </Text>
               {activeSessionId ? (
-                <TouchableOpacity
-                  onPress={handleCopySessionId}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Copy session id ${activeSessionId}`}
-                  style={styles.sessionIdBadge}
-                >
-                  <Text style={styles.sessionIdLabel} numberOfLines={1}>
-                    Session
-                  </Text>
-                  <Text style={styles.sessionIdText} numberOfLines={1}>
-                    {truncateSessionId(activeSessionId)}
-                  </Text>
-                </TouchableOpacity>
+                <View style={styles.sessionRow}>
+                  <TouchableOpacity
+                    onPress={handleCopySessionId}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Copy session id ${activeSessionId}`}
+                    style={styles.sessionIdBadge}
+                  >
+                    <Text style={styles.sessionIdLabel} numberOfLines={1}>
+                      Session
+                    </Text>
+                    <Text style={styles.sessionIdText} numberOfLines={1}>
+                      {truncateSessionId(activeSessionId)}
+                    </Text>
+                  </TouchableOpacity>
+                  <HubChatBacklinks
+                    kind="session"
+                    targetId={activeSessionId}
+                    variant="chip"
+                    onOpenChannel={onOpenChatChannel}
+                  />
+                </View>
               ) : null}
             </View>
           </View>
@@ -323,8 +337,10 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  sessionRow: { flexDirection: 'row', alignItems: 'center', minWidth: 0 },
   sessionIdBadge: {
     alignSelf: 'flex-start',
+    flexShrink: 1,
     flexDirection: 'row',
     alignItems: 'center',
     maxWidth: '100%',

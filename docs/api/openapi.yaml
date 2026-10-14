@@ -7847,6 +7847,50 @@ components:
       required:
         - message
         - channel
+    HubChatBacklink:
+      type: object
+      properties:
+        messageId:
+          type: string
+        channelId:
+          type: string
+        channelKind:
+          type: string
+          enum:
+            - dm
+            - group
+            - channel
+            - trigger
+            - agent
+            - summary
+        channelLabel:
+          type: string
+          description: "Display name: `# name` for channels, the peer for a DM."
+        authorKind:
+          type: string
+          enum:
+            - user
+            - agent
+            - system
+            - trigger
+        authorName:
+          type: string
+          nullable: true
+        excerpt:
+          type: string
+          description: Plain-text preview of the message.
+        createdAt:
+          type: string
+      required:
+        - messageId
+        - channelId
+        - channelKind
+        - channelLabel
+        - authorKind
+        - authorName
+        - excerpt
+        - createdAt
+      description: A chat message that references the entity.
     HubChatChannelDigest:
       type: object
       properties:
@@ -36854,6 +36898,76 @@ paths:
                       $ref: "#/components/schemas/HubChatResolvedRef"
                 required:
                   - refs
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/backlinks:
+    get:
+      tags:
+        - Hub Chat
+      summary: List chat messages that reference a card, PR, session or ticket
+      description: Newest first. Only messages in channels the caller can read (public channels and ones they belong to) are returned, and none when the caller cannot see the entity itself. Trigger posts are excluded.
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - card
+              - pr
+              - session
+              - ticket
+          required: true
+          name: kind
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+            description: Row id; for a PR, `<projectId>#<number>`.
+          required: true
+          description: Row id; for a PR, `<projectId>#<number>`.
+          name: targetId
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            description: Most recent messages to return (default 20).
+          required: false
+          description: Most recent messages to return (default 20).
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Backlinks visible to the caller.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  target:
+                    $ref: "#/components/schemas/HubChatResolvedRef"
+                  backlinks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatBacklink"
+                required:
+                  - target
+                  - backlinks
         "400":
           description: Validation failed.
           content:

@@ -67,6 +67,7 @@ import {
 } from '../utils/kanbanPagination';
 import KanbanColumnsModal from '../components/KanbanColumnsModal';
 import LinkedTodosPanel from '../components/LinkedTodosPanel';
+import HubChatBacklinks from '../components/HubChatBacklinks';
 import {
   normalizeCardTemplate,
   templateCreateCardPayload,
@@ -1258,6 +1259,13 @@ export default function KanbanScreen({ route, navigation }: any) {
             {/* Linked-from todos — the caller's own personal todos that point
                 at this card (reverse of the todo's link badge). */}
             <LinkedTodosPanel targetType="card" entity={selectedCard} projectId={projectId} />
+            <HubChatBacklinks
+              kind="card"
+              targetId={selectedCard?.id}
+              onOpenChannel={(channelId) =>
+                navigation?.navigate?.('Hub', { tab: 'chat', channelId })
+              }
+            />
 
             {/* Status — moves the card immediately (same path as the action sheet). */}
             {columns.length > 0 ? (

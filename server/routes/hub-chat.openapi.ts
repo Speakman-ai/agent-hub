@@ -684,6 +684,56 @@ registerPath({
   },
 });
 
+export const BacklinkKindSchema = z.enum(['card', 'pr', 'session', 'ticket']);
+
+export const ListBacklinksQuerySchema = z.object({
+  kind: BacklinkKindSchema,
+  targetId: z.string().min(1).max(HUB_CHAT_REF_MAX_ID).openapi({
+    description: 'Row id; for a PR, `<projectId>#<number>`.',
+  }),
+  limit: z.coerce.number().int().min(1).max(100).optional().openapi({
+    description: 'Most recent messages to return (default 20).',
+  }),
+});
+
+const BacklinkComponent = registerComponent(
+  'HubChatBacklink',
+  z
+    .object({
+      messageId: z.string(),
+      channelId: z.string(),
+      channelKind: ChannelKindSchema,
+      channelLabel: z.string().openapi({
+        description: 'Display name: `# name` for channels, the peer for a DM.',
+      }),
+      authorKind: AuthorKindSchema,
+      authorName: z.string().nullable(),
+      excerpt: z.string().openapi({ description: 'Plain-text preview of the message.' }),
+      createdAt: z.string(),
+    })
+    .openapi({ description: 'A chat message that references the entity.' }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/chat/backlinks',
+  tags: [TAG],
+  summary: 'List chat messages that reference a card, PR, session or ticket',
+  description:
+    'Newest first. Only messages in channels the caller can read (public channels and ones they belong to) are returned, and none when the caller cannot see the entity itself. Trigger posts are excluded.',
+  request: { query: ListBacklinksQuerySchema },
+  responses: {
+    200: {
+      description: 'Backlinks visible to the caller.',
+      content: jsonContent(
+        z.object({ target: ResolvedRefComponent, backlinks: z.array(BacklinkComponent) }),
+      ),
+    },
+    400: errorResponse('Validation failed.'),
+    ...common,
+  },
+});
+
 export const DigestScopeSchema = z.enum(['channel', 'project']);
 
 export const ChannelDigestComponent = registerComponent(

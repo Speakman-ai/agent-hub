@@ -406,7 +406,11 @@ export default function ChatScreen({
     );
   return (
     <SafeAreaView style={styles.container} edges={embedded ? ['bottom'] : ['top', 'bottom']}>
-      {embedded ? null : <TopBar />}
+      {embedded ? null : (
+        <TopBar
+          onOpenChatChannel={(channelId) => navigation.navigate('Hub', { tab: 'chat', channelId })}
+        />
+      )}
       {hubSession && onClearChat ? (
         <TouchableOpacity
           testID="hub-clear-chat"

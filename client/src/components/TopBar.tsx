@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import HubChatBacklinks from './HubChatBacklinks';
 import {
   formatSessionExport,
   copyToClipboard,
@@ -270,6 +271,9 @@ export default function TopBar({
                     <span className="mr-1 text-gray-500">Session</span>
                     <span className="truncate">{truncateSessionId(activeSessionId)}</span>
                   </button>
+                )}
+                {activeSessionId && (
+                  <HubChatBacklinks kind="session" targetId={activeSessionId} variant="menu" />
                 )}
               </div>
               <p className="text-xs text-gray-500 font-mono truncate hidden sm:block">

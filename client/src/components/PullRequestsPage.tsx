@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import HubChatBacklinks from './HubChatBacklinks';
 import {
   GitPullRequest,
   GitMerge,
@@ -1310,6 +1311,10 @@ function PrDetail({
           </code>
         </span>
       </div>
+
+      {isNative && projectId && pr.number ? (
+        <HubChatBacklinks kind="pr" targetId={`${projectId}#${pr.number}`} className="mb-4" />
+      ) : null}
 
       {agentReviewProgress && (
         <div

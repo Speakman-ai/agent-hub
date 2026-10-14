@@ -89,6 +89,37 @@ export interface HubChatMessage {
   createdAt: string;
 }
 
+/** Entities that list where they were discussed in chat. */
+export type HubChatBacklinkKind = 'card' | 'pr' | 'session' | 'ticket';
+
+/** A chat message that references an entity (`GET /api/chat/backlinks`). */
+export interface HubChatBacklink {
+  messageId: string;
+  channelId: string;
+  channelKind: HubChatChannelKind;
+  /** `# name` for channels, the peer for a DM. */
+  channelLabel: string;
+  authorKind: HubChatMessage['authorKind'];
+  authorName: string | null;
+  excerpt: string;
+  createdAt: string;
+}
+
+/**
+ * True when a live message event (new or edited) touches the entity's
+ * backlinks: it references the entity now, or it is a deletion (which may
+ * have removed one).
+ */
+export function messageAffectsBacklinks(
+  message: Pick<HubChatMessage, 'refs' | 'deletedAt'> | null | undefined,
+  kind: HubChatBacklinkKind,
+  targetId: string,
+): boolean {
+  if (!message) return false;
+  if (message.deletedAt) return true;
+  return (message.refs ?? []).some((r) => r.kind === kind && r.targetId === targetId);
+}
+
 export interface HubChatMember {
   userId: string;
   username: string | null;

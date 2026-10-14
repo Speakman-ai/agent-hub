@@ -25,7 +25,10 @@ import { getUserById } from '../users-store.js';
 import { isHubSystemProject } from '../../shared/utils/hub.js';
 import { canViewProject } from '../project-visibility.js';
 import { isEligibleBackgroundSessionAgent } from '../background-agent-session.js';
-import { broadcastHubChatMessage, shapeMessage } from '../hub-chat-broadcast.js';
+import { agentDisplayName, broadcastHubChatMessage, shapeMessage } from '../hub-chat-broadcast.js';
+import { locateChatMarkdownCode } from '../hub-chat-markdown.js';
+import { hubChatRefsToPlainText } from '../../shared/utils/hubChatRefTokens.js';
+import { channelLabel } from '../../shared/utils/hubChat.js';
 import {
   agentChannelState,
   reserveAgentChannelTurn,
@@ -52,6 +55,7 @@ import {
   getOrCreateDm,
   listChannelsForUser,
   listJoinableChannels,
+  listRefBacklinks,
   listMembers,
   listMessages,
   markRead,
@@ -65,6 +69,7 @@ import {
   CreateChannelRequestSchema,
   CreateDmRequestSchema,
   EditMessageRequestSchema,
+  ListBacklinksQuerySchema,
   ListChannelsQuerySchema,
   ListMessagesQuerySchema,
   MarkReadRequestSchema,
@@ -104,6 +109,13 @@ import {
 } from '../hub-chat-events.js';
 
 const DEFAULT_PAGE = 50;
+const DEFAULT_BACKLINKS = 20;
+const EXCERPT_MAX = 160;
+
+function excerptOf(body: string): string {
+  const text = hubChatRefsToPlainText(body, locateChatMarkdownCode).replace(/\s+/g, ' ').trim();
+  return text.length > EXCERPT_MAX ? `${text.slice(0, EXCERPT_MAX - 1)}…` : text;
+}
 
 function bad(res: Response, status: number, error: string, code?: string): void {
   res.status(status).json(code ? { error, code } : { error });
@@ -449,6 +461,55 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     res.json({
       refs: body.refs.map((r) => resolveRef(refLookups, viewer, r.kind, r.targetId)),
     });
+  });
+
+  router.get('/api/chat/backlinks', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const q = parse(ListBacklinksQuerySchema, req.query, res);
+    if (!q) return;
+    const target = resolveRef(refLookups, refViewer(caller), q.kind, q.targetId);
+    if (!target.visible) {
+      res.json({ target, backlinks: [] });
+      return;
+    }
+    const rows = listRefBacklinks(
+      caller.orgId,
+      caller.userId,
+      q.kind,
+      q.targetId,
+      q.limit ?? DEFAULT_BACKLINKS,
+    );
+    const usernames = new Map<string, string>();
+    const username = (id: string | null): string | null => {
+      if (!id) return null;
+      if (!usernames.has(id)) usernames.set(id, getUserById(id)?.username ?? 'Unknown user');
+      return usernames.get(id) ?? null;
+    };
+    const backlinks = rows.map((r) => {
+      const peer = dmPeer({ kind: r.channel_kind, dm_key: r.dm_key }, caller.userId);
+      if (peer) username(peer);
+      return {
+        messageId: r.message_id,
+        channelId: r.channel_id,
+        channelKind: r.channel_kind,
+        channelLabel: channelLabel(
+          { kind: r.channel_kind, name: r.channel_name, dmPeerUserId: peer },
+          usernames,
+          caller.userId,
+        ),
+        authorKind: r.author_kind,
+        authorName:
+          r.author_kind === 'agent' && r.author_agent_id
+            ? agentDisplayName(r.author_agent_id)
+            : r.author_kind === 'system'
+              ? 'Agent Hub'
+              : username(r.author_user_id),
+        excerpt: excerptOf(r.body),
+        createdAt: r.created_at,
+      };
+    });
+    res.json({ target, backlinks });
   });
 
   router.get('/api/chat/channels', (req: Request, res: Response) => {

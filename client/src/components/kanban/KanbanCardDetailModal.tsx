@@ -13,6 +13,7 @@ import { hasUnresolvedBlockers } from '../../utils/blockers';
 import { MarkdownContent } from '../MarkdownRenderer';
 import ReplayPlayerModal from '../ReplayPlayerModal';
 import LinkedTodosPanel from './LinkedTodosPanel';
+import HubChatBacklinks from '../HubChatBacklinks';
 import type { KanbanCardDetailState } from '../../hooks/useKanbanCardDetail';
 
 import EpicLeadUserField from '../EpicLeadUserField';
@@ -352,6 +353,9 @@ export default function KanbanCardDetailModal({
                   ) : null}
                   {/* Linked-from todos — the caller's own personal todos that
                       point at this card (reverse of the todo's link badge). */}
+                  {!isCreating ? (
+                    <HubChatBacklinks kind="card" targetId={selectedCard?.id} />
+                  ) : null}
                   {!isCreating ? (
                     <LinkedTodosPanel
                       targetType="card"

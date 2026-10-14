@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
+import HubChatBacklinks from '../components/HubChatBacklinks';
 import {
   View,
   Text,
@@ -317,6 +318,7 @@ export function PrDetail({
   onOpenChat,
   reviewAgentId,
   onOpenReviewSession,
+  onOpenChatChannel,
 }: any) {
   const [reviewBusy, setReviewBusy] = useState(false);
   const requestReview = async () => {
@@ -658,6 +660,13 @@ export function PrDetail({
         </Text>
       )}
       <Text style={styles.diffText}>{diffSummary(pr)}</Text>
+      {caps.isNative && projectId && pr.number ? (
+        <HubChatBacklinks
+          kind="pr"
+          targetId={`${projectId}#${pr.number}`}
+          onOpenChannel={onOpenChatChannel}
+        />
+      ) : null}
 
       {agentReview ? (
         <View
@@ -1440,6 +1449,9 @@ export default function PullRequestsScreen({ route, navigation }: any) {
                 setActiveSessionId(sessionId);
                 navigation.navigate('Chat');
               }}
+              onOpenChatChannel={(channelId: string) =>
+                navigation.navigate('Hub', { tab: 'chat', channelId })
+              }
               spawnedSessionId={sessionSpawnedByPr[selectedNumber] || null}
               onOpenChat={
                 sessionSpawnedByPr[selectedNumber]
