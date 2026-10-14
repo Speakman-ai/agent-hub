@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  SPOT_RECLAIMED_DURING_BRINGUP,
   resolveAdvertiseHost,
   runAgentEnvironment,
   type EnvironmentDocker,
@@ -35,10 +36,12 @@ function harness(opts: { healthy?: boolean; onExec?: (run: string) => number | u
   let hubDown = false;
   let containerRunning: boolean | null = true;
   const heartbeats: string[] = [];
+  const spotFlags: boolean[] = [];
   const transport: EnvironmentTransport = {
     postLogs: vi.fn(async () => {}),
     postFinish: vi.fn(async () => {}),
-    async heartbeat() {
+    async heartbeat(_jobId, spotInterruption) {
+      spotFlags.push(spotInterruption === true);
       if (hubDown) {
         heartbeats.push('error');
         throw new Error('ECONNREFUSED');
@@ -72,6 +75,7 @@ function harness(opts: { healthy?: boolean; onExec?: (run: string) => number | u
     reports,
     execs,
     heartbeats,
+    spotFlags,
     stop: () => {
       stopRequested = true;
     },
@@ -100,6 +104,8 @@ const run = (h: ReturnType<typeof harness>, extra: Record<string, unknown> = {})
     livenessMs: 5,
     readyRetryMs: 5,
     containerCheckRetryMs: 1,
+    checkSpot: async () => false,
+    spotProbeMs: 5,
     ...extra,
   });
 
@@ -191,6 +197,40 @@ describe('runAgentEnvironment', () => {
     expect(h.reports).toEqual([
       { status: 'lost', detail: 'the environment container stopped during bring-up' },
     ]);
+  });
+
+  it('reports compose canceled by a Spot reclaim as lost while the container still reads running', async () => {
+    // The reclaim SIGTERMs the DinD container; compose prints "context canceled"
+    // and exits 1 before docker shows the container as stopped.
+    const h = harness({ onExec: (run) => (run.startsWith('docker compose up') ? 1 : undefined) });
+    const res = await run(h, { checkSpot: async () => true, spotProbeMs: 60_000 });
+    expect(res).toEqual({ ready: false, error: SPOT_RECLAIMED_DURING_BRINGUP });
+    expect(h.reports).toEqual([{ status: 'lost', detail: SPOT_RECLAIMED_DURING_BRINGUP }]);
+    expect(SPOT_RECLAIMED_DURING_BRINGUP).toContain('[spot_reclaimed]');
+    expect(h.spotFlags).toContain(true);
+  });
+
+  it('flags a Spot notice on heartbeats during bring-up and stops when the Hub requeues', async () => {
+    let spot = false;
+    let h!: ReturnType<typeof harness>;
+    h = harness({
+      onExec: (run) => {
+        if (run.startsWith('curl')) {
+          spot = true;
+          if (h.spotFlags.includes(true)) h.stop(); // Hub requeued on the first flagged beat
+          return 0; // no 2xx yet: keeps polling health
+        }
+        return undefined;
+      },
+    });
+    const res = await run(h, {
+      checkSpot: async () => spot,
+      sleep: () => new Promise((r) => setTimeout(r, 2)),
+    });
+    expect(res).toEqual({ ready: false, error: 'stopped' });
+    expect(h.spotFlags).toContain(true);
+    expect(h.reports).toEqual([]);
+    expect(h.docker.stopContainer).toHaveBeenCalled();
   });
 
   it('keeps a bring-up failure as failed when docker cannot say whether the container is up', async () => {

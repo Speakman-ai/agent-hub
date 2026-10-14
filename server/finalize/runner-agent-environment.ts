@@ -29,7 +29,7 @@ import type { RunnerJobWireSpec } from './runner-backend-remote.js';
 import type { AgentDocker, AgentLogFrame, AgentTransport } from './runner-agent.js';
 import { deliverCritical, runExecStepChild } from './runner-agent.js';
 import { noopTaskProtection, type TaskProtection } from './ecs-task-protection.js';
-import { getImdsMetadata } from './spot-interruption.js';
+import { checkSpotInterruption, getImdsMetadata, spotReclaimDetail } from './spot-interruption.js';
 import {
   chownWorktreeForJobRunner,
   clearWorktreeDestForRematerialize,
@@ -113,6 +113,16 @@ export async function containerConfirmedDown(
 
 /** Detail recorded when the container died during bring-up. */
 export const CONTAINER_STOPPED_DURING_BRINGUP = 'the environment container stopped during bring-up';
+
+/**
+ * Detail recorded when bring-up failed on a host with a pending EC2 Spot
+ * reclaim. The reclaim SIGTERMs the environment container while the container
+ * is still running, so compose exits 1 ("context canceled") before the
+ * container reads as stopped.
+ */
+export const SPOT_RECLAIMED_DURING_BRINGUP = spotReclaimDetail(
+  'the runner host was reclaimed (EC2 Spot interruption) during bring-up',
+);
 
 /** `docker inspect`/`exec` failed because the container does not exist. */
 export function isNoSuchContainerError(err: unknown): boolean {
@@ -310,6 +320,9 @@ export async function runAgentEnvironment(args: {
   readyRetryMs?: number;
   /** Delay between container checks after a failed bring-up. */
   containerCheckRetryMs?: number;
+  /** IMDS Spot interruption probe (tests inject; off EC2 it is a fast no-op). */
+  checkSpot?: () => Promise<boolean>;
+  spotProbeMs?: number;
 }): Promise<{ ready: boolean; error: string | null }> {
   const { jobId, spec, transport, docker } = args;
   const envSpec = spec.environment;
@@ -323,9 +336,14 @@ export async function runAgentEnvironment(args: {
   const stopped = new Promise<void>((resolve) =>
     stop.signal.addEventListener('abort', () => resolve(), { once: true }),
   );
-  const heartbeat = setInterval(() => {
+  // Sticky Spot flag, reported on every heartbeat so the Hub stamps
+  // `spot_interruption_at`. A reclaim kills the stack mid bring-up, and without
+  // it that reads as an app failure the user has to Retry by hand.
+  const checkSpot = args.checkSpot ?? (async () => (await checkSpotInterruption()).pending);
+  let spotInterruption = false;
+  const sendHeartbeat = (): void => {
     void transport
-      .heartbeat(jobId)
+      .heartbeat(jobId, spotInterruption || undefined)
       .then((r) => {
         if (r && r.gone && !stop.signal.aborted) {
           console.log(`[runner-agent] environment ${jobId} stopped by the Hub`);
@@ -333,9 +351,29 @@ export async function runAgentEnvironment(args: {
         }
       })
       .catch(() => {});
+  };
+  const heartbeat = setInterval(() => {
+    sendHeartbeat();
     void protection.set(true).catch(() => {});
   }, args.heartbeatMs ?? 30_000);
   (heartbeat as { unref?: () => void }).unref?.();
+  let probeInFlight = false;
+  const spotProbe = setInterval(() => {
+    if (spotInterruption || probeInFlight) return;
+    probeInFlight = true;
+    void checkSpot()
+      .then((pending) => {
+        if (!pending || spotInterruption) return;
+        spotInterruption = true;
+        console.log(`[runner-agent] environment ${jobId}: EC2 Spot interruption notice`);
+        sendHeartbeat();
+      })
+      .catch(() => {})
+      .finally(() => {
+        probeInFlight = false;
+      });
+  }, args.spotProbeMs ?? 5_000);
+  (spotProbe as { unref?: () => void }).unref?.();
 
   let seq = 0;
   const buffer: AgentLogFrame[] = [];
@@ -381,10 +419,22 @@ export async function runAgentEnvironment(args: {
     } else if (!result.ok) {
       // A dead container makes every phase fail; that is a runner loss (the
       // Hub requeues it), not a broken app (terminal until Retry).
-      const lost = await containerConfirmedDown(docker, name, {
-        delayMs: args.containerCheckRetryMs,
-      });
-      error = lost ? CONTAINER_STOPPED_DURING_BRINGUP : result.error;
+      // Probe once more: the failure can land between two probe ticks.
+      const reclaimed = spotInterruption || (await checkSpot().catch(() => false));
+      if (reclaimed && !spotInterruption) {
+        spotInterruption = true;
+        sendHeartbeat();
+      }
+      const lost =
+        reclaimed ||
+        (await containerConfirmedDown(docker, name, {
+          delayMs: args.containerCheckRetryMs,
+        }));
+      error = reclaimed
+        ? SPOT_RECLAIMED_DURING_BRINGUP
+        : lost
+          ? CONTAINER_STOPPED_DURING_BRINGUP
+          : result.error;
       log(`!! ${error}`);
       await flush();
       const report: EnvironmentReport = lost
@@ -454,6 +504,7 @@ export async function runAgentEnvironment(args: {
     clearInterval(flusher);
     await flush();
     clearInterval(heartbeat);
+    clearInterval(spotProbe);
     if (containerStarted) {
       const exec = createEnvironmentExec(docker, name, () => {});
       await exec(buildEnvironmentTeardownCommand(), {
