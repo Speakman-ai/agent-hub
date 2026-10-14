@@ -334,6 +334,17 @@ export function describeProbeResult(result: RemoteProbeResult, apiKey: string) {
   }
   if (data.authRequired) {
     if (!apiKey) {
+      // JWT hubs (the normal desktop case) sign the user in on the next
+      // screen. Blocking Test Connection here left Connect disabled, so a
+      // wiped connection could not be restored without an API key the user
+      // does not have. API-key-only hubs still need a key.
+      if (data.jwtAuthEnabled) {
+        return {
+          ok: true,
+          message: `Server reachable — sign in after connecting. ${data.agents || 0} agents, uptime ${Math.round((data.uptime || 0) / 60)}m`,
+          serverInfo: data,
+        };
+      }
       return { ok: false, message: 'Server requires an API key. Enter one above.' };
     }
     if (!auth) return { ok: false, message: 'Auth check failed: no response' };

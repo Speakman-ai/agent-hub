@@ -7,6 +7,7 @@ import SettingsPage, {
   AgentConfigSection,
 } from './SettingsPage';
 import { api } from '../utils/api';
+import { fetchOrgs } from '../utils/orgs';
 
 (vi as any).mock('../utils/api.js', () => ({
   api: {
@@ -100,6 +101,10 @@ import { api } from '../utils/api';
   return {
     ...actual,
     getOrgs: vi.fn(() => ({
+      orgs: [{ id: 'default', name: 'Personal', mode: 'local', color: '#6366f1' }],
+      activeOrgId: 'default',
+    })),
+    fetchOrgs: vi.fn(async () => ({
       orgs: [{ id: 'default', name: 'Personal', mode: 'local', color: '#6366f1' }],
       activeOrgId: 'default',
     })),
@@ -808,6 +813,24 @@ describe('OrganizationsSection — Connection Mode toggle visibility', () => {
     expect(getByText(/Connection Mode/i)).toBeTruthy();
     expect(getByText(/Server runs on this machine/i)).toBeTruthy();
     expect(getByText(/Connect to a remote server/i)).toBeTruthy();
+  });
+
+  it('shows a saved remote URL stored only as remote_url', async () => {
+    (fetchOrgs as any).mockResolvedValueOnce({
+      orgs: [
+        {
+          id: 'st',
+          name: 'Survey Tracker',
+          mode: 'remote',
+          color: '#6366f1',
+          remote_url: 'https://saved-hub.example.com',
+        },
+      ],
+      activeOrgId: 'st',
+    });
+    const { findByText } = render(<OrganizationsSection />);
+    expect(await findByText('https://saved-hub.example.com')).toBeTruthy();
+    expect(await findByText('Survey Tracker')).toBeTruthy();
   });
 });
 

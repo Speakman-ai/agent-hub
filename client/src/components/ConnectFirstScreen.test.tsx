@@ -7,6 +7,12 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
   testConnection: vi.fn(),
   getApiBase: vi.fn(() => '/api'),
   getAuthHeaders: vi.fn(() => ({})),
+  reloadForOrgSwitch: vi.fn(),
+}));
+
+(vi as any).mock('../utils/orgs.js', () => ({
+  fetchOrgs: vi.fn().mockResolvedValue({ orgs: [], activeOrgId: null }),
+  switchOrg: vi.fn().mockResolvedValue(undefined),
 }));
 
 (vi as any).mock('../utils/auth.js', () => ({
@@ -14,7 +20,13 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 }));
 
 import ConnectFirstScreen from './ConnectFirstScreen';
-import { getConnectionConfig, saveConnectionConfig, testConnection } from '../utils/connection';
+import {
+  getConnectionConfig,
+  saveConnectionConfig,
+  testConnection,
+  reloadForOrgSwitch,
+} from '../utils/connection';
+import { fetchOrgs, switchOrg } from '../utils/orgs';
 import { isAuthenticated } from '../utils/auth';
 
 const Child = () => <div data-testid="app-child">app</div>;
@@ -23,6 +35,11 @@ beforeEach(() => {
   (getConnectionConfig as any).mockReset();
   (saveConnectionConfig as any).mockReset();
   (testConnection as any).mockReset();
+  (reloadForOrgSwitch as any).mockReset();
+  (fetchOrgs as any).mockReset();
+  (switchOrg as any).mockReset();
+  (fetchOrgs as any).mockResolvedValue({ orgs: [], activeOrgId: null });
+  (switchOrg as any).mockResolvedValue(undefined);
   (isAuthenticated as any).mockReset();
   (getConnectionConfig as any).mockReturnValue({ mode: 'local', remoteUrl: '', apiKey: '' });
   (isAuthenticated as any).mockReturnValue(false);
@@ -274,5 +291,77 @@ describe('ConnectFirstScreen — actions', () => {
     expect(saveConnectionConfig!).toHaveBeenCalledWith(
       expect.objectContaining({ remoteUrl: 'https://hub.example.com' }),
     );
+  });
+
+  it('reconnects to a saved server without requiring a new URL or API key', async () => {
+    (fetchOrgs as any).mockResolvedValue({
+      orgs: [
+        {
+          id: 'st',
+          name: 'Survey Tracker',
+          mode: 'remote',
+          color: '#6366f1',
+          remote_url: 'https://saved-hub.example.com',
+          api_key: 'saved-key',
+        },
+      ],
+      activeOrgId: null,
+    });
+    (testConnection as any).mockResolvedValue({ ok: true, message: 'ok' });
+
+    render(
+      <ConnectFirstScreen>
+        <Child />
+      </ConnectFirstScreen>,
+    );
+    const saved = await screen.findByTestId('connect-saved-st');
+    expect(saved).toHaveTextContent('Survey Tracker');
+    expect(saved).toHaveTextContent('https://saved-hub.example.com');
+
+    await act(async () => {
+      fireEvent.click(saved);
+    });
+
+    expect(testConnection).toHaveBeenCalledWith('https://saved-hub.example.com', 'saved-key');
+    expect(switchOrg).toHaveBeenCalledWith('st');
+    expect(reloadForOrgSwitch).toHaveBeenCalled();
+  });
+
+  it('keeps the chooser and shows an error when a saved server is unreachable', async () => {
+    (fetchOrgs as any).mockResolvedValue({
+      orgs: [
+        {
+          id: 'st',
+          name: 'Survey Tracker',
+          mode: 'remote',
+          remote_url: 'https://saved-hub.example.com',
+          api_key: '',
+        },
+      ],
+      activeOrgId: null,
+    });
+    (testConnection as any).mockResolvedValue({
+      ok: false,
+      message: 'Connection failed: getaddrinfo ENOTFOUND',
+    });
+
+    render(
+      <ConnectFirstScreen>
+        <Child />
+      </ConnectFirstScreen>,
+    );
+    const saved = await screen.findByTestId('connect-saved-st');
+
+    await act(async () => {
+      fireEvent.click(saved);
+    });
+
+    expect(testConnection).toHaveBeenCalledWith('https://saved-hub.example.com', '');
+    expect(switchOrg).not.toHaveBeenCalled();
+    expect(reloadForOrgSwitch).not.toHaveBeenCalled();
+    expect(await screen.findByTestId('connect-saved-error')).toHaveTextContent(
+      'Survey Tracker is unreachable. Connection failed: getaddrinfo ENOTFOUND',
+    );
+    expect(screen.getByTestId('connect-saved-st')).not.toBeDisabled();
   });
 });

@@ -64,6 +64,12 @@ describe('describeProbeResult', () => {
     );
     expect(
       describeProbeResult(
+        ok({ authRequired: true, jwtAuthEnabled: false, apiKeyAuthEnabled: true }),
+        '',
+      ).message,
+    ).toBe('Server requires an API key. Enter one above.');
+    expect(
+      describeProbeResult(
         { ...ok({ authRequired: true }), auth: { status: 403, statusText: 'Forbidden' } },
         'k',
       ).message,
@@ -73,6 +79,15 @@ describe('describeProbeResult', () => {
   it('does not report Connected for a 200 without health data', () => {
     const r = describeProbeResult({ health: { status: 200, statusText: 'OK', data: null } }, 'k');
     expect(r.ok).toBe(false);
+  });
+
+  it('lets a JWT hub through without an API key so the user can sign in next', () => {
+    const r = describeProbeResult(
+      ok({ authRequired: true, jwtAuthEnabled: true, agents: 9, uptime: 120 }),
+      '',
+    );
+    expect(r.ok).toBe(true);
+    expect(r.message).toMatch(/sign in after connecting/i);
   });
 
   it('accepts a valid key on an auth-required hub', () => {

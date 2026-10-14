@@ -80,7 +80,15 @@ import {
   getServerBase,
   reloadForOrgSwitch,
 } from '../utils/connection';
-import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, switchOrg } from '../utils/orgs';
+import {
+  getOrgs,
+  getActiveOrg,
+  fetchOrgs,
+  createOrg,
+  updateOrg,
+  deleteOrg,
+  switchOrg,
+} from '../utils/orgs';
 import {
   Settings as SettingsIcon,
   Building2,
@@ -199,6 +207,25 @@ export function OrganizationsSection() {
   ];
 
   const refreshOrgs = () => setOrgsState(getOrgs());
+
+  // The in-memory cache is empty until fetchOrgs runs. Opening this tab
+  // before app init finishes (or after a reload that never reached it)
+  // otherwise paints a blank list even though the desktop file still has
+  // the saved servers.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchOrgs();
+        if (!cancelled && res) setOrgsState(res);
+      } catch {
+        // Keep whatever getOrgs() already had.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleExpand = (orgId: any) => {
     if (expandedOrgId === orgId) {
@@ -385,9 +412,9 @@ export function OrganizationsSection() {
                       </span>
                     )}
                   </div>
-                  {org.mode === 'remote' && org.remoteUrl && (
+                  {org.mode === 'remote' && (org.remote_url || org.remoteUrl) && (
                     <p className="text-xs text-gray-500 truncate mt-0.5 font-mono">
-                      {org.remoteUrl}
+                      {org.remote_url || org.remoteUrl}
                     </p>
                   )}
                 </div>
