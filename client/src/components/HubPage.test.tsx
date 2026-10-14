@@ -15,6 +15,20 @@ const panes = {
 };
 
 describe('HubPage', () => {
+  it('hides the assistant column on desktop while the assistant is open in Chat', () => {
+    window.localStorage.setItem(HUB_ASSISTANT_COLLAPSED_KEY, '1');
+    const { rerender } = render(
+      <HubPage pane="chat" onPaneChange={() => {}} {...panes} assistantInWorkspace />,
+    );
+    expect(screen.getByTestId('hub-assistant-pane').className).toContain('lg:hidden');
+    // The "Show assistant" button would reopen a column with nothing in it.
+    expect(screen.queryByTestId('hub-assistant-open')).toBeNull();
+
+    window.localStorage.removeItem(HUB_ASSISTANT_COLLAPSED_KEY);
+    rerender(<HubPage pane="chat" onPaneChange={() => {}} {...panes} />);
+    expect(screen.getByTestId('hub-assistant-open')).toBeInTheDocument();
+  });
+
   it('renders Hub chrome and switches workspace panes', () => {
     const onPaneChange = vi.fn();
     render(

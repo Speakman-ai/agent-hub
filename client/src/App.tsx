@@ -123,7 +123,20 @@ import {
 import { getOpenChatSpace, requestOpenChatSpace } from './utils/googleChatNotifications';
 import { useHubChatUnread } from './hooks/useHubChatUnread';
 import { combinedChatBadge } from './utils/hubChatUnread';
-import { effectiveChatPaneSide, getChatPaneSide, setChatPaneSide } from './utils/chatPaneSide';
+import {
+  effectiveChatPaneSide,
+  getChatPaneSide,
+  setChatPaneSide,
+  useChatPaneSide,
+} from './utils/chatPaneSide';
+import {
+  clearHubAssistantUnread,
+  getHubAssistantUnread,
+  isHubAssistantTranscriptVisible,
+  noteHubAssistantTurnDone,
+  useHubAssistantSelected,
+  useHubAssistantUnread,
+} from './utils/hubAssistantChat';
 import {
   focusHubChatMessage,
   getHubChatSession,
@@ -2328,6 +2341,9 @@ export default function App({ initialView }: any = {}) {
           if (followRearmedTurnSessionRef.current === data.sessionId) {
             followRearmedTurnSessionRef.current = null;
           }
+          if (data.message && data.sessionId && data.sessionId === hubSessionIdRef.current) {
+            noteHubAssistantTurnDone(isHubAssistantTranscriptVisible());
+          }
           setActiveTasks((prev: any) => {
             const next = { ...prev };
             delete next[data.sessionId];
@@ -3987,7 +4003,41 @@ export default function App({ initialView }: any = {}) {
       notify({ title: notice.title, body: notice.body });
     },
   });
-  const chatButtonBadge = combinedChatBadge(hubChatUnread.badge, googleChatBadge);
+  // The pinned Agent Hub DM renders the Hub assistant session. It takes over
+  // from the assistant column only while it is actually the visible Chat
+  // conversation; otherwise the column keeps the transcript.
+  const hubAssistantSelected = useHubAssistantSelected();
+  const chatPaneSideChoice = useChatPaneSide();
+  const hubAssistantInChat =
+    hubAssistantSelected &&
+    currentView === 'hub' &&
+    hubPane === 'chat' &&
+    hubMobileTab !== 'assistant' &&
+    effectiveChatPaneSide(chatPaneSideChoice, chatEnabled) === 'hub';
+  const hubAssistantUnread = useHubAssistantUnread();
+  const agentHubChatBadge = hubChatUnread.badge + hubAssistantUnread;
+  const chatButtonBadge = combinedChatBadge(agentHubChatBadge, googleChatBadge);
+  // Moving the transcript between the column and the DM remounts its scroll
+  // container at the top; snap it back to the latest turn.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => scrollToBottom());
+    return () => cancelAnimationFrame(raf);
+  }, [hubAssistantInChat, scrollToBottom]);
+  // A reply counted while off screen is seen once the transcript shows again.
+  useEffect(() => {
+    if (getHubAssistantUnread() > 0 && isHubAssistantTranscriptVisible()) {
+      clearHubAssistantUnread();
+    }
+  });
+  useEffect(() => {
+    const onVisible = () => {
+      if (getHubAssistantUnread() > 0 && isHubAssistantTranscriptVisible()) {
+        clearHubAssistantUnread();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
 
   const handleCancel = useCallback(() => {
     if (activeSessionId) {
@@ -7339,7 +7389,9 @@ export default function App({ initialView }: any = {}) {
                   }
                   chat={
                     <ChatPane
-                      hubUnread={hubChatUnread.badge}
+                      hubUnread={agentHubChatBadge}
+                      assistantEnabled
+                      assistant={hubAssistantInChat ? hubAssistantChat : null}
                       googleUnread={googleChatBadge}
                       onSessionStarted={handleOpenCreatedSession}
                       onOpenRef={(ref) => {
@@ -7382,7 +7434,8 @@ export default function App({ initialView }: any = {}) {
                       }}
                     />
                   }
-                  assistant={hubAssistantChat}
+                  assistant={hubAssistantInChat ? null : hubAssistantChat}
+                  assistantInWorkspace={hubAssistantInChat}
                   paneBadges={{ chat: chatButtonBadge }}
                 />
               ) : currentView === 'deployments' && deploymentsProjectId ? (

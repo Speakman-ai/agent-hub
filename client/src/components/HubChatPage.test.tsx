@@ -26,7 +26,17 @@ import ChatPane from './ChatPane';
 import { api } from '../utils/api';
 import { requestOpenChatSpace, takePendingOpenChatSpace } from '../utils/googleChatNotifications';
 import type { HubChatChannel, HubChatMessage } from '../utils/hubChat';
-import { resetHubChatSessionForTests } from '../utils/hubChatSession';
+import {
+  getHubChatSession,
+  resetHubChatSessionForTests,
+  updateHubChatSession,
+} from '../utils/hubChatSession';
+import {
+  HUB_ASSISTANT_CHANNEL_ID,
+  getHubAssistantUnread,
+  markHubAssistantReplyUnseen,
+  resetHubAssistantUnreadForTests,
+} from '../utils/hubAssistantChat';
 import { CHAT_PANE_SIDE_KEY, resetChatPaneSideForTests } from '../utils/chatPaneSide';
 
 const chat = (api as unknown as { hubChat: Record<string, ReturnType<typeof vi.fn>> }).hubChat;
@@ -83,6 +93,7 @@ function wsEvent(type: string, detail: Record<string, unknown>) {
 beforeEach(() => {
   vi.clearAllMocks();
   resetHubChatSessionForTests();
+  resetHubAssistantUnreadForTests();
   window.localStorage.removeItem(CHAT_PANE_SIDE_KEY);
   resetChatPaneSideForTests();
   chat.members.mockResolvedValue({
@@ -105,7 +116,8 @@ describe('HubChatPage rail', () => {
   it('shows sections and unread badges, and updates them from live events', async () => {
     render(<HubChatPage />);
     await screen.findByTestId('hub-chat-channel-gen');
-    expect(screen.getByTestId('hub-chat-assistant-placeholder')).toBeTruthy();
+    // The pinned assistant DM only shows when the app wires the assistant in.
+    expect(screen.queryByTestId('hub-chat-assistant')).toBeNull();
     expect(within(screen.getByTestId('hub-chat-section-dms')).getByText('bob')).toBeTruthy();
     expect(screen.getByTestId('hub-chat-unread-gen').textContent).toBe('2');
 
@@ -130,6 +142,62 @@ describe('HubChatPage rail', () => {
       message: message(3, { channelId: 'gen', authorUserId: 'alice' }),
     });
     expect(screen.getByTestId('hub-chat-unread-gen').textContent).toBe('2');
+  });
+});
+
+describe('HubChatPage pinned Agent Hub DM', () => {
+  it('opens the assistant transcript it is given and keeps it open', async () => {
+    render(
+      <HubChatPage
+        assistantEnabled
+        assistant={<div data-testid="assistant-transcript">hub session</div>}
+      />,
+    );
+    await screen.findByText('hello 1');
+    const row = screen.getByTestId('hub-chat-assistant');
+    expect(row.textContent).toContain('Agent Hub');
+
+    fireEvent.click(row);
+    expect(getHubChatSession().selectedId).toBe(HUB_ASSISTANT_CHANNEL_ID);
+    expect(await screen.findByTestId('assistant-transcript')).toBeTruthy();
+    // The rail does not fall back to the first channel while the DM is open.
+    await waitFor(() => expect(screen.queryByText('hello 1')).toBeNull());
+    expect(getHubChatSession().selectedId).toBe(HUB_ASSISTANT_CHANNEL_ID);
+
+    // Back to a channel.
+    fireEvent.click(screen.getByTestId('hub-chat-channel-dm1'));
+    expect(await screen.findByText('hello 1')).toBeTruthy();
+    expect(screen.queryByTestId('assistant-transcript')).toBeNull();
+  });
+
+  it('badges an unseen assistant reply and clears it when the DM opens', async () => {
+    render(<HubChatPage assistantEnabled />);
+    await screen.findByText('hello 1');
+    expect(screen.queryByTestId('hub-chat-assistant-unread')).toBeNull();
+
+    act(() => markHubAssistantReplyUnseen());
+    expect(screen.getByTestId('hub-chat-assistant-unread').textContent).toBe('1');
+
+    fireEvent.click(screen.getByTestId('hub-chat-assistant'));
+    expect(screen.queryByTestId('hub-chat-assistant-unread')).toBeNull();
+    expect(getHubAssistantUnread()).toBe(0);
+    // The transcript is mounted in the assistant column instead.
+    expect(screen.getByTestId('hub-chat-assistant-elsewhere')).toBeTruthy();
+  });
+
+  it('falls back to a channel when the assistant DM is not available', async () => {
+    updateHubChatSession((st) => ({ ...st, selectedId: HUB_ASSISTANT_CHANNEL_ID }));
+    render(<HubChatPage />);
+    await screen.findByText('hello 1');
+    expect(getHubChatSession().selectedId).toBe('dm1');
+  });
+
+  it('renders the assistant through ChatPane', async () => {
+    render(
+      <ChatPane assistantEnabled assistant={<div data-testid="assistant-transcript">hub</div>} />,
+    );
+    fireEvent.click(await screen.findByTestId('hub-chat-assistant'));
+    expect(await screen.findByTestId('assistant-transcript')).toBeTruthy();
   });
 });
 

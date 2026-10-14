@@ -25,8 +25,14 @@ export default function ChatPane({
   googleUnread = 0,
   onOpenRef,
   onSessionStarted,
+  assistantEnabled = false,
+  assistant = null,
 }: {
   google?: ReactNode;
+  /** Pins the Hub assistant DM in the Agent Hub rail. */
+  assistantEnabled?: boolean;
+  /** The assistant transcript, when the pinned DM may render it here. */
+  assistant?: ReactNode;
   hubUnread?: number;
   googleUnread?: number;
   /** Opens the card, session, PR or ticket behind a clicked chat chip. */
@@ -84,7 +90,12 @@ export default function ChatPane({
         </div>
       )}
       {side === 'hub' || !googleAvailable ? (
-        <HubChatPage onOpenRef={onOpenRef} onSessionStarted={onSessionStarted} />
+        <HubChatPage
+          onOpenRef={onOpenRef}
+          onSessionStarted={onSessionStarted}
+          assistantEnabled={assistantEnabled}
+          assistant={assistant}
+        />
       ) : (
         google
       )}

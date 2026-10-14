@@ -56,6 +56,11 @@ export interface HubPageProps {
   assistantActions?: ReactNode;
   /** Unread counts shown on pane tabs (e.g. Google Chat). Zero hides the badge. */
   paneBadges?: Partial<Record<HubWorkspacePane, number>>;
+  /**
+   * The assistant is open as the pinned DM in the Chat pane, so the column
+   * steps aside on desktop (the transcript can only be mounted once).
+   */
+  assistantInWorkspace?: boolean;
 }
 
 export const HUB_ASSISTANT_COLLAPSED_KEY = 'agentHub.hubAssistantCollapsed';
@@ -128,6 +133,7 @@ export default function HubPage({
   onMobileTabChange,
   assistantActions,
   paneBadges,
+  assistantInWorkspace = false,
 }: HubPageProps) {
   const active = parseHubPane(pane);
   // Desktop-only: narrow viewports reach the assistant through its own tab.
@@ -211,7 +217,7 @@ export default function HubPage({
               );
             })}
           </nav>
-          {assistantCollapsed && (
+          {assistantCollapsed && !assistantInWorkspace && (
             <button
               type="button"
               data-testid="hub-assistant-open"
@@ -235,7 +241,11 @@ export default function HubPage({
       <aside
         className={`border-gray-800 bg-gray-950 min-h-0 min-w-0 flex-col ${
           mobileAssistantTab && mobileTab === 'assistant' ? 'flex' : 'hidden'
-        } ${assistantCollapsed ? 'lg:hidden' : 'lg:flex lg:w-[min(28rem,40vw)] lg:border-l'}`}
+        } ${
+          assistantCollapsed || assistantInWorkspace
+            ? 'lg:hidden'
+            : 'lg:flex lg:w-[min(28rem,40vw)] lg:border-l'
+        }`}
         data-testid="hub-assistant-pane"
       >
         <div className="hidden lg:flex shrink-0 items-center gap-2 border-b border-gray-800 px-3 py-2">

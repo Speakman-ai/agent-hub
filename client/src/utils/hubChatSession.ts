@@ -72,13 +72,13 @@ export function updateHubChatSession(fn: (s: HubChatSessionState) => HubChatSess
   for (const l of listeners) l();
 }
 
-function subscribe(listener: () => void): () => void {
+export function subscribeHubChatSession(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
 export function useHubChatSession(): HubChatSessionState {
-  return useSyncExternalStore(subscribe, getHubChatSession, getHubChatSession);
+  return useSyncExternalStore(subscribeHubChatSession, getHubChatSession, getHubChatSession);
 }
 
 /** Asks the page to open a channel and show one of its messages. */
