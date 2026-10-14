@@ -125,6 +125,28 @@ export const HUB_CHAT_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_project_chat_trigger_posts_created
     ON project_chat_trigger_posts(created_at);
 
+  -- Scheduled AI digest for a channel: at most one per channel. Runs on the
+  -- owner's engine credentials and posts as author_kind='system'.
+  -- window_start is the durable cursor: the next run summarizes
+  -- [window_start, now). Only a posted or skipped run moves it (to that run's
+  -- end); a failed run leaves it, so the retry covers the same span.
+  CREATE TABLE IF NOT EXISTS hub_chat_channel_digests (
+    channel_id      TEXT PRIMARY KEY REFERENCES hub_chat_channels(id) ON DELETE CASCADE,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    cron            TEXT NOT NULL,
+    time_zone       TEXT NOT NULL DEFAULT 'UTC',
+    scope           TEXT NOT NULL CHECK(scope IN ('channel','project')),
+    project_id      TEXT,
+    owner_user_id   TEXT NOT NULL,
+    window_start    TEXT NOT NULL,
+    last_run_at     TEXT,
+    last_status     TEXT CHECK(last_status IS NULL OR last_status IN ('posted','skipped','error')),
+    last_error      TEXT,
+    last_message_id TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+
   -- The turn a session with channel turns is running now (a channel turn or
   -- one started in the session directly).
   CREATE TABLE IF NOT EXISTS hub_chat_agent_session_turns (

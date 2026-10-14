@@ -191,6 +191,11 @@ export interface DailySummaryScheduleDeps {
    * no-runtime-edge reason as `generate`.
    */
   onScheduledReport?: (userId: string, report: HubDailySummaryStored) => void;
+  /**
+   * Other schedules that ride this ticker (channel digests). Started before
+   * the daily summaries so a slow summary never delays them; awaited at the end.
+   */
+  onTick?: (now: Date) => Promise<void>;
   now?: () => Date;
 }
 
@@ -214,6 +219,19 @@ export async function runDailySummaryScheduleTick(deps: DailySummaryScheduleDeps
     firedThisDay.clear();
     firedDayKey = utcDay;
   }
+  const extra = deps.onTick
+    ? deps.onTick(now).catch((err: unknown) => {
+        console.error('[daily-summary-schedule] onTick failed:', (err as Error).message);
+      })
+    : Promise.resolve();
+  try {
+    await runDueDailySummaries(deps, now);
+  } finally {
+    await extra;
+  }
+}
+
+async function runDueDailySummaries(deps: DailySummaryScheduleDeps, now: Date): Promise<void> {
   let entries: Array<{ userId: string; schedule: HubDailySummarySchedule }>;
   try {
     entries = deps.listSchedules();

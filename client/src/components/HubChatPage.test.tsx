@@ -17,6 +17,7 @@ vi.mock('../utils/api', () => ({
       remove: vi.fn(),
       join: vi.fn(),
       channel: vi.fn(),
+      digest: vi.fn(() => Promise.resolve({ digest: null })),
     },
   },
 }));

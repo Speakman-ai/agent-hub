@@ -54,6 +54,7 @@ import { useApp } from '../context/AppContext';
 import { HubChatComposer, HubChatMessageBody } from '../components/HubChatRefs';
 import HubIcon from '../components/HubIcon';
 import HubChatTriggerCard from '../components/HubChatTriggerCard';
+import HubChatDigestSection from '../components/HubChatDigestSection';
 import { readChatTriggerCard } from '@shared/utils/chatTriggers';
 import { colors } from '../theme/colors';
 
@@ -1134,37 +1135,43 @@ function ChannelSettingsDialog({
   const setMute = (until: string | null) =>
     save({ mutedUntil: until }, () => api.hubChat.setMute(channel.id, until));
   return (
-    <DialogShell visible={visible} title="Notifications" onClose={onClose}>
-      {NOTIFY_OPTIONS.map((o) => (
-        <TouchableOpacity
-          key={o.level}
-          style={styles.row}
-          onPress={() => setLevel(o.level)}
-          accessibilityRole="radio"
-          accessibilityState={{ selected: level === o.level }}
-        >
-          <Text style={[styles.rowLabel, level === o.level && styles.rowLabelBold]}>
-            {level === o.level ? '● ' : '○ '}
-            {o.label}
-          </Text>
-        </TouchableOpacity>
-      ))}
-      <Text style={[styles.sectionLabel, styles.pad]}>Mute</Text>
-      {muted ? (
-        <TouchableOpacity style={styles.row} onPress={() => setMute(null)}>
-          <Text style={styles.link}>Unmute</Text>
-        </TouchableOpacity>
-      ) : (
-        MUTE_PRESETS.map((p) => (
+    <DialogShell visible={visible} title="Channel settings" onClose={onClose}>
+      <ScrollView>
+        <Text style={styles.sectionLabel}>Notifications</Text>
+        {NOTIFY_OPTIONS.map((o) => (
           <TouchableOpacity
-            key={p.label}
+            key={o.level}
             style={styles.row}
-            onPress={() => setMute(muteUntilIso(p.hours))}
+            onPress={() => setLevel(o.level)}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: level === o.level }}
           >
-            <Text style={styles.rowLabel}>{p.label}</Text>
+            <Text style={[styles.rowLabel, level === o.level && styles.rowLabelBold]}>
+              {level === o.level ? '● ' : '○ '}
+              {o.label}
+            </Text>
           </TouchableOpacity>
-        ))
-      )}
+        ))}
+        <Text style={[styles.sectionLabel, styles.pad]}>Mute</Text>
+        {muted ? (
+          <TouchableOpacity style={styles.row} onPress={() => setMute(null)}>
+            <Text style={styles.link}>Unmute</Text>
+          </TouchableOpacity>
+        ) : (
+          MUTE_PRESETS.map((p) => (
+            <TouchableOpacity
+              key={p.label}
+              style={styles.row}
+              onPress={() => setMute(muteUntilIso(p.hours))}
+            >
+              <Text style={styles.rowLabel}>{p.label}</Text>
+            </TouchableOpacity>
+          ))
+        )}
+        {visible && channel.membership && !channel.archivedAt && (
+          <HubChatDigestSection channelId={channel.id} channelProjectId={channel.projectId} />
+        )}
+      </ScrollView>
     </DialogShell>
   );
 }

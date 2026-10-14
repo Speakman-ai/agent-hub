@@ -633,3 +633,98 @@ registerPath({
     ...common,
   },
 });
+
+export const DigestScopeSchema = z.enum(['channel', 'project']);
+
+export const ChannelDigestComponent = registerComponent(
+  'HubChatChannelDigest',
+  z
+    .object({
+      channelId: z.string(),
+      enabled: z.boolean(),
+      cron: z.string().openapi({ description: '5-field cron expression, read in `timeZone`.' }),
+      timeZone: z.string().openapi({ description: 'IANA timezone the cron is read in.' }),
+      scope: DigestScopeSchema.openapi({
+        description:
+          "`channel` summarizes this channel's messages since the last digest; `project` summarizes a project's activity.",
+      }),
+      projectId: z.string().nullable(),
+      ownerUserId: z.string().openapi({
+        description: 'User whose engine credentials and access the digest runs on (last editor).',
+      }),
+      windowStart: z.string().openapi({
+        description:
+          'Start of the span the next run summarizes. Moves only when a run posts or skips, so a failed span is retried.',
+      }),
+      lastRunAt: z.string().nullable().openapi({
+        description: 'End of the last window that was posted or skipped as empty.',
+      }),
+      lastStatus: z.enum(['posted', 'skipped', 'error']).nullable(),
+      lastError: z.string().nullable(),
+      lastMessageId: z.string().nullable(),
+      createdAt: z.string(),
+      updatedAt: z.string(),
+    })
+    .openapi({ description: 'Scheduled AI digest posted into a channel as a system message.' }),
+);
+
+export const UpsertDigestRequestSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    cron: z.string().trim().min(1).max(120),
+    timeZone: z.string().trim().min(1).max(64),
+    scope: DigestScopeSchema,
+    projectId: z.string().trim().min(1).max(200).nullable().optional().openapi({
+      description: 'Required when `scope` is `project`; ignored otherwise.',
+    }),
+  })
+  .strict();
+
+const digestEnvelope = z.object({ digest: ChannelDigestComponent.nullable() });
+
+registerPath({
+  method: 'get',
+  path: '/api/chat/channels/{channelId}/digest',
+  tags: [TAG],
+  summary: "Get a channel's scheduled digest",
+  request: { params: channelParams },
+  responses: {
+    200: {
+      description: 'The digest, or null when none is configured.',
+      content: jsonContent(digestEnvelope),
+    },
+    404: notFound,
+    ...common,
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/chat/channels/{channelId}/digest',
+  tags: [TAG],
+  summary: "Create or replace a channel's scheduled digest",
+  description:
+    'Members only. The caller becomes the digest owner: runs use their engine credentials, and a project digest requires that they can view the project.',
+  request: { params: channelParams, body: { content: jsonContent(UpsertDigestRequestSchema) } },
+  responses: {
+    200: { description: 'The saved digest.', content: jsonContent(digestEnvelope) },
+    400: errorResponse('Invalid cron, timezone, or missing project.'),
+    404: errorResponse('Channel or project not found.'),
+    409: errorResponse('Not joined, or the channel is archived.'),
+    ...common,
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/chat/channels/{channelId}/digest',
+  tags: [TAG],
+  summary: "Remove a channel's scheduled digest",
+  request: { params: channelParams },
+  responses: {
+    200: { description: 'Removed (or nothing to remove).', content: jsonContent(digestEnvelope) },
+    404: notFound,
+    409: errorResponse('Not joined.'),
+    ...common,
+  },
+});

@@ -1325,6 +1325,24 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify({ mutedUntil }),
       }),
+    digest: (channelId: string) =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/digest`),
+    saveDigest: (
+      channelId: string,
+      data: {
+        enabled: boolean;
+        cron: string;
+        timeZone: string;
+        scope: 'channel' | 'project';
+        projectId?: string | null;
+      },
+    ) =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/digest`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    removeDigest: (channelId: string) =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/digest`, { method: 'DELETE' }),
     searchRefs: (trigger: '@' | '#', q: string) =>
       fetchJSON(`/chat/refs/search?${new URLSearchParams({ trigger, q }).toString()}`),
     resolveRefs: (refs: { kind: string; targetId: string }[]) =>

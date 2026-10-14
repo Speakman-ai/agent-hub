@@ -74,7 +74,16 @@ import {
   ResolveRefsRequestSchema,
   SearchRefsQuerySchema,
   UpdateChannelRequestSchema,
+  UpsertDigestRequestSchema,
 } from './hub-chat.openapi.js';
+import {
+  deleteChannelDigest,
+  getChannelDigest,
+  upsertChannelDigest,
+  type ChannelDigestRow,
+} from '../hub-chat-digests-store.js';
+import { isValidCron } from '../cron-match.js';
+import { isValidTimeZone } from '../daily-summary-schedule.js';
 import {
   buildRefViewer,
   resolveBodyRefs,
@@ -175,6 +184,26 @@ function shapeMember(m: HubChatMemberRow) {
     username: getUserById(m.user_id)?.username ?? null,
     role: m.role,
     joinedAt: m.joined_at,
+  };
+}
+
+function shapeDigest(row: ChannelDigestRow | null) {
+  if (!row) return null;
+  return {
+    channelId: row.channel_id,
+    enabled: row.enabled === 1,
+    cron: row.cron,
+    timeZone: row.time_zone,
+    scope: row.scope,
+    projectId: row.project_id,
+    ownerUserId: row.owner_user_id,
+    windowStart: row.window_start,
+    lastRunAt: row.last_run_at,
+    lastStatus: row.last_status,
+    lastError: row.last_error,
+    lastMessageId: row.last_message_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -715,6 +744,71 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       membership,
     });
     res.json({ membership });
+  });
+
+  router.get('/api/chat/channels/:channelId/digest', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const v = visibleChannel(caller, String(req.params.channelId), res);
+    if (!v) return;
+    res.json({ digest: shapeDigest(getChannelDigest(v.channel.id)) });
+  });
+
+  router.put('/api/chat/channels/:channelId/digest', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const m = memberChannel(caller, String(req.params.channelId), res);
+    if (!m) return;
+    const body = parse(UpsertDigestRequestSchema, req.body, res);
+    if (!body) return;
+    if (m.channel.archived_at) {
+      bad(res, 409, 'This channel is archived', 'channel_archived');
+      return;
+    }
+    if (!isValidCron(body.cron)) {
+      bad(res, 400, 'Schedule must be a 5-field cron expression', 'invalid_cron');
+      return;
+    }
+    if (!isValidTimeZone(body.timeZone)) {
+      bad(res, 400, 'Unknown timezone', 'invalid_time_zone');
+      return;
+    }
+    let projectId: string | null = null;
+    if (body.scope === 'project') {
+      const project = body.projectId ? (deps.findProject?.(body.projectId) ?? null) : null;
+      if (!body.projectId) {
+        bad(res, 400, 'Pick a project for a project digest', 'project_required');
+        return;
+      }
+      if (
+        !project ||
+        isHubSystemProject(project) ||
+        !canViewProject(project, refViewer(caller).visibility)
+      ) {
+        bad(res, 404, 'Project not found', 'project_not_found');
+        return;
+      }
+      projectId = project.id;
+    }
+    const row = upsertChannelDigest({
+      channelId: m.channel.id,
+      enabled: body.enabled,
+      cron: body.cron.trim().split(/\s+/).join(' '),
+      timeZone: body.timeZone.trim(),
+      scope: body.scope,
+      projectId,
+      ownerUserId: caller.userId,
+    });
+    res.json({ digest: shapeDigest(row) });
+  });
+
+  router.delete('/api/chat/channels/:channelId/digest', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const m = memberChannel(caller, String(req.params.channelId), res);
+    if (!m) return;
+    deleteChannelDigest(m.channel.id);
+    res.json({ digest: null });
   });
 
   return router;
