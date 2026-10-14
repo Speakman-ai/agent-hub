@@ -206,6 +206,8 @@ export function useVoiceRecorder({
 }: VoiceRecorderOptions) {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  // The live mic stream while recording, so callers can meter it.
+  const [stream, setStream] = useState<MediaStream | null>(null);
   const takeRef = useRef<Take | null>(null);
   // Bumped by cancel() and every start() so a start() still awaiting mic permission knows it was
   // abandoned and releases the stream instead of recording.
@@ -256,6 +258,7 @@ export function useVoiceRecorder({
     }
     setIsRecording(false);
     setIsTranscribing(false);
+    setStream(null);
   }, []);
 
   const finalize = useCallback(
@@ -307,6 +310,7 @@ export function useVoiceRecorder({
       }
       stopTracks(take.stream);
       setIsRecording(false);
+      setStream(null);
       void finalize(take);
     },
     [finalize],
@@ -346,6 +350,7 @@ export function useVoiceRecorder({
           // while the remaining uploads finish.
           stopTracks(take.stream);
           setIsRecording(false);
+          setStream(null);
           void finalize(take);
         }
       };
@@ -408,7 +413,7 @@ export function useVoiceRecorder({
       const denied = err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError';
       reportError(
         denied
-          ? 'Microphone permission denied. Enable mic access in your browser settings, then tap the mic again.'
+          ? 'Microphone permission denied. Allow microphone access in your browser, or on macOS in System Settings > Privacy & Security > Microphone, then tap the mic again.'
           : `Could not start microphone: ${err?.message || err?.name || 'unknown error'}`,
       );
       return;
@@ -438,6 +443,7 @@ export function useVoiceRecorder({
     takeRef.current = take;
     take.timer = setInterval(() => rotate(take), SEGMENT_DURATION_MS);
     setIsRecording(true);
+    setStream(stream);
   }, [isRecording, isTranscribing, reportError, startSegment, rotate]);
 
   const stop = useCallback(() => {
@@ -459,7 +465,7 @@ export function useVoiceRecorder({
   // unmounted caller.
   useEffect(() => cancel, [cancel]);
 
-  return { isRecording, isTranscribing, start, stop, toggle, cancel };
+  return { isRecording, isTranscribing, stream, start, stop, toggle, cancel };
 }
 
 // Pads a transcript with a single space on either side where it would

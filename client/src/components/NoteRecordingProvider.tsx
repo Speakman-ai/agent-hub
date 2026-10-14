@@ -60,6 +60,8 @@ export type NoteRecordingEditorRef = { current: NoteRecordingEditor };
 export interface NoteRecordingContextValue {
   isRecording: boolean;
   isTranscribing: boolean;
+  /** The live mic stream while recording, for the level meter. */
+  stream: MediaStream | null;
   summarizing: boolean;
   /** Settling the editor's writes or appending through the API. */
   saving: boolean;
@@ -284,6 +286,7 @@ export function NoteRecordingProvider({ children }: { children: ReactNode }) {
   const {
     isRecording,
     isTranscribing,
+    stream,
     start: startRecorder,
     stop: stopRecorder,
     cancel: cancelRecorder,
@@ -372,6 +375,7 @@ export function NoteRecordingProvider({ children }: { children: ReactNode }) {
     () => ({
       isRecording,
       isTranscribing,
+      stream,
       summarizing,
       saving,
       serialize,
@@ -394,6 +398,7 @@ export function NoteRecordingProvider({ children }: { children: ReactNode }) {
     [
       isRecording,
       isTranscribing,
+      stream,
       stopRecorder,
       summarizing,
       saving,

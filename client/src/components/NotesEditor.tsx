@@ -35,6 +35,7 @@ import {
   Users,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import RecordingLevelMeter from './RecordingLevelMeter';
 import { padBlockForInsert } from '@shared/utils/voiceNoteMarkdown';
 import {
   NoteRecordingProvider,
@@ -1407,7 +1408,10 @@ function NotesEditorBody({
                 )}
                 {uploadError && <span className="text-xs text-red-400">{uploadError}</span>}
                 {showRecording && (
-                  <span className="text-xs text-red-400 animate-pulse">Recording…</span>
+                  <>
+                    <span className="text-xs text-red-400 animate-pulse">Recording…</span>
+                    <RecordingLevelMeter stream={recording.stream} />
+                  </>
                 )}
                 {showTranscribing && (
                   <span className="text-xs text-blue-400 animate-pulse">Transcribing…</span>

@@ -9,6 +9,8 @@ const create = TestRenderer.create as (element: any) => any;
 const recording = vi.hoisted(() => ({
   stopAndUnloadAsync: vi.fn(async () => {}),
   getURI: vi.fn(() => 'file:///rec.m4a'),
+  setProgressUpdateInterval: vi.fn(),
+  setOnRecordingStatusUpdate: vi.fn(),
 }));
 vi.mock('expo-av', () => ({
   Audio: {
@@ -100,6 +102,24 @@ describe('useVoiceTranscription', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     transcribe.resolve = null;
+  });
+
+  it('meters the live input while recording and clears the meter on stop', async () => {
+    const h = mount(1);
+    await h.render();
+    await act(async () => {
+      h.state.hook.handleMicClick();
+      await flush();
+    });
+    expect(recording.setOnRecordingStatusUpdate).toHaveBeenCalledTimes(1);
+    const onStatus = (recording.setOnRecordingStatusUpdate.mock.calls as any[])[0][0];
+    onStatus({ isRecording: true, metering: -30 });
+    expect(h.state.hook.levelStore.get().level).toBeCloseTo(0.5);
+    await act(async () => {
+      h.state.hook.handleMicClick();
+      await flush();
+    });
+    expect(h.state.hook.levelStore.get()).toEqual({ level: 0, warning: null });
   });
 
   it('splices the transcript at the captured cursor', async () => {

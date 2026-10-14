@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Copy, Loader2, Square, X } from 'lucide-react';
 import { useNoteRecording } from './NoteRecordingProvider';
+import RecordingLevelMeter from './RecordingLevelMeter';
 
 export function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -83,22 +84,25 @@ export default function NoteRecordingWidget({
           ) : (
             <Loader2 size={14} className="shrink-0 animate-spin text-blue-400" />
           )}
-          <button
-            onClick={() => target && onOpenNotes?.(target.projectId)}
-            disabled={!onOpenNotes || !target}
-            className="min-w-0 flex-1 text-left disabled:cursor-default"
-            title={onOpenNotes ? 'Open notes' : undefined}
-          >
-            <span className="block text-xs font-medium">
-              {status}
-              {isRecording && recording.startedAt != null && (
-                <span className="ml-1.5 tabular-nums text-gray-400">
-                  {formatElapsed(now - recording.startedAt)}
-                </span>
-              )}
-            </span>
-            <span className="block truncate text-xs text-gray-400">{noteLabel}</span>
-          </button>
+          <div className="min-w-0 flex-1">
+            <button
+              onClick={() => target && onOpenNotes?.(target.projectId)}
+              disabled={!onOpenNotes || !target}
+              className="block w-full min-w-0 text-left disabled:cursor-default"
+              title={onOpenNotes ? 'Open notes' : undefined}
+            >
+              <span className="block text-xs font-medium">
+                {status}
+                {isRecording && recording.startedAt != null && (
+                  <span className="ml-1.5 tabular-nums text-gray-400">
+                    {formatElapsed(now - recording.startedAt)}
+                  </span>
+                )}
+              </span>
+              <span className="block truncate text-xs text-gray-400">{noteLabel}</span>
+            </button>
+            {isRecording && <RecordingLevelMeter stream={recording.stream} />}
+          </div>
           {isRecording && (
             <button
               onClick={recording.stop}

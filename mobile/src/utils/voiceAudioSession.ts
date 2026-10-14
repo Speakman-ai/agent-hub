@@ -24,6 +24,8 @@ export function speechRecordingOptions(): any {
   const speech = { sampleRate: 16_000, numberOfChannels: 1, bitRate: SPEECH_RECORDING_BITRATE };
   return {
     ...base,
+    // Live input level for the recording meter (status.metering, in dBFS).
+    isMeteringEnabled: true,
     android: { ...base.android, ...speech },
     ios: { ...base.ios, ...speech },
     web: { ...base.web, bitsPerSecond: SPEECH_RECORDING_BITRATE },

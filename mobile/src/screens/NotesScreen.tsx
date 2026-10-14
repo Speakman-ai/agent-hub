@@ -21,6 +21,7 @@ import { api } from '../utils/api';
 import { getServerBaseUrl } from '../utils/config';
 import { colors } from '../theme/colors';
 import AppIcon from '../components/AppIcon';
+import VoiceLevelMeter from '../components/VoiceLevelMeter';
 import { useVoiceTranscription } from '../hooks/useVoiceTranscription';
 import NoteMarkdown from '../components/NoteMarkdown';
 import { buildVoiceNoteMarkdown } from '@shared/utils/voiceNoteMarkdown';
@@ -220,6 +221,7 @@ export default function NotesScreen({ route }: any) {
     isRecording,
     isTranscribing,
     isPreparing: isSummarizing,
+    levelStore: voiceLevelStore,
     micDisabled,
     handleMicClick,
     cancel: cancelVoice,
@@ -756,6 +758,7 @@ export default function NotesScreen({ route }: any) {
                   (isRecording ? 'Recording…' : isSummarizing ? 'Summarizing…' : 'Transcribing…')}
               </Text>
             ) : null}
+            {isRecording && voiceLevelStore ? <VoiceLevelMeter store={voiceLevelStore} /> : null}
             <TextInput
               style={styles.contentInput}
               value={editContent}

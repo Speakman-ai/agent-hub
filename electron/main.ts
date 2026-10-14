@@ -13,6 +13,7 @@ import {
   ipcMain,
   session,
   shell,
+  systemPreferences,
   Menu,
   type MenuItemConstructorOptions,
 } from 'electron';
@@ -29,6 +30,7 @@ import {
   renameSync,
 } from 'fs';
 import { createNotificationHandlers } from './notifications.js';
+import { resolvePermissionRequest } from './media-permission.js';
 import { saveDesignPdfWithDialog } from './save-design-pdf-dialog.js';
 import { mergeElectronServerPath } from './merge-server-path.js';
 import { resolveElectronDevUserDataDir } from './resolve-user-data-dir.js';
@@ -169,6 +171,20 @@ function installRemoteApiKeyInjector() {
     );
     callback({ requestHeaders: details.requestHeaders });
   });
+}
+
+function installMediaPermissionHandler() {
+  session.defaultSession.setPermissionRequestHandler(
+    (_webContents, permission, callback, details) => {
+      resolvePermissionRequest(permission, details, {
+        platform: process.platform,
+        getMediaAccessStatus: (type) => systemPreferences.getMediaAccessStatus(type),
+        askForMediaAccess: (type) => systemPreferences.askForMediaAccess(type),
+      })
+        .then(callback)
+        .catch(() => callback(false));
+    },
+  );
 }
 
 function isRemoteMode() {
@@ -720,6 +736,7 @@ function buildMenu() {
 app.whenReady().then(async () => {
   buildMenu();
   installRemoteApiKeyInjector();
+  installMediaPermissionHandler();
 
   // Always start the local server — it's lightweight and ensures switching
   // from a remote org to a local org works without an app restart.

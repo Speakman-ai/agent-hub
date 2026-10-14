@@ -9,6 +9,7 @@ import {
 } from '../utils/voiceAudioSession';
 import { applyTranscriptAtAnchor, contentTypeForRecordingUri } from '../utils/voiceTranscription';
 import { transcribeAudio } from '../utils/transcribeAudio';
+import { createVoiceLevelStore, METERING_INTERVAL_MS } from '../utils/voiceLevel';
 import { transformRange } from '@shared/utils/noteAttachments';
 import { padBlockForInsert } from '@shared/utils/voiceNoteMarkdown';
 /**
@@ -35,6 +36,9 @@ export function useVoiceTranscription({
   const prepareRef = useRef<((t: string) => Promise<string>) | undefined>(prepareTranscript);
   prepareRef.current = prepareTranscript;
   const recordingRef = useRef<any>(null);
+  const levelStoreRef = useRef<ReturnType<typeof createVoiceLevelStore> | null>(null);
+  if (!levelStoreRef.current) levelStoreRef.current = createVoiceLevelStore();
+  const levelStore = levelStoreRef.current;
   const transcribeAnchorRef = useRef<any>(null);
   // Callers that swap the edited buffer (notes) pass a key identifying it; a
   // transcript recorded against one key is dropped if the key has changed.
@@ -114,6 +118,15 @@ export function useVoiceTranscription({
         return;
       }
       recordingRef.current = recording;
+      levelStore.begin(Date.now());
+      try {
+        recording.setProgressUpdateInterval?.(METERING_INTERVAL_MS);
+        recording.setOnRecordingStatusUpdate?.((status: any) => {
+          if (status?.isRecording) levelStore.push(status.metering, Date.now());
+        });
+      } catch {
+        /* metering is best-effort; recording continues without the meter */
+      }
       setIsRecording(true);
     } catch (err: any) {
       if (!isLive(attempt)) return;
@@ -123,12 +136,13 @@ export function useVoiceTranscription({
           : `Could not start microphone: ${err?.message || 'unknown error'}`,
       );
     }
-  }, [isRecording, isTranscribing, value, cursorRef, isLive, reportError]);
+  }, [isRecording, isTranscribing, value, cursorRef, isLive, reportError, levelStore]);
   const stopRecording = useCallback(async () => {
     const attempt = attemptRef.current;
     const rec = recordingRef.current;
     recordingRef.current = null;
     setIsRecording(false);
+    levelStore.reset();
     if (!attempt || !rec) return;
     // Busy from the moment the user taps stop, through unload and upload, so
     // the mic can't be re-armed while this attempt is still finishing.
@@ -176,7 +190,7 @@ export function useVoiceTranscription({
       // for a superseded one, and a newer attempt may have set it since.
       if (isLive(attempt)) setIsTranscribing(false);
     }
-  }, [isLive, applyTranscript, reportError]);
+  }, [isLive, applyTranscript, reportError, levelStore]);
   const handleMicClick = useCallback(() => {
     if (isTranscribing) return;
     if (isRecording) stopRecording();
@@ -194,8 +208,9 @@ export function useVoiceTranscription({
     setIsRecording(false);
     setIsTranscribing(false);
     setIsPreparing(false);
+    levelStore.reset();
     if (rec) void releaseRecording(attempt, rec);
-  }, []);
+  }, [levelStore]);
   // Keeps the captured dictation anchor aligned with edits made while the
   // recording or upload is pending (callers that let the user keep typing).
   const trackEdit = useCallback((prevText: string, nextText: string) => {
@@ -212,6 +227,8 @@ export function useVoiceTranscription({
     isRecording,
     isTranscribing,
     isPreparing,
+    /** Live input level and silence warning while recording. */
+    levelStore,
     micDisabled,
     handleMicClick,
     cancel,

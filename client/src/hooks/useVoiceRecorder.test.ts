@@ -134,6 +134,16 @@ describe('useVoiceRecorder', () => {
     });
   });
 
+  it('exposes the live mic stream only while recording, for the level meter', async () => {
+    const { hook } = setup();
+    expect(hook.result.current.stream).toBeNull();
+    await act(() => hook.result.current.start());
+    const live = await (navigator.mediaDevices.getUserMedia as any).mock.results[0].value;
+    expect(hook.result.current.stream).toBe(live);
+    act(() => hook.result.current.stop());
+    expect(hook.result.current.stream).toBeNull();
+  });
+
   it('records at the speech bitrate', async () => {
     const { hook } = setup();
     await act(() => hook.result.current.start());

@@ -92,7 +92,12 @@
       ],
       "icon": "client/public/icon.png",
       "category": "public.app-category.developer-tools",
-      "x64ArchFiles": "**/better-sqlite3/build/Release/test_extension.node"
+      "x64ArchFiles": "**/better-sqlite3/build/Release/test_extension.node",
+      "entitlements": "electron/entitlements.mac.plist",
+      "entitlementsInherit": "electron/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Agent Hub uses the microphone to record voice notes and meetings and to dictate chat messages."
+      }
     },
     "linux": {
       "target": [
