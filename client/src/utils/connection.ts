@@ -258,55 +258,98 @@ export function getAuthHeaders(): Record<string, string> {
   return {};
 }
 
-/** Test connection to a remote server. Returns { ok, message, serverInfo? }. */
-export async function testConnection(url: any, apiKey: any) {
-  const base = url.trim().replace(/\/+$/, '');
-  const headers: Record<string, any> = {};
-  if (apiKey) headers['X-API-Key'] = apiKey;
+type ProbeResponse = { status: number; statusText: string };
 
+/** Raw HTTP facts from a Test Connection probe (same shape as the Electron IPC result). */
+export type RemoteProbeResult =
+  | { error: 'invalid-url' | 'timeout' | 'network'; message: string }
+  | { health: ProbeResponse & { data: any }; auth?: ProbeResponse };
+
+async function probeFromRenderer(base: string, apiKey: string): Promise<RemoteProbeResult> {
   try {
-    // First: hit /api/health (public) to verify server is reachable
     const healthRes = await fetch(`${base}/api/health`, {
-      headers,
+      headers: apiKey ? { 'X-API-Key': apiKey } : {},
       signal: AbortSignal.timeout(10000),
     });
-    if (!healthRes.ok) {
-      return {
-        ok: false,
-        message: `Server responded with ${healthRes.status}: ${healthRes.statusText}`,
-      };
-    }
-    const data = await healthRes.json();
-
-    // Second: if server requires auth, verify the API key by hitting an auth-required endpoint
-    if (data.authRequired) {
-      if (!apiKey) {
-        return { ok: false, message: 'Server requires an API key. Enter one above.' };
-      }
-      const authRes = await fetch(`${base}/api/agents`, {
-        headers: { 'X-API-Key': apiKey },
-        signal: AbortSignal.timeout(10000),
-      });
-      if (authRes.status === 401 || authRes.status === 403) {
-        return {
-          ok: false,
-          message: `Server reachable but API key is invalid (${authRes.status}).`,
-        };
-      }
-      if (!authRes.ok) {
-        return { ok: false, message: `Auth check failed: ${authRes.status} ${authRes.statusText}` };
-      }
-    }
-
-    return {
-      ok: true,
-      message: `Connected — ${data.agents || 0} agents, uptime ${Math.round((data.uptime || 0) / 60)}m`,
-      serverInfo: data,
-    };
+    const data = healthRes.ok ? await healthRes.json() : null;
+    const health = { status: healthRes.status, statusText: healthRes.statusText, data };
+    if (!healthRes.ok || !data?.authRequired || !apiKey) return { health };
+    const authRes = await fetch(`${base}/api/agents`, {
+      headers: { 'X-API-Key': apiKey },
+      signal: AbortSignal.timeout(10000),
+    });
+    return { health, auth: { status: authRes.status, statusText: authRes.statusText } };
   } catch (err: any) {
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      return { error: 'timeout', message: 'timed out' };
+    }
+    return { error: 'network', message: err.message };
+  }
+}
+
+/**
+ * Test connection to a remote server. Returns { ok, message, serverInfo? }.
+ *
+ * In Electron the probe runs in the main process: the renderer is served from
+ * the embedded localhost server, so a renderer fetch to a remote hub is
+ * cross-origin and the hub's CORS allowlist blocks it ("Failed to fetch").
+ */
+export async function testConnection(url: any, apiKey: any) {
+  const base = String(url ?? '')
+    .trim()
+    .replace(/\/+$/, '');
+  const key = String(apiKey ?? '').trim();
+  const ipcProbe = typeof window !== 'undefined' ? window.electronAPI?.probeRemoteConnection : null;
+
+  let result: RemoteProbeResult;
+  try {
+    result = ipcProbe ? await ipcProbe(base, key) : await probeFromRenderer(base, key);
+  } catch (err: any) {
+    result = { error: 'network', message: err?.message || 'network error' };
+  }
+  return describeProbeResult(result, key);
+}
+
+export function describeProbeResult(result: RemoteProbeResult, apiKey: string) {
+  if ('error' in result) {
+    if (result.error === 'timeout') {
       return { ok: false, message: 'Connection timed out after 10 seconds.' };
     }
-    return { ok: false, message: `Connection failed: ${err.message}` };
+    if (result.error === 'invalid-url') return { ok: false, message: result.message };
+    return { ok: false, message: `Connection failed: ${result.message}` };
   }
+  const { health, auth } = result;
+  if (health.status < 200 || health.status >= 300) {
+    return {
+      ok: false,
+      message: `Server responded with ${health.status}: ${health.statusText}`,
+    };
+  }
+  const data = health.data;
+  if (!data || typeof data !== 'object') {
+    return {
+      ok: false,
+      message: 'Connection failed: server did not return Agent Hub health data.',
+    };
+  }
+  if (data.authRequired) {
+    if (!apiKey) {
+      return { ok: false, message: 'Server requires an API key. Enter one above.' };
+    }
+    if (!auth) return { ok: false, message: 'Auth check failed: no response' };
+    if (auth.status === 401 || auth.status === 403) {
+      return {
+        ok: false,
+        message: `Server reachable but API key is invalid (${auth.status}).`,
+      };
+    }
+    if (auth.status < 200 || auth.status >= 300) {
+      return { ok: false, message: `Auth check failed: ${auth.status} ${auth.statusText}` };
+    }
+  }
+  return {
+    ok: true,
+    message: `Connected — ${data.agents || 0} agents, uptime ${Math.round((data.uptime || 0) / 60)}m`,
+    serverInfo: data,
+  };
 }

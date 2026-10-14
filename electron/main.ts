@@ -42,6 +42,7 @@ import {
 } from './remote-auth-scope.js';
 import { resolveEffectiveArch } from './effective-arch.js';
 import { probeInstallerUrl } from './release-asset-probe.js';
+import { probeRemoteConnection } from './remote-connection-probe.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -680,6 +681,11 @@ ipcMain.handle('agenthub-fetch-health', async (_event, rawUrl) => {
 });
 
 ipcMain.handle('agenthub-probe-installer', (_event, rawUrl) => probeInstallerUrl(rawUrl));
+
+// Test Connection to a remote hub without renderer CORS (see remote-connection-probe.ts).
+ipcMain.handle('agenthub-probe-remote', (_event, rawUrl, rawApiKey) =>
+  probeRemoteConnection(rawUrl, rawApiKey),
+);
 
 // Notification IPC handlers
 

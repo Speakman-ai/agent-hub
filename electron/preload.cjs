@@ -38,6 +38,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** HEAD-check a published S3 release DMG. Resolves true / false, or null when the URL is not probeable. */
   probeInstallerUrl: (url) => ipcRenderer.invoke('agenthub-probe-installer', url),
 
+  /**
+   * Probe a remote hub's /api/health (and API key) from the main process so
+   * Test Connection isn't blocked by renderer CORS.
+   */
+  probeRemoteConnection: (url, apiKey) => ipcRenderer.invoke('agenthub-probe-remote', url, apiKey),
+
   /** Read the connection config from the main process (file-backed). */
   getConnectionConfig: () => ipcRenderer.sendSync('get-connection-config'),
 

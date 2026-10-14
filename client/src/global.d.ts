@@ -10,6 +10,10 @@ interface ElectronAPI {
   checkForDesktopUpdate?: (...args: any[]) => any;
   getDesktopUpdateHealth?: (...args: any[]) => any;
   showNotification?: (...args: any[]) => any;
+  probeRemoteConnection?: (
+    url: string,
+    apiKey: string,
+  ) => Promise<import('./utils/connection').RemoteProbeResult>;
   [key: string]: any;
 }
 
