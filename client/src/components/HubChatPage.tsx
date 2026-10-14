@@ -73,6 +73,9 @@ import {
   reconcileMembership,
   reconcileChannels,
   sectionChannels,
+  agentChannelStatus,
+  applyAgentStateToChannels,
+  type HubChatAgentState,
   type HubChatChannel,
   type HubChatMessage,
   type HubChatOrgMember,
@@ -80,6 +83,7 @@ import {
   type MessageWindow,
   type ChannelFieldGroup,
 } from '../utils/hubChat';
+import { formatHubChatRefToken } from '@shared/utils/hubChatRefTokens';
 
 const PAGE = 50;
 const TOOL_BUTTON =
@@ -185,6 +189,40 @@ function emptyView(channelId: string, dividerSeq: number | null, generation: num
 }
 
 type DialogKind = 'channel' | 'dm' | 'browse' | 'settings' | null;
+
+/** Agent channel header: running state plus a chip for the linked session. */
+function AgentChannelHeaderState({
+  state,
+  onOpenRef,
+}: {
+  state: HubChatAgentState | null | undefined;
+  onOpenRef?: HubChatRefOpenHandler;
+}) {
+  const chip =
+    state?.sessionId &&
+    formatHubChatRefToken(state.sessionName || 'Session', 'session', state.sessionId);
+  return (
+    <div
+      className="flex shrink-0 items-center gap-2 text-xs text-gray-400"
+      data-testid="hub-chat-agent-state"
+      data-running={state?.running ? 'true' : 'false'}
+    >
+      <span className="inline-flex items-center gap-1" role="status">
+        {state?.running ? (
+          <Loader2 size={12} className="animate-spin text-blue-400" aria-hidden />
+        ) : (
+          <Bot size={12} aria-hidden />
+        )}
+        {agentChannelStatus(state)}
+      </span>
+      {chip && (
+        <span className="max-w-[12rem] truncate">
+          <HubChatMessageBody body={chip} onOpenRef={onOpenRef} />
+        </span>
+      )}
+    </div>
+  );
+}
 
 export default function HubChatPage({
   onOpenRef,
@@ -742,6 +780,13 @@ export default function HubChatPage({
         changeChannels(data.channelId, ['presence'], (prev) =>
           prev.filter((c) => c.id !== data.channelId),
         );
+      }
+      if (data.reason === 'agent_state' && data.agentState && data.channelId) {
+        const state = data.agentState as HubChatAgentState;
+        changeChannels(data.channelId, [], (prev) =>
+          applyAgentStateToChannels(prev, data.channelId, state),
+        );
+        return;
       }
       if (data.reason === 'membership' && data.membership && data.channelId) {
         // A live event is the server's current value, newer than any change
@@ -1339,6 +1384,9 @@ export default function HubChatPage({
                   </div>
                 )}
               </div>
+              {selected.kind === 'agent' && (
+                <AgentChannelHeaderState state={selected.agentState} onOpenRef={onOpenRef} />
+              )}
               <button
                 type="button"
                 onClick={() => setDialog('settings')}

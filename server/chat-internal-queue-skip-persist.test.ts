@@ -169,3 +169,24 @@ describe('handleChat busy-enqueue — internal dispatch honors _skipUserMessageP
     ).toBe(true);
   });
 });
+
+describe('handleChat busy-enqueue — caller-chosen user message id', () => {
+  it('queues the turn under _userMessageId so the caller can recognise it', async () => {
+    const { agentId, sessionId, projectId, activeProcesses, stmts } = seedBusySession('uid');
+    const { handleChat, broadcasts } = stubChatDeps(agentId, projectId, activeProcesses);
+    const id = randomUUID();
+
+    await handleChat(null, {
+      type: 'chat',
+      agentId,
+      sessionId,
+      content: 'from a chat channel',
+      _userMessageId: id,
+    } as Parameters<typeof handleChat>[1]);
+
+    const queued = stmts.getQueuedMessages.all(sessionId) as Array<{ id: string }>;
+    expect(queued.map((q) => q.id)).toEqual([id]);
+    const msg = broadcasts.find((b) => b.type === 'message')?.message as { id?: string };
+    expect(msg?.id).toBe(id);
+  });
+});

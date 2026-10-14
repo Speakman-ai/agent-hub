@@ -438,3 +438,41 @@ describe('agent-authored messages', () => {
     expect(rows.map((r) => r.showHeader)).toEqual([true, false, true]);
   });
 });
+
+describe('agent channels', () => {
+  it('offers only chat-capable agents of the chosen project', async () => {
+    const { agentChannelAgentOptions } = await import('./hubChat');
+    const agents = [
+      { id: 'web-dev', name: 'Web Dev', projectId: 'web' },
+      { id: 'web-rev', name: 'Reviewer', projectId: 'web', role: 'reviewer' },
+      { id: 'web-docs', name: 'Docs', projectId: 'web', role: 'Docs' },
+      { id: 'api-dev', name: 'API Dev', projectId: 'api' },
+      { id: 'loose', name: 'Loose' },
+    ];
+    expect(agentChannelAgentOptions(agents, 'web')).toEqual([{ id: 'web-dev', name: 'Web Dev' }]);
+    expect(agentChannelAgentOptions(agents, '')).toEqual([]);
+    expect(agentChannelAgentOptions(null, 'web')).toEqual([]);
+  });
+
+  it('applies a live agent state to one channel', async () => {
+    const { applyAgentStateToChannels } = await import('./hubChat');
+    const a = { id: 'a', agentState: null } as never;
+    const b = { id: 'b', agentState: null } as never;
+    const state = { sessionId: 's1', sessionName: '#web', running: true };
+    const next = applyAgentStateToChannels([a, b], 'a', state);
+    expect(next[0]).toMatchObject({ id: 'a', agentState: state });
+    expect(next[1]).toBe(b);
+  });
+
+  it('labels the header state', async () => {
+    const { agentChannelStatus } = await import('./hubChat');
+    expect(agentChannelStatus(null)).toBe('');
+    expect(agentChannelStatus({ sessionId: null, sessionName: null, running: false })).toBe(
+      'Post to start a session',
+    );
+    expect(agentChannelStatus({ sessionId: 's', sessionName: 'x', running: true })).toBe(
+      'Working…',
+    );
+    expect(agentChannelStatus({ sessionId: 's', sessionName: 'x', running: false })).toBe('Idle');
+  });
+});

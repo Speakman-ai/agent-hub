@@ -23,6 +23,8 @@ import {
   type HubChatChannel,
   type HubChatMembership,
   type HubChatMessage,
+  applyAgentStateToChannels,
+  type HubChatAgentState,
 } from '@shared/utils/hubChat';
 import {
   hubChatBadgeCount,
@@ -564,6 +566,13 @@ export function createHubChatStore(chatApi: HubChatStoreApi) {
         case 'hub_chat_channel_update': {
           const channelId = typeof data.channelId === 'string' ? data.channelId : null;
           for (const l of liveListeners) l({ type: 'hub_chat_channel_update', channelId });
+          // Agent running state is complete in the event; nothing else changed.
+          if (data.reason === 'agent_state' && channelId && data.agentState) {
+            setBase(
+              applyAgentStateToChannels(base, channelId, data.agentState as HubChatAgentState),
+            );
+            return;
+          }
           void refresh();
           return;
         }

@@ -1156,10 +1156,12 @@ export const api = {
     browse: () => fetchJSON('/chat/channels/browse'),
     channel: (channelId: string) => fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}`),
     createChannel: (data: {
-      kind?: 'channel' | 'group';
+      kind?: 'channel' | 'group' | 'agent';
       name?: string;
       topic?: string | null;
       isPrivate?: boolean;
+      projectId?: string;
+      agentId?: string;
       memberUserIds?: string[];
     }) => fetchJSON('/chat/channels', { method: 'POST', body: JSON.stringify(data) }),
     openDm: (userId: string) =>

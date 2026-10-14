@@ -22,8 +22,16 @@ import { AGENT_HUB_SESSION_ID_HEADER } from '../kanban-caller-session.js';
 import { getMembershipRole, listMembersForOrg } from '../memberships-store.js';
 import { getActiveOrgId } from '../orgs.js';
 import { getUserById } from '../users-store.js';
-import { findAgent } from '../project-model.js';
-import { HUB_ASSISTANT_AGENT_ID } from '../../shared/utils/hub.js';
+import { isHubSystemProject } from '../../shared/utils/hub.js';
+import { canViewProject } from '../project-visibility.js';
+import { isEligibleBackgroundSessionAgent } from '../background-agent-session.js';
+import { broadcastHubChatMessage, shapeMessage } from '../hub-chat-broadcast.js';
+import {
+  agentChannelState,
+  reserveAgentChannelTurn,
+  runAgentChannelPost,
+} from '../hub-chat-agent-channels.js';
+import { getDb } from '../db.js';
 import type {
   HubChatChannelRow,
   HubChatChannelSummary,
@@ -148,6 +156,7 @@ function shapeChannel(
       : null,
     unreadCount: summary?.unread_count ?? 0,
     mentionCount: summary?.mention_count ?? 0,
+    agentState: agentChannelState(row),
   };
 }
 
@@ -169,38 +178,7 @@ function shapeMember(m: HubChatMemberRow) {
   };
 }
 
-function parseJson(raw: string | null): unknown {
-  if (raw == null) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-function agentDisplayName(agentId: string): string {
-  if (agentId === HUB_ASSISTANT_AGENT_ID) return 'Agent Hub';
-  return findAgent(agentId)?.agent.name || agentId;
-}
-
-export function shapeMessage(m: HubChatMessageRow) {
-  const refs = parseJson(m.refs_json);
-  return {
-    id: m.id,
-    channelId: m.channel_id,
-    seq: m.seq,
-    authorKind: m.author_kind,
-    authorUserId: m.author_user_id,
-    authorAgentId: m.author_agent_id,
-    authorAgentName: m.author_agent_id ? agentDisplayName(m.author_agent_id) : null,
-    body: m.body,
-    refs: Array.isArray(refs) ? refs : [],
-    payload: parseJson(m.payload_json),
-    editedAt: m.edited_at,
-    deletedAt: m.deleted_at,
-    createdAt: m.created_at,
-  };
-}
+export { shapeMessage };
 
 export default function createHubChatRoutes(deps: RouteDeps): Router {
   const router = Router();
@@ -229,19 +207,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
   }
 
   function emitMessage(type: string, channel: HubChatChannelRow, message: HubChatMessageRow) {
-    emit(type, recipientsOf(listMembers(channel.id)), {
-      orgId: channel.org_id,
-      channelId: channel.id,
-      channelKind: channel.kind,
-      channelName: channel.name,
-      authorName:
-        message.author_kind === 'agent' && message.author_agent_id
-          ? agentDisplayName(message.author_agent_id)
-          : message.author_user_id
-            ? (getUserById(message.author_user_id)?.username ?? null)
-            : null,
-      message: shapeMessage(message),
-    });
+    broadcastHubChatMessage(deps.broadcast, type, channel, message);
   }
 
   /** Read state is the caller's alone; this syncs their other clients. */
@@ -362,6 +328,42 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     return msg;
   }
 
+  /**
+   * Validates the project agent an agent channel binds to: a project the
+   * caller can see, and an agent in it that can host a chat session.
+   */
+  function agentBinding(
+    caller: Caller,
+    projectId: string,
+    agentId: string,
+    res: Response,
+  ): { projectId: string; agentId: string; agentName: string } | null {
+    const project = deps.findProject?.(projectId) ?? null;
+    if (
+      !project ||
+      isHubSystemProject(project) ||
+      !canViewProject(project, refViewer(caller).visibility)
+    ) {
+      bad(res, 404, 'Project not found', 'project_not_found');
+      return null;
+    }
+    const agent = project.agents?.find((a) => a.id === agentId);
+    if (!agent) {
+      bad(res, 404, 'Agent not found in this project', 'agent_not_found');
+      return null;
+    }
+    if (!isEligibleBackgroundSessionAgent(agent)) {
+      bad(res, 400, `Agent "${agent.name}" cannot host a chat session`, 'agent_not_eligible');
+      return null;
+    }
+    return { projectId: project.id, agentId: agent.id, agentName: agent.name || agent.id };
+  }
+
+  function canUseAgentProject(caller: Caller, channel: HubChatChannelRow): boolean {
+    const project = channel.project_id ? (deps.findProject?.(channel.project_id) ?? null) : null;
+    return Boolean(project && canViewProject(project, refViewer(caller).visibility));
+  }
+
   router.get('/api/chat/members', (req: Request, res: Response) => {
     const caller = requireCaller(req, res);
     if (!caller) return;
@@ -424,12 +426,19 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       bad(res, 400, `User ${outsider} is not a member of this org`, 'member_not_in_org');
       return;
     }
+    let binding: { projectId: string; agentId: string; agentName: string } | null = null;
+    if (body.kind === 'agent') {
+      binding = agentBinding(caller, body.projectId ?? '', body.agentId ?? '', res);
+      if (!binding) return;
+    }
     const channel = createChannel({
       orgId: caller.orgId,
       kind: body.kind,
-      name: body.name ?? '',
+      name: body.name || binding?.agentName || '',
       topic: body.topic ?? null,
       isPrivate: body.isPrivate,
+      projectId: binding?.projectId ?? null,
+      agentId: binding?.agentId ?? null,
       createdByUserId: caller.userId,
       memberUserIds: others,
     });
@@ -574,20 +583,40 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       bad(res, 409, 'This channel is archived', 'channel_archived');
       return;
     }
+    if (m.channel.kind === 'agent' && !caller.agentId && !canUseAgentProject(caller, m.channel)) {
+      bad(res, 403, "You need access to this channel's project to post", 'project_access_required');
+      return;
+    }
     const resolved = resolveBodyRefs(refLookups, refViewer(caller), body.body);
-    const message = appendMessage({
-      channelId: m.channel.id,
-      authorKind: caller.agentId ? 'agent' : 'user',
-      authorUserId: caller.userId,
-      authorAgentId: caller.agentId,
-      body: resolved.body,
-      refs: resolved.refs,
-    });
+    // A member's post in an agent channel runs in its session. Agent posts
+    // (chat.sh) never do, so two agents cannot loop on each other.
+    const runsAgent = m.channel.kind === 'agent' && !caller.agentId;
+    // The post and its agent turn are stored together, so a stored post is
+    // never left without the record that gets it answered.
+    const { message, turnId } = getDb().transaction(() => {
+      const message = appendMessage({
+        channelId: m.channel.id,
+        authorKind: caller.agentId ? 'agent' : 'user',
+        authorUserId: caller.userId,
+        authorAgentId: caller.agentId,
+        body: resolved.body,
+        refs: resolved.refs,
+      });
+      return { message, turnId: runsAgent ? reserveAgentChannelTurn(m.channel) : null };
+    })();
     emitMessage(HUB_CHAT_MESSAGE_EVENT, m.channel, message);
     // The author's read pointer moved past their own message. An agent's post
     // stays unread for the owner, so they notice it.
     if (!caller.agentId) emitRead(caller, m.channel.id, message.seq);
-    res.status(201).json({ message: shapeMessage(message) });
+    const agentSessionId = turnId
+      ? runAgentChannelPost({
+          channel: m.channel,
+          turnId,
+          authorName: getUserById(caller.userId)?.username ?? 'A member',
+          body: resolved.body,
+        }).sessionId
+      : null;
+    res.status(201).json({ message: shapeMessage(message), agentSessionId });
   });
 
   // Resolves a message link to its channel and seq, so a client can load the

@@ -16,6 +16,8 @@ import {
   View,
 } from 'react-native';
 import {
+  agentChannelAgentOptions,
+  agentChannelStatus,
   authorLabel,
   channelLabel,
   isChannelMuted,
@@ -36,6 +38,8 @@ import {
   type ComposerMention,
   type HubChatResolvedRef,
 } from '@shared/utils/hubChatRefs';
+import { formatHubChatRefToken } from '@shared/utils/hubChatRefTokens';
+import { isHubSystemProject } from '@shared/utils/hub';
 import { useIsFocused } from '@react-navigation/native';
 import { api } from '../utils/api';
 import {
@@ -604,6 +608,26 @@ function ChannelView({
               {channel.topic}
             </Text>
           ) : null}
+          {channel?.kind === 'agent' ? (
+            <View style={styles.agentStateRow} testID="hub-chat-agent-state">
+              {channel.agentState?.running ? (
+                <ActivityIndicator size="small" color={colors.blue400} />
+              ) : null}
+              <Text style={styles.muted}>{agentChannelStatus(channel.agentState)}</Text>
+              {channel.agentState?.sessionId ? (
+                <HubChatMessageBody
+                  body={
+                    formatHubChatRefToken(
+                      channel.agentState.sessionName || 'Session',
+                      'session',
+                      channel.agentState.sessionId,
+                    ) ?? ''
+                  }
+                  onOpenRef={onOpenRef}
+                />
+              ) : null}
+            </View>
+          ) : null}
         </View>
         {channel?.membership ? (
           <TouchableOpacity
@@ -871,20 +895,58 @@ function NewChannelDialog({
   onClose: () => void;
   onCreated: (channelId: string) => void;
 }) {
+  const [kind, setKind] = useState<'channel' | 'agent'>('channel');
   const [name, setName] = useState('');
   const [topic, setTopic] = useState('');
   const [isPrivate, setIsPrivate] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
+  const [agents, setAgents] = useState<unknown[]>([]);
+  const [projectId, setProjectId] = useState('');
+  const [agentId, setAgentId] = useState('');
+  const isAgent = kind === 'agent';
+  const agentOptions = useMemo(
+    () => agentChannelAgentOptions(agents, projectId),
+    [agents, projectId],
+  );
+  const canCreate = isAgent ? !!agentId : !!name.trim();
+
+  useEffect(() => {
+    if (!visible || !isAgent) return;
+    let cancelled = false;
+    Promise.all([api.getProjects(), api.getAgents()])
+      .then(([p, a]) => {
+        if (cancelled) return;
+        const list = (Array.isArray(p) ? p : [])
+          .filter((x: { id?: unknown }) => !isHubSystemProject(x as { id: string }))
+          .map((x: { id: unknown; name?: unknown }) => ({
+            id: String(x.id),
+            name: typeof x.name === 'string' && x.name ? x.name : String(x.id),
+          }));
+        const agentList = Array.isArray(a) ? (a as unknown[]) : [];
+        setProjects(list);
+        setAgents(agentList);
+        const first = list.find((x) => agentChannelAgentOptions(agentList, x.id).length);
+        setProjectId(first?.id ?? '');
+        setAgentId(first ? (agentChannelAgentOptions(agentList, first.id)[0]?.id ?? '') : '');
+      })
+      .catch((err: unknown) => Alert.alert('Could not load agents', errorText(err)));
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, isAgent]);
+
   const create = () => {
-    if (!name.trim()) return;
+    if (!canCreate) return;
     setBusy(true);
     hubChatStore
       .requestChannel(() =>
         api.hubChat.createChannel({
-          kind: 'channel',
-          name: name.trim(),
+          kind,
+          name: name.trim() || undefined,
           topic: topic.trim() || null,
           isPrivate,
+          ...(isAgent ? { projectId, agentId } : {}),
         }),
       )
       .then((channel) => {
@@ -892,6 +954,7 @@ function NewChannelDialog({
         setName('');
         setTopic('');
         setIsPrivate(false);
+        setKind('channel');
         onCreated(channel.id);
       })
       .catch((err: unknown) => Alert.alert('Could not create the channel', errorText(err)))
@@ -899,10 +962,66 @@ function NewChannelDialog({
   };
   return (
     <DialogShell visible={visible} title="New channel" onClose={onClose}>
+      <View style={styles.chipRow} accessibilityRole="radiogroup">
+        {(
+          [
+            ['channel', 'Channel'],
+            ['agent', 'Agent channel'],
+          ] as const
+        ).map(([value, label]) => (
+          <TouchableOpacity
+            key={value}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: kind === value }}
+            onPress={() => setKind(value)}
+            style={[styles.chip, kind === value && styles.chipActive]}
+            disabled={busy}
+          >
+            <Text style={styles.rowLabel}>{label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      {isAgent ? (
+        <>
+          <Text style={styles.muted}>
+            Posts run in one session on this agent, owned by you. Replies are posted back here.
+          </Text>
+          <Text style={styles.rowLabel}>Project</Text>
+          <View style={styles.chipRow}>
+            {projects.map((p) => (
+              <TouchableOpacity
+                key={p.id}
+                onPress={() => {
+                  setProjectId(p.id);
+                  setAgentId(agentChannelAgentOptions(agents, p.id)[0]?.id ?? '');
+                }}
+                style={[styles.chip, projectId === p.id && styles.chipActive]}
+                disabled={busy}
+              >
+                <Text style={styles.rowLabel}>{p.name}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text style={styles.rowLabel}>Agent</Text>
+          <View style={styles.chipRow}>
+            {agentOptions.map((a) => (
+              <TouchableOpacity
+                key={a.id}
+                onPress={() => setAgentId(a.id)}
+                style={[styles.chip, agentId === a.id && styles.chipActive]}
+                disabled={busy}
+              >
+                <Text style={styles.rowLabel}>{a.name}</Text>
+              </TouchableOpacity>
+            ))}
+            {!agentOptions.length ? <Text style={styles.muted}>No agents</Text> : null}
+          </View>
+        </>
+      ) : null}
       <TextInput
         value={name}
         onChangeText={setName}
-        placeholder="Name"
+        placeholder={isAgent ? 'Name (optional)' : 'Name'}
         placeholderTextColor={colors.gray500}
         style={styles.field}
         autoCapitalize="none"
@@ -921,8 +1040,8 @@ function NewChannelDialog({
         <Switch value={isPrivate} onValueChange={setIsPrivate} disabled={busy} />
       </View>
       <TouchableOpacity
-        style={[styles.primary, (busy || !name.trim()) && styles.disabled]}
-        disabled={busy || !name.trim()}
+        style={[styles.primary, (busy || !canCreate) && styles.disabled]}
+        disabled={busy || !canCreate}
         onPress={create}
       >
         <Text style={styles.sendText}>Create</Text>
@@ -1054,6 +1173,16 @@ const styles = StyleSheet.create({
   pad: { padding: 12 },
   link: { color: colors.blue400, fontSize: 13 },
   disabled: { opacity: 0.5 },
+  agentStateRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 },
+  chip: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  chipActive: { backgroundColor: colors.blue600, borderColor: colors.blue600 },
   toggle: {
     flexDirection: 'row',
     marginHorizontal: 12,

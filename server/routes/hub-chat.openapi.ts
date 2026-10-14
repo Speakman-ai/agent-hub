@@ -32,6 +32,17 @@ const MembershipComponent = z
   })
   .openapi({ description: "The caller's membership in the channel." });
 
+const AgentStateComponent = registerComponent(
+  'HubChatAgentState',
+  z.object({
+    sessionId: z.string().nullable().openapi({
+      description: 'The session posts run in; null until the first post.',
+    }),
+    sessionName: z.string().nullable(),
+    running: z.boolean().openapi({ description: 'True while the agent is answering a post.' }),
+  }),
+);
+
 export const HubChatChannelComponent = registerComponent(
   'HubChatChannel',
   z
@@ -57,6 +68,9 @@ export const HubChatChannelComponent = registerComponent(
       }),
       unreadCount: z.number().int(),
       mentionCount: z.number().int(),
+      agentState: AgentStateComponent.nullable().openapi({
+        description: 'Agent channels only: the linked session and whether it is working.',
+      }),
     })
     .openapi({ description: 'A chat channel as seen by the caller, with their unread state.' }),
 );
@@ -113,11 +127,19 @@ export const MAX_BODY = 20_000;
 
 export const CreateChannelRequestSchema = z
   .object({
-    kind: z.enum(['channel', 'group']).default('channel'),
-    name: z.string().trim().max(MAX_NAME).optional(),
+    kind: z.enum(['channel', 'group', 'agent']).default('channel'),
+    name: z.string().trim().max(MAX_NAME).optional().openapi({
+      description: "Required for a channel. An agent channel defaults to the agent's name.",
+    }),
     topic: z.string().trim().max(MAX_TOPIC).nullable().optional(),
     isPrivate: z.boolean().optional().openapi({
-      description: 'Channels only; groups are always private.',
+      description: 'Channels and agent channels; groups are always private.',
+    }),
+    projectId: z.string().min(1).max(200).optional().openapi({
+      description: 'Agent channels: the project the agent belongs to.',
+    }),
+    agentId: z.string().min(1).max(200).optional().openapi({
+      description: "Agent channels: the agent whose session answers the channel's posts.",
     }),
     memberUserIds: z.array(z.string().min(1)).max(100).optional(),
   })
@@ -125,6 +147,10 @@ export const CreateChannelRequestSchema = z
   .refine((v) => v.kind !== 'channel' || (v.name ?? '').length > 0, {
     message: 'name is required for a channel',
     path: ['name'],
+  })
+  .refine((v) => v.kind !== 'agent' || (Boolean(v.projectId) && Boolean(v.agentId)), {
+    message: 'projectId and agentId are required for an agent channel',
+    path: ['agentId'],
   });
 
 export const UpdateChannelRequestSchema = z
@@ -329,14 +355,19 @@ registerPath({
   method: 'post',
   path: '/api/chat/channels',
   tags: [TAG],
-  summary: 'Create a channel or group',
+  summary: 'Create a channel, group, or agent channel',
+  description:
+    'An agent channel (`kind: agent`) binds a project agent (`projectId` + `agentId`); posts in it run in one shared session owned by the creator.',
   request: { body: { content: jsonContent(CreateChannelRequestSchema) } },
   responses: {
     201: {
       description: 'Created; the caller is the owner.',
       content: jsonContent(channelEnvelope),
     },
-    400: errorResponse('Validation failed, or a member is not in the org.'),
+    400: errorResponse(
+      'Validation failed, a member is not in the org, or the agent cannot host a chat session.',
+    ),
+    404: errorResponse('Agent channel: the project or agent was not found or is not visible.'),
     ...common,
   },
 });
@@ -459,14 +490,26 @@ registerPath({
   tags: [TAG],
   summary: 'Post a message',
   description:
-    'The body may carry `@[label](kind:id)` refs (kinds user, agent, session, card, ticket, pr; a PR id is `project#number`). The server resolves each as the author: refs the author cannot see are flattened to their label, the rest are stored and returned in `refs`. A user ref counts as a mention for that user.',
+    "The body may carry `@[label](kind:id)` refs (kinds user, agent, session, card, ticket, pr; a PR id is `project#number`). The server resolves each as the author: refs the author cannot see are flattened to their label, the rest are stored and returned in `refs`. A user ref counts as a mention for that user. In an agent channel a member's post also runs in the channel's session (dispatched on first post, continued after); the agent's reply is posted back as an agent message with a session ref.",
   request: { params: channelParams, body: { content: jsonContent(PostMessageRequestSchema) } },
   responses: {
-    201: { description: 'Posted.', content: jsonContent(messageEnvelope) },
+    201: {
+      description: 'Posted.',
+      content: jsonContent(
+        messageEnvelope.extend({
+          agentSessionId: z.string().nullable().optional().openapi({
+            description: 'Agent channels: the session the post was handed to, when it started.',
+          }),
+        }),
+      ),
+    },
     400: errorResponse('Validation failed.'),
+    403: errorResponse(
+      "Caller is not a member of the active org, or (agent channel) cannot see the channel's project.",
+    ),
     409: errorResponse('The channel is archived, or the caller has not joined it.'),
     404: notFound,
-    ...common,
+    ...commonNo403,
   },
 });
 

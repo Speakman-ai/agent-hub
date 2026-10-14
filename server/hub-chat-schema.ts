@@ -23,6 +23,8 @@ export const HUB_CHAT_SCHEMA = `
     is_private         INTEGER NOT NULL DEFAULT 0,
     project_id         TEXT,
     agent_id           TEXT,
+    -- kind='agent': the chat session posts dispatch into or continue.
+    session_id         TEXT,
     -- Sorted "userA:userB" for kind='dm', so the same pair always resolves to
     -- one channel. NULL for every other kind.
     dm_key             TEXT,
@@ -76,4 +78,42 @@ export const HUB_CHAT_SCHEMA = `
     ON hub_chat_refs(message_id, kind, target_id, IFNULL(project_id, ''));
   CREATE INDEX IF NOT EXISTS idx_hub_chat_refs_target
     ON hub_chat_refs(kind, target_id);
+
+  -- Agent channels: one row per member post handed to the channel's session,
+  -- until its reply is posted. turn_id is the id the post's user message is
+  -- stored (or queued) under in that session. Kept in the db so a post queued
+  -- or in flight across a server restart still gets its reply.
+  CREATE TABLE IF NOT EXISTS hub_chat_agent_turns (
+    turn_id           TEXT PRIMARY KEY,
+    channel_id        TEXT NOT NULL REFERENCES hub_chat_channels(id) ON DELETE CASCADE,
+    session_id        TEXT,
+    started           INTEGER NOT NULL DEFAULT 0,
+    -- The turn's latest assistant message, posted once the turn is over.
+    reply_message_id  TEXT,
+    reply_content     TEXT,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_hub_chat_agent_turns_session
+    ON hub_chat_agent_turns(session_id);
+
+  -- The turn a session with channel turns is running now (a channel turn or
+  -- one started in the session directly).
+  CREATE TABLE IF NOT EXISTS hub_chat_agent_session_turns (
+    session_id  TEXT PRIMARY KEY,
+    turn_id     TEXT NOT NULL
+  );
+`;
+
+/**
+ * Columns added after the tables first shipped. `CREATE TABLE IF NOT EXISTS`
+ * skips existing tables, so these are applied one by one and tolerate
+ * "duplicate column".
+ */
+export const HUB_CHAT_COLUMN_MIGRATIONS: ReadonlyArray<string> = [
+  'ALTER TABLE hub_chat_channels ADD COLUMN session_id TEXT',
+];
+
+export const HUB_CHAT_POST_MIGRATION_SCHEMA = `
+  CREATE INDEX IF NOT EXISTS idx_hub_chat_channels_session
+    ON hub_chat_channels(session_id) WHERE session_id IS NOT NULL;
 `;

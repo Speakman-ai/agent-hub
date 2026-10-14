@@ -2766,7 +2766,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           }
         }
 
-        const queueMsgId = uuidv4();
+        const queueMsgId = msg._userMessageId ?? uuidv4();
 
         let position: number;
         if (isInterrupt) {
@@ -2874,7 +2874,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       } else if (msg._skipUserMessagePersist && msg._persistedUserMsgId) {
         userMsgId = msg._persistedUserMsgId;
       } else if (!isAutoContinuation && !msg._skipUserMessagePersist) {
-        userMsgId = uuidv4();
+        userMsgId = msg._userMessageId ?? uuidv4();
         stmts.addMessage.run(
           userMsgId,
           sessionId,
@@ -2892,6 +2892,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
         broadcast({
           type: 'message',
+          // A crash-resume carries on the interrupted turn rather than
+          // starting a new one; turn trackers (agent chat channels) need that.
+          ...(msg._autoResume ? { autoResume: true } : {}),
           message: {
             id: userMsgId,
             session_id: sessionId,

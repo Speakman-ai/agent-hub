@@ -43,6 +43,8 @@ describe('hub chat schema', () => {
       .all()
       .map((r) => (r as { name: string }).name);
     expect(tables).toEqual([
+      'hub_chat_agent_session_turns',
+      'hub_chat_agent_turns',
       'hub_chat_channels',
       'hub_chat_members',
       'hub_chat_messages',

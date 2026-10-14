@@ -38,6 +38,13 @@ export interface HubChatMembership {
   mutedUntil: string | null;
 }
 
+/** Agent channels: the linked session and whether the agent is answering. */
+export interface HubChatAgentState {
+  sessionId: string | null;
+  sessionName: string | null;
+  running: boolean;
+}
+
 export interface HubChatChannel {
   id: string;
   orgId: string;
@@ -55,6 +62,8 @@ export interface HubChatChannel {
   membership: HubChatMembership | null;
   unreadCount: number;
   mentionCount: number;
+  /** Set for agent channels only. */
+  agentState?: HubChatAgentState | null;
 }
 
 export interface HubChatRef {
@@ -549,4 +558,42 @@ export const MUTE_PRESETS: { label: string; hours: number | null }[] = [
 export function muteUntilIso(hours: number | null, now: number = Date.now()): string {
   const ms = hours === null ? 100 * 365 * 24 * 3_600_000 : hours * 3_600_000;
   return new Date(now + ms).toISOString();
+}
+
+/** Applies a live `agent_state` channel update. */
+export function applyAgentStateToChannels(
+  channels: HubChatChannel[],
+  channelId: string,
+  agentState: HubChatAgentState,
+): HubChatChannel[] {
+  return channels.map((c) => (c.id === channelId ? { ...c, agentState } : c));
+}
+
+/** Agent roles that never answer a chat channel (mirrors the server rule). */
+const NON_CHAT_AGENT_ROLES = new Set(['reviewer', 'docs', 'hub-assistant', 'skill-builder']);
+
+/** Agents of a project that can be bound to an agent channel. */
+export function agentChannelAgentOptions(
+  agents: unknown,
+  projectId: string,
+): { id: string; name: string }[] {
+  if (!Array.isArray(agents) || !projectId) return [];
+  const out: { id: string; name: string }[] = [];
+  for (const a of agents) {
+    if (!a || typeof a !== 'object') continue;
+    const row = a as Record<string, unknown>;
+    if (row.projectId == null || String(row.projectId) !== projectId) continue;
+    if (typeof row.id !== 'string' || !row.id) continue;
+    const role = typeof row.role === 'string' ? row.role.trim().toLowerCase() : '';
+    if (NON_CHAT_AGENT_ROLES.has(role)) continue;
+    out.push({ id: row.id, name: typeof row.name === 'string' && row.name ? row.name : row.id });
+  }
+  return out;
+}
+
+/** One-line header status for an agent channel. */
+export function agentChannelStatus(state: HubChatAgentState | null | undefined): string {
+  if (!state) return '';
+  if (state.running) return 'Working…';
+  return state.sessionId ? 'Idle' : 'Post to start a session';
 }

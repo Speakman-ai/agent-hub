@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { api } from '../utils/api';
+import { isHubSystemProject } from '@shared/utils/hub';
+import type { ProjectWire } from '@shared/types';
 import {
   MUTE_PRESETS,
+  agentChannelAgentOptions,
   channelLabel,
   isChannelMuted,
   muteUntilIso,
@@ -134,13 +137,20 @@ export function NewChannelDialog({
   onClose: () => void;
   onCreated: (channel: HubChatChannel, issuedAt: number) => void;
 }) {
+  const [kind, setKind] = useState<'channel' | 'agent'>('channel');
   const [name, setName] = useState('');
   const [topic, setTopic] = useState('');
   const [isPrivate, setIsPrivate] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [agentPick, setAgentPick] = useState<{ projectId: string; agentId: string }>({
+    projectId: '',
+    agentId: '',
+  });
   const exclude = useMemo(() => new Set(viewerUserId ? [viewerUserId] : []), [viewerUserId]);
+  const isAgent = kind === 'agent';
+  const canSubmit = isAgent ? !!agentPick.agentId : !!name.trim();
 
   const submit = async () => {
     setBusy(true);
@@ -148,10 +158,11 @@ export function NewChannelDialog({
     const issuedAt = clock();
     try {
       const res = await api.hubChat.createChannel({
-        kind: 'channel',
-        name: name.trim(),
+        kind,
+        name: name.trim() || undefined,
         topic: topic.trim() || null,
         isPrivate,
+        ...(isAgent ? { projectId: agentPick.projectId, agentId: agentPick.agentId } : {}),
         memberUserIds: [...picked],
       });
       onCreated(res.channel, issuedAt);
@@ -168,14 +179,46 @@ export function NewChannelDialog({
         aria-busy={busy}
         onSubmit={(e) => {
           e.preventDefault();
-          if (name.trim()) void submit();
+          if (canSubmit) void submit();
         }}
       >
         {/* Locked while creating: the dialog closes on success, so anything
             typed meanwhile would be lost. */}
         <fieldset disabled={busy} className="contents">
+          <div role="radiogroup" aria-label="Channel type" className="flex gap-1 text-xs">
+            {(
+              [
+                ['channel', 'Channel'],
+                ['agent', 'Agent channel'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={kind === value}
+                onClick={() => setKind(value)}
+                className={`rounded px-2 py-1 ${
+                  kind === value
+                    ? 'bg-blue-600 text-white'
+                    : 'border border-gray-700 text-gray-300 hover:bg-gray-800'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {isAgent && (
+            <>
+              <p className="text-xs text-gray-500">
+                Posts run in one session on this agent, owned by you. Replies from the agent are
+                posted back into the channel.
+              </p>
+              <AgentChannelPicker value={agentPick} onChange={setAgentPick} />
+            </>
+          )}
           <label className="text-xs text-gray-400">
-            Name
+            {isAgent ? 'Name (optional, defaults to the agent)' : 'Name'}
             <input
               autoFocus
               value={name}
@@ -228,7 +271,7 @@ export function NewChannelDialog({
             </p>
           )}
           <div className="flex justify-end">
-            <button type="submit" disabled={busy || !name.trim()} className={primaryButton}>
+            <button type="submit" disabled={busy || !canSubmit} className={primaryButton}>
               {busy && <Loader2 size={14} className="animate-spin" />}
               Create
             </button>
@@ -236,6 +279,112 @@ export function NewChannelDialog({
         </fieldset>
       </form>
     </Dialog>
+  );
+}
+
+/** Project and agent selects for an agent channel. */
+function AgentChannelPicker({
+  value,
+  onChange,
+}: {
+  value: { projectId: string; agentId: string };
+  onChange: (next: { projectId: string; agentId: string }) => void;
+}) {
+  const [projects, setProjects] = useState<ProjectWire[] | null>(null);
+  const [agents, setAgents] = useState<unknown[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.getProjects(), api.getAgents()])
+      .then(([p, a]) => {
+        if (cancelled) return;
+        const list = (Array.isArray(p) ? (p as ProjectWire[]) : []).filter(
+          (x) => !isHubSystemProject(x),
+        );
+        const agentList = Array.isArray(a) ? (a as unknown[]) : [];
+        setProjects(list);
+        setAgents(agentList);
+        const first = list.find((x) => agentChannelAgentOptions(agentList, String(x.id)).length);
+        if (first) {
+          const pid = String(first.id);
+          onChangeRef.current({
+            projectId: pid,
+            agentId: agentChannelAgentOptions(agentList, pid)[0]?.id ?? '',
+          });
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(errorText(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const agentOptions = useMemo(
+    () => agentChannelAgentOptions(agents ?? [], value.projectId),
+    [agents, value.projectId],
+  );
+
+  if (loadError) {
+    return (
+      <p role="alert" className="text-xs text-red-300">
+        {loadError}
+      </p>
+    );
+  }
+  if (!projects || !agents) {
+    return (
+      <p className="flex items-center gap-1 text-xs text-gray-500">
+        <Loader2 size={12} className="animate-spin" /> Loading projects…
+      </p>
+    );
+  }
+  return (
+    <div className="flex gap-2">
+      <label className="flex-1 text-xs text-gray-400">
+        Project
+        <select
+          value={value.projectId}
+          onChange={(e) => {
+            const pid = e.target.value;
+            onChange({
+              projectId: pid,
+              agentId: agentChannelAgentOptions(agents, pid)[0]?.id ?? '',
+            });
+          }}
+          aria-label="Agent channel project"
+          className={`mt-1 ${inputClass}`}
+        >
+          {!projects.length && <option value="">No projects</option>}
+          {projects.map((p) => (
+            <option key={p.id} value={String(p.id)}>
+              {p.name || p.id}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex-1 text-xs text-gray-400">
+        Agent
+        <select
+          value={value.agentId}
+          onChange={(e) => onChange({ ...value, agentId: e.target.value })}
+          aria-label="Agent channel agent"
+          disabled={!agentOptions.length}
+          className={`mt-1 ${inputClass}`}
+        >
+          {!agentOptions.length && <option value="">No agents</option>}
+          {agentOptions.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
   );
 }
 

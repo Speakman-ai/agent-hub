@@ -7519,6 +7519,23 @@ components:
       required:
         - error
       description: Error envelope for chat routes.
+    HubChatAgentState:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          nullable: true
+          description: The session posts run in; null until the first post.
+        sessionName:
+          type: string
+          nullable: true
+        running:
+          type: boolean
+          description: True while the agent is answering a post.
+      required:
+        - sessionId
+        - sessionName
+        - running
     HubChatChannel:
       type: object
       properties:
@@ -7594,6 +7611,11 @@ components:
           type: integer
         mentionCount:
           type: integer
+        agentState:
+          allOf:
+            - $ref: "#/components/schemas/HubChatAgentState"
+            - nullable: true
+              description: "Agent channels only: the linked session and whether it is working."
       required:
         - id
         - orgId
@@ -7611,6 +7633,7 @@ components:
         - membership
         - unreadCount
         - mentionCount
+        - agentState
       description: A chat channel as seen by the caller, with their unread state.
     HubChatMember:
       type: object
@@ -35503,7 +35526,8 @@ paths:
     post:
       tags:
         - Hub Chat
-      summary: Create a channel or group
+      summary: Create a channel, group, or agent channel
+      description: "An agent channel (`kind: agent`) binds a project agent (`projectId` + `agentId`); posts in it run in one shared session owned by the creator."
       requestBody:
         content:
           application/json:
@@ -35515,17 +35539,29 @@ paths:
                   enum:
                     - channel
                     - group
+                    - agent
                   default: channel
                 name:
                   type: string
                   maxLength: 80
+                  description: Required for a channel. An agent channel defaults to the agent's name.
                 topic:
                   type: string
                   nullable: true
                   maxLength: 250
                 isPrivate:
                   type: boolean
-                  description: Channels only; groups are always private.
+                  description: Channels and agent channels; groups are always private.
+                projectId:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: "Agent channels: the project the agent belongs to."
+                agentId:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: "Agent channels: the agent whose session answers the channel's posts."
                 memberUserIds:
                   type: array
                   items:
@@ -35546,7 +35582,7 @@ paths:
                 required:
                   - channel
         "400":
-          description: Validation failed, or a member is not in the org.
+          description: Validation failed, a member is not in the org, or the agent cannot host a chat session.
           content:
             application/json:
               schema:
@@ -35559,6 +35595,12 @@ paths:
                 $ref: "#/components/schemas/HubChatErrorResponse"
         "403":
           description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: "Agent channel: the project or agent was not found or is not visible."
           content:
             application/json:
               schema:
@@ -36025,7 +36067,7 @@ paths:
       tags:
         - Hub Chat
       summary: Post a message
-      description: "The body may carry `@[label](kind:id)` refs (kinds user, agent, session, card, ticket, pr; a PR id is `project#number`). The server resolves each as the author: refs the author cannot see are flattened to their label, the rest are stored and returned in `refs`. A user ref counts as a mention for that user."
+      description: "The body may carry `@[label](kind:id)` refs (kinds user, agent, session, card, ticket, pr; a PR id is `project#number`). The server resolves each as the author: refs the author cannot see are flattened to their label, the rest are stored and returned in `refs`. A user ref counts as a mention for that user. In an agent channel a member's post also runs in the channel's session (dispatched on first post, continued after); the agent's reply is posted back as an agent message with a session ref."
       parameters:
         - schema:
             type: string
@@ -36056,6 +36098,10 @@ paths:
                 properties:
                   message:
                     $ref: "#/components/schemas/HubChatMessage"
+                  agentSessionId:
+                    type: string
+                    nullable: true
+                    description: "Agent channels: the session the post was handed to, when it started."
                 required:
                   - message
         "400":
@@ -36071,7 +36117,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/HubChatErrorResponse"
         "403":
-          description: Caller is not a member of the active org.
+          description: Caller is not a member of the active org, or (agent channel) cannot see the channel's project.
           content:
             application/json:
               schema:

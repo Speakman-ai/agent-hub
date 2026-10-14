@@ -471,3 +471,21 @@ export function listJoinableChannels(orgId: string, userId: string): HubChatChan
     )
     .all(orgId, userId) as HubChatChannelRow[];
 }
+
+/** Binds an agent channel to the session its posts run in. */
+export function setChannelSession(channelId: string, sessionId: string | null): void {
+  db()
+    .prepare('UPDATE hub_chat_channels SET session_id = ? WHERE id = ?')
+    .run(sessionId, channelId);
+}
+
+/** Live agent channels bound to a session. */
+export function listAgentChannelsForSession(sessionId: string): HubChatChannelRow[] {
+  return db()
+    .prepare(
+      `SELECT * FROM hub_chat_channels
+       WHERE session_id = ? AND kind = 'agent' AND archived_at IS NULL
+       ORDER BY created_at, id`,
+    )
+    .all(sessionId) as HubChatChannelRow[];
+}

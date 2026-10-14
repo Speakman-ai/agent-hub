@@ -194,6 +194,7 @@ import createSkillEvalRoutes from './routes/skill-evals.js';
 import createBackgroundAgentRoutes from './routes/background-agents.js';
 import createSessionDispatchRoutes from './routes/session-dispatch.js';
 import { initBackgroundAgentSessionHook } from './background-agent-session.js';
+import { initAgentChannels, observeBroadcastForAgentChannels } from './hub-chat-agent-channels.js';
 import createBoardRoutes from './routes/board.js';
 import createConfigRoutes from './routes/config.js';
 import createSessionRoutes, { summarizeTranscript, buildTranscript } from './routes/sessions.js';
@@ -811,6 +812,12 @@ app.use(cors(corsOptions));
 let _broadcast: BroadcastFn;
 function broadcast(data: Record<string, unknown>): void {
   _broadcast(data);
+  // Agent chat channels post the agent's reply when its turn settles.
+  try {
+    observeBroadcastForAgentChannels(data);
+  } catch (err) {
+    console.error('[hub-chat] agent channel relay failed:', (err as Error).message);
+  }
 }
 
 // Git smart-HTTP transport for Agent Hub-hosted repos (/git/<id>.git).
@@ -2718,6 +2725,13 @@ initBackgroundAgentSessionHook({
   config,
   handleChat: (ws, msg) => handleChat!(ws, msg),
   broadcast,
+});
+initAgentChannels({
+  stmts: stmts!,
+  broadcast,
+  findProject,
+  handleChat: (ws, msg) => handleChat!(ws, msg),
+  activeProcesses,
 });
 setReadyToPushAutomationHook((sessionId, runId) => {
   void maybeAutoPushReadyFinalizeRun({ sessionId, runId });

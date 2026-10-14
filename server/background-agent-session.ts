@@ -179,6 +179,8 @@ export function dispatchBackgroundAgentSession(
     onKickoffError?: (message: string) => void;
     /** Overrides the default `[Background] <name>` session title. */
     sessionName?: string;
+    /** Id for the kickoff's user message (see `ChatMessage._userMessageId`). */
+    userMessageId?: string;
   } = {},
 ): BackgroundSessionDispatchResult {
   const deps = hook;
@@ -264,6 +266,7 @@ export function dispatchBackgroundAgentSession(
       agentId: agent.id,
       sessionId,
       content: cfg.prompt,
+      ...(opts.userMessageId ? { _userMessageId: opts.userMessageId } : {}),
     })
     .catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);

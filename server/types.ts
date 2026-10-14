@@ -4515,6 +4515,12 @@ export interface ChatMessage {
    */
   _onUserMessagePersisted?: (accepted: boolean) => void;
   /**
+   * Id to store this turn's user message under (immediate or queued), so a
+   * caller can recognise its own turn in later broadcasts. Agent chat
+   * channels use it to relay only the turns they started.
+   */
+  _userMessageId?: string;
+  /**
    * Internal: checked synchronously right before the user message is persisted
    * or queued, with whether the session is busy (the turn would be queued).
    * Returning false drops the turn (reported as not persisted). Lets a caller
@@ -4847,6 +4853,8 @@ export interface HubChatChannelRow {
   is_private: number;
   project_id: string | null;
   agent_id: string | null;
+  /** kind='agent': the session channel posts dispatch into or continue. */
+  session_id: string | null;
   dm_key: string | null;
   created_by_user_id: string | null;
   archived_at: string | null;
