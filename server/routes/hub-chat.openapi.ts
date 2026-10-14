@@ -227,6 +227,19 @@ export const SearchRefsQuerySchema = z.object({
   }),
 });
 
+export const SearchMessagesQuerySchema = z.object({
+  q: z.string().trim().min(1).max(200).openapi({
+    description:
+      'Words to find. Every word must appear (each matches as a prefix); punctuation is ignored.',
+  }),
+  channelId: z.string().min(1).optional().openapi({
+    description: 'Only search this channel.',
+  }),
+  limit: z.coerce.number().int().min(1).max(50).optional().openapi({
+    description: 'Max results, 1..50 (default 20).',
+  }),
+});
+
 export const ResolveRefsRequestSchema = z
   .object({
     refs: z
@@ -598,6 +611,43 @@ registerPath({
     200: { description: 'Updated membership.', content: jsonContent(membershipEnvelope) },
     400: errorResponse('Validation failed.'),
     404: notFound,
+    ...common,
+  },
+});
+
+const SearchHitComponent = registerComponent(
+  'HubChatSearchHit',
+  z.object({
+    message: HubChatMessageComponent,
+    channel: z.object({
+      id: z.string(),
+      kind: ChannelKindSchema,
+      name: z.string(),
+      dmPeerUserId: z.string().nullable(),
+      isPrivate: z.boolean(),
+      isMember: z.boolean().openapi({
+        description: 'False for a public channel the caller has not joined.',
+      }),
+    }),
+  }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/chat/search',
+  tags: [TAG],
+  summary: 'Search messages',
+  description:
+    "Full-text search over live messages in the caller's active org, newest first. Only channels the caller can read are searched: public channels and the private channels, groups and DMs they belong to.",
+  request: { query: SearchMessagesQuerySchema },
+  responses: {
+    200: {
+      description: 'Matching messages with their channel. hasMore says more matches exist.',
+      content: jsonContent(
+        z.object({ results: z.array(SearchHitComponent), hasMore: z.boolean() }),
+      ),
+    },
+    400: errorResponse('Validation failed.'),
     ...common,
   },
 });

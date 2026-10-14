@@ -1229,6 +1229,12 @@ export const api = {
         body: JSON.stringify({ body }),
       }),
     message: (messageId: string) => fetchJSON(`/chat/messages/${encodeURIComponent(messageId)}`),
+    search: (q: string, opts: { channelId?: string; limit?: number } = {}) => {
+      const params = new URLSearchParams({ q });
+      if (opts.channelId) params.set('channelId', opts.channelId);
+      if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+      return fetchJSON(`/chat/search?${params.toString()}`);
+    },
     remove: (messageId: string) =>
       fetchJSON(`/chat/messages/${encodeURIComponent(messageId)}`, { method: 'DELETE' }),
     markRead: (channelId: string, seq?: number) =>

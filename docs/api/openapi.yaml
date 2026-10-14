@@ -7808,6 +7808,45 @@ components:
         - agentId
         - number
       description: Live detail for one message ref, as the caller sees it.
+    HubChatSearchHit:
+      type: object
+      properties:
+        message:
+          $ref: "#/components/schemas/HubChatMessage"
+        channel:
+          type: object
+          properties:
+            id:
+              type: string
+            kind:
+              type: string
+              enum:
+                - dm
+                - group
+                - channel
+                - trigger
+                - agent
+                - summary
+            name:
+              type: string
+            dmPeerUserId:
+              type: string
+              nullable: true
+            isPrivate:
+              type: boolean
+            isMember:
+              type: boolean
+              description: False for a public channel the caller has not joined.
+          required:
+            - id
+            - kind
+            - name
+            - dmPeerUserId
+            - isPrivate
+            - isMember
+      required:
+        - message
+        - channel
     HubChatChannelDigest:
       type: object
       properties:
@@ -36636,6 +36675,74 @@ paths:
                 $ref: "#/components/schemas/HubChatErrorResponse"
         "404":
           description: Channel not found, or private and the caller is not a member (hidden as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/search:
+    get:
+      tags:
+        - Hub Chat
+      summary: Search messages
+      description: "Full-text search over live messages in the caller's active org, newest first. Only channels the caller can read are searched: public channels and the private channels, groups and DMs they belong to."
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+            description: Words to find. Every word must appear (each matches as a prefix); punctuation is ignored.
+          required: true
+          description: Words to find. Every word must appear (each matches as a prefix); punctuation is ignored.
+          name: q
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            description: Only search this channel.
+          required: false
+          description: Only search this channel.
+          name: channelId
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            description: Max results, 1..50 (default 20).
+          required: false
+          description: Max results, 1..50 (default 20).
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Matching messages with their channel. hasMore says more matches exist.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatSearchHit"
+                  hasMore:
+                    type: boolean
+                required:
+                  - results
+                  - hasMore
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
           content:
             application/json:
               schema:

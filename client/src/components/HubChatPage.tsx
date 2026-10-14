@@ -26,6 +26,7 @@ import {
 } from '@shared/utils/hubChatCapture';
 import StartSessionModal from './StartSessionModal';
 import HubChatTriggerCard from './HubChatTriggerCard';
+import HubChatSearch from './HubChatSearch';
 import { readChatTriggerCard } from '@shared/utils/chatTriggers';
 import CaptureToTicketModal from './CaptureToTicketModal';
 import { api } from '../utils/api';
@@ -1258,83 +1259,91 @@ export default function HubChatPage({
             {loadError}
           </div>
         )}
-        {assistantEnabled && (
-          <>
-            <div className="px-4 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-              Agent Hub
-            </div>
-            <button
-              type="button"
-              onClick={openAssistant}
-              data-testid="hub-chat-assistant"
-              aria-current={assistantSelected ? 'page' : undefined}
-              className={`flex w-full items-center gap-2 px-4 py-1.5 text-left text-sm ${
-                assistantSelected ? 'bg-gray-800 text-white' : 'text-gray-300 hover:bg-gray-800/50'
-              }`}
-            >
-              <Bot size={13} className="shrink-0 text-cyan-400" />
-              <span
-                className={`min-w-0 flex-1 truncate ${
-                  assistantUnread > 0 && !assistantSelected ? 'font-semibold text-white' : ''
+        <HubChatSearch
+          usernames={usernames}
+          viewerUserId={viewerUserId}
+          onPick={(r) => focusHubChatMessage(r.channel.id, r.message.id)}
+        >
+          {assistantEnabled && (
+            <>
+              <div className="px-4 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                Agent Hub
+              </div>
+              <button
+                type="button"
+                onClick={openAssistant}
+                data-testid="hub-chat-assistant"
+                aria-current={assistantSelected ? 'page' : undefined}
+                className={`flex w-full items-center gap-2 px-4 py-1.5 text-left text-sm ${
+                  assistantSelected
+                    ? 'bg-gray-800 text-white'
+                    : 'text-gray-300 hover:bg-gray-800/50'
                 }`}
               >
-                Agent Hub
-              </span>
-              {assistantUnread > 0 && !assistantSelected && (
+                <Bot size={13} className="shrink-0 text-cyan-400" />
                 <span
-                  data-testid="hub-chat-assistant-unread"
-                  aria-label={`${assistantUnread} unread`}
-                  className="shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
+                  className={`min-w-0 flex-1 truncate ${
+                    assistantUnread > 0 && !assistantSelected ? 'font-semibold text-white' : ''
+                  }`}
                 >
-                  {assistantUnread > 99 ? '99+' : assistantUnread}
+                  Agent Hub
                 </span>
-              )}
-            </button>
-          </>
-        )}
-        {RAIL_SECTIONS.map((section) => {
-          const items = sections[section.id];
-          const action = sectionAction[section.id];
-          // Triggers and summaries are created elsewhere; hide them until they exist.
-          if (!items.length && !action) return null;
-          return (
-            <div key={section.id} className="mt-3" data-testid={`hub-chat-section-${section.id}`}>
-              <div className="flex items-center justify-between px-4 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                {section.label}
-                <span className="flex items-center gap-1">
-                  {section.id === 'channels' && (
-                    <button
-                      type="button"
-                      onClick={() => setDialog('browse')}
-                      title="Browse channels"
-                      aria-label="Browse channels"
-                      className="rounded p-0.5 text-gray-500 hover:bg-gray-800 hover:text-white"
-                    >
-                      <Compass size={13} />
-                    </button>
-                  )}
-                  {action && (
-                    <button
-                      type="button"
-                      onClick={action.onClick}
-                      title={action.label}
-                      aria-label={action.label}
-                      className="rounded p-0.5 text-gray-500 hover:bg-gray-800 hover:text-white"
-                    >
-                      <Plus size={13} />
-                    </button>
-                  )}
-                </span>
+                {assistantUnread > 0 && !assistantSelected && (
+                  <span
+                    data-testid="hub-chat-assistant-unread"
+                    aria-label={`${assistantUnread} unread`}
+                    className="shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
+                  >
+                    {assistantUnread > 99 ? '99+' : assistantUnread}
+                  </span>
+                )}
+              </button>
+            </>
+          )}
+          {RAIL_SECTIONS.map((section) => {
+            const items = sections[section.id];
+            const action = sectionAction[section.id];
+            // Triggers and summaries are created elsewhere; hide them until they exist.
+            if (!items.length && !action) return null;
+            return (
+              <div key={section.id} className="mt-3" data-testid={`hub-chat-section-${section.id}`}>
+                <div className="flex items-center justify-between px-4 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  {section.label}
+                  <span className="flex items-center gap-1">
+                    {section.id === 'channels' && (
+                      <button
+                        type="button"
+                        onClick={() => setDialog('browse')}
+                        title="Browse channels"
+                        aria-label="Browse channels"
+                        className="rounded p-0.5 text-gray-500 hover:bg-gray-800 hover:text-white"
+                      >
+                        <Compass size={13} />
+                      </button>
+                    )}
+                    {action && (
+                      <button
+                        type="button"
+                        onClick={action.onClick}
+                        title={action.label}
+                        aria-label={action.label}
+                        className="rounded p-0.5 text-gray-500 hover:bg-gray-800 hover:text-white"
+                      >
+                        <Plus size={13} />
+                      </button>
+                    )}
+                  </span>
+                </div>
+                {items.map(renderChannelRow)}
+                {!items.length && (
+                  <p className="px-4 py-1 text-xs text-gray-600">
+                    {section.id === 'dms' ? 'No conversations yet.' : 'No channels yet.'}
+                  </p>
+                )}
               </div>
-              {items.map(renderChannelRow)}
-              {!items.length && (
-                <p className="px-4 py-1 text-xs text-gray-600">
-                  {section.id === 'dms' ? 'No conversations yet.' : 'No channels yet.'}
-                </p>
-              )}
-            </div>
-          );
-        })}
+            );
+          })}
+        </HubChatSearch>
       </nav>
 
       <section className="flex min-h-0 min-w-0 flex-1 flex-col">

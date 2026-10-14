@@ -1,3 +1,5 @@
+import type Database from 'better-sqlite3';
+
 /**
  * Agent Hub first-party chat tables. Applied from `initDb` in `db.ts`; every
  * statement is `IF NOT EXISTS`, so re-running it is a no-op. Store:
@@ -171,3 +173,51 @@ export const HUB_CHAT_POST_MIGRATION_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_hub_chat_channels_session
     ON hub_chat_channels(session_id) WHERE session_id IS NOT NULL;
 `;
+
+/**
+ * Full-text index over message bodies; queried by `hub-chat-search.ts`.
+ * External-content FTS5 kept in sync by triggers, so every writer is indexed.
+ * Soft deletes clear the body, which removes the message via the update
+ * trigger.
+ */
+export const HUB_CHAT_FTS_TABLE = 'hub_chat_messages_fts';
+const FTS_TABLE = HUB_CHAT_FTS_TABLE;
+
+const FTS_SCHEMA = `
+  CREATE VIRTUAL TABLE ${FTS_TABLE} USING fts5(
+    body,
+    content='hub_chat_messages',
+    content_rowid='rowid',
+    tokenize='unicode61 remove_diacritics 2'
+  );
+`;
+
+const FTS_TRIGGERS = `
+  CREATE TRIGGER IF NOT EXISTS hub_chat_messages_fts_ai AFTER INSERT ON hub_chat_messages BEGIN
+    INSERT INTO ${FTS_TABLE}(rowid, body) VALUES (new.rowid, new.body);
+  END;
+  CREATE TRIGGER IF NOT EXISTS hub_chat_messages_fts_ad AFTER DELETE ON hub_chat_messages BEGIN
+    INSERT INTO ${FTS_TABLE}(${FTS_TABLE}, rowid, body) VALUES ('delete', old.rowid, old.body);
+  END;
+  CREATE TRIGGER IF NOT EXISTS hub_chat_messages_fts_au AFTER UPDATE OF body ON hub_chat_messages BEGIN
+    INSERT INTO ${FTS_TABLE}(${FTS_TABLE}, rowid, body) VALUES ('delete', old.rowid, old.body);
+    INSERT INTO ${FTS_TABLE}(rowid, body) VALUES (new.rowid, new.body);
+  END;
+`;
+
+/**
+ * Creates the index and its triggers. A database that already has messages
+ * when the index is first created gets them backfilled. Idempotent.
+ */
+export function applyHubChatSearchIndex(conn: Database.Database): void {
+  const exists = conn
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(FTS_TABLE);
+  conn.transaction(() => {
+    if (!exists) {
+      conn.exec(FTS_SCHEMA);
+      conn.exec(`INSERT INTO ${FTS_TABLE}(${FTS_TABLE}) VALUES ('rebuild')`);
+    }
+    conn.exec(FTS_TRIGGERS);
+  })();
+}

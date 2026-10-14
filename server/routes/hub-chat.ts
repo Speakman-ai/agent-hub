@@ -72,6 +72,7 @@ import {
   NotifyLevelRequestSchema,
   PostMessageRequestSchema,
   ResolveRefsRequestSchema,
+  SearchMessagesQuerySchema,
   SearchRefsQuerySchema,
   UpdateChannelRequestSchema,
   UpsertDigestRequestSchema,
@@ -82,6 +83,7 @@ import {
   upsertChannelDigest,
   type ChannelDigestRow,
 } from '../hub-chat-digests-store.js';
+import { searchHubChatMessages } from '../hub-chat-search.js';
 import { isValidCron } from '../cron-match.js';
 import { isValidTimeZone } from '../daily-summary-schedule.js';
 import {
@@ -130,7 +132,7 @@ interface Caller {
   agentId: string | null;
 }
 
-function dmPeer(row: HubChatChannelRow, userId: string): string | null {
+function dmPeer(row: Pick<HubChatChannelRow, 'kind' | 'dm_key'>, userId: string): string | null {
   if (row.kind !== 'dm' || !row.dm_key) return null;
   const [a, b] = row.dm_key.split(':');
   return a === userId ? (b ?? a) : (a ?? null);
@@ -402,6 +404,32 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       role: m.role,
     }));
     res.json({ members });
+  });
+
+  router.get('/api/chat/search', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const q = parse(SearchMessagesQuerySchema, req.query, res);
+    if (!q) return;
+    const limit = q.limit ?? 20;
+    const rows = searchHubChatMessages(caller.orgId, caller.userId, q.q, {
+      channelId: q.channelId,
+      limit,
+    });
+    res.json({
+      results: rows.slice(0, limit).map((r) => ({
+        message: shapeMessage(r),
+        channel: {
+          id: r.channel_id,
+          kind: r.channel_kind,
+          name: r.channel_name,
+          dmPeerUserId: dmPeer({ kind: r.channel_kind, dm_key: r.channel_dm_key }, caller.userId),
+          isPrivate: r.channel_is_private === 1,
+          isMember: r.is_member === 1,
+        },
+      })),
+      hasMore: rows.length > limit,
+    });
   });
 
   router.get('/api/chat/refs/search', (req: Request, res: Response) => {

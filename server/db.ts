@@ -40,6 +40,7 @@ import {
   HUB_CHAT_COLUMN_MIGRATIONS,
   HUB_CHAT_POST_MIGRATION_SCHEMA,
   HUB_CHAT_SCHEMA,
+  applyHubChatSearchIndex,
 } from './hub-chat-schema.js';
 import {
   SECURITY_AUDIT_SCHEMA,
@@ -1336,6 +1337,7 @@ function initDb(dataDir: string): void {
     }
   }
   db.exec(HUB_CHAT_POST_MIGRATION_SCHEMA);
+  applyHubChatSearchIndex(db);
 
   // Native pull requests — DB-backed PRs for Agent Hub-hosted projects
   // (Project.gitHost === 'agenthub'). The PR's git side (diff, files,
