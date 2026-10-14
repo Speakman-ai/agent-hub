@@ -166,6 +166,89 @@ describe('release-all.yml — unattended prod terraform apply', () => {
     expect(collect).not.toContain('2>/dev/null');
   });
 
+  it('pins the runner-agent fleet to the image this release pushed', () => {
+    // prod.tfvars points the fleet at `agent-hub-finalize-runner:main`, which
+    // Release never retags. Without this override the fleet task definition
+    // never changes, so agents stay on a stale image while the Hub upgrades.
+    const release = parseYaml(workflow);
+    const job = release.jobs['terraform-apply'];
+    const imageExpr =
+      "format('{0}/agent-hub-finalize-runner:{1}', vars.ECR_REGISTRY || 'public.ecr.aws/h9t4v7h0', needs.release.outputs.tag)";
+    expect(job.needs).toContain('docker-ecr-dev');
+    const image: string = job.env.RELEASE_FINALIZE_AGENT_IMAGE;
+    expect(image).toContain("needs.docker-ecr-dev.result == 'success'");
+    // Same artifact the AMI bake pre-pulls.
+    expect(image).toContain(imageExpr);
+    expect(release.jobs['bake-finalize-ami-prod'].with.runner_image).toContain(imageExpr);
+    // A TF_VAR_* env var loses to any -var-file entry, so it must not be the
+    // delivery mechanism.
+    expect(job.env).not.toHaveProperty('TF_VAR_finalize_agent_image_uri');
+  });
+
+  it('always resolves the fleet image, falling back to the deployed one, never :main', () => {
+    const resolve = steps.slice(
+      steps.indexOf('- name: Resolve finalize runner-agent image'),
+      steps.indexOf('- name: Terraform plan'),
+    );
+    expect(resolve).toContain('IMAGE="$RELEASE_FINALIZE_AGENT_IMAGE"');
+    // A failed push keeps the fleet where it is instead of planning the
+    // tfvars `:main` fallback.
+    expect(resolve).toContain('terraform show -json > "$STATE_JSON"');
+    expect(resolve).toContain('./scripts/finalize-agent-image.sh deployed "$STATE_JSON"');
+    expect(resolve).toContain('echo "FINALIZE_AGENT_IMAGE=$IMAGE" >> "$GITHUB_ENV"');
+    expect(steps.indexOf('- name: Terraform init')).toBeLessThan(
+      steps.indexOf('- name: Resolve finalize runner-agent image'),
+    );
+  });
+
+  it('passes the resolved image unconditionally as -var after the prod -var-file', () => {
+    const plan = steps.slice(
+      steps.indexOf('- name: Terraform plan'),
+      steps.indexOf('- name: Assert the plan pins the runner fleet image'),
+    );
+    const varFile = plan.indexOf('-var-file=environments/prod/prod.tfvars');
+    const agentVar = plan.indexOf('-var "finalize_agent_image_uri=${FINALIZE_AGENT_IMAGE}"');
+    expect(varFile).toBeGreaterThanOrEqual(0);
+    expect(agentVar).toBeGreaterThan(varFile);
+    expect(plan.indexOf('-out="$RUNNER_TEMP/prod.plan"')).toBeGreaterThan(agentVar);
+  });
+
+  it('promotes the resolved AMI pin to -var so tfvars cannot revert the bake', () => {
+    // TF_VAR_* ranks below every -var-file, so the bake/SSM AMI pin must also be
+    // an explicit -var placed after the prod tfvars.
+    const plan = steps.slice(
+      steps.indexOf('- name: Terraform plan'),
+      steps.indexOf('- name: Assert the plan pins the runner fleet image'),
+    );
+    expect(plan).toContain(
+      'AMI_VAR=(-var "finalize_runner_ami_id=${TF_VAR_finalize_runner_ami_id}")',
+    );
+    expect(plan.indexOf('"${AMI_VAR[@]}"')).toBeGreaterThan(
+      plan.indexOf('-var-file=environments/prod/prod.tfvars'),
+    );
+  });
+
+  it('verifies the effective fleet image in the saved plan on every apply', () => {
+    const release = parseYaml(workflow);
+    const guardStep = release.jobs['terraform-apply'].steps.find(
+      (s: { name?: string }) => s.name === 'Assert the plan pins the runner fleet image',
+    );
+    // Unconditional: a push-failure run is exactly when a downgrade could slip in.
+    expect(guardStep).toBeDefined();
+    expect(guardStep.if).toBeUndefined();
+    const show = steps.indexOf('terraform show -json "$RUNNER_TEMP/prod.plan"');
+    const check = steps.indexOf(
+      './scripts/finalize-agent-image.sh assert "$RUNNER_TEMP/prod.plan.json" "$FINALIZE_AGENT_IMAGE"',
+    );
+    const apply = steps.indexOf(
+      'terraform apply -input=false -auto-approve "$RUNNER_TEMP/prod.plan"',
+    );
+    expect(show).toBeGreaterThanOrEqual(0);
+    expect(check).toBeGreaterThan(show);
+    expect(apply).toBeGreaterThan(check);
+    expect(isExecutable('ops/terraform/scripts/finalize-agent-image.sh')).toBe(true);
+  });
+
   it('ships the referenced helper scripts as executables', () => {
     expect(isExecutable('ops/terraform/scripts/assert-no-protected-replacements.sh')).toBe(true);
     expect(isExecutable('ops/scripts/sync-hub-env.sh')).toBe(true);

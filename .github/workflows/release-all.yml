@@ -16,7 +16,7 @@ name: Release
 #        - terraform-apply  — ALWAYS runs (after bake when bake ran):
 #          `terraform apply` against the prod stack. Uses the committed
 #          environments/prod/prod.tfvars. Injects
-#          TF_VAR_finalize_runner_ami_id from bake/SSM so a stale AMI pin in
+#          the bake/SSM AMI (as -var, after the tfvars) so a stale AMI pin in
 #          that file cannot revert the launch template. Tokens come from
 #          individual GitHub secrets (AGENT_HUB_AHLOG_TOKEN, …), not a tfvars
 #          blob. The apply can never replace the Hub: the plan is gated by
@@ -353,7 +353,7 @@ jobs:
   #                                  DEV Hub was decommissioned 2026-08-17.
   terraform-apply:
     name: Terraform apply (prod infra)
-    needs: [release, bake-finalize-ami-prod]
+    needs: [release, docker-ecr-dev, bake-finalize-ami-prod]
     # The reusable bake job allows failure; still apply when bake fails/skips.
     if: always() && needs.release.result == 'success'
     runs-on: ubuntu-latest
@@ -365,6 +365,12 @@ jobs:
       # Prefer the AMI this release just baked/pinned; falls through to SSM in the
       # plan step if the reusable output is empty (should not happen).
       BAKED_FINALIZE_AMI: ${{ needs.bake-finalize-ami-prod.outputs.ami_id }}
+      # Image this release pushed for the runner-agent fleet, or empty when the
+      # push failed. The fleet image is always passed to plan explicitly (see
+      # "Resolve finalize runner-agent image"): the tfvars fallback is the
+      # mutable `:main` tag, which nothing publishes any more, so planning with
+      # it would roll the fleet back to a months-old agent.
+      RELEASE_FINALIZE_AGENT_IMAGE: ${{ needs.docker-ecr-dev.result == 'success' && format('{0}/agent-hub-finalize-runner:{1}', vars.ECR_REGISTRY || 'public.ecr.aws/h9t4v7h0', needs.release.outputs.tag) || '' }}
       # Single source of truth for the rollout target. Release / push-image
       # SSM vars.DOCKER_DEPLOY_INSTANCE_ID; the CI role's ssm:SendCommand grant
       # is scoped by ci_ssm_deploy_* in committed prod.tfvars. Feeding the
@@ -522,15 +528,47 @@ jobs:
           echo "TF_VAR_finalize_runner_ami_id=$AMI" >>"$GITHUB_ENV"
           echo "Using finalize_runner_ami_id=$AMI"
 
+      # One source of truth for the fleet image: the image this release pushed,
+      # else (push failed) the image the fleet runs now, read from state. Never
+      # the tfvars `:main` fallback. A new tag yields a new task definition
+      # revision, which ECS rolls out on its own; an unchanged one is a no-op.
+      - name: Resolve finalize runner-agent image
+        run: |
+          set -euo pipefail
+          if [ -n "${RELEASE_FINALIZE_AGENT_IMAGE:-}" ]; then
+            IMAGE="$RELEASE_FINALIZE_AGENT_IMAGE"
+          else
+            echo "::warning::Image push did not succeed; keeping the Finalize runner fleet on its deployed image."
+            # State JSON carries secrets: keep it on disk only for this step.
+            STATE_JSON="$RUNNER_TEMP/prior-state.json"
+            trap 'rm -f "$STATE_JSON"' EXIT
+            terraform show -json > "$STATE_JSON"
+            IMAGE="$(./scripts/finalize-agent-image.sh deployed "$STATE_JSON")"
+          fi
+          echo "FINALIZE_AGENT_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "Using finalize_agent_image_uri=$IMAGE"
+
       # Saved plan + JSON rendering. Everything downstream keys off this exact
       # plan file so the guard cannot approve one plan while apply runs another.
       - name: Terraform plan
         run: |
           set -euo pipefail
+          # Release-resolved pins go in as -var AFTER -var-file. Terraform ranks
+          # TF_VAR_* env vars below every -var-file, so a pin delivered only as
+          # TF_VAR_* would silently lose to a tfvars entry.
+          AMI_VAR=()
+          if [ -n "${TF_VAR_finalize_runner_ami_id:-}" ]; then
+            AMI_VAR=(-var "finalize_runner_ami_id=${TF_VAR_finalize_runner_ami_id}")
+          fi
           terraform plan -input=false \
             -var-file=environments/prod/prod.tfvars \
+            "${AMI_VAR[@]}" \
+            -var "finalize_agent_image_uri=${FINALIZE_AGENT_IMAGE}" \
             -out="$RUNNER_TEMP/prod.plan"
           terraform show -json "$RUNNER_TEMP/prod.plan" > "$RUNNER_TEMP/prod.plan.json"
+
+      - name: Assert the plan pins the runner fleet image
+        run: ./scripts/finalize-agent-image.sh assert "$RUNNER_TEMP/prod.plan.json" "$FINALIZE_AGENT_IMAGE"
 
       - name: Assert the plan cannot destroy the Hub
         run: ./scripts/assert-no-protected-replacements.sh "$RUNNER_TEMP/prod.plan.json"
