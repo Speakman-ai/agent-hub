@@ -259,3 +259,18 @@ describe('notificationRouteToNavigation', () => {
     expect(notificationRouteToNavigation('nope')).toBeNull();
   });
 });
+describe('routeNotificationTap — Agent Hub chat', () => {
+  it('opens the pushed channel on the Hub Chat tab', () => {
+    // The server's chat push carries `type: 'chat_message'` and the channel id.
+    const data = { type: 'chat_message', channelId: 'ch1', messageId: 'm1' };
+    const route = routeNotificationTap(data);
+    expect(route).toEqual({ kind: 'hubChat', channelId: 'ch1' });
+    expect(notificationRouteToNavigation(route)).toEqual({
+      screen: 'Hub',
+      params: { tab: 'chat', channelId: 'ch1' },
+    });
+  });
+  it('drops a chat tap without a channel id', () => {
+    expect(routeNotificationTap({ event: 'chat_message' })).toBeNull();
+  });
+});

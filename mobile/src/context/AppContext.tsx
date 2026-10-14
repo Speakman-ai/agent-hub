@@ -14,7 +14,7 @@ import { Alert } from 'react-native';
 import { api } from '../utils/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { extractSubmittedAskIds } from '../utils/askAnswers';
-import { loadOrgs, migrateFromLegacy, getOrgs } from '../utils/orgs';
+import { loadOrgs, migrateFromLegacy, getOrgs, getActiveOrg } from '../utils/orgs';
 import { createOrgSwitcher } from '../utils/orgSwitch';
 import { loadConnectionConfig, getApiBaseUrl, getAuthHeaders } from '../utils/config';
 import {
@@ -44,6 +44,8 @@ import { applyEntryUnread, clearProjectUnread, isRetiredHeartbeatThread } from '
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
 import { mapBroadcastToNotification } from '../utils/ticketNotifications';
 import { routeNotificationTap, notificationRouteToNavigation } from '../utils/notificationRouting';
+import { hubChatAccountGate, hubChatStore } from '../utils/hubChatInstance';
+import { HUB_CHAT_WS_EVENTS } from '../utils/hubChatStore';
 import { uploadAttachments } from '../utils/uploadAttachments';
 import { coalescePromiseByKey } from '@shared/utils/coalesceInFlight';
 import { coalesceRefreshByKey, type PendingRefresh } from '@shared/utils/coalesceRefresh';
@@ -432,6 +434,10 @@ export function AppProvider({ children }: any) {
       // Fan out to the in-app banner first so every mapped type gets a
       // notification regardless of which switch-case it takes below.
       presentForegroundFor(data);
+      if (HUB_CHAT_WS_EVENTS.has(data.type)) {
+        hubChatStore.handleWsEvent(data);
+        return;
+      }
       const forActiveSession = data.sessionId && data.sessionId === activeSessionIdRef.current;
       const msgForActiveSession = data.message?.session_id === activeSessionIdRef.current;
       switch (data.type) {
@@ -1220,6 +1226,39 @@ export function AppProvider({ children }: any) {
     [kanbanRefreshScheduler, presentForegroundFor, reloadActiveAgentSkills],
   );
   const { send, connected, reconnecting, reconnect } = useWebSocket(handleWsMessage);
+  // Agent Hub chat: start over whenever the account or server changes, and
+  // refetch on every (re)connect, since events missed while disconnected are
+  // not replayed.
+  useEffect(() => {
+    const signedIn = configReady && !needsAuth && !needsSetup;
+    const userId = getAuthRecord()?.user?.id ?? null;
+    const orgId = getActiveOrg()?.id ?? '';
+    hubChatAccountGate.update({
+      account: signedIn ? `${getApiBaseUrl() ?? ''}|${userId ?? ''}|${orgId}` : null,
+      userId,
+      connected,
+    });
+  }, [configReady, needsAuth, needsSetup, connected]);
+  // Foreground banner for DMs and mentions (remote pushes are hidden while
+  // the app is open), with the same rule as the web desktop notice.
+  useEffect(() => {
+    hubChatStore.setNotifier((notice) => {
+      try {
+        const Notifications = require('expo-notifications');
+        void presentLocalNotification(
+          { Notifications },
+          {
+            title: notice.title,
+            body: notice.body,
+            data: { event: 'chat_message', type: 'chat_message', channelId: notice.channelId },
+          },
+        );
+      } catch {
+        /* expo-notifications unavailable (web / test) */
+      }
+    });
+    return () => hubChatStore.setNotifier(null);
+  }, []);
   // Mirror `sessions` into a ref so the notification-response listener —
   // which registers once on mount — can read the latest list without being
   // torn down and re-registered on every sessions refresh.
@@ -1298,7 +1337,8 @@ export function AppProvider({ children }: any) {
       case 'threads':
       case 'support':
       case 'pulls':
-      case 'infra': {
+      case 'infra':
+      case 'hubChat': {
         // Navigator-driven kinds share one param mapper (screen + params,
         // including the `pulls` PR number and the `infra` alert id).
         const nav = notificationRouteToNavigation(route);
@@ -1743,6 +1783,10 @@ export function AppProvider({ children }: any) {
     () =>
       createOrgSwitcher({
         switchOrg: async (orgId) => {
+          // Chat belongs to the org being left: drop it before the API
+          // configuration changes, so nothing of it stays on screen and no
+          // response still in flight for it can land afterwards.
+          hubChatAccountGate.invalidate();
           const { switchOrg } = require('../utils/orgs');
           await switchOrg(orgId);
         },
@@ -1767,6 +1811,9 @@ export function AppProvider({ children }: any) {
           setFinalizeStatusBySession({});
           setSessionHandoffs([]);
           setSessionConsultMode(false);
+          // Chat stays empty until the new org's connection is up; the gate
+          // loads it then (and drops anything that slipped in meanwhile).
+          hubChatAccountGate.invalidate();
           // Reconnect WebSocket to new org
           reconnectRef.current();
           // Re-probe the new server's auth mode so notification owner-scoping

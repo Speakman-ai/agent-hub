@@ -16,6 +16,8 @@ import CalendarScreen from './CalendarScreen';
 import GmailScreen from './GmailScreen';
 import SupportOverviewScreen from './SupportOverviewScreen';
 import ChatScreen from './ChatScreen';
+import HubChatScreen, { CountBadge } from './HubChatScreen';
+import { useAccountScoped, useHubChatBadge } from '../hooks/useHubChat';
 import { DEFAULT_HUB_PANE, parseHubPane, type HubWorkspacePane } from '@shared/utils/hub';
 
 type HubTab = 'assistant' | HubWorkspacePane;
@@ -32,6 +34,7 @@ const TABS: { id: HubTab; label: string; icon: string }[] = [
   { id: 'todos', label: 'Todos', icon: 'ListTodo' },
   { id: 'calendar', label: 'Calendar', icon: 'CalendarDays' },
   { id: 'mail', label: 'Mail', icon: 'Mail' },
+  { id: 'chat', label: 'Chat', icon: 'MessageSquare' },
   { id: 'support', label: 'Support', icon: 'LifeBuoy' },
 ];
 
@@ -39,10 +42,16 @@ function HubBody({
   tab,
   navigation,
   setTab,
+  chatChannelId,
+  chatOpenRequest,
+  onChatChannelChange,
 }: {
   tab: HubTab;
   navigation: any;
   setTab: (tab: HubTab) => void;
+  chatChannelId: string | null;
+  chatOpenRequest: number;
+  onChatChannelChange: (channelId: string | null) => void;
 }) {
   const { clearHubChat } = useApp();
   switch (tab) {
@@ -90,13 +99,14 @@ function HubBody({
     case 'mail':
       return <GmailScreen navigation={navigation} />;
     case 'chat':
-      // Web-only for now; a hub pane synced from the web client can still land here.
       return (
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-          <Text style={{ color: colors.gray400, textAlign: 'center' }}>
-            Google Chat is available in the web app.
-          </Text>
-        </View>
+        <HubChatScreen
+          initialChannelId={chatChannelId}
+          openRequest={chatOpenRequest}
+          onOpenAssistant={() => setTab('assistant')}
+          onChannelChange={onChatChannelChange}
+          navigation={navigation}
+        />
       );
     case 'support':
       return <SupportOverviewScreen />;
@@ -124,6 +134,15 @@ export default function HubScreen({ navigation, route }: any) {
   } = useApp();
   const initial = parseHubTab(route?.params?.tab || route?.params?.pane || DEFAULT_HUB_PANE);
   const [tab, setTab] = useState<HubTab>(initial);
+  const chatBadge = useHubChatBadge();
+  // A push tap or link that names a channel opens it, even when it is the
+  // channel already requested (the counter re-fires the open).
+  // The retained channel belongs to the account it was opened under, so a
+  // switch while the Chat tab is closed cannot reopen it under the next one.
+  const [chatChannelId, setChatChannelId] = useAccountScoped<string>(
+    typeof route?.params?.channelId === 'string' ? route.params.channelId : null,
+  );
+  const [chatOpenRequest, setChatOpenRequest] = useState(0);
 
   // Mark the Hub as focused so the sessions loader won't retarget the active
   // session to a project row while the assistant tab is open.
@@ -166,6 +185,18 @@ export default function HubScreen({ navigation, route }: any) {
     if (route?.params?.tab) setTab(parseHubTab(route.params.tab));
   }, [route?.params?.pane, route?.params?.tab]);
 
+  const onChatChannelChange = setChatChannelId;
+
+  useEffect(() => {
+    const channelId = route?.params?.channelId;
+    if (typeof channelId !== 'string' || !channelId) return;
+    setTab('chat');
+    setChatChannelId(channelId);
+    setChatOpenRequest((n) => n + 1);
+    // Consume the param so returning to Hub later does not reopen it.
+    navigation?.setParams?.({ channelId: undefined });
+  }, [route?.params?.channelId, navigation, setChatChannelId]);
+
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <View style={styles.header}>
@@ -198,12 +229,22 @@ export default function HubScreen({ navigation, route }: any) {
                 color={active ? colors.white : colors.gray400}
               />
               <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{item.label}</Text>
+              {item.id === 'chat' && chatBadge > 0 ? (
+                <CountBadge count={chatBadge} testID="hub-tab-chat-badge" />
+              ) : null}
             </TouchableOpacity>
           );
         })}
       </ScrollView>
       <View style={styles.body}>
-        <HubBody tab={tab} navigation={navigation} setTab={setTab} />
+        <HubBody
+          tab={tab}
+          navigation={navigation}
+          setTab={setTab}
+          chatChannelId={chatChannelId}
+          chatOpenRequest={chatOpenRequest}
+          onChatChannelChange={onChatChannelChange}
+        />
       </View>
     </SafeAreaView>
   );

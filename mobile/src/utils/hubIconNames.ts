@@ -26,6 +26,7 @@ export const HUB_ICON_NAMES = [
   'LifeBuoy',
   'Link2',
   'Mail',
+  'MessageSquare',
   'MonitorPlay',
   'List',
   'ListOrdered',

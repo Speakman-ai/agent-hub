@@ -9,7 +9,8 @@
  * @typedef {{ kind: 'support', projectId: string, ticketId: string | null }} SupportRoute
  * @typedef {{ kind: 'pulls', projectId: string | null, prNumber: number | null }} PullsRoute
  * @typedef {{ kind: 'infra', projectId: string, alertId: string | null }} InfraRoute
- * @typedef {ChatRoute | KanbanRoute | ThreadsRoute | SupportRoute | PullsRoute | InfraRoute} Route
+ * @typedef {{ kind: 'hubChat', channelId: string }} HubChatRoute
+ * @typedef {ChatRoute | KanbanRoute | ThreadsRoute | SupportRoute | PullsRoute | InfraRoute | HubChatRoute} Route
  */
 /**
  * @param {Record<string, unknown> | null | undefined} data
@@ -112,6 +113,12 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
         alertId: typeof data.alertId === 'string' ? data.alertId : null,
       };
     }
+    case 'chat_message': {
+      // An Agent Hub chat push: open that channel on the Hub's Chat tab.
+      const channelId = typeof data.channelId === 'string' ? data.channelId : null;
+      if (!channelId) return null;
+      return { kind: 'hubChat', channelId };
+    }
     default:
       return null;
   }
@@ -178,6 +185,8 @@ export function notificationRouteToNavigation(route: any) {
           initialTab: 'alerts',
         },
       };
+    case 'hubChat':
+      return { screen: 'Hub', params: { tab: 'chat', channelId: route.channelId } };
     default:
       return null;
   }

@@ -34,6 +34,7 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
   LifeBuoy: { family: 'feather', name: 'life-buoy' },
   Link2: { family: 'feather', name: 'link-2' },
   Mail: { family: 'feather', name: 'mail' },
+  MessageSquare: { family: 'feather', name: 'message-square' },
   MonitorPlay: { family: 'material', name: 'play-box-outline' },
   List: { family: 'feather', name: 'list' },
   ListOrdered: { family: 'material', name: 'format-list-numbered' },

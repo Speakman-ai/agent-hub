@@ -1,0 +1,1208 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  AppState,
+  FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import {
+  authorLabel,
+  channelLabel,
+  isChannelMuted,
+  layoutHubChatMessages,
+  muteUntilIso,
+  MUTE_PRESETS,
+  RAIL_SECTIONS,
+  railUnread,
+  sectionChannels,
+  type HubChatChannel,
+  type HubChatMessage,
+  type HubChatNotifyLevel,
+  type HubChatOrgMember,
+} from '@shared/utils/hubChat';
+import {
+  decodeToComposer,
+  encodeComposerMentions,
+  type ComposerMention,
+  type HubChatResolvedRef,
+} from '@shared/utils/hubChatRefs';
+import { useIsFocused } from '@react-navigation/native';
+import { api } from '../utils/api';
+import {
+  createChannelSync,
+  type ChannelSync,
+  type ChannelSyncState,
+} from '../utils/hubChatChannelSync';
+import { hubChatStore, locateChatMarkdownCode } from '../utils/hubChatInstance';
+import { badgeText, hubChatRefTarget } from '../utils/hubChatMobile';
+import { useAccountScoped, useHubChatBadge, useHubChatSnapshot } from '../hooks/useHubChat';
+import { useApp } from '../context/AppContext';
+import { HubChatComposer, HubChatMessageBody } from '../components/HubChatRefs';
+import HubIcon from '../components/HubIcon';
+import { colors } from '../theme/colors';
+
+type Side = 'hub' | 'google';
+
+function useUsernames(account: number): ReadonlyMap<string, string> & { list: HubChatOrgMember[] } {
+  const [members, setMembers] = useState<HubChatOrgMember[]>([]);
+  // Org members belong to one account: refetch, and drop the old list, on switch.
+  useEffect(() => {
+    let cancelled = false;
+    setMembers([]);
+    api.hubChat
+      .members()
+      .then((res: { members?: HubChatOrgMember[] }) => {
+        if (!cancelled) setMembers(res?.members ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [account]);
+  return useMemo(() => {
+    const map = new Map(members.map((m) => [m.userId, m.username])) as Map<string, string> & {
+      list: HubChatOrgMember[];
+    };
+    map.list = members;
+    return map;
+  }, [members]);
+}
+
+/**
+ * Agent Hub chat on mobile: the Agent Hub | Google Chat toggle, the channel
+ * rail, and one open channel. Peer of the web `ChatPane` + `HubChatPage`.
+ */
+export default function HubChatScreen({
+  initialChannelId,
+  openRequest,
+  onOpenAssistant,
+  onChannelChange,
+  navigation,
+}: {
+  initialChannelId?: string | null;
+  /** Bumped by the Hub screen when a push or link asks for a channel again. */
+  openRequest?: number;
+  onOpenAssistant?: () => void;
+  /** Reports the open channel so the Hub can restore it after a tab switch. */
+  onChannelChange?: (channelId: string | null) => void;
+  navigation?: any;
+}) {
+  const [side, setSide] = useState<Side>('hub');
+  // The open channel belongs to the account it was opened under.
+  const [channelId, setChannelIdState] = useAccountScoped<string>(initialChannelId ?? null);
+  const changeRef = useRef(onChannelChange);
+  changeRef.current = onChannelChange;
+  const setChannelId = useCallback(
+    (id: string | null) => {
+      setChannelIdState(id);
+      changeRef.current?.(id);
+    },
+    [setChannelIdState],
+  );
+  const badge = useHubChatBadge();
+  const { account } = useHubChatSnapshot();
+  const usernames = useUsernames(account);
+  const { handleOpenHandoffSession } = useApp();
+
+  useEffect(() => {
+    if (initialChannelId) {
+      setSide('hub');
+      setChannelIdState(initialChannelId);
+    }
+  }, [initialChannelId, openRequest, setChannelIdState]);
+
+  const openRef = useCallback(
+    (ref: HubChatResolvedRef) => {
+      const target = hubChatRefTarget(ref);
+      if (!target) return;
+      if (target.kind === 'session') {
+        handleOpenHandoffSession(target.agentId, target.sessionId);
+        navigation?.navigate?.('Chat');
+        return;
+      }
+      navigation?.navigate?.(target.screen, target.params);
+    },
+    [handleOpenHandoffSession, navigation],
+  );
+
+  return (
+    <View style={styles.root}>
+      <View style={styles.toggle} accessibilityRole="tablist">
+        <SideButton
+          label="Agent Hub"
+          active={side === 'hub'}
+          count={badge}
+          onPress={() => setSide('hub')}
+          testID="chat-side-hub"
+        />
+        <SideButton
+          label="Google Chat"
+          active={side === 'google'}
+          count={0}
+          onPress={() => setSide('google')}
+          testID="chat-side-google"
+        />
+      </View>
+      {side === 'google' ? (
+        <View style={styles.center}>
+          <Text style={styles.muted}>Google Chat is available in the web app.</Text>
+        </View>
+      ) : channelId ? (
+        <ChannelView
+          key={`${account}:${channelId}`}
+          channelId={channelId}
+          usernames={usernames}
+          onBack={() => setChannelId(null)}
+          onOpenRef={openRef}
+        />
+      ) : (
+        <ChannelRail
+          // Remount per account so open dialogs drop lists fetched for the last one.
+          key={account}
+          usernames={usernames}
+          onOpen={setChannelId}
+          onOpenAssistant={onOpenAssistant}
+        />
+      )}
+    </View>
+  );
+}
+
+function SideButton({
+  label,
+  active,
+  count,
+  onPress,
+  testID,
+}: {
+  label: string;
+  active: boolean;
+  count: number;
+  onPress: () => void;
+  testID: string;
+}) {
+  return (
+    <TouchableOpacity
+      testID={testID}
+      onPress={onPress}
+      style={[styles.sideButton, active && styles.sideButtonActive]}
+      accessibilityRole="tab"
+      accessibilityState={{ selected: active }}
+    >
+      <Text style={[styles.sideLabel, active && styles.sideLabelActive]}>{label}</Text>
+      {count > 0 ? <CountBadge count={count} /> : null}
+    </TouchableOpacity>
+  );
+}
+
+export function CountBadge({ count, testID }: { count: number; testID?: string }) {
+  return (
+    <View style={styles.badge} testID={testID}>
+      <Text style={styles.badgeText}>{badgeText(count)}</Text>
+    </View>
+  );
+}
+
+/** One rail row: label, bold when anything is unread, a badge per the web rule. */
+export function ChannelRow({
+  channel,
+  label,
+  onPress,
+  now,
+}: {
+  channel: HubChatChannel;
+  label: string;
+  onPress: () => void;
+  now?: number;
+}) {
+  const unread = railUnread(channel, now);
+  const muted = isChannelMuted(channel, now);
+  return (
+    <TouchableOpacity
+      testID={`hub-chat-channel-${channel.id}`}
+      style={styles.row}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={unread.count > 0 ? `${label}, ${unread.count} unread` : label}
+    >
+      <Text
+        style={[styles.rowLabel, unread.bold && styles.rowLabelBold, muted && styles.rowMuted]}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
+      {unread.count > 0 ? <CountBadge count={unread.count} /> : null}
+    </TouchableOpacity>
+  );
+}
+
+function ChannelRail({
+  usernames,
+  onOpen,
+  onOpenAssistant,
+}: {
+  usernames: ReturnType<typeof useUsernames>;
+  onOpen: (channelId: string) => void;
+  onOpenAssistant?: () => void;
+}) {
+  const snapshot = useHubChatSnapshot();
+  const [dialog, setDialog] = useState<'dm' | 'channel' | 'browse' | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const sections = useMemo(
+    () => sectionChannels(snapshot.channels, usernames, snapshot.viewerUserId),
+    [snapshot.channels, usernames, snapshot.viewerUserId],
+  );
+
+  return (
+    <View style={styles.flex}>
+      <View style={styles.railActions}>
+        <ActionButton label="Message" onPress={() => setDialog('dm')} />
+        <ActionButton label="Channel" onPress={() => setDialog('channel')} />
+        <ActionButton label="Browse" onPress={() => setDialog('browse')} />
+      </View>
+      <ScrollView style={styles.flex} contentContainerStyle={styles.railContent}>
+        {onOpenAssistant ? (
+          <TouchableOpacity
+            testID="hub-chat-assistant"
+            style={styles.row}
+            onPress={onOpenAssistant}
+            accessibilityRole="button"
+          >
+            <HubIcon name="Bot" size={14} color={colors.blue400} />
+            <Text style={[styles.rowLabel, styles.rowLabelBold]}>Agent Hub</Text>
+          </TouchableOpacity>
+        ) : null}
+        {!snapshot.loaded ? <ActivityIndicator color={colors.gray400} style={styles.pad} /> : null}
+        {RAIL_SECTIONS.map((section) => {
+          const list = sections[section.id];
+          if (list.length === 0) return null;
+          return (
+            <View key={section.id} style={styles.section}>
+              <Text style={styles.sectionLabel}>{section.label}</Text>
+              {list.map((c) => (
+                <ChannelRow
+                  key={c.id}
+                  channel={c}
+                  label={channelLabel(c, usernames, snapshot.viewerUserId)}
+                  onPress={() => onOpen(c.id)}
+                />
+              ))}
+            </View>
+          );
+        })}
+        {snapshot.loaded && snapshot.channels.length === 0 ? (
+          <Text style={[styles.muted, styles.pad]}>
+            No conversations yet. Start a message or join a channel.
+          </Text>
+        ) : null}
+        <TouchableOpacity
+          style={styles.refresh}
+          disabled={refreshing}
+          onPress={() => {
+            setRefreshing(true);
+            void hubChatStore.refresh().finally(() => setRefreshing(false));
+          }}
+        >
+          <Text style={styles.muted}>{refreshing ? 'Refreshing…' : 'Refresh'}</Text>
+        </TouchableOpacity>
+      </ScrollView>
+      <NewDmDialog
+        visible={dialog === 'dm'}
+        members={usernames.list}
+        viewerUserId={snapshot.viewerUserId}
+        onClose={() => setDialog(null)}
+        onOpened={(id) => {
+          setDialog(null);
+          onOpen(id);
+        }}
+      />
+      <NewChannelDialog
+        visible={dialog === 'channel'}
+        onClose={() => setDialog(null)}
+        onCreated={(id) => {
+          setDialog(null);
+          onOpen(id);
+        }}
+      />
+      <BrowseDialog
+        visible={dialog === 'browse'}
+        onClose={() => setDialog(null)}
+        onJoined={(id) => {
+          setDialog(null);
+          onOpen(id);
+        }}
+      />
+    </View>
+  );
+}
+
+function ActionButton({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <TouchableOpacity style={styles.actionButton} onPress={onPress} accessibilityRole="button">
+      <HubIcon name="Plus" size={12} color={colors.gray300} />
+      <Text style={styles.actionLabel}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function ChannelView({
+  channelId,
+  usernames,
+  onBack,
+  onOpenRef,
+}: {
+  channelId: string;
+  usernames: ReturnType<typeof useUsernames>;
+  onBack: () => void;
+  onOpenRef: (ref: HubChatResolvedRef) => void;
+}) {
+  const snapshot = useHubChatSnapshot();
+  const listed = snapshot.channels.find((c) => c.id === channelId);
+  // A channel not in the rail (a public channel opened before joining).
+  const [fetched, setFetched] = useState<HubChatChannel | null>(null);
+  const channel = listed ?? fetched;
+  const [sync, setSync] = useState<ChannelSyncState>({
+    window: { messages: [], revisions: {} },
+    hasMore: false,
+    loading: true,
+    error: null,
+  });
+  const win = sync.window;
+  const { hasMore, loading } = sync;
+  const loadError = sync.error;
+  const syncRef = useRef<ChannelSync | null>(null);
+  const [draft, setDraft] = useState<{ text: string; mentions: ComposerMention[] }>({
+    text: '',
+    mentions: [],
+  });
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const [editing, setEditing] = useState<HubChatMessage | null>(null);
+  const [sending, setSending] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+  // On screen means both: the app is in front and this screen has focus. It
+  // decides whether arriving messages count as read and whether reads are
+  // written, so a backgrounded or covered channel keeps its unread count.
+  const focused = useIsFocused();
+  const visible = appActive && focused;
+  const mounted = useRef(true);
+  // A read write that failed is not retried for the same position until the
+  // channel is on screen again, so a server error cannot loop the request.
+  const failedReadRef = useRef<number | null>(null);
+  // Follow new messages only while the reader is at the bottom.
+  const stickToBottomRef = useRef(true);
+  // The Unread line stays where it was when the channel opened.
+  const [openedReadSeq, setOpenedReadSeq] = useState<number | null>(
+    listed?.membership ? listed.membership.lastReadSeq : null,
+  );
+
+  // One sync controller per open channel owns every change to the window.
+  useEffect(() => {
+    mounted.current = true;
+    const ctl = createChannelSync(channelId, api.hubChat, (next) => {
+      if (mounted.current) setSync(next);
+    });
+    syncRef.current = ctl;
+    setSync(ctl.getState());
+    void ctl.load();
+    const offLive = hubChatStore.subscribeLive((event) => {
+      if (event.type === 'resync') ctl.resync();
+      else if (event.type === 'hub_chat_message' && event.message.channelId === channelId) {
+        ctl.receiveNew([event.message]);
+      } else if (
+        event.type === 'hub_chat_message_update' &&
+        event.message.channelId === channelId
+      ) {
+        ctl.receiveUpdate(event.message);
+      }
+    });
+    const sub = AppState.addEventListener('change', (st) => setAppActive(st === 'active'));
+    return () => {
+      mounted.current = false;
+      ctl.dispose();
+      syncRef.current = null;
+      offLive();
+      sub.remove();
+      if (hubChatStore.getViewing() === channelId) hubChatStore.setViewing(null);
+    };
+  }, [channelId]);
+
+  // Viewing follows visibility. Coming back on screen reloads what is shown,
+  // since the socket may have dropped while away.
+  const wasVisible = useRef(visible);
+  useEffect(() => {
+    if (visible) {
+      hubChatStore.setViewing(channelId);
+      if (!wasVisible.current) {
+        failedReadRef.current = null;
+        syncRef.current?.resync();
+      }
+    } else if (hubChatStore.getViewing() === channelId) {
+      hubChatStore.setViewing(null);
+    }
+    wasVisible.current = visible;
+  }, [visible, channelId]);
+
+  useEffect(() => {
+    if (listed) return;
+    api.hubChat
+      .channel(channelId)
+      .then((res: { channel?: HubChatChannel }) => {
+        if (mounted.current && res?.channel) setFetched(res.channel);
+      })
+      .catch(() => {});
+  }, [channelId, listed]);
+
+  useEffect(() => {
+    if (openedReadSeq === null && channel?.membership) {
+      setOpenedReadSeq(channel.membership.lastReadSeq);
+    }
+  }, [channel?.membership, openedReadSeq]);
+
+  const newestSeq = win.messages.length ? win.messages[win.messages.length - 1].seq : 0;
+
+  // The rail learned the channel moved past the window (e.g. after a reconnect).
+  const channelLastSeq = channel?.lastSeq ?? 0;
+  useEffect(() => {
+    syncRef.current?.catchUpTo(channelLastSeq);
+  }, [channelLastSeq]);
+
+  // Mark read only while the channel is on screen.
+  // Compared against what the server was told (confirmed and in-flight
+  // writes), not the shown pointer: that already counts messages on screen as
+  // read, so it would skip writing exactly the reads this view exists for.
+  // The store subscription re-renders this view on every change.
+  const readSeq = hubChatStore.readWritten(channelId);
+  useEffect(() => {
+    if (!visible || !channel?.membership || newestSeq <= readSeq) return;
+    if (failedReadRef.current === newestSeq) return;
+    const seq = newestSeq;
+    const settle = hubChatStore.markReadLocal(channelId, seq);
+    api.hubChat.markRead(channelId, seq).then(
+      () => settle(true),
+      () => {
+        failedReadRef.current = seq;
+        settle(false);
+      },
+    );
+  }, [visible, channel?.membership, channelId, newestSeq, readSeq]);
+
+  const loadOlder = () => {
+    if (!win.messages[0]) return;
+    stickToBottomRef.current = false;
+    syncRef.current
+      ?.loadOlder()
+      .catch((err: unknown) => Alert.alert('Could not load messages', errorText(err)));
+  };
+
+  const send = async () => {
+    const sent = draftRef.current;
+    if (!sent.text.trim() || sending) return;
+    const body = encodeComposerMentions(sent.text, sent.mentions, locateChatMarkdownCode);
+    setSending(true);
+    try {
+      const res = editing
+        ? await api.hubChat.edit(editing.id, body)
+        : await api.hubChat.post(channelId, body);
+      if (res?.message) {
+        if (editing) syncRef.current?.receiveUpdate(res.message);
+        else {
+          stickToBottomRef.current = true;
+          syncRef.current?.receiveNew([res.message]);
+        }
+      }
+      // Clear only what was sent: text typed while the request was out stays.
+      if (mounted.current && draftRef.current.text === sent.text) {
+        setDraft({ text: '', mentions: [] });
+        setEditing(null);
+      }
+    } catch (err) {
+      Alert.alert(editing ? 'Could not save the edit' : 'Could not send', errorText(err));
+    } finally {
+      if (mounted.current) setSending(false);
+    }
+  };
+
+  const startEdit = (m: HubChatMessage) => {
+    const decoded = decodeToComposer(m.body, locateChatMarkdownCode);
+    setEditing(m);
+    setDraft({ text: decoded.text, mentions: decoded.mentions });
+  };
+
+  const onLongPress = (m: HubChatMessage) => {
+    Alert.alert('Message', undefined, [
+      { text: 'Edit', onPress: () => startEdit(m) },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          api.hubChat
+            .remove(m.id)
+            .then((res: { message?: HubChatMessage }) => {
+              if (res?.message) syncRef.current?.receiveUpdate(res.message);
+            })
+            .catch((err: unknown) => Alert.alert('Could not delete', errorText(err)));
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const join = () => {
+    hubChatStore
+      .requestChannel(() => api.hubChat.join(channelId))
+      .catch((err: unknown) => Alert.alert('Could not join', errorText(err)));
+  };
+
+  const rows = useMemo(
+    () =>
+      layoutHubChatMessages(win.messages, {
+        viewerUserId: snapshot.viewerUserId,
+        lastReadSeq: openedReadSeq,
+      }),
+    [win.messages, snapshot.viewerUserId, openedReadSeq],
+  );
+  const listRef = useRef<FlatList<any>>(null);
+  const label = channel ? channelLabel(channel, usernames, snapshot.viewerUserId) : '';
+
+  return (
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 0}
+    >
+      <View style={styles.channelHeader}>
+        <TouchableOpacity
+          onPress={onBack}
+          style={styles.headerButton}
+          accessibilityLabel="Back to conversations"
+          testID="hub-chat-back"
+        >
+          <Text style={styles.backText}>‹</Text>
+        </TouchableOpacity>
+        <View style={styles.flex}>
+          <Text style={styles.channelTitle} numberOfLines={1}>
+            {label}
+          </Text>
+          {channel?.topic ? (
+            <Text style={styles.muted} numberOfLines={1}>
+              {channel.topic}
+            </Text>
+          ) : null}
+        </View>
+        {channel?.membership ? (
+          <TouchableOpacity
+            onPress={() => setSettingsOpen(true)}
+            style={styles.headerButton}
+            accessibilityLabel="Channel settings"
+          >
+            <HubIcon name="Settings" size={16} color={colors.gray400} />
+          </TouchableOpacity>
+        ) : null}
+      </View>
+      {loading && win.messages.length === 0 ? (
+        <ActivityIndicator color={colors.gray400} style={styles.pad} />
+      ) : loadError && win.messages.length === 0 ? (
+        <Text style={[styles.error, styles.pad]}>{loadError}</Text>
+      ) : (
+        <FlatList
+          ref={listRef}
+          style={styles.flex}
+          contentContainerStyle={styles.messages}
+          data={rows}
+          keyExtractor={(r) => r.message.id}
+          // Prepending older pages keeps the message the reader was looking at
+          // in place; new messages scroll into view only while at the bottom.
+          maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+          scrollEventThrottle={100}
+          onScroll={(e) => {
+            const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+            stickToBottomRef.current = shouldFollowTail(
+              contentOffset.y,
+              layoutMeasurement.height,
+              contentSize.height,
+            );
+          }}
+          onContentSizeChange={() => {
+            if (stickToBottomRef.current) listRef.current?.scrollToEnd({ animated: false });
+          }}
+          ListHeaderComponent={
+            hasMore ? (
+              <TouchableOpacity onPress={loadOlder} style={styles.loadOlder}>
+                <Text style={styles.muted}>Load earlier messages</Text>
+              </TouchableOpacity>
+            ) : null
+          }
+          ListEmptyComponent={<Text style={[styles.muted, styles.pad]}>No messages yet.</Text>}
+          renderItem={({ item }) => (
+            <MessageRow
+              row={item}
+              usernames={usernames}
+              onOpenRef={onOpenRef}
+              onLongPress={item.own && !item.message.deletedAt ? onLongPress : undefined}
+            />
+          )}
+        />
+      )}
+      {channel && !channel.membership ? (
+        <TouchableOpacity style={styles.joinBar} onPress={join} accessibilityRole="button">
+          <Text style={styles.joinText}>Join channel</Text>
+        </TouchableOpacity>
+      ) : (
+        <View style={styles.composer}>
+          {editing ? (
+            <View style={styles.editingBar}>
+              <Text style={styles.muted}>Editing message</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setEditing(null);
+                  setDraft({ text: '', mentions: [] });
+                }}
+              >
+                <Text style={styles.link}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+          <View style={styles.composerRow}>
+            <View style={styles.flex}>
+              <HubChatComposer
+                value={draft.text}
+                mentions={draft.mentions}
+                onChange={(text, mentions) => setDraft({ text, mentions })}
+                placeholder={label ? `Message ${label}` : 'Message'}
+                placeholderTextColor={colors.gray500}
+                multiline
+                style={styles.input}
+                testID="hub-chat-input"
+              />
+            </View>
+            <TouchableOpacity
+              onPress={() => void send()}
+              disabled={sending || !draft.text.trim()}
+              style={[styles.sendButton, (sending || !draft.text.trim()) && styles.disabled]}
+              accessibilityLabel={editing ? 'Save edit' : 'Send'}
+              testID="hub-chat-send"
+            >
+              <Text style={styles.sendText}>{editing ? 'Save' : 'Send'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+      {channel ? (
+        <ChannelSettingsDialog
+          visible={settingsOpen}
+          channel={channel}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
+    </KeyboardAvoidingView>
+  );
+}
+
+/** Within this many points of the bottom, the list keeps following new messages. */
+const FOLLOW_TAIL_SLOP = 80;
+
+export function shouldFollowTail(offsetY: number, viewHeight: number, contentHeight: number) {
+  return contentHeight - (offsetY + viewHeight) <= FOLLOW_TAIL_SLOP;
+}
+
+function timeLabel(iso: string): string {
+  const d = new Date(iso.includes('T') ? iso : `${iso}Z`);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+export function MessageRow({
+  row,
+  usernames,
+  onOpenRef,
+  onLongPress,
+}: {
+  row: ReturnType<typeof layoutHubChatMessages>[number];
+  usernames: ReadonlyMap<string, string>;
+  onOpenRef?: (ref: HubChatResolvedRef) => void;
+  onLongPress?: (m: HubChatMessage) => void;
+}) {
+  const m = row.message;
+  return (
+    <View>
+      {row.dayLabel ? (
+        <View style={styles.dayDivider}>
+          <Text style={styles.dayLabel}>{row.dayLabel}</Text>
+        </View>
+      ) : null}
+      {row.unreadDivider ? (
+        <View style={styles.unreadDivider} testID="hub-chat-unread-line">
+          <Text style={styles.unreadLabel}>Unread</Text>
+        </View>
+      ) : null}
+      <TouchableOpacity
+        activeOpacity={onLongPress ? 0.7 : 1}
+        onLongPress={onLongPress ? () => onLongPress(m) : undefined}
+        style={[styles.message, row.showHeader && styles.messageFirst]}
+      >
+        {row.showHeader ? (
+          <View style={styles.messageHeader}>
+            <Text style={[styles.author, row.own && styles.authorOwn]}>
+              {authorLabel(m, usernames)}
+            </Text>
+            <Text style={styles.time}>{timeLabel(m.createdAt)}</Text>
+          </View>
+        ) : null}
+        {m.deletedAt ? (
+          <Text style={styles.deleted}>Message deleted</Text>
+        ) : (
+          <>
+            <HubChatMessageBody body={m.body} onOpenRef={onOpenRef} />
+            {m.editedAt ? <Text style={styles.time}>(edited)</Text> : null}
+          </>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function DialogShell({
+  visible,
+  title,
+  onClose,
+  children,
+}: {
+  visible: boolean;
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.backdrop}>
+        <View style={styles.sheet}>
+          <View style={styles.sheetHeader}>
+            <Text style={styles.sheetTitle}>{title}</Text>
+            <TouchableOpacity onPress={onClose} accessibilityLabel="Close">
+              <HubIcon name="X" size={18} color={colors.gray400} />
+            </TouchableOpacity>
+          </View>
+          {children}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function NewDmDialog({
+  visible,
+  members,
+  viewerUserId,
+  onClose,
+  onOpened,
+}: {
+  visible: boolean;
+  members: HubChatOrgMember[];
+  viewerUserId: string | null;
+  onClose: () => void;
+  onOpened: (channelId: string) => void;
+}) {
+  const [filter, setFilter] = useState('');
+  const [busy, setBusy] = useState(false);
+  const shown = members
+    .filter((m) => m.username.toLowerCase().includes(filter.trim().toLowerCase()))
+    .sort((a, b) => a.username.localeCompare(b.username));
+  const open = (userId: string) => {
+    setBusy(true);
+    hubChatStore
+      .requestChannel(() => api.hubChat.openDm(userId))
+      .then((channel) => {
+        if (channel) onOpened(channel.id);
+      })
+      .catch((err: unknown) => Alert.alert('Could not open the conversation', errorText(err)))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <DialogShell visible={visible} title="New message" onClose={onClose}>
+      <TextInput
+        value={filter}
+        onChangeText={setFilter}
+        placeholder="Search people"
+        placeholderTextColor={colors.gray500}
+        style={styles.field}
+        autoCapitalize="none"
+      />
+      <ScrollView style={styles.sheetList}>
+        {shown.map((m) => (
+          <TouchableOpacity
+            key={m.userId}
+            style={styles.row}
+            disabled={busy}
+            onPress={() => open(m.userId)}
+          >
+            <Text style={styles.rowLabel}>
+              {m.username}
+              {m.userId === viewerUserId ? ' (you)' : ''}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+    </DialogShell>
+  );
+}
+
+function NewChannelDialog({
+  visible,
+  onClose,
+  onCreated,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onCreated: (channelId: string) => void;
+}) {
+  const [name, setName] = useState('');
+  const [topic, setTopic] = useState('');
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const create = () => {
+    if (!name.trim()) return;
+    setBusy(true);
+    hubChatStore
+      .requestChannel(() =>
+        api.hubChat.createChannel({
+          kind: 'channel',
+          name: name.trim(),
+          topic: topic.trim() || null,
+          isPrivate,
+        }),
+      )
+      .then((channel) => {
+        if (!channel) return;
+        setName('');
+        setTopic('');
+        setIsPrivate(false);
+        onCreated(channel.id);
+      })
+      .catch((err: unknown) => Alert.alert('Could not create the channel', errorText(err)))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <DialogShell visible={visible} title="New channel" onClose={onClose}>
+      <TextInput
+        value={name}
+        onChangeText={setName}
+        placeholder="Name"
+        placeholderTextColor={colors.gray500}
+        style={styles.field}
+        autoCapitalize="none"
+        editable={!busy}
+      />
+      <TextInput
+        value={topic}
+        onChangeText={setTopic}
+        placeholder="Topic (optional)"
+        placeholderTextColor={colors.gray500}
+        style={styles.field}
+        editable={!busy}
+      />
+      <View style={styles.switchRow}>
+        <Text style={styles.rowLabel}>Private</Text>
+        <Switch value={isPrivate} onValueChange={setIsPrivate} disabled={busy} />
+      </View>
+      <TouchableOpacity
+        style={[styles.primary, (busy || !name.trim()) && styles.disabled]}
+        disabled={busy || !name.trim()}
+        onPress={create}
+      >
+        <Text style={styles.sendText}>Create</Text>
+      </TouchableOpacity>
+    </DialogShell>
+  );
+}
+
+function BrowseDialog({
+  visible,
+  onClose,
+  onJoined,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onJoined: (channelId: string) => void;
+}) {
+  const [channels, setChannels] = useState<HubChatChannel[] | null>(null);
+  useEffect(() => {
+    if (!visible) return;
+    setChannels(null);
+    api.hubChat
+      .browse()
+      .then((res: { channels?: HubChatChannel[] }) => setChannels(res?.channels ?? []))
+      .catch(() => setChannels([]));
+  }, [visible]);
+  const join = (id: string) => {
+    hubChatStore
+      .requestChannel(() => api.hubChat.join(id))
+      .then((channel) => {
+        if (channel) onJoined(id);
+      })
+      .catch((err: unknown) => Alert.alert('Could not join', errorText(err)));
+  };
+  return (
+    <DialogShell visible={visible} title="Browse channels" onClose={onClose}>
+      {channels === null ? <ActivityIndicator color={colors.gray400} /> : null}
+      {channels && channels.length === 0 ? (
+        <Text style={styles.muted}>No channels to join.</Text>
+      ) : null}
+      <ScrollView style={styles.sheetList}>
+        {(channels ?? []).map((c) => (
+          <TouchableOpacity key={c.id} style={styles.row} onPress={() => join(c.id)}>
+            <View style={styles.flex}>
+              <Text style={styles.rowLabel}># {c.name}</Text>
+              {c.topic ? <Text style={styles.muted}>{c.topic}</Text> : null}
+            </View>
+            <Text style={styles.link}>Join</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+    </DialogShell>
+  );
+}
+
+const NOTIFY_OPTIONS: { level: HubChatNotifyLevel; label: string }[] = [
+  { level: 'all', label: 'All messages' },
+  { level: 'mentions', label: 'Mentions only' },
+  { level: 'none', label: 'Nothing' },
+];
+
+function ChannelSettingsDialog({
+  visible,
+  channel,
+  onClose,
+}: {
+  visible: boolean;
+  channel: HubChatChannel;
+  onClose: () => void;
+}) {
+  const muted = isChannelMuted(channel);
+  const level = channel.membership?.notifyLevel ?? 'all';
+  // Both controls go through one ordered writer, so a slow earlier response
+  // cannot undo a later choice.
+  const save = (
+    patch: { notifyLevel?: HubChatNotifyLevel; mutedUntil?: string | null },
+    write: () => Promise<any>,
+  ) => {
+    hubChatStore
+      .updateMembership(channel.id, patch, write)
+      .catch((err: unknown) => Alert.alert('Could not save', errorText(err)));
+  };
+  const setLevel = (next: HubChatNotifyLevel) =>
+    save({ notifyLevel: next }, () => api.hubChat.setNotifyLevel(channel.id, next));
+  const setMute = (until: string | null) =>
+    save({ mutedUntil: until }, () => api.hubChat.setMute(channel.id, until));
+  return (
+    <DialogShell visible={visible} title="Notifications" onClose={onClose}>
+      {NOTIFY_OPTIONS.map((o) => (
+        <TouchableOpacity
+          key={o.level}
+          style={styles.row}
+          onPress={() => setLevel(o.level)}
+          accessibilityRole="radio"
+          accessibilityState={{ selected: level === o.level }}
+        >
+          <Text style={[styles.rowLabel, level === o.level && styles.rowLabelBold]}>
+            {level === o.level ? '● ' : '○ '}
+            {o.label}
+          </Text>
+        </TouchableOpacity>
+      ))}
+      <Text style={[styles.sectionLabel, styles.pad]}>Mute</Text>
+      {muted ? (
+        <TouchableOpacity style={styles.row} onPress={() => setMute(null)}>
+          <Text style={styles.link}>Unmute</Text>
+        </TouchableOpacity>
+      ) : (
+        MUTE_PRESETS.map((p) => (
+          <TouchableOpacity
+            key={p.label}
+            style={styles.row}
+            onPress={() => setMute(muteUntilIso(p.hours))}
+          >
+            <Text style={styles.rowLabel}>{p.label}</Text>
+          </TouchableOpacity>
+        ))
+      )}
+    </DialogShell>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: colors.gray950 },
+  flex: { flex: 1, minHeight: 0 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  muted: { color: colors.gray400, fontSize: 12 },
+  error: { color: colors.red400, fontSize: 13 },
+  pad: { padding: 12 },
+  link: { color: colors.blue400, fontSize: 13 },
+  disabled: { opacity: 0.5 },
+  toggle: {
+    flexDirection: 'row',
+    marginHorizontal: 12,
+    marginBottom: 8,
+    padding: 2,
+    borderRadius: 8,
+    backgroundColor: colors.gray900,
+  },
+  sideButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  sideButtonActive: { backgroundColor: colors.gray800 },
+  sideLabel: { color: colors.gray400, fontSize: 13, fontWeight: '500' },
+  sideLabelActive: { color: colors.white },
+  badge: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 5,
+    backgroundColor: colors.blue600,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeText: { color: colors.white, fontSize: 11, fontWeight: '700' },
+  railActions: { flexDirection: 'row', gap: 6, paddingHorizontal: 12, paddingBottom: 6 },
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: colors.gray900,
+  },
+  actionLabel: { color: colors.gray300, fontSize: 12 },
+  railContent: { paddingBottom: 24 },
+  section: { marginTop: 8 },
+  sectionLabel: {
+    color: colors.gray500,
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  rowLabel: { color: colors.gray300, fontSize: 14, flexShrink: 1, flexGrow: 1 },
+  rowLabelBold: { color: colors.white, fontWeight: '700' },
+  rowMuted: { color: colors.gray500 },
+  refresh: { alignItems: 'center', padding: 12 },
+  channelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 8,
+    paddingBottom: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.gray800,
+  },
+  headerButton: { padding: 6 },
+  backText: { color: colors.gray300, fontSize: 24, lineHeight: 24 },
+  channelTitle: { color: colors.white, fontSize: 15, fontWeight: '600' },
+  messages: { paddingHorizontal: 12, paddingVertical: 8 },
+  loadOlder: { alignItems: 'center', padding: 8 },
+  dayDivider: { alignItems: 'center', marginVertical: 8 },
+  dayLabel: { color: colors.gray500, fontSize: 11, fontWeight: '600' },
+  unreadDivider: {
+    borderTopWidth: 1,
+    borderTopColor: colors.red500,
+    marginVertical: 6,
+    alignItems: 'flex-end',
+  },
+  unreadLabel: { color: colors.red400, fontSize: 10, fontWeight: '700' },
+  message: { paddingVertical: 1 },
+  messageFirst: { marginTop: 8 },
+  messageHeader: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginBottom: 2 },
+  author: { color: colors.gray100, fontSize: 13, fontWeight: '700' },
+  authorOwn: { color: colors.blue300 },
+  time: { color: colors.gray500, fontSize: 11 },
+  deleted: { color: colors.gray500, fontStyle: 'italic', fontSize: 13 },
+  joinBar: {
+    margin: 12,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: colors.blue600,
+    alignItems: 'center',
+  },
+  joinText: { color: colors.white, fontWeight: '600' },
+  composer: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.gray800,
+  },
+  editingBar: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+  composerRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
+  input: {
+    color: colors.white,
+    backgroundColor: colors.gray900,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    maxHeight: 120,
+    fontSize: 14,
+  },
+  sendButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 8,
+    backgroundColor: colors.blue600,
+  },
+  sendText: { color: colors.white, fontWeight: '600', fontSize: 14 },
+  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: colors.black60 },
+  sheet: {
+    backgroundColor: colors.gray900,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    padding: 16,
+    maxHeight: '80%',
+    gap: 8,
+  },
+  sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  sheetTitle: { color: colors.white, fontSize: 16, fontWeight: '600' },
+  sheetList: { maxHeight: 360 },
+  field: {
+    color: colors.white,
+    backgroundColor: colors.gray800,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 14,
+  },
+  switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  primary: {
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: colors.blue600,
+  },
+});

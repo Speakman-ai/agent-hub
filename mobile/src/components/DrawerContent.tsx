@@ -43,6 +43,7 @@ import SessionStateIcon from './SessionStateIcon';
 import HubIcon from './HubIcon';
 import BugReportButton from './BugReportButton';
 import BrandLogo from './BrandLogo';
+import { useHubChatBadge } from '../hooks/useHubChat';
 
 /**
  * The one API call the collapsed-project saver makes. Module scope so every
@@ -53,6 +54,7 @@ const putCollapsedProject = (projectId: string, collapsed: boolean) =>
   api.putMySidebarCollapsedProject(projectId, collapsed);
 
 export default function DrawerContent({ navigation }: any) {
+  const chatBadge = useHubChatBadge();
   const {
     showAiSignInGuide,
     dismissAiSignInGuide,
@@ -623,6 +625,23 @@ export default function DrawerContent({ navigation }: any) {
         >
           <BrandLogo size="sm" />
         </TouchableOpacity>
+        <TouchableOpacity
+          testID="drawer-chat"
+          style={styles.chatItem}
+          onPress={() => {
+            navigation.navigate('Hub', { tab: 'chat' });
+            navigation.closeDrawer();
+          }}
+          accessibilityLabel={chatBadge > 0 ? `Chat, ${chatBadge} unread` : 'Chat'}
+        >
+          <HubIcon name="MessageSquare" size={14} color={colors.gray400} />
+          <Text style={styles.chatItemText}>Chat</Text>
+          {chatBadge > 0 ? (
+            <View style={styles.unreadBadge} testID="drawer-chat-badge">
+              <Text style={styles.unreadBadgeText}>{chatBadge > 99 ? '99+' : chatBadge}</Text>
+            </View>
+          ) : null}
+        </TouchableOpacity>
         <View style={styles.connectionRow}>
           <Pressable
             onLongPress={showConnectionInfo}
@@ -985,6 +1004,16 @@ const styles = StyleSheet.create({
     marginBottom: 0,
     paddingHorizontal: 0,
   },
+  chatItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginTop: -10,
+    marginBottom: 12,
+  },
+  chatItemText: { color: colors.gray300, fontSize: 14, fontWeight: '500', flex: 1 },
   dashboardItem: {
     flexDirection: 'row',
     alignItems: 'center',

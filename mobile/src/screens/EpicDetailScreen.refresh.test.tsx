@@ -40,6 +40,7 @@ vi.mock('../utils/orgs', () => ({
   loadOrgs: vi.fn(),
   migrateFromLegacy: vi.fn(),
   getOrgs: () => ({ orgs: [] }),
+  getActiveOrg: () => null,
 }));
 vi.mock('../utils/auth', () => ({
   loadAuthToken: vi.fn(),

@@ -1251,6 +1251,83 @@ export const api = {
   },
   getMyWork: () => fetchJSON('/me/work'),
   getHubSession: () => fetchJSON('/me/hub-session'),
+  // Agent Hub chat (/api/chat). The server acts as the signed-in user.
+  hubChat: {
+    members: () => fetchJSON('/chat/members'),
+    channels: () => fetchJSON('/chat/channels'),
+    browse: () => fetchJSON('/chat/channels/browse'),
+    channel: (channelId: string) => fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}`),
+    createChannel: (data: {
+      kind?: 'channel' | 'group';
+      name?: string;
+      topic?: string | null;
+      isPrivate?: boolean;
+      memberUserIds?: string[];
+    }) => fetchJSON('/chat/channels', { method: 'POST', body: JSON.stringify(data) }),
+    openDm: (userId: string) =>
+      fetchJSON('/chat/dms', { method: 'POST', body: JSON.stringify({ userId }) }),
+    updateChannel: (channelId: string, data: { name?: string; topic?: string | null }) =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    join: (channelId: string) =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/join`, { method: 'POST' }),
+    addMembers: (channelId: string, userIds: string[]) =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/members`, {
+        method: 'POST',
+        body: JSON.stringify({ userIds }),
+      }),
+    removeMember: (channelId: string, userId: string) =>
+      fetchJSON(
+        `/chat/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(userId)}`,
+        { method: 'DELETE' },
+      ),
+    messages: (
+      channelId: string,
+      opts: { before?: number; after?: number; limit?: number } = {},
+    ) => {
+      const params = new URLSearchParams();
+      if (opts.before !== undefined) params.set('before', String(opts.before));
+      if (opts.after !== undefined) params.set('after', String(opts.after));
+      if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+      const qs = params.toString();
+      return fetchJSON(
+        `/chat/channels/${encodeURIComponent(channelId)}/messages${qs ? `?${qs}` : ''}`,
+      );
+    },
+    post: (channelId: string, body: string) =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ body }),
+      }),
+    edit: (messageId: string, body: string) =>
+      fetchJSON(`/chat/messages/${encodeURIComponent(messageId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ body }),
+      }),
+    remove: (messageId: string) =>
+      fetchJSON(`/chat/messages/${encodeURIComponent(messageId)}`, { method: 'DELETE' }),
+    markRead: (channelId: string, seq?: number) =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/read`, {
+        method: 'POST',
+        body: JSON.stringify(seq === undefined ? {} : { seq }),
+      }),
+    setNotifyLevel: (channelId: string, notifyLevel: 'all' | 'mentions' | 'none') =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/notify-level`, {
+        method: 'PUT',
+        body: JSON.stringify({ notifyLevel }),
+      }),
+    setMute: (channelId: string, mutedUntil: string | null) =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/mute`, {
+        method: 'PUT',
+        body: JSON.stringify({ mutedUntil }),
+      }),
+    searchRefs: (trigger: '@' | '#', q: string) =>
+      fetchJSON(`/chat/refs/search?${new URLSearchParams({ trigger, q }).toString()}`),
+    resolveRefs: (refs: { kind: string; targetId: string }[]) =>
+      fetchJSON('/chat/refs/resolve', { method: 'POST', body: JSON.stringify({ refs }) }),
+  },
   clearHubSession: () => fetchJSON('/me/hub-session/clear', { method: 'POST' }),
   getHubModel: () => fetchJSON('/me/hub-model'),
   putHubModel: (body: { engine: string; model: string }) =>

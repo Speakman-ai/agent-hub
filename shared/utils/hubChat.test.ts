@@ -169,6 +169,20 @@ describe('live unread updates', () => {
   });
 });
 
+describe('a delayed message already covered by the read position', () => {
+  it('moves the tail without counting it unread', () => {
+    const c = channel({
+      lastSeq: 50,
+      membership: { role: 'member', lastReadSeq: 51, notifyLevel: 'all', mutedUntil: null },
+    });
+    const [next] = applyMessageToChannels([c], msg(51), {
+      viewerUserId: 'alice',
+      viewingChannelId: null,
+    });
+    expect(next).toMatchObject({ lastSeq: 51, unreadCount: 0, mentionCount: 0 });
+  });
+});
+
 describe('layoutHubChatMessages', () => {
   const at = (min: number) => new Date(Date.UTC(2026, 9, 13, 10, min)).toISOString();
   const now = new Date(Date.UTC(2026, 9, 13, 12, 0));

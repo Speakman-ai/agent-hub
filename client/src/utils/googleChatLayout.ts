@@ -1,6 +1,9 @@
 import { compareRfc3339 } from '@shared/utils/rfc3339';
+import { chatDayLabel } from '@shared/utils/hubChat';
 import { parseDate } from './time';
 import { chatSenderLabel, type ChatMessage, type ChatUser } from './googleChat';
+
+export { chatDayLabel };
 
 // Literal class names so Tailwind keeps them in the build.
 const AVATAR_COLORS = [
@@ -51,21 +54,6 @@ export function isOwnMessage(message: ChatMessage, selfUserName: string | null):
 
 function localDayKey(d: Date): string {
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-}
-
-/** "Today", "Yesterday", or a date, the way Chat labels its day separators. */
-export function chatDayLabel(d: Date, now: Date): string {
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const diffDays = Math.round((today.getTime() - day.getTime()) / 86_400_000);
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Yesterday';
-  return d.toLocaleDateString(undefined, {
-    weekday: diffDays < 7 ? 'long' : undefined,
-    month: 'short',
-    day: 'numeric',
-    year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric',
-  });
 }
 
 export type ChatRow = {
