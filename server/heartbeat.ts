@@ -378,6 +378,39 @@ export function formatCronErrorResult(
   return `ERROR: ${message}\n\n--- Partial output ---\n${partial}`;
 }
 
+/**
+ * Announces a finished cron run on the broadcast bus for server-side
+ * subscribers (chat triggers). Not sent to WebSocket clients and never pushed.
+ */
+function broadcastCronFinished(
+  cronJob: CronRow,
+  projectId: string | null,
+  run: { logId: number | bigint; status: 'success' | 'error'; durationMs: number; preview: string },
+): void {
+  if (!broadcastFn || !projectId) return;
+  try {
+    broadcastFn({
+      type: 'cron_finished',
+      projectId,
+      cronId: cronJob.id,
+      cronName: cronJob.name,
+      logId: Number(run.logId),
+      status: run.status,
+      durationMs: run.durationMs,
+      preview: run.preview.slice(0, 500),
+      ownerUserId: cronJob.owner_user_id ?? null,
+      cronShared: Boolean(cronJob.shared),
+      suppressWebSocket: true,
+      suppressPush: true,
+    });
+  } catch (err) {
+    console.error(
+      `[Cron] cron_finished broadcast failed for "${cronJob.name}":`,
+      (err as Error).message,
+    );
+  }
+}
+
 export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
   console.log(`[Cron] Running "${cronJob.name}"...`);
   const logEntry = stmts.addCronLog.run(cronJob.id, 'running');
@@ -586,6 +619,13 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       );
     }
 
+    broadcastCronFinished(cronJob, cronProject?.id ?? null, {
+      logId,
+      status: 'success',
+      durationMs,
+      preview: detailed.stdout || result,
+    });
+
     if (SLACK_WEBHOOK_URL) {
       const lowerResult = result.toLowerCase();
       const allClear = ['no open', 'nothing to', 'all clear', 'no dependabot'].some((p) =>
@@ -644,6 +684,13 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         );
       }
     }
+
+    broadcastCronFinished(cronJob, findProjectForCron(cronJob)?.id ?? null, {
+      logId,
+      status: 'error',
+      durationMs,
+      preview: errorMsg,
+    });
 
     return { id: logId, status: 'error', result: errorMsg };
   } finally {

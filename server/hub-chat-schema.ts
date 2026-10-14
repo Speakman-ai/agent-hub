@@ -96,6 +96,35 @@ export const HUB_CHAT_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_hub_chat_agent_turns_session
     ON hub_chat_agent_turns(session_id);
 
+  -- Project triggers: route one project event (see shared/utils/chatTriggers.ts)
+  -- into a chat channel. filter_json narrows which occurrences post.
+  CREATE TABLE IF NOT EXISTS project_chat_triggers (
+    id                 TEXT PRIMARY KEY,
+    project_id         TEXT NOT NULL,
+    event              TEXT NOT NULL,
+    filter_json        TEXT,
+    channel_id         TEXT NOT NULL REFERENCES hub_chat_channels(id) ON DELETE CASCADE,
+    enabled            INTEGER NOT NULL DEFAULT 1,
+    created_by         TEXT,
+    created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_project_chat_triggers_project_event
+    ON project_chat_triggers(project_id, event);
+
+  -- One row per (trigger, occurrence) a trigger has posted, written in the
+  -- same transaction as the message, so a duplicate broadcast of an occurrence
+  -- can never post twice and a failed post leaves nothing behind.
+  CREATE TABLE IF NOT EXISTS project_chat_trigger_posts (
+    trigger_id      TEXT NOT NULL REFERENCES project_chat_triggers(id) ON DELETE CASCADE,
+    occurrence_key  TEXT NOT NULL,
+    message_id      TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (trigger_id, occurrence_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_project_chat_trigger_posts_created
+    ON project_chat_trigger_posts(created_at);
+
   -- The turn a session with channel turns is running now (a channel turn or
   -- one started in the session directly).
   CREATE TABLE IF NOT EXISTS hub_chat_agent_session_turns (

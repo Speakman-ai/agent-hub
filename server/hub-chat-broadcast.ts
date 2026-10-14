@@ -62,9 +62,11 @@ export function broadcastHubChatMessage(
     authorName:
       message.author_kind === 'agent' && message.author_agent_id
         ? agentDisplayName(message.author_agent_id)
-        : message.author_user_id
-          ? (getUserById(message.author_user_id)?.username ?? null)
-          : null,
+        : message.author_kind === 'trigger'
+          ? 'Trigger'
+          : message.author_user_id
+            ? (getUserById(message.author_user_id)?.username ?? null)
+            : null,
     message: shapeMessage(message),
   });
 }

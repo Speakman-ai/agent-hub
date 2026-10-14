@@ -12964,6 +12964,136 @@ components:
         - html
         - subject
         - usingProjectLogo
+    ChatTriggerErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+      required:
+        - error
+      description: Error envelope for chat trigger routes.
+    ChatTrigger:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        event:
+          type: string
+          enum:
+            - session_awaiting_input
+            - session_completed
+            - finalize_run_completed
+            - pr_opened
+            - pr_review_requested
+            - pr_merged
+            - card_created
+            - card_moved
+            - support_ticket_created
+            - cron_finished
+            - infra_alert
+          description: Project event the trigger routes. Session events only post sessions owned by the trigger creator (or unowned ones); private crons likewise.
+        filter:
+          type: object
+          properties:
+            columns:
+              type: array
+              items:
+                type: string
+                minLength: 1
+                maxLength: 200
+              maxItems: 50
+              description: "card_created / card_moved: column names (case-insensitive)."
+            epicId:
+              type: string
+              minLength: 1
+              maxLength: 200
+              description: "card_created / card_moved: only cards in this epic."
+            labels:
+              type: array
+              items:
+                type: string
+                minLength: 1
+                maxLength: 200
+              maxItems: 50
+              description: "card_created / card_moved: cards with any of these labels."
+            outcome:
+              type: string
+              enum:
+                - pass
+                - fail
+                - success
+                - error
+              description: "finalize_run_completed: pass | fail. cron_finished: success | error."
+            agentIds:
+              type: array
+              items:
+                type: string
+                minLength: 1
+                maxLength: 200
+              maxItems: 50
+              description: "Session events: only sessions of these agents."
+            severities:
+              type: array
+              items:
+                type: string
+                minLength: 1
+                maxLength: 200
+              maxItems: 50
+              description: "infra_alert: severities (case-insensitive)."
+          additionalProperties: false
+        channelId:
+          type: string
+          nullable: true
+          description: Null when the caller is not a member of the destination channel.
+        channel:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            kind:
+              type: string
+            isPrivate:
+              type: boolean
+            archived:
+              type: boolean
+          required:
+            - id
+            - name
+            - kind
+            - isPrivate
+            - archived
+          description: Null when the caller is not a member of the destination channel, public or private.
+        enabled:
+          type: boolean
+        createdByUserId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        canManage:
+          type: boolean
+          description: True when the caller may enable, disable or delete the trigger (creator or org admin). Changing its event, filter or channel is creator-only.
+      required:
+        - id
+        - projectId
+        - event
+        - filter
+        - channelId
+        - channel
+        - enabled
+        - createdByUserId
+        - createdAt
+        - updatedAt
+        - canManage
     ProjectOrderResponse:
       type: object
       properties:
@@ -46749,6 +46879,385 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProjectBrandingErrorResponse"
+  /api/projects/{projectId}/chat-triggers:
+    get:
+      tags:
+        - Chat Triggers
+      summary: List a project's chat triggers
+      parameters:
+        - schema:
+            type: string
+            description: Project id.
+          required: true
+          description: Project id.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Triggers, oldest first, plus the suggested name for a first channel.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  triggers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ChatTrigger"
+                  defaultChannelName:
+                    type: string
+                    description: e.g. `agent-hub-activity`.
+                required:
+                  - triggers
+                  - defaultChannelName
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+        "404":
+          description: Project (or trigger) not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+    post:
+      tags:
+        - Chat Triggers
+      summary: Create a chat trigger
+      description: Routes one project event into a chat channel. Pass `channelId` for a channel the caller belongs to, or `newChannel` to create a trigger channel (e.g. the default `#<project>-activity`).
+      parameters:
+        - schema:
+            type: string
+            description: Project id.
+          required: true
+          description: Project id.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event:
+                  type: string
+                  enum:
+                    - session_awaiting_input
+                    - session_completed
+                    - finalize_run_completed
+                    - pr_opened
+                    - pr_review_requested
+                    - pr_merged
+                    - card_created
+                    - card_moved
+                    - support_ticket_created
+                    - cron_finished
+                    - infra_alert
+                  description: Project event the trigger routes. Session events only post sessions owned by the trigger creator (or unowned ones); private crons likewise.
+                filter:
+                  type: object
+                  properties:
+                    columns:
+                      type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 50
+                      description: "card_created / card_moved: column names (case-insensitive)."
+                    epicId:
+                      type: string
+                      minLength: 1
+                      maxLength: 200
+                      description: "card_created / card_moved: only cards in this epic."
+                    labels:
+                      type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 50
+                      description: "card_created / card_moved: cards with any of these labels."
+                    outcome:
+                      type: string
+                      enum:
+                        - pass
+                        - fail
+                        - success
+                        - error
+                      description: "finalize_run_completed: pass | fail. cron_finished: success | error."
+                    agentIds:
+                      type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 50
+                      description: "Session events: only sessions of these agents."
+                    severities:
+                      type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 50
+                      description: "infra_alert: severities (case-insensitive)."
+                  additionalProperties: false
+                enabled:
+                  type: boolean
+                channelId:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: Existing channel or group the caller belongs to.
+                newChannel:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      minLength: 1
+                      maxLength: 80
+                    isPrivate:
+                      type: boolean
+                      description: Defaults to private; add members to the channel to share it.
+                  required:
+                    - name
+                  additionalProperties: false
+                  description: Create a trigger channel for the project and route into it.
+              required:
+                - event
+              additionalProperties: false
+      responses:
+        "201":
+          description: Trigger created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trigger:
+                    $ref: "#/components/schemas/ChatTrigger"
+                required:
+                  - trigger
+        "400":
+          description: Invalid body, or the channel cannot receive triggers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+        "404":
+          description: Project (or trigger) not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+  /api/projects/{projectId}/chat-triggers/{triggerId}:
+    patch:
+      tags:
+        - Chat Triggers
+      summary: Update a chat trigger
+      description: Enable/disable (creator or org admin), or change the event, filter or destination channel (creator only).
+      parameters:
+        - schema:
+            type: string
+            description: Project id.
+          required: true
+          description: Project id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Trigger id.
+          required: true
+          description: Trigger id.
+          name: triggerId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event:
+                  type: string
+                  enum:
+                    - session_awaiting_input
+                    - session_completed
+                    - finalize_run_completed
+                    - pr_opened
+                    - pr_review_requested
+                    - pr_merged
+                    - card_created
+                    - card_moved
+                    - support_ticket_created
+                    - cron_finished
+                    - infra_alert
+                  description: Project event the trigger routes. Session events only post sessions owned by the trigger creator (or unowned ones); private crons likewise.
+                filter:
+                  type: object
+                  nullable: true
+                  properties:
+                    columns:
+                      type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 50
+                      description: "card_created / card_moved: column names (case-insensitive)."
+                    epicId:
+                      type: string
+                      minLength: 1
+                      maxLength: 200
+                      description: "card_created / card_moved: only cards in this epic."
+                    labels:
+                      type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 50
+                      description: "card_created / card_moved: cards with any of these labels."
+                    outcome:
+                      type: string
+                      enum:
+                        - pass
+                        - fail
+                        - success
+                        - error
+                      description: "finalize_run_completed: pass | fail. cron_finished: success | error."
+                    agentIds:
+                      type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 50
+                      description: "Session events: only sessions of these agents."
+                    severities:
+                      type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 50
+                      description: "infra_alert: severities (case-insensitive)."
+                  additionalProperties: false
+                enabled:
+                  type: boolean
+                channelId:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+              additionalProperties: false
+      responses:
+        "200":
+          description: Updated trigger.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trigger:
+                    $ref: "#/components/schemas/ChatTrigger"
+                required:
+                  - trigger
+        "400":
+          description: Invalid body, or the channel cannot receive triggers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+        "403":
+          description: Not the creator or an org admin (`forbidden`), or a non-creator tried to change the event, filter or channel (`creator_only`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+        "404":
+          description: Project (or trigger) not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+    delete:
+      tags:
+        - Chat Triggers
+      summary: Delete a chat trigger
+      description: The channel and its messages stay.
+      parameters:
+        - schema:
+            type: string
+            description: Project id.
+          required: true
+          description: Project id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Trigger id.
+          required: true
+          description: Trigger id.
+          name: triggerId
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+        "403":
+          description: Only the creator or an org admin may delete a trigger.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
+        "404":
+          description: Project (or trigger) not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatTriggerErrorResponse"
   /api/projects/{projectId}/stats:
     get:
       tags:

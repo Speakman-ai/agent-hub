@@ -1200,3 +1200,34 @@ describe('ChatPane', () => {
     expect(screen.getByTestId('google-side')).toBeTruthy();
   });
 });
+
+describe('HubChatPage trigger messages', () => {
+  it('renders a trigger message as a card instead of a text bubble', async () => {
+    chat.messages.mockResolvedValue({
+      messages: [
+        message(1, {
+          authorKind: 'trigger',
+          authorUserId: null,
+          body: 'Card created',
+          payload: {
+            type: 'trigger',
+            event: 'card_created',
+            triggerId: 't1',
+            projectId: 'web',
+            title: 'Card created',
+            status: 'info',
+            statusLabel: 'To Do',
+            detail: 'Ship triggers',
+            refs: [],
+          },
+        }),
+      ],
+      hasMore: false,
+    });
+    render(<HubChatPage />);
+    const card = await screen.findByTestId('hub-chat-trigger-card');
+    expect(card).toHaveTextContent('Ship triggers');
+    expect(screen.queryByTestId('hub-chat-body')).toBeNull();
+    expect(screen.getByText('Trigger')).toBeTruthy();
+  });
+});

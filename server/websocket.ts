@@ -17,6 +17,7 @@ import {
   type WsVisibilityStamp,
 } from './session-ownership.js';
 import { handleBroadcastForPush } from './push.js';
+import { isChatTriggerSourceType, routeBroadcastToChatTriggers } from './chat-trigger-router.js';
 import { resolveProjectIdFromEvent } from './event-project-resolver.js';
 import { shouldDeliverBroadcast } from './broadcast-filter.js';
 import { createSidebarBroadcastTagger } from './session-sidebar.js';
@@ -473,6 +474,13 @@ export default function createWebSocket(
     // events go only to the session owner's devices
     // (`filterTokensForSessionOwner`); unowned sessions keep the shared
     // fan-out.
+    // Project chat triggers post into channels. Deferred so a trigger's own
+    // chat broadcast never re-enters this fan-out mid-flight.
+    if (isChatTriggerSourceType(data.type)) {
+      queueMicrotask(() => {
+        routeBroadcastToChatTriggers(data, { broadcast });
+      });
+    }
     // A SideBar is answered in its panel; a phone push would deep-link to a
     // session no list shows.
     if (typeof data.sidebarParentId === 'string') return;

@@ -1151,6 +1151,26 @@ export const api = {
     fetchJSON('/google/gmail/importance/settings', { method: 'PUT', body: JSON.stringify(data) }),
   startGmailImportanceScan: (data: { windowDays?: 1 | 7 | 30 } = {}) =>
     fetchJSON('/google/gmail/importance/scan', { method: 'POST', body: JSON.stringify(data) }),
+  // Project chat triggers: route project events into chat channels.
+  chatTriggers: {
+    list: (projectId: string) =>
+      fetchJSON(`/projects/${encodeURIComponent(projectId)}/chat-triggers`),
+    create: (projectId: string, data: Record<string, unknown>) =>
+      fetchJSON(`/projects/${encodeURIComponent(projectId)}/chat-triggers`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (projectId: string, triggerId: string, data: Record<string, unknown>) =>
+      fetchJSON(
+        `/projects/${encodeURIComponent(projectId)}/chat-triggers/${encodeURIComponent(triggerId)}`,
+        { method: 'PATCH', body: JSON.stringify(data) },
+      ),
+    remove: (projectId: string, triggerId: string) =>
+      fetchJSON(
+        `/projects/${encodeURIComponent(projectId)}/chat-triggers/${encodeURIComponent(triggerId)}`,
+        { method: 'DELETE' },
+      ),
+  },
   // Agent Hub chat (/api/chat). The server acts as the signed-in user.
   hubChat: {
     members: () => fetchJSON('/chat/members'),

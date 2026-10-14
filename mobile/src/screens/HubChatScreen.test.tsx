@@ -139,6 +139,35 @@ describe('MessageRow', () => {
     expect(html).toContain('Message deleted');
     expect(html).not.toContain('hello');
   });
+
+  it('renders a trigger message as a status card', () => {
+    const [row] = layoutHubChatMessages(
+      [
+        msg({
+          authorKind: 'trigger',
+          authorUserId: null,
+          body: 'Finalize failed',
+          payload: {
+            type: 'trigger',
+            event: 'finalize_run_completed',
+            triggerId: 't1',
+            projectId: 'web',
+            title: 'Finalize failed',
+            status: 'failure',
+            statusLabel: 'failed',
+            detail: 'ci failed',
+            refs: [],
+          },
+        }),
+      ],
+      { viewerUserId: 'u1', lastReadSeq: null },
+    );
+    const html = renderToStaticMarkup(<MessageRow row={row} usernames={new Map()} />);
+    expect(html).toContain('hub-chat-trigger-card');
+    expect(html).toContain('Trigger');
+    expect(html).toContain('Finalize run completed');
+    expect(html).toContain('ci failed');
+  });
 });
 
 describe('HubChatRefChip', () => {

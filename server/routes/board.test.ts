@@ -391,3 +391,38 @@ describe('POST /board/epics — auto-link scoping session to the new epic', () =
     expect((res.body as { id: string }).id).toBeTruthy();
   });
 });
+
+describe('POST /board/cards — chat triggers', () => {
+  it('a card_created trigger posts the new card into its channel', async () => {
+    const { createChannel, listMessages } = await import('../hub-chat-store.js');
+    const { createTrigger } = await import('../chat-triggers-store.js');
+    const project = await createProject();
+    const pid = project.id as string;
+    const channel = createChannel({
+      orgId: 'trigger-test-org',
+      kind: 'trigger',
+      name: `${pid}-activity`,
+      projectId: pid,
+      createdByUserId: 'someone',
+    });
+    createTrigger({
+      projectId: pid,
+      event: 'card_created',
+      channelId: channel.id,
+      createdBy: 'someone',
+    });
+
+    const board = await request.get(`/api/projects/${pid}/board`).expect(200);
+    const firstColumn = (board.body as { columns: Array<{ id: string }> }).columns[0].id;
+    const res = await request
+      .post(`/api/projects/${pid}/board/cards`)
+      .send({ title: 'Triggered card', columnId: firstColumn })
+      .expect(200);
+    const cardId = (res.body as { id: string }).id;
+
+    await vi.waitFor(() => expect(listMessages(channel.id)).toHaveLength(1));
+    const [message] = listMessages(channel.id);
+    expect(message!.author_kind).toBe('trigger');
+    expect(message!.body).toContain(`(card:${cardId})`);
+  });
+});

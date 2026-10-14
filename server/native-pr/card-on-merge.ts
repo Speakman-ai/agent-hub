@@ -83,6 +83,8 @@ export function handleCardOnMerge(
         broadcast({ type: 'kanban_update', projectId });
         broadcast({
           type: 'card_moved',
+          // One id per move: lets subscribers tell a repeat broadcast from a new move.
+          moveId: randomUUID(),
           projectId,
           cardId: card.id,
           cardTitle: fresh.title,

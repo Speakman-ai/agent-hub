@@ -1258,8 +1258,9 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       if (row.status !== 'open') {
         throw new NativePrError(`PR #${number} is ${row.status}`, 409);
       }
+      const requestedAt = requested ? Date.now() : null;
       stmts.setPullRequestReviewRequested.run(
-        requested ? Date.now() : null,
+        requestedAt,
         requested ? actor : null,
         Date.now(),
         row.id,
@@ -1269,6 +1270,8 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         projectId: project.id,
         prNumber: number,
         action: requested ? 'review_requested' : 'review_request_cleared',
+        // Identifies this request: a later re-request carries a new stamp.
+        ...(requestedAt !== null ? { reviewRequestedAt: requestedAt } : {}),
       });
       return { row: requirePr(stmts, project, number) };
     },

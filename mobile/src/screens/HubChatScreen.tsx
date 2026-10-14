@@ -53,6 +53,8 @@ import { useAccountScoped, useHubChatBadge, useHubChatSnapshot } from '../hooks/
 import { useApp } from '../context/AppContext';
 import { HubChatComposer, HubChatMessageBody } from '../components/HubChatRefs';
 import HubIcon from '../components/HubIcon';
+import HubChatTriggerCard from '../components/HubChatTriggerCard';
+import { readChatTriggerCard } from '@shared/utils/chatTriggers';
 import { colors } from '../theme/colors';
 
 type Side = 'hub' | 'google';
@@ -763,6 +765,7 @@ export function MessageRow({
   onLongPress?: (m: HubChatMessage) => void;
 }) {
   const m = row.message;
+  const triggerCard = m.authorKind === 'trigger' ? readChatTriggerCard(m.payload) : null;
   return (
     <View>
       {row.dayLabel ? (
@@ -790,6 +793,8 @@ export function MessageRow({
         ) : null}
         {m.deletedAt ? (
           <Text style={styles.deleted}>Message deleted</Text>
+        ) : triggerCard ? (
+          <HubChatTriggerCard card={triggerCard} onOpenRef={onOpenRef} />
         ) : (
           <>
             <HubChatMessageBody body={m.body} onOpenRef={onOpenRef} />

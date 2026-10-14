@@ -25,6 +25,8 @@ import {
   type HubChatCaptureInput,
 } from '@shared/utils/hubChatCapture';
 import StartSessionModal from './StartSessionModal';
+import HubChatTriggerCard from './HubChatTriggerCard';
+import { readChatTriggerCard } from '@shared/utils/chatTriggers';
 import CaptureToTicketModal from './CaptureToTicketModal';
 import { api } from '../utils/api';
 import { isSubmitEnter } from '../utils/keyboard';
@@ -1502,6 +1504,10 @@ export default function HubChatPage({
                       const deleted = !!message.deletedAt;
                       const isEditing = editing?.id === message.id;
                       const bot = message.authorKind !== 'user';
+                      const triggerCard =
+                        message.authorKind === 'trigger' && !deleted
+                          ? readChatTriggerCard(message.payload)
+                          : null;
                       const isPicked = pickedIds.has(message.id);
                       const copyState = copied?.id === message.id ? copied : null;
                       return (
@@ -1657,14 +1663,20 @@ export default function HubChatPage({
                               ) : (
                                 <div
                                   title={showHeader ? undefined : formatDateTime(message.createdAt)}
-                                  className={`break-words rounded-2xl px-3 py-2 text-sm ${
-                                    own
-                                      ? 'bg-blue-600/30 text-blue-50'
-                                      : 'bg-gray-800 text-gray-100'
-                                  } ${showHeader ? (own ? 'rounded-tr-md' : 'rounded-tl-md') : ''}`}
+                                  className={
+                                    triggerCard
+                                      ? 'w-full'
+                                      : `break-words rounded-2xl px-3 py-2 text-sm ${
+                                          own
+                                            ? 'bg-blue-600/30 text-blue-50'
+                                            : 'bg-gray-800 text-gray-100'
+                                        } ${showHeader ? (own ? 'rounded-tr-md' : 'rounded-tl-md') : ''}`
+                                  }
                                 >
                                   {deleted ? (
                                     <span className="italic text-gray-500">Message deleted</span>
+                                  ) : triggerCard ? (
+                                    <HubChatTriggerCard card={triggerCard} onOpenRef={onOpenRef} />
                                   ) : (
                                     <div className="markdown-content" data-testid="hub-chat-body">
                                       <HubChatMessageBody

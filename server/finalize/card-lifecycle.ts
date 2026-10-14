@@ -237,6 +237,8 @@ export function createCardLifecycle(
       // them. Cf. the manual move handler in `routes/board.ts`.
       deps.broadcast({
         type: 'card_moved',
+        // One id per move: lets subscribers tell a repeat broadcast from a new move.
+        moveId: randomUUID(),
         projectId: opts.projectId,
         cardId: opts.cardId,
         cardTitle: card.title,

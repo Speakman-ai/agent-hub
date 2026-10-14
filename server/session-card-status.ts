@@ -7,6 +7,7 @@
  * source operation and must still succeed when a legacy board is missing one
  * of the required system columns or a board broadcast fails.
  */
+import { randomUUID } from 'crypto';
 import { recomputeEpicState } from './epic-state.js';
 import { isColumnDone, isColumnShippedLane } from './kanban-blockers.js';
 import type {
@@ -134,6 +135,8 @@ export function syncLinkedCardToSessionStatus(
       broadcast({ type: 'kanban_update', projectId });
       broadcast({
         type: 'card_moved',
+        // One id per move: lets subscribers tell a repeat broadcast from a new move.
+        moveId: randomUUID(),
         projectId,
         cardId: card.id,
         cardTitle: card.title,

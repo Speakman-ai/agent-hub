@@ -308,6 +308,8 @@ export function runPostPushDetach(deps: PostPushDetachDeps, opts: PostPushDetach
       deps.broadcast({ type: 'kanban_update', projectId: opts.projectId });
       deps.broadcast({
         type: 'card_moved',
+        // One id per move: lets subscribers tell a repeat broadcast from a new move.
+        moveId: randomUUID(),
         projectId: opts.projectId,
         cardId: opts.cardId,
         cardTitle: move.card.title,

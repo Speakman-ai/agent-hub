@@ -30,6 +30,7 @@ import ProjectDefaultAutomationSection from './finalize/ProjectDefaultAutomation
 import ProjectMembersSection from './ProjectMembersSection';
 import ContextFilePanel from './ContextFilePanel';
 import InfraAlertRoutingSection from './InfraAlertRoutingSection';
+import ChatTriggersSection from './ChatTriggersSection';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar';
 import {
   agentAcceptsAutonomousTickets,
@@ -1431,6 +1432,8 @@ export function ProjectsSection({
       <ProjectDefaultAutomationSection projectId={p.id} />
 
       <InfraAlertRoutingSection projectId={p.id} showToast={showToast} />
+
+      <ChatTriggersSection projectId={p.id} agents={p.agents} showToast={showToast} />
 
       {/* Agent Hub git hosting — host the repo on the Hub itself; GitHub
           becomes an optional downstream mirror. Self-contained: fetches

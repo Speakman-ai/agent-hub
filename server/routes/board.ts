@@ -1278,6 +1278,17 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     }
 
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+    // Server-side subscribers only (chat triggers); clients refresh on kanban_update.
+    const createdColumn = (
+      stmts.getKanbanColumn as { get?: (id: string) => KanbanColumnRow | undefined }
+    )?.get?.(columnId);
+    broadcast({
+      type: 'card_created',
+      projectId: req.params.projectId,
+      cardId: id,
+      columnName: createdColumn?.name ?? null,
+      suppressWebSocket: true,
+    });
     if (effectiveSessionId) {
       maybeRenameSessionForLinkedCard(stmts, broadcast, effectiveSessionId, title);
     }
@@ -1569,6 +1580,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           }
           broadcast({
             type: 'card_moved',
+            // One id per move: lets subscribers tell a repeat broadcast from a new move.
+            moveId: uuidv4(),
             projectId: req.params.projectId,
             cardId: req.params.cardId,
             cardTitle: updatedCard.title,
