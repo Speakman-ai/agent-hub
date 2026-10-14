@@ -20,6 +20,7 @@ import {
 } from './support-tickets-store.js';
 import { triggerSupportTicketInvestigation } from './support-ticket-investigation.js';
 import { linkReplay } from './replays/replay-store.js';
+import { listSupportTicketAttachments } from './support-ticket-attachments.js';
 
 export interface SupportTicketIntakeDeps {
   stmts: RouteDeps['stmts'];
@@ -43,6 +44,12 @@ export interface SupportTicketIntakeDeps {
    * body without ever leaking a rejected one — no timing assumption required.
    */
   finalizeBody?: (ticket: SupportTicketRow) => string | null;
+  /**
+   * Optional hook to attach files once the row exists. Awaited before the
+   * `support_ticket_created` broadcast so subscribers see the attachments.
+   * Must not throw for a bad file: the ticket has already landed.
+   */
+  attachFiles?: (ticket: SupportTicketRow) => Promise<void>;
 }
 
 /**
@@ -136,10 +143,13 @@ export async function intakeSupportTicket(
     }
   }
 
+  if (deps.attachFiles) await deps.attachFiles(ticket);
+
   deps.broadcast({
     type: 'support_ticket_created',
     ticket: {
       ...ticket,
+      attachments: listSupportTicketAttachments(ticket.id),
       reporter_email: maskReporterEmail(ticket.reporter_email),
       reporter_email_masked: Boolean(ticket.reporter_email),
     },

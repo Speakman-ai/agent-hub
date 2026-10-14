@@ -118,12 +118,16 @@ function detectClientType() {
  * `BUG_REPORT_PROJECT_ID`. A `projectId` arg is accepted-and-ignored for
  * backward compatibility with existing call sites; do not rely on it.
  */
+/** Mirrors the intake's cap on repeated `attachment` parts. */
+export const MAX_BUG_REPORT_ATTACHMENTS = 5;
+
 export async function submitBugReport({
   title,
   description,
   severity,
   screenshotBlob,
   screenshotMissReason,
+  attachments,
 
   projectId: _projectId,
   agentId,
@@ -151,6 +155,14 @@ export async function submitBugReport({
     form.append('screenshot', screenshotBlob, 'screenshot.png');
   } else if (screenshotMissReason) {
     form.append('screenshotMissReason', String(screenshotMissReason));
+  }
+
+  // Extra reporter files; the intake keeps the first MAX_BUG_REPORT_ATTACHMENTS
+  // and drops any it can't accept without failing the report.
+  if (Array.isArray(attachments)) {
+    for (const file of attachments.slice(0, MAX_BUG_REPORT_ATTACHMENTS)) {
+      if (file) form.append('attachment', file, file.name || 'file');
+    }
   }
 
   form.append(

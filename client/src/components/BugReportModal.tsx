@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Bug, Camera, Loader2, X } from 'lucide-react';
-import { captureScreenshot, submitBugReport } from '../utils/bugReport';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Bug, Camera, Loader2, Paperclip, X } from 'lucide-react';
+import { MAX_BUG_REPORT_ATTACHMENTS, captureScreenshot, submitBugReport } from '../utils/bugReport';
 import { flushSessionReplayRefWithReason } from '../utils/sessionReplay';
 
 const BUG_REPORT_REPLAY_FLUSH_TIMEOUT_MS = 30_000;
@@ -33,6 +33,8 @@ export default function BugReportModal({
   const [retaking, setRetaking] = useState(false);
   const [error, setError] = useState<any>(null);
   const [hidden, setHidden] = useState(false);
+  const [files, setFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Reset state whenever the modal is (re)opened.
   useEffect(() => {
@@ -46,6 +48,7 @@ export default function BugReportModal({
       setSubmitting(false);
       setRetaking(false);
       setHidden(false);
+      setFiles([]);
     }
   }, [isOpen, initialScreenshotBlob, initialScreenshotMissReason]);
 
@@ -118,6 +121,7 @@ export default function BugReportModal({
         severity,
         screenshotBlob,
         screenshotMissReason: screenshotBlob ? null : screenshotMissReason,
+        attachments: files,
         projectId,
         agentId,
         replayRef,
@@ -251,6 +255,57 @@ export default function BugReportModal({
                 attached when you submit.
               </div>
             )}
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-sm text-gray-400">Files</span>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={submitting || files.length >= MAX_BUG_REPORT_ATTACHMENTS}
+                className="flex items-center gap-1.5 text-xs text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-2 py-1 disabled:opacity-50"
+              >
+                <Paperclip size={12} />
+                Attach files
+              </button>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              data-testid="bug-report-file-input"
+              onChange={(e: any) => {
+                const picked: File[] = Array.from(e.target.files || []);
+                e.target.value = '';
+                setFiles((cur) => [...cur, ...picked].slice(0, MAX_BUG_REPORT_ATTACHMENTS));
+              }}
+            />
+            {files.length ? (
+              <ul className="space-y-1">
+                {files.map((f, i) => (
+                  <li
+                    key={`${f.name}-${i}`}
+                    className="flex items-center gap-2 rounded-md border border-gray-700 bg-gray-950/60 px-2 py-1 text-xs text-gray-300"
+                  >
+                    <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                    <button
+                      type="button"
+                      aria-label={`Remove ${f.name}`}
+                      onClick={() => setFiles((cur) => cur.filter((_, j) => j !== i))}
+                      className="text-gray-500 hover:text-gray-200"
+                    >
+                      <X size={12} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <p className="text-xs text-gray-500 mt-1">
+              Up to {MAX_BUG_REPORT_ATTACHMENTS} files, 25 MB each: images, PDF, video, zip, or text
+              logs.
+            </p>
           </div>
 
           {error && (

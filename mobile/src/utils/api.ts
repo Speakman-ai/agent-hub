@@ -2086,6 +2086,11 @@ export const api = {
   },
   getSupportTicket: (projectId: any, id: any) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
+  // Uploads go through utils/supportTicketAttachments (binary file upload).
+  deleteSupportTicketAttachment: (projectId: string, id: string, attachmentId: string) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/attachments/${attachmentId}`, {
+      method: 'DELETE',
+    }),
   runSupportTicketInvestigation: (projectId: any, id: any, selection: any = {}) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}/investigate`, {
       method: 'POST',

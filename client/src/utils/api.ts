@@ -3345,6 +3345,24 @@ export const api = {
   },
   getSupportTicket: (projectId: any, id: any) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
+  // Attach one file (raw bytes). Sent as octet-stream so the server's JSON
+  // parser leaves .json files alone; the server decides the type from the bytes.
+  // Returns { attachment, ticket }.
+  addSupportTicketAttachment: (projectId: string, id: string, file: File) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/attachments`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Filename': encodeURIComponent(file.name || 'file'),
+      },
+      body: file,
+      timeout: 120_000,
+    }),
+  // Returns { ok, ticket }.
+  deleteSupportTicketAttachment: (projectId: string, id: string, attachmentId: string) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/attachments/${attachmentId}`, {
+      method: 'DELETE',
+    }),
   runSupportTicketInvestigation: (projectId: any, id: any, selection: any = {}) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}/investigate`, {
       method: 'POST',

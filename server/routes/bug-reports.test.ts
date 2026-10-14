@@ -16,6 +16,8 @@ vi.mock('../support-ticket-investigation.js', () => ({
 
 import createBugReportRoutes, {
   _resetRateLimit,
+  MAX_BUG_REPORT_ATTACHMENTS,
+  MAX_MULTIPART_BYTES,
   buildBugReportTicketBody,
   isDiscardableTestReport,
   sanitizeReplayRef,
@@ -24,6 +26,11 @@ import createBugReportRoutes, {
 } from './bug-reports.js';
 import { getStmts } from '../db.js';
 import { getSupportTicket, listSupportTickets } from '../support-tickets-store.js';
+import {
+  MAX_ATTACHMENT_BYTES,
+  listSupportTicketAttachments,
+} from '../support-ticket-attachments.js';
+import { MAX_SCREENSHOT_BYTES } from '../support-ticket-screenshot.js';
 import type { RouteDeps } from '../types.js';
 
 const INTAKE_PROJECT = { id: 'agent-hub', name: 'Agent Hub', cwd: '/tmp', color: '#000' };
@@ -448,6 +455,54 @@ describe('POST /api/bug-reports', () => {
     expect(ticket!.body).not.toContain('Screenshot');
     expect(ticket!.body).not.toContain('initial-capture-failed');
   });
+
+  it('stores repeated attachment parts on the ticket and drops invalid ones', async () => {
+    const PDF = Buffer.from('%PDF-1.7\n%fake but signed\n', 'latin1');
+    const LOG = Buffer.from('2026-10-14 ERROR boom\n', 'utf8');
+    const HTML = Buffer.from('<script>alert(1)</script>', 'utf8');
+    const res = await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'Has attachments')
+      .field('severity', 'low')
+      .attach('attachment', PDF, { filename: 'report.pdf', contentType: 'application/pdf' })
+      .attach('attachment', LOG, { filename: 'console.log', contentType: 'text/plain' })
+      .attach('attachment', HTML, { filename: 'page.html', contentType: 'text/html' })
+      .expect(201);
+
+    const attachments = listSupportTicketAttachments(res.body.ticketId);
+    expect(attachments.map((a) => [a.filename, a.mime])).toEqual([
+      ['report.pdf', 'application/pdf'],
+      ['console.log', 'text/plain'],
+    ]);
+    const created = broadcast.mock.calls
+      .map(([e]) => e)
+      .find((e) => e.type === 'support_ticket_created' && e.ticket.id === res.body.ticketId);
+    expect(created.ticket.attachments).toHaveLength(2);
+  });
+
+  it('sizes the multipart limit for a screenshot plus every attachment at its cap', () => {
+    expect(MAX_MULTIPART_BYTES).toBeGreaterThan(
+      MAX_SCREENSHOT_BYTES + MAX_BUG_REPORT_ATTACHMENTS * MAX_ATTACHMENT_BYTES,
+    );
+  });
+
+  it('accepts several large attachments whose total exceeds 40 MB', async () => {
+    const big = (n: number) =>
+      Buffer.concat([
+        Buffer.from('%PDF-1.7\n', 'latin1'),
+        Buffer.alloc(21 * 1024 * 1024 + n, 0x20),
+      ]);
+    const res = await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'Large attachments')
+      .field('severity', 'low')
+      .attach('attachment', big(1), { filename: 'a.pdf', contentType: 'application/pdf' })
+      .attach('attachment', big(2), { filename: 'b.pdf', contentType: 'application/pdf' })
+      .expect(201);
+
+    const attachments = listSupportTicketAttachments(res.body.ticketId);
+    expect(attachments.map((a) => a.filename)).toEqual(['a.pdf', 'b.pdf']);
+  }, 30_000);
 
   it('records the screenshot miss reason in the ticket body when no screenshot attached', async () => {
     const res = await supertest(app)

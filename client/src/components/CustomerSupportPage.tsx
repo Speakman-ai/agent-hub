@@ -21,6 +21,9 @@ import {
   MessageCircle,
   Pause,
   Play,
+  Paperclip,
+  FileText,
+  Upload,
 } from 'lucide-react';
 import { convertedCardId, convertedCardLabel } from '@shared/utils/convertedCardLabel';
 import { hasRole } from '../utils/auth';
@@ -826,6 +829,159 @@ function ConvertedCardLink({ ticket, onOpenCard }: any) {
   );
 }
 
+export function formatAttachmentSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Files attached to a ticket, plus "Add files" (multi-select) and per-file
+// remove. Uploads run one request per file, in order, so a rejected file
+// (wrong type, too large, cap reached) doesn't block the others.
+export function TicketAttachments({ projectId, ticket, onUpdated, onNotify }: any) {
+  const attachments: any[] = Array.isArray(ticket.attachments) ? ticket.attachments : [];
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+
+  const onPick = async (e: any) => {
+    const files: File[] = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    setProgress({ done: 0, total: files.length });
+    const failures: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]!;
+      try {
+        const res = await api.addSupportTicketAttachment(projectId, ticket.id, file);
+        if (res?.ticket) onUpdated?.(res.ticket);
+      } catch (err: any) {
+        failures.push(`${file.name}: ${err?.message || 'upload failed'}`);
+      }
+      setProgress({ done: i + 1, total: files.length });
+    }
+    setProgress(null);
+    if (failures.length) onNotify?.(failures.join('\n'), 'error');
+    else
+      onNotify?.(
+        files.length === 1 ? 'File attached' : `${files.length} files attached`,
+        'success',
+      );
+  };
+
+  const remove = async (attachmentId: string) => {
+    setRemovingId(attachmentId);
+    try {
+      const res = await api.deleteSupportTicketAttachment(projectId, ticket.id, attachmentId);
+      if (res?.ticket) onUpdated?.(res.ticket);
+    } catch (err: any) {
+      onNotify?.(err?.message || 'Failed to remove file', 'error');
+    } finally {
+      setRemovingId(null);
+      setConfirmingId(null);
+    }
+  };
+
+  return (
+    <div data-testid="detail-attachments">
+      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+        <Paperclip size={12} />
+        Attachments{attachments.length ? ` (${attachments.length})` : ''}
+      </div>
+      {attachments.length ? (
+        <ul className="mb-2 space-y-1.5">
+          {attachments.map((a: any) => {
+            const url = resolveUploadUrl(a.ref);
+            const isImage = typeof a.mime === 'string' && a.mime.startsWith('image/');
+            return (
+              <li
+                key={a.id}
+                className="flex items-center gap-2 rounded-md border border-gray-800 bg-gray-950/40 px-2 py-1.5"
+                data-testid="ticket-attachment"
+              >
+                {isImage && url ? (
+                  <a href={url} target="_blank" rel="noreferrer" className="flex-shrink-0">
+                    <img
+                      src={url}
+                      alt={a.filename}
+                      loading="lazy"
+                      className="h-10 w-14 rounded border border-gray-700 object-cover"
+                    />
+                  </a>
+                ) : (
+                  <FileText size={16} className="flex-shrink-0 text-gray-500" />
+                )}
+                <a
+                  href={url || undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                  download={a.filename}
+                  className="min-w-0 flex-1 truncate text-xs text-blue-400 hover:text-blue-300"
+                  title={a.filename}
+                >
+                  {a.filename}
+                </a>
+                <span className="flex-shrink-0 text-[10px] text-gray-600">
+                  {formatAttachmentSize(a.size_bytes)}
+                </span>
+                {confirmingId === a.id ? (
+                  <span className="flex flex-shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => remove(a.id)}
+                      disabled={removingId === a.id}
+                      className="rounded px-1.5 py-0.5 text-[11px] text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingId(null)}
+                      className="rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:bg-gray-800"
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingId(a.id)}
+                    aria-label={`Remove ${a.filename}`}
+                    className="flex-shrink-0 text-gray-600 hover:text-red-300"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={onPick}
+        data-testid="attachment-file-input"
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={!!progress}
+        className="inline-flex items-center gap-1.5 rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-60"
+      >
+        <Upload size={12} />
+        {progress
+          ? `Uploading ${Math.min(progress.done + 1, progress.total)} of ${progress.total}…`
+          : 'Add files'}
+      </button>
+    </div>
+  );
+}
+
 function TicketScreenshot({ src, scrollRoot }: any) {
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [shouldLoad, setShouldLoad] = useState(() => typeof IntersectionObserver === 'undefined');
@@ -978,6 +1134,16 @@ function SupportTicketCard({
               >
                 <TicketScreenshot src={screenshotUrl} scrollRoot={screenshotRoot} />
               </a>
+            ) : null}
+
+            {ticket.attachments?.length ? (
+              <span
+                className="relative mt-2 flex w-fit items-center gap-1 text-[11px] text-gray-500"
+                data-testid="ticket-attachment-count"
+              >
+                <Paperclip size={12} />
+                {ticket.attachments.length === 1 ? '1 file' : `${ticket.attachments.length} files`}
+              </span>
             ) : null}
 
             {replayId ? (
@@ -1503,6 +1669,13 @@ function SupportTicketDetailModal({
                 </a>
               </div>
             ) : null}
+
+            <TicketAttachments
+              projectId={projectId}
+              ticket={ticket}
+              onUpdated={onUpdated}
+              onNotify={onNotify}
+            />
 
             {replayId ? (
               <button

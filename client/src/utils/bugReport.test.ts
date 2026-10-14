@@ -5,6 +5,7 @@ import {
   BUG_REPORT_PROJECT_ID,
   defaultReporterEmail,
   resolveBugReportEndpoint,
+  MAX_BUG_REPORT_ATTACHMENTS,
 } from './bugReport';
 
 // captureScreenshot dynamically imports the canvas rasterizer. We must mock the
@@ -163,6 +164,21 @@ describe('submitBugReport', () => {
     const fd = vi.mocked(fetch).mock.calls[0]![1]!.body;
     expect((fd as any).get('screenshot')).toBeInstanceOf(Blob);
     expect((fd as any).get('screenshotMissReason')).toBeNull();
+  });
+
+  it('appends each attachment as a repeated part, capped at the intake limit', async () => {
+    const files = Array.from(
+      { length: MAX_BUG_REPORT_ATTACHMENTS + 2 },
+      (_, i) => new File([`log ${i}`], `log-${i}.txt`, { type: 'text/plain' }),
+    );
+    await submitBugReport({ title: 'with files', severity: 'low', attachments: files });
+
+    const fd = vi.mocked(fetch).mock.calls[0]![1]!.body as FormData;
+    const parts = fd.getAll('attachment') as File[];
+    expect(parts).toHaveLength(MAX_BUG_REPORT_ATTACHMENTS);
+    expect(parts.map((f) => f.name)).toEqual(
+      files.slice(0, MAX_BUG_REPORT_ATTACHMENTS).map((f) => f.name),
+    );
   });
 
   it('sends replayMissReason (and no replayRef) when the capture was missing', async () => {

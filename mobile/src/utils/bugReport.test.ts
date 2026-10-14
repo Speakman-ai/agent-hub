@@ -13,8 +13,13 @@ vi.mock('./auth', () => ({
   getAuthRecord: () => state.authRecord,
 }));
 
-const { submitBugReport, BUG_REPORT_PROJECT_ID, defaultReporterEmail, resolveBugReportEndpoint } =
-  await import('./bugReport');
+const {
+  submitBugReport,
+  BUG_REPORT_PROJECT_ID,
+  MAX_BUG_REPORT_ATTACHMENTS,
+  defaultReporterEmail,
+  resolveBugReportEndpoint,
+} = await import('./bugReport');
 
 // Configured endpoint the POST tests opt into. The default (unset env) is empty
 // so a self-hosted build never phones home.
@@ -115,6 +120,25 @@ describe('mobile submitBugReport', () => {
     expect(fd.get('currentAgentId')).toBe('agent-hub-dev');
     expect(fd.get('reporter_email')).toBe('reporter@example.com');
     expect(defaultReporterEmail()).toBe('reporter@example.com');
+  });
+
+  it('appends picked files as repeated attachment parts, capped at the intake limit', async () => {
+    const append = vi.spyOn(FormData.prototype, 'append');
+    const files = Array.from({ length: MAX_BUG_REPORT_ATTACHMENTS + 1 }, (_, i) => ({
+      uri: `file:///tmp/f${i}.log`,
+      name: `f${i}.log`,
+    }));
+
+    await submitBugReport({ screenshotUri: '', title: 'With files', attachments: files });
+
+    const parts = append.mock.calls.filter(([name]) => name === 'attachment').map(([, v]) => v);
+    append.mockRestore();
+    expect(parts).toHaveLength(MAX_BUG_REPORT_ATTACHMENTS);
+    expect(parts[0]).toEqual({
+      uri: 'file:///tmp/f0.log',
+      name: 'f0.log',
+      type: 'application/octet-stream',
+    });
   });
 
   it('falls back to username for legacy username-as-email auth records', async () => {

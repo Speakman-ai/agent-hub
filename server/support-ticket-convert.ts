@@ -5,7 +5,12 @@
  * module owns mapping a ticket row to the card fields (title, description,
  * priority, labels), separate from the route / DB plumbing.
  */
-import type { SupportTicketRow, SupportTicketSeverity } from './types.js';
+import type {
+  SupportTicketAttachmentRow,
+  SupportTicketRow,
+  SupportTicketSeverity,
+} from './types.js';
+import { attachmentMarkdownLines } from './support-ticket-attachments.js';
 
 export type KanbanPriority = 'low' | 'medium' | 'high' | 'urgent';
 
@@ -39,12 +44,16 @@ export interface CardFieldsFromTicket {
  *   the body, then to a stable `Support ticket <short-id>` placeholder so a
  *   card never lands with an empty title.
  * - **description**: the full ticket body plus a footer linking back to the
- *   source support ticket (id + type/severity) so the card is traceable.
+ *   source support ticket (id + type/severity) so the card is traceable, then
+ *   the screenshot and any attachments as server-relative links.
  * - **priority**: mapped from severity (see {@link SEVERITY_TO_PRIORITY}).
  * - **labels**: a comma-joined `support,<type>` tag pair so converted cards are
  *   filterable on the board.
  */
-export function buildCardFieldsFromTicket(ticket: SupportTicketRow): CardFieldsFromTicket {
+export function buildCardFieldsFromTicket(
+  ticket: SupportTicketRow,
+  attachments: SupportTicketAttachmentRow[] = [],
+): CardFieldsFromTicket {
   const subject = (ticket.subject ?? '').trim();
   const body = (ticket.body ?? '').trim();
   const firstLine =
@@ -66,9 +75,8 @@ export function buildCardFieldsFromTicket(ticket: SupportTicketRow): CardFieldsF
   const screenshotLine = ticket.screenshot_ref
     ? `\n\n**Screenshot:** ![screenshot](${ticket.screenshot_ref})`
     : '';
-  const description = body
-    ? `${body}\n\n---\n${footer}${screenshotLine}`
-    : `${footer}${screenshotLine}`;
+  const media = `${screenshotLine}${attachmentMarkdownLines(attachments)}`;
+  const description = body ? `${body}\n\n---\n${footer}${media}` : `${footer}${media}`;
 
   const labels = `support,${ticket.type}`;
 

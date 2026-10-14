@@ -96,6 +96,27 @@ const ErrorResponse = registerComponent(
     .openapi({ description: 'Error envelope for support-ticket routes.' }),
 );
 
+export const SupportTicketAttachmentComponent = registerComponent(
+  'SupportTicketAttachment',
+  z
+    .object({
+      id: z.string(),
+      support_ticket_id: z.string(),
+      ref: z.string().openapi({
+        description: 'Server-relative `/uploads/support-attachment-<id>.<ext>` ref to the bytes.',
+      }),
+      filename: z.string().openapi({ description: "Uploader's original filename." }),
+      mime: z.string().openapi({
+        description:
+          'Type detected from the file bytes: an image, application/pdf, a video, application/zip, or text/plain.',
+      }),
+      size_bytes: z.number().int(),
+      created_by: z.string().nullable(),
+      created_at: z.string(),
+    })
+    .openapi({ description: 'A file attached to a support ticket.' }),
+);
+
 export const SupportTicketComponent = registerComponent(
   'SupportTicket',
   z
@@ -124,6 +145,9 @@ export const SupportTicketComponent = registerComponent(
         .string()
         .nullable()
         .openapi({ description: 'Server-relative ref to an attached screenshot, or null.' }),
+      attachments: z.array(SupportTicketAttachmentComponent).openapi({
+        description: 'Files attached to the ticket, oldest first. Separate from screenshot_ref.',
+      }),
       converted_card_id: z.string().nullable(),
       converted_card: SupportTicketConvertedCardComponent.nullable().openapi({
         description:
@@ -751,7 +775,7 @@ registerPath({
   tags: ['Support'],
   summary: 'Link a support ticket to an existing kanban card or session',
   description:
-    'Ties the ticket to an existing card (or to a session, via its card) instead of creating a new one: stamps the ticket back-link on the card, records a comment preserving the ticket context + screenshot, then flags the source ticket `converted` (retained, not deleted) and marks it read. The target card must be on this project board and not already linked to a different ticket. Re-linking an already-converted ticket 409s.',
+    'Ties the ticket to an existing card (or to a session, via its card) instead of creating a new one: stamps the ticket back-link on the card, records a comment preserving the ticket context + screenshot, appends links to the ticket attachments to the card description (existing text is kept; files it already links are skipped), then flags the source ticket `converted` (retained, not deleted) and marks it read. The target card must be on this project board and not already linked to a different ticket. Re-linking an already-converted ticket 409s.',
   request: {
     params: ticketParams,
     body: { required: true, content: jsonContent(LinkSupportTicketToCardRequestSchema) },
@@ -918,5 +942,64 @@ registerPath({
   responses: {
     200: { description: 'Deleted.', content: jsonContent(z.object({ ok: z.boolean() })) },
     404: errorResponse('Project or ticket not found.'),
+  },
+});
+
+export const SupportTicketAttachmentHeadersSchema = z.object({
+  'x-filename': z.string().min(1).openapi({
+    description: 'Original filename, URI-encoded (encodeURIComponent).',
+  }),
+});
+
+const attachmentParams = ticketParams.extend({
+  attachmentId: z.string().openapi({ description: 'Attachment id.' }),
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/support-tickets/{id}/attachments',
+  tags: ['Support'],
+  summary: 'Attach a file to a support ticket',
+  description:
+    'One file per request; the body is the raw bytes (send `Content-Type: application/octet-stream`). The type is decided from the bytes: images (png, jpeg, webp, gif), PDF, video (mp4, mov, webm), zip, or UTF-8 text when the filename ends in txt/log/json/har/csv/md. Max 25 MB per file and 20 files per ticket. Broadcasts `support_ticket_updated`.',
+  request: {
+    params: ticketParams,
+    headers: SupportTicketAttachmentHeadersSchema,
+    body: {
+      content: {
+        'application/octet-stream': {
+          schema: z.string().openapi({ format: 'binary', description: 'Raw file bytes.' }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: 'Stored attachment and the updated ticket.',
+      content: jsonContent(
+        z.object({ attachment: SupportTicketAttachmentComponent, ticket: SupportTicketComponent }),
+      ),
+    },
+    400: errorResponse('Empty file, missing X-Filename, or unsupported file type.'),
+    404: errorResponse('Project or ticket not found.'),
+    409: errorResponse('The ticket already has the maximum number of attachments.'),
+    413: errorResponse('File exceeds 25 MB.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/support-tickets/{id}/attachments/{attachmentId}',
+  tags: ['Support'],
+  summary: 'Remove a file from a support ticket',
+  description:
+    'Deletes the attachment row and its stored bytes. Bytes still linked from the converted or linked kanban card are kept. Broadcasts `support_ticket_updated`.',
+  request: { params: attachmentParams },
+  responses: {
+    200: {
+      description: 'Removed; returns the updated ticket.',
+      content: jsonContent(z.object({ ok: z.boolean(), ticket: SupportTicketComponent })),
+    },
+    404: errorResponse('Project, ticket, or attachment not found.'),
   },
 });

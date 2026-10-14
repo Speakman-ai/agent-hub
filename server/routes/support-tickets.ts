@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
 import rateLimit, { type RateLimitInfo } from 'express-rate-limit';
 import type { RouteDeps, KanbanCardRow, SessionRow } from '../types.js';
 import {
@@ -39,6 +39,16 @@ import {
   deleteSupportTicketScreenshot,
 } from '../support-ticket-screenshot.js';
 import { buildCardFieldsFromTicket } from '../support-ticket-convert.js';
+import {
+  AttachmentValidationError,
+  MAX_ATTACHMENT_BYTES,
+  addSupportTicketAttachment,
+  attachmentMarkdownLines,
+  deleteSupportTicketAttachmentFiles,
+  getSupportTicketAttachment,
+  listSupportTicketAttachments,
+  removeSupportTicketAttachment,
+} from '../support-ticket-attachments.js';
 import { getOrCreateBoard, serializeCardForRequest } from './board.js';
 import { linkReplay } from '../replays/replay-store.js';
 import { getDb } from '../db.js';
@@ -47,6 +57,7 @@ import {
   CastVoteRequestSchema,
   ConvertSupportTicketRequestSchema,
   LinkSupportTicketToCardRequestSchema,
+  SupportTicketAttachmentHeadersSchema,
   SupportTicketLinkTargetsQuerySchema,
   VotingListQuerySchema,
 } from './support-tickets.openapi.js';
@@ -116,22 +127,25 @@ async function tryLinkReplay(
 }
 
 /**
- * Whether a screenshot ref is still embedded in the markdown of the card this
- * ticket was converted to. The convert path bakes the screenshot ref into the
- * card description (`![screenshot](/uploads/...)`), so a file referenced by a
- * live converted card must NOT be deleted when the ticket's own attachment is
- * later replaced or cleared. Each screenshot file has a unique uuid name and is
- * only ever referenced by its own ticket + that ticket's converted card, so
- * checking this one card is sufficient.
+ * Whether an uploaded file ref (the reporter screenshot or an attachment) is
+ * still embedded in the card this ticket was converted or linked to. Convert
+ * bakes the refs into the card description and link-card into a card comment,
+ * so a file referenced there must NOT be deleted when the ticket's own copy is
+ * replaced, removed, or the ticket deleted. Every file has a unique uuid name and
+ * is only ever referenced by its own ticket + that card, so checking this one
+ * card is sufficient.
  */
-function screenshotReferencedByConvertedCard(
+function uploadReferencedByConvertedCard(
   stmts: RouteDeps['stmts'],
   ticket: SupportTicketRow,
   ref: string,
 ): boolean {
   if (!ticket.converted_card_id) return false;
   const card = stmts.getKanbanCard.get(ticket.converted_card_id) as KanbanCardRow | undefined;
-  return Boolean(card && typeof card.description === 'string' && card.description.includes(ref));
+  if (!card) return false;
+  if (typeof card.description === 'string' && card.description.includes(ref)) return true;
+  const comments = stmts.getKanbanCardComments.all(card.id) as Array<{ content?: unknown }>;
+  return comments.some((c) => typeof c.content === 'string' && c.content.includes(ref));
 }
 
 /**
@@ -673,7 +687,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           if (
             previousRef &&
             previousRef !== screenshotRef &&
-            !screenshotReferencedByConvertedCard(stmts, ticket, previousRef)
+            !uploadReferencedByConvertedCard(stmts, ticket, previousRef)
           ) {
             await deleteSupportTicketScreenshot(uploadStore, previousRef);
           }
@@ -899,7 +913,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         return res.status(500).json({ error: 'Board has no columns to place the card in' });
       }
 
-      const fields = buildCardFieldsFromTicket(ticket);
+      const fields = buildCardFieldsFromTicket(ticket, listSupportTicketAttachments(ticket.id));
       const existingCards = stmts.getKanbanCardsByColumn.all(todo.id) as KanbanCardRow[];
       const maxPos =
         existingCards.length > 0 ? Math.max(...existingCards.map((c) => c.position)) + 1 : 0;
@@ -1076,6 +1090,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       const linkComment = note
         ? `${note}\n\n---\n${footer}${screenshotLine}`
         : `${footer}${screenshotLine}`;
+      const ticketAttachments = listSupportTicketAttachments(ticket.id);
 
       // Atomic stamp-card + flip-ticket-to-converted. The ticket re-read bails if
       // it was converted by a concurrent/retried request (linked once only). The
@@ -1096,7 +1111,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           byName('to do') ??
           [...columns].sort((a, b) => a.position - b.position)[0];
         if (!column) throw new Error('Board has no columns to place the card in');
-        const fields = buildCardFieldsFromTicket(source);
+        const fields = buildCardFieldsFromTicket(source, listSupportTicketAttachments(source.id));
         const existing = stmts.getKanbanCardsByColumn.all(column.id) as KanbanCardRow[];
         const maxPos = existing.length ? Math.max(...existing.map((c) => c.position)) + 1 : 0;
         const newId = uuidv4();
@@ -1155,6 +1170,25 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
             return { kind: 'card-taken' };
           }
           stmts.createKanbanCardComment.run(uuidv4(), cardId, 'support-ticket', linkComment);
+          // Carry the attachments into the existing card's description (a card
+          // created above already has them), keeping what's there and skipping
+          // any file it already links.
+          if (!cardCreated) {
+            const target = stmts.getKanbanCard.get(cardId) as KanbanCardRow;
+            const current = typeof target.description === 'string' ? target.description : '';
+            const missing = ticketAttachments.filter((a) => !current.includes(a.ref));
+            const lines = attachmentMarkdownLines(missing);
+            if (lines) {
+              const description = current.trim()
+                ? `${current.trimEnd()}${lines}`
+                : lines.trimStart();
+              getDb()
+                .prepare(
+                  "UPDATE kanban_cards SET description = ?, updated_at = datetime('now') WHERE id = ?",
+                )
+                .run(description, cardId);
+            }
+          }
           convertSupportTicketToCard(ticket.id, cardId);
           markSupportTicketRead(ticket.id);
           // Linking flips status to 'converted'; a leftover wont_do_reason must
@@ -1366,6 +1400,82 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     },
   );
 
+  // Add one file to a ticket. The body is the raw file bytes; send it as
+  // application/octet-stream so the global JSON/urlencoded parsers leave it
+  // alone. The original filename travels URI-encoded in `X-Filename`. Clients
+  // upload several files as several requests.
+  router.post(
+    '/api/projects/:projectId/support-tickets/:id/attachments',
+    express.raw({ type: () => true, limit: MAX_ATTACHMENT_BYTES + 1 }),
+    async (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const ticket = getSupportTicket(req.params.id as string);
+      if (!ticket || ticket.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+      if (!Buffer.isBuffer(req.body)) {
+        return res
+          .status(400)
+          .json({ error: 'Send the file bytes as the request body (application/octet-stream)' });
+      }
+      const parsedHeaders = SupportTicketAttachmentHeadersSchema.safeParse(req.headers);
+      if (!parsedHeaders.success) {
+        return res.status(400).json({ error: 'X-Filename header is required' });
+      }
+      let filename = parsedHeaders.data['x-filename'];
+      try {
+        filename = decodeURIComponent(filename);
+      } catch {
+        // Not URI-encoded; use it verbatim.
+      }
+
+      try {
+        const attachment = await addSupportTicketAttachment(uploadStore, {
+          ticketId: ticket.id,
+          buffer: req.body,
+          filename,
+          createdBy: resolveOwnerUserId(req as AuthenticatedRequest) ?? null,
+        });
+        const fresh = getSupportTicket(ticket.id) ?? ticket;
+        broadcastTicket('support_ticket_updated', project.id, { ticket: fresh });
+        res.status(201).json({ attachment, ticket: serializeForRequest(req, fresh) });
+      } catch (err) {
+        if (err instanceof AttachmentValidationError) {
+          return res.status(err.status).json({ error: err.message });
+        }
+        console.error('[SupportTickets] attachment upload failed:', (err as Error).message);
+        res.status(500).json({ error: 'Upload failed' });
+      }
+    },
+  );
+
+  router.delete(
+    '/api/projects/:projectId/support-tickets/:id/attachments/:attachmentId',
+    async (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const ticket = getSupportTicket(req.params.id as string);
+      if (!ticket || ticket.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+      const attachment = getSupportTicketAttachment(req.params.attachmentId as string);
+      if (!attachment || attachment.support_ticket_id !== ticket.id) {
+        return res.status(404).json({ error: 'Attachment not found' });
+      }
+
+      // A converted card's description may link the file; keep the bytes then.
+      await removeSupportTicketAttachment(uploadStore, attachment, {
+        keepBytes: uploadReferencedByConvertedCard(stmts, ticket, attachment.ref),
+      });
+      const fresh = getSupportTicket(ticket.id) ?? ticket;
+      broadcastTicket('support_ticket_updated', project.id, { ticket: fresh });
+      res.json({ ok: true, ticket: serializeForRequest(req, fresh) });
+    },
+  );
+
   router.delete(
     '/api/projects/:projectId/support-tickets/:id',
     async (req: Request, res: Response) => {
@@ -1377,12 +1487,17 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         return res.status(404).json({ error: 'Support ticket not found' });
       }
 
+      // Read before the delete: the attachment rows cascade with the ticket.
+      const attachments = listSupportTicketAttachments(ticket.id);
       deleteSupportTicket(ticket.id);
+      await deleteSupportTicketAttachmentFiles(uploadStore, attachments, (ref) =>
+        uploadReferencedByConvertedCard(stmts, ticket, ref),
+      );
       // The row is gone — its screenshot file would otherwise stay orphaned and
       // publicly fetchable. Delete it unless a converted card still embeds it.
       if (
         ticket.screenshot_ref &&
-        !screenshotReferencedByConvertedCard(stmts, ticket, ticket.screenshot_ref)
+        !uploadReferencedByConvertedCard(stmts, ticket, ticket.screenshot_ref)
       ) {
         await deleteSupportTicketScreenshot(uploadStore, ticket.screenshot_ref);
       }

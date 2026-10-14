@@ -35,6 +35,7 @@ import { computeOptimisticVote, sortVotingItems } from '@shared/utils/voting';
 import { getVoterKey } from '../utils/voterKey';
 import { hasRole } from '../utils/auth';
 import VotingScaffolderModal from './VotingScaffolderModal';
+import SupportTicketAttachments from '../components/SupportTicketAttachments';
 const SEVERITY_COLOR: Record<string, any> = {
   critical: colors.red500,
   high: colors.rose400,
@@ -1517,6 +1518,11 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
               resizeMode="contain"
             />
           ) : null}
+          <SupportTicketAttachments
+            projectId={projectId}
+            ticket={selectedTicket}
+            onUpdated={upsertOrDrop}
+          />
           <CommentThread projectId={projectId} ticketId={selectedTicket.id} />
         </ScrollView>
         <Modal

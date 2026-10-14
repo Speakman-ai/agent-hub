@@ -13,7 +13,12 @@ import {
   releaseNotificationHistoryItem,
   type ReleaseNotificationHistoryItem,
 } from './release-notification-outbox.js';
+import {
+  listSupportTicketAttachments,
+  listSupportTicketAttachmentsByTicket,
+} from './support-ticket-attachments.js';
 import type {
+  SupportTicketAttachmentRow,
   SupportTicketCommentRow,
   SupportTicketCommentSource,
   SupportTicketReleaseState,
@@ -35,6 +40,8 @@ export type SupportTicketResponse = Omit<SupportTicketRow, 'voting_paused'> & {
   converted_card: ConvertedCardSummary | null;
   /** Voting paused for this feature request — consumers disable vote controls. */
   voting_paused: boolean;
+  /** Files attached to the ticket, oldest first. */
+  attachments: SupportTicketAttachmentRow[];
 };
 
 export interface LinkedSupportTicketMetadata {
@@ -133,6 +140,8 @@ export function serializeSupportTicket(
      * `null` means "already resolved, and the card is gone".
      */
     convertedCard?: ConvertedCardSummary | null;
+    /** Pre-resolved attachments (list serialization); omit for single reads. */
+    attachments?: SupportTicketAttachmentRow[];
   },
 ): SupportTicketResponse {
   const hasEmail = Boolean(ticket.reporter_email);
@@ -157,6 +166,7 @@ export function serializeSupportTicket(
       opts.convertedCard !== undefined
         ? opts.convertedCard
         : getConvertedCardSummary(ticket.converted_card_id),
+    attachments: opts.attachments ?? listSupportTicketAttachments(ticket.id),
   };
   if (opts.releaseNotifications) {
     response.release_notifications = opts.releaseNotifications;
@@ -190,9 +200,11 @@ export function serializeSupportTickets(
   opts: { canReadReporterEmail: boolean },
 ): SupportTicketResponse[] {
   const summaries = getConvertedCardSummaries(tickets.map((t) => t.converted_card_id));
+  const attachments = listSupportTicketAttachmentsByTicket(tickets.map((t) => t.id));
   return tickets.map((ticket) =>
     serializeSupportTicket(ticket, {
       canReadReporterEmail: opts.canReadReporterEmail,
+      attachments: attachments.get(ticket.id) ?? [],
       convertedCard: ticket.converted_card_id
         ? (summaries.get(ticket.converted_card_id) ?? null)
         : null,

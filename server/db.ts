@@ -1070,6 +1070,25 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_support_ticket_comments_ticket
       ON support_ticket_comments(support_ticket_id);
 
+    -- Files attached to a support ticket (logs, extra screenshots, recordings,
+    -- documents). ref is the server-relative /uploads path; filename is the
+    -- uploader's original name, shown in the UI and used as the download name.
+    -- Child of support_tickets so a hard-delete cascades the rows (the route
+    -- deletes the stored bytes).
+    CREATE TABLE IF NOT EXISTS support_ticket_attachments (
+      id TEXT PRIMARY KEY,
+      support_ticket_id TEXT NOT NULL,
+      ref TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (support_ticket_id) REFERENCES support_tickets(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_support_ticket_attachments_ticket
+      ON support_ticket_attachments(support_ticket_id);
+
     -- Wiki pages: per-project knowledge base with full-text search
     CREATE TABLE IF NOT EXISTS wiki_pages (
       id TEXT PRIMARY KEY,

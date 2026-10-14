@@ -3137,6 +3137,12 @@ components:
           type: string
           format: binary
           description: Optional image part (PNG/JPEG/WebP/GIF, ≤8 MB). Validated by magic-byte signature, persisted under /uploads, and stored as the ticket `screenshot_ref` so it renders inline in the Customer Support queue. A bad/oversize/non-image part is dropped (the report still lands).
+        attachment:
+          type: array
+          items:
+            type: string
+            format: binary
+          description: "Optional extra files: repeat the `attachment` part up to 5 times. Each is stored on the ticket `attachments` list when it is an image, PDF, video (mp4/mov/webm), zip, or UTF-8 text named txt/log/json/har/csv/md, at most 25 MB. Invalid or surplus files are dropped (the report still lands)."
       required:
         - title
       description: Multipart form fields for the bug-report intake. Documentation-only; the handler reads multipart bytes directly because the body is `application/octet-stream` to express.
@@ -16564,6 +16570,39 @@ components:
       required:
         - error
       description: Error envelope for support-ticket routes.
+    SupportTicketAttachment:
+      type: object
+      properties:
+        id:
+          type: string
+        support_ticket_id:
+          type: string
+        ref:
+          type: string
+          description: Server-relative `/uploads/support-attachment-<id>.<ext>` ref to the bytes.
+        filename:
+          type: string
+          description: Uploader's original filename.
+        mime:
+          type: string
+          description: "Type detected from the file bytes: an image, application/pdf, a video, application/zip, or text/plain."
+        size_bytes:
+          type: integer
+        created_by:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+      required:
+        - id
+        - support_ticket_id
+        - ref
+        - filename
+        - mime
+        - size_bytes
+        - created_by
+        - created_at
+      description: A file attached to a support ticket.
     SupportTicket:
       type: object
       properties:
@@ -16625,6 +16664,11 @@ components:
           type: string
           nullable: true
           description: Server-relative ref to an attached screenshot, or null.
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/SupportTicketAttachment"
+          description: Files attached to the ticket, oldest first. Separate from screenshot_ref.
         converted_card_id:
           type: string
           nullable: true
@@ -16711,6 +16755,7 @@ components:
         - ai_investigated_at
         - replay_ref
         - screenshot_ref
+        - attachments
         - converted_card_id
         - converted_card
         - wont_do_reason
@@ -26196,7 +26241,7 @@ paths:
       tags:
         - Bug Reports
       summary: Public bug-report intake (multipart)
-      description: Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Lands a `bug` support ticket in the `agent-hub` Customer Support queue (severity-ordered, with a one-shot AI investigation); an operator promotes it to a kanban card via "Convert to card". An optional `screenshot` image part is persisted and shown inline on the ticket.
+      description: Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Lands a `bug` support ticket in the `agent-hub` Customer Support queue (severity-ordered, with a one-shot AI investigation); an operator promotes it to a kanban card via "Convert to card". An optional `screenshot` image part is persisted and shown inline on the ticket; repeated `attachment` parts become ticket attachments.
       requestBody:
         content:
           multipart/form-data:
@@ -53348,7 +53393,7 @@ paths:
       tags:
         - Support
       summary: Link a support ticket to an existing kanban card or session
-      description: "Ties the ticket to an existing card (or to a session, via its card) instead of creating a new one: stamps the ticket back-link on the card, records a comment preserving the ticket context + screenshot, then flags the source ticket `converted` (retained, not deleted) and marks it read. The target card must be on this project board and not already linked to a different ticket. Re-linking an already-converted ticket 409s."
+      description: "Ties the ticket to an existing card (or to a session, via its card) instead of creating a new one: stamps the ticket back-link on the card, records a comment preserving the ticket context + screenshot, appends links to the ticket attachments to the card description (existing text is kept; files it already links are skipped), then flags the source ticket `converted` (retained, not deleted) and marks it read. The target card must be on this project board and not already linked to a different ticket. Re-linking an already-converted ticket 409s."
       parameters:
         - schema:
             type: string
@@ -53623,6 +53668,130 @@ paths:
                 $ref: "#/components/schemas/SupportTicketErrorResponse"
         "404":
           description: Project, ticket, or comment not found, or already hidden.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/{id}/attachments:
+    post:
+      tags:
+        - Support
+      summary: Attach a file to a support ticket
+      description: "One file per request; the body is the raw bytes (send `Content-Type: application/octet-stream`). The type is decided from the bytes: images (png, jpeg, webp, gif), PDF, video (mp4, mov, webm), zip, or UTF-8 text when the filename ends in txt/log/json/har/csv/md. Max 25 MB per file and 20 files per ticket. Broadcasts `support_ticket_updated`."
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            description: Original filename, URI-encoded (encodeURIComponent).
+          required: true
+          description: Original filename, URI-encoded (encodeURIComponent).
+          name: x-filename
+          in: header
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw file bytes.
+      responses:
+        "201":
+          description: Stored attachment and the updated ticket.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attachment:
+                    $ref: "#/components/schemas/SupportTicketAttachment"
+                  ticket:
+                    $ref: "#/components/schemas/SupportTicket"
+                required:
+                  - attachment
+                  - ticket
+        "400":
+          description: Empty file, missing X-Filename, or unsupported file type.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "404":
+          description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "409":
+          description: The ticket already has the maximum number of attachments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "413":
+          description: File exceeds 25 MB.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/{id}/attachments/{attachmentId}:
+    delete:
+      tags:
+        - Support
+      summary: Remove a file from a support ticket
+      description: Deletes the attachment row and its stored bytes. Bytes still linked from the converted or linked kanban card are kept. Broadcasts `support_ticket_updated`.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+        - schema:
+            type: string
+            description: Attachment id.
+          required: true
+          description: Attachment id.
+          name: attachmentId
+          in: path
+      responses:
+        "200":
+          description: Removed; returns the updated ticket.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  ticket:
+                    $ref: "#/components/schemas/SupportTicket"
+                required:
+                  - ok
+                  - ticket
+        "404":
+          description: Project, ticket, or attachment not found.
           content:
             application/json:
               schema:

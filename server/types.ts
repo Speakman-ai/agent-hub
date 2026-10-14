@@ -1651,6 +1651,21 @@ export interface SupportTicketVoteRow {
   updated_at: string;
 }
 
+/** A file attached to a support ticket (see support-ticket-attachments.ts). */
+export interface SupportTicketAttachmentRow {
+  id: string;
+  support_ticket_id: string;
+  /** Server-relative ref, `/uploads/support-attachment-<id>.<ext>`. */
+  ref: string;
+  /** Uploader's original filename, shown in the UI. */
+  filename: string;
+  /** Sniffed canonical type (never the declared one). */
+  mime: string;
+  size_bytes: number;
+  created_by: string | null;
+  created_at: string;
+}
+
 export type SupportTicketCommentSource = 'hub' | 'external';
 
 export interface SupportTicketCommentRow {

@@ -68,6 +68,13 @@ export const BugReportFormFieldsComponent = registerComponent(
           'Optional image part (PNG/JPEG/WebP/GIF, ≤8 MB). Validated by magic-byte signature, persisted under /uploads, and stored as the ticket `screenshot_ref` so it renders inline in the Customer Support queue. A bad/oversize/non-image part is dropped (the report still lands).',
         format: 'binary',
       }),
+      attachment: z
+        .array(z.string().openapi({ format: 'binary' }))
+        .optional()
+        .openapi({
+          description:
+            'Optional extra files: repeat the `attachment` part up to 5 times. Each is stored on the ticket `attachments` list when it is an image, PDF, video (mp4/mov/webm), zip, or UTF-8 text named txt/log/json/har/csv/md, at most 25 MB. Invalid or surplus files are dropped (the report still lands).',
+        }),
     })
     .openapi({
       description:
@@ -118,7 +125,7 @@ registerPath({
   tags: ['Bug Reports'],
   summary: 'Public bug-report intake (multipart)',
   description:
-    'Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Lands a `bug` support ticket in the `agent-hub` Customer Support queue (severity-ordered, with a one-shot AI investigation); an operator promotes it to a kanban card via "Convert to card". An optional `screenshot` image part is persisted and shown inline on the ticket.',
+    'Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Lands a `bug` support ticket in the `agent-hub` Customer Support queue (severity-ordered, with a one-shot AI investigation); an operator promotes it to a kanban card via "Convert to card". An optional `screenshot` image part is persisted and shown inline on the ticket; repeated `attachment` parts become ticket attachments.',
   request: {
     body: {
       content: {

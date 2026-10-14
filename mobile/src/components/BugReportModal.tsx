@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import Constants from 'expo-constants';
 import { colors } from '../theme/colors';
-import { captureScreenshot, submitBugReport } from '../utils/bugReport';
+import { MAX_BUG_REPORT_ATTACHMENTS, captureScreenshot, submitBugReport } from '../utils/bugReport';
 const SEVERITIES = ['low', 'medium', 'high', 'critical'];
 const TITLE_MAX = 200;
 export default function BugReportModal({
@@ -33,6 +33,7 @@ export default function BugReportModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<any>(null);
   const [currentUri, setCurrentUri] = useState(screenshotUri);
+  const [files, setFiles] = useState<{ uri: string; name: string; type?: string }[]>([]);
   // Keep the preview URI in sync with whatever the parent hands us.
   React.useEffect(() => {
     setCurrentUri(screenshotUri);
@@ -45,8 +46,28 @@ export default function BugReportModal({
       setSeverity('medium');
       setSubmitting(false);
       setError(null);
+      setFiles([]);
     }
   }, [visible]);
+  const pickFiles = async () => {
+    try {
+      const DocumentPicker = await import('expo-document-picker');
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const picked = result.assets.map((a: any) => ({
+        uri: a.uri,
+        name: a.name,
+        type: a.mimeType || undefined,
+      }));
+      setFiles((cur) => [...cur, ...picked].slice(0, MAX_BUG_REPORT_ATTACHMENTS));
+    } catch (e: any) {
+      setError(e?.message || 'Failed to pick files');
+    }
+  };
   const canSubmit = !submitting && title.trim().length > 0;
   const handleRetake = async () => {
     // Briefly dismiss the modal so the screenshot doesn't include it.
@@ -76,6 +97,7 @@ export default function BugReportModal({
       const userAgent = `${Platform.OS} ${Platform.Version} / Expo ${appVersion}`;
       await submitBugReport({
         screenshotUri: currentUri,
+        attachments: files,
         title: title.trim(),
         description: [descriptionPrefix, description.trim()].filter(Boolean).join('\n\n'),
         severity,
@@ -172,6 +194,34 @@ export default function BugReportModal({
             <TouchableOpacity onPress={handleRetake} disabled={submitting} style={styles.retakeBtn}>
               <Text style={styles.retakeLabel}>Retake screenshot</Text>
             </TouchableOpacity>
+
+            <Text style={styles.label}>Files</Text>
+            {files.map((f, i) => (
+              <View key={`${f.name}-${i}`} style={styles.fileRow}>
+                <Text style={styles.fileName} numberOfLines={1}>
+                  {f.name}
+                </Text>
+                <TouchableOpacity
+                  accessibilityLabel={`Remove ${f.name}`}
+                  onPress={() => setFiles((cur) => cur.filter((_, j) => j !== i))}
+                  disabled={submitting}
+                >
+                  <Text style={styles.fileRemove}>{'\u00D7'}</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+            <TouchableOpacity
+              testID="bug-report-attach-files"
+              onPress={pickFiles}
+              disabled={submitting || files.length >= MAX_BUG_REPORT_ATTACHMENTS}
+              style={styles.retakeBtn}
+            >
+              <Text style={styles.retakeLabel}>Attach files</Text>
+            </TouchableOpacity>
+            <Text style={styles.fileHint}>
+              Up to {MAX_BUG_REPORT_ATTACHMENTS} files, 25 MB each: images, PDF, video, zip, or text
+              logs.
+            </Text>
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
           </ScrollView>
@@ -338,6 +388,20 @@ const styles = StyleSheet.create({
     color: colors.gray200,
     fontSize: 12,
   },
+  fileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    marginBottom: 6,
+  },
+  fileName: { flex: 1, color: colors.gray200, fontSize: 12 },
+  fileRemove: { color: colors.gray400, fontSize: 16, paddingHorizontal: 4 },
+  fileHint: { color: colors.gray500, fontSize: 11, marginTop: 6 },
   error: {
     color: colors.red400,
     fontSize: 13,

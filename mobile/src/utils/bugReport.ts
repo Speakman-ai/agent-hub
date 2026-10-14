@@ -75,10 +75,15 @@ export async function captureScreenshot() {
  * @param {string} [args.currentProjectId=''] accepted-and-ignored; wire field is fixed
  * @param {string} [args.currentAgentId='']
  * @param {string} [args.reporterEmail]
+ * @param {{uri: string, name: string, type?: string}[]} [args.attachments] extra files
  * @returns {Promise<{ sessionId: string, status: string }>}
  */
+/** Mirrors the intake's cap on repeated `attachment` parts. */
+export const MAX_BUG_REPORT_ATTACHMENTS = 5;
+
 export async function submitBugReport({
   screenshotUri,
+  attachments,
   title,
   description = '',
   severity = 'medium',
@@ -107,6 +112,16 @@ export async function submitBugReport({
       name: 'screenshot.png',
       type: 'image/png',
     } as any);
+  }
+  if (Array.isArray(attachments)) {
+    for (const file of attachments.slice(0, MAX_BUG_REPORT_ATTACHMENTS)) {
+      if (!file?.uri) continue;
+      form.append('attachment', {
+        uri: file.uri,
+        name: file.name || 'file',
+        type: file.type || 'application/octet-stream',
+      } as any);
+    }
   }
   form.append('title', title);
   form.append('description', description || '');

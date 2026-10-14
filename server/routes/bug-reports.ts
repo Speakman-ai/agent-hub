@@ -9,9 +9,11 @@ import { createUploadStore } from '../upload-store.js';
 import { resolveOwnerUserId } from '../session-ownership.js';
 import { normalizeReporterEmail } from '../support-tickets-store.js';
 import {
+  MAX_SCREENSHOT_BYTES,
   persistSupportTicketScreenshotBuffer,
   deleteSupportTicketScreenshot,
 } from '../support-ticket-screenshot.js';
+import { MAX_ATTACHMENT_BYTES, addSupportTicketAttachment } from '../support-ticket-attachments.js';
 
 /**
  * Public, rate-limited bug-report intake endpoint.
@@ -37,9 +39,13 @@ import {
 
 const RATE_LIMIT_MAX = 10;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-// Fit an 8 MB screenshot (MAX_SCREENSHOT_BYTES, sent as raw multipart bytes —
-// not base64) plus the short text fields, with headroom.
-const MAX_MULTIPART_BYTES = 10 * 1024 * 1024;
+// Repeated `attachment` parts accepted from the public form; extras are dropped.
+export const MAX_BUG_REPORT_ATTACHMENTS = 5;
+// Room for the largest valid report: an 8 MB screenshot (raw multipart bytes,
+// not base64), every attachment at its per-file cap, plus 1 MB for the text
+// fields and part headers. Anything bigger can't be a valid report.
+export const MAX_MULTIPART_BYTES =
+  MAX_SCREENSHOT_BYTES + MAX_BUG_REPORT_ATTACHMENTS * MAX_ATTACHMENT_BYTES + 1024 * 1024;
 const VALID_SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
 const VALID_CLIENT_TYPES = new Set(['web', 'electron', 'mobile']);
 // Closed vocabulary the client recorder reports when a flush yields no replay
@@ -141,12 +147,16 @@ interface ParsedFile {
 
 interface ParsedMultipart {
   fields: Record<string, string>;
+  /** Last part per field name. */
   files: Record<string, ParsedFile>;
+  /** Every file part in order, so repeated names (`attachment`) all survive. */
+  fileParts: ParsedFile[];
 }
 
 function parseMultipart(body: Buffer, boundary: string): ParsedMultipart {
   const fields: Record<string, string> = {};
   const files: Record<string, ParsedFile> = {};
+  const fileParts: ParsedFile[] = [];
 
   const boundaryBuf = Buffer.from(`--${boundary}`);
   const parts: Buffer[] = [];
@@ -187,18 +197,15 @@ function parseMultipart(body: Buffer, boundary: string): ParsedMultipart {
       const contentType = ctLine
         ? ctLine.slice(ctLine.indexOf(':') + 1).trim()
         : 'application/octet-stream';
-      files[name] = {
-        name,
-        filename: filenameMatch[1]!,
-        contentType,
-        data,
-      };
+      const file = { name, filename: filenameMatch[1]!, contentType, data };
+      files[name] = file;
+      fileParts.push(file);
     } else {
       fields[name] = data.toString('utf8');
     }
   }
 
-  return { fields, files };
+  return { fields, files, fileParts };
 }
 
 function getBoundary(contentType: string | undefined): string | null {
@@ -372,7 +379,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
           return res.status(400).json({ error: 'Empty request body' });
         }
 
-        const { fields, files } = parseMultipart(rawBody, boundary);
+        const { fields, files, fileParts } = parseMultipart(rawBody, boundary);
 
         // Validate fields
         const title = (fields.title || '').trim();
@@ -502,6 +509,24 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
             // accepted it for persistence (`ticket.replay_ref`). The helper
             // applies this before broadcast/investigation, so a rejected ref
             // never reaches the body and consumers see the finalized one.
+            // Extra files are dropped one by one when invalid, same policy as
+            // the screenshot: a usable report should still land.
+            attachFiles: async (t) => {
+              const parts = fileParts
+                .filter((f) => f.name === 'attachment' && f.data.length > 0)
+                .slice(0, MAX_BUG_REPORT_ATTACHMENTS);
+              for (const part of parts) {
+                try {
+                  await addSupportTicketAttachment(uploadStore, {
+                    ticketId: t.id,
+                    buffer: part.data,
+                    filename: part.filename,
+                  });
+                } catch (err) {
+                  console.warn('[Bug Reports] attachment dropped:', (err as Error).message);
+                }
+              }
+            },
             finalizeBody: (t) =>
               t.replay_ref
                 ? buildBugReportTicketBody({ ...bodyFields, replayRef: t.replay_ref })
