@@ -3673,7 +3673,6 @@ export const api = {
       }),
       timeout: 30000,
     }),
-  getCronThread: (cronId: any) => fetchJSON(`/crons/${cronId}/thread`),
 
   // Notes
   getNotes: (projectId: any, query?: any, limit?: any) => {

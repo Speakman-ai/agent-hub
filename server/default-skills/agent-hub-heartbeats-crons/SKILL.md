@@ -2,10 +2,10 @@
 name: agent-hub-heartbeats-crons
 description: >-
   Agent Hub scheduled work — project-scoped crons (automated jobs).
-  Crons run on node-cron expressions and pipe streamed tokens into a
-  persistent thread row. Per-agent heartbeats are retired; use a cron.
+  Crons run on node-cron expressions and keep each run's output in the
+  cron run log. Per-agent heartbeats are retired; use a cron.
   TRIGGER only on Agent Hub scheduling signals: the words "heartbeat",
-  "cron", "scheduled agent", "scheduled job", "thread log"; cron-expression
+  "cron", "scheduled agent", "scheduled job", "cron log"; cron-expression
   formats in an Agent Hub context (e.g. "0 */6 * * *" near agentId);
   the wrappers scripts/heartbeats.sh, scripts/crons.sh; or URLs under
   /api/crons. DO NOT TRIGGER on system crontab,
@@ -34,15 +34,18 @@ scripts/crons.sh list
 scripts/crons.sh create '{"name":"…","schedule":"0 3 * * *","prompt":"…"}'
 scripts/crons.sh run    <cronId>
 scripts/crons.sh logs   <cronId>
-scripts/crons.sh thread <cronId>
 ```
 
-## Threads
+## Run logs and notifications
 
-Scheduled runs don't dump output into an interactive session — they pipe
-streamed tokens into a **thread** row so the UI can show a persistent log
-per run without cluttering the session list. The `thread` subcommand
-attaches to it.
+Every run writes a `cron_logs` row: the output on success, and the error
+plus stdout/stderr on failure. `crons.sh logs` reads them (newest first);
+Settings → Cron jobs shows the same log under **View log**.
+
+Crons do not send push notifications themselves. To hear about finished
+runs, add a **Cron finished** chat trigger (Project Settings → Chat
+triggers, optionally filtered to success or error). It posts a card into
+a chat channel, and optionally a Google Chat space.
 
 ## Scheduling semantics
 

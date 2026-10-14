@@ -42123,7 +42123,6 @@ paths:
                       - ready_to_push
                       - pushed
                       - support_ticket_created
-                      - thread_message
                       - review_assigned_to_you
                       - pr_merged
                       - infra_alert

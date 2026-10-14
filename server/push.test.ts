@@ -4,7 +4,6 @@ import {
   readyToPushPush,
   pushedPush,
   supportTicketCreatedPush,
-  threadMessagePush,
   reviewAssignedPush,
   prMergedPush,
   infraAlertPush,
@@ -63,19 +62,6 @@ describe('push formatters', () => {
       'bug: Login broken',
     );
     expect(supportTicketCreatedPush({}).body).toBe('New ticket');
-  });
-
-  it('formats thread messages and truncates long previews', () => {
-    expect(
-      threadMessagePush({ threadName: 'Nightly', threadType: 'cron', isError: true }).title,
-    ).toBe('Thread error');
-    const long = 'y'.repeat(200);
-    const trimmed = threadMessagePush({
-      threadName: 'Nightly',
-      threadType: 'cron',
-      preview: long,
-    }).body;
-    expect(trimmed.endsWith('…')).toBe(true);
   });
 
   it('formats review assigned and PR merged', () => {
@@ -145,8 +131,8 @@ describe('parseEnabledEvents / tokenAcceptsEvent', () => {
   });
 
   it('only accepts enumerated events when preferences are set', () => {
-    const row = token('t', ['thread_message']);
-    expect(tokenAcceptsEvent(row, 'thread_message')).toBe(true);
+    const row = token('t', ['chat_message']);
+    expect(tokenAcceptsEvent(row, 'chat_message')).toBe(true);
     expect(tokenAcceptsEvent(row, 'awaiting_feedback')).toBe(false);
   });
 
@@ -156,7 +142,6 @@ describe('parseEnabledEvents / tokenAcceptsEvent', () => {
       'ready_to_push',
       'pushed',
       'support_ticket_created',
-      'thread_message',
       'review_assigned_to_you',
       'pr_merged',
       'infra_alert',
@@ -176,9 +161,9 @@ describe('parseEnabledEvents / tokenAcceptsEvent', () => {
     expect(s?.has('session_complete')).toBe(true);
   });
 
-  it('maps both legacy thread keys onto thread_message', () => {
-    expect(parseEnabledEvents('["thread_entry"]')?.has('thread_message')).toBe(true);
-    expect(parseEnabledEvents('["thread_created"]')?.has('thread_message')).toBe(true);
+  it('no longer offers thread_message as a push event', () => {
+    expect(PUSH_EVENT_TYPES).not.toContain('thread_message');
+    expect(parseEnabledEvents('["thread_entry"]')?.has('thread_message')).toBe(false);
   });
 
   it('tokenAcceptsEvent honors a legacy-only preference for the renamed event', () => {
@@ -304,7 +289,7 @@ describe('dispatchPushEvent', () => {
   it('returns 0 when no tokens match', async () => {
     const fetchFn = vi.fn() as unknown as typeof fetch;
     const sent = await dispatchPushEvent(
-      'thread_message',
+      'chat_message',
       { title: 'T', body: 'B' },
       { fetchFn, getAllTokens: () => [], removeToken: () => {} },
     );
@@ -533,7 +518,7 @@ describe('mapBroadcastToPush', () => {
     ).toBeNull();
   });
 
-  it('maps native_pr_update review_requested, thread_entry_created, webhook_pr_merged', () => {
+  it('maps native_pr_update review_requested and webhook_pr_merged', () => {
     expect(
       mapBroadcastToPush({
         type: 'native_pr_update',
@@ -543,16 +528,18 @@ describe('mapBroadcastToPush', () => {
       })?.event,
     ).toBe('review_assigned_to_you');
 
-    const entry = mapBroadcastToPush({
-      type: 'thread_entry_created',
-      projectId: 'p',
-      threadId: 't',
-      threadName: 'Nightly',
-      threadType: 'cron',
-      entry: { id: 'e', content: 'ERROR: boom' },
-    });
-    expect(entry?.event).toBe('thread_message');
-    expect(entry?.payload.title).toBe('Thread error');
+    // Thread entries (formerly cron output) no longer push; cron notifications
+    // go through the cron_finished chat trigger.
+    expect(
+      mapBroadcastToPush({
+        type: 'thread_entry_created',
+        projectId: 'p',
+        threadId: 't',
+        threadName: 'Nightly',
+        threadType: 'cron',
+        entry: { id: 'e', content: 'ERROR: boom' },
+      }),
+    ).toBeNull();
 
     expect(
       mapBroadcastToPush({
@@ -687,12 +674,10 @@ describe('handleBroadcastForPush', () => {
     const fetchFn = vi.fn() as unknown as typeof fetch;
     const sent = await handleBroadcastForPush(
       {
-        type: 'thread_entry_created',
-        threadId: 't1',
-        projectId: 'p1',
-        threadName: 'some cron',
-        threadType: 'cron',
-        entry: { id: 'e1', content: 'ok' },
+        type: 'awaiting_input',
+        waiting: true,
+        sessionId: 's1',
+        sessionName: 'N',
         suppressPush: true,
       },
       { fetchFn, getAllTokens: () => [token('a')], removeToken: () => {} },
@@ -710,15 +695,19 @@ describe('handleBroadcastForPush', () => {
     }) as unknown as typeof fetch;
     const sent = await handleBroadcastForPush(
       {
-        type: 'thread_entry_created',
-        threadId: 't1',
-        projectId: 'p1',
-        threadName: 'some cron',
-        threadType: 'cron',
-        entry: { id: 'e1', content: 'ok' },
+        type: 'awaiting_input',
+        waiting: true,
+        sessionId: 's1',
+        sessionName: 'N',
         suppressPush: false,
       },
-      { fetchFn, getAllTokens: () => [token('a')], removeToken: () => {} },
+      {
+        fetchFn,
+        getAllTokens: () => [token('a')],
+        removeToken: () => {},
+        resolveProjectId: () => null,
+        getSessionOwnerById: () => null,
+      },
     );
     expect(sent).toBe(1);
   });
@@ -760,30 +749,6 @@ describe('handleBroadcastForPush', () => {
 });
 
 describe('filterTokensForBroadcastVisibility', () => {
-  it('keeps cron owner and org Owner tokens for private cron thread entries', () => {
-    const out = filterTokensForBroadcastVisibility(
-      [
-        token('cron-owner', null, 'cron-owner-id'),
-        token('org-owner', null, 'org-owner-id'),
-        token('regular-user', null, 'regular-user-id'),
-        token('legacy-device', null, null),
-      ],
-      {
-        type: 'thread_entry_created',
-        projectId: 'p1',
-        ownerUserId: 'cron-owner-id',
-        cronShared: false,
-      },
-      {
-        resolveProjectId: () => 'p1',
-        findProjectById: () =>
-          ({ id: 'p1', visibility: 'shared', ownerUserId: 'project-owner' }) as any,
-        getUserRoleById: (userId) => (userId === 'org-owner-id' ? 'Owner' : 'User'),
-      },
-    );
-    expect(out.map((t) => t.token)).toEqual(['cron-owner', 'org-owner']);
-  });
-
   it('keeps only the owner token for shared projects with an owner', () => {
     const out = filterTokensForBroadcastVisibility(
       [token('owner', null, 'u1'), token('other', null, 'u2')],

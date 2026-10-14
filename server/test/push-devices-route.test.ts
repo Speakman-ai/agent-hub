@@ -32,12 +32,12 @@ describe('device token preference routes', () => {
 
     const put = await request
       .put(`/api/devices/${encodeURIComponent(token)}/preferences`)
-      .send({ enabledEvents: ['thread_message', 'pr_merged', 'definitely-bogus'] })
+      .send({ enabledEvents: ['chat_message', 'pr_merged', 'thread_message', 'definitely-bogus'] })
       .expect(200);
-    expect(put.body.enabledEvents).toEqual(['thread_message', 'pr_merged']);
+    expect(put.body.enabledEvents).toEqual(['chat_message', 'pr_merged']);
 
     const get = await request.get(`/api/devices/${encodeURIComponent(token)}`).expect(200);
-    expect(get.body.enabledEvents).toEqual(['thread_message', 'pr_merged']);
+    expect(get.body.enabledEvents).toEqual(['chat_message', 'pr_merged']);
   });
 
   it('clears preferences when null is passed (back to all events)', async () => {
@@ -47,7 +47,7 @@ describe('device token preference routes', () => {
 
     await request
       .put(`/api/devices/${encodeURIComponent(token)}/preferences`)
-      .send({ enabledEvents: ['thread_message'] })
+      .send({ enabledEvents: ['chat_message'] })
       .expect(200);
 
     const cleared = await request

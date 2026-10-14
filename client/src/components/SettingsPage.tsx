@@ -11,6 +11,7 @@ import {
 import { relativeTime, relativeFuture, formatDateTime, formatTime } from '../utils/time';
 import { hasRole, isLocalBundledDeployment } from '../utils/auth';
 import humanCron from '@shared/utils/humanCron';
+import { latestCronLogKey } from '@shared/utils/cronLog';
 import { localTimeZone } from '@shared/utils/calendarEvents';
 import CronSchedulePicker from './CronSchedulePicker';
 import AgentAvatar from './AgentAvatar';
@@ -1659,7 +1660,7 @@ export function ProjectsSection({
   );
 }
 
-export function CronSection({ projects = [], onNavigate, showToast, projectId = null }: any) {
+export function CronSection({ projects = [], showToast, projectId = null }: any) {
   const scopedProjects = useMemo(
     () => (projectId ? projects.filter((p: any) => p.id === projectId) : projects),
     [projects, projectId],
@@ -1850,19 +1851,10 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
     return agent?.engine && agent.engine !== DEFAULT_ENGINE ? agent.engine : null;
   };
 
-  const viewThread = async (cronJob: any) => {
-    if (!onNavigate) return;
-    try {
-      const { thread } = await api.getCronThread(cronJob.id);
-      if (thread) {
-        onNavigate('threads', { projectId: thread.project_id, threadId: thread.id, thread });
-      } else {
-        showToast?.('No thread yet — run this cron job at least once to create a thread.', 'info');
-      }
-    } catch (e: any) {
-      console.error('Failed to fetch cron thread:', e);
-      showToast?.('Failed to load cron thread.', 'error');
-    }
+  const viewLog = (cronJob: any) => {
+    const key = latestCronLogKey(cronJob.id, cronLogs[cronJob.id]);
+    if (key) setExpandedLog(expandedLog === key ? null : key);
+    else showToast?.('No runs yet. Run this cron job to see its log.', 'info');
   };
 
   const toggleCron = async (cronJob: any) => {
@@ -2116,20 +2108,10 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
               </select>
             </div>
           )}
-          <label className="flex items-start gap-2 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={!!form.notify_on_run}
-              onChange={(e: any) => setForm({ ...form, notify_on_run: e.target.checked })}
-              className="mt-0.5 accent-blue-500"
-            />
-            <span className="text-xs text-gray-300">
-              Send a push notification on every run
-              <span className="block text-gray-500">
-                Off by default — thread logs are written either way.
-              </span>
-            </span>
-          </label>
+          <p className="text-xs text-gray-500">
+            Run notifications: add a <span className="text-gray-300">Cron finished</span> trigger in
+            Project Settings → Chat triggers.
+          </p>
           <label className="flex items-start gap-2 cursor-pointer select-none">
             <input
               type="checkbox"
@@ -2286,22 +2268,10 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                     </select>
                   </div>
                 )}
-                <label className="flex items-start gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={!!editForm.notify_on_run}
-                    onChange={(e: any) =>
-                      setEditForm({ ...editForm, notify_on_run: e.target.checked })
-                    }
-                    className="mt-0.5 accent-blue-500"
-                  />
-                  <span className="text-xs text-gray-300">
-                    Send a push notification on every run
-                    <span className="block text-gray-500">
-                      Off by default — thread logs are written either way.
-                    </span>
-                  </span>
-                </label>
+                <p className="text-xs text-gray-500">
+                  Run notifications: add a <span className="text-gray-300">Cron finished</span>{' '}
+                  trigger in Project Settings → Chat triggers.
+                </p>
                 <label className="flex items-start gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -2378,7 +2348,6 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                     {cronJob.engine ? <> · Engine: {cronJob.engine}</> : null}
                     {cronJob.model ? <> · Model: {cronJob.model}</> : null}
                     {cronJob.timezone ? <> · Timezone: {cronJob.timezone}</> : null}
-                    {cronJob.notify_on_run ? <> · 🔔 Notifies on run</> : null}
                     {cronJob.last_run && <> · Last: {relativeTime(cronJob.last_run)}</>}
                   </p>
                   <label className="mt-2 inline-flex items-center gap-2 text-xs text-gray-300">
@@ -2497,15 +2466,14 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                   )}
                 </div>
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-                  {onNavigate && (
-                    <button
-                      onClick={() => viewThread(cronJob)}
-                      className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                      title="View thread"
-                    >
-                      <ScrollText size={14} />
-                    </button>
-                  )}
+                  <button
+                    onClick={() => viewLog(cronJob)}
+                    className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                    title="View log"
+                    aria-label="View log"
+                  >
+                    <ScrollText size={14} />
+                  </button>
                   <button
                     onClick={() => triggerRun(cronJob.id)}
                     disabled={running[cronJob.id] || !cronJob.can_manage}

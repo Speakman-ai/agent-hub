@@ -1,7 +1,7 @@
 # Example: Post a Cron Summary
 
 **Scenario:** you run as a scheduled project cron (e.g. every 6 hours). At the end
-of a run, you want to (a) read the previous thread for continuity, (b) sweep
+of a run, you want to (a) read the previous run's log for continuity, (b) sweep
 the board / wiki / deploy status, and (c) leave a structured summary that
 future runs can pick up.
 
@@ -21,14 +21,14 @@ The cron's configured prompt is something like:
 
 ## Walk-through
 
-### 1. Read the persistent thread to see what the last run said
+### 1. Read the run log to see what the last run said
 
 ```bash
-scripts/crons.sh thread <cronId> \
-  | python3 -c "import json,sys; msgs=json.load(sys.stdin).get('messages',[]); [print(m['created_at'], '-', m['content'][:120]) for m in msgs[-5:]]"
+scripts/crons.sh logs <cronId> \
+  | python3 -c "import json,sys; logs=json.load(sys.stdin); [print(l['timestamp'], '-', (l.get('result') or '')[:120]) for l in reversed(logs[:5])]"
 ```
 
-Expected output (abbreviated — last five thread entries):
+Expected output (abbreviated, last five runs, oldest first):
 
 ```
 2026-04-18T23:00:12Z - Cron: 0 stuck cards, 1 failing PR (#438 — typecheck).
@@ -79,8 +79,8 @@ Expected output:
 
 ### 4. End your turn with the one-line summary
 
-The final assistant message in your cron session becomes the thread entry
-that the **next** run will read in step 1. Keep it structured so future runs
+The final assistant message in your cron session becomes the run's
+`cron_logs` result that the **next** run will read in step 1. Keep it structured so future runs
 can diff against it:
 
 ```
@@ -100,7 +100,7 @@ TOOL_ERROR | 2026-04-19T11:00:42Z | Bash | scripts/board.sh comment | exit 22 | 
 
 ## Copy-paste checklist
 
-- [x] Read previous thread via `scripts/crons.sh thread <cronId>`
+- [x] Read the previous run via `scripts/crons.sh logs <cronId>`
 - [x] Sweep relevant board columns with `scripts/kanban-list.sh --column …`
 - [x] Comment on any actionable stuck cards
 - [x] End with a structured one-line summary (the next run reads it)
@@ -108,10 +108,13 @@ TOOL_ERROR | 2026-04-19T11:00:42Z | Bash | scripts/board.sh comment | exit 22 | 
 
 ## Gotchas
 
-- **Cron thread is read-only via the API.** You don't POST to the thread
-  directly — the thread row is populated from your chat output when the CLI
-  closes. Just structure your final message to be the summary.
+- **The run log is read-only via the API.** It is written from your chat
+  output when the CLI closes, so structure your final message to be the
+  summary. Failed runs keep their stdout and stderr in the log too.
+- **Notifications come from chat triggers.** To get pinged when a cron
+  finishes, add a **Cron finished** trigger (Project Settings → Chat triggers);
+  crons no longer send their own push notifications.
 - **Scheduled runs have short context budgets.** Don't re-read every card's full
   description — filter with `--column` / jq before inspecting.
-- **`scripts/crons.sh run <cronId>`** triggers a run *now*; don't call
+- **`scripts/crons.sh run <cronId>`** triggers a run _now_; don't call
   this from inside a cron session or you'll recurse.

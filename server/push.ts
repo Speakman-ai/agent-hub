@@ -39,7 +39,6 @@ export const PUSH_EVENT_TYPES = [
   'ready_to_push',
   'pushed',
   'support_ticket_created',
-  'thread_message',
   'review_assigned_to_you',
   'pr_merged',
   'infra_alert',
@@ -133,20 +132,6 @@ export function supportTicketCreatedPush(args: { subject?: string; ticketType?: 
     title: 'Support ticket created',
     body: `${label}${args.subject || 'New ticket'}`,
   };
-}
-
-export function threadMessagePush(args: {
-  threadName: string;
-  threadType: string;
-  preview?: string;
-  isError?: boolean;
-}): { title: string; body: string } {
-  const label = args.threadType === 'heartbeat' ? 'Heartbeat' : 'Thread';
-  const title = args.isError ? `${label} error` : `${label} message`;
-  const trimmed =
-    args.preview && args.preview.length > 120 ? args.preview.slice(0, 120) + '…' : args.preview;
-  const body = trimmed ? `${args.threadName}: ${trimmed}` : `New message in "${args.threadName}"`;
-  return { title, body };
 }
 
 export function reviewAssignedPush(args: { cardTitle?: string; prNumber?: number }): {
@@ -246,7 +231,7 @@ export function chatMessagePush(args: {
  * "changes_ready"]` in `enabled_events`; without aliasing, `tokenAcceptsEvent`
  * would never match the new `awaiting_feedback` / `ready_to_push` events and
  * the user would silently go dark until they re-saved preferences. Keys with
- * no current equivalent (e.g. `pr_creation_stale`, `cron`) are intentionally
+ * no current equivalent (e.g. `pr_creation_stale`, `cron`, the thread keys) are intentionally
  * absent — those events no longer fire. `pr_merged` kept its name, so it needs
  * no alias.
  */
@@ -254,8 +239,6 @@ const LEGACY_EVENT_ALIASES: Record<string, PushEventType> = {
   session_complete: 'awaiting_feedback',
   changes_ready: 'ready_to_push',
   card_review: 'review_assigned_to_you',
-  thread_entry: 'thread_message',
-  thread_created: 'thread_message',
 };
 
 /**
@@ -390,27 +373,6 @@ export function filterTokensForBroadcastVisibility(
   data: BroadcastData,
   deps?: Pick<PushDispatchDeps, 'resolveProjectId' | 'findProjectById' | 'getUserRoleById'>,
 ): DeviceTokenRowWithPrefs[] {
-  if (data.type === 'thread_entry_created' && data.cronShared === false) {
-    if (isLocalBundledServer()) return tokens;
-    const owner =
-      typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
-    if (owner) {
-      const getUserRole =
-        deps?.getUserRoleById ??
-        ((userId: string) => {
-          try {
-            return getMembershipRole(userId, getActiveOrgId());
-          } catch {
-            return null;
-          }
-        });
-      return tokens.filter((t) => {
-        if (t.user_id === owner) return true;
-        if (!t.user_id) return false;
-        return getUserRole(t.user_id) === 'Owner';
-      });
-    }
-  }
   const resolveProjectId =
     deps?.resolveProjectId ?? ((payload: BroadcastData) => resolveProjectIdFromEvent(payload));
   const findProjectById = deps?.findProjectById ?? ((projectId: string) => findProject(projectId));
@@ -569,9 +531,8 @@ interface BroadcastData {
  * call on every broadcast.
  *
  * Broadcasts may opt out of push entirely by setting `suppressPush: true`
- * on the payload. Used by e.g. cron runs where the per-cron `notify_on_run`
- * flag is off — the thread entry is still broadcast to the UI, but no
- * mobile push is dispatched.
+ * on the payload. Used by e.g. the server-only `cron_finished` event, whose
+ * notifications go through project chat triggers instead.
  */
 export async function handleBroadcastForPush(
   data: BroadcastData,
@@ -723,32 +684,6 @@ export function mapBroadcastToPush(data: BroadcastData): {
             projectId: data.projectId,
             ticketId: ticket && 'id' in ticket ? (ticket as { id?: string }).id : undefined,
             type: 'support_ticket_created',
-          },
-        },
-      };
-    }
-
-    case 'thread_entry_created': {
-      const entry = (data as { entry?: { content?: string; id?: string } }).entry;
-      const preview =
-        typeof entry?.content === 'string' ? entry.content.replace(/\n+/g, ' ').trim() : undefined;
-      const isError = typeof entry?.content === 'string' && entry.content.startsWith('ERROR:');
-      const { title, body } = threadMessagePush({
-        threadName: typeof data.threadName === 'string' ? data.threadName : 'Thread',
-        threadType: typeof data.threadType === 'string' ? data.threadType : 'cron',
-        preview,
-        isError,
-      });
-      return {
-        event: 'thread_message',
-        payload: {
-          title,
-          body,
-          data: {
-            projectId: data.projectId,
-            threadId: data.threadId,
-            entryId: entry?.id,
-            type: 'thread_message',
           },
         },
       };

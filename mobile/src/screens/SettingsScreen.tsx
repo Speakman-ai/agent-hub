@@ -24,6 +24,7 @@ import { colors } from '../theme/colors';
 import { relativeTime, relativeFuture } from '../utils/time';
 import { normalizeSettingsTab } from '../utils/settingsTabs';
 import humanCron from '@shared/utils/humanCron';
+import { latestCronLogKey } from '@shared/utils/cronLog';
 import { localTimeZone } from '@shared/utils/calendarEvents';
 import {
   cronEngineChoices,
@@ -964,22 +965,9 @@ function CronFormFields({ form, setForm, projects, modelConfig }: any) {
           </ScrollView>
         </>
       )}
-      <TouchableOpacity
-        onPress={() => setForm({ ...form, notify_on_run: !form.notify_on_run })}
-        style={styles.notifyToggleRow}
-        accessibilityRole="checkbox"
-        accessibilityState={{ checked: !!form.notify_on_run }}
-      >
-        <View style={[styles.notifyCheckbox, !!form.notify_on_run && styles.notifyCheckboxChecked]}>
-          {!!form.notify_on_run && <Text style={styles.notifyCheckboxMark}>✓</Text>}
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.notifyToggleLabel}>Send a push notification on every run</Text>
-          <Text style={styles.notifyToggleHint}>
-            Off by default — thread logs are written either way.
-          </Text>
-        </View>
-      </TouchableOpacity>
+      <Text style={[styles.notifyToggleHint, { marginTop: 8 }]}>
+        Run notifications: add a Cron finished trigger in Project Settings → Chat triggers.
+      </Text>
       <TouchableOpacity
         onPress={() => setForm({ ...form, shared: !form.shared })}
         style={styles.notifyToggleRow}
@@ -1085,6 +1073,11 @@ export function CronSection() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects]);
+  const viewLog = (cronJob: any) => {
+    const key = latestCronLogKey(cronJob.id, cronLogs[cronJob.id]);
+    if (key) setExpandedLog(expandedLog === key ? null : key);
+    else Alert.alert('No runs yet', 'Run this cron job to see its log.');
+  };
   const toggleCron = async (cronJob: any) => {
     const updated = await api.updateCron(cronJob.id, { enabled: !cronJob.enabled });
     setCrons((prev: any) => prev.map((c: any) => (c.id === updated.id ? updated : c)));
@@ -1278,7 +1271,6 @@ export function CronSection() {
                       : ''}
                     {cronJob.engine ? ` · Engine: ${cronJob.engine}` : ''}
                     {cronJob.model ? ` · Model: ${cronJob.model}` : ''}
-                    {cronJob.notify_on_run ? ' · Notifies on run' : ''}
                     {cronJob.last_run && ` · Last: ${relativeTime(cronJob.last_run)}`}
                   </Text>
                   {/* Recent runs — clickable status dots */}
@@ -1419,6 +1411,13 @@ export function CronSection() {
                   )}
                 </View>
                 <View style={styles.actionButtons}>
+                  <TouchableOpacity
+                    style={styles.smallButton}
+                    onPress={() => viewLog(cronJob)}
+                    accessibilityLabel="View log"
+                  >
+                    <Text style={styles.smallButtonText}>Log</Text>
+                  </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.smallButton, !cronJob.can_manage && styles.disabledButton]}
                     onPress={() => startEditing(cronJob)}

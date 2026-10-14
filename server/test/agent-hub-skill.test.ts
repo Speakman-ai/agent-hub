@@ -70,7 +70,7 @@ const SUB_SKILLS = [
     id: 'agent-hub-heartbeats-crons',
     dir: path.join(DEFAULT_SKILLS_DIR, 'agent-hub-heartbeats-crons'),
     reference: 'heartbeats-crons.md',
-    domainMarkers: [/heartbeat/i, /cron/i, /thread/i, /node-cron/i],
+    domainMarkers: [/heartbeat/i, /cron/i, /cron_logs/, /Cron finished/, /node-cron/i],
   },
 ] as const;
 

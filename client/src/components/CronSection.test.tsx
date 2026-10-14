@@ -246,3 +246,66 @@ describe('CronSection — engine picker', () => {
     expect(payload!).not.toHaveProperty('skill_principal_agent_id');
   });
 });
+
+describe('CronSection — View log', () => {
+  const cron = {
+    id: 7,
+    name: 'Nightly',
+    schedule: '0 3 * * *',
+    prompt: 'Audit.',
+    cwd: '/tmp/proj-a',
+    project_id: 'proj-a',
+    enabled: 1,
+    shared: 0,
+    can_manage: true,
+    last_run: null,
+    next_run_at: null,
+  };
+
+  beforeEach(() => {
+    (api.getModelConfig as any).mockResolvedValue(MULTI_ENGINE_MODEL_CONFIG);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('opens the newest run log, including stdout/stderr of a failed run', async () => {
+    (api.getCrons as any).mockResolvedValue([cron]);
+    (api.getCronLogs as any).mockResolvedValue([
+      {
+        id: 2,
+        status: 'error',
+        timestamp: '2026-10-14T03:00:00Z',
+        duration_ms: 1200,
+        result: 'ERROR: boom\n\n--- stdout ---\npartial work\n\n--- stderr ---\nrate limited',
+      },
+      { id: 1, status: 'success', timestamp: '2026-10-13T03:00:00Z', result: 'older run' },
+    ]);
+    const { findByText, queryByText } = render(<CronSection projects={PROJECTS_FIXTURE} />);
+    await findByText('Nightly');
+    expect(document.querySelector('button[title="View thread"]')).toBeNull();
+    const btn = await waitFor(() => {
+      const b = document.querySelector('button[title="View log"]');
+      if (!b) throw new Error('View log button not mounted yet');
+      return b;
+    });
+    await findByText('Runs:');
+    fireEvent.click(btn as any);
+    await findByText(/partial work/);
+    expect(queryByText(/rate limited/)).not.toBeNull();
+    expect(queryByText('older run')).toBeNull();
+  });
+
+  it('toasts when the cron has never run', async () => {
+    (api.getCrons as any).mockResolvedValue([cron]);
+    (api.getCronLogs as any).mockResolvedValue([]);
+    const showToast = vi.fn();
+    const { findByText } = render(
+      <CronSection projects={PROJECTS_FIXTURE} showToast={showToast} />,
+    );
+    await findByText('Nightly');
+    fireEvent.click(document.querySelector('button[title="View log"]') as any);
+    expect(showToast).toHaveBeenCalledWith(expect.stringMatching(/No runs yet/), 'info');
+  });
+});

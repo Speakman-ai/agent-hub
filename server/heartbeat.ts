@@ -40,8 +40,6 @@ import { ALL_SUPPORTED_ENGINES, type SupportedEngine } from './engine-availabili
 import type {
   EnrichedAgent,
   CronRow,
-  ThreadRow,
-  ThreadEntryRow,
   SessionRow,
   Project,
   BroadcastFn,
@@ -311,42 +309,6 @@ function resolveCronCwd(cronJob: CronRow): string {
   return fallback;
 }
 
-interface CronEntryContentInput {
-  stdout: string | null;
-  stderr: string | null;
-  status: string;
-  durationMs: number;
-}
-
-function formatCronEntryContent({
-  stdout,
-  stderr,
-  status,
-  durationMs,
-}: CronEntryContentInput): string {
-  const parts: string[] = [];
-  if (stdout) parts.push(stdout);
-  if (stderr) parts.push(`--- stderr ---\n${stderr}`);
-  if (!stdout && !stderr) parts.push('(empty response)');
-  parts.push(`\n[${status} in ${durationMs}ms]`);
-  return parts.join('\n');
-}
-
-function getOrCreateCronThread(cronJob: CronRow): ThreadRow | null {
-  const project = findProjectForCron(cronJob);
-  if (!project) return null;
-
-  const sourceId = String(cronJob.id);
-  let thread = stmts.getThreadBySource.get(project.id, 'cron', sourceId) as ThreadRow | undefined;
-  if (!thread) {
-    const threadId = uuidv4();
-    stmts.createThread.run(threadId, project.id, cronJob.name, 'cron', sourceId);
-    thread = stmts.getThread.get(threadId) as ThreadRow | undefined;
-    console.log(`[Cron] Created thread "${cronJob.name}" for cron ${cronJob.id}`);
-  }
-  return thread ?? null;
-}
-
 interface CronRunResult {
   id: number | bigint;
   status: 'success' | 'error';
@@ -376,6 +338,25 @@ export function formatCronErrorResult(
     return `ERROR: ${message}`;
   }
   return `ERROR: ${message}\n\n--- Partial output ---\n${partial}`;
+}
+
+/**
+ * Build the `cron_logs.result` text for a failed run. Unlike the cron row's
+ * `last_result` summary, the log keeps both streams in full so Settings →
+ * View log shows what the engine printed before it failed.
+ */
+export function formatCronErrorLog(
+  errorMsg: string,
+  stdout: string | null | undefined,
+  stderr: string | null | undefined,
+): string {
+  const message = (errorMsg || 'Unknown error').trim() || 'Unknown error';
+  const parts = [`ERROR: ${message}`];
+  const out = (stdout || '').trim();
+  const err = (stderr || '').trim();
+  if (out) parts.push(`--- stdout ---\n${out}`);
+  if (err) parts.push(`--- stderr ---\n${err}`);
+  return parts.join('\n\n');
 }
 
 /**
@@ -423,8 +404,6 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     typeof cronJob.timeout_ms === 'number' && cronJob.timeout_ms > 0
       ? cronJob.timeout_ms
       : config.defaultTimeoutMs;
-
-  const thread = getOrCreateCronThread(cronJob);
 
   // Per-cron model override; null means "use the engine default". Resolved
   // once here so both the CLI invocation and the session record share the
@@ -531,42 +510,6 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     stmts.updateCronLog.run(result, 'success', durationMs, logId);
     console.log(`[Cron] "${cronJob.name}" completed successfully (${durationMs}ms)`);
 
-    if (thread) {
-      try {
-        const entryId = uuidv4();
-        const content = formatCronEntryContent({
-          stdout: detailed.stdout,
-          stderr: detailed.stderr,
-          status: 'success',
-          durationMs,
-        });
-        stmts.createThreadEntry.run(entryId, thread.id, content);
-        const entry = stmts.getThreadEntry.get(entryId) as ThreadEntryRow | undefined;
-        if (broadcastFn) {
-          broadcastFn({
-            type: 'thread_entry_created',
-            threadId: thread.id,
-            projectId: thread.project_id,
-            threadName: thread.name,
-            threadType: thread.type,
-            ownerUserId: cronJob.owner_user_id ?? null,
-            cronShared: Boolean(cronJob.shared),
-            entry,
-            // When the cron has opted out of "ran" notifications, suppress
-            // the mobile push that `handleBroadcastForPush` would otherwise
-            // dispatch from this broadcast. The UI still receives the event
-            // and updates the thread view in real time.
-            suppressPush: !cronJob.notify_on_run,
-          });
-        }
-      } catch (err) {
-        console.error(
-          `[Cron] Failed to add thread entry for "${cronJob.name}":`,
-          (err as Error).message,
-        );
-      }
-    }
-
     try {
       let session = stmts.getSessionByCronId.get(cronJob.id) as SessionRow | undefined;
       if (!session) {
@@ -581,7 +524,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         setSessionOwner(sessionId, cronOwnerId);
         stmts.updateSessionCronId.run(cronJob.id, sessionId);
         // Scheduled tasks are consult-only: the cron session is a read-only
-        // log/Q&A thread, never a build/ship surface. Tagging it `consult`
+        // log/Q&A session, never a build/ship surface. Tagging it `consult`
         // keeps any follow-up interaction in consult behavior (no code edits,
         // no Finalize) and surfaces the consult badge in the sidebar.
         stmts.updateSessionMode.run('consult', sessionId);
@@ -609,7 +552,6 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
           sessionId: session!.id,
           cronId: cronJob.id,
           cronName: cronJob.name,
-          threadId: thread?.id || null,
         });
       }
     } catch (err) {
@@ -647,43 +589,13 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     const durationMs = Date.now() - startTime;
     const cronResult = formatCronErrorResult(errorMsg, typedErr.stdout, typedErr.stderr);
     stmts.updateCronResult.run(cronResult, cronJob.id);
-    stmts.updateCronLog.run(errorMsg, 'error', durationMs, logId);
+    stmts.updateCronLog.run(
+      formatCronErrorLog(errorMsg, typedErr.stdout, typedErr.stderr),
+      'error',
+      durationMs,
+      logId,
+    );
     console.error(`[Cron] "${cronJob.name}" failed:`, errorMsg);
-
-    if (thread) {
-      try {
-        const entryId = uuidv4();
-        const content = formatCronEntryContent({
-          stdout: typedErr.stdout || null,
-          stderr: typedErr.stderr || errorMsg,
-          status: 'error',
-          durationMs,
-        });
-        stmts.createThreadEntry.run(entryId, thread.id, content);
-        const entry = stmts.getThreadEntry.get(entryId) as ThreadEntryRow | undefined;
-        if (broadcastFn) {
-          broadcastFn({
-            type: 'thread_entry_created',
-            threadId: thread.id,
-            projectId: thread.project_id,
-            threadName: thread.name,
-            threadType: thread.type,
-            ownerUserId: cronJob.owner_user_id ?? null,
-            cronShared: Boolean(cronJob.shared),
-            entry,
-            // See success-path comment — honor per-cron notify_on_run on the
-            // error path too, so a silenced cron doesn't suddenly start
-            // pushing just because it happened to fail.
-            suppressPush: !cronJob.notify_on_run,
-          });
-        }
-      } catch (threadErr) {
-        console.error(
-          `[Cron] Failed to add error thread entry for "${cronJob.name}":`,
-          (threadErr as Error).message,
-        );
-      }
-    }
 
     broadcastCronFinished(cronJob, findProjectForCron(cronJob)?.id ?? null, {
       logId,

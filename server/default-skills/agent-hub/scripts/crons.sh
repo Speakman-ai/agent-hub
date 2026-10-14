@@ -8,7 +8,6 @@
 #   delete <cronId>              delete a cron
 #   run    <cronId>              trigger a run now
 #   logs   <cronId>              execution logs
-#   thread <cronId>              persistent thread log
 
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,11 +46,6 @@ case "$cmd" in
     [[ -n "$id" ]] || usage_die "usage: crons.sh logs <cronId>"
     hub_api GET "/api/crons/$id/logs"
     ;;
-  thread)
-    id="${1:-}"
-    [[ -n "$id" ]] || usage_die "usage: crons.sh thread <cronId>"
-    hub_api GET "/api/crons/$id/thread"
-    ;;
   help|-h|--help|'')
     cat <<EOF
 usage: crons.sh <subcommand> [args]
@@ -61,7 +55,6 @@ usage: crons.sh <subcommand> [args]
   delete <cronId>
   run    <cronId>
   logs   <cronId>
-  thread <cronId>
 EOF
     ;;
   *)

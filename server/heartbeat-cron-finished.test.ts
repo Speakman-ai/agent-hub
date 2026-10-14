@@ -101,4 +101,37 @@ describe('runCronJob cron_finished broadcast', () => {
       expect.objectContaining({ status: 'error', preview: 'engine exploded', cronShared: false }),
     ]);
   });
+
+  it('stores stdout and stderr in the cron log when a run fails', async () => {
+    runOneShot.mockRejectedValue(
+      Object.assign(new Error('Timed out after 5 minutes'), {
+        stdout: 'checked 3 PRs',
+        stderr: 'rate limited',
+      }),
+    );
+    const cron = makeCron(1);
+    const result = await runCronJob(cron);
+    expect(result.status).toBe('error');
+    const [log] = getStmts().getCronLogs.all(cron.id, 1) as { result: string; status: string }[];
+    expect(log.status).toBe('error');
+    expect(log.result).toBe(
+      'ERROR: Timed out after 5 minutes\n\n--- stdout ---\nchecked 3 PRs\n\n--- stderr ---\nrate limited',
+    );
+  });
+
+  it('writes no thread or thread_entry_created broadcast for success or error runs', async () => {
+    runOneShot.mockResolvedValueOnce({
+      detailed: { stdout: 'ok', stderr: '' },
+      engine: 'claude-code',
+      model: null,
+      output: 'ok',
+      failovers: [],
+    });
+    const cron = makeCron(1);
+    await runCronJob(cron);
+    runOneShot.mockRejectedValueOnce(new Error('boom'));
+    await runCronJob(cron);
+    expect(getStmts().getThreadBySource.get('cron-proj', 'cron', String(cron.id))).toBeUndefined();
+    expect(broadcast.mock.calls.map((c) => c[0].type)).not.toContain('thread_entry_created');
+  });
 });
