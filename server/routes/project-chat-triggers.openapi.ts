@@ -46,6 +46,18 @@ export const ChatTriggerFilterSchema = z
   })
   .strict();
 
+/** Accepts `AAAA` or `spaces/AAAA`; stored and returned as `AAAA`. */
+export const GoogleChatSpaceIdSchema = z
+  .string()
+  .trim()
+  .transform((v) => v.replace(/^spaces\//, ''))
+  .pipe(z.string().regex(/^[A-Za-z0-9_-]{1,128}$/, 'invalid Google Chat space id'))
+  .openapi({
+    type: 'string',
+    description:
+      'Google Chat space to also post into, as the trigger creator. `AAAA` or `spaces/AAAA`. Needs the creator to have connected Google with Chat send access.',
+  });
+
 const TriggerChannelComponent = z
   .object({
     id: z.string(),
@@ -69,6 +81,13 @@ export const ChatTriggerComponent = registerComponent(
     channel: TriggerChannelComponent.nullable().openapi({
       description:
         'Null when the caller is not a member of the destination channel, public or private.',
+    }),
+    googleChat: z.boolean().openapi({
+      description: 'True when the trigger also posts to a Google Chat space.',
+    }),
+    googleChatSpaceId: z.string().nullable().openapi({
+      description:
+        "The Google Chat space id. Shown to the trigger's creator only (the space is theirs); null for everyone else.",
     }),
     enabled: z.boolean(),
     createdByUserId: z.string().nullable(),
@@ -99,6 +118,7 @@ export const CreateChatTriggerRequestSchema = z
       .strict()
       .optional()
       .openapi({ description: 'Create a trigger channel for the project and route into it.' }),
+    googleChatSpaceId: GoogleChatSpaceIdSchema.optional(),
   })
   .strict()
   .refine((v) => Boolean(v.channelId) !== Boolean(v.newChannel), {
@@ -112,6 +132,9 @@ export const UpdateChatTriggerRequestSchema = z
     filter: ChatTriggerFilterSchema.nullable().optional(),
     enabled: z.boolean().optional(),
     channelId: z.string().min(1).max(200).optional(),
+    googleChatSpaceId: z.union([GoogleChatSpaceIdSchema, z.null()]).optional().openapi({
+      description: 'Google Chat space to also post into; null removes it. Creator-only.',
+    }),
   })
   .strict()
   .refine((v) => Object.values(v).some((x) => x !== undefined), {

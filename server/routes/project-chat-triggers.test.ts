@@ -2,13 +2,24 @@
  * `/api/projects/:projectId/chat-triggers`: create (existing channel or a new
  * trigger channel), list, update and delete, plus destination and manage rules.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import request from 'supertest';
 import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
 import path from 'path';
 import type { Project, RouteDeps } from '../types.js';
+import { CHAT_MESSAGES_CREATE_SCOPE } from '../google-scopes.js';
+
+/** Scopes each user's Google connection grants; absent = not connected. */
+const googleScopes = new Map<string, string[]>();
+vi.mock('../google-connections-store.js', async (orig) => ({
+  ...(await orig<typeof import('../google-connections-store.js')>()),
+  getGoogleConnectionStatus: (userId: string) => ({
+    connected: googleScopes.has(userId),
+    grantedScopes: googleScopes.get(userId) ?? [],
+  }),
+}));
 
 const { initDb } = await import('../db.js');
 const { initOrgsDb, setOrgsDbPathForTests, createOrg, setActiveOrgId } = await import('../orgs.js');
@@ -44,6 +55,7 @@ function as(userId: string): Express {
   app.use(
     createRoutes({
       stmts: {},
+      config: { googleOAuth: { clientId: 'cid', clientSecret: 'secret' } },
       findProject: (id: string) => PROJECTS.find((p) => p.id === id) ?? null,
       broadcast: (d: Record<string, unknown>) => broadcasts.push(d),
     } as unknown as RouteDeps),
@@ -69,6 +81,7 @@ beforeEach(() => {
   createMembership(bob, 'acme', 'User');
   createMembership(admin, 'acme', 'Admin');
   broadcasts = [];
+  googleScopes.clear();
 });
 
 const base = '/api/projects/web/chat-triggers';
@@ -344,5 +357,80 @@ describe('project chat triggers routes', () => {
     await request(as(alice))
       .delete(`/api/projects/secret/chat-triggers/${created.body.trigger.id}`)
       .expect(404);
+  });
+
+  describe('Google Chat destination', () => {
+    async function channelFor(userId: string): Promise<string> {
+      const res = await request(as(userId))
+        .post(base)
+        .send({ event: 'pr_opened', newChannel: { name: `ch-${userId}` } })
+        .expect(201);
+      return res.body.trigger.channelId as string;
+    }
+
+    it('needs the caller to have Google Chat send access', async () => {
+      const channelId = await channelFor(alice);
+      const res = await request(as(alice))
+        .post(base)
+        .send({ event: 'pr_merged', channelId, googleChatSpaceId: 'AAAA' })
+        .expect(400);
+      expect(res.body.code).toBe('google_chat_send_access_required');
+    });
+
+    it('stores the space, normalised, and shows it to the creator only', async () => {
+      googleScopes.set(alice, [CHAT_MESSAGES_CREATE_SCOPE]);
+      const channelId = await channelFor(alice);
+      const res = await request(as(alice))
+        .post(base)
+        .send({ event: 'pr_merged', channelId, googleChatSpaceId: 'spaces/AAAA' })
+        .expect(201);
+      expect(res.body.trigger).toMatchObject({ googleChat: true, googleChatSpaceId: 'AAAA' });
+
+      const seenByBob = (await request(as(bob)).get(base).expect(200)).body.triggers.find(
+        (t: { id: string }) => t.id === res.body.trigger.id,
+      );
+      expect(seenByBob).toMatchObject({ googleChat: true, googleChatSpaceId: null });
+    });
+
+    it('rejects a malformed space id', async () => {
+      googleScopes.set(alice, [CHAT_MESSAGES_CREATE_SCOPE]);
+      const channelId = await channelFor(alice);
+      const res = await request(as(alice))
+        .post(base)
+        .send({ event: 'pr_merged', channelId, googleChatSpaceId: 'spaces/../x' })
+        .expect(400);
+      expect(res.body.code).toBe('invalid_request');
+    });
+
+    it('only the creator may change it, and clearing it never needs Google', async () => {
+      googleScopes.set(alice, [CHAT_MESSAGES_CREATE_SCOPE]);
+      googleScopes.set(admin, [CHAT_MESSAGES_CREATE_SCOPE]);
+      const channelId = await channelFor(alice);
+      const created = await request(as(alice))
+        .post(base)
+        .send({ event: 'pr_merged', channelId, googleChatSpaceId: 'AAAA' })
+        .expect(201);
+      const url = `${base}/${created.body.trigger.id}`;
+
+      const hijack = await request(as(admin))
+        .patch(url)
+        .send({ googleChatSpaceId: 'EVIL' })
+        .expect(403);
+      expect(hijack.body.code).toBe('creator_only');
+
+      // Clearing never needs Google, e.g. after the creator disconnected it.
+      googleScopes.delete(alice);
+      const cleared = await request(as(alice))
+        .patch(url)
+        .send({ googleChatSpaceId: null })
+        .expect(200);
+      expect(cleared.body.trigger).toMatchObject({ googleChat: false, googleChatSpaceId: null });
+
+      const blocked = await request(as(alice))
+        .patch(url)
+        .send({ googleChatSpaceId: 'BBBB' })
+        .expect(400);
+      expect(blocked.body.code).toBe('google_chat_send_access_required');
+    });
   });
 });

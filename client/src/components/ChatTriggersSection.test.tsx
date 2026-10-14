@@ -8,6 +8,7 @@ import { api } from '../utils/api';
     chatTriggers: { list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn() },
     hubChat: { channels: vi.fn() },
     getEpics: vi.fn(),
+    listGoogleChatSpaces: vi.fn(),
   },
 }));
 
@@ -16,6 +17,7 @@ const create = vi.mocked(api.chatTriggers.create);
 const update = vi.mocked(api.chatTriggers.update);
 const channels = vi.mocked(api.hubChat.channels);
 const getEpics = vi.mocked(api.getEpics);
+const googleSpaces = vi.mocked(api.listGoogleChatSpaces);
 
 const trigger = {
   id: 't1',
@@ -37,6 +39,7 @@ describe('ChatTriggersSection', () => {
       ],
     } as any);
     getEpics.mockResolvedValue([] as any);
+    googleSpaces.mockRejectedValue(new Error('Google account is not connected'));
   });
 
   it('offers the default activity channel for the first trigger', async () => {
@@ -80,6 +83,52 @@ describe('ChatTriggersSection', () => {
     expect(await screen.findByRole('button', { name: 'Enable trigger' })).toHaveAttribute(
       'aria-pressed',
       'false',
+    );
+  });
+});
+
+describe('ChatTriggersSection Google Chat destination', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    channels.mockResolvedValue({
+      channels: [{ id: 'c1', name: 'web-activity', kind: 'trigger' }],
+    } as any);
+    getEpics.mockResolvedValue([] as any);
+  });
+
+  it('is hidden when Google Chat is not connected', async () => {
+    googleSpaces.mockRejectedValue(new Error('not connected'));
+    list.mockResolvedValue({ triggers: [], defaultChannelName: 'web-activity' } as any);
+    render(<ChatTriggersSection projectId="web" />);
+    await screen.findByLabelText('Channel');
+    await waitFor(() => expect(googleSpaces).toHaveBeenCalled());
+    expect(screen.queryByLabelText('Google Chat space')).toBeNull();
+  });
+
+  it('sends the chosen space and shows it on the trigger', async () => {
+    googleSpaces.mockResolvedValue({
+      spaces: [
+        { id: 'AAAA', displayName: 'Eng', spaceType: 'SPACE' },
+        { id: 'BOT', displayName: 'Bot', spaceType: 'DIRECT_MESSAGE', singleUserBotDm: true },
+      ],
+    } as any);
+    list.mockResolvedValue({
+      triggers: [{ ...trigger, googleChat: true, googleChatSpaceId: 'AAAA' }],
+      defaultChannelName: 'web-activity',
+    } as any);
+    create.mockResolvedValue({ trigger } as any);
+    render(<ChatTriggersSection projectId="web" />);
+
+    expect(await screen.findByTestId('chat-trigger-google')).toHaveTextContent('Google Chat: Eng');
+    const select = await screen.findByLabelText('Google Chat space');
+    expect(screen.queryByRole('option', { name: 'Bot' })).toBeNull();
+    fireEvent.change(select, { target: { value: 'AAAA' } });
+    fireEvent.click(screen.getByRole('button', { name: /Add trigger/ }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(
+        'web',
+        expect.objectContaining({ channelId: 'c1', googleChatSpaceId: 'AAAA' }),
+      ),
     );
   });
 });

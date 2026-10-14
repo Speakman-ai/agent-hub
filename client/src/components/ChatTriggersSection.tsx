@@ -16,6 +16,35 @@ interface TriggerWire {
   channel: { id: string; name: string; kind: string; isPrivate: boolean; archived: boolean } | null;
   enabled: boolean;
   canManage: boolean;
+  googleChat?: boolean;
+  /** Set for the trigger's creator only. */
+  googleChatSpaceId?: string | null;
+}
+
+interface GoogleSpaceOption {
+  id: string;
+  label: string;
+}
+
+interface GoogleSpaceWire {
+  id?: string | null;
+  displayName?: string | null;
+  spaceType?: string | null;
+  participants?: string[] | null;
+  singleUserBotDm?: boolean;
+}
+
+/** Spaces a trigger can post into, labelled the way the Chat pane names them. */
+export function googleSpaceOptions(spaces: GoogleSpaceWire[] | undefined): GoogleSpaceOption[] {
+  return (spaces ?? [])
+    .filter((s): s is GoogleSpaceWire & { id: string } => !!s.id && !s.singleUserBotDm)
+    .map((s) => ({
+      id: s.id,
+      label:
+        s.displayName ||
+        (s.participants?.length ? s.participants.join(', ') : null) ||
+        (s.spaceType === 'DIRECT_MESSAGE' ? 'Direct message' : 'Unnamed space'),
+    }));
 }
 
 interface ChannelOption {
@@ -71,6 +100,8 @@ export default function ChatTriggersSection({
   const [defaultChannelName, setDefaultChannelName] = useState('');
   const [channels, setChannels] = useState<ChannelOption[]>([]);
   const [epics, setEpics] = useState<{ id: string; name: string }[]>([]);
+  const [googleSpaces, setGoogleSpaces] = useState<GoogleSpaceOption[]>([]);
+  const [googleSpaceId, setGoogleSpaceId] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -98,7 +129,7 @@ export default function ChatTriggersSection({
     setLoading(true);
     setError(null);
     try {
-      const [list, chans, epicList] = await Promise.all([
+      const [list, chans, epicList, gspaces] = await Promise.all([
         api.chatTriggers.list(pid) as Promise<{
           triggers: TriggerWire[];
           defaultChannelName: string;
@@ -107,6 +138,10 @@ export default function ChatTriggersSection({
           channels: [],
         })),
         (api.getEpics(pid) as Promise<unknown>).catch(() => []),
+        // Not connected, or no Chat access: the Google destination is hidden.
+        Promise.resolve()
+          .then(() => api.listGoogleChatSpaces() as Promise<{ spaces?: GoogleSpaceWire[] }>)
+          .catch(() => ({ spaces: [] as GoogleSpaceWire[] })),
       ]);
       if (!live()) return;
       setTriggers(list.triggers || []);
@@ -116,6 +151,7 @@ export default function ChatTriggersSection({
         ['channel', 'trigger', 'group'].includes(c.kind),
       );
       setChannels(usable);
+      setGoogleSpaces(googleSpaceOptions(gspaces?.spaces));
       // The first trigger offers the default #<project>-activity channel;
       // later ones default to the channel the last trigger used.
       const lastChannel = list.triggers?.[list.triggers.length - 1]?.channelId;
@@ -143,6 +179,8 @@ export default function ChatTriggersSection({
     setTriggers([]);
     setChannels([]);
     setEpics([]);
+    setGoogleSpaces([]);
+    setGoogleSpaceId('');
     // Filter selections name this project's columns, labels, epics and
     // agents; none of them carry over to another project.
     setColumns('');
@@ -163,6 +201,14 @@ export default function ChatTriggersSection({
   const uses = (f: keyof ChatTriggerFilter) => info.filters.includes(f);
   const epicNames = useMemo(() => new Map(epics.map((e) => [e.id, e.name])), [epics]);
   const agentNames = useMemo(() => new Map(agents.map((a) => [a.id, a.name || a.id])), [agents]);
+  const googleSpaceNames = useMemo(
+    () => new Map(googleSpaces.map((g) => [g.id, g.label])),
+    [googleSpaces],
+  );
+  const googleTarget = (t: TriggerWire) =>
+    t.googleChatSpaceId
+      ? `Google Chat: ${googleSpaceNames.get(t.googleChatSpaceId) ?? t.googleChatSpaceId}`
+      : 'Google Chat';
   const channelName = (t: TriggerWire) =>
     t.channel
       ? `#${t.channel.name}${t.channel.archived ? ' (archived)' : ''}`
@@ -195,6 +241,9 @@ export default function ChatTriggersSection({
       body.newChannel = { name };
     } else {
       body.channelId = destination;
+    }
+    if (googleSpaceId && googleSpaces.some((g) => g.id === googleSpaceId)) {
+      body.googleChatSpaceId = googleSpaceId;
     }
     const pid = projectId;
     setBusy('add');
@@ -285,6 +334,12 @@ export default function ChatTriggersSection({
                         {CHAT_TRIGGER_EVENT_INFO[t.event]?.label ?? t.event}
                         <span className="text-gray-500"> → </span>
                         <span className="text-gray-300">{channelName(t)}</span>
+                        {t.googleChat && (
+                          <span className="text-gray-400" data-testid="chat-trigger-google">
+                            {' + '}
+                            {googleTarget(t)}
+                          </span>
+                        )}
                       </div>
                       {summary && (
                         <div className="truncate text-[11px] text-gray-500">{summary}</div>
@@ -375,6 +430,29 @@ export default function ChatTriggersSection({
                     onChange={(e) => setNewName(e.target.value)}
                   />
                 </div>
+              </label>
+            )}
+            {googleSpaces.length > 0 && (
+              <label className="text-xs text-gray-400 sm:col-span-2">
+                Also post to Google Chat
+                <select
+                  aria-label="Google Chat space"
+                  className={INPUT}
+                  value={googleSpaceId}
+                  onChange={(e) => setGoogleSpaceId(e.target.value)}
+                >
+                  <option value="">Agent Hub only</option>
+                  {googleSpaces.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.label}
+                    </option>
+                  ))}
+                </select>
+                {googleSpaceId && (
+                  <span className="mt-0.5 block text-[11px] text-gray-500">
+                    Posts as you, through your Google account.
+                  </span>
+                )}
               </label>
             )}
             <p className="text-[11px] text-gray-500 sm:col-span-2">{info.description}</p>

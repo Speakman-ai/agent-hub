@@ -10,8 +10,11 @@
  *     to, so nobody can route into a channel they cannot read. Listing shows a
  *     trigger's destination only to its members.
  *   - Anyone who can view the project may list and create. Only the creator
- *     may change a trigger's event, filter or channel; the creator or an org
- *     Owner/Admin may enable, disable or delete it.
+ *     may change a trigger's event, filter, channel or Google Chat space; the
+ *     creator or an org Owner/Admin may enable, disable or delete it.
+ *   - A Google Chat space posts through the creator's own Google account, so
+ *     setting one needs the caller's Google connection with Chat send access,
+ *     and the space id is shown to the creator only.
  */
 
 import { Router, type Request, type Response } from 'express';
@@ -19,6 +22,8 @@ import type { z } from '../openapi/registry.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
 import { getMembershipRole } from '../memberships-store.js';
+import { getGoogleConnectionStatus } from '../google-connections-store.js';
+import { hasChatMessagesCreateScope } from '../google-scopes.js';
 import { getActiveOrgId } from '../orgs.js';
 import { isHubSystemProject } from '../../shared/utils/hub.js';
 import { getDb } from '../db.js';
@@ -171,6 +176,25 @@ export default function createProjectChatTriggerRoutes(deps: RouteDeps): Router 
     return channel;
   }
 
+  /** Whether the caller can post to Google Chat; writes 400 and returns false if not. */
+  function googleChatSendable(caller: Caller, res: Response): boolean {
+    const status = getGoogleConnectionStatus(caller.userId);
+    if (
+      deps.config?.googleOAuth?.clientId &&
+      status.connected &&
+      hasChatMessagesCreateScope(status.grantedScopes)
+    ) {
+      return true;
+    }
+    bad(
+      res,
+      400,
+      'Connect Google with Chat send access (Settings > Account > Google) to post triggers to Google Chat',
+      'google_chat_send_access_required',
+    );
+    return false;
+  }
+
   function shape(caller: Caller, row: ChatTriggerRow) {
     const channel = getChannel(row.channel_id);
     // Destination details are for its members only, public or not: a
@@ -192,6 +216,8 @@ export default function createProjectChatTriggerRoutes(deps: RouteDeps): Router 
             archived: Boolean(channel.archived_at),
           }
         : null,
+      googleChat: Boolean(row.google_chat_space_id),
+      googleChatSpaceId: row.created_by === caller.userId ? row.google_chat_space_id : null,
       enabled: row.enabled === 1,
       createdByUserId: row.created_by,
       createdAt: row.created_at,
@@ -220,6 +246,7 @@ export default function createProjectChatTriggerRoutes(deps: RouteDeps): Router 
     if (!body) return;
     const err = filterError(project, body.event, body.filter);
     if (err) return bad(res, 400, err, 'invalid_filter');
+    if (body.googleChatSpaceId && !googleChatSendable(caller, res)) return;
 
     let channel: HubChatChannelRow | null;
     if (body.newChannel) {
@@ -250,6 +277,7 @@ export default function createProjectChatTriggerRoutes(deps: RouteDeps): Router 
       event: body.event,
       channelId: channel.id,
       filter: body.filter,
+      googleChatSpaceId: body.googleChatSpaceId ?? null,
       enabled: body.enabled,
       createdBy: caller.userId,
     });
@@ -280,7 +308,10 @@ export default function createProjectChatTriggerRoutes(deps: RouteDeps): Router 
       // change what it routes or where would let them aim the owner's private
       // work at a channel of their choosing, so only the creator may.
       const retargets =
-        body.event !== undefined || body.channelId !== undefined || body.filter !== undefined;
+        body.event !== undefined ||
+        body.channelId !== undefined ||
+        body.filter !== undefined ||
+        body.googleChatSpaceId !== undefined;
       if (retargets && row.created_by !== caller.userId) {
         return bad(
           res,
@@ -301,10 +332,18 @@ export default function createProjectChatTriggerRoutes(deps: RouteDeps): Router 
       if (body.channelId !== undefined && body.channelId !== row.channel_id) {
         if (!destination(caller, body.channelId, res)) return;
       }
+      if (
+        body.googleChatSpaceId &&
+        body.googleChatSpaceId !== row.google_chat_space_id &&
+        !googleChatSendable(caller, res)
+      ) {
+        return;
+      }
       const updated = updateTrigger(row.id, {
         event: body.event,
         channelId: body.channelId,
         filter: body.filter,
+        googleChatSpaceId: body.googleChatSpaceId,
         enabled: body.enabled,
       });
       if (!updated) return bad(res, 404, 'Trigger not found', 'trigger_not_found');

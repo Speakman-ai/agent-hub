@@ -11,6 +11,9 @@
  *   2. Every enabled trigger for that project + event whose filter matches
  *      posts one `authorKind: 'trigger'` message into its channel, with a
  *      structured card in `payload`.
+ *   3. A trigger with a Google Chat space also posts the card there, as its
+ *      creator, after the Agent Hub message commits (`chat-trigger-google.ts`).
+ *      That post is fire-and-forget and never affects the Agent Hub one.
  *
  * Two rules keep the router honest, and both mean it never guesses:
  *
@@ -41,6 +44,7 @@ import { isLocalBundledServer } from './auth.js';
 import { findProject } from './project-model.js';
 import { canViewProject } from './project-visibility.js';
 import { buildRefViewer } from './hub-chat-refs.js';
+import { sendTriggerToGoogleChat, type GoogleChatTriggerSend } from './chat-trigger-google.js';
 import {
   listEnabledTriggers,
   parseTriggerFilter,
@@ -573,6 +577,29 @@ function maybePrune(now: number, log: (msg: string) => void): void {
   }
 }
 
+/**
+ * Fire-and-forget: the Agent Hub message is already committed and announced,
+ * so nothing Google does (throwing, rejecting, hanging) can affect it.
+ */
+function mirrorToGoogleChat(
+  send: (input: GoogleChatTriggerSend) => Promise<void>,
+  input: GoogleChatTriggerSend,
+  triggerId: string,
+  log: (msg: string) => void,
+): void {
+  const fail = (err: unknown) =>
+    log(
+      `[chat-triggers] trigger ${triggerId} Google Chat post failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  try {
+    void send(input).catch(fail);
+  } catch (err) {
+    fail(err);
+  }
+}
+
 export interface ChatTriggerRouterDeps {
   broadcast?: BroadcastFn;
   lookups?: TriggerLookups;
@@ -585,6 +612,11 @@ export interface ChatTriggerRouterDeps {
    */
   creatorCanViewProject?: (userId: string, orgId: string, projectId: string) => boolean;
   post?: typeof appendMessage;
+  /**
+   * Posts to a trigger's Google Chat space. Called only after the Agent Hub
+   * message commits; its promise is not awaited and a rejection is logged.
+   */
+  sendToGoogleChat?: (send: GoogleChatTriggerSend) => Promise<void>;
   now?: () => number;
   log?: (msg: string) => void;
 }
@@ -643,6 +675,7 @@ export function routeBroadcastToChatTriggers(
       if (event.privateToUserId && !isMember(channel.id, event.privateToUserId)) continue;
       // The occurrence is recorded in the same transaction as its message:
       // a failed write records nothing, so the next broadcast retries it.
+      const card = buildTriggerCard(trigger, event);
       const message = postOccurrenceOnce(trigger.id, event.dedupeKey, () =>
         post({
           channelId: channel.id,
@@ -653,13 +686,26 @@ export function routeBroadcastToChatTriggers(
             targetId: r.targetId,
             projectId: event.projectId,
           })),
-          payload: buildTriggerCard(trigger, event),
+          payload: card,
         }),
       );
       if (!message) continue;
       posted.push(message);
       // Only after commit: a rolled-back message is never announced.
       broadcastHubChatMessage(deps.broadcast, HUB_CHAT_MESSAGE_EVENT, channel, message);
+      if (trigger.google_chat_space_id) {
+        mirrorToGoogleChat(
+          deps.sendToGoogleChat ?? sendTriggerToGoogleChat,
+          {
+            userId: trigger.created_by,
+            spaceId: trigger.google_chat_space_id,
+            card,
+            messageId: message.id,
+          },
+          trigger.id,
+          log,
+        );
+      }
     } catch (err) {
       log(`[chat-triggers] trigger ${trigger.id} failed: ${(err as Error).message}`);
     }

@@ -13070,6 +13070,13 @@ components:
             - isPrivate
             - archived
           description: Null when the caller is not a member of the destination channel, public or private.
+        googleChat:
+          type: boolean
+          description: True when the trigger also posts to a Google Chat space.
+        googleChatSpaceId:
+          type: string
+          nullable: true
+          description: The Google Chat space id. Shown to the trigger's creator only (the space is theirs); null for everyone else.
         enabled:
           type: boolean
         createdByUserId:
@@ -13089,6 +13096,8 @@ components:
         - filter
         - channelId
         - channel
+        - googleChat
+        - googleChatSpaceId
         - enabled
         - createdByUserId
         - createdAt
@@ -47032,6 +47041,9 @@ paths:
                     - name
                   additionalProperties: false
                   description: Create a trigger channel for the project and route into it.
+                googleChatSpaceId:
+                  type: string
+                  description: Google Chat space to also post into, as the trigger creator. `AAAA` or `spaces/AAAA`. Needs the creator to have connected Google with Chat send access.
               required:
                 - event
               additionalProperties: false
@@ -47169,6 +47181,12 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 200
+                googleChatSpaceId:
+                  anyOf:
+                    - type: string
+                      description: Google Chat space to also post into, as the trigger creator. `AAAA` or `spaces/AAAA`. Needs the creator to have connected Google with Chat send access.
+                    - nullable: true
+                  description: Google Chat space to also post into; null removes it. Creator-only.
               additionalProperties: false
       responses:
         "200":

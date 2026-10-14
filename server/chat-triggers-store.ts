@@ -13,6 +13,8 @@ export interface ChatTriggerRow {
   event: string;
   filter_json: string | null;
   channel_id: string;
+  /** Google Chat space id (`AAAA`, not `spaces/AAAA`), posted as `created_by`. */
+  google_chat_space_id: string | null;
   enabled: number;
   created_by: string | null;
   created_at: string;
@@ -69,6 +71,7 @@ export function createTrigger(input: {
   event: ChatTriggerEvent;
   channelId: string;
   filter?: ChatTriggerFilter | null;
+  googleChatSpaceId?: string | null;
   enabled?: boolean;
   createdBy: string | null;
 }): ChatTriggerRow {
@@ -76,8 +79,8 @@ export function createTrigger(input: {
   getDb()
     .prepare(
       `INSERT INTO project_chat_triggers
-         (id, project_id, event, filter_json, channel_id, enabled, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (id, project_id, event, filter_json, channel_id, google_chat_space_id, enabled, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       id,
@@ -85,6 +88,7 @@ export function createTrigger(input: {
       input.event,
       filterJson(input.filter),
       input.channelId,
+      input.googleChatSpaceId || null,
       input.enabled === false ? 0 : 1,
       input.createdBy,
     );
@@ -97,6 +101,8 @@ export function updateTrigger(
     event?: ChatTriggerEvent;
     channelId?: string;
     filter?: ChatTriggerFilter | null;
+    /** null clears the Google Chat destination. */
+    googleChatSpaceId?: string | null;
     enabled?: boolean;
   },
 ): ChatTriggerRow | null {
@@ -113,6 +119,10 @@ export function updateTrigger(
   if (patch.filter !== undefined) {
     sets.push('filter_json = ?');
     args.push(filterJson(patch.filter));
+  }
+  if (patch.googleChatSpaceId !== undefined) {
+    sets.push('google_chat_space_id = ?');
+    args.push(patch.googleChatSpaceId || null);
   }
   if (patch.enabled !== undefined) {
     sets.push('enabled = ?');

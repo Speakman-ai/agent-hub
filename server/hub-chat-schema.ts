@@ -140,6 +140,9 @@ export const HUB_CHAT_SCHEMA = `
  */
 export const HUB_CHAT_COLUMN_MIGRATIONS: ReadonlyArray<string> = [
   'ALTER TABLE hub_chat_channels ADD COLUMN session_id TEXT',
+  // Optional second destination: a Google Chat space the trigger creator
+  // posts into through their own Google connection.
+  'ALTER TABLE project_chat_triggers ADD COLUMN google_chat_space_id TEXT',
 ];
 
 export const HUB_CHAT_POST_MIGRATION_SCHEMA = `
