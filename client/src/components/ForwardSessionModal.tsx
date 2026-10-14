@@ -22,7 +22,7 @@ import {
 export function filterForwardTargets(agents: any, sourceAgent: any) {
   if (!Array.isArray(agents)) return [];
   const active = agents.filter((a: any) => a && a.active !== false);
-  // No source agent (e.g. forwarding a standalone thread entry): there is no
+  // No source agent (a source-less forward): there is no
   // "self" to pin, so just list every active agent grouped by project then
   // name for a stable, scannable order.
   if (!sourceAgent) {
@@ -51,10 +51,10 @@ export default function ForwardSessionModal({
   // Engine → valid/default model maps (from GET /api/config/models). Optional:
   // when absent the model picker is hidden and the fork inherits the target
   // agent's own model, preserving the original behavior for callers (e.g. the
-  // thread-entry / design forward) that don't wire it up.
+  // design forward) that don't wire it up.
   modelConfig = null,
   // Generic-forward overrides. Defaults keep the session-forward behavior so
-  // existing callers are unaffected; the thread-entry forward passes its own
+  // existing callers are unaffected; a source-less forward passes its own
   // copy and a `ready` gate (no source session to key off).
   title = 'Forward session',
   sourceLabel,
@@ -176,7 +176,7 @@ export default function ForwardSessionModal({
 
   const hasCandidates = candidates.length > 0;
   // Default readiness mirrors the original "must have a source session" gate;
-  // callers without a session (thread-entry forward) pass `ready` explicitly.
+  // callers without a session pass `ready` explicitly.
   const submitReady = ready !== undefined ? !!ready : !!sessionId;
   const headerSourceLabel =
     sourceLabel !== undefined ? sourceLabel : sourceAgent?.name ? `from ${sourceAgent.name}` : null;

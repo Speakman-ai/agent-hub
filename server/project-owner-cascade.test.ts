@@ -42,7 +42,6 @@ function makeStmts(
     deleteWikiPagesByProject: noop,
     deleteBoardsByProject: noop,
     deleteWorkflowsByProject: noop,
-    deleteThreadsByProject: noop,
     deleteRoomsByProject: noop,
     deleteCronsByProject: noop,
     deleteSessionsByAgent: noop,

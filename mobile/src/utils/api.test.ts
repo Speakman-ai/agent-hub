@@ -37,13 +37,7 @@ function lastCall() {
   expect(mockFetch).toHaveBeenCalledTimes(1);
   return mockFetch.mock.calls[0];
 }
-describe('api threads helpers — URL + method parity with web client', () => {
-  it('getThreads(projectId) without filter → GET /projects/:id/threads', async () => {
-    await api.getThreads('agent-hub');
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/projects/agent-hub/threads');
-    expect(init?.method).toBeUndefined();
-  });
+describe('api support ticket helpers', () => {
   it('runSupportTicketInvestigation sends the selected engine and model', async () => {
     await api.runSupportTicketInvestigation('agent-hub', 'tkt-model', {
       engine: 'codex-cli',
@@ -64,28 +58,6 @@ describe('api threads helpers — URL + method parity with web client', () => {
     );
     expect(init?.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({});
-  });
-  it('getThreads(projectId, type) appends the type query', async () => {
-    await api.getThreads('agent-hub', 'cron');
-    const [url] = lastCall();
-    expect(url).toBe('https://example.test/api/projects/agent-hub/threads?type=cron');
-  });
-  it('getThreads URL-encodes the type parameter', async () => {
-    await api.getThreads('agent-hub', 'heart beat');
-    const [url] = lastCall();
-    expect(url).toBe('https://example.test/api/projects/agent-hub/threads?type=heart%20beat');
-  });
-  it('getThread(threadId) → GET /threads/:id', async () => {
-    await api.getThread('thread-xyz');
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/threads/thread-xyz');
-    expect(init?.method).toBeUndefined();
-  });
-  it('getThreadEntries(threadId) → GET /threads/:id/entries', async () => {
-    await api.getThreadEntries('thread-xyz');
-    const [url, init] = lastCall();
-    expect(url).toBe('https://example.test/api/threads/thread-xyz/entries');
-    expect(init?.method).toBeUndefined();
   });
 });
 
@@ -521,7 +493,7 @@ describe('api plugin key helpers', () => {
 });
 describe('api fetchJSON — request headers + error handling', () => {
   it('attaches the API key and JSON content-type to every call', async () => {
-    await api.getThreads('agent-hub');
+    await api.getAgents();
     const [, init] = lastCall();
     expect(init.headers).toMatchObject({
       'Content-Type': 'application/json',
@@ -534,7 +506,7 @@ describe('api fetchJSON — request headers + error handling', () => {
       status: 500,
       json: async () => ({ error: 'boom' }),
     });
-    await expect(api.getThreads('agent-hub')).rejects.toThrow(/500: boom/);
+    await expect(api.getAgents()).rejects.toThrow(/500: boom/);
   });
 });
 describe('api session summarization — URL + method parity with web client', () => {

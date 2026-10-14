@@ -10,7 +10,6 @@ import {
   GitFork,
   Radio,
   ExternalLink,
-  List,
   ListOrdered,
   Terminal,
   Play,
@@ -133,7 +132,6 @@ export default function Sidebar({
   onReorderProjects,
   cronSessions = [],
   reviewerProjectId,
-  threadsProjectId,
   supportProjectId,
   /** When true, the per-user Google account is connected, so the global
    *  Calendar nav entry (under Dashboard) is shown. Calendar is NOT a
@@ -153,7 +151,6 @@ export default function Sidebar({
   onOpenPrDetail,
   notesProjectId,
   workflowBadgeByProject = {},
-  unreadThreadCounts = {},
   unreadTicketCounts = {},
   openPullCounts = {},
   /** Per-project open-severity counts: { [projectId]: { critical, high, … } }. */
@@ -1052,24 +1049,6 @@ export default function Sidebar({
                                   )}
                                 </button>
                               )}
-                              <button
-                                type="button"
-                                onClick={() => onNavigate('threads', project.id)}
-                                className={projectMenuLinkClass(
-                                  currentView.startsWith('threads') &&
-                                    threadsProjectId === project.id,
-                                )}
-                              >
-                                <List size={14} className="flex-shrink-0" />
-                                <span className="truncate">Threads</span>
-                                {unreadThreadCounts[project.id] > 0 && (
-                                  <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white px-1">
-                                    {unreadThreadCounts[project.id] > 99
-                                      ? '99+'
-                                      : unreadThreadCounts[project.id]}
-                                  </span>
-                                )}
-                              </button>
                               {showLogs && (
                                 <button
                                   type="button"

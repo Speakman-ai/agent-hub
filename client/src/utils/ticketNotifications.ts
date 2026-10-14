@@ -34,20 +34,6 @@ export function prReadyNotification({ agentName, sessionName, branch }: any) {
   return { title, body };
 }
 
-export function threadCreatedNotification({ threadName, threadType }: any) {
-  const label = threadType === 'heartbeat' ? 'Heartbeat' : 'Cron';
-  const body = `New ${label} thread: "${threadName}"`;
-  return { title: 'Thread Created', body };
-}
-
-export function threadEntryNotification({ threadName, threadType, preview, isError }: any) {
-  const label = threadType === 'heartbeat' ? 'Heartbeat' : 'Cron';
-  const title = isError ? `${label} Error` : `${label} Update`;
-  const trimmed = preview && preview.length > 120 ? preview.substring(0, 120) + '…' : preview;
-  const body = trimmed ? `${threadName}: ${trimmed}` : `New entry in "${threadName}"`;
-  return { title, body };
-}
-
 /**
  * `awaiting_input` with `waiting: true` while the user is not viewing that session.
  */

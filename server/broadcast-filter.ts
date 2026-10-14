@@ -49,7 +49,7 @@ export interface BroadcastFilterDeps {
   getSessionOwner: (sessionId: string) => string | null;
   /**
    * True when the session is intentionally readable by every org member
-   * (Reviewer threads, shared cron runs). Used for session-event /
+   * (Reviewer sessions, shared cron runs). Used for session-event /
    * session-progress so live updates match `userCanReadSession`.
    */
   isSharedReadableSession?: (sessionId: string) => boolean;
@@ -146,17 +146,6 @@ export function shouldDeliverBroadcast(
   // 2. localBypass collapses every event to "deliver" — single-tenant
   //    local mode, global apiKey break-glass, or no-auth-configured.
   if (stamp.localBypass) return true;
-
-  // 3. Private cron thread entries are scoped to the cron owner plus org
-  //    Owners, even when the backing project is shared. Shared crons carry the
-  //    same ownerUserId for credential attribution, but cronShared=true means
-  //    they should continue through normal project visibility below.
-  if (data.type === 'thread_entry_created' && data.cronShared === false) {
-    const owner =
-      typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
-    if (!owner) return true;
-    return stamp.role === 'Owner' || stamp.userId === owner;
-  }
 
   // 3b. Personal user-scoped events go only to their owner — NO admin
   //    override. Todos are a private capture primitive (spec TODO-MODEL),

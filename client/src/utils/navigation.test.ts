@@ -42,7 +42,6 @@ describe('navigation defaults', () => {
       view: 'security',
       projectId: 'agent-hub',
       prNumber: null,
-      threadId: null,
       designId: null,
       ticketId: null,
       hubPane: null,
@@ -68,7 +67,6 @@ describe('navigation defaults', () => {
       view: 'pulls',
       projectId: 'agent-hub',
       prNumber: 313,
-      threadId: null,
       designId: null,
       ticketId: null,
       hubPane: null,
@@ -87,7 +85,6 @@ describe('navigation defaults', () => {
       view: 'support',
       projectId: 'agent-hub',
       prNumber: null,
-      threadId: null,
       designId: null,
       ticketId: 'ticket-42',
       hubPane: null,
@@ -114,7 +111,6 @@ describe('navigation defaults', () => {
       view: 'hub',
       projectId: null,
       prNumber: null,
-      threadId: null,
       designId: null,
       ticketId: null,
       hubPane: 'calendar',
@@ -167,7 +163,6 @@ describe('navigation defaults', () => {
       view: 'hub',
       projectId: null,
       prNumber: null,
-      threadId: null,
       designId: null,
       ticketId: null,
       hubPane: 'today',
@@ -176,6 +171,14 @@ describe('navigation defaults', () => {
     expect(parseNavigationHash('#/autopilot/agent-hub')).toMatchObject({
       view: 'hub',
       projectId: null,
+    });
+  });
+
+  it('maps stale Threads links back to Hub', () => {
+    expect(parseNavigationHash('#/threads/agent-hub?thread=t1')).toMatchObject({
+      view: 'hub',
+      projectId: null,
+      hubPane: 'today',
     });
   });
 

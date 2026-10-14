@@ -1305,7 +1305,7 @@ describe('Sidebar — per-project nav groups', () => {
     expect(screen.getByRole('button', { name: 'Notes' })).toBeInTheDocument();
     // Support (the ticket page is now labeled "Customer Issues")
     expect(screen.getByRole('button', { name: 'Customer Issues' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Threads' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Threads' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Logs' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'RUM' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Replays' })).toBeInTheDocument();
@@ -1425,9 +1425,6 @@ describe('Sidebar — per-project nav groups', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Skills' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`skills:${PROJECT_ID}`);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Threads' } as any) as any);
-    expect(onNavigate!).toHaveBeenCalledWith('threads', PROJECT_ID);
 
     fireEvent.click(screen.getByRole('button', { name: 'Wiki' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith('wiki', PROJECT_ID);
@@ -1550,7 +1547,6 @@ describe('Sidebar — per-project nav groups', () => {
     // Non-dev items are still present.
     expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Wiki' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Threads' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Agents' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cron Jobs' })).toBeInTheDocument();
   });

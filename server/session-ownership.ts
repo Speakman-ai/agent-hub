@@ -237,8 +237,7 @@ export function isReviewerSession(sessionId: string): boolean {
 /**
  * True when `sessionId` is a cron run whose parent cron is shared
  * (`crons.shared = 1`). Shared crons are visible to every org member (see
- * `canViewCron` in `routes/crons.ts` and the `/api/crons/:id/thread`
- * surface), so their run sessions are read-only artifacts anyone in the
+ * `canViewCron` in `routes/crons.ts`), so their run sessions are read-only artifacts anyone in the
  * org may inspect — the same treatment reviewer sessions get.
  *
  * Non-shared cron sessions return `false` here and fall through to strict

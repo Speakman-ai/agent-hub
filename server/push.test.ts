@@ -114,9 +114,9 @@ describe('parseEnabledEvents / tokenAcceptsEvent', () => {
   });
 
   it('parses a JSON array into a Set', () => {
-    const s = parseEnabledEvents('["thread_message","pr_merged"]');
+    const s = parseEnabledEvents('["chat_message","pr_merged"]');
     expect(s).toBeInstanceOf(Set);
-    expect(s?.has('thread_message')).toBe(true);
+    expect(s?.has('chat_message')).toBe(true);
     expect(s?.has('pr_merged')).toBe(true);
   });
 
@@ -266,7 +266,7 @@ describe('sendExpoPush', () => {
 
 describe('dispatchPushEvent', () => {
   it('filters by token preferences before dispatch', async () => {
-    const tokens = [token('all'), token('threadOnly', ['thread_message'])];
+    const tokens = [token('all'), token('chatOnly', ['chat_message'])];
     const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
       return {
@@ -527,19 +527,6 @@ describe('mapBroadcastToPush', () => {
         projectId: 'p1',
       })?.event,
     ).toBe('review_assigned_to_you');
-
-    // Thread entries (formerly cron output) no longer push; cron notifications
-    // go through the cron_finished chat trigger.
-    expect(
-      mapBroadcastToPush({
-        type: 'thread_entry_created',
-        projectId: 'p',
-        threadId: 't',
-        threadName: 'Nightly',
-        threadType: 'cron',
-        entry: { id: 'e', content: 'ERROR: boom' },
-      }),
-    ).toBeNull();
 
     expect(
       mapBroadcastToPush({

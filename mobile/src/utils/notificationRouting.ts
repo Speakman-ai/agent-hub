@@ -1,16 +1,15 @@
 /**
  * Notification-tap routing.
  *
- * @typedef {'awaiting_feedback'|'ready_to_push'|'pushed'|'support_ticket_created'|'thread_message'|'review_assigned_to_you'|'pr_merged'|'infra_alert'|'chat_message'} EventKey
+ * @typedef {'awaiting_feedback'|'ready_to_push'|'pushed'|'support_ticket_created'|'review_assigned_to_you'|'pr_merged'|'infra_alert'|'chat_message'} EventKey
  *
  * @typedef {{ kind: 'chat', agentId: string | null, sessionId: string }} ChatRoute
  * @typedef {{ kind: 'kanban', projectId: string | null, cardId: string | null }} KanbanRoute
- * @typedef {{ kind: 'threads', projectId: string, threadId: string | null }} ThreadsRoute
  * @typedef {{ kind: 'support', projectId: string, ticketId: string | null }} SupportRoute
  * @typedef {{ kind: 'pulls', projectId: string | null, prNumber: number | null }} PullsRoute
  * @typedef {{ kind: 'infra', projectId: string, alertId: string | null }} InfraRoute
  * @typedef {{ kind: 'hubChat', channelId: string }} HubChatRoute
- * @typedef {ChatRoute | KanbanRoute | ThreadsRoute | SupportRoute | PullsRoute | InfraRoute | HubChatRoute} Route
+ * @typedef {ChatRoute | KanbanRoute | SupportRoute | PullsRoute | InfraRoute | HubChatRoute} Route
  */
 /**
  * @param {Record<string, unknown> | null | undefined} data
@@ -74,15 +73,6 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
             : null;
       return { kind: 'support', projectId, ticketId };
     }
-    case 'thread_message': {
-      const projectId = typeof data.projectId === 'string' ? data.projectId : null;
-      if (!projectId) return null;
-      return {
-        kind: 'threads',
-        projectId,
-        threadId: typeof data.threadId === 'string' ? data.threadId : null,
-      };
-    }
     case 'review_assigned_to_you': {
       const projectId = typeof data.projectId === 'string' ? data.projectId : null;
       const cardId = typeof data.cardId === 'string' ? data.cardId : null;
@@ -125,7 +115,7 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
 }
 /**
  * Map a routed notification tap to a React Navigation `(screen, params)`
- * pair for the navigator-driven kinds (kanban, threads, support, pulls).
+ * pair for the navigator-driven kinds (kanban, support, pulls, infra, hubChat).
  *
  * `applyNotificationRoute` used to build these params inline, where a dropped
  * field (e.g. the `pulls` PR number) was invisible. The `chat` kind is handled
@@ -143,14 +133,6 @@ export function notificationRouteToNavigation(route: any) {
         params: {
           projectId: route.projectId || undefined,
           cardId: route.cardId || undefined,
-        },
-      };
-    case 'threads':
-      return {
-        screen: 'Threads',
-        params: {
-          projectId: route.projectId,
-          threadId: route.threadId || undefined,
         },
       };
     case 'support':

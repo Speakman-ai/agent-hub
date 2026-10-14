@@ -3,14 +3,7 @@ import type { z } from 'zod';
 import { rescheduleCron, runCronJob } from '../heartbeat.js';
 import config from '../config.js';
 import { getProjects } from '../project-model.js';
-import type {
-  RouteDeps,
-  CronRow,
-  CronLogRow,
-  Project,
-  ThreadRow,
-  ThreadEntryRow,
-} from '../types.js';
+import type { RouteDeps, CronRow, CronLogRow, Project } from '../types.js';
 import { CreateCronRequestSchema, UpdateCronRequestSchema } from './crons.openapi.js';
 import { DEFAULT_CRON_ENGINE, isSupportedEngine, resolveCronEngine } from '../cron-engine.js';
 import { ALL_SUPPORTED_ENGINES } from '../engine-availability.js';
@@ -504,34 +497,6 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     runCronJob(cronJob).catch((err: Error) => {
       console.error(`Manual cron run failed for "${cronJob.name}":`, err);
     });
-  });
-
-  router.get('/api/crons/:id/thread', (req: Request, res: Response) => {
-    backfillCronOwners(stmts);
-    const id = parseInt(req.params.id as string);
-    const cron = stmts.getCron.get(id) as CronRow | undefined;
-    if (!cron) return res.status(404).json({ error: 'Cron not found' });
-    if (!canViewCron(req as AuthenticatedRequest, cron)) {
-      return res.status(404).json({ error: 'Cron not found' });
-    }
-
-    const projects = getProjects();
-    const project =
-      (cron.project_id && projects.find((p) => p.id === cron.project_id)) ||
-      projects.find((p) => p.cwd === cron.cwd);
-    if (!project) {
-      return res.json({ thread: null, entries: [] });
-    }
-
-    const thread = stmts.getThreadBySource.get(project.id, 'cron', String(id)) as
-      | ThreadRow
-      | undefined;
-    if (!thread) {
-      return res.json({ thread: null, entries: [] });
-    }
-
-    const entries = stmts.getThreadEntries.all(thread.id) as ThreadEntryRow[];
-    res.json({ thread, entries });
   });
 
   return router;

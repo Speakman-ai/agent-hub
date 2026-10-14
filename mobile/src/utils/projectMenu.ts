@@ -5,7 +5,7 @@
  * the per-project navigation as five collapsible groups:
  *   - Git       — Repository, Pulls, Deployments
  *   - Planning  — Board, Workflows, Epics, Notes
- *   - Support   — Customer Issues, Threads, Logs, RUM, Replays, AWS, Security
+ *   - Support   — Customer Issues, Logs, RUM, Replays, AWS, Security
  *   - AI        — Agents, Wiki
  *   - Settings  — Project Configuration, Finalize CI, Previews, Cron Jobs
  *
@@ -88,7 +88,6 @@ export function projectNavGroups(project: any) {
       label: 'Support',
       entries: [
         { key: 'support', label: 'Customer Issues', icon: 'LifeBuoy', screen: 'CustomerSupport' },
-        { key: 'threads', label: 'Threads', icon: 'List', screen: 'Threads' },
         { key: 'logs', label: 'Logs', icon: 'ScrollText', screen: 'Logs' },
         { key: 'rum', label: 'RUM', icon: 'Activity', screen: 'RumSettings' },
         { key: 'replays', label: 'Replays', icon: 'MonitorPlay', screen: 'Replays' },

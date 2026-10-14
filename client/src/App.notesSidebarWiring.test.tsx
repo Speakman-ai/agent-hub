@@ -1,7 +1,7 @@
 /**
  * App integration: the Notes sidebar link highlights for the active notes
  * project only because App threads its `notesProjectId` state down to
- * <Sidebar notesProjectId={...}> (mirrors threadsProjectId / pullsProjectId).
+ * <Sidebar notesProjectId={...}> (mirrors pullsProjectId).
  *
  * Regression guard: a reviewer worried the prop might never be wired at the
  * caller, leaving the Notes row un-highlighted in the real app. This test

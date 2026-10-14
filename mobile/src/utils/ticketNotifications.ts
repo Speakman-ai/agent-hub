@@ -8,7 +8,6 @@ import {
   shouldDeliverProjectNotification,
   shouldNotifyUserForProject,
 } from '@shared/utils/notificationProjectScope';
-import { isRetiredHeartbeatThread } from '@shared/utils/retiredHeartbeatThread';
 /** @typedef {{ title: string, body: string }} NotificationContent */
 export function awaitingFeedbackNotification({ sessionName }: any) {
   const subject = sessionName ? `"${sessionName}"` : 'A session';
@@ -32,13 +31,6 @@ export function supportTicketCreatedNotification({ subject, ticketType }: any) {
     title: 'Support ticket created',
     body: `${label}${subject || 'New ticket'}`,
   };
-}
-export function threadMessageNotification({ threadName, threadType, preview, isError }: any) {
-  const label = threadType === 'heartbeat' ? 'Heartbeat' : 'Thread';
-  const title = isError ? `${label} error` : `${label} message`;
-  const trimmed = preview && preview.length > 120 ? preview.substring(0, 120) + '…' : preview;
-  const body = trimmed ? `${threadName}: ${trimmed}` : `New message in "${threadName}"`;
-  return { title, body };
 }
 export function reviewAssignedNotification({ cardTitle, prNumber }: any) {
   const title = cardTitle || 'Ticket';
@@ -94,8 +86,7 @@ export function mapBroadcastToNotification(data: any, opts: any = {}) {
   // else — INCLUDING an unattributed / API-key client (`me === null`) on a
   // multi-user server — unless a real local/bundled single-user `localBypass`
   // is set. Same strict semantics as the project gate.
-  const cronShared = data.type === 'thread_entry_created' && data.cronShared === true;
-  if (!cronShared && !shouldNotifyUserForProject(owner, me, { localBypass })) return null;
+  if (!shouldNotifyUserForProject(owner, me, { localBypass })) return null;
   if (
     !shouldDeliverProjectNotification(data, me, opts.projects || [], opts.agents || [], {
       localBypass,
@@ -132,19 +123,6 @@ export function mapBroadcastToNotification(data: any, opts: any = {}) {
         ticketType: ticket.type,
       });
       return { event: 'support_ticket_created', title, body };
-    }
-    case 'thread_entry_created': {
-      if (isRetiredHeartbeatThread({ type: data.threadType })) return null;
-      const content = data.entry?.content || '';
-      const isError = content.startsWith('ERROR:');
-      const preview = content.replace(/\n+/g, ' ').trim();
-      const { title, body } = threadMessageNotification({
-        threadName: data.threadName || 'Thread',
-        threadType: data.threadType || 'cron',
-        preview,
-        isError,
-      });
-      return { event: 'thread_message', title, body };
     }
     case 'card_moved': {
       const col = (data.columnName || '').toLowerCase();

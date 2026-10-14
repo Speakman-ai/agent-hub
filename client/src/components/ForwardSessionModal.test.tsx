@@ -77,7 +77,7 @@ describe('filterForwardTargets', () => {
   });
 
   it('lists every active agent (sorted) when there is no source agent', () => {
-    // No source (e.g. forwarding a standalone thread entry) → all active
+    // No source (a source-less forward) → all active
     // agents, grouped by project name then agent name. These fixtures carry
     // no projectName, so ordering collapses to agent name.
     const result = filterForwardTargets([source, siblingA, inactive], null);
@@ -154,7 +154,7 @@ describe('<ForwardSessionModal />', () => {
     );
   });
 
-  it('supports source-less forwarding (thread entry) with a custom title and ready gate', async () => {
+  it('supports source-less forwarding with a custom title and ready gate', async () => {
     const onForward = vi.fn(() => Promise.resolve({ session: { id: 'fwd' } }));
     render(
       <ForwardSessionModal

@@ -54,7 +54,7 @@ describe('shouldDeliverProjectNotification', () => {
   it('suppresses another user project event', () => {
     expect(
       shouldDeliverProjectNotification(
-        { type: 'thread_created', projectId: 'theirs' },
+        { type: 'support_ticket_created', projectId: 'theirs' },
         'ryan',
         projects,
       ),

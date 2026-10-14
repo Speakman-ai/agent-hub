@@ -88,9 +88,6 @@ import EpicView from './components/EpicView';
 import KanbanCardTemplatesView from './components/KanbanCardTemplatesView';
 import DashboardView from './components/DashboardView';
 import WikiBrowser from './components/WikiBrowser';
-import ThreadList from './components/ThreadList';
-import ThreadView from './components/ThreadView';
-import { isRetiredHeartbeatThread } from '@shared/utils/retiredHeartbeatThread';
 import CustomerSupportPage from './components/CustomerSupportPage';
 import SupportOverviewPage from './components/SupportOverviewPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
@@ -228,8 +225,6 @@ import {
   cardReviewNotification,
   prReadyNotification,
   sessionCompleteNotification,
-  threadCreatedNotification,
-  threadEntryNotification,
 } from './utils/ticketNotifications';
 import {
   MessageCircle,
@@ -688,19 +683,6 @@ export default function App({ initialView }: any = {}) {
   >({});
   /** Deep-link from Workflows → Settings → GitHub: expand this project row (cleared when leaving Settings). */
   const [settingsGithubExpandProjectId, setSettingsGithubExpandProjectId] = useState<any>(null);
-  // Threads state
-  const [threadsProjectId, setThreadsProjectId] = useState<any>(
-    initialNavigation.view === 'threads' ? initialNavigation.projectId || null : null,
-  );
-  const [activeThreadId, setActiveThreadId] = useState<any>(
-    initialNavigation.view === 'threads' ? initialNavigation.threadId || null : null,
-  );
-  const [activeThread, setActiveThread] = useState<any>(null);
-  // Unread thread entry counts per project: { [projectId]: number }
-  const [unreadThreadCounts, setUnreadThreadCounts] = useState<Record<string, any>>({});
-  // Refs to push WebSocket updates into ThreadList/ThreadView
-  const threadListRef = useRef<any>(null);
-  const threadViewRef = useRef<any>(null);
   // Customer Support page state
   const [supportProjectId, setSupportProjectId] = useState<any>(
     initialNavigation.view === 'support' ? initialNavigation.projectId || null : null,
@@ -1011,15 +993,11 @@ export default function App({ initialView }: any = {}) {
   /** Populated after `focusAgentSession` is defined — WebSocket toasts call `.current(...)`. */
   const focusAgentSessionRef = useRef<any>(null);
 
-  // Refs for thread state (accessible inside WebSocket callback)
-  const threadsProjectIdRef = useRef(threadsProjectId);
-  threadsProjectIdRef.current = threadsProjectId;
+  // Refs for page state (accessible inside WebSocket callback)
   const supportProjectIdRef = useRef(supportProjectId);
   supportProjectIdRef.current = supportProjectId;
   const securityProjectIdRef = useRef(securityProjectId);
   securityProjectIdRef.current = securityProjectId;
-  const activeThreadIdRef = useRef(activeThreadId);
-  activeThreadIdRef.current = activeThreadId;
   const currentViewRef = useRef(currentView);
   currentViewRef.current = currentView;
   const newProjectWizardReturnRef = useRef('chat');
@@ -1035,8 +1013,6 @@ export default function App({ initialView }: any = {}) {
         return reviewerProjectId;
       case 'pulls':
         return pullsProjectId;
-      case 'threads':
-        return threadsProjectId;
       case 'support':
         return supportProjectId;
       case 'deployments':
@@ -1057,7 +1033,6 @@ export default function App({ initialView }: any = {}) {
     reviewerProjectId,
     securityProjectId,
     supportProjectId,
-    threadsProjectId,
     wikiProjectId,
   ]);
 
@@ -1083,11 +1058,6 @@ export default function App({ initialView }: any = {}) {
     if (view === 'pulls') {
       setPullsProjectId(route?.projectId || null);
       setPullsOpenPrNumber(route?.prNumber || null);
-    }
-    if (view === 'threads') {
-      setThreadsProjectId(route?.projectId || null);
-      setActiveThreadId(route?.threadId || null);
-      setActiveThread(null);
     }
     if (view === 'support') {
       setSupportProjectId(route?.projectId || null);
@@ -1152,7 +1122,6 @@ export default function App({ initialView }: any = {}) {
       view: currentView,
       projectId: routeProjectId,
       prNumber: pullsOpenPrNumber,
-      threadId: activeThreadId,
       designId: activeDesignId,
       ticketId: currentView === 'support' ? supportTicketId : null,
       hubPane: currentView === 'hub' ? hubPane : null,
@@ -1168,7 +1137,6 @@ export default function App({ initialView }: any = {}) {
     routeUrlInitializedRef.current = true;
   }, [
     activeDesignId,
-    activeThreadId,
     currentView,
     initialView,
     pullsOpenPrNumber,
@@ -3266,89 +3234,6 @@ export default function App({ initialView }: any = {}) {
               },
             ]);
             notify({ title, body, type: 'info' });
-          }
-          break;
-        }
-
-        // Thread notifications
-        case 'thread_created': {
-          if (isRetiredHeartbeatThread(data.thread)) break;
-          // Live-update ThreadList if viewing threads for this project
-          if (threadListRef.current && threadsProjectIdRef.current === data.projectId) {
-            threadListRef.current.addThread(data.thread);
-          }
-          const { title, body } = threadCreatedNotification({
-            threadName: data.thread.name,
-            threadType: data.thread.type,
-          });
-          setToasts((prev: any) => [
-            ...prev,
-            {
-              id: `thread-created-${data.thread.id}-${Date.now()}`,
-              type: 'info',
-              message: body,
-              duration: 6000,
-            },
-          ]);
-          notify({ title, body, type: 'info' });
-          break;
-        }
-
-        case 'thread_entry_created': {
-          if (isRetiredHeartbeatThread({ type: data.threadType })) break;
-          const isError = data.entry?.content?.startsWith('ERROR:');
-          // Live-update ThreadView if viewing this thread
-          if (threadViewRef.current && activeThreadIdRef.current === data.threadId) {
-            threadViewRef.current.addEntry(data.entry);
-          } else {
-            // Increment unread count for the project (we need to find it from data)
-            // The broadcast includes threadId — look up the project via thread cache
-            // For simplicity, increment for all projects that have threads view open or track globally
-            setUnreadThreadCounts((prev: any) => {
-              const pid = data.projectId;
-              if (!pid) return prev;
-              return { ...prev, [pid]: (prev[pid] || 0) + 1 };
-            });
-          }
-          // Build notification — need thread name which the server should include
-          const threadName = data.threadName || 'Thread';
-          const threadType = data.threadType || 'cron';
-          const preview = data.entry?.content?.replace(/\n+/g, ' ').trim();
-          const { title, body } = threadEntryNotification({
-            threadName,
-            threadType,
-            preview,
-            isError,
-          });
-          // Only toast for errors or when not actively viewing the thread
-          if (
-            isError ||
-            activeThreadIdRef.current !== data.threadId ||
-            currentViewRef.current !== 'threads'
-          ) {
-            setToasts((prev: any) => [
-              ...prev,
-              {
-                id: `thread-entry-${data.entry.id}-${Date.now()}`,
-                type: isError ? 'error' : 'info',
-                message: body,
-                duration: isError ? 10000 : 6000,
-              },
-            ]);
-          }
-          notify({ title, body, type: isError ? 'error' : 'info' });
-          break;
-        }
-
-        case 'thread_deleted': {
-          // Live-update ThreadList
-          if (threadListRef.current && threadsProjectIdRef.current === data.projectId) {
-            threadListRef.current.removeThread(data.threadId);
-          }
-          // If viewing the deleted thread, go back to list
-          if (activeThreadIdRef.current === data.threadId) {
-            setActiveThreadId(null);
-            setActiveThread(null);
           }
           break;
         }
@@ -6233,7 +6118,6 @@ export default function App({ initialView }: any = {}) {
     if (currentView === 'wiki' && wikiProjectId) return wikiProjectId;
     if (currentView === 'notes' && notesProjectId) return notesProjectId;
     if (currentView === 'pulls' && pullsProjectId) return pullsProjectId;
-    if (currentView === 'threads' && threadsProjectId) return threadsProjectId;
     if (currentView === 'support' && supportProjectId) return supportProjectId;
     if (currentView === 'replays' && replaysProjectId) return replaysProjectId;
     if (currentView === 'security' && securityProjectId) return securityProjectId;
@@ -6246,7 +6130,6 @@ export default function App({ initialView }: any = {}) {
     wikiProjectId,
     notesProjectId,
     pullsProjectId,
-    threadsProjectId,
     supportProjectId,
     replaysProjectId,
     securityProjectId,
@@ -6780,18 +6663,6 @@ export default function App({ initialView }: any = {}) {
                 setDesignStreaming(null);
                 setDesignThinking(false);
               }
-              if (view === 'threads' && extra) {
-                setThreadsProjectId(extra);
-                setActiveThreadId(null);
-                setActiveThread(null);
-                // Clear unread count when opening threads view
-                setUnreadThreadCounts((prev: any) => {
-                  if (!prev[extra]) return prev;
-                  const next = { ...prev };
-                  delete next[extra];
-                  return next;
-                });
-              }
               if (view === 'support') {
                 if (extra) setSupportProjectId(extra);
                 // Opening support from the sidebar is not a ticket deep-link.
@@ -6818,7 +6689,6 @@ export default function App({ initialView }: any = {}) {
             wikiProjectId={wikiProjectId}
             notesProjectId={notesProjectId}
             reviewerProjectId={reviewerProjectId}
-            threadsProjectId={threadsProjectId}
             supportProjectId={supportProjectId}
             googleCalendarNavVisible={googleCalendarNavVisible}
             googleGmailNavVisible={googleGmailNavVisible}
@@ -6828,7 +6698,6 @@ export default function App({ initialView }: any = {}) {
             pullsProjectId={pullsProjectId}
             onOpenPrDetail={handleOpenPrDetail}
             workflowBadgeByProject={workflowSidebarBadgeByProject}
-            unreadThreadCounts={unreadThreadCounts}
             unreadTicketCounts={unreadTicketCounts}
             openPullCounts={openPullCounts}
             securityOpenCounts={securityOpenCounts}
@@ -7088,16 +6957,6 @@ export default function App({ initialView }: any = {}) {
                   onProjectsChange={refreshProjects}
                   onNavigate={(view: any, extra: any) => {
                     setCurrentView(view);
-                    if (view === 'threads' && extra) {
-                      setThreadsProjectId(extra.projectId);
-                      if (extra.threadId) {
-                        setActiveThreadId(extra.threadId);
-                        setActiveThread(extra.thread || null);
-                      } else {
-                        setActiveThreadId(null);
-                        setActiveThread(null);
-                      }
-                    }
                     if (view === 'chat' && extra) {
                       focusAgentSession(extra.agentId, extra.sessionId);
                     }
@@ -7216,16 +7075,6 @@ export default function App({ initialView }: any = {}) {
                   initialGithubExpandedProjectId={settingsGithubExpandProjectId}
                   onNavigate={(view: any, extra: any) => {
                     setCurrentView(view);
-                    if (view === 'threads' && extra) {
-                      setThreadsProjectId(extra.projectId);
-                      if (extra.threadId) {
-                        setActiveThreadId(extra.threadId);
-                        setActiveThread(extra.thread || null);
-                      } else {
-                        setActiveThreadId(null);
-                        setActiveThread(null);
-                      }
-                    }
                     // Direct-jump into a chat session (e.g. from the
                     // Settings → Preview "AI Setup" wizard, which spawns
                     // a wizard session and needs the user to land on it
@@ -7257,38 +7106,6 @@ export default function App({ initialView }: any = {}) {
                   projects={projects}
                   onAgentsChange={refreshAgents}
                 />
-              ) : currentView === 'threads' && threadsProjectId ? (
-                activeThreadId ? (
-                  <ThreadView
-                    ref={threadViewRef}
-                    key={activeThreadId}
-                    threadId={activeThreadId}
-                    thread={activeThread}
-                    agents={agents}
-                    onForwarded={(result: any) => {
-                      const session = result?.session;
-                      showToast(
-                        `Forwarded to ${session?.name || 'a new session'}`,
-                        'success',
-                        4000,
-                      );
-                    }}
-                    onBack={() => {
-                      setActiveThreadId(null);
-                      setActiveThread(null);
-                    }}
-                  />
-                ) : (
-                  <ThreadList
-                    ref={threadListRef}
-                    projectId={threadsProjectId}
-                    onSelectThread={(thread: any) => {
-                      if (isRetiredHeartbeatThread(thread)) return;
-                      setActiveThreadId(thread.id);
-                      setActiveThread(thread);
-                    }}
-                  />
-                )
               ) : currentView === 'support' && supportProjectId ? (
                 <CustomerSupportPage
                   ref={supportListRef}

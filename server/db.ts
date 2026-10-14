@@ -153,15 +153,10 @@ function initDb(dataDir: string): void {
     return rawExec(source);
   };
 
-  // Migration: drop legacy threads/thread_entries tables that lack project_id
-  // (created by an older schema before the threads feature was redesigned).
-  {
-    const cols = (db.pragma('table_info(threads)') as { name: string }[]).map((c) => c.name);
-    if (cols.length > 0 && !cols.includes('project_id')) {
-      db.exec('DROP TABLE IF EXISTS thread_entries');
-      db.exec('DROP TABLE IF EXISTS threads');
-    }
-  }
+  // Threads were replaced by Agent Hub Chat. Cron output lives in cron_logs,
+  // so the tables are dropped without migrating their contents.
+  db.exec('DROP TABLE IF EXISTS thread_entries');
+  db.exec('DROP TABLE IF EXISTS threads');
 
   // Migration: drop legacy preview tables from the Docker-based preview
   // system (replaced by pr_captures / pr_capture_artifacts). Safe if they
@@ -1111,38 +1106,6 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS idx_wiki_files_project ON wiki_files(project_id, folder);
 
-    -- Threads: group log entries for cron runs, heartbeat checks, etc.
-    CREATE TABLE IF NOT EXISTS threads (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('cron', 'heartbeat')),
-      source_id TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_threads_project ON threads(project_id);
-    CREATE INDEX IF NOT EXISTS idx_threads_type ON threads(project_id, type);
-    CREATE INDEX IF NOT EXISTS idx_threads_source ON threads(project_id, source_id);
-
-    -- Thread entries: individual log lines within a thread.
-    -- Historically single-writer (heartbeat/cron daemons). The columns
-    -- author_user_id, author_agent_id, and role were added when humans
-    -- started posting through the chatroom composer; daemon writes
-    -- leave role at its DEFAULT 'system' so existing call sites keep
-    -- working. See server/routes/threads.ts and the corresponding
-    -- migration block above for the existing-install ALTER TABLEs.
-    CREATE TABLE IF NOT EXISTS thread_entries (
-      id TEXT PRIMARY KEY,
-      thread_id TEXT NOT NULL,
-      content TEXT NOT NULL DEFAULT '',
-      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-      author_user_id TEXT,
-      author_agent_id TEXT,
-      role TEXT NOT NULL DEFAULT 'system' CHECK(role IN ('system','user','assistant')),
-      FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_thread_entries_thread ON thread_entries(thread_id);
-
     -- Note processings: tracks notes sent to agents for incorporation into knowledge
     CREATE TABLE IF NOT EXISTS note_processings (
       id TEXT PRIMARY KEY,
@@ -1913,30 +1876,6 @@ function initDb(dataDir: string): void {
       DROP INDEX IF EXISTS idx_heartbeat_state_owner;
       DROP INDEX IF EXISTS idx_heartbeat_state_shared;
     `);
-  }
-
-  // Threads-as-chatroom: thread_entries grew an author identity + role so
-  // humans can post into the same thread the heartbeat / cron daemon
-  // streams into. The fresh-install CREATE TABLE (above) carries the
-  // CHECK(role IN …) constraint; existing installs get the columns
-  // without the inline CHECK because SQLite can't add column-scope CHECK
-  // via ALTER TABLE without a full table rebuild. Validity is enforced
-  // at the app layer (only `createThreadEntry` / `createUserThreadEntry`
-  // write the column, both with a fixed value).
-  try {
-    db.prepare('SELECT role FROM thread_entries LIMIT 1').get();
-  } catch {
-    db.exec("ALTER TABLE thread_entries ADD COLUMN role TEXT NOT NULL DEFAULT 'system'");
-  }
-  try {
-    db.prepare('SELECT author_user_id FROM thread_entries LIMIT 1').get();
-  } catch {
-    db.exec('ALTER TABLE thread_entries ADD COLUMN author_user_id TEXT');
-  }
-  try {
-    db.prepare('SELECT author_agent_id FROM thread_entries LIMIT 1').get();
-  } catch {
-    db.exec('ALTER TABLE thread_entries ADD COLUMN author_agent_id TEXT');
   }
 
   try {
@@ -5636,11 +5575,6 @@ function initDb(dataDir: string): void {
     ),
     updateSessionCronId: db.prepare('UPDATE sessions SET cron_id = ? WHERE id = ?'),
 
-    // Thread lookup by source (used by cron/heartbeat to find their thread)
-    getThreadBySource: db.prepare(
-      'SELECT * FROM threads WHERE project_id = ? AND type = ? AND source_id = ? LIMIT 1',
-    ),
-
     // Device tokens (push notifications)
     registerDeviceToken: db.prepare(
       `INSERT INTO device_tokens (token, platform, user_id, last_used)
@@ -6354,45 +6288,6 @@ function initDb(dataDir: string): void {
       'SELECT COUNT(*) as n FROM code_chunks WHERE project_id = ?',
     ),
 
-    // Threads
-    getThreadsByProject: db.prepare(
-      'SELECT * FROM threads WHERE project_id = ? ORDER BY created_at DESC',
-    ),
-    getThreadsByProjectAndType: db.prepare(
-      'SELECT * FROM threads WHERE project_id = ? AND type = ? ORDER BY created_at DESC',
-    ),
-    getThread: db.prepare('SELECT * FROM threads WHERE id = ?'),
-    getThreadBySourceId: db.prepare(
-      'SELECT * FROM threads WHERE project_id = ? AND type = ? AND source_id = ?',
-    ),
-    createThread: db.prepare(
-      'INSERT INTO threads (id, project_id, name, type, source_id) VALUES (?, ?, ?, ?, ?)',
-    ),
-    deleteThread: db.prepare('DELETE FROM threads WHERE id = ?'),
-
-    // Thread entries
-    getThreadEntries: db.prepare(
-      'SELECT * FROM thread_entries WHERE thread_id = ? ORDER BY timestamp ASC',
-    ),
-    getThreadEntry: db.prepare('SELECT * FROM thread_entries WHERE id = ?'),
-    createThreadEntry: db.prepare(
-      'INSERT INTO thread_entries (id, thread_id, content) VALUES (?, ?, ?)',
-    ),
-    // Human-authored entry — `POST /api/threads/:threadId/entries`. Stamps
-    // role='user' and (optionally) the user id resolved by the auth
-    // middleware. Daemons keep using the 3-arg `createThreadEntry` above,
-    // which falls back to the column DEFAULT of 'system' for role.
-    createUserThreadEntry: db.prepare(
-      "INSERT INTO thread_entries (id, thread_id, content, author_user_id, role) VALUES (?, ?, ?, ?, 'user')",
-    ),
-    deleteThreadEntry: db.prepare('DELETE FROM thread_entries WHERE id = ?'),
-    deleteThreadEntries: db.prepare('DELETE FROM thread_entries WHERE thread_id = ?'),
-    pruneThreadEntries: db.prepare(
-      `DELETE FROM thread_entries WHERE thread_id = ? AND id NOT IN (
-         SELECT id FROM thread_entries WHERE thread_id = ? ORDER BY timestamp DESC LIMIT 100
-       )`,
-    ),
-
     // Skill registry
     getSkillRegistry: db.prepare(
       'SELECT * FROM skill_registry ORDER BY install_count DESC, name ASC',
@@ -6935,7 +6830,6 @@ function initDb(dataDir: string): void {
     deleteWikiEmbeddingsByProject: db.prepare('DELETE FROM wiki_embeddings WHERE project_id = ?'),
     deleteBoardsByProject: db.prepare('DELETE FROM kanban_boards WHERE project_id = ?'),
     deleteWorkflowsByProject: db.prepare('DELETE FROM workflows WHERE project_id = ?'),
-    deleteThreadsByProject: db.prepare('DELETE FROM threads WHERE project_id = ?'),
     deleteSessionAgentsByAgent: db.prepare('DELETE FROM session_agents WHERE agent_id = ?'),
     deleteCronsByProject: db.prepare('DELETE FROM crons WHERE project_id = ?'),
     deleteSessionsByAgent: db.prepare('DELETE FROM sessions WHERE agent_id = ?'),

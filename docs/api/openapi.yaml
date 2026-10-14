@@ -3896,18 +3896,6 @@ components:
         - result
         - duration_ms
       description: A single cron run log row.
-    CronThreadResponse:
-      type: object
-      properties:
-        thread:
-          nullable: true
-        entries:
-          type: array
-          items:
-            nullable: true
-      required:
-        - entries
-      description: Cron thread (persistent output log). Both `thread` and `entries` come back null/empty when the cron has no project association or no run has produced a thread yet.
     CronRunAck:
       type: object
       properties:
@@ -17355,45 +17343,6 @@ components:
           description: Skills preloaded into the first turn.
       required:
         - prompt
-    ForwardThreadEntryResponse:
-      type: object
-      properties:
-        session:
-          type: object
-          additionalProperties:
-            nullable: true
-          description: The newly created session for the target agent (client-enriched shape).
-        forwardedMessageId:
-          type: string
-          nullable: true
-          description: ID of the pre-stored forwarded user message, or null when autoStart dispatched the turn instead.
-      required:
-        - session
-        - forwardedMessageId
-    ThreadsErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-      required:
-        - error
-      description: Error envelope.
-    ForwardThreadEntryRequest:
-      type: object
-      properties:
-        targetAgentId:
-          type: string
-          minLength: 1
-          description: Agent to forward the thread entry to. May belong to a different project; the caller must be able to view the target agent’s project.
-        prompt:
-          type: string
-          maxLength: 50000
-          description: Extra instructions prepended to the forwarded entry (max 50k chars).
-        autoStart:
-          type: boolean
-          description: When true, immediately dispatch the forwarded message to the target agent’s CLI (fire-and-forget).
-      required:
-        - targetAgentId
   parameters: {}
 paths:
   /api/agents:
@@ -27942,32 +27891,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CronRunAck"
-        "404":
-          description: Cron not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CronErrorResponse"
-  /api/crons/{id}/thread:
-    get:
-      tags:
-        - Crons
-      summary: Fetch the persistent output thread for a cron
-      parameters:
-        - schema:
-            type: string
-            description: Cron job numeric id (URL string).
-          required: true
-          description: Cron job numeric id (URL string).
-          name: id
-          in: path
-      responses:
-        "200":
-          description: Thread + entries (both null/empty when no run has produced a thread yet).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CronThreadResponse"
         "404":
           description: Cron not found.
           content:
@@ -53048,57 +52971,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SupportTicketOverviewErrorResponse"
-  /api/threads/{threadId}/entries/{entryId}/forward:
-    post:
-      tags:
-        - Threads
-      summary: Forward a single thread entry to an agent
-      description: Creates a new session for the target agent seeded with the given thread entry as the initial user message. The new session is owned by the caller.
-      parameters:
-        - schema:
-            type: string
-            description: Thread UUID.
-          required: true
-          description: Thread UUID.
-          name: threadId
-          in: path
-        - schema:
-            type: string
-            description: Thread entry UUID to forward.
-          required: true
-          description: Thread entry UUID to forward.
-          name: entryId
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ForwardThreadEntryRequest"
-      responses:
-        "201":
-          description: Forwarded session created.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ForwardThreadEntryResponse"
-        "400":
-          description: Validation failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ThreadsErrorResponse"
-        "404":
-          description: Thread, entry, or target agent not found / not visible.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ThreadsErrorResponse"
-        "503":
-          description: Auto-start requested but chat handler unavailable.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ThreadsErrorResponse"
   /api/upload:
     post:
       tags:

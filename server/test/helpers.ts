@@ -131,30 +131,6 @@ export async function createWikiPage(
   return res.body as Record<string, unknown>;
 }
 
-interface ThreadOverrides {
-  name?: string;
-  type?: string;
-  source_id?: string | null;
-  [key: string]: unknown;
-}
-
-export async function createThread(
-  projectId: string,
-  overrides: ThreadOverrides = {},
-): Promise<Record<string, unknown>> {
-  const request = await getRequest();
-  const res = await request
-    .post(`/api/projects/${projectId}/threads`)
-    .send({
-      name: overrides.name ?? `Test Thread ${uid('thread')}`,
-      type: overrides.type ?? 'cron',
-      source_id: overrides.source_id ?? null,
-      ...overrides,
-    })
-    .expect(201);
-  return res.body as Record<string, unknown>;
-}
-
 interface EscalationOverrides {
   type?: string;
   title?: string;

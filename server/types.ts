@@ -1511,38 +1511,6 @@ export interface WikiFileRow {
   updated_at: string;
 }
 
-export interface ThreadRow {
-  id: string;
-  project_id: string;
-  name: string;
-  type: 'cron' | 'heartbeat';
-  source_id: string | null;
-  created_at: string;
-}
-
-/**
- * Author role on a thread entry. `system` is the historical default —
- * heartbeat / cron daemons write directly via `stmts.createThreadEntry`
- * and leave the role at its column default. `user` is a human posting
- * through the chatroom composer (POST /api/threads/:threadId/entries).
- * `assistant` is reserved for a future "agent replies in-thread" path
- * — no caller writes it today.
- */
-export type ThreadEntryRole = 'system' | 'user' | 'assistant';
-
-export interface ThreadEntryRow {
-  id: string;
-  thread_id: string;
-  content: string;
-  timestamp: string;
-  /** User id of the human who posted this entry, or null for daemon-written rows. */
-  author_user_id: string | null;
-  /** Agent id when an agent posts (future). Null for human / daemon rows today. */
-  author_agent_id: string | null;
-  /** Author kind — see {@link ThreadEntryRole}. */
-  role: ThreadEntryRole;
-}
-
 export interface NoteProcessingRow {
   id: string;
   project_id: string;
@@ -2427,9 +2395,6 @@ export interface Stmts {
   getAllCronSessions: Stmt;
   updateSessionCronId: Stmt;
 
-  // Thread lookup
-  getThreadBySource: Stmt;
-
   // Device tokens
   registerDeviceToken: Stmt;
   removeDeviceToken: Stmt;
@@ -2583,28 +2548,6 @@ export interface Stmts {
   getDistinctCodeFiles: Stmt;
   countCodeChunksByProject: Stmt;
 
-  // Threads
-  getThreadsByProject: Stmt;
-  getThreadsByProjectAndType: Stmt;
-  getThread: Stmt;
-  getThreadBySourceId: Stmt;
-  createThread: Stmt;
-  deleteThread: Stmt;
-
-  // Thread entries
-  getThreadEntries: Stmt;
-  getThreadEntry: Stmt;
-  createThreadEntry: Stmt;
-  /**
-   * Insert a human-authored thread entry with `role = 'user'`. Used by
-   * `POST /api/threads/:threadId/entries` for the chatroom composer.
-   * Args: `(id, thread_id, content, author_user_id | null)`.
-   */
-  createUserThreadEntry: Stmt;
-  deleteThreadEntry: Stmt;
-  deleteThreadEntries: Stmt;
-  pruneThreadEntries: Stmt;
-
   // Skill registry
   getSkillRegistry: Stmt;
   getSkillRegistryByCategory: Stmt;
@@ -2676,7 +2619,6 @@ export interface Stmts {
   deleteWikiEmbeddingsByProject: Stmt;
   deleteBoardsByProject: Stmt;
   deleteWorkflowsByProject: Stmt;
-  deleteThreadsByProject: Stmt;
   deleteSessionAgentsByAgent: Stmt;
   deleteCronsByProject: Stmt;
   deleteSessionsByAgent: Stmt;

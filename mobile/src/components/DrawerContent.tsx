@@ -76,7 +76,6 @@ export default function DrawerContent({ navigation }: any) {
     cronSessions,
     activeTasks,
     finalizeStatusBySession,
-    unreadThreadCounts,
     unreadTicketCounts,
     openPullCounts,
     securityOpenCounts,
@@ -491,13 +490,6 @@ export default function DrawerContent({ navigation }: any) {
       <Text style={styles.projectMenuItemText} numberOfLines={1}>
         {entry.label}
       </Text>
-      {entry.key === 'threads' && unreadThreadCounts?.[project.id] > 0 && (
-        <View style={styles.unreadBadge}>
-          <Text style={styles.unreadBadgeText}>
-            {unreadThreadCounts[project.id] > 99 ? '99+' : unreadThreadCounts[project.id]}
-          </Text>
-        </View>
-      )}
       {entry.key === 'support' && unreadTicketCounts?.[project.id] > 0 && (
         <View style={styles.unreadBadge}>
           <Text style={styles.unreadBadgeText}>

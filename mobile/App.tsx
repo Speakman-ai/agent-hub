@@ -27,7 +27,6 @@ import TodosScreen from './src/screens/TodosScreen';
 import WikiScreen from './src/screens/WikiScreen';
 import NotesScreen from './src/screens/NotesScreen';
 import PullRequestsScreen from './src/screens/PullRequestsScreen';
-import ThreadsScreen from './src/screens/ThreadsScreen';
 import CustomerSupportScreen from './src/screens/CustomerSupportScreen';
 import SupportOverviewScreen from './src/screens/SupportOverviewScreen';
 import CalendarScreen from './src/screens/CalendarScreen';
@@ -168,7 +167,7 @@ function AppContent() {
     }, 50);
   };
   // Hand the AppContext a navigator function so notification-tap handlers
-  // (registered inside the context) can open Kanban / Threads. We build a
+  // (registered inside the context) can open Kanban / Customer Issues. We build a
   // small wrapper instead of exposing the raw navigationRef so taps also
   // close the drawer if it's open (mirrors the DrawerContent `navigate`
   // helper above).
@@ -250,7 +249,6 @@ function AppContent() {
             <Stack.Screen name="Wiki" component={WikiScreen} />
             <Stack.Screen name="Notes" component={NotesScreen} />
             <Stack.Screen name="PullRequests" component={PullRequestsScreen} />
-            <Stack.Screen name="Threads" component={ThreadsScreen} />
             <Stack.Screen name="CustomerSupport" component={CustomerSupportScreen} />
             <Stack.Screen name="SupportOverview" component={SupportOverviewScreen} />
             <Stack.Screen name="Calendar" component={CalendarScreen} />

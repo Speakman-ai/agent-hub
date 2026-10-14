@@ -2235,35 +2235,6 @@ export const api = {
         ...(suppress === false ? { suppress: false } : {}),
       }),
     }),
-  // Threads (persistent output logs for crons)
-  getThreads: (projectId: any, type: any) => {
-    const qs = type ? `?type=${encodeURIComponent(type)}` : '';
-    return fetchJSON(`/projects/${projectId}/threads${qs}`);
-  },
-  getThread: (threadId: any) => fetchJSON(`/threads/${threadId}`),
-  getThreadEntries: (threadId: any) => fetchJSON(`/threads/${threadId}/entries`),
-  // Human-authored entry — used by the ThreadView composer on mobile.
-  // The server stamps role='user' and author_user_id from req.authUserId.
-  postThreadEntry: (threadId: any, content: any) =>
-    fetchJSON(`/threads/${threadId}/entries`, {
-      method: 'POST',
-      body: JSON.stringify({ content }),
-    }),
-  // Forward a single thread entry to an agent — creates a new session for
-  // the target agent seeded with that one entry's content.
-  forwardThreadEntry: (
-    threadId: any,
-    entryId: any,
-    { targetAgentId, prompt, autoStart }: any = {},
-  ) =>
-    fetchJSON(`/threads/${threadId}/entries/${entryId}/forward`, {
-      method: 'POST',
-      body: JSON.stringify({
-        targetAgentId,
-        ...(prompt ? { prompt } : {}),
-        ...(autoStart != null ? { autoStart: !!autoStart } : {}),
-      }),
-    }),
   // Push notification device tokens (Expo)
   registerDeviceToken: (token: any, platform: any) =>
     fetchJSON('/devices', {

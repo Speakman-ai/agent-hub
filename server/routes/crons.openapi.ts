@@ -149,19 +149,6 @@ export const CronLogComponent = registerComponent(
     .openapi({ description: 'A single cron run log row.' }),
 );
 
-export const CronThreadComponent = registerComponent(
-  'CronThreadResponse',
-  z
-    .object({
-      thread: z.unknown().nullable(),
-      entries: z.array(z.unknown()),
-    })
-    .openapi({
-      description:
-        'Cron thread (persistent output log). Both `thread` and `entries` come back null/empty when the cron has no project association or no run has produced a thread yet.',
-    }),
-);
-
 export const CronRunAckComponent = registerComponent(
   'CronRunAck',
   z
@@ -364,22 +351,6 @@ registerPath({
   request: { params: cronIdParams },
   responses: {
     200: { description: 'Run ack.', content: jsonContent(CronRunAckComponent) },
-    404: errorResponse('Cron not found.'),
-  },
-});
-
-// GET /api/crons/:id/thread
-registerPath({
-  method: 'get',
-  path: '/api/crons/{id}/thread',
-  tags: ['Crons'],
-  summary: 'Fetch the persistent output thread for a cron',
-  request: { params: cronIdParams },
-  responses: {
-    200: {
-      description: 'Thread + entries (both null/empty when no run has produced a thread yet).',
-      content: jsonContent(CronThreadComponent),
-    },
     404: errorResponse('Cron not found.'),
   },
 });

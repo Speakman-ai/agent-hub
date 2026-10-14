@@ -13,7 +13,7 @@ describe('resolveEventKey', () => {
     );
   });
   it('falls back to `type` for server-pushed payloads', () => {
-    expect(resolveEventKey({ type: 'thread_message' })).toBe('thread_message');
+    expect(resolveEventKey({ type: 'chat_message' })).toBe('chat_message');
   });
   it('returns null for empty / malformed input', () => {
     expect(resolveEventKey(null)).toBeNull();
@@ -126,17 +126,11 @@ describe('routeNotificationTap — kanban and pulls', () => {
     });
   });
 });
-describe('routeNotificationTap — thread events', () => {
-  it('routes thread_message to the Threads screen for the project', () => {
-    const data = { event: 'thread_message', projectId: 'p1', threadId: 't1' };
-    expect(routeNotificationTap(data)).toEqual({
-      kind: 'threads',
-      projectId: 'p1',
-      threadId: 't1',
-    });
-  });
-  it('returns null when thread events lack projectId — no screen to open', () => {
-    expect(routeNotificationTap({ event: 'thread_message', threadId: 't1' })).toBeNull();
+describe('routeNotificationTap — removed thread events', () => {
+  it('no longer routes thread_message taps', () => {
+    expect(
+      routeNotificationTap({ event: 'thread_message', projectId: 'p1', threadId: 't1' }),
+    ).toBeNull();
   });
 });
 describe('routeNotificationTap — infra alerts', () => {
@@ -198,13 +192,13 @@ describe('notificationRouteToNavigation', () => {
       params: { projectId: 'p1', prNumber: 42 },
     });
   });
-  it('maps kanban / threads / support kinds to their screens', () => {
+  it('maps kanban / support kinds to their screens', () => {
     expect(
       notificationRouteToNavigation({ kind: 'kanban', projectId: 'p1', cardId: 'c1' }),
     ).toEqual({ screen: 'Kanban', params: { projectId: 'p1', cardId: 'c1' } });
     expect(
       notificationRouteToNavigation({ kind: 'threads', projectId: 'p1', threadId: 't1' }),
-    ).toEqual({ screen: 'Threads', params: { projectId: 'p1', threadId: 't1' } });
+    ).toBeNull();
     expect(
       notificationRouteToNavigation({ kind: 'support', projectId: 'p1', ticketId: 'tk1' }),
     ).toEqual({ screen: 'CustomerSupport', params: { projectId: 'p1', ticketId: 'tk1' } });

@@ -29,7 +29,7 @@ describe('projectNavGroups', () => {
       'notes',
     ]);
     expect(group({}, 'support').entries.map((e) => e.key)).toEqual(
-      expect.arrayContaining(['support', 'threads', 'logs', 'rum', 'replays', 'security']),
+      expect.arrayContaining(['support', 'logs', 'rum', 'replays', 'security']),
     );
     expect(group({}, 'ai').entries.map((e) => e.key)).toEqual(['project-agents', 'wiki']);
     expect(group({}, 'settings').entries.map((e) => e.key)).toEqual([
@@ -45,8 +45,8 @@ describe('projectNavGroups', () => {
     expect(entry).toMatchObject({ label: 'Customer Issues', screen: 'CustomerSupport' });
   });
 
-  it('groups Threads under Support', () => {
-    expect(group({}, 'support').entries.map((e) => e.key)).toContain('threads');
+  it('has no Threads entry', () => {
+    expect(flat({}).map((e) => e.key)).not.toContain('threads');
   });
 
   it('groups Wiki and Agents under AI', () => {
@@ -137,7 +137,6 @@ describe('projectNavGroups', () => {
       'workflows',
       'epics',
       'notes',
-      'threads',
       'wiki',
       'project-agents',
       'project-settings',

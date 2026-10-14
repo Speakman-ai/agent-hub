@@ -20,20 +20,18 @@ const PROJECT_SCOPED_VIEWS = new Set([
   'notes',
   'reviewer',
   'pulls',
-  'threads',
   'support',
   'deployments',
   'replays',
   'security',
 ]);
 
-const REMOVED_GLOBAL_VIEWS = new Set(['sheets', 'drive', 'autopilot']);
+const REMOVED_GLOBAL_VIEWS = new Set(['sheets', 'drive', 'autopilot', 'threads']);
 
 export type NavigationState = {
   view: string;
   projectId?: string | null;
   prNumber?: number | string | null;
-  threadId?: string | null;
   designId?: string | null;
   /** Support view only: deep-link a specific ticket to focus on open. */
   ticketId?: string | null;
@@ -120,7 +118,6 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
     view: view || DEFAULT_VIEW,
     projectId,
     prNumber: parsePositiveInt(params.get('pr')),
-    threadId: cleanSegment(params.get('thread')),
     designId: cleanSegment(params.get('design')),
     ticketId: cleanSegment(params.get('ticket')),
     hubPane: view === 'hub' ? hubPane || DEFAULT_HUB_PANE : null,
@@ -163,8 +160,6 @@ export function buildNavigationHash(state: NavigationState) {
 
   const prNumber = parsePositiveInt(state?.prNumber);
   if (view === 'pulls' && prNumber) params.set('pr', String(prNumber));
-  const threadId = cleanSegment(state?.threadId);
-  if (view === 'threads' && threadId) params.set('thread', threadId);
   const designId = cleanSegment(state?.designId);
   if (view === 'design' && designId) params.set('design', designId);
   const ticketId = cleanSegment(state?.ticketId);

@@ -119,7 +119,7 @@ describe('runCronJob cron_finished broadcast', () => {
     );
   });
 
-  it('writes no thread or thread_entry_created broadcast for success or error runs', async () => {
+  it('emits no thread_entry_created broadcast for success or error runs', async () => {
     runOneShot.mockResolvedValueOnce({
       detailed: { stdout: 'ok', stderr: '' },
       engine: 'claude-code',
@@ -131,7 +131,6 @@ describe('runCronJob cron_finished broadcast', () => {
     await runCronJob(cron);
     runOneShot.mockRejectedValueOnce(new Error('boom'));
     await runCronJob(cron);
-    expect(getStmts().getThreadBySource.get('cron-proj', 'cron', String(cron.id))).toBeUndefined();
     expect(broadcast.mock.calls.map((c) => c[0].type)).not.toContain('thread_entry_created');
   });
 });

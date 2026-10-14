@@ -39,7 +39,6 @@ const testState = vi.hoisted(() => ({
     cronSessions: [],
     activeTasks: {},
     finalizeStatusBySession: {},
-    unreadThreadCounts: {},
     unreadTicketCounts: {},
     openPullCounts: {},
     securityOpenCounts: {},

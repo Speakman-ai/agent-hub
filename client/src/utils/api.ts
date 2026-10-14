@@ -3643,37 +3643,6 @@ export const api = {
       body: JSON.stringify({ extend: !!extend }),
     }),
 
-  // Threads
-  getThreads: (projectId: any, type: any) => {
-    const qs = type ? `?type=${type}` : '';
-    return fetchJSON(`/projects/${projectId}/threads${qs}`);
-  },
-  getThread: (threadId: any) => fetchJSON(`/threads/${threadId}`),
-  getThreadEntries: (threadId: any) => fetchJSON(`/threads/${threadId}/entries`),
-  // Human-authored entry — used by the ThreadView composer. The server
-  // stamps `role='user'` and `author_user_id` from req.authUserId.
-  postThreadEntry: (threadId: any, content: any) =>
-    fetchJSON(`/threads/${threadId}/entries`, {
-      method: 'POST',
-      body: JSON.stringify({ content }),
-    }),
-  // Forward a single thread entry to an agent. Creates a new session for the
-  // target agent seeded with that one entry's content as the initial message.
-  forwardThreadEntry: (
-    threadId: any,
-    entryId: any,
-    { targetAgentId, prompt, autoStart }: any = {},
-  ) =>
-    fetchJSON(`/threads/${threadId}/entries/${entryId}/forward`, {
-      method: 'POST',
-      body: JSON.stringify({
-        targetAgentId,
-        ...(prompt ? { prompt } : {}),
-        ...(autoStart != null ? { autoStart: !!autoStart } : {}),
-      }),
-      timeout: 30000,
-    }),
-
   // Notes
   getNotes: (projectId: any, query?: any, limit?: any) => {
     const params = new URLSearchParams();

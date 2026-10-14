@@ -40,7 +40,6 @@ import {
   deepLinkFetchId,
   upsertSessionRow,
 } from '../utils/sessionSelection';
-import { applyEntryUnread, clearProjectUnread, isRetiredHeartbeatThread } from '../utils/threads';
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
 import { mapBroadcastToNotification } from '../utils/ticketNotifications';
 import { routeNotificationTap, notificationRouteToNavigation } from '../utils/notificationRouting';
@@ -154,13 +153,6 @@ export function AppProvider({ children }: any) {
   const [presentedArtifactBySession, setPresentedArtifactBySession] = useState<any>({});
   // Cron-linked sessions
   const [cronSessions, setCronSessions] = useState<any[]>([]);
-  // Threads (persistent output logs for crons)
-  // Unread entry counts keyed by projectId
-  const [unreadThreadCounts, setUnreadThreadCounts] = useState<any>({});
-  // The last raw thread event received from the server. Screens listening for
-  // live updates react to this ref bump via a counter. Shape:
-  //   { type, projectId, thread?, threadId?, entry?, bump }
-  const [lastThreadEvent, setLastThreadEvent] = useState<any>(null);
   const [lastDesignEvent, setLastDesignEvent] = useState<any>(null);
   // Last `support_ticket_*` WS event for the Customer Support screen.
   //   { type, projectId, ticket?, ticketId?, bump }
@@ -226,11 +218,6 @@ export function AppProvider({ children }: any) {
   // `lastUserTodoEvent`. Drives live refetches of the org Todos section without
   // a poll. Shape: { orgId, action, bump }.
   const [lastOrgTodoEvent, setLastOrgTodoEvent] = useState<any>(null);
-  // Tracks the project currently being viewed in ThreadsScreen so we can
-  // suppress unread-badge increments (counts are only incremented when the
-  // user isn't already looking at that project's threads list).
-  const activeThreadsProjectIdRef = useRef<any>(null);
-  const activeThreadIdRef = useRef<any>(null);
   // Stable ref to refreshSecurityOpenCounts so the WS handler (defined before
   // the helper) can call it without a stale-closure / ordering problem.
   const refreshSecurityOpenCountsRef = useRef<any>(null);
@@ -336,7 +323,7 @@ export function AppProvider({ children }: any) {
   const pendingSessionIdRef = useRef<any>(null);
   // Stack navigator bridge — populated by `App.js` via `registerNavigator`
   // once the `NavigationContainer` ref is ready. Used by the notification
-  // response listener to open Kanban / Threads from a cold- or warm-start
+  // response listener to open Kanban / Customer Issues from a cold- or warm-start
   // tap. `null` is a no-op (pre-mount or web/test).
   const navigatorRef = useRef<any>(null);
   // A ref — not state — so registering the navigator never triggers a
@@ -1000,44 +987,6 @@ export function AppProvider({ children }: any) {
             });
           }
           break;
-        // Thread events (persistent output logs)
-        case 'thread_created':
-          if (isRetiredHeartbeatThread(data.thread)) break;
-          setLastThreadEvent({
-            type: 'thread_created',
-            projectId: data.projectId,
-            thread: data.thread,
-            bump: Date.now(),
-          });
-          break;
-        case 'thread_entry_created': {
-          if (isRetiredHeartbeatThread({ type: data.threadType })) break;
-          setUnreadThreadCounts((prev: any) =>
-            applyEntryUnread(
-              prev,
-              { projectId: data.projectId, threadId: data.threadId, threadType: data.threadType },
-              activeThreadIdRef.current,
-            ),
-          );
-          setLastThreadEvent({
-            type: 'thread_entry_created',
-            projectId: data.projectId,
-            threadId: data.threadId,
-            threadName: data.threadName,
-            threadType: data.threadType,
-            entry: data.entry,
-            bump: Date.now(),
-          });
-          break;
-        }
-        case 'thread_deleted':
-          setLastThreadEvent({
-            type: 'thread_deleted',
-            projectId: data.projectId,
-            threadId: data.threadId,
-            bump: Date.now(),
-          });
-          break;
         case 'support_ticket_created':
         case 'support_ticket_updated':
           if (data.projectId && typeof data.unreadCount === 'number') {
@@ -1334,7 +1283,6 @@ export function AppProvider({ children }: any) {
         break;
       }
       case 'kanban':
-      case 'threads':
       case 'support':
       case 'pulls':
       case 'infra':
@@ -2361,14 +2309,6 @@ export function AppProvider({ children }: any) {
     });
   }, []);
   /**
-   * Clear the unread-threads badge for a project. Call when the user opens
-   * the threads list or a specific thread so the sidebar chip resets.
-   */
-  const markProjectThreadsRead = useCallback((projectId: any) => {
-    if (!projectId) return;
-    setUnreadThreadCounts((prev: any) => clearProjectUnread(prev, projectId));
-  }, []);
-  /**
    * Seed the unread support-ticket count for a project from the server. Called
    * by the Support screen on mount so the drawer badge is correct on a cold
    * load; after this the WebSocket unreadCount keeps it live.
@@ -2540,22 +2480,6 @@ export function AppProvider({ children }: any) {
       cancelled = true;
     };
   }, [projects]);
-  /**
-   * ThreadsScreen calls this when the user enters the list view for a project,
-   * so the WS handler knows which project is currently focused (used later if
-   * we want to keep the list live without also pinging the badge).
-   */
-  const setActiveThreadsProject = useCallback((projectId: any) => {
-    activeThreadsProjectIdRef.current = projectId;
-  }, []);
-  /**
-   * ThreadsScreen calls this when the user opens a specific thread detail.
-   * Passing `null` clears (e.g. on back / unmount). While set, incoming entry
-   * events for that thread skip unread-count bumps.
-   */
-  const setActiveThread = useCallback((threadId: any) => {
-    activeThreadIdRef.current = threadId;
-  }, []);
   const dismissChangesReady = useCallback((sessionId: any) => {
     setChangesReady((prev: any) => {
       if (!prev[sessionId]) return prev;
@@ -2718,9 +2642,6 @@ export function AppProvider({ children }: any) {
     lastGoogleChatDraftEvent,
     // Shared org todos (live refetch signal)
     lastOrgTodoEvent,
-    // Threads
-    unreadThreadCounts,
-    lastThreadEvent,
     lastDesignEvent,
     wsSend: send,
     lastSupportTicketEvent,
@@ -2732,9 +2653,6 @@ export function AppProvider({ children }: any) {
     // Security audit drawer badge + screen seed
     securityOpenCounts,
     refreshSecurityOpenCounts,
-    markProjectThreadsRead,
-    setActiveThreadsProject,
-    setActiveThread,
     // Push notification state (Settings screen surfaces these)
     pushToken,
     pushPermissionStatus,

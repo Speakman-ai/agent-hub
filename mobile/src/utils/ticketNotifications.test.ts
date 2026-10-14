@@ -5,7 +5,6 @@ import {
   readyToPushNotification,
   pushedNotification,
   supportTicketCreatedNotification,
-  threadMessageNotification,
   reviewAssignedNotification,
   prMergedNotification,
   infraAlertNotification,
@@ -29,19 +28,6 @@ describe('ticketNotification formatters', () => {
     expect(supportTicketCreatedNotification({ subject: 'Help', ticketType: 'bug' }).body).toBe(
       'bug: Help',
     );
-  });
-  it('formats thread messages and truncates long preview', () => {
-    expect(threadMessageNotification({ threadName: 'T', threadType: 'heartbeat' }).title).toBe(
-      'Heartbeat message',
-    );
-    const long = 'y'.repeat(200);
-    expect(
-      threadMessageNotification({
-        threadName: 'T',
-        threadType: 'cron',
-        preview: long,
-      }).body.endsWith('…'),
-    ).toBe(true);
   });
   it('formats review assigned and PR merged', () => {
     expect(reviewAssignedNotification({ cardTitle: 'X' }).body).toBe('"X" needs your review');
@@ -113,26 +99,6 @@ describe('mapBroadcastToNotification', () => {
       mapBroadcastToNotification({ type: 'card_moved', columnName: 'Done', cardTitle: 'T' }),
     ).toBeNull();
   });
-  it('maps thread_entry_created and flags ERROR entries', () => {
-    const entry = mapBroadcastToNotification({
-      type: 'thread_entry_created',
-      threadName: 'Nightly',
-      threadType: 'cron',
-      entry: { content: 'ERROR: boom' },
-    });
-    expect(entry.event).toBe('thread_message');
-    expect(entry.title).toBe('Thread error');
-  });
-  it('suppresses retired heartbeat thread entries', () => {
-    expect(
-      mapBroadcastToNotification({
-        type: 'thread_entry_created',
-        threadName: 'Daily Check',
-        threadType: 'heartbeat',
-        entry: { content: 'ok' },
-      }),
-    ).toBeNull();
-  });
   it('maps support_ticket_created and webhook_pr_merged', () => {
     expect(
       mapBroadcastToNotification({
@@ -199,22 +165,6 @@ describe('mapBroadcastToNotification — account scoping (ownerUserId)', () => {
       'awaiting_feedback',
     );
   });
-  it('lets shared cron thread messages notify non-owners but keeps private cron messages scoped', () => {
-    const base = {
-      type: 'thread_entry_created',
-      projectId: 'p1',
-      threadName: 'Nightly audit',
-      threadType: 'cron',
-      ownerUserId: 'kevin',
-      entry: { content: 'Done' },
-    };
-    expect(
-      mapBroadcastToNotification({ ...base, cronShared: false }, { currentUserId: 'ryan' }),
-    ).toBeNull();
-    expect(
-      mapBroadcastToNotification({ ...base, cronShared: true }, { currentUserId: 'ryan' })?.event,
-    ).toBe('thread_message');
-  });
   it('never scopes non-session events without a resolvable project', () => {
     const r = mapBroadcastToNotification(
       { type: 'card_moved', columnName: 'Review', cardTitle: 'T', ownerUserId: 'kevin' },
@@ -232,11 +182,9 @@ describe('mapBroadcastToNotification — project scoping (ownerUserId on project
     expect(
       mapBroadcastToNotification(
         {
-          type: 'thread_entry_created',
+          type: 'support_ticket_created',
           projectId: 'theirs',
-          threadName: 'N',
-          threadType: 'cron',
-          entry: { content: 'ok' },
+          ticket: { subject: 'Help', type: 'bug' },
         },
         { currentUserId: 'ryan', projects },
       ),
@@ -251,15 +199,13 @@ describe('mapBroadcastToNotification — project scoping (ownerUserId on project
   it('shows events for projects the current user owns', () => {
     const r = mapBroadcastToNotification(
       {
-        type: 'thread_entry_created',
+        type: 'support_ticket_created',
         projectId: 'mine',
-        threadName: 'Nightly',
-        threadType: 'cron',
-        entry: { content: 'ok' },
+        ticket: { subject: 'Help', type: 'bug' },
       },
       { currentUserId: 'ryan', projects },
     );
-    expect(r?.event).toBe('thread_message');
+    expect(r?.event).toBe('support_ticket_created');
   });
   it("suppresses another user's project event for an unattributed client without a real local bypass", () => {
     // Regression: a missing currentUserId must NOT be treated as a local
