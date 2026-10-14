@@ -6,6 +6,8 @@ import {
   resolveUploadUrl,
   performTicketDelete,
   performTicketLink,
+  linkTargetOptions,
+  freshLinkTargetOptions,
   releaseStateLabel,
   mergeTicketDetail,
 } from './supportTickets';
@@ -279,5 +281,48 @@ describe('performTicketLink', () => {
     const { args } = makeHarness({ linkCard });
     args.onConverted = undefined;
     await expect(performTicketLink(args)).resolves.toBe(true);
+  });
+});
+
+describe('performTicketLink via session', () => {
+  it('sends sessionId (not cardId) and uses the returned card id', async () => {
+    const linkCard = vi.fn().mockResolvedValue({ card: { id: 'card-new' } });
+    const converted: any[] = [];
+    await performTicketLink({
+      projectId: 'proj-1',
+      ticketId: 'tkt-9',
+      sessionId: 'sess-1',
+      item: { id: 'tkt-9', status: 'new' },
+      linkCard,
+      setLinking: () => {},
+      setLinkError: () => {},
+      onConverted: (t: any) => converted.push(t),
+    });
+    expect(linkCard).toHaveBeenCalledWith('proj-1', 'tkt-9', {
+      sessionId: 'sess-1',
+      comment: undefined,
+    });
+    expect(converted[0].converted_card_id).toBe('card-new');
+  });
+});
+
+describe('linkTargetOptions', () => {
+  it('lists cards then sessions, flagging sessions without a card', () => {
+    const opts = linkTargetOptions({
+      cards: [{ id: 'c1', short_id: 7, title: 'Fix it', column_name: 'To Do' }],
+      sessions: [{ id: 's1', name: 'Chat', agent_name: 'Dev', card_id: null, card_short_id: null }],
+    });
+    expect(opts.map((o) => `${o.kind}:${o.label}`)).toEqual(['card:#7 · Fix it', 'session:Chat']);
+    expect(opts[1].detail).toBe('Dev · no card yet, one will be created');
+    expect(linkTargetOptions(null)).toEqual([]);
+  });
+});
+
+describe('freshLinkTargetOptions', () => {
+  const targets = { cards: [{ id: 'c1', short_id: 1, title: 'Old hit', column_name: 'To Do' }] };
+  it('returns options only when the results belong to the current query', () => {
+    expect(freshLinkTargetOptions({ query: 'old', targets }, 'old')).toHaveLength(1);
+    expect(freshLinkTargetOptions({ query: 'old', targets }, 'new')).toEqual([]);
+    expect(freshLinkTargetOptions(null, '')).toEqual([]);
   });
 });

@@ -16844,6 +16844,73 @@ components:
         - ticketId
         - converted
       description: The kanban card the ticket became, plus the retained source ticket (now converted).
+    SupportTicketLinkTargetsResponse:
+      type: object
+      properties:
+        cards:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              short_id:
+                type: integer
+                nullable: true
+              title:
+                type: string
+              column_name:
+                type: string
+              session_id:
+                type: string
+                nullable: true
+              updated_at:
+                type: string
+            required:
+              - id
+              - short_id
+              - title
+              - column_name
+              - session_id
+              - updated_at
+        sessions:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              agent_id:
+                type: string
+              agent_name:
+                type: string
+              card_id:
+                type: string
+                nullable: true
+                description: Kanban card linked to the session, or null when it has none.
+              card_short_id:
+                type: integer
+                nullable: true
+              card_title:
+                type: string
+                nullable: true
+              updated_at:
+                type: string
+            required:
+              - id
+              - name
+              - agent_id
+              - agent_name
+              - card_id
+              - card_short_id
+              - card_title
+              - updated_at
+      required:
+        - cards
+        - sessions
+      description: Cards and sessions a ticket can be linked to. Cards already linked to a support ticket, and sessions whose card is, are omitted.
     LinkSupportTicketToCardResponse:
       type: object
       properties:
@@ -16856,6 +16923,13 @@ components:
         ticketId:
           type: string
           description: Id of the linked source ticket.
+        sessionId:
+          type: string
+          nullable: true
+          description: Session the ticket was linked through, when the request named one.
+        cardCreated:
+          type: boolean
+          description: True when the session had no card and one was created for the link.
         linked:
           type: boolean
           enum:
@@ -16865,6 +16939,8 @@ components:
         - card
         - ticket
         - ticketId
+        - sessionId
+        - cardCreated
         - linked
       description: The existing kanban card the ticket was linked to, plus the retained source ticket.
     SupportTicketComment:
@@ -53217,12 +53293,62 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/link-targets:
+    get:
+      tags:
+        - Support
+      summary: Search cards and sessions a support ticket can be linked to
+      description: Backs the Link-to-card autocomplete. Open cards sort ahead of Done/Cancelled ones; sessions sort most recently updated first and are limited to sessions the caller can read.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            maxLength: 200
+            description: Search text. `#123` / `123` matches a card short id; anything else matches titles and session names.
+          required: false
+          description: Search text. `#123` / `123` matches a card short id; anything else matches titles and session names.
+          name: q
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            description: Max results per group (default 20, max 50).
+          required: false
+          description: Max results per group (default 20, max 50).
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Matching link targets.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketLinkTargetsResponse"
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
   /api/projects/{projectId}/support-tickets/{id}/link-card:
     post:
       tags:
         - Support
-      summary: Link a support ticket to an existing kanban card
-      description: "Ties the ticket to an existing card instead of creating a new one: stamps the ticket back-link on the card, records a comment preserving the ticket context + screenshot, then flags the source ticket `converted` (retained, not deleted) and marks it read. The target card must be on this project board and not already linked to a different ticket. Re-linking an already-converted ticket 409s."
+      summary: Link a support ticket to an existing kanban card or session
+      description: "Ties the ticket to an existing card (or to a session, via its card) instead of creating a new one: stamps the ticket back-link on the card, records a comment preserving the ticket context + screenshot, then flags the source ticket `converted` (retained, not deleted) and marks it read. The target card must be on this project board and not already linked to a different ticket. Re-linking an already-converted ticket 409s."
       parameters:
         - schema:
             type: string
@@ -53247,16 +53373,16 @@ paths:
               properties:
                 cardId:
                   type: string
-                  minLength: 1
-                  description: Id of an existing kanban card on this project board to link the ticket to. Must live on the project board and not already be linked to another ticket.
+                  description: Id of an existing kanban card on this project board to link the ticket to. Must live on the project board and not already be linked to another ticket. Provide exactly one of cardId or sessionId.
+                sessionId:
+                  type: string
+                  description: Id of a live session in this project. The ticket links to the session's kanban card; when the session has no card, one is created from the ticket and linked to the session. Provide exactly one of cardId or sessionId.
                 comment:
                   type: string
                   nullable: true
                   maxLength: 4000
                   description: Optional note (max 4000 characters) recorded as a comment on the linked card, above an auto-generated footer that links back to the source ticket.
-              required:
-                - cardId
-              description: Existing card to link the ticket to, plus an optional note recorded on that card.
+              description: Existing card or session to link the ticket to, plus an optional note recorded on the card.
       responses:
         "200":
           description: Ticket linked to the existing card; the source ticket is retained as converted.
@@ -53271,13 +53397,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/SupportTicketErrorResponse"
         "404":
-          description: Project, ticket, or target card not found.
+          description: Project, ticket, target card, or target session not found.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SupportTicketErrorResponse"
         "409":
-          description: Ticket already converted, or the card is already linked to another ticket.
+          description: Ticket already converted, or the card (or the session card) is already linked to another ticket.
           content:
             application/json:
               schema:

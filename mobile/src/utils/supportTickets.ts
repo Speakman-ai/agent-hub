@@ -94,10 +94,12 @@ export async function performTicketDelete({
 // (already flagged `converted`), falling back to the local row stamped
 // converted + converted_card_id when the response omits it. `linkCard` is
 // injected (the api.linkSupportTicketToCard wrapper) to keep this pure.
+// Pass `sessionId` instead of `cardId` to link through a session.
 export async function performTicketLink({
   projectId,
   ticketId,
   cardId,
+  sessionId,
   comment,
   item,
   linkCard,
@@ -108,12 +110,16 @@ export async function performTicketLink({
   setLinking(true);
   setLinkError(null);
   try {
-    const res: any = await linkCard(projectId, ticketId, { cardId, comment });
+    const res: any = await linkCard(
+      projectId,
+      ticketId,
+      sessionId ? { sessionId, comment } : { cardId, comment },
+    );
     setLinking(false);
     const linkedTicket = res?.ticket ?? {
       ...item,
       status: 'converted',
-      converted_card_id: res?.card?.id ?? cardId,
+      converted_card_id: res?.card?.id ?? cardId ?? null,
     };
     onConverted?.(linkedTicket);
     return true;
@@ -122,4 +128,36 @@ export async function performTicketLink({
     setLinking(false);
     return false;
   }
+}
+
+// Flatten a link-targets search response into one pickable list: cards first,
+// then sessions (which link through their card, or get one created).
+export function linkTargetOptions(targets: any) {
+  const out: { kind: 'card' | 'session'; id: string; label: string; detail: string }[] = [];
+  for (const c of targets?.cards || []) {
+    out.push({
+      kind: 'card',
+      id: c.id,
+      label: `${c.short_id != null ? `#${c.short_id} · ` : ''}${c.title}`,
+      detail: c.column_name || '',
+    });
+  }
+  for (const s of targets?.sessions || []) {
+    const card =
+      s.card_id != null
+        ? `card ${s.card_short_id != null ? `#${s.card_short_id}` : 'linked'}`
+        : 'no card yet, one will be created';
+    out.push({ kind: 'session', id: s.id, label: s.name, detail: `${s.agent_name} · ${card}` });
+  }
+  return out;
+}
+
+// Options for the current query only. Results tagged with an older query are
+// dropped so a stale row can't be picked while the replacement search runs.
+export function freshLinkTargetOptions(
+  results: { query: string; targets: any } | null,
+  query: string,
+) {
+  if (!results || results.query !== query) return [];
+  return linkTargetOptions(results.targets);
 }

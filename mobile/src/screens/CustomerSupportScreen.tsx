@@ -25,6 +25,7 @@ import {
   resolveUploadUrl,
   performTicketDelete,
   performTicketLink,
+  freshLinkTargetOptions,
   releaseStateLabel,
   mergeTicketDetail,
 } from '../utils/supportTickets';
@@ -152,39 +153,46 @@ function TicketCard({
   const [convertComment, setConvertComment] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<any>(null);
-  // Link-to-existing-card state (the sibling of convert): the picker is lazy —
-  // cards load the first time the operator opens it.
+  // Link-to-existing-card state (the sibling of convert). The picker searches
+  // cards and sessions server-side once the operator opens it.
   const [linkOpen, setLinkOpen] = useState(false);
-  const [linkCards, setLinkCards] = useState<any[]>([]);
-  const [loadingLinkCards, setLoadingLinkCards] = useState(false);
-  const [linkCardId, setLinkCardId] = useState('');
+  const [linkQuery, setLinkQuery] = useState('');
+  const [linkResults, setLinkResults] = useState<any>(null);
+  const [linkTarget, setLinkTarget] = useState<{ kind: 'card' | 'session'; id: string } | null>(
+    null,
+  );
   const [linkComment, setLinkComment] = useState('');
   const [linking, setLinking] = useState(false);
   const [linkError, setLinkError] = useState<any>(null);
-  const loadLinkCards = async () => {
-    setLoadingLinkCards(true);
-    setLinkError(null);
-    try {
-      const board: any = await api.getProjectBoard(projectId, { limit: 200 });
-      const flat: any[] = [];
-      for (const col of board?.columns || []) {
-        for (const c of col?.cards || []) {
-          flat.push({ id: c.id, title: c.title, shortId: c.short_id, column: col.name });
-        }
-      }
-      setLinkCards(flat);
-    } catch (err: any) {
-      setLinkError(err.message || 'Failed to load board cards');
-    } finally {
-      setLoadingLinkCards(false);
-    }
-  };
-  const handleOpenLink = () => {
-    setLinkOpen(true);
-    if (!linkCards.length) void loadLinkCards();
-  };
+  useEffect(() => {
+    if (!linkOpen) return;
+    let cancelled = false;
+    const handle = setTimeout(() => {
+      setLinkError(null);
+      api
+        .searchSupportTicketLinkTargets(projectId, linkQuery)
+        .then((res: any) => {
+          if (!cancelled) setLinkResults({ query: linkQuery, targets: res });
+        })
+        .catch((err: any) => {
+          if (!cancelled) setLinkError(err?.message || 'Search failed');
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [linkOpen, linkQuery, projectId]);
+  // Only results produced by the current query are pickable; stale rows from a
+  // previous query are hidden while the replacement search is in flight.
+  const linkResultsFresh = linkResults !== null && linkResults.query === linkQuery;
+  const linkOptions = useMemo(
+    () => freshLinkTargetOptions(linkResults, linkQuery),
+    [linkResults, linkQuery],
+  );
+  const handleOpenLink = () => setLinkOpen(true);
   const handleLink = async () => {
-    if (linking || !linkCardId) return;
+    if (linking || !linkTarget) return;
     // Local-state update on success + error handling lives in a pure,
     // unit-tested helper (performTicketLink in utils/supportTickets) so the
     // "flip the ticket to converted without waiting on the WebSocket echo"
@@ -192,7 +200,7 @@ function TicketCard({
     await performTicketLink({
       projectId,
       ticketId: item.id,
-      cardId: linkCardId,
+      ...(linkTarget.kind === 'session' ? { sessionId: linkTarget.id } : { cardId: linkTarget.id }),
       comment: linkComment.trim() || undefined,
       item,
       linkCard: api.linkSupportTicketToCard,
@@ -337,35 +345,53 @@ function TicketCard({
 
       {!isConverted && linkOpen ? (
         <View style={styles.linkOptions} testID="link-card-picker">
-          <Text style={styles.linkLabel}>Link to an existing card</Text>
-          {loadingLinkCards ? (
-            <Text style={styles.linkHint}>Loading cards…</Text>
-          ) : (
-            <ScrollView style={styles.linkCardList} nestedScrollEnabled>
-              {linkCards.map((c: any) => {
-                const active = linkCardId === c.id;
-                return (
-                  <TouchableOpacity
-                    key={c.id}
-                    testID={`link-card-option-${c.id}`}
-                    onPress={() => setLinkCardId(c.id)}
-                    style={[styles.linkCardOption, active && styles.linkCardOptionActive]}
+          <Text style={styles.linkLabel}>Link to a card or session</Text>
+          <TextInput
+            style={styles.convertComment}
+            value={linkQuery}
+            onChangeText={(t) => {
+              setLinkQuery(t);
+              setLinkTarget(null);
+            }}
+            placeholder="Search cards or sessions (#123, title)"
+            placeholderTextColor={colors.gray500}
+            editable={!linking}
+            autoCorrect={false}
+            autoCapitalize="none"
+            testID="link-target-search"
+          />
+          <ScrollView style={styles.linkCardList} nestedScrollEnabled>
+            {linkOptions.map((o) => {
+              const active = linkTarget?.kind === o.kind && linkTarget.id === o.id;
+              return (
+                <TouchableOpacity
+                  key={`${o.kind}:${o.id}`}
+                  testID={`link-target-option-${o.kind}-${o.id}`}
+                  onPress={() => setLinkTarget({ kind: o.kind, id: o.id })}
+                  style={[styles.linkCardOption, active && styles.linkCardOptionActive]}
+                >
+                  <Text
+                    style={[styles.linkCardOptionText, active && styles.linkCardOptionTextActive]}
+                    numberOfLines={1}
                   >
-                    <Text
-                      style={[styles.linkCardOptionText, active && styles.linkCardOptionTextActive]}
-                      numberOfLines={1}
-                    >
-                      {c.shortId ? `#${c.shortId} · ` : ''}
-                      {c.title} ({c.column})
+                    {o.kind === 'session' ? 'Session · ' : ''}
+                    {o.label}
+                  </Text>
+                  {o.detail ? (
+                    <Text style={styles.linkHint} numberOfLines={1}>
+                      {o.detail}
                     </Text>
-                  </TouchableOpacity>
-                );
-              })}
-              {!linkCards.length ? (
-                <Text style={styles.linkHint}>No cards on this board.</Text>
-              ) : null}
-            </ScrollView>
-          )}
+                  ) : null}
+                </TouchableOpacity>
+              );
+            })}
+            {!linkResultsFresh && !linkError ? (
+              <Text style={styles.linkHint}>Searching…</Text>
+            ) : null}
+            {linkResultsFresh && !linkError && !linkOptions.length ? (
+              <Text style={styles.linkHint}>No matching cards or sessions.</Text>
+            ) : null}
+          </ScrollView>
           <TextInput
             style={styles.convertComment}
             value={linkComment}
@@ -401,10 +427,10 @@ function TicketCard({
           linkOpen ? (
             <TouchableOpacity
               onPress={handleLink}
-              disabled={linking || !linkCardId}
+              disabled={linking || !linkTarget}
               style={[
                 styles.convertButton,
-                (linking || !linkCardId) && styles.convertButtonDisabled,
+                (linking || !linkTarget) && styles.convertButtonDisabled,
               ]}
               testID="link-card-submit"
             >

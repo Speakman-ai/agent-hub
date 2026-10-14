@@ -71,3 +71,33 @@ describe('api.linkSupportTicketToCard', () => {
     expect(JSON.parse(options?.body as string)).toEqual({ cardId: 'card-9' });
   });
 });
+
+describe('api.linkSupportTicketToCard via session', () => {
+  it('sends sessionId instead of cardId', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ linked: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await api.linkSupportTicketToCard('project-1', 'ticket-1', { sessionId: ' sess-1 ' });
+    const [, options] = fetchSpy.mock.calls[0];
+    expect(JSON.parse(options?.body as string)).toEqual({ sessionId: 'sess-1' });
+    fetchSpy.mockRestore();
+  });
+});
+
+describe('api.searchSupportTicketLinkTargets', () => {
+  it('GETs link-targets with the trimmed query', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ cards: [], sessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await api.searchSupportTicketLinkTargets('project-1', '  #12 ');
+    const [url] = fetchSpy.mock.calls[0];
+    expect(String(url)).toMatch(/\/projects\/project-1\/support-tickets\/link-targets\?q=%2312$/);
+    fetchSpy.mockRestore();
+  });
+});

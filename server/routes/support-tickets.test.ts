@@ -4,7 +4,7 @@ import express from 'express';
 import { readdirSync, rmSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getRequest, createAgent, createProject } from '../test/helpers.js';
+import { getRequest, createAgent, createProject, createSession } from '../test/helpers.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { getStmts } from '../db.js';
 import type { RouteDeps } from '../types.js';
@@ -1493,6 +1493,137 @@ describe('support-tickets routes', () => {
       .get(`/api/projects/${projectId}/support-tickets/${created.body.id}`)
       .expect(200);
     expect(detail.body.status).toBe('new');
+  });
+
+  async function newTicket(projectId: string, body: string): Promise<string> {
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body, severity: 'medium', type: 'bug' })
+      .expect(201);
+    return created.body.id as string;
+  }
+
+  it('400s when both cardId and sessionId are given', async () => {
+    const projectId = await newProjectId();
+    const cardId = await createBoardCard(projectId, `both ${Date.now()}`);
+    const ticketId = await newTicket(projectId, 'pick one target');
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/link-card`)
+      .send({ cardId, sessionId: 'whatever' })
+      .expect(400);
+  });
+
+  it("links through a session to the session's existing card", async () => {
+    const projectId = await newProjectId();
+    const agent = await createAgent({ projectId });
+    const session = await createSession({ agentId: agent.id as string, name: 'carded session' });
+    const sessionId = session.id as string;
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const card = await request
+      .post(`/api/projects/${projectId}/board/cards`)
+      .send({ title: `session card ${Date.now()}`, sessionId, columnId: board.body.columns[0].id })
+      .expect(200);
+    expect(card.body.session_id).toBe(sessionId);
+    const ticketId = await newTicket(projectId, 'fixed in that session');
+
+    const link = await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/link-card`)
+      .send({ sessionId })
+      .expect(200);
+    expect(link.body.card.id).toBe(card.body.id);
+    expect(link.body.card.support_ticket_id).toBe(ticketId);
+    expect(link.body.sessionId).toBe(sessionId);
+    expect(link.body.cardCreated).toBe(false);
+    expect(link.body.ticket.converted_card_id).toBe(card.body.id);
+  });
+
+  it('creates a card for a session that has none, linked to both session and ticket', async () => {
+    const projectId = await newProjectId();
+    const agent = await createAgent({ projectId });
+    const session = await createSession({ agentId: agent.id as string, name: 'bare session' });
+    const sessionId = session.id as string;
+    const ticketId = await newTicket(projectId, 'the export button crashes');
+
+    const link = await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/link-card`)
+      .send({ sessionId, comment: 'working on it here' })
+      .expect(200);
+    expect(link.body.cardCreated).toBe(true);
+    expect(link.body.card.session_id).toBe(sessionId);
+    expect(link.body.card.support_ticket_id).toBe(ticketId);
+    expect(link.body.ticket.status).toBe('converted');
+
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const created = board.body.cards.find((c: { id: string }) => c.id === link.body.card.id);
+    const column = board.body.columns.find((c: { id: string }) => c.id === created.column_id);
+    expect(column.name).toBe('In Progress');
+  });
+
+  it("404s linking a session from another project, and 409s when the session's card is taken", async () => {
+    const projectId = await newProjectId();
+    const otherAgent = await createAgent({ projectId: await newProjectId() });
+    const foreign = await createSession({ agentId: otherAgent.id as string });
+    const ticketId = await newTicket(projectId, 'foreign session');
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/link-card`)
+      .send({ sessionId: foreign.id })
+      .expect(404);
+
+    const agent = await createAgent({ projectId });
+    const session = await createSession({ agentId: agent.id as string });
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/link-card`)
+      .send({ sessionId: session.id })
+      .expect(200);
+    const second = await newTicket(projectId, 'second ticket same session');
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${second}/link-card`)
+      .send({ sessionId: session.id })
+      .expect(409);
+  });
+
+  it('searches link targets by title, short id, and session name, omitting claimed cards', async () => {
+    const projectId = await newProjectId();
+    const stamp = Date.now();
+    const openId = await createBoardCard(projectId, `Fix export crash ${stamp}`);
+    const takenId = await createBoardCard(projectId, `Fix export taken ${stamp}`);
+    await createBoardCard(projectId, `Unrelated ${stamp}`);
+    const taker = await newTicket(projectId, 'claims a card');
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${taker}/link-card`)
+      .send({ cardId: takenId })
+      .expect(200);
+    const agent = await createAgent({ projectId, name: 'Dev Bot' });
+    const session = await createSession({
+      agentId: agent.id as string,
+      name: `Export investigation ${stamp}`,
+    });
+
+    const res = await request
+      .get(`/api/projects/${projectId}/support-tickets/link-targets`)
+      .query({ q: 'EXPORT' })
+      .expect(200);
+    expect(res.body.cards.map((c: { id: string }) => c.id)).toEqual([openId]);
+    expect(res.body.cards[0].column_name).toBe('To Do');
+    expect(res.body.sessions.map((s: { id: string }) => s.id)).toEqual([session.id]);
+    expect(res.body.sessions[0].agent_name).toBe('Dev Bot');
+    expect(res.body.sessions[0].card_id).toBeNull();
+
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const shortId = board.body.cards.find((c: { id: string }) => c.id === openId).short_id;
+    const byShort = await request
+      .get(`/api/projects/${projectId}/support-tickets/link-targets`)
+      .query({ q: `#${shortId}` })
+      .expect(200);
+    expect(byShort.body.cards.map((c: { id: string }) => c.id)).toEqual([openId]);
+
+    const limited = await request
+      .get(`/api/projects/${projectId}/support-tickets/link-targets`)
+      .query({ limit: 1 })
+      .expect(200);
+    expect(limited.body.cards).toHaveLength(1);
+
+    await request.get('/api/projects/nope/support-tickets/link-targets').expect(404);
   });
 
   it('is race-safe — two tickets linking the same card: exactly one wins, no clobber', async () => {

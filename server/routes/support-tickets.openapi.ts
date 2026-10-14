@@ -628,9 +628,13 @@ registerPath({
 
 export const LinkSupportTicketToCardRequestSchema = z
   .object({
-    cardId: z.string().min(1).openapi({
+    cardId: z.string().optional().openapi({
       description:
-        'Id of an existing kanban card on this project board to link the ticket to. Must live on the project board and not already be linked to another ticket.',
+        'Id of an existing kanban card on this project board to link the ticket to. Must live on the project board and not already be linked to another ticket. Provide exactly one of cardId or sessionId.',
+    }),
+    sessionId: z.string().optional().openapi({
+      description:
+        "Id of a live session in this project. The ticket links to the session's kanban card; when the session has no card, one is created from the ticket and linked to the session. Provide exactly one of cardId or sessionId.",
     }),
     comment: z
       .string()
@@ -644,10 +648,76 @@ export const LinkSupportTicketToCardRequestSchema = z
         description: `Optional note (max ${MAX_ASSIGNMENT_COMMENT_LEN} characters) recorded as a comment on the linked card, above an auto-generated footer that links back to the source ticket.`,
       }),
   })
+  .refine((b) => Boolean(b.cardId?.trim()) !== Boolean(b.sessionId?.trim()), {
+    message: 'Provide exactly one of cardId or sessionId',
+  })
   .openapi({
     description:
-      'Existing card to link the ticket to, plus an optional note recorded on that card.',
+      'Existing card or session to link the ticket to, plus an optional note recorded on the card.',
   });
+
+export const SupportTicketLinkTargetsQuerySchema = z.object({
+  q: z.string().max(200).optional().openapi({
+    description:
+      'Search text. `#123` / `123` matches a card short id; anything else matches titles and session names.',
+  }),
+  limit: z.coerce.number().int().min(1).max(50).optional().openapi({
+    description: 'Max results per group (default 20, max 50).',
+  }),
+});
+
+const SupportTicketLinkTargetsResponse = registerComponent(
+  'SupportTicketLinkTargetsResponse',
+  z
+    .object({
+      cards: z.array(
+        z.object({
+          id: z.string(),
+          short_id: z.number().int().nullable(),
+          title: z.string(),
+          column_name: z.string(),
+          session_id: z.string().nullable(),
+          updated_at: z.string(),
+        }),
+      ),
+      sessions: z.array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          agent_id: z.string(),
+          agent_name: z.string(),
+          card_id: z.string().nullable().openapi({
+            description: 'Kanban card linked to the session, or null when it has none.',
+          }),
+          card_short_id: z.number().int().nullable(),
+          card_title: z.string().nullable(),
+          updated_at: z.string(),
+        }),
+      ),
+    })
+    .openapi({
+      description:
+        'Cards and sessions a ticket can be linked to. Cards already linked to a support ticket, and sessions whose card is, are omitted.',
+    }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/support-tickets/link-targets',
+  tags: ['Support'],
+  summary: 'Search cards and sessions a support ticket can be linked to',
+  description:
+    'Backs the Link-to-card autocomplete. Open cards sort ahead of Done/Cancelled ones; sessions sort most recently updated first and are limited to sessions the caller can read.',
+  request: { params: projectIdParams, query: SupportTicketLinkTargetsQuerySchema },
+  responses: {
+    200: {
+      description: 'Matching link targets.',
+      content: jsonContent(SupportTicketLinkTargetsResponse),
+    },
+    400: errorResponse('Invalid query.'),
+    404: errorResponse('Project not found.'),
+  },
+});
 
 const LinkSupportTicketToCardResponse = registerComponent(
   'LinkSupportTicketToCardResponse',
@@ -658,6 +728,12 @@ const LinkSupportTicketToCardResponse = registerComponent(
         description: "The source ticket, now retained and flagged 'converted', linked to the card.",
       }),
       ticketId: z.string().openapi({ description: 'Id of the linked source ticket.' }),
+      sessionId: z.string().nullable().openapi({
+        description: 'Session the ticket was linked through, when the request named one.',
+      }),
+      cardCreated: z.boolean().openapi({
+        description: 'True when the session had no card and one was created for the link.',
+      }),
       linked: z.literal(true).openapi({
         description:
           'Always true — the ticket was linked to the existing card and flagged converted.',
@@ -673,9 +749,9 @@ registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/support-tickets/{id}/link-card',
   tags: ['Support'],
-  summary: 'Link a support ticket to an existing kanban card',
+  summary: 'Link a support ticket to an existing kanban card or session',
   description:
-    'Ties the ticket to an existing card instead of creating a new one: stamps the ticket back-link on the card, records a comment preserving the ticket context + screenshot, then flags the source ticket `converted` (retained, not deleted) and marks it read. The target card must be on this project board and not already linked to a different ticket. Re-linking an already-converted ticket 409s.',
+    'Ties the ticket to an existing card (or to a session, via its card) instead of creating a new one: stamps the ticket back-link on the card, records a comment preserving the ticket context + screenshot, then flags the source ticket `converted` (retained, not deleted) and marks it read. The target card must be on this project board and not already linked to a different ticket. Re-linking an already-converted ticket 409s.',
   request: {
     params: ticketParams,
     body: { required: true, content: jsonContent(LinkSupportTicketToCardRequestSchema) },
@@ -687,9 +763,9 @@ registerPath({
       content: jsonContent(LinkSupportTicketToCardResponse),
     },
     400: errorResponse('Invalid request body.'),
-    404: errorResponse('Project, ticket, or target card not found.'),
+    404: errorResponse('Project, ticket, target card, or target session not found.'),
     409: errorResponse(
-      'Ticket already converted, or the card is already linked to another ticket.',
+      'Ticket already converted, or the card (or the session card) is already linked to another ticket.',
     ),
   },
 });

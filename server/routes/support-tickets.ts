@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { Router, Request, Response } from 'express';
 import rateLimit, { type RateLimitInfo } from 'express-rate-limit';
-import type { RouteDeps, KanbanCardRow } from '../types.js';
+import type { RouteDeps, KanbanCardRow, SessionRow } from '../types.js';
 import {
   getSupportTicket,
   listSupportTickets,
@@ -47,13 +47,15 @@ import {
   CastVoteRequestSchema,
   ConvertSupportTicketRequestSchema,
   LinkSupportTicketToCardRequestSchema,
+  SupportTicketLinkTargetsQuerySchema,
   VotingListQuerySchema,
 } from './support-tickets.openapi.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
 import { resolveEffectiveEngineAndModel } from '../effective-model.js';
 import type { SupportedEngine } from '../engine-availability.js';
 import type { AuthenticatedRequest } from '../auth.js';
-import { resolveOwnerUserId } from '../session-ownership.js';
+import { resolveOwnerUserId, userCanReadSession } from '../session-ownership.js';
+import { searchSupportTicketLinkTargets } from '../support-ticket-link-targets.js';
 import { triggerSupportTicketInvestigation } from '../support-ticket-investigation.js';
 import { pickMainDevAgent } from '../routing.js';
 import { resolveUploadsDir } from '../uploads-dir.js';
@@ -362,6 +364,25 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       const project = findProject(req.params.projectId as string);
       if (!project) return res.status(404).json({ error: 'Project not found' });
       res.json({ count: countUnreadSupportTickets(project.id) });
+    },
+  );
+
+  // Autocomplete source for the Link-to-card control. Registered before the
+  // `/:id` route so the literal path wins the match.
+  router.get(
+    '/api/projects/:projectId/support-tickets/link-targets',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const parsed = SupportTicketLinkTargetsQuerySchema.safeParse(req.query);
+      if (!parsed.success) return res.status(400).json({ error: 'Invalid query' });
+      res.json(
+        searchSupportTicketLinkTargets(stmts, project, {
+          query: parsed.data.q,
+          limit: parsed.data.limit,
+          canReadSession: (sessionId) => userCanReadSession(req as AuthenticatedRequest, sessionId),
+        }),
+      );
     },
   );
 
@@ -1005,17 +1026,41 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       if (!parsed.success) {
         return res.status(400).json({ error: 'Invalid request body' });
       }
-      const cardId = parsed.data.cardId.trim();
-      if (!cardId) return res.status(400).json({ error: 'cardId is required' });
       const note = typeof parsed.data.comment === 'string' ? parsed.data.comment.trim() : '';
+      const sessionId = parsed.data.sessionId?.trim() || null;
 
-      const { board } = getOrCreateBoard(stmts, project.id);
-      const target = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
-      if (!target || target.board_id !== board.id) {
-        return res.status(404).json({ error: 'Target card not found on this board' });
+      const { board, columns } = getOrCreateBoard(stmts, project.id);
+
+      // Linking through a session resolves to the session's card. A session
+      // with no card gets one created from the ticket inside the transaction.
+      let cardId = parsed.data.cardId?.trim() || '';
+      if (sessionId) {
+        const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        const inProject =
+          !!session &&
+          !session.deleted_at &&
+          project.agents.some((a) => a.id === session.agent_id) &&
+          userCanReadSession(req as AuthenticatedRequest, sessionId);
+        if (!inProject) {
+          return res.status(404).json({ error: 'Target session not found in this project' });
+        }
+        const sessionCard = stmts.getKanbanCardBySession.get(sessionId) as
+          | KanbanCardRow
+          | undefined;
+        if (sessionCard && sessionCard.board_id === board.id) cardId = sessionCard.id;
+      }
+      const createForSession = !!sessionId && !cardId;
+      let cardCreated = false;
+
+      let target: KanbanCardRow | undefined;
+      if (!createForSession) {
+        target = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
+        if (!target || target.board_id !== board.id) {
+          return res.status(404).json({ error: 'Target card not found on this board' });
+        }
       }
       // Never clobber the back-link of a card already tied to another ticket.
-      if (target.support_ticket_id && target.support_ticket_id !== ticket.id) {
+      if (target?.support_ticket_id && target.support_ticket_id !== ticket.id) {
         return res.status(409).json({ error: 'Card is already linked to another support ticket' });
       }
 
@@ -1042,6 +1087,37 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       // `changes`) rather than clobbering the winner's provenance or surfacing a
       // busy/snapshot 500. A 0-row claim is disambiguated into card-gone (404)
       // vs card-taken (409) by a follow-up read.
+      // Lands in In Progress (the session is already working on it), falling
+      // back to To Do / the left-most column on boards with renamed columns.
+      const createCardForSession = (source: SupportTicketRow, sid: string): string => {
+        const byName = (n: string) => columns.find((c) => c.name.trim().toLowerCase() === n);
+        const column =
+          byName('in progress') ??
+          byName('to do') ??
+          [...columns].sort((a, b) => a.position - b.position)[0];
+        if (!column) throw new Error('Board has no columns to place the card in');
+        const fields = buildCardFieldsFromTicket(source);
+        const existing = stmts.getKanbanCardsByColumn.all(column.id) as KanbanCardRow[];
+        const maxPos = existing.length ? Math.max(...existing.map((c) => c.position)) + 1 : 0;
+        const newId = uuidv4();
+        stmts.createKanbanCard.run(
+          newId,
+          column.id,
+          board.id,
+          fields.title,
+          fields.description,
+          fields.priority,
+          null, // assignee
+          fields.labels,
+          sid,
+          null, // github_issue_url
+          'support-ticket', // created_by
+          null, // assign_model
+          maxPos,
+        );
+        return newId;
+      };
+
       const link = getDb().transaction(
         ():
           | { kind: 'ok'; card: KanbanCardRow }
@@ -1052,6 +1128,18 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           const fresh = getSupportTicket(ticket.id);
           if (!fresh) return { kind: 'gone' };
           if (fresh.status === 'converted') return { kind: 'already' };
+          if (createForSession) {
+            // Re-check inside the transaction: a concurrent link may have
+            // created the session's card since the read above.
+            const raced = stmts.getKanbanCardBySession.get(sessionId) as KanbanCardRow | undefined;
+            if (raced) {
+              if (raced.board_id !== board.id) return { kind: 'card-gone' };
+              cardId = raced.id;
+            } else {
+              cardId = createCardForSession(fresh, sessionId!);
+              cardCreated = true;
+            }
+          }
           const claim = stmts.claimKanbanCardForSupportTicket.run(
             ticket.id,
             ticket.id,
@@ -1108,6 +1196,8 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         card: serializeCardForRequest(req, stmts, board.id, card),
         ticket: serializeForRequest(req, linked),
         ticketId: ticket.id,
+        sessionId,
+        cardCreated,
         linked: true,
       });
     },

@@ -32,6 +32,7 @@ import VotingScaffolderModal from './VotingScaffolderModal';
 import { parseReplayIdFromRef } from '../utils/replayPlayer';
 import { MarkdownContent } from './MarkdownRenderer';
 import { isImeComposing } from '../utils/keyboard';
+import SupportLinkTargetPicker, { type LinkTarget } from './SupportLinkTargetPicker';
 
 function relativeTime(ts: any) {
   if (!ts) return '';
@@ -209,26 +210,6 @@ function sortTickets(list: any, mode: 'priority' | 'date' = 'priority') {
     // matching the server's created_at DESC.
     return (b.created_at || '').localeCompare(a.created_at || '');
   });
-}
-
-// Flatten a `GET /board` response into picker rows for the Link-to-card
-// control. The board response carries cards as a FLAT top-level array; each
-// card references its column by `column_id` and columns do NOT nest their
-// cards. Resolving the column name through an id→name map is what keeps the
-// picker populated (iterating a non-existent `column.cards` yields nothing).
-function flattenBoardCardsForPicker(board: any) {
-  const columnNameById = new Map<string, string>();
-  for (const col of board?.columns || []) columnNameById.set(col.id, col.name);
-  const flat: any[] = [];
-  for (const c of board?.cards || []) {
-    flat.push({
-      id: c.id,
-      title: c.title,
-      shortId: c.short_id,
-      column: columnNameById.get(c.column_id) || '',
-    });
-  }
-  return flat;
 }
 
 // Sort the voting feed: highest score first, ties broken by newest first —
@@ -713,9 +694,10 @@ function ConvertControl({
 // Link-to-existing-card control: the sibling of ConvertControl. Instead of
 // creating a fresh card, it attaches the ticket to a card that already exists
 // (e.g. the card whose fix already addressed the reported bug). Collapsed until
-// the operator opens it, at which point it lazily loads the board's cards into
-// a picker. On success the ticket flips to `converted` server-side and leaves
-// the open queue, so we reuse the same `onConverted(ticketId)` drop handler.
+// the operator opens it, at which point a server-backed autocomplete searches
+// cards and sessions (a session links through its card). On success the ticket
+// flips to `converted` server-side and leaves the open queue, so we reuse the
+// same `onConverted(ticketId)` drop handler.
 function LinkToCardControl({
   projectId,
   ticketId,
@@ -724,41 +706,20 @@ function LinkToCardControl({
   onConverted,
 }: any) {
   const [open, setOpen] = useState(false);
-  const [cards, setCards] = useState<any[]>([]);
-  const [loadingCards, setLoadingCards] = useState(false);
-  const [cardId, setCardId] = useState('');
+  const [target, setTarget] = useState<LinkTarget | null>(null);
   const [comment, setComment] = useState('');
   const [linking, setLinking] = useState(false);
   const [error, setError] = useState<any>(null);
   const pe = stretched ? 'pointer-events-auto relative' : '';
   const btnPad = size === 'md' ? 'px-2.5 py-1.5' : 'px-2 py-1';
 
-  const loadCards = async () => {
-    setLoadingCards(true);
-    setError(null);
-    try {
-      // Pull a generous page per column so the picker covers the whole board.
-      const board: any = await api.getBoard(projectId, { limit: 200 });
-      setCards(flattenBoardCardsForPicker(board));
-    } catch (err: any) {
-      setError(err?.message || 'Failed to load board cards');
-    } finally {
-      setLoadingCards(false);
-    }
-  };
-
-  const handleOpen = () => {
-    setOpen(true);
-    if (!cards.length) void loadCards();
-  };
-
   const handleLink = async () => {
-    if (linking || !cardId) return;
+    if (linking || !target) return;
     setLinking(true);
     setError(null);
     try {
       await api.linkSupportTicketToCard(projectId, ticketId, {
-        cardId,
+        ...(target.kind === 'session' ? { sessionId: target.id } : { cardId: target.id }),
         comment: comment.trim() || undefined,
       });
     } catch (err: any) {
@@ -772,8 +733,8 @@ function LinkToCardControl({
   if (!open) {
     return (
       <button
-        onClick={handleOpen}
-        title="Link this ticket to an existing kanban card"
+        onClick={() => setOpen(true)}
+        title="Link this ticket to an existing kanban card or session"
         className={`${pe} inline-flex items-center gap-1.5 text-xs ${btnPad} rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:border-gray-600 hover:bg-gray-800 transition-colors`}
       >
         <Link2 size={13} />
@@ -784,22 +745,14 @@ function LinkToCardControl({
 
   return (
     <span className={`${pe} inline-flex flex-col gap-1.5 items-start min-w-[14rem]`}>
-      <select
-        value={cardId}
-        onChange={(e: any) => setCardId(e.target.value)}
-        disabled={linking || loadingCards}
-        aria-label="Existing card to link the ticket to"
-        data-testid="link-card-select"
-        className={`${pe} w-full text-xs bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300 focus:outline-none focus:border-gray-600 disabled:opacity-50`}
-      >
-        <option value="">{loadingCards ? 'Loading cards…' : 'Select a card…'}</option>
-        {cards.map((c: any) => (
-          <option key={c.id} value={c.id}>
-            {c.shortId ? `#${c.shortId} · ` : ''}
-            {c.title} ({c.column})
-          </option>
-        ))}
-      </select>
+      <SupportLinkTargetPicker
+        projectId={projectId}
+        value={target}
+        onChange={setTarget}
+        disabled={linking}
+        autoFocus
+        className={pe}
+      />
       <textarea
         value={comment}
         onChange={(e: any) => setComment(e.target.value)}
@@ -814,7 +767,7 @@ function LinkToCardControl({
       <span className="inline-flex items-center gap-2">
         <button
           onClick={handleLink}
-          disabled={linking || !cardId}
+          disabled={linking || !target}
           data-testid="link-card-submit"
           className={`${pe} inline-flex items-center gap-1.5 text-xs ${btnPad} rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:border-gray-600 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors`}
         >
@@ -2615,4 +2568,4 @@ function CustomerSupportPageInner(
 const CustomerSupportPage = forwardRef(CustomerSupportPageInner);
 CustomerSupportPage.displayName = 'CustomerSupportPage';
 export default CustomerSupportPage;
-export { sortTickets, resolveReplayUrl, flattenBoardCardsForPicker };
+export { sortTickets, resolveReplayUrl };

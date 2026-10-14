@@ -64,6 +64,31 @@ interface UpdateDeployReleaseGateBody {
 }
 
 /** Todo priority — reuses the kanban-card enum so a promote maps 1:1. */
+export interface SupportTicketLinkTargetCard {
+  id: string;
+  short_id: number | null;
+  title: string;
+  column_name: string;
+  session_id: string | null;
+  updated_at: string;
+}
+
+export interface SupportTicketLinkTargetSession {
+  id: string;
+  name: string;
+  agent_id: string;
+  agent_name: string;
+  card_id: string | null;
+  card_short_id: number | null;
+  card_title: string | null;
+  updated_at: string;
+}
+
+export interface SupportTicketLinkTargets {
+  cards: SupportTicketLinkTargetCard[];
+  sessions: SupportTicketLinkTargetSession[];
+}
+
 export type TodoPriority = 'urgent' | 'high' | 'medium' | 'low';
 /** Polymorphic link target type (spec TODO-TO-TICKET). */
 export type TodoLinkType = 'card' | 'epic' | 'session';
@@ -3384,14 +3409,35 @@ export const api = {
   // queue. Returns { card, ticket, ticketId, linked: true }. 404 if the card
   // isn't on the board; 409 if the ticket is already converted or the card is
   // already linked to another ticket.
+  // Pass `sessionId` instead of `cardId` to link through a session: the server
+  // uses the session's card, creating one when the session has none.
   linkSupportTicketToCard: (projectId: any, id: any, opts: any = {}) => {
-    const body: Record<string, any> = { cardId: String(opts.cardId || '').trim() };
+    const sessionId = String(opts.sessionId || '').trim();
+    const body: Record<string, any> = sessionId
+      ? { sessionId }
+      : { cardId: String(opts.cardId || '').trim() };
     if (opts.comment != null && String(opts.comment).trim())
       body.comment = String(opts.comment).trim();
     return fetchJSON(`/projects/${projectId}/support-tickets/${id}/link-card`, {
       method: 'POST',
       body: JSON.stringify(body),
     });
+  },
+  // Autocomplete source for the Link-to-card control: matching board cards
+  // (claimed ones omitted) and live project sessions.
+  searchSupportTicketLinkTargets: (
+    projectId: string,
+    query: string,
+    opts: { limit?: number; signal?: AbortSignal } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (query.trim()) params.set('q', query.trim());
+    if (opts.limit) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    return fetchJSON<SupportTicketLinkTargets>(
+      `/projects/${projectId}/support-tickets/link-targets${qs ? `?${qs}` : ''}`,
+      opts.signal ? { signal: opts.signal } : undefined,
+    );
   },
   // Permanently delete a support ticket. The server emits a
   // support_ticket_deleted WebSocket event so open clients drop the row.

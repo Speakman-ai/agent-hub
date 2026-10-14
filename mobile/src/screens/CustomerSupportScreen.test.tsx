@@ -107,7 +107,10 @@ vi.mock('@shared/utils/convertedCardLabel', () => ({
   convertedCardLabel: () => null,
   convertedCardId: () => null,
 }));
-vi.mock('../utils/supportTickets', () => ({
+vi.mock('../utils/supportTickets', async (importOriginal) => ({
+  // Pure link-picker helpers run for real; the rest are stubbed.
+  freshLinkTargetOptions: (await importOriginal<typeof import('../utils/supportTickets')>())
+    .freshLinkTargetOptions,
   sortTickets: (l: any[]) => l,
   resolveReplayUrl: () => null,
   resolveUploadUrl: () => null,
