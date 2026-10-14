@@ -17,6 +17,7 @@ export default function StartSessionModal({
   seedMessage,
   defaultName,
   warning,
+  autoStart = false,
   onClose,
   onStarted,
 }: {
@@ -28,6 +29,8 @@ export default function StartSessionModal({
   defaultName?: string;
   /** Shown above the form, e.g. when the source was already sent to an agent. */
   warning?: string | null;
+  /** Run the opening message as the first turn right away instead of waiting for a follow-up. */
+  autoStart?: boolean;
   onClose: () => void;
   onStarted: (session: SessionWire) => void;
 }) {
@@ -101,7 +104,10 @@ export default function StartSessionModal({
     setSubmitting(true);
     setError(null);
     try {
-      const session = await api.createSession(agentId, defaultName, { seedMessage: seed.trim() });
+      const session = await api.createSession(agentId, defaultName, {
+        seedMessage: seed.trim(),
+        autoStart,
+      });
       onStarted(session);
       onClose();
     } catch (err: any) {

@@ -1996,6 +1996,7 @@ export default function HubChatPage({
           contextLabel={dispatch.label}
           seedMessage={dispatch.seed}
           defaultName={dispatch.label}
+          autoStart
           onClose={() => setDispatch(null)}
           onStarted={(session) => {
             setPicked(null);

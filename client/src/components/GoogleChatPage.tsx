@@ -2449,6 +2449,7 @@ export default function GoogleChatPage({
           contextLabel={dispatch.label}
           seedMessage={dispatch.seed}
           defaultName={dispatch.label}
+          autoStart
           warning={dispatchWarning}
           onClose={() => setDispatch(null)}
           onStarted={(session) => {

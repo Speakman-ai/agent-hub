@@ -332,8 +332,12 @@ export const CreateSessionRequestSchema = z.object({
     .optional()
     .openapi({
       description:
-        'Optional opening user message to pre-store on the new session (e.g. an email or todo context block from the User Module). Stored as the first `role="user"` message and fed to the CLI by the first-turn history bootstrap on the next turn; the session is not auto-started.',
+        'Optional opening user message to pre-store on the new session (e.g. an email or todo context block from the User Module). Stored as the first `role="user"` message and fed to the CLI by the first-turn history bootstrap on the next turn unless `autoStart` is true.',
     }),
+  autoStart: z.boolean().optional().openapi({
+    description:
+      'When true and `seedMessage` is non-empty, run `seedMessage` as the first chat turn immediately instead of pre-storing it, so the agent starts working without a follow-up message.',
+  }),
 });
 
 /** PATCH /api/sessions/:sessionId — `name`, `max_turns`, and/or `finalize_automation`. */

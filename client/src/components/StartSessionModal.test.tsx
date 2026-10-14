@@ -46,6 +46,7 @@ describe('StartSessionModal', () => {
     await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
     expect(createSession).toHaveBeenCalledWith('agent-1', 'Email: Q3 planning', {
       seedMessage: "Here's an email I'd like to work on with you.",
+      autoStart: false,
     });
     await waitFor(() =>
       expect(onStarted).toHaveBeenCalledWith({ id: 'sess-1', agent_id: 'agent-1' }),
@@ -70,6 +71,30 @@ describe('StartSessionModal', () => {
     await waitFor(() => expect(submit).not.toBeDisabled());
     fireEvent.click(submit);
     await waitFor(() => expect(createSession).toHaveBeenCalled());
-    expect(createSession.mock.calls[0][2]).toEqual({ seedMessage: 'edited seed' });
+    expect(createSession.mock.calls[0][2]).toEqual({
+      seedMessage: 'edited seed',
+      autoStart: false,
+    });
+  });
+
+  it('asks the server to run the seed as the first turn when autoStart is set', async () => {
+    render(
+      <StartSessionModal
+        contextLabel="Chat: #eng"
+        seedMessage="Please look at this thread."
+        autoStart
+        onClose={() => {}}
+        onStarted={() => {}}
+      />,
+    );
+    await waitFor(() => expect(getAgents).toHaveBeenCalled());
+    const submit = await screen.findByTestId('start-session-submit');
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(createSession).toHaveBeenCalled());
+    expect(createSession.mock.calls[0][2]).toEqual({
+      seedMessage: 'Please look at this thread.',
+      autoStart: true,
+    });
   });
 });

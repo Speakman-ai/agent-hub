@@ -737,12 +737,14 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const useWorktree = defaultSessionUseWorktreeFlag(found?.project);
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, 0, 1);
     setSessionOwner(id, ownerUid);
-    // Optional opening user message (e.g. an email/todo context block from the
-    // User Module's "Start session with this as context" action). Pre-stored as
-    // the first user message — not auto-started — so the first-turn history
-    // bootstrap feeds it to the CLI when the user sends their follow-up.
+    // Optional opening user message (e.g. an email/todo context block, or chat
+    // messages sent to an agent). With `autoStart` it runs as the first turn
+    // right away (handleChat stores the message itself, below). Otherwise it is
+    // pre-stored and the first-turn history bootstrap feeds it to the CLI when
+    // the user sends their follow-up.
     const seed = parsed.seedMessage?.trim();
-    if (seed) {
+    const autoStartSeed = Boolean(seed && parsed.autoStart && handleChat);
+    if (seed && !autoStartSeed) {
       stmts.addMessage.run(uuidv4(), id, 'user', seed, null, null, null, null, null, null, null);
       stmts.touchSession.run(id);
     }
@@ -777,6 +779,17 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const session = stmts.getSession.get(id) as SessionRow;
     const sessionWire = enrichSessionForClient(session, stmts, found?.project ?? null);
     deps.broadcast({ type: 'session_created', agentId: req.params.agentId, session: sessionWire });
+    if (autoStartSeed && seed) {
+      void handleChat(null, {
+        type: 'chat',
+        agentId: agentIdParam,
+        sessionId: id,
+        content: seed,
+      }).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[sessions] seed auto-start rejected for session ${id}: ${message}`);
+      });
+    }
     res.json(sessionWire);
   });
 
