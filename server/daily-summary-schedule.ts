@@ -185,6 +185,12 @@ export interface DailySummaryScheduleDeps {
   routeDeps: RouteDeps;
   listSchedules: () => Array<{ userId: string; schedule: HubDailySummarySchedule }>;
   generate: GenerateDailySummaryFn;
+  /**
+   * Called with each report a scheduled run produced (never for on-demand
+   * regenerates). Wired to the Summaries channel poster, injected for the same
+   * no-runtime-edge reason as `generate`.
+   */
+  onScheduledReport?: (userId: string, report: HubDailySummaryStored) => void;
   now?: () => Date;
 }
 
@@ -221,8 +227,9 @@ export async function runDailySummaryScheduleTick(deps: DailySummaryScheduleDeps
     const key = `${item.userId}:${item.localDate}:${item.time}`;
     if (firedThisDay.has(key)) continue;
     firedThisDay.add(key);
+    let report: HubDailySummaryStored;
     try {
-      await generate({
+      report = await generate({
         userId: item.userId,
         timeZone: item.timeZone,
         deps: deps.routeDeps,
@@ -233,6 +240,15 @@ export async function runDailySummaryScheduleTick(deps: DailySummaryScheduleDeps
       // Best-effort: one user's engine/auth failure must not stop the others.
       console.error(
         `[daily-summary-schedule] generate failed for ${item.userId}:`,
+        (err as Error).message,
+      );
+      continue;
+    }
+    try {
+      deps.onScheduledReport?.(item.userId, report);
+    } catch (err) {
+      console.error(
+        `[daily-summary-schedule] posting to Summaries failed for ${item.userId}:`,
         (err as Error).message,
       );
     }

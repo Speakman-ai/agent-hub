@@ -34,6 +34,15 @@ const DailySummaryResponse = registerComponent(
       date: z.string(),
       timeZone: z.string(),
       report: DailySummaryReport.nullable(),
+      summaryChannelId: z
+        .string()
+        .nullable()
+        .optional()
+        .openapi({
+          description:
+            "The caller's private Summaries chat channel, where scheduled summaries are posted. " +
+            'Null until the first scheduled summary creates it. Only returned by GET.',
+        }),
     })
     .openapi({
       description:

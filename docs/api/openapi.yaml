@@ -11437,6 +11437,10 @@ components:
           allOf:
             - $ref: "#/components/schemas/MeDailySummaryReport"
             - nullable: true
+        summaryChannelId:
+          type: string
+          nullable: true
+          description: The caller's private Summaries chat channel, where scheduled summaries are posted. Null until the first scheduled summary creates it. Only returned by GET.
       required:
         - date
         - timeZone

@@ -271,6 +271,7 @@ import {
 import { initDeploySchedules } from './deploy/deploy-schedule-ticker.js';
 import { initReleaseGates, requestReleaseGateSweep } from './deploy/release-gate-ticker.js';
 import { initDailySummarySchedules } from './daily-summary-schedule.js';
+import { postDailySummaryToChannel } from './hub-chat-summaries.js';
 import { generateDailySummary } from './hub-daily-summary.js';
 import { listUsersWithDailySummarySchedule } from './user-preferences-store.js';
 import createReleaseNotificationSettingsRoutes from './routes/release-notification-settings.js';
@@ -3152,6 +3153,9 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
         routeDeps,
         listSchedules: listUsersWithDailySummarySchedule,
         generate: generateDailySummary,
+        onScheduledReport: (userId, report) => {
+          postDailySummaryToChannel({ userId, report, broadcast });
+        },
       });
     } catch (e) {
       console.error('[daily-summary-schedule] init on boot', (e as Error).message);

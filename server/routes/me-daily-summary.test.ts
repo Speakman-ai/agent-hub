@@ -98,6 +98,28 @@ describe('/api/me/daily-summary', () => {
     expect(again.body.report.markdown).toContain('generated');
     expect(generate).toHaveBeenCalledTimes(1);
   });
+
+  it('links the Summaries channel once a scheduled run posted, never on a manual POST', async () => {
+    const report: HubDailySummaryStored = {
+      date: '2026-08-19',
+      timeZone: 'UTC',
+      markdown: '## Today',
+      engine: 'claude-code',
+      model: 'm',
+      generatedAt: '2026-08-19T18:00:00.000Z',
+    };
+    await request(mount(userA, async () => report))
+      .post('/api/me/daily-summary')
+      .send({ tz: 'UTC' })
+      .expect(200);
+    const before = await request(mount(userA)).get('/api/me/daily-summary').expect(200);
+    expect(before.body.summaryChannelId).toBeNull();
+
+    const { postDailySummaryToChannel } = await import('../hub-chat-summaries.js');
+    const { channel } = postDailySummaryToChannel({ userId: userA, report });
+    const after = await request(mount(userA)).get('/api/me/daily-summary').expect(200);
+    expect(after.body.summaryChannelId).toBe(channel.id);
+  });
 });
 
 describe('/api/me/daily-summary/schedule', () => {

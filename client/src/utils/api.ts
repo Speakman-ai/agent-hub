@@ -221,6 +221,8 @@ export interface DailySummaryWire {
   date: string;
   timeZone: string;
   report: DailySummaryReportWire | null;
+  /** The caller's Summaries chat channel (GET only); null until a scheduled run posts. */
+  summaryChannelId?: string | null;
 }
 
 export interface DailySummaryScheduleWire {

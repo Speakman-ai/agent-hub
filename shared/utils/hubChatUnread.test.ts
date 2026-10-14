@@ -100,6 +100,23 @@ describe('hubChatNoticeFor', () => {
     expect(notice).toEqual({ channelId: 'c1', messageId: 'm1', title: 'bob', body: 'ping' });
   });
 
+  it('announces a summary post under the channel name', () => {
+    const notice = hubChatNoticeFor(
+      {
+        authorName: null,
+        message: message({ authorKind: 'system', authorUserId: null, body: 'Busy day' }),
+      },
+      channel({ kind: 'summary', name: 'Summaries' }),
+      opts,
+    );
+    expect(notice).toEqual({
+      channelId: 'c1',
+      messageId: 'm1',
+      title: 'Summaries',
+      body: 'Busy day',
+    });
+  });
+
   it('announces a mention in a channel, with mention tokens as plain text', () => {
     const notice = hubChatNoticeFor(
       {

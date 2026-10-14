@@ -45,6 +45,7 @@ function HubBody({
   chatChannelId,
   chatOpenRequest,
   onChatChannelChange,
+  onOpenChatChannel,
 }: {
   tab: HubTab;
   navigation: any;
@@ -52,6 +53,7 @@ function HubBody({
   chatChannelId: string | null;
   chatOpenRequest: number;
   onChatChannelChange: (channelId: string | null) => void;
+  onOpenChatChannel: (channelId: string) => void;
 }) {
   const { clearHubChat } = useApp();
   switch (tab) {
@@ -89,7 +91,13 @@ function HubBody({
         />
       );
     case 'summary':
-      return <DailySummaryScreen navigation={navigation} setTab={setTab} />;
+      return (
+        <DailySummaryScreen
+          navigation={navigation}
+          setTab={setTab}
+          onOpenChannel={onOpenChatChannel}
+        />
+      );
     case 'org':
       return <DashboardScreen />;
     case 'todos':
@@ -187,15 +195,22 @@ export default function HubScreen({ navigation, route }: any) {
 
   const onChatChannelChange = setChatChannelId;
 
+  const openChatChannel = useCallback(
+    (channelId: string) => {
+      setTab('chat');
+      setChatChannelId(channelId);
+      setChatOpenRequest((n) => n + 1);
+    },
+    [setChatChannelId],
+  );
+
   useEffect(() => {
     const channelId = route?.params?.channelId;
     if (typeof channelId !== 'string' || !channelId) return;
-    setTab('chat');
-    setChatChannelId(channelId);
-    setChatOpenRequest((n) => n + 1);
+    openChatChannel(channelId);
     // Consume the param so returning to Hub later does not reopen it.
     navigation?.setParams?.({ channelId: undefined });
-  }, [route?.params?.channelId, navigation, setChatChannelId]);
+  }, [route?.params?.channelId, navigation, openChatChannel]);
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
@@ -244,6 +259,7 @@ export default function HubScreen({ navigation, route }: any) {
           chatChannelId={chatChannelId}
           chatOpenRequest={chatOpenRequest}
           onChatChannelChange={onChatChannelChange}
+          onOpenChatChannel={openChatChannel}
         />
       </View>
     </SafeAreaView>

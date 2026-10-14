@@ -113,4 +113,25 @@ describe('HubScreen retained chat channel', () => {
     expect(shownChat(r)).toBe('c9');
     act(() => r.unmount());
   });
+
+  it('opens the Summaries channel from the Daily Summary history link', async () => {
+    api.hubChat.channels.mockResolvedValue({ channels: [], viewerUserId: 'u1' });
+    await hubChatStore.reset(true, 'u1');
+    let r: any;
+    await act(async () => {
+      r = TestRenderer.create(
+        React.createElement(HubScreen, {
+          navigation: { setParams: vi.fn(), navigate: vi.fn() },
+          route: { params: {} },
+        }),
+      );
+    });
+    await tab(r, 'summary');
+    const summary = r.root.find((n: any) => typeof n.props?.onOpenChannel === 'function');
+    await act(async () => {
+      summary.props.onOpenChannel('sum-1');
+    });
+    expect(shownChat(r)).toBe('sum-1');
+    act(() => r.unmount());
+  });
 });

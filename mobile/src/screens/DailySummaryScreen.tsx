@@ -42,9 +42,12 @@ function formatGeneratedAt(iso: string): string {
 export default function DailySummaryScreen({
   navigation,
   setTab,
+  onOpenChannel,
 }: {
   navigation?: any;
   setTab?: (tab: 'assistant' | 'todos') => void;
+  /** Opens a chat channel; used for the Summaries channel history link. */
+  onOpenChannel?: (channelId: string) => void;
 } = {}) {
   const { setActiveAgentId, setActiveSessionId } = useApp();
   const [report, setReport] = useState<{
@@ -53,6 +56,8 @@ export default function DailySummaryScreen({
     engine?: string;
     model?: string;
   } | null>(null);
+  // Only GET reports it; kept apart so a POST response doesn't clear it.
+  const [summaryChannelId, setSummaryChannelId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +68,9 @@ export default function DailySummaryScreen({
     try {
       const body: any = await api.getDailySummary({ tz: localTimeZone() });
       setReport(body?.report ?? null);
+      setSummaryChannelId(
+        typeof body?.summaryChannelId === 'string' ? body.summaryChannelId : null,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -116,6 +124,16 @@ export default function DailySummaryScreen({
       <View style={styles.toolbar}>
         <HubIcon name="ScrollText" size={16} color={colors.sky400} />
         <Text style={styles.title}>Daily Summary</Text>
+        {summaryChannelId && onOpenChannel ? (
+          <TouchableOpacity
+            onPress={() => onOpenChannel(summaryChannelId)}
+            testID="daily-summary-history"
+            accessibilityLabel="Open earlier summaries in Chat"
+            style={styles.button}
+          >
+            <Text style={styles.buttonLabel}>History</Text>
+          </TouchableOpacity>
+        ) : null}
         <TouchableOpacity
           onPress={() => void generate()}
           disabled={generating || loading}

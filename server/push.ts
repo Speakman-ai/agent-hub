@@ -228,6 +228,9 @@ export function chatMessagePush(args: {
     .trim();
   const trimmed = preview.length > 120 ? preview.slice(0, 120) + '…' : preview;
   if (args.channelKind === 'dm') return { title: author, body: trimmed || 'New message' };
+  if (args.channelKind === 'summary') {
+    return { title: args.channelName || 'Summaries', body: trimmed || 'New summary' };
+  }
   const where = args.channelName ? `#${args.channelName}` : 'Chat';
   return { title: where, body: trimmed ? `${author}: ${trimmed}` : `New message from ${author}` };
 }

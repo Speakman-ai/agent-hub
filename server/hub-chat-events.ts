@@ -58,8 +58,9 @@ export function mentionedUserIds(refs: unknown): Set<string> {
 
 /**
  * Who gets a phone push for a new message. Never the author, never a muted
- * member, never `notify_level=none`. A DM or a mention notifies at `all` and
- * `mentions`; any other message notifies only at `all`.
+ * member, never `notify_level=none`. A DM, a mention, or a post in the user's
+ * own Summaries channel notifies at `all` and `mentions`; any other message
+ * notifies only at `all`.
  */
 export function chatPushRecipients(args: {
   channelKind: HubChatChannelKind;
@@ -73,7 +74,8 @@ export function chatPushRecipients(args: {
   for (const m of args.members) {
     if (m.user_id === args.authorUserId) continue;
     if (m.notify_level === 'none' || isMuted(m.muted_until, now)) continue;
-    const direct = args.channelKind === 'dm' || args.mentioned.has(m.user_id);
+    const direct =
+      args.channelKind === 'dm' || args.channelKind === 'summary' || args.mentioned.has(m.user_id);
     if (m.notify_level === 'all' || direct) out.push(m.user_id);
   }
   return out;

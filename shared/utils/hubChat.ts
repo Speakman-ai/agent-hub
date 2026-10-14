@@ -173,7 +173,8 @@ export function isChannelMuted(channel: HubChatChannel, now: number = Date.now()
  * What the rail shows for a channel: a count badge for the messages that call
  * for attention, and bold text whenever anything is unread. Muted channels and
  * channels at notify level `none` never badge; `mentions` channels badge only
- * for mentions; DMs and `all` channels badge every unread message.
+ * for mentions; DMs, groups, the Summaries channel and `all` channels badge
+ * every unread message.
  */
 export function railUnread(
   channel: HubChatChannel,
@@ -183,7 +184,12 @@ export function railUnread(
   if (!channel.membership || isChannelMuted(channel, now)) return { count: 0, bold: false };
   const level = channel.membership.notifyLevel;
   let count = 0;
-  if (level === 'all' || channel.kind === 'dm' || channel.kind === 'group') {
+  if (
+    level === 'all' ||
+    channel.kind === 'dm' ||
+    channel.kind === 'group' ||
+    channel.kind === 'summary'
+  ) {
     count = level === 'none' ? 0 : unread;
   } else if (level === 'mentions') {
     count = channel.mentionCount;

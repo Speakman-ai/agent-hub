@@ -21,6 +21,7 @@ import {
   normalizeDailySummarySchedule,
   type HubDailySummarySchedule,
 } from '../daily-summary-schedule.js';
+import { findSummaryChannel, summaryOrgForUser } from '../hub-chat-summaries.js';
 import './me-daily-summary.openapi.js';
 
 export interface MeDailySummaryRouteOptions {
@@ -42,8 +43,16 @@ export default function createMeDailySummaryRoutes(
       res.status(401).json({ error: 'Authentication required' });
       return;
     }
+    const userId = areq.authUserId;
     const timeZone = parseDailySummaryTimeZone(req.query.tz);
-    res.json(getDailySummaryPayload({ userId: areq.authUserId, timeZone, now: now() }));
+    let summaryChannelId: string | null = null;
+    try {
+      const orgId = areq.authOrgId || summaryOrgForUser(userId);
+      summaryChannelId = findSummaryChannel(orgId, userId)?.id ?? null;
+    } catch {
+      /* the chat link is optional; the report still renders */
+    }
+    res.json({ ...getDailySummaryPayload({ userId, timeZone, now: now() }), summaryChannelId });
   });
 
   router.post('/api/me/daily-summary', async (req: Request, res: Response) => {

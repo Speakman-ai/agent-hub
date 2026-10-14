@@ -83,6 +83,25 @@ describe('DailySummaryPage', () => {
     expect(onOpenCard).toHaveBeenCalledWith('agent-hub', 'card-1');
   });
 
+  it('links to the Summaries channel history, and keeps the link after Regenerate', async () => {
+    const onOpenChannel = vi.fn();
+    vi.mocked(api.getDailySummary).mockResolvedValue({ ...filled, summaryChannelId: 'chan-1' });
+    vi.mocked(api.generateDailySummary).mockResolvedValue(filled);
+    render(<DailySummaryPage onOpenChannel={onOpenChannel} />);
+    await waitFor(() => expect(screen.getByTestId('daily-summary-history')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('daily-summary-generate'));
+    await waitFor(() => expect(api.generateDailySummary).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('daily-summary-history'));
+    expect(onOpenChannel).toHaveBeenCalledWith('chan-1');
+  });
+
+  it('hides the history link until a scheduled summary created the channel', async () => {
+    vi.mocked(api.getDailySummary).mockResolvedValue({ ...filled, summaryChannelId: null });
+    render(<DailySummaryPage onOpenChannel={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('Today card')).toBeInTheDocument());
+    expect(screen.queryByTestId('daily-summary-history')).toBeNull();
+  });
+
   it('Generate posts and then flips the button to Regenerate', async () => {
     vi.mocked(api.getDailySummary).mockResolvedValue(empty);
     vi.mocked(api.generateDailySummary).mockResolvedValue(filled);

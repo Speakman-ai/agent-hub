@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Clock, Plus, RefreshCw, ScrollText, Trash2 } from 'lucide-react';
+import { Clock, MessagesSquare, Plus, RefreshCw, ScrollText, Trash2 } from 'lucide-react';
 import {
   api,
   type DailySummaryReportWire,
@@ -33,6 +33,8 @@ export interface DailySummaryPageProps {
   onOpenSession?: (agentId: string | null, sessionId: string) => void;
   onOpenTodos?: () => void;
   onOpenProject?: (projectId: string) => void;
+  /** Opens a chat channel; used for the Summaries channel history link. */
+  onOpenChannel?: (channelId: string) => void;
 }
 
 /**
@@ -44,8 +46,11 @@ export default function DailySummaryPage({
   onOpenSession,
   onOpenTodos,
   onOpenProject,
+  onOpenChannel,
 }: DailySummaryPageProps = {}) {
   const [data, setData] = useState<DailySummaryWire | null>(null);
+  // Only GET reports it; kept apart so a POST response doesn't clear it.
+  const [summaryChannelId, setSummaryChannelId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,6 +61,7 @@ export default function DailySummaryPage({
     try {
       const body = await api.getDailySummary({ tz: localTimeZone() });
       setData(body);
+      setSummaryChannelId(body.summaryChannelId ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -121,6 +127,18 @@ export default function DailySummaryPage({
         <div className="flex items-center gap-3 mb-5">
           <ScrollText size={18} className="text-cyan-400 shrink-0" />
           <h1 className="text-lg font-semibold text-white flex-1">Daily Summary</h1>
+          {summaryChannelId && onOpenChannel && (
+            <button
+              type="button"
+              onClick={() => onOpenChannel(summaryChannelId)}
+              data-testid="daily-summary-history"
+              title="Earlier scheduled summaries in the Summaries chat channel"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-900 px-2.5 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-800 transition-colors"
+            >
+              <MessagesSquare size={13} />
+              History
+            </button>
+          )}
           <button
             type="button"
             onClick={() => void generate()}

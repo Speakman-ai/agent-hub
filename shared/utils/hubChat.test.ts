@@ -110,6 +110,15 @@ describe('railUnread', () => {
     expect(railUnread(c).count).toBe(2);
   });
 
+  it('badges a summary post at notify level mentions', () => {
+    const c = channel({
+      kind: 'summary',
+      unreadCount: 1,
+      membership: { role: 'owner', lastReadSeq: 0, notifyLevel: 'mentions', mutedUntil: null },
+    });
+    expect(railUnread(c).count).toBe(1);
+  });
+
   it('never badges a muted channel', () => {
     const now = Date.parse('2026-10-13T12:00:00Z');
     const c = channel({

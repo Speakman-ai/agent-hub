@@ -7367,6 +7367,7 @@ export default function App({ initialView }: any = {}) {
                         setCurrentView(`kanban:${projectId}`);
                         setSidebarOpen(false);
                       }}
+                      onOpenChannel={openHubChatChannel}
                     />
                   }
                   org={

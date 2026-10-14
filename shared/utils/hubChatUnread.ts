@@ -77,12 +77,14 @@ export function hubChatNoticeFor(
   }
   if (isChannelMuted(channel, opts.now)) return null;
   if (channel.membership.notifyLevel === 'none') return null;
-  const direct = channel.kind === 'dm' || channel.kind === 'group';
+  // The user's own Summaries channel notifies like a DM.
+  const direct = channel.kind === 'dm' || channel.kind === 'group' || channel.kind === 'summary';
   if (!direct && !mentionsUser(message, opts.viewerUserId)) return null;
   const author = event.authorName || 'Someone';
   const name = event.channelName ?? channel.name;
   let title = author;
   if (channel.kind === 'group') title = `${author} · ${name || 'Group'}`;
+  else if (channel.kind === 'summary') title = name || 'Summaries';
   else if (!direct) title = `${author} · #${name || 'channel'}`;
   return {
     channelId: channel.id,
