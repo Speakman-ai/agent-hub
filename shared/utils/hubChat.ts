@@ -70,6 +70,8 @@ export interface HubChatMessage {
   authorKind: 'user' | 'agent' | 'system' | 'trigger';
   authorUserId: string | null;
   authorAgentId: string | null;
+  /** Display name of the posting agent, for agent-authored messages. */
+  authorAgentName?: string | null;
   body: string;
   refs: HubChatRef[];
   payload: unknown;
@@ -453,7 +455,8 @@ export function mergeIntoWindow(
 const GROUP_GAP_MS = 5 * 60_000;
 
 function senderKey(m: HubChatMessage): string {
-  return `${m.authorKind}:${m.authorUserId ?? m.authorAgentId ?? ''}`;
+  const who = m.authorKind === 'agent' ? (m.authorAgentId ?? m.authorUserId) : m.authorUserId;
+  return `${m.authorKind}:${who ?? m.authorAgentId ?? ''}`;
 }
 
 function localDayKey(d: Date): string {
@@ -526,7 +529,9 @@ export function authorLabel(
   if (message.authorKind === 'user') {
     return (message.authorUserId && usernames.get(message.authorUserId)) || 'Unknown user';
   }
-  if (message.authorKind === 'agent') return message.authorAgentId || 'Agent';
+  if (message.authorKind === 'agent') {
+    return message.authorAgentName || message.authorAgentId || 'Agent';
+  }
   if (message.authorKind === 'trigger') return 'Trigger';
   return 'Agent Hub';
 }

@@ -55,7 +55,7 @@ their own `references/<domain>.md` and trigger only on domain vocabulary.
 | --- | --- |
 | `agent-hub-kanban` | Cards, columns, comments, epics, blockers, Done-state contract |
 | `agent-hub-wiki` | FTS5 search, pages, categories, slug conventions |
-| `agent-hub-sessions` | Messages, ask mode, session ownership, `<agenthub:close-card>` |
+| `agent-hub-sessions` | Messages, ask mode, starting sessions, posting to chat (`chat.sh`), `<agenthub:close-card>` |
 | `agent-hub-heartbeats-crons` | Project crons, threads, persistent logs |
 
 To load one mid-turn, end your turn with:

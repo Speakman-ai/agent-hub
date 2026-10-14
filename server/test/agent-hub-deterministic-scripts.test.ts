@@ -58,6 +58,7 @@ const DETERMINISTIC_SCRIPTS = [
   'get-board-state.sh',
   'log-tool-error.sh',
   'artifacts.sh',
+  'chat.sh',
 ];
 
 function runHelp(file: string): { code: number; stdout: string } {

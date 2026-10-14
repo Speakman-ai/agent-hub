@@ -331,11 +331,18 @@ export function chatPushUserIdsFromStore(data: BroadcastData): string[] {
   const channelId = typeof data.channelId === 'string' ? data.channelId : null;
   const channel = channelId ? getChannel(channelId) : null;
   if (!channel) return [];
-  const message = (data.message ?? {}) as { authorUserId?: unknown; refs?: unknown };
+  const message = (data.message ?? {}) as {
+    authorKind?: unknown;
+    authorUserId?: unknown;
+    refs?: unknown;
+  };
+  // An agent posting on its owner's behalf still notifies that owner.
+  const selfAuthored = message.authorKind === undefined || message.authorKind === 'user';
   return chatPushRecipients({
     channelKind: channel.kind,
     members: listMembers(channel.id),
-    authorUserId: typeof message.authorUserId === 'string' ? message.authorUserId : null,
+    authorUserId:
+      selfAuthored && typeof message.authorUserId === 'string' ? message.authorUserId : null,
     mentioned: mentionedUserIds(message.refs),
   });
 }

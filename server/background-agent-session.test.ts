@@ -99,6 +99,15 @@ describe('dispatchBackgroundAgentSession', () => {
     );
   });
 
+  it('uses an explicit session name instead of the background label', () => {
+    dispatchBackgroundAgentSession(
+      proj(),
+      { id: 'a1', name: 'Ad hoc', prompt: 'Do it', runAsSession: true },
+      { sessionName: 'Fix login redirect' },
+    );
+    expect(stmts.createSession.run.mock.calls[0]![2]).toBe('Fix login redirect');
+  });
+
   it('creates the session in the chosen mode with skills staged and the prompt sent', () => {
     const result = dispatchBackgroundAgentSession(proj(), {
       id: 'a1',

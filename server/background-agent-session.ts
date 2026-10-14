@@ -175,7 +175,11 @@ export function backgroundSessionName(agentName: string): string {
 export function dispatchBackgroundAgentSession(
   project: Project,
   cfg: BackgroundCustomAgentConfig,
-  opts: { onKickoffError?: (message: string) => void } = {},
+  opts: {
+    onKickoffError?: (message: string) => void;
+    /** Overrides the default `[Background] <name>` session title. */
+    sessionName?: string;
+  } = {},
 ): BackgroundSessionDispatchResult {
   const deps = hook;
   if (!deps) {
@@ -217,7 +221,7 @@ export function dispatchBackgroundAgentSession(
   stmts.createSession.run(
     sessionId,
     agent.id,
-    backgroundSessionName(cfg.name),
+    opts.sessionName?.trim() || backgroundSessionName(cfg.name),
     engine,
     model,
     defaultSessionUseWorktreeFlag(project),

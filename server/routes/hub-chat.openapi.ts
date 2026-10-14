@@ -81,6 +81,9 @@ export const HubChatMessageComponent = registerComponent(
       authorKind: AuthorKindSchema,
       authorUserId: z.string().nullable(),
       authorAgentId: z.string().nullable(),
+      authorAgentName: z.string().nullable().optional().openapi({
+        description: 'Display name of the posting agent, for agent-authored messages.',
+      }),
       body: z.string().openapi({ description: 'Markdown. Empty once deleted.' }),
       refs: z.array(
         z.object({

@@ -427,3 +427,93 @@ describe('channel settings', () => {
     expect(res.body.viewerUserId).toBe(alice);
   });
 });
+
+describe('agent posts (chat.sh from a session)', () => {
+  const sessions: Record<string, { id: string; agent_id: string; owner_user_id: string }> = {};
+  const events: Record<string, unknown>[] = [];
+
+  function asAgentSession(sessionId: string, claims: Claims = {}): Express {
+    const app = express();
+    app.use(express.json());
+    app.use((req: Request, _res: Response, next: NextFunction) => {
+      const areq = req as unknown as Record<string, unknown>;
+      if (claims.userId) {
+        areq.authUserId = claims.userId;
+        areq.authRole = 'User';
+      } else {
+        areq.authViaApiKey = true;
+        areq.authRole = 'Owner';
+      }
+      areq.authOrgId = 'acme';
+      req.headers['x-agent-hub-session-id'] = sessionId;
+      next();
+    });
+    app.use(
+      createHubChatRoutes({
+        stmts: { getSession: { get: (id: string) => sessions[id] } },
+        broadcast: (e: Record<string, unknown>) => events.push(e),
+      } as unknown as RouteDeps),
+    );
+    return app;
+  }
+
+  beforeEach(() => {
+    events.length = 0;
+    sessions['s-alice'] = { id: 's-alice', agent_id: 'web-dev', owner_user_id: alice };
+    sessions['s-bob'] = { id: 's-bob', agent_id: 'bob-dev', owner_user_id: bob };
+  });
+
+  it('posts as the agent on the session owner membership and stays unread for the owner', async () => {
+    const ch = await makeChannel(alice, { name: 'deploys', memberUserIds: [bob] });
+    const res = await request(asAgentSession('s-alice'))
+      .post(`/api/chat/channels/${ch.id}/messages`)
+      .send({ body: 'Started @[Fix login](session:s-alice)' })
+      .expect(201);
+    expect(res.body.message).toMatchObject({
+      authorKind: 'agent',
+      authorUserId: alice,
+      authorAgentId: 'web-dev',
+      authorAgentName: 'web-dev',
+    });
+    expect(events.find((e) => e.type === 'hub_chat_message')).toMatchObject({
+      authorName: 'web-dev',
+    });
+    // No read event: the owner has not seen the agent's post yet.
+    expect(events.some((e) => e.type === 'hub_chat_read')).toBe(false);
+
+    const list = await request(as({ userId: alice }))
+      .get('/api/chat/channels')
+      .expect(200);
+    const row = list.body.channels.find((c: { id: string }) => c.id === ch.id);
+    expect(row.unreadCount).toBe(1);
+  });
+
+  it('opens a DM and posts into it the way chat.sh dm does', async () => {
+    const dm = await request(asAgentSession('s-alice'))
+      .post('/api/chat/dms')
+      .send({ userId: bob })
+      .expect(201);
+    const res = await request(asAgentSession('s-alice'))
+      .post(`/api/chat/channels/${dm.body.channel.id}/messages`)
+      .send({ body: 'Card is ready' })
+      .expect(201);
+    expect(res.body.message.authorKind).toBe('agent');
+    const bobList = await request(as({ userId: bob }))
+      .get('/api/chat/channels')
+      .expect(200);
+    expect(bobList.body.channels[0].unreadCount).toBe(1);
+  });
+
+  it('ignores a session header naming a session the caller does not own', async () => {
+    const ch = await makeChannel(alice, { name: 'general2' });
+    const res = await request(asAgentSession('s-bob', { userId: alice }))
+      .post(`/api/chat/channels/${ch.id}/messages`)
+      .send({ body: 'hi' })
+      .expect(201);
+    expect(res.body.message).toMatchObject({
+      authorKind: 'user',
+      authorUserId: alice,
+      authorAgentId: null,
+    });
+  });
+});

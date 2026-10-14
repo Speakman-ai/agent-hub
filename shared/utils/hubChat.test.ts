@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   applyMessageToChannels,
   applyReadToChannels,
+  authorLabel,
   channelLabel,
   layoutHubChatMessages,
   mergeIntoWindow,
@@ -408,5 +409,32 @@ describe('mergeIntoWindow', () => {
     expect(w.messages).toHaveLength(0);
     w = mergeIntoWindow(w, [msg(1, { body: 'secret' }), msg(2)], true);
     expect(w.messages.map((m) => m.deletedAt !== null)).toEqual([true, false]);
+  });
+});
+
+describe('agent-authored messages', () => {
+  const at = (min: number) => new Date(Date.UTC(2026, 9, 13, 10, min)).toISOString();
+  const now = new Date(Date.UTC(2026, 9, 13, 12, 0));
+  const agentMsg = (seq: number, agentId: string, min: number) =>
+    msg(seq, {
+      authorKind: 'agent',
+      authorUserId: 'alice',
+      authorAgentId: agentId,
+      authorAgentName: agentId === 'web-dev' ? 'Web Dev' : null,
+      createdAt: at(min),
+    });
+
+  it('labels by agent name, falling back to the id', () => {
+    expect(authorLabel(agentMsg(1, 'web-dev', 0), names)).toBe('Web Dev');
+    expect(authorLabel(agentMsg(2, 'docs', 0), names)).toBe('docs');
+  });
+
+  it("is not the owner's own message and groups by agent, not by owner", () => {
+    const rows = layoutHubChatMessages(
+      [agentMsg(1, 'web-dev', 0), agentMsg(2, 'web-dev', 1), agentMsg(3, 'docs', 2)],
+      { viewerUserId: 'alice', lastReadSeq: null, now },
+    );
+    expect(rows.map((r) => r.own)).toEqual([false, false, false]);
+    expect(rows.map((r) => r.showHeader)).toEqual([true, false, true]);
   });
 });

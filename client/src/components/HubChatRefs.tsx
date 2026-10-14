@@ -1,4 +1,6 @@
 import {
+  createContext,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -280,6 +282,9 @@ function statusTone(kind: HubChatRefKind, status: string | null): string {
 /** Where a clicked chip should take the user. */
 export type HubChatRefOpenHandler = (ref: HubChatResolvedRef) => void;
 
+/** Opens chips rendered without an explicit `onOpen` (e.g. in a session transcript). */
+export const HubChatRefOpenContext = createContext<HubChatRefOpenHandler | undefined>(undefined);
+
 export function HubChatRefChip({
   token,
   resolved,
@@ -289,6 +294,8 @@ export function HubChatRefChip({
   resolved: HubChatResolvedRef | null;
   onOpen?: HubChatRefOpenHandler;
 }) {
+  const contextOpen = useContext(HubChatRefOpenContext);
+  const open = onOpen ?? contextOpen;
   const Icon = KIND_ICON[token.kind];
   const visible = !!resolved?.visible;
   const label = refDisplay(token.kind, visible && resolved?.label ? resolved.label : token.label);
@@ -346,9 +353,9 @@ export function HubChatRefChip({
       title={tooltip}
       className={`${base} bg-blue-500/20 text-blue-200 hover:bg-blue-500/30`}
       onClick={(e) => {
-        if (!onOpen || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+        if (!open || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
         e.preventDefault();
-        onOpen(resolved as HubChatResolvedRef);
+        open(resolved as HubChatResolvedRef);
       }}
     >
       {content}
@@ -365,9 +372,14 @@ export function HubChatRefChip({
 export function HubChatMessageBody({
   body,
   onOpenRef,
+  baseComponents = markdownComponentsCompact,
+  rehypePlugins = [],
 }: {
   body: string;
   onOpenRef?: HubChatRefOpenHandler;
+  /** Markdown components for everything that is not a chip. */
+  baseComponents?: typeof markdownComponentsCompact;
+  rehypePlugins?: unknown[];
 }) {
   const tokens = useMemo(() => parseHubChatRefTokens(body, locateChatMarkdownCode), [body]);
   const remarkPlugins = useMemo(
@@ -377,7 +389,7 @@ export function HubChatMessageBody({
   const version = useHubChatRefs(tokens);
   const components = useMemo(
     () => ({
-      ...markdownComponentsCompact,
+      ...baseComponents,
       a(props: Record<string, unknown>) {
         const i = hubRefIndexFromProps(props);
         const token = i == null ? undefined : tokens[i];
@@ -390,19 +402,24 @@ export function HubChatMessageBody({
             />
           );
         }
-        return markdownComponentsCompact.a(props);
+        return baseComponents.a(props);
       },
     }),
     // `version` re-renders chips when resolved detail lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tokens, onOpenRef, version],
+    [tokens, onOpenRef, version, baseComponents],
   );
   return (
     <MarkdownContent
       content={body}
       components={components}
-      rehypePlugins={[]}
+      rehypePlugins={rehypePlugins}
       remarkPlugins={remarkPlugins}
     />
   );
+}
+
+/** True when `text` holds at least one ref token outside code. */
+export function hasHubChatRefTokens(text: string): boolean {
+  return text.includes('@[') && parseHubChatRefTokens(text, locateChatMarkdownCode).length > 0;
 }

@@ -12,6 +12,7 @@ export const HUB_SKILL_IDS = [
   'agent-hub-kanban',
   'agent-hub-sessions',
   'agent-hub-heartbeats-crons',
+  'google',
 ] as const;
 
 export function requiredHubSkillIds(
@@ -47,8 +48,17 @@ export function buildHubModePreamble(args: {
     '- Summarize ticket progress, epics, customer support, and org activity.',
     "- Update the user's personal todos when they ask.",
     '- Kick off work by creating a session on a **project** agent (never on yourself) when they ask. Confirm first via the `agenthub:ask` picker before spawning **more than one** session, or before any irreversible config change.',
+    '- Read their mail and calendar through the `google` skill (`google-mail.sh`, `google-cal.sh`). For "any important unread email?" search `is:unread` (narrow with `is:important` or `category:primary`), then summarize who wrote, what they want, and what needs a reply. If Google is not linked, say so and point to Settings → Account → Google.',
+    '- Post into Agent Hub chat with `chat.sh` when they ask you to tell a channel or a person something.',
     '- Help configure Agent Hub: engines, models, crons, roster, skills, Google, notifications — confirm before destructive or bulk settings changes.',
     '- Create or update a **personal daily brief cron** when they want a scheduled Hub summary (Slack or this session). Do not enable a brief unprompted.',
+    '',
+    '### Starting sessions, cards and chat posts',
+    '',
+    '- Start a session: `sessions.sh dispatch <projectId> --prompt "…" [--agent <agentId>] [--name "…"] [--mode manual|review|push|merge|consult|scoping]`. Pick the agent from `server.sh agents` when the user did not name one. It runs as the user and returns JSON with `sessionId` and a `ref` token.',
+    '- Create or move cards with `kanban-create-card.sh` / `kanban-move-card.sh` (set `PROJECT_ID` to the target project).',
+    '- Chat: `chat.sh channels` lists channels, `chat.sh post <channelId|#name> "…"` posts, `chat.sh dm <username> "…"` messages a person.',
+    '- **Link what you create.** Put a ref token in your reply for every session or card you started or created: the `ref` field from `sessions.sh dispatch` as is, or `@[<label>](card:<cardId>)` for a card (label like `WEB-12 Fix login`). Tokens render as live chips in this chat; never wrap them in code.',
     '',
     '### Research tools',
     '',

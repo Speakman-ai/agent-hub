@@ -18,9 +18,12 @@ import { Router, type Request, type Response } from 'express';
 import type { z } from '../openapi/registry.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
+import { AGENT_HUB_SESSION_ID_HEADER } from '../kanban-caller-session.js';
 import { getMembershipRole, listMembersForOrg } from '../memberships-store.js';
 import { getActiveOrgId } from '../orgs.js';
 import { getUserById } from '../users-store.js';
+import { findAgent } from '../project-model.js';
+import { HUB_ASSISTANT_AGENT_ID } from '../../shared/utils/hub.js';
 import type {
   HubChatChannelRow,
   HubChatChannelSummary,
@@ -103,6 +106,11 @@ interface Caller {
   orgId: string;
   /** Single-tenant local server: one user, so no project ACLs apply to refs. */
   localBypass: boolean;
+  /**
+   * Set when the request comes from an agent session the user owns (bundled
+   * `chat.sh`): posts are authored by that agent, on the owner's membership.
+   */
+  agentId: string | null;
 }
 
 function dmPeer(row: HubChatChannelRow, userId: string): string | null {
@@ -170,6 +178,11 @@ function parseJson(raw: string | null): unknown {
   }
 }
 
+function agentDisplayName(agentId: string): string {
+  if (agentId === HUB_ASSISTANT_AGENT_ID) return 'Agent Hub';
+  return findAgent(agentId)?.agent.name || agentId;
+}
+
 export function shapeMessage(m: HubChatMessageRow) {
   const refs = parseJson(m.refs_json);
   return {
@@ -179,6 +192,7 @@ export function shapeMessage(m: HubChatMessageRow) {
     authorKind: m.author_kind,
     authorUserId: m.author_user_id,
     authorAgentId: m.author_agent_id,
+    authorAgentName: m.author_agent_id ? agentDisplayName(m.author_agent_id) : null,
     body: m.body,
     refs: Array.isArray(refs) ? refs : [],
     payload: parseJson(m.payload_json),
@@ -220,9 +234,12 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       channelId: channel.id,
       channelKind: channel.kind,
       channelName: channel.name,
-      authorName: message.author_user_id
-        ? (getUserById(message.author_user_id)?.username ?? null)
-        : null,
+      authorName:
+        message.author_kind === 'agent' && message.author_agent_id
+          ? agentDisplayName(message.author_agent_id)
+          : message.author_user_id
+            ? (getUserById(message.author_user_id)?.username ?? null)
+            : null,
       message: shapeMessage(message),
     });
   }
@@ -256,7 +273,28 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       bad(res, 403, 'Membership of this org required', 'org_membership_required');
       return null;
     }
-    return { userId, orgId, localBypass: Boolean(areq.authLocalOrgBypass) };
+    return {
+      userId,
+      orgId,
+      localBypass: Boolean(areq.authLocalOrgBypass),
+      agentId: callingAgentId(req, userId),
+    };
+  }
+
+  /**
+   * The agent behind a session-bound call. Only a session the acting user
+   * owns counts, so a header naming someone else's session changes nothing.
+   */
+  function callingAgentId(req: Request, userId: string): string | null {
+    const areq = req as AuthenticatedRequest;
+    const sessionId =
+      areq.authSpawnSessionId?.trim() || req.get(AGENT_HUB_SESSION_ID_HEADER)?.trim() || '';
+    if (!sessionId || !deps.stmts?.getSession) return null;
+    const session = deps.stmts.getSession.get(sessionId) as
+      | { agent_id?: string | null; owner_user_id?: string | null }
+      | undefined;
+    if (!session?.agent_id || session.owner_user_id !== userId) return null;
+    return session.agent_id;
   }
 
   const refLookups: RefLookups = {
@@ -539,14 +577,16 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     const resolved = resolveBodyRefs(refLookups, refViewer(caller), body.body);
     const message = appendMessage({
       channelId: m.channel.id,
-      authorKind: 'user',
+      authorKind: caller.agentId ? 'agent' : 'user',
       authorUserId: caller.userId,
+      authorAgentId: caller.agentId,
       body: resolved.body,
       refs: resolved.refs,
     });
     emitMessage(HUB_CHAT_MESSAGE_EVENT, m.channel, message);
-    // The author's read pointer moved past their own message.
-    emitRead(caller, m.channel.id, message.seq);
+    // The author's read pointer moved past their own message. An agent's post
+    // stays unread for the owner, so they notice it.
+    if (!caller.agentId) emitRead(caller, m.channel.id, message.seq);
     res.status(201).json({ message: shapeMessage(message) });
   });
 

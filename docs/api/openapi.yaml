@@ -7654,6 +7654,10 @@ components:
         authorAgentId:
           type: string
           nullable: true
+        authorAgentName:
+          type: string
+          nullable: true
+          description: Display name of the posting agent, for agent-authored messages.
         body:
           type: string
           description: Markdown. Empty once deleted.
@@ -14835,6 +14839,32 @@ components:
         - baseSha
         - discardedAt
       description: The session worktree was reset and `changes_ready` cleared.
+    DispatchSessionResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        skippedSkills:
+          type: array
+          items:
+            type: string
+        ref:
+          type: string
+          description: Chat ref token (`@[name](session:id)`) that renders as a live session chip in chat and assistant replies.
+      required:
+        - sessionId
+        - agentId
+        - projectId
+        - name
+        - skippedSkills
+        - ref
+      description: The started session. Its first turn streams in the background.
     SessionSidebarErrorResponse:
       type: object
       properties:
@@ -17049,6 +17079,50 @@ components:
         - agentId
         - importedMessages
         - reused
+    DispatchSessionRequest:
+      type: object
+      properties:
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 50000
+          description: First message sent to the new session.
+        agentId:
+          type: string
+          minLength: 1
+          description: Project agent that hosts the session. Defaults to the project's first agent that can host one (reviewer, docs and Hub agents cannot).
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: Session title. Defaults to the start of the prompt.
+        mode:
+          type: string
+          enum:
+            - manual
+            - review
+            - push
+            - merge
+            - consult
+            - scoping
+            - skill-builder
+            - autopilot
+          description: Finalize level (`manual`/`review`/`push`/`merge`) or session mode (`consult`/`scoping`/`skill-builder`/`autopilot`). Defaults to the project default.
+        engine:
+          type: string
+          minLength: 1
+        model:
+          type: string
+          minLength: 1
+        skills:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          maxItems: 20
+          description: Skills preloaded into the first turn.
+      required:
+        - prompt
     ForwardThreadEntryResponse:
       type: object
       properties:
@@ -50018,6 +50092,82 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionDiscardErrorResponse"
+  /api/projects/{projectId}/sessions/dispatch:
+    post:
+      tags:
+        - Sessions
+      summary: Start a session on a project agent with a first prompt
+      description: Creates the session as the acting user (or the calling session owner on the global key), sends the prompt, and returns once the session exists. The turn runs in the background.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DispatchSessionRequest"
+      responses:
+        "201":
+          description: Session created and first turn started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DispatchSessionResponse"
+        "400":
+          description: Invalid body, agent or mode.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: No user identity to own the session.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Project not found or not visible.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+        "503":
+          description: Session dispatch is not ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
   /api/sessions/{sessionId}/sidebar:
     get:
       tags:

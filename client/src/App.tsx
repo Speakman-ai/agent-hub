@@ -97,6 +97,7 @@ import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
 import GoogleChatPage from './components/GoogleChatPage';
 import ChatPane from './components/ChatPane';
+import { HubChatRefOpenContext, type HubChatRefOpenHandler } from './components/HubChatRefs';
 import { useGoogleChatPush, useGoogleChatPushBootstrap } from './utils/googleChatPush';
 import TodosPage from './components/TodosPage';
 import PersonalDashboard from './components/PersonalDashboard';
@@ -6543,104 +6544,124 @@ export default function App({ initialView }: any = {}) {
     />
   );
   const hubClearButton = <HubClearChatButton onClear={clearActiveHubChat} clearing={hubClearing} />;
+  const handleOpenChatRef: HubChatRefOpenHandler = (ref) => {
+    if (!ref.visible) return;
+    if (ref.kind === 'card' && ref.projectId) {
+      setKanbanFocusCardId(ref.targetId);
+      setCurrentView(`kanban:${ref.projectId}`);
+      setSidebarOpen(false);
+    } else if (ref.kind === 'session') {
+      focusAgentSession(ref.agentId, ref.targetId);
+    } else if (ref.kind === 'pr' && ref.projectId && ref.number) {
+      handleOpenPrDetail(ref.projectId, ref.number);
+    } else if (ref.kind === 'ticket' && ref.projectId) {
+      setSupportProjectId(ref.projectId);
+      setSupportTicketId(ref.targetId);
+      setCurrentView('support');
+      setSidebarOpen(false);
+    }
+  };
+
   const hubAssistantChat = (
-    <div className="flex-1 flex flex-col min-h-0">
-      <div
-        ref={scrollContainerRef}
-        onScroll={handleScrollEvent}
-        data-testid="hub-assistant-scroll"
-        className="flex-1 overflow-y-auto px-3 py-3 space-y-2"
-        style={{ overflowAnchor: 'none' }}
-      >
-        <div ref={messagesColumnRef}>
-          {messages.length === 0 && !thinking && !streamingMsgId && !streamingContent && (
-            <p className="text-sm text-gray-500 px-1">
-              Ask Hub what to focus on next, to kick off an agent, or to configure Agent Hub. It
-              reads your boards, todos, support, and calendar through the API — not by scraping
-              pages.
-            </p>
-          )}
-          {messages.map((msg: any) =>
-            msg.role === 'assistant' ? (
-              <SessionTail
-                key={msg.id}
-                message={msg}
-                events={eventsByMessage[msg.id]}
-                agentColor={msg.agent_color || chatAccentColor}
-                agentName={activeAgent?.name || 'Hub'}
-                onEventsLoaded={handleEventsLoaded}
-                onAskSubmit={handleAskSubmit}
-                onCredentialSubmit={handleCredentialSubmit}
-                askSubmittedIds={askSubmitted}
-                fromAgent={activeAgent}
-                agents={agents}
-                sessionHandoffs={sessionHandoffs}
-                sessionDelegations={delegations[activeSessionId]}
-                delegationDispatchError={delegationDispatchErrors[activeSessionId]}
-                onOpenSession={handleOpenHandoffSession}
-                browserScreenshots={browserScreensBySession[activeSessionId]?.[msg.id] ?? {}}
+    <HubChatRefOpenContext.Provider value={handleOpenChatRef}>
+      <div className="flex-1 flex flex-col min-h-0">
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScrollEvent}
+          data-testid="hub-assistant-scroll"
+          className="flex-1 overflow-y-auto px-3 py-3 space-y-2"
+          style={{ overflowAnchor: 'none' }}
+        >
+          <div ref={messagesColumnRef}>
+            {messages.length === 0 && !thinking && !streamingMsgId && !streamingContent && (
+              <p className="text-sm text-gray-500 px-1">
+                Ask Hub what to focus on next, to kick off an agent, or to configure Agent Hub. It
+                reads your boards, todos, support, and calendar through the API — not by scraping
+                pages.
+              </p>
+            )}
+            {messages.map((msg: any) =>
+              msg.role === 'assistant' ? (
+                <SessionTail
+                  key={msg.id}
+                  message={msg}
+                  events={eventsByMessage[msg.id]}
+                  agentColor={msg.agent_color || chatAccentColor}
+                  agentName={activeAgent?.name || 'Hub'}
+                  onEventsLoaded={handleEventsLoaded}
+                  onAskSubmit={handleAskSubmit}
+                  onCredentialSubmit={handleCredentialSubmit}
+                  askSubmittedIds={askSubmitted}
+                  fromAgent={activeAgent}
+                  agents={agents}
+                  sessionHandoffs={sessionHandoffs}
+                  sessionDelegations={delegations[activeSessionId]}
+                  delegationDispatchError={delegationDispatchErrors[activeSessionId]}
+                  onOpenSession={handleOpenHandoffSession}
+                  browserScreenshots={browserScreensBySession[activeSessionId]?.[msg.id] ?? {}}
+                />
+              ) : (
+                <ChatMessage
+                  key={msg.id}
+                  message={msg}
+                  agentColor={chatAccentColor}
+                  projectId={activeChatProject?.id}
+                  hosted={activeChatProject?.gitHost === 'agenthub'}
+                  onOpenPrDetail={handleOpenPrDetail}
+                  onStartFollowUp={() => handleStartFollowUpSession(activeSessionId)}
+                />
+              ),
+            )}
+            {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
+              <ReactLoopObservabilityPanel
+                steps={reactLoopStepsBySession[activeSessionId]}
+                streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
               />
-            ) : (
-              <ChatMessage
-                key={msg.id}
-                message={msg}
-                agentColor={chatAccentColor}
-                projectId={activeChatProject?.id}
-                hosted={activeChatProject?.gitHost === 'agenthub'}
-                onOpenPrDetail={handleOpenPrDetail}
-                onStartFollowUp={() => handleStartFollowUpSession(activeSessionId)}
-              />
-            ),
-          )}
-          {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
-            <ReactLoopObservabilityPanel
-              steps={reactLoopStepsBySession[activeSessionId]}
-              streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-            />
-          )}
-          {liveStreamingAssistantTurn}
+            )}
+            {liveStreamingAssistantTurn}
+          </div>
+        </div>
+        <div className="shrink-0">
+          <MessageInput
+            ref={messageInputRef}
+            onSend={sendHubChat}
+            onCancel={handleCancel}
+            disabled={
+              shouldDisableSessionComposer({
+                hasAgent: !!activeAgent,
+                connected,
+                workspaceEnsureFailed: !!activeSessionWorkspaceEnsureError,
+              }) ||
+              // Lock the composer until the live Hub session is the active one, so
+              // the user can never type into (and send to) a project session that
+              // happens to be active before the Hub GET resolves.
+              !hubSessionId ||
+              activeSessionId !== hubSessionId
+            }
+            isProcessing={isProcessing}
+            queueLength={(messageQueues[activeSessionId] || []).length}
+            agentColor={chatAccentColor}
+            skills={skills}
+            consultMode
+            consultHint="Hub assistant — org & account help, no code ship or Finalize"
+            readOnly={false}
+            draftKey={activeSessionId || 'hub'}
+            onFileError={(msg: any) => showToast(msg, 'error', 6000)}
+            composerPrefill={composerPrefill}
+            onComposerPrefillClear={() => setComposerPrefill(null)}
+            onReplaceQueuedMessage={handleEditQueuedMessage}
+            sessionAgents={sessionAgents}
+            enableMentions={false}
+            toolbarStart={
+              <div className="flex items-center gap-2 min-w-0 w-full">
+                {hubModelPicker}
+                <div className="lg:hidden ml-auto shrink-0">{hubClearButton}</div>
+              </div>
+            }
+          />
         </div>
       </div>
-      <div className="shrink-0">
-        <MessageInput
-          ref={messageInputRef}
-          onSend={sendHubChat}
-          onCancel={handleCancel}
-          disabled={
-            shouldDisableSessionComposer({
-              hasAgent: !!activeAgent,
-              connected,
-              workspaceEnsureFailed: !!activeSessionWorkspaceEnsureError,
-            }) ||
-            // Lock the composer until the live Hub session is the active one, so
-            // the user can never type into (and send to) a project session that
-            // happens to be active before the Hub GET resolves.
-            !hubSessionId ||
-            activeSessionId !== hubSessionId
-          }
-          isProcessing={isProcessing}
-          queueLength={(messageQueues[activeSessionId] || []).length}
-          agentColor={chatAccentColor}
-          skills={skills}
-          consultMode
-          consultHint="Hub assistant — org & account help, no code ship or Finalize"
-          readOnly={false}
-          draftKey={activeSessionId || 'hub'}
-          onFileError={(msg: any) => showToast(msg, 'error', 6000)}
-          composerPrefill={composerPrefill}
-          onComposerPrefillClear={() => setComposerPrefill(null)}
-          onReplaceQueuedMessage={handleEditQueuedMessage}
-          sessionAgents={sessionAgents}
-          enableMentions={false}
-          toolbarStart={
-            <div className="flex items-center gap-2 min-w-0 w-full">
-              {hubModelPicker}
-              <div className="lg:hidden ml-auto shrink-0">{hubClearButton}</div>
-            </div>
-          }
-        />
-      </div>
-    </div>
+    </HubChatRefOpenContext.Provider>
   );
 
   return (
@@ -7394,23 +7415,7 @@ export default function App({ initialView }: any = {}) {
                       assistant={hubAssistantInChat ? hubAssistantChat : null}
                       googleUnread={googleChatBadge}
                       onSessionStarted={handleOpenCreatedSession}
-                      onOpenRef={(ref) => {
-                        if (!ref.visible) return;
-                        if (ref.kind === 'card' && ref.projectId) {
-                          setKanbanFocusCardId(ref.targetId);
-                          setCurrentView(`kanban:${ref.projectId}`);
-                          setSidebarOpen(false);
-                        } else if (ref.kind === 'session') {
-                          focusAgentSession(ref.agentId, ref.targetId);
-                        } else if (ref.kind === 'pr' && ref.projectId && ref.number) {
-                          handleOpenPrDetail(ref.projectId, ref.number);
-                        } else if (ref.kind === 'ticket' && ref.projectId) {
-                          setSupportProjectId(ref.projectId);
-                          setSupportTicketId(ref.targetId);
-                          setCurrentView('support');
-                          setSidebarOpen(false);
-                        }
-                      }}
+                      onOpenRef={handleOpenChatRef}
                       google={
                         chatEnabled ? (
                           <GoogleChatPage

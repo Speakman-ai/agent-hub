@@ -12,6 +12,7 @@ import {
   wakeupResultPanel,
 } from '@shared/utils/scheduledWakeup';
 import { markdownComponents } from './MarkdownRenderer';
+import { HubChatMessageBody, hasHubChatRefTokens } from './HubChatRefs';
 import {
   isFileModifyingTool,
   shortenPath,
@@ -773,6 +774,31 @@ const ENGINE_BADGES = {
 
 /** Full markdown + CodeBlock stack — same as ChatMessage for readable diffs / fences. */
 const MARKDOWN_COMPONENTS = markdownComponents;
+
+/**
+ * Assistant prose. Chat ref tokens (`@[label](session:id)`) render as live
+ * chips, so an agent can link the sessions and cards it created.
+ */
+function ProseMarkdown({ text }: { text: string }) {
+  if (hasHubChatRefTokens(text)) {
+    return (
+      <HubChatMessageBody
+        body={text}
+        baseComponents={MARKDOWN_COMPONENTS}
+        rehypePlugins={[rehypeHighlight]}
+      />
+    );
+  }
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeHighlight]}
+      components={MARKDOWN_COMPONENTS}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+}
 
 function truncateStatusDetail(s: any, max: any) {
   if (!s) return '';
@@ -1945,13 +1971,7 @@ function TextBubble({
     <>
       {review.prose ? (
         <div className="markdown-content text-gray-200 text-sm leading-relaxed">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-            components={MARKDOWN_COMPONENTS}
-          >
-            {review.prose}
-          </ReactMarkdown>
+          <ProseMarkdown text={review.prose} />
         </div>
       ) : null}
       {handoff && (
@@ -2180,13 +2200,7 @@ function StoredAssistantBubble({
         />
         {review.prose ? (
           <div className="markdown-content text-gray-200 mt-1">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeHighlight]}
-              components={MARKDOWN_COMPONENTS}
-            >
-              {review.prose}
-            </ReactMarkdown>
+            <ProseMarkdown text={review.prose} />
           </div>
         ) : null}
         {handoff && (

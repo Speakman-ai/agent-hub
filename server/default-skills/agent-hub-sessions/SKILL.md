@@ -28,7 +28,28 @@ in the shared core tree (`agent-hub/scripts/`).
 scripts/sessions.sh list <agentId>           # sessions for an agent
 scripts/sessions.sh messages <sessionId>     # full message history
 scripts/sessions.sh ask-mode <sessionId> true|false
+scripts/sessions.sh dispatch <projectId> --prompt "…" [--agent <agentId>] [--name "…"] [--mode manual]
 ```
+
+`dispatch` starts a session on a project agent, owned by your session's owner,
+and sends it the prompt. It prints `sessionId` and `ref`, an
+`@[name](session:id)` token. Paste `ref` into your reply or a chat post and it
+renders as a live session chip.
+
+## Posting to Agent Hub chat
+
+`scripts/chat.sh` posts as the session owner; the message shows as written by
+your agent and stays unread for the owner.
+
+```bash
+scripts/chat.sh channels [--all]                   # your channels (+ joinable)
+scripts/chat.sh messages '#deploys' --limit 20     # recent messages
+scripts/chat.sh post '#deploys' "Build is green" --ref session:<id>="Fix login"
+scripts/chat.sh dm alice "Card is ready" --ref card:<cardId>="WEB-12"
+```
+
+A channel is an id or a name (`#` optional); posting joins a public channel
+first. A body of `-` reads stdin.
 
 ## Ask mode (read-only / plan mode)
 
