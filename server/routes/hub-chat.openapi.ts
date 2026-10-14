@@ -85,6 +85,24 @@ const HubChatMemberComponent = registerComponent(
   }),
 );
 
+const ReactionComponent = registerComponent(
+  'HubChatReaction',
+  z
+    .object({
+      emoji: z.string(),
+      count: z.number().int(),
+      userIds: z.array(z.string()).openapi({ description: 'Who reacted, earliest first.' }),
+    })
+    .openapi({ description: 'One emoji on a message and who reacted with it.' }),
+);
+
+const PinInfoComponent = registerComponent(
+  'HubChatPinInfo',
+  z
+    .object({ byUserId: z.string().nullable(), at: z.string() })
+    .openapi({ description: 'Who pinned the message, and when.' }),
+);
+
 export const HubChatMessageComponent = registerComponent(
   'HubChatMessage',
   z
@@ -112,8 +130,30 @@ export const HubChatMessageComponent = registerComponent(
       editedAt: z.string().nullable(),
       deletedAt: z.string().nullable(),
       createdAt: z.string(),
+      metaRev: z.number().int().openapi({
+        description:
+          'Revision of `reactions` and `pinned`, bumped on every change. Keep the copy with the higher value.',
+      }),
+      reactions: z.array(ReactionComponent),
+      pinned: PinInfoComponent.nullable(),
     })
     .openapi({ description: 'One chat message. Deleted messages keep their seq.' }),
+);
+
+export const MessageMetaComponent = registerComponent(
+  'HubChatMessageMeta',
+  z
+    .object({
+      messageId: z.string(),
+      channelId: z.string(),
+      metaRev: z.number().int(),
+      reactions: z.array(ReactionComponent),
+      pinned: PinInfoComponent.nullable(),
+    })
+    .openapi({
+      description:
+        'Reaction and pin state of one message. Same shape as the `hub_chat_message_meta` WebSocket event.',
+    }),
 );
 
 const OrgMemberComponent = registerComponent(
@@ -199,6 +239,29 @@ export const PostMessageRequestSchema = z
   .strict();
 
 export const EditMessageRequestSchema = PostMessageRequestSchema;
+
+// Exactly one emoji sequence: a keycap, a flag (two regional indicators), or
+// a pictograph with an optional presentation selector or skin tone, optional
+// tag sequence (subdivision flags), and further pictographs only when joined
+// by a ZWJ. Concatenated emoji and stray components (digits, lone modifiers)
+// are refused.
+const EMOJI_ELEMENT = String.raw`\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?`;
+const EMOJI_RE = new RegExp(
+  String.raw`^(?:[0-9#*]\uFE0F?\u20E3|\p{Regional_Indicator}{2}|` +
+    String.raw`${EMOJI_ELEMENT}(?:[\u{E0020}-\u{E007E}]+\u{E007F})?(?:\u200D${EMOJI_ELEMENT})*)$`,
+  'u',
+);
+
+export const EmojiSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(32)
+  .refine((v) => EMOJI_RE.test(v), { message: 'emoji must be a single emoji' })
+  .openapi({ description: 'One emoji, e.g. 👍.', example: '👍' });
+
+export const ReactionRequestSchema = z.object({ emoji: EmojiSchema }).strict();
+export const RemoveReactionQuerySchema = z.object({ emoji: EmojiSchema });
 
 export const MarkReadRequestSchema = z
   .object({
@@ -825,6 +888,97 @@ registerPath({
     200: { description: 'Removed (or nothing to remove).', content: jsonContent(digestEnvelope) },
     404: notFound,
     409: errorResponse('Not joined.'),
+    ...common,
+  },
+});
+
+const metaEnvelope = z.object({ meta: MessageMetaComponent });
+const reactionResponses = {
+  200: {
+    description: "The message's reactions and pin state.",
+    content: jsonContent(metaEnvelope),
+  },
+  400: errorResponse(
+    'Not a single emoji, or the message already has the most distinct emoji allowed.',
+  ),
+  404: errorResponse('Message not found, deleted, or not visible to the caller.'),
+  409: errorResponse('Join the channel first, or the channel is archived.'),
+  ...common,
+};
+
+registerPath({
+  method: 'put',
+  path: '/api/chat/messages/{messageId}/reactions',
+  tags: [TAG],
+  summary: 'Add your reaction to a message',
+  description:
+    "Idempotent. Members of the message's channel get a `hub_chat_message_meta` event with the new state.",
+  request: { params: messageParams, body: { content: jsonContent(ReactionRequestSchema) } },
+  responses: reactionResponses,
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/chat/messages/{messageId}/reactions',
+  tags: [TAG],
+  summary: 'Remove your reaction from a message',
+  request: { params: messageParams, query: RemoveReactionQuerySchema },
+  responses: reactionResponses,
+});
+
+const pinResponses = {
+  200: {
+    description: "The message's reactions and pin state.",
+    content: jsonContent(metaEnvelope),
+  },
+  404: errorResponse('Message not found, deleted, or not visible to the caller.'),
+  409: errorResponse('Join the channel first, or the channel is archived.'),
+  ...common,
+};
+
+registerPath({
+  method: 'put',
+  path: '/api/chat/messages/{messageId}/pin',
+  tags: [TAG],
+  summary: 'Pin a message in its channel',
+  description: 'Any channel member can pin. Idempotent.',
+  request: { params: messageParams },
+  responses: pinResponses,
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/chat/messages/{messageId}/pin',
+  tags: [TAG],
+  summary: 'Unpin a message',
+  description: 'Any channel member can unpin. Idempotent.',
+  request: { params: messageParams },
+  responses: pinResponses,
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/chat/channels/{channelId}/pins',
+  tags: [TAG],
+  summary: "List a channel's pinned messages",
+  description: 'Most recently pinned first. Deleted messages drop off the list.',
+  request: { params: channelParams },
+  responses: {
+    200: {
+      description: 'Pinned messages.',
+      content: jsonContent(
+        z.object({
+          pins: z.array(
+            z.object({
+              message: HubChatMessageComponent,
+              pinnedByUserId: z.string().nullable(),
+              pinnedAt: z.string(),
+            }),
+          ),
+        }),
+      ),
+    },
+    404: notFound,
     ...common,
   },
 });

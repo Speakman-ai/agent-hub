@@ -38,6 +38,9 @@ const api = vi.hoisted(() => ({
     channel: vi.fn(),
     messages: vi.fn(),
     markRead: vi.fn(),
+    pins: vi.fn(),
+    pin: vi.fn(),
+    unpin: vi.fn(),
   },
 }));
 vi.mock('../utils/api', () => ({ api }));
@@ -127,6 +130,7 @@ describe('HubChatScreen channel view (mounted)', () => {
     api.hubChat.members.mockResolvedValue({ members: [] });
     api.hubChat.channel.mockResolvedValue({ channel: channel() });
     api.hubChat.markRead.mockResolvedValue({});
+    api.hubChat.pins.mockResolvedValue({ pins: [] });
     api.hubChat.channels.mockResolvedValue({ channels: [channel()], viewerUserId: 'u1' });
     await hubChatStore.reset(true, 'u1');
   });
@@ -233,5 +237,122 @@ describe('HubChatScreen channel view (mounted)', () => {
       membership: expect.objectContaining({ lastReadSeq: 51 }),
     });
     expect(hubChatBadge(hubChatStore.getSnapshot())).toBe(0);
+  });
+
+  it('shows live reactions and pin changes without touching unread state', async () => {
+    api.hubChat.messages.mockResolvedValue({ messages: range(1, 50), hasMore: false });
+    const r = await mount();
+    const pinsLabel = () =>
+      r.root.findByProps({ testID: 'hub-chat-pins-button' }).props.accessibilityLabel;
+    expect(pinsLabel()).toBe('Pinned messages');
+    api.hubChat.pins.mockResolvedValue({
+      pins: [{ message: msg(7), pinnedByUserId: 'u2', pinnedAt: '2026-10-13T10:00:00Z' }],
+    });
+    const reactions = [{ emoji: '👍', count: 1, userIds: ['u2'] }];
+    await act(async () => {
+      hubChatStore.handleWsEvent({
+        type: 'hub_chat_message_meta',
+        channelId: 'c1',
+        messageId: 'm7',
+        metaRev: 2,
+        reactions,
+        pinned: { byUserId: 'u2', at: '2026-10-13T10:00:00Z' },
+        pinChanged: true,
+      });
+    });
+    await flush();
+    const rows = r.root.findByType('FlatList').props.data as { message: HubChatMessage }[];
+    expect(rows.find((row) => row.message.id === 'm7')!.message.reactions).toEqual(reactions);
+    expect(pinsLabel()).toBe('Pinned messages (1)');
+    expect(api.hubChat.channels).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens an older pinned message that is not loaded yet', async () => {
+    const all = range(1, 300);
+    api.hubChat.messages.mockImplementation(
+      async (_c: string, o: { before?: number; limit?: number }) => {
+        const rows = all.filter((m) => o.before === undefined || m.seq < o.before);
+        const limit = o.limit ?? 50;
+        return { messages: rows.slice(-limit), hasMore: rows.length > limit };
+      },
+    );
+    api.hubChat.pins.mockResolvedValue({
+      pins: [{ message: msg(7), pinnedByUserId: 'u2', pinnedAt: '2026-10-13T10:00:00Z' }],
+    });
+    const scrollToIndex = vi.fn();
+    await act(async () => {
+      mounted = TestRenderer.create(
+        React.createElement(HubChatScreen, { initialChannelId: 'c1' }),
+        {
+          createNodeMock: (el: { type: unknown }) =>
+            el.type === 'FlatList'
+              ? { scrollToIndex, scrollToEnd: vi.fn(), scrollToOffset: vi.fn() }
+              : null,
+        },
+      );
+    });
+    const r = mounted;
+    await flush();
+    expect(shownSeqs(r)[0]).toBe(251);
+    const pinRow = r.root.findByProps({ testID: 'hub-chat-pin' });
+    await act(async () => {
+      pinRow.findAllByType('TouchableOpacity' as any)[0]!.props.onPress();
+    });
+    await flush();
+    const shown = shownSeqs(r);
+    expect(shown[0]).toBeLessThanOrEqual(7);
+    expect(shown[shown.length - 1]).toBe(300);
+    expect(scrollToIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ index: shown.indexOf(7) }),
+    );
+  });
+
+  it('updates the header from pin and unpin responses when no socket echo arrives', async () => {
+    api.hubChat.messages.mockResolvedValue({ messages: range(1, 50), hasMore: false });
+    const pinned = { byUserId: 'u1', at: '2026-10-13T10:00:00Z' };
+    const meta = (metaRev: number, p: typeof pinned | null) => ({
+      messageId: 'm50',
+      channelId: 'c1',
+      metaRev,
+      reactions: [],
+      pinned: p,
+    });
+    api.hubChat.pin.mockResolvedValue({ meta: meta(1, pinned) });
+    api.hubChat.unpin.mockResolvedValue({ meta: meta(2, null) });
+    const r = await mount();
+    await flush();
+    const pinsLabel = () =>
+      r.root.findByProps({ testID: 'hub-chat-pins-button' }).props.accessibilityLabel;
+    expect(pinsLabel()).toBe('Pinned messages');
+    api.hubChat.pins.mockResolvedValue({
+      pins: [
+        { message: { ...msg(50), metaRev: 1, pinned }, pinnedByUserId: 'u1', pinnedAt: pinned.at },
+      ],
+    });
+    // The list renders rows through renderItem; open the row's long-press sheet.
+    const list = r.root.findByType('FlatList');
+    const item = (list.props.data as { message: HubChatMessage }[]).find(
+      (row) => row.message.id === 'm50',
+    )!;
+    const rowEl = list.props.renderItem({ item });
+    await act(async () => rowEl.props.onLongPress(item.message));
+    const sheet = r.root.findByProps({ testID: 'hub-chat-message-actions' });
+    const pinAction = sheet
+      .findAllByType('TouchableOpacity' as any)
+      .find((n: any) =>
+        n.findAllByType('Text' as any).some((t: any) => t.props.children === 'Pin to channel'),
+      );
+    await act(async () => pinAction.props.onPress());
+    await flush();
+    expect(api.hubChat.pin).toHaveBeenCalledWith('m50');
+    expect(pinsLabel()).toBe('Pinned messages (1)');
+
+    // Unpin from the pinned list: the item goes without waiting for an event.
+    const unpin = r.root.findByProps({ accessibilityLabel: 'Unpin' });
+    await act(async () => unpin.props.onPress());
+    await flush();
+    expect(api.hubChat.unpin).toHaveBeenCalledWith('m50');
+    expect(pinsLabel()).toBe('Pinned messages');
+    expect(r.root.findAllByProps({ testID: 'hub-chat-pin' })).toHaveLength(0);
   });
 });

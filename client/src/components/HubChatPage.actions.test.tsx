@@ -5,6 +5,11 @@ vi.mock('../utils/api', () => ({
   api: {
     hubChat: {
       members: vi.fn(),
+      pins: vi.fn(() => Promise.resolve({ pins: [] })),
+      react: vi.fn(),
+      unreact: vi.fn(),
+      pin: vi.fn(),
+      unpin: vi.fn(),
       channels: vi.fn(),
       messages: vi.fn(),
       markRead: vi.fn(),

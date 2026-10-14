@@ -27,8 +27,11 @@ import {
   RAIL_SECTIONS,
   railUnread,
   sectionChannels,
+  HUB_CHAT_QUICK_REACTIONS,
+  reactedByViewer,
   type HubChatChannel,
   type HubChatMessage,
+  type HubChatMessageMeta,
   type HubChatNotifyLevel,
   type HubChatOrgMember,
 } from '@shared/utils/hubChat';
@@ -48,6 +51,9 @@ import {
   type ChannelSyncState,
 } from '../utils/hubChatChannelSync';
 import { hubChatStore, locateChatMarkdownCode } from '../utils/hubChatInstance';
+import { createPinsLoader, type PinsState } from '../utils/hubChatPins';
+import { initialPinnedList } from '@shared/utils/hubChatPins';
+import { plainChatText } from '@shared/utils/hubChatUnread';
 import { badgeText, hubChatRefTarget } from '../utils/hubChatMobile';
 import { useAccountScoped, useHubChatBadge, useHubChatSnapshot } from '../hooks/useHubChat';
 import { useApp } from '../context/AppContext';
@@ -436,6 +442,7 @@ function ChannelView({
   const { hasMore, loading } = sync;
   const loadError = sync.error;
   const syncRef = useRef<ChannelSync | null>(null);
+  const pinsRef = useRef<ReturnType<typeof createPinsLoader> | null>(null);
   const [draft, setDraft] = useState<{ text: string; mentions: ComposerMention[] }>({
     text: '',
     mentions: [],
@@ -445,6 +452,9 @@ function ChannelView({
   const [editing, setEditing] = useState<HubChatMessage | null>(null);
   const [sending, setSending] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [actionsFor, setActionsFor] = useState<HubChatMessage | null>(null);
+  const [pinsOpen, setPinsOpen] = useState(false);
+  const [pinsState, setPinsState] = useState<PinsState>(initialPinnedList);
   const [appActive, setAppActive] = useState(AppState.currentState === 'active');
   // On screen means both: the app is in front and this screen has focus. It
   // decides whether arriving messages count as read and whether reads are
@@ -471,21 +481,35 @@ function ChannelView({
     syncRef.current = ctl;
     setSync(ctl.getState());
     void ctl.load();
+    const pinsLoader = createPinsLoader(channelId, api.hubChat, (next) => {
+      if (mounted.current) setPinsState(next);
+    });
+    pinsRef.current = pinsLoader;
+    setPinsState(pinsLoader.getState());
+    void pinsLoader.reload();
     const offLive = hubChatStore.subscribeLive((event) => {
-      if (event.type === 'resync') ctl.resync();
-      else if (event.type === 'hub_chat_message' && event.message.channelId === channelId) {
+      if (event.type === 'resync') {
+        ctl.resync();
+        void pinsLoader.reload();
+      } else if (event.type === 'hub_chat_message_meta') {
+        ctl.receiveMeta(event.meta);
+        pinsLoader.receiveMeta(event.meta);
+      } else if (event.type === 'hub_chat_message' && event.message.channelId === channelId) {
         ctl.receiveNew([event.message]);
       } else if (
         event.type === 'hub_chat_message_update' &&
         event.message.channelId === channelId
       ) {
         ctl.receiveUpdate(event.message);
+        pinsLoader.receiveUpdate(event.message);
       }
     });
     const sub = AppState.addEventListener('change', (st) => setAppActive(st === 'active'));
     return () => {
       mounted.current = false;
       ctl.dispose();
+      pinsLoader.dispose();
+      pinsRef.current = null;
       syncRef.current = null;
       offLive();
       sub.remove();
@@ -683,8 +707,10 @@ function ChannelView({
         ? await api.hubChat.edit(editing.id, body)
         : await api.hubChat.post(channelId, body);
       if (res?.message) {
-        if (editing) syncRef.current?.receiveUpdate(res.message);
-        else {
+        if (editing) {
+          syncRef.current?.receiveUpdate(res.message);
+          pinsRef.current?.receiveUpdate(res.message);
+        } else {
           stickToBottomRef.current = true;
           syncRef.current?.receiveNew([res.message]);
         }
@@ -707,23 +733,57 @@ function ChannelView({
     setDraft({ text: decoded.text, mentions: decoded.mentions });
   };
 
-  const onLongPress = (m: HubChatMessage) => {
-    Alert.alert('Message', undefined, [
-      { text: 'Edit', onPress: () => startEdit(m) },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          api.hubChat
-            .remove(m.id)
-            .then((res: { message?: HubChatMessage }) => {
-              if (res?.message) syncRef.current?.receiveUpdate(res.message);
-            })
-            .catch((err: unknown) => Alert.alert('Could not delete', errorText(err)));
-        },
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+  const canAct = !!channel?.membership && !channel.archivedAt;
+
+  const applyMeta = (res: { meta?: HubChatMessageMeta }) => {
+    if (!res?.meta) return;
+    syncRef.current?.receiveMeta(res.meta);
+    // The header list too: a pin made while the socket is down has no echo.
+    pinsRef.current?.receiveMeta(res.meta);
+  };
+
+  const toggleReaction = (m: HubChatMessage, emoji: string) => {
+    const mine = m.reactions?.find((r) => r.emoji === emoji);
+    const request =
+      mine && reactedByViewer(mine, snapshot.viewerUserId)
+        ? api.hubChat.unreact(m.id, emoji)
+        : api.hubChat.react(m.id, emoji);
+    request.then(applyMeta).catch((err: unknown) => Alert.alert('Could not react', errorText(err)));
+  };
+
+  const setPinned = (messageId: string, pinned: boolean) => {
+    (pinned ? api.hubChat.pin(messageId) : api.hubChat.unpin(messageId))
+      .then(applyMeta)
+      .catch((err: unknown) =>
+        Alert.alert(pinned ? 'Could not pin' : 'Could not unpin', errorText(err)),
+      );
+  };
+
+  const deleteMessage = (m: HubChatMessage) => {
+    api.hubChat
+      .remove(m.id)
+      .then((res: { message?: HubChatMessage }) => {
+        if (res?.message) {
+          syncRef.current?.receiveUpdate(res.message);
+          pinsRef.current?.receiveUpdate(res.message);
+        }
+      })
+      .catch((err: unknown) => Alert.alert('Could not delete', errorText(err)));
+  };
+
+  const onLongPress = (m: HubChatMessage) => setActionsFor(m);
+
+  // A pinned message: the same seek as a search result, starting from the
+  // seq the pinned list already has.
+  const jumpToPinned = (message: HubChatMessage) => {
+    setPinsOpen(false);
+    seekTokenRef.current++;
+    const token = seekTokenRef.current;
+    setSeekPending(null);
+    setSeekError(null);
+    holdPositionRef.current = true;
+    stickToBottomRef.current = false;
+    void finishSeek(token, message.id, message.seq);
   };
 
   const join = () => {
@@ -811,6 +871,18 @@ function ChannelView({
             </View>
           ) : null}
         </View>
+        <TouchableOpacity
+          onPress={() => setPinsOpen(true)}
+          style={styles.headerButton}
+          accessibilityLabel={
+            pinsState.pins.length ? `Pinned messages (${pinsState.pins.length})` : 'Pinned messages'
+          }
+          testID="hub-chat-pins-button"
+        >
+          <Text style={styles.pinButtonText}>
+            📌{pinsState.pins.length ? ` ${pinsState.pins.length}` : ''}
+          </Text>
+        </TouchableOpacity>
         {channel?.membership ? (
           <TouchableOpacity
             onPress={() => setSettingsOpen(true)}
@@ -905,7 +977,11 @@ function ChannelView({
               highlighted={item.message.id === highlightId}
               usernames={usernames}
               onOpenRef={onOpenRef}
-              onLongPress={item.own && !item.message.deletedAt ? onLongPress : undefined}
+              viewerUserId={snapshot.viewerUserId}
+              onLongPress={
+                !item.message.deletedAt && (canAct || item.own) ? onLongPress : undefined
+              }
+              onToggleReaction={canAct ? toggleReaction : undefined}
             />
           )}
         />
@@ -954,6 +1030,45 @@ function ChannelView({
           </View>
         </View>
       )}
+      <MessageActionsSheet
+        message={actionsFor}
+        own={
+          !!actionsFor &&
+          actionsFor.authorUserId === snapshot.viewerUserId &&
+          actionsFor.authorKind === 'user'
+        }
+        canAct={canAct}
+        viewerUserId={snapshot.viewerUserId}
+        onClose={() => setActionsFor(null)}
+        onReact={(m, emoji) => {
+          setActionsFor(null);
+          toggleReaction(m, emoji);
+        }}
+        onPin={(m) => {
+          setActionsFor(null);
+          setPinned(m.id, !m.pinned);
+        }}
+        onEdit={(m) => {
+          setActionsFor(null);
+          startEdit(m);
+        }}
+        onDelete={(m) => {
+          setActionsFor(null);
+          Alert.alert('Delete this message?', undefined, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Delete', style: 'destructive', onPress: () => deleteMessage(m) },
+          ]);
+        }}
+      />
+      <PinsDialog
+        visible={pinsOpen}
+        state={pinsState}
+        usernames={usernames}
+        canUnpin={canAct}
+        onClose={() => setPinsOpen(false)}
+        onPick={jumpToPinned}
+        onUnpin={(id) => setPinned(id, false)}
+      />
       {channel ? (
         <ChannelSettingsDialog
           visible={settingsOpen}
@@ -984,12 +1099,16 @@ export function MessageRow({
   onOpenRef,
   onLongPress,
   highlighted,
+  viewerUserId = null,
+  onToggleReaction,
 }: {
   row: ReturnType<typeof layoutHubChatMessages>[number];
   highlighted?: boolean;
   usernames: ReadonlyMap<string, string>;
   onOpenRef?: (ref: HubChatResolvedRef) => void;
   onLongPress?: (m: HubChatMessage) => void;
+  viewerUserId?: string | null;
+  onToggleReaction?: (m: HubChatMessage, emoji: string) => void;
 }) {
   const m = row.message;
   const triggerCard = m.authorKind === 'trigger' ? readChatTriggerCard(m.payload) : null;
@@ -1033,8 +1152,162 @@ export function MessageRow({
             {m.editedAt ? <Text style={styles.time}>(edited)</Text> : null}
           </>
         )}
+        {!m.deletedAt && m.pinned ? (
+          <Text style={styles.pinnedLabel} testID="hub-chat-pinned-label">
+            📌 Pinned
+            {m.pinned.byUserId && usernames.get(m.pinned.byUserId)
+              ? ` by ${usernames.get(m.pinned.byUserId)}`
+              : ''}
+          </Text>
+        ) : null}
+        {!m.deletedAt && m.reactions?.length ? (
+          <View style={styles.reactionRow} testID="hub-chat-reactions">
+            {m.reactions.map((r) => {
+              const mine = reactedByViewer(r, viewerUserId);
+              return (
+                <TouchableOpacity
+                  key={r.emoji}
+                  disabled={!onToggleReaction}
+                  onPress={() => onToggleReaction?.(m, r.emoji)}
+                  style={[styles.reactionChip, mine && styles.reactionChipMine]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: mine }}
+                  accessibilityLabel={`${r.emoji} ${r.count}`}
+                  testID="hub-chat-reaction"
+                >
+                  <Text style={styles.reactionText}>
+                    {r.emoji} {r.count}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        ) : null}
       </TouchableOpacity>
     </View>
+  );
+}
+
+/** Long-press sheet: quick reactions, pin, and the author's edit/delete. */
+function MessageActionsSheet({
+  message,
+  own,
+  canAct,
+  viewerUserId,
+  onClose,
+  onReact,
+  onPin,
+  onEdit,
+  onDelete,
+}: {
+  message: HubChatMessage | null;
+  own: boolean;
+  canAct: boolean;
+  viewerUserId: string | null;
+  onClose: () => void;
+  onReact: (m: HubChatMessage, emoji: string) => void;
+  onPin: (m: HubChatMessage) => void;
+  onEdit: (m: HubChatMessage) => void;
+  onDelete: (m: HubChatMessage) => void;
+}) {
+  return (
+    <DialogShell visible={!!message} title="Message" onClose={onClose}>
+      {message ? (
+        <View testID="hub-chat-message-actions">
+          {canAct ? (
+            <>
+              <View style={styles.reactionPickRow}>
+                {HUB_CHAT_QUICK_REACTIONS.map((emoji) => {
+                  const r = message.reactions?.find((x) => x.emoji === emoji);
+                  const mine = !!r && reactedByViewer(r, viewerUserId);
+                  return (
+                    <TouchableOpacity
+                      key={emoji}
+                      onPress={() => onReact(message, emoji)}
+                      style={[styles.reactionPick, mine && styles.reactionChipMine]}
+                      accessibilityLabel={`React with ${emoji}`}
+                    >
+                      <Text style={styles.reactionPickText}>{emoji}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              <TouchableOpacity style={styles.sheetAction} onPress={() => onPin(message)}>
+                <Text style={styles.sheetActionText}>
+                  {message.pinned ? 'Unpin from channel' : 'Pin to channel'}
+                </Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
+          {own ? (
+            <>
+              <TouchableOpacity style={styles.sheetAction} onPress={() => onEdit(message)}>
+                <Text style={styles.sheetActionText}>Edit</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.sheetAction} onPress={() => onDelete(message)}>
+                <Text style={[styles.sheetActionText, styles.error]}>Delete</Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
+        </View>
+      ) : null}
+    </DialogShell>
+  );
+}
+
+function PinsDialog({
+  visible,
+  state,
+  usernames,
+  canUnpin,
+  onClose,
+  onPick,
+  onUnpin,
+}: {
+  visible: boolean;
+  state: PinsState;
+  usernames: ReadonlyMap<string, string>;
+  canUnpin: boolean;
+  onClose: () => void;
+  onPick: (message: HubChatMessage) => void;
+  onUnpin: (messageId: string) => void;
+}) {
+  return (
+    <DialogShell visible={visible} title="Pinned messages" onClose={onClose}>
+      {state.error ? <Text style={styles.error}>{state.error}</Text> : null}
+      {state.loading && state.pins.length === 0 ? (
+        <ActivityIndicator color={colors.gray400} style={styles.pad} />
+      ) : state.pins.length === 0 ? (
+        <Text style={[styles.muted, styles.pad]}>
+          Nothing pinned yet. Long-press a message to pin it.
+        </Text>
+      ) : (
+        <ScrollView style={styles.sheetList}>
+          {state.pins.map((p) => (
+            <View key={p.message.id} style={styles.pinRow} testID="hub-chat-pin">
+              <TouchableOpacity style={styles.flex} onPress={() => onPick(p.message)}>
+                <Text style={styles.author}>{authorLabel(p.message, usernames)}</Text>
+                <Text style={styles.pinText} numberOfLines={3}>
+                  {plainChatText(p.message.body) || '(no text)'}
+                </Text>
+                <Text style={styles.time}>
+                  Pinned by {(p.pinnedByUserId && usernames.get(p.pinnedByUserId)) || 'someone'}
+                </Text>
+              </TouchableOpacity>
+              {canUnpin ? (
+                <TouchableOpacity
+                  onPress={() => onUnpin(p.message.id)}
+                  accessibilityLabel="Unpin"
+                  style={styles.headerButton}
+                >
+                  <HubIcon name="X" size={14} color={colors.gray400} />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          ))}
+        </ScrollView>
+      )}
+    </DialogShell>
   );
 }
 
@@ -1530,6 +1803,33 @@ const styles = StyleSheet.create({
   authorOwn: { color: colors.blue300 },
   time: { color: colors.gray500, fontSize: 11 },
   deleted: { color: colors.gray500, fontStyle: 'italic', fontSize: 13 },
+  pinButtonText: { color: colors.gray300, fontSize: 13 },
+  pinnedLabel: { color: colors.amber400, fontSize: 11, marginTop: 2 },
+  reactionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
+  reactionChip: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray900,
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  reactionChipMine: { borderColor: colors.blue400, backgroundColor: colors.blue600 },
+  reactionText: { color: colors.gray100, fontSize: 12 },
+  reactionPickRow: { flexDirection: 'row', justifyContent: 'space-between', marginVertical: 12 },
+  reactionPick: { borderRadius: 8, padding: 6 },
+  reactionPickText: { fontSize: 24 },
+  sheetAction: { paddingVertical: 12, borderTopWidth: 1, borderTopColor: colors.gray800 },
+  sheetActionText: { color: colors.gray100, fontSize: 15 },
+  pinRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+  },
+  pinText: { color: colors.gray300, fontSize: 13, marginVertical: 2 },
   joinBar: {
     margin: 12,
     padding: 12,

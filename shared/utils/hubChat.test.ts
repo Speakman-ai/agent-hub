@@ -6,6 +6,9 @@ import {
   channelLabel,
   layoutHubChatMessages,
   mergeIntoWindow,
+  applyMetaToWindow,
+  parseMessageMetaEvent,
+  toggleReaction,
   reconcileChannels,
   changedGroups,
   reconcileChannel,
@@ -483,5 +486,63 @@ describe('agent channels', () => {
       'Working…',
     );
     expect(agentChannelStatus({ sessionId: 's', sessionName: 'x', running: false })).toBe('Idle');
+  });
+});
+
+describe('reactions and pins in a message window', () => {
+  const empty = { messages: [], revisions: {} };
+  const thumbs = (userIds: string[]) => [{ emoji: '👍', count: userIds.length, userIds }];
+  const meta = (metaRev: number, userIds: string[]) => ({
+    messageId: 'm1',
+    channelId: 'c1',
+    metaRev,
+    reactions: thumbs(userIds),
+    pinned: null,
+  });
+
+  it('applies a live reaction to a shown message', () => {
+    const w = applyMetaToWindow(mergeIntoWindow(empty, [msg(1)], true), meta(1, ['bob']));
+    expect(w.messages[0]!.reactions).toEqual(thumbs(['bob']));
+  });
+
+  it('keeps a live reaction when an older history page lands afterwards', () => {
+    // The event arrives before the page that holds the message.
+    const live = applyMetaToWindow(empty, meta(3, ['bob', 'carol']));
+    expect(live.messages).toEqual([]);
+    const stale = msg(1, { metaRev: 2, reactions: thumbs(['bob']) });
+    const w = mergeIntoWindow(live, [stale], true);
+    expect(w.messages[0]!.reactions).toEqual(thumbs(['bob', 'carol']));
+    expect(w.messages[0]!.metaRev).toBe(3);
+  });
+
+  it('ignores an out-of-order older meta event', () => {
+    const shown = mergeIntoWindow(empty, [msg(1)], true);
+    const w = applyMetaToWindow(applyMetaToWindow(shown, meta(5, ['bob'])), meta(4, []));
+    expect(w.messages[0]!.reactions).toEqual(thumbs(['bob']));
+  });
+
+  it('keeps reactions across an edit, and the edit across a reaction', () => {
+    const reacted = msg(1, { metaRev: 2, reactions: thumbs(['bob']) });
+    const edit = msg(1, { body: 'fixed', editedAt: '2026-10-13T11:00:00.000Z', metaRev: 1 });
+    const w = mergeIntoWindow(mergeIntoWindow(empty, [reacted], true), [edit], false);
+    expect(w.messages[0]).toMatchObject({ body: 'fixed', metaRev: 2, reactions: thumbs(['bob']) });
+  });
+
+  it('toggles the viewer in and out of a reaction', () => {
+    const added = toggleReaction(thumbs(['bob']), '👍', 'alice');
+    expect(added).toEqual(thumbs(['bob', 'alice']));
+    expect(toggleReaction(added, '👍', 'bob')).toEqual(thumbs(['alice']));
+    expect(toggleReaction(thumbs(['alice']), '👍', 'alice')).toEqual([]);
+    expect(toggleReaction(undefined, '🎉', 'alice')).toEqual([
+      { emoji: '🎉', count: 1, userIds: ['alice'] },
+    ]);
+  });
+
+  it('parses meta events and rejects malformed ones', () => {
+    expect(parseMessageMetaEvent({ ...meta(1, ['bob']), type: 'hub_chat_message_meta' })).toEqual(
+      meta(1, ['bob']),
+    );
+    expect(parseMessageMetaEvent({ messageId: 'm1' })).toBeNull();
+    expect(parseMessageMetaEvent(null)).toBeNull();
   });
 });

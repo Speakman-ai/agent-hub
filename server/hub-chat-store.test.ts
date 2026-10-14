@@ -49,6 +49,8 @@ describe('hub chat schema', () => {
       'hub_chat_channels',
       'hub_chat_members',
       'hub_chat_messages',
+      'hub_chat_pins',
+      'hub_chat_reactions',
       'hub_chat_refs',
     ]);
   });

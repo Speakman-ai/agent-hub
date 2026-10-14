@@ -1317,6 +1317,21 @@ export const api = {
       }),
     remove: (messageId: string) =>
       fetchJSON(`/chat/messages/${encodeURIComponent(messageId)}`, { method: 'DELETE' }),
+    react: (messageId: string, emoji: string) =>
+      fetchJSON(`/chat/messages/${encodeURIComponent(messageId)}/reactions`, {
+        method: 'PUT',
+        body: JSON.stringify({ emoji }),
+      }),
+    unreact: (messageId: string, emoji: string) =>
+      fetchJSON(
+        `/chat/messages/${encodeURIComponent(messageId)}/reactions?emoji=${encodeURIComponent(emoji)}`,
+        { method: 'DELETE' },
+      ),
+    pin: (messageId: string) =>
+      fetchJSON(`/chat/messages/${encodeURIComponent(messageId)}/pin`, { method: 'PUT' }),
+    unpin: (messageId: string) =>
+      fetchJSON(`/chat/messages/${encodeURIComponent(messageId)}/pin`, { method: 'DELETE' }),
+    pins: (channelId: string) => fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/pins`),
     markRead: (channelId: string, seq?: number) =>
       fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/read`, {
         method: 'POST',

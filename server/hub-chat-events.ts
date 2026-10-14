@@ -15,12 +15,19 @@ export const HUB_CHAT_MESSAGE_EVENT = 'hub_chat_message';
 export const HUB_CHAT_MESSAGE_UPDATE_EVENT = 'hub_chat_message_update';
 export const HUB_CHAT_READ_EVENT = 'hub_chat_read';
 export const HUB_CHAT_CHANNEL_UPDATE_EVENT = 'hub_chat_channel_update';
+/**
+ * A message's reactions or pin changed. Carries the full reaction/pin state
+ * and its `metaRev`, not the message body, so clients patch the message in
+ * place and unread state is untouched.
+ */
+export const HUB_CHAT_MESSAGE_META_EVENT = 'hub_chat_message_meta';
 
 export const HUB_CHAT_EVENT_TYPES: ReadonlySet<string> = new Set([
   HUB_CHAT_MESSAGE_EVENT,
   HUB_CHAT_MESSAGE_UPDATE_EVENT,
   HUB_CHAT_READ_EVENT,
   HUB_CHAT_CHANNEL_UPDATE_EVENT,
+  HUB_CHAT_MESSAGE_META_EVENT,
 ]);
 
 export type HubChatChannelUpdateReason =

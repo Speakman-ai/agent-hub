@@ -7643,6 +7643,35 @@ components:
         - username
         - role
         - joinedAt
+    HubChatReaction:
+      type: object
+      properties:
+        emoji:
+          type: string
+        count:
+          type: integer
+        userIds:
+          type: array
+          items:
+            type: string
+          description: Who reacted, earliest first.
+      required:
+        - emoji
+        - count
+        - userIds
+      description: One emoji on a message and who reacted with it.
+    HubChatPinInfo:
+      type: object
+      properties:
+        byUserId:
+          type: string
+          nullable: true
+        at:
+          type: string
+      required:
+        - byUserId
+        - at
+      description: Who pinned the message, and when.
     HubChatMessage:
       type: object
       properties:
@@ -7705,6 +7734,17 @@ components:
           nullable: true
         createdAt:
           type: string
+        metaRev:
+          type: integer
+          description: Revision of `reactions` and `pinned`, bumped on every change. Keep the copy with the higher value.
+        reactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/HubChatReaction"
+        pinned:
+          allOf:
+            - $ref: "#/components/schemas/HubChatPinInfo"
+            - nullable: true
       required:
         - id
         - channelId
@@ -7717,7 +7757,34 @@ components:
         - editedAt
         - deletedAt
         - createdAt
+        - metaRev
+        - reactions
+        - pinned
       description: One chat message. Deleted messages keep their seq.
+    HubChatMessageMeta:
+      type: object
+      properties:
+        messageId:
+          type: string
+        channelId:
+          type: string
+        metaRev:
+          type: integer
+        reactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/HubChatReaction"
+        pinned:
+          allOf:
+            - $ref: "#/components/schemas/HubChatPinInfo"
+            - nullable: true
+      required:
+        - messageId
+        - channelId
+        - metaRev
+        - reactions
+        - pinned
+      description: Reaction and pin state of one message. Same shape as the `hub_chat_message_meta` WebSocket event.
     HubChatOrgMember:
       type: object
       properties:
@@ -37167,6 +37234,298 @@ paths:
                 $ref: "#/components/schemas/HubChatErrorResponse"
         "409":
           description: Not joined.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/messages/{messageId}/reactions:
+    put:
+      tags:
+        - Hub Chat
+      summary: Add your reaction to a message
+      description: Idempotent. Members of the message's channel get a `hub_chat_message_meta` event with the new state.
+      parameters:
+        - schema:
+            type: string
+            description: Message id.
+          required: true
+          description: Message id.
+          name: messageId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                emoji:
+                  type: string
+                  minLength: 1
+                  maxLength: 32
+                  description: One emoji, e.g. 👍.
+                  example: 👍
+              required:
+                - emoji
+              additionalProperties: false
+      responses:
+        "200":
+          description: The message's reactions and pin state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    $ref: "#/components/schemas/HubChatMessageMeta"
+                required:
+                  - meta
+        "400":
+          description: Not a single emoji, or the message already has the most distinct emoji allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Message not found, deleted, or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: Join the channel first, or the channel is archived.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+    delete:
+      tags:
+        - Hub Chat
+      summary: Remove your reaction from a message
+      parameters:
+        - schema:
+            type: string
+            description: Message id.
+          required: true
+          description: Message id.
+          name: messageId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 32
+            description: One emoji, e.g. 👍.
+            example: 👍
+          required: true
+          description: One emoji, e.g. 👍.
+          name: emoji
+          in: query
+      responses:
+        "200":
+          description: The message's reactions and pin state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    $ref: "#/components/schemas/HubChatMessageMeta"
+                required:
+                  - meta
+        "400":
+          description: Not a single emoji, or the message already has the most distinct emoji allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Message not found, deleted, or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: Join the channel first, or the channel is archived.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/messages/{messageId}/pin:
+    put:
+      tags:
+        - Hub Chat
+      summary: Pin a message in its channel
+      description: Any channel member can pin. Idempotent.
+      parameters:
+        - schema:
+            type: string
+            description: Message id.
+          required: true
+          description: Message id.
+          name: messageId
+          in: path
+      responses:
+        "200":
+          description: The message's reactions and pin state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    $ref: "#/components/schemas/HubChatMessageMeta"
+                required:
+                  - meta
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Message not found, deleted, or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: Join the channel first, or the channel is archived.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+    delete:
+      tags:
+        - Hub Chat
+      summary: Unpin a message
+      description: Any channel member can unpin. Idempotent.
+      parameters:
+        - schema:
+            type: string
+            description: Message id.
+          required: true
+          description: Message id.
+          name: messageId
+          in: path
+      responses:
+        "200":
+          description: The message's reactions and pin state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meta:
+                    $ref: "#/components/schemas/HubChatMessageMeta"
+                required:
+                  - meta
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Message not found, deleted, or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: Join the channel first, or the channel is archived.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/{channelId}/pins:
+    get:
+      tags:
+        - Hub Chat
+      summary: List a channel's pinned messages
+      description: Most recently pinned first. Deleted messages drop off the list.
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+      responses:
+        "200":
+          description: Pinned messages.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pins:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        message:
+                          $ref: "#/components/schemas/HubChatMessage"
+                        pinnedByUserId:
+                          type: string
+                          nullable: true
+                        pinnedAt:
+                          type: string
+                      required:
+                        - message
+                        - pinnedByUserId
+                        - pinnedAt
+                required:
+                  - pins
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel not found, or private and the caller is not a member (hidden as 404).
           content:
             application/json:
               schema:

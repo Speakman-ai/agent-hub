@@ -18,7 +18,13 @@
  * - a resync (reconnect, back in front) refetches everything loaded, so edits
  *   and deletes missed while away replace stale copies.
  */
-import { mergeIntoWindow, type HubChatMessage, type MessageWindow } from '@shared/utils/hubChat';
+import {
+  applyMetaToWindow,
+  mergeIntoWindow,
+  type HubChatMessage,
+  type HubChatMessageMeta,
+  type MessageWindow,
+} from '@shared/utils/hubChat';
 
 export interface ChannelPage {
   messages?: HubChatMessage[];
@@ -212,6 +218,11 @@ export function createChannelSync(
     /** An edit or delete: never inserts. */
     receiveUpdate(message: HubChatMessage) {
       merge([message], false);
+    },
+    /** A reaction or pin change (live event or the viewer's own request). */
+    receiveMeta(meta: HubChatMessageMeta) {
+      if (disposed || meta.channelId !== channelId) return;
+      set({ window: applyMetaToWindow(state.window, meta) });
     },
     /** The channel's tail moved past the window (learned from the rail). */
     catchUpTo(lastSeq: number) {

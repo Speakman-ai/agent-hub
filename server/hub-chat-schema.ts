@@ -65,7 +65,9 @@ export const HUB_CHAT_SCHEMA = `
     payload_json     TEXT,
     edited_at        TEXT,
     deleted_at       TEXT,
-    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    -- Bumped on every reaction or pin change (see HUB_CHAT_COLUMN_MIGRATIONS).
+    meta_rev         INTEGER NOT NULL DEFAULT 0
   );
   CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_chat_messages_channel_seq
     ON hub_chat_messages(channel_id, seq);
@@ -149,6 +151,26 @@ export const HUB_CHAT_SCHEMA = `
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
 
+  -- Emoji reactions: one row per (message, user, emoji).
+  CREATE TABLE IF NOT EXISTS hub_chat_reactions (
+    message_id  TEXT NOT NULL REFERENCES hub_chat_messages(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL,
+    emoji       TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (message_id, user_id, emoji)
+  );
+
+  -- Pinned messages, at most one pin per message. channel_id is denormalized
+  -- so a channel's pinned list is one indexed read.
+  CREATE TABLE IF NOT EXISTS hub_chat_pins (
+    message_id         TEXT PRIMARY KEY REFERENCES hub_chat_messages(id) ON DELETE CASCADE,
+    channel_id         TEXT NOT NULL REFERENCES hub_chat_channels(id) ON DELETE CASCADE,
+    pinned_by_user_id  TEXT,
+    pinned_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_hub_chat_pins_channel
+    ON hub_chat_pins(channel_id, pinned_at);
+
   -- The turn a session with channel turns is running now (a channel turn or
   -- one started in the session directly).
   CREATE TABLE IF NOT EXISTS hub_chat_agent_session_turns (
@@ -167,6 +189,9 @@ export const HUB_CHAT_COLUMN_MIGRATIONS: ReadonlyArray<string> = [
   // Optional second destination: a Google Chat space the trigger creator
   // posts into through their own Google connection.
   'ALTER TABLE project_chat_triggers ADD COLUMN google_chat_space_id TEXT',
+  // Bumped on every reaction or pin change, so a client holding two copies of
+  // a message (a history page and a live update) keeps the newer reactions.
+  'ALTER TABLE hub_chat_messages ADD COLUMN meta_rev INTEGER NOT NULL DEFAULT 0',
 ];
 
 export const HUB_CHAT_POST_MIGRATION_SCHEMA = `

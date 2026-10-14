@@ -138,6 +138,27 @@ describe('MessageRow', () => {
     expect(html).toContain('hub-chat-message-highlighted');
   });
 
+  it('shows reactions, marking the viewer’s own, and the pinned label', () => {
+    const [row] = layoutHubChatMessages(
+      [
+        msg({
+          reactions: [
+            { emoji: '👍', count: 2, userIds: ['u1', 'u2'] },
+            { emoji: '🎉', count: 1, userIds: ['u2'] },
+          ],
+          pinned: { byUserId: 'u2', at: '2026-10-13T10:01:00Z' },
+        }),
+      ],
+      { viewerUserId: 'u1', lastReadSeq: 1 },
+    );
+    const html = renderToStaticMarkup(
+      <MessageRow row={row} usernames={new Map([['u2', 'bob']])} viewerUserId="u1" />,
+    );
+    expect(html).toContain('👍 2');
+    expect(html).toContain('🎉 1');
+    expect(html).toContain('Pinned by bob');
+  });
+
   it('renders a deleted message as a placeholder', () => {
     const [row] = layoutHubChatMessages([msg({ deletedAt: '2026-10-13T10:05:00Z' })], {
       viewerUserId: 'u1',

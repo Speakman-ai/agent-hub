@@ -18,6 +18,8 @@ import type {
   HubChatMemberRow,
   HubChatMessageRow,
   HubChatNotifyLevel,
+  HubChatPinRow,
+  HubChatReactionRow,
   HubChatRefInput,
   HubChatRefKind,
   HubChatRefRow,
@@ -386,6 +388,12 @@ export function softDeleteMessage(messageId: string): HubChatMessageRow | null {
       .run(messageId);
     if (r.changes === 0) return false;
     conn.prepare('DELETE FROM hub_chat_refs WHERE message_id = ?').run(messageId);
+    // A deleted message keeps no reactions and drops off the pinned list.
+    conn.prepare('DELETE FROM hub_chat_reactions WHERE message_id = ?').run(messageId);
+    conn.prepare('DELETE FROM hub_chat_pins WHERE message_id = ?').run(messageId);
+    conn
+      .prepare('UPDATE hub_chat_messages SET meta_rev = meta_rev + 1 WHERE id = ?')
+      .run(messageId);
     return true;
   })();
   return changed ? getMessage(messageId) : null;
@@ -538,4 +546,145 @@ export function listRefBacklinks(
        LIMIT ?`,
     )
     .all(kind, targetId, orgId, userId, limit) as HubChatBacklinkRow[];
+}
+
+export interface HubChatReactionSummary {
+  emoji: string;
+  count: number;
+  /** Who reacted, earliest first. */
+  userIds: string[];
+}
+
+/** Distinct emoji a single message may carry, so a message cannot be flooded. */
+export const MAX_REACTION_EMOJI_PER_MESSAGE = 20;
+
+function bumpMetaRev(conn: Database.Database, messageId: string): void {
+  conn.prepare('UPDATE hub_chat_messages SET meta_rev = meta_rev + 1 WHERE id = ?').run(messageId);
+}
+
+export type ReactionResult = 'added' | 'removed' | 'unchanged' | 'too_many';
+
+/**
+ * Adds the user's reaction. Idempotent. A new emoji on a message already
+ * carrying the maximum number of distinct emoji is refused.
+ */
+export function addReaction(messageId: string, userId: string, emoji: string): ReactionResult {
+  const conn = db();
+  return conn
+    .transaction((): ReactionResult => {
+      const exists = conn
+        .prepare(
+          'SELECT 1 FROM hub_chat_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?',
+        )
+        .get(messageId, userId, emoji);
+      if (exists) return 'unchanged';
+      const known = conn
+        .prepare('SELECT 1 FROM hub_chat_reactions WHERE message_id = ? AND emoji = ? LIMIT 1')
+        .get(messageId, emoji);
+      if (!known) {
+        const { n } = conn
+          .prepare('SELECT COUNT(DISTINCT emoji) AS n FROM hub_chat_reactions WHERE message_id = ?')
+          .get(messageId) as { n: number };
+        if (n >= MAX_REACTION_EMOJI_PER_MESSAGE) return 'too_many';
+      }
+      conn
+        .prepare('INSERT INTO hub_chat_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)')
+        .run(messageId, userId, emoji);
+      bumpMetaRev(conn, messageId);
+      return 'added';
+    })
+    .immediate();
+}
+
+export function removeReaction(messageId: string, userId: string, emoji: string): ReactionResult {
+  const conn = db();
+  return conn.transaction((): ReactionResult => {
+    const r = conn
+      .prepare('DELETE FROM hub_chat_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?')
+      .run(messageId, userId, emoji);
+    if (r.changes === 0) return 'unchanged';
+    bumpMetaRev(conn, messageId);
+    return 'removed';
+  })();
+}
+
+function summarizeReactions(rows: HubChatReactionRow[]): HubChatReactionSummary[] {
+  const byEmoji = new Map<string, HubChatReactionSummary>();
+  for (const r of rows) {
+    const entry = byEmoji.get(r.emoji) ?? { emoji: r.emoji, count: 0, userIds: [] };
+    entry.count += 1;
+    entry.userIds.push(r.user_id);
+    byEmoji.set(r.emoji, entry);
+  }
+  return [...byEmoji.values()];
+}
+
+const REACTION_ORDER = 'ORDER BY created_at, rowid';
+
+/** Reactions on one message, grouped by emoji in the order each emoji first appeared. */
+export function listReactions(messageId: string): HubChatReactionSummary[] {
+  const rows = db()
+    .prepare(`SELECT * FROM hub_chat_reactions WHERE message_id = ? ${REACTION_ORDER}`)
+    .all(messageId) as HubChatReactionRow[];
+  return summarizeReactions(rows);
+}
+
+/** Pins a message in its channel. Returns false when it was already pinned. */
+export function pinMessage(message: HubChatMessageRow, userId: string): boolean {
+  const conn = db();
+  return conn.transaction(() => {
+    const r = conn
+      .prepare(
+        `INSERT OR IGNORE INTO hub_chat_pins (message_id, channel_id, pinned_by_user_id)
+         VALUES (?, ?, ?)`,
+      )
+      .run(message.id, message.channel_id, userId);
+    if (r.changes === 0) return false;
+    bumpMetaRev(conn, message.id);
+    return true;
+  })();
+}
+
+export function unpinMessage(messageId: string): boolean {
+  const conn = db();
+  return conn.transaction(() => {
+    const r = conn.prepare('DELETE FROM hub_chat_pins WHERE message_id = ?').run(messageId);
+    if (r.changes === 0) return false;
+    bumpMetaRev(conn, messageId);
+    return true;
+  })();
+}
+
+export function getPin(messageId: string): HubChatPinRow | null {
+  const row = db().prepare('SELECT * FROM hub_chat_pins WHERE message_id = ?').get(messageId) as
+    | HubChatPinRow
+    | undefined;
+  return row ?? null;
+}
+
+/** A channel's pinned messages, most recently pinned first. */
+export function listPins(channelId: string): { pin: HubChatPinRow; message: HubChatMessageRow }[] {
+  const rows = db()
+    .prepare(
+      `SELECT p.message_id AS p_message_id, p.channel_id AS p_channel_id,
+              p.pinned_by_user_id AS p_pinned_by_user_id, p.pinned_at AS p_pinned_at, m.*
+       FROM hub_chat_pins p JOIN hub_chat_messages m ON m.id = p.message_id
+       WHERE p.channel_id = ? AND m.deleted_at IS NULL
+       ORDER BY p.pinned_at DESC, p.rowid DESC`,
+    )
+    .all(channelId) as (HubChatMessageRow & {
+    p_message_id: string;
+    p_channel_id: string;
+    p_pinned_by_user_id: string | null;
+    p_pinned_at: string;
+  })[];
+  return rows.map(({ p_message_id, p_channel_id, p_pinned_by_user_id, p_pinned_at, ...m }) => ({
+    pin: {
+      message_id: p_message_id,
+      channel_id: p_channel_id,
+      pinned_by_user_id: p_pinned_by_user_id,
+      pinned_at: p_pinned_at,
+    },
+    message: m,
+  }));
 }

@@ -8,6 +8,11 @@ vi.mock('../utils/api', () => ({
       addMembers: vi.fn(),
       setNotifyLevel: vi.fn(),
       members: vi.fn(),
+      pins: vi.fn(() => Promise.resolve({ pins: [] })),
+      react: vi.fn(),
+      unreact: vi.fn(),
+      pin: vi.fn(),
+      unpin: vi.fn(),
       channels: vi.fn(),
       messages: vi.fn(),
       post: vi.fn(),
@@ -111,6 +116,7 @@ beforeEach(() => {
     }),
   );
   chat.markRead.mockResolvedValue({ lastReadSeq: 0 });
+  chat.pins.mockResolvedValue({ pins: [] });
 });
 
 describe('HubChatPage rail', () => {
@@ -199,6 +205,111 @@ describe('HubChatPage pinned Agent Hub DM', () => {
     );
     fireEvent.click(await screen.findByTestId('hub-chat-assistant'));
     expect(await screen.findByTestId('assistant-transcript')).toBeTruthy();
+  });
+});
+
+describe('HubChatPage reactions and pins', () => {
+  const meta = (metaRev: number, over: Record<string, unknown> = {}) => ({
+    messageId: 'm1',
+    channelId: 'dm1',
+    metaRev,
+    reactions: [],
+    pinned: null,
+    ...over,
+  });
+
+  it('reacts from the toolbar and shows reactions that arrive live', async () => {
+    chat.react.mockResolvedValue({
+      meta: meta(1, { reactions: [{ emoji: '👍', count: 1, userIds: ['alice'] }] }),
+    });
+    render(<HubChatPage />);
+    await screen.findByText('hello 1');
+    fireEvent.click(screen.getByRole('button', { name: 'Add reaction' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'React with 👍' }));
+    await waitFor(() => expect(chat.react).toHaveBeenCalledWith('m1', '👍'));
+    const chip = await screen.findByTestId('hub-chat-reaction');
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+
+    wsEvent(
+      'hub_chat_message_meta',
+      meta(2, { reactions: [{ emoji: '👍', count: 2, userIds: ['alice', 'bob'] }] }),
+    );
+    await waitFor(() => expect(screen.getByTestId('hub-chat-reaction')).toHaveTextContent('2'));
+    // An out-of-order older event does not roll it back.
+    wsEvent('hub_chat_message_meta', meta(1, { reactions: [] }));
+    expect(screen.getByTestId('hub-chat-reaction')).toHaveTextContent('2');
+
+    // Clicking the viewer's own chip removes their reaction.
+    chat.unreact.mockResolvedValue({
+      meta: meta(3, { reactions: [{ emoji: '👍', count: 1, userIds: ['bob'] }] }),
+    });
+    fireEvent.click(screen.getByTestId('hub-chat-reaction'));
+    await waitFor(() => expect(chat.unreact).toHaveBeenCalledWith('m1', '👍'));
+    await waitFor(() =>
+      expect(screen.getByTestId('hub-chat-reaction')).toHaveAttribute('aria-pressed', 'false'),
+    );
+  });
+
+  it('pins a message and lists it in the channel header', async () => {
+    const pinned = { byUserId: 'alice', at: '2026-10-13T10:05:00.000Z' };
+    chat.pin.mockResolvedValue({ meta: meta(1, { pinned }) });
+    render(<HubChatPage />);
+    await screen.findByText('hello 1');
+    expect(screen.getByTestId('hub-chat-pins-button')).toHaveAttribute(
+      'aria-label',
+      'Pinned messages',
+    );
+    chat.pins.mockResolvedValue({
+      pins: [{ message: message(1), pinnedByUserId: 'alice', pinnedAt: pinned.at }],
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Pin message' }));
+    await waitFor(() => expect(chat.pin).toHaveBeenCalledWith('m1'));
+    expect(await screen.findByTestId('hub-chat-pinned-label')).toHaveTextContent('Pinned by alice');
+    wsEvent('hub_chat_message_meta', { ...meta(1, { pinned }), pinChanged: true });
+    await waitFor(() =>
+      expect(screen.getByTestId('hub-chat-pins-button')).toHaveAttribute(
+        'aria-label',
+        'Pinned messages (1)',
+      ),
+    );
+  });
+});
+
+describe('HubChatPage pinned list without a socket echo', () => {
+  it('updates the header from the pin and unpin responses alone', async () => {
+    const pinned = { byUserId: 'alice', at: '2026-10-13T10:05:00.000Z' };
+    const meta = (metaRev: number, p: typeof pinned | null) => ({
+      messageId: 'm1',
+      channelId: 'dm1',
+      metaRev,
+      reactions: [],
+      pinned: p,
+    });
+    chat.pin.mockResolvedValue({ meta: meta(1, pinned) });
+    chat.unpin.mockResolvedValue({ meta: meta(2, null) });
+    render(<HubChatPage />);
+    await screen.findByText('hello 1');
+    const button = screen.getByTestId('hub-chat-pins-button');
+    await waitFor(() => expect(chat.pins).toHaveBeenCalledTimes(1));
+    chat.pins.mockResolvedValue({
+      pins: [
+        {
+          message: message(1, { metaRev: 1, pinned }),
+          pinnedByUserId: 'alice',
+          pinnedAt: pinned.at,
+        },
+      ],
+    });
+    // No hub_chat_message_meta event is delivered in this test.
+    fireEvent.click(screen.getByRole('button', { name: 'Pin message' }));
+    await waitFor(() => expect(button).toHaveAttribute('aria-label', 'Pinned messages (1)'));
+    fireEvent.click(button);
+    fireEvent.click(
+      within(screen.getByTestId('hub-chat-pins-panel')).getByRole('button', { name: 'Unpin' }),
+    );
+    await waitFor(() => expect(chat.unpin).toHaveBeenCalledWith('m1'));
+    await waitFor(() => expect(button).toHaveAttribute('aria-label', 'Pinned messages'));
+    expect(screen.queryByTestId('hub-chat-pin')).toBeNull();
   });
 });
 

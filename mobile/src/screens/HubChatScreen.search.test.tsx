@@ -43,6 +43,7 @@ const api = vi.hoisted(() => ({
     markRead: vi.fn(),
     message: vi.fn(),
     search: vi.fn(),
+    pins: vi.fn(),
   },
 }));
 vi.mock('../utils/api', () => ({ api }));
@@ -177,6 +178,7 @@ function pressLabel(container: any, label: string) {
 describe('HubChatScreen message search', () => {
   beforeEach(async () => {
     for (const fn of Object.values(api.hubChat)) fn.mockReset();
+    api.hubChat.pins.mockResolvedValue({ pins: [] });
     for (const fn of Object.values(listApi)) fn.mockReset();
     api.hubChat.members.mockResolvedValue({ members: [{ userId: 'u2', username: 'bo' }] });
     api.hubChat.markRead.mockResolvedValue({});

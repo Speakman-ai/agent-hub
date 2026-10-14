@@ -5,7 +5,7 @@
  */
 import { findAgent } from './project-model.js';
 import { getUserById } from './users-store.js';
-import { listMembers } from './hub-chat-store.js';
+import { getPin, listMembers, listReactions } from './hub-chat-store.js';
 import { HUB_ASSISTANT_AGENT_ID } from '../shared/utils/hub.js';
 import { recipientsOf } from './hub-chat-events.js';
 import type { BroadcastFn, HubChatChannelRow, HubChatMessageRow } from './types.js';
@@ -40,6 +40,17 @@ export function shapeMessage(m: HubChatMessageRow) {
     editedAt: m.edited_at,
     deletedAt: m.deleted_at,
     createdAt: m.created_at,
+    ...shapeMessageMeta(m),
+  };
+}
+
+/** Reactions and pin state of a message, with the revision they belong to. */
+export function shapeMessageMeta(m: Pick<HubChatMessageRow, 'id' | 'meta_rev' | 'deleted_at'>) {
+  const pin = m.deleted_at ? null : getPin(m.id);
+  return {
+    metaRev: m.meta_rev ?? 0,
+    reactions: m.deleted_at ? [] : listReactions(m.id),
+    pinned: pin ? { byUserId: pin.pinned_by_user_id, at: pin.pinned_at } : null,
   };
 }
 

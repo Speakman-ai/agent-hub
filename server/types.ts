@@ -4826,6 +4826,22 @@ export interface HubChatMessageRow {
   edited_at: string | null;
   deleted_at: string | null;
   created_at: string;
+  /** Reaction/pin revision; absent on rows read before the column existed. */
+  meta_rev?: number;
+}
+
+export interface HubChatReactionRow {
+  message_id: string;
+  user_id: string;
+  emoji: string;
+  created_at: string;
+}
+
+export interface HubChatPinRow {
+  message_id: string;
+  channel_id: string;
+  pinned_by_user_id: string | null;
+  pinned_at: string;
 }
 
 export interface HubChatRefRow {

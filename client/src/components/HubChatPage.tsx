@@ -10,6 +10,8 @@ import {
   MessageSquarePlus,
   Lock,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   Send,
   Settings,
@@ -27,6 +29,12 @@ import {
 import StartSessionModal from './StartSessionModal';
 import HubChatTriggerCard from './HubChatTriggerCard';
 import HubChatSearch from './HubChatSearch';
+import {
+  HubChatPinsButton,
+  HubChatReactionBar,
+  HubChatReactionPicker,
+  useHubChatPins,
+} from './HubChatReactions';
 import { readChatTriggerCard } from '@shared/utils/chatTriggers';
 import CaptureToTicketModal from './CaptureToTicketModal';
 import { api } from '../utils/api';
@@ -70,6 +78,9 @@ import {
   isChannelMuted,
   layoutHubChatMessages,
   mergeIntoWindow,
+  applyMetaToWindow,
+  parseMessageMetaEvent,
+  type HubChatMessageMeta,
   railUnread,
   changedGroups,
   reconcileChannel,
@@ -332,6 +343,9 @@ export default function HubChatPage({
     [channels, usernames, viewerUserId],
   );
   const selected = channels.find((c) => c.id === selectedId) ?? null;
+  // The open channel's pinned list; every response below that changes a
+  // message or its pin state is fed to it as well as to the view.
+  const pinned = useHubChatPins(selected?.id ?? null);
   const assistantSelected = assistantEnabled && selectedId === HUB_ASSISTANT_CHANNEL_ID;
   const assistantUnread = useHubAssistantUnread();
 
@@ -683,6 +697,7 @@ export default function HubChatPage({
           {
             messages: cur.messages.filter((m) => latest.length > 0 && m.seq >= latest[0].seq),
             revisions: cur.revisions,
+            metas: cur.metas,
           },
           latest,
           true,
@@ -755,6 +770,13 @@ export default function HubChatPage({
           : v,
       );
     };
+    const onMeta = (e: Event) => {
+      const meta = parseMessageMetaEvent((e as CustomEvent).detail);
+      if (!meta) return;
+      setView((v) =>
+        v && v.channelId === meta.channelId ? { ...v, ...applyMetaToWindow(v, meta) } : v,
+      );
+    };
     const onRead = (e: Event) => {
       const { channelId, lastReadSeq } = (e as CustomEvent).detail ?? {};
       if (typeof channelId !== 'string' || typeof lastReadSeq !== 'number') return;
@@ -813,6 +835,7 @@ export default function HubChatPage({
     };
     window.addEventListener('hub_chat_message', onMessage);
     window.addEventListener('hub_chat_message_update', onMessageUpdate);
+    window.addEventListener('hub_chat_message_meta', onMeta);
     window.addEventListener('hub_chat_read', onRead);
     window.addEventListener('hub_chat_channel_update', onChannelUpdate);
     window.addEventListener('agenthub:ws_reconnected', onReconnect);
@@ -820,6 +843,7 @@ export default function HubChatPage({
     return () => {
       window.removeEventListener('hub_chat_message', onMessage);
       window.removeEventListener('hub_chat_message_update', onMessageUpdate);
+      window.removeEventListener('hub_chat_message_meta', onMeta);
       window.removeEventListener('hub_chat_read', onRead);
       window.removeEventListener('hub_chat_channel_update', onChannelUpdate);
       window.removeEventListener('agenthub:ws_reconnected', onReconnect);
@@ -878,12 +902,14 @@ export default function HubChatPage({
   };
 
   /** Merges a message into the view only if that view is still its channel. */
-  const mergeIntoOwnChannel = (message: HubChatMessage) =>
+  const mergeIntoOwnChannel = (message: HubChatMessage) => {
+    pinned.applyUpdate(message);
     setView((v) =>
       v && v.channelId === message.channelId
         ? { ...v, ...mergeIntoWindow(v, [message], false) }
         : v,
     );
+  };
 
   const saveEdit = async () => {
     if (!editing || !editing.text.trim()) return;
@@ -911,6 +937,40 @@ export default function HubChatPage({
     try {
       const res = await api.hubChat.remove(message.id);
       mergeIntoOwnChannel(res.message as HubChatMessage);
+    } catch (err) {
+      updateView(generation, (v) => ({ ...v, error: errorText(err) }));
+    }
+  };
+
+  /** Applies a reaction/pin response to the view still showing its channel. */
+  const applyMeta = (meta: HubChatMessageMeta | undefined) => {
+    if (!meta) return;
+    pinned.applyMeta(meta);
+    setView((v) =>
+      v && v.channelId === meta.channelId ? { ...v, ...applyMetaToWindow(v, meta) } : v,
+    );
+  };
+
+  const toggleReaction = async (message: HubChatMessage, emoji: string) => {
+    const generation = viewRef.current?.generation ?? -1;
+    const mine = message.reactions
+      ?.find((r) => r.emoji === emoji)
+      ?.userIds.includes(viewerRef.current ?? '');
+    try {
+      const res = mine
+        ? await api.hubChat.unreact(message.id, emoji)
+        : await api.hubChat.react(message.id, emoji);
+      applyMeta(res.meta as HubChatMessageMeta);
+    } catch (err) {
+      updateView(generation, (v) => ({ ...v, error: errorText(err) }));
+    }
+  };
+
+  const setPinned = async (messageId: string, pinned: boolean) => {
+    const generation = viewRef.current?.generation ?? -1;
+    try {
+      const res = pinned ? await api.hubChat.pin(messageId) : await api.hubChat.unpin(messageId);
+      applyMeta(res.meta as HubChatMessageMeta);
     } catch (err) {
       updateView(generation, (v) => ({ ...v, error: errorText(err) }));
     }
@@ -1398,6 +1458,14 @@ export default function HubChatPage({
               {selected.kind === 'agent' && (
                 <AgentChannelHeaderState state={selected.agentState} onOpenRef={onOpenRef} />
               )}
+              <HubChatPinsButton
+                channelId={selected.id}
+                pins={pinned}
+                usernames={usernames}
+                canUnpin={canPost}
+                onPick={(messageId) => focusHubChatMessage(selected.id, messageId)}
+                onUnpin={(messageId) => void setPinned(messageId, false)}
+              />
               <button
                 type="button"
                 onClick={() => setDialog('settings')}
@@ -1696,12 +1764,34 @@ export default function HubChatPage({
                                   )}
                                 </div>
                               )}
+                              {!deleted && (
+                                <HubChatReactionBar
+                                  reactions={message.reactions}
+                                  usernames={usernames}
+                                  viewerUserId={viewerUserId}
+                                  canReact={canPost}
+                                  onToggle={(emoji) => void toggleReaction(message, emoji)}
+                                />
+                              )}
                               {!deleted && message.editedAt && !isEditing && (
                                 <span
                                   className="px-1 text-[11px] text-gray-500"
                                   title={`Edited ${formatDateTime(message.editedAt)}`}
                                 >
                                   Edited
+                                </span>
+                              )}
+                              {!deleted && message.pinned && (
+                                <span
+                                  className="inline-flex items-center gap-1 px-1 text-[11px] text-amber-300/80"
+                                  data-testid="hub-chat-pinned-label"
+                                  title={`Pinned ${formatDateTime(message.pinned.at)}`}
+                                >
+                                  <Pin size={10} />
+                                  Pinned
+                                  {message.pinned.byUserId && usernames.get(message.pinned.byUserId)
+                                    ? ` by ${usernames.get(message.pinned.byUserId)}`
+                                    : ''}
                                 </span>
                               )}
                             </div>
@@ -1712,6 +1802,25 @@ export default function HubChatPage({
                                   copyState ? '' : '[@media(hover:hover)]:opacity-0'
                                 }`}
                               >
+                                {canPost && (
+                                  <>
+                                    <HubChatReactionPicker
+                                      className={TOOL_BUTTON}
+                                      onPick={(emoji) => void toggleReaction(message, emoji)}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => void setPinned(message.id, !message.pinned)}
+                                      aria-label={message.pinned ? 'Unpin message' : 'Pin message'}
+                                      title={
+                                        message.pinned ? 'Unpin from channel' : 'Pin to channel'
+                                      }
+                                      className={TOOL_BUTTON}
+                                    >
+                                      {message.pinned ? <PinOff size={13} /> : <Pin size={13} />}
+                                    </button>
+                                  </>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => openSendToAgent([message])}

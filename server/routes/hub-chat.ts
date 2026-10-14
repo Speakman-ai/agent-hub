@@ -25,7 +25,12 @@ import { getUserById } from '../users-store.js';
 import { isHubSystemProject } from '../../shared/utils/hub.js';
 import { canViewProject } from '../project-visibility.js';
 import { isEligibleBackgroundSessionAgent } from '../background-agent-session.js';
-import { agentDisplayName, broadcastHubChatMessage, shapeMessage } from '../hub-chat-broadcast.js';
+import {
+  agentDisplayName,
+  broadcastHubChatMessage,
+  shapeMessage,
+  shapeMessageMeta,
+} from '../hub-chat-broadcast.js';
 import { locateChatMarkdownCode } from '../hub-chat-markdown.js';
 import { hubChatRefsToPlainText } from '../../shared/utils/hubChatRefTokens.js';
 import { channelLabel } from '../../shared/utils/hubChat.js';
@@ -44,6 +49,7 @@ import type {
 } from '../types.js';
 import {
   addMember,
+  addReaction,
   appendMessage,
   createChannel,
   editMessage,
@@ -53,13 +59,19 @@ import {
   getMember,
   getMessage,
   getOrCreateDm,
+  getPin,
   listChannelsForUser,
   listJoinableChannels,
   listRefBacklinks,
   listMembers,
   listMessages,
+  listPins,
+  listReactions,
   markRead,
+  pinMessage,
   removeMember,
+  removeReaction,
+  unpinMessage,
   softDeleteMessage,
   updateChannel,
   updateMemberPrefs,
@@ -76,6 +88,8 @@ import {
   MuteRequestSchema,
   NotifyLevelRequestSchema,
   PostMessageRequestSchema,
+  ReactionRequestSchema,
+  RemoveReactionQuerySchema,
   ResolveRefsRequestSchema,
   SearchMessagesQuerySchema,
   SearchRefsQuerySchema,
@@ -102,6 +116,7 @@ import {
 import {
   HUB_CHAT_CHANNEL_UPDATE_EVENT,
   HUB_CHAT_MESSAGE_EVENT,
+  HUB_CHAT_MESSAGE_META_EVENT,
   HUB_CHAT_MESSAGE_UPDATE_EVENT,
   HUB_CHAT_READ_EVENT,
   recipientsOf,
@@ -774,14 +789,137 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     if (!caller) return;
     const msg = ownMessage(caller, String(req.params.messageId), res);
     if (!msg) return;
+    const hadMeta = Boolean(getPin(msg.id)) || listReactions(msg.id).length > 0;
     const deleted = softDeleteMessage(msg.id);
     if (!deleted) {
       bad(res, 404, 'Message not found', 'message_not_found');
       return;
     }
     const channel = getChannel(deleted.channel_id);
-    if (channel) emitMessage(HUB_CHAT_MESSAGE_UPDATE_EVENT, channel, deleted);
+    if (channel) {
+      emitMessage(HUB_CHAT_MESSAGE_UPDATE_EVENT, channel, deleted);
+      // A deleted message loses its reactions and pin; pinned lists refetch.
+      if (hadMeta) {
+        emit(HUB_CHAT_MESSAGE_META_EVENT, recipientsOf(listMembers(channel.id)), {
+          orgId: channel.org_id,
+          messageId: deleted.id,
+          channelId: channel.id,
+          ...shapeMessageMeta(deleted),
+          pinChanged: true,
+        });
+      }
+    }
     res.json({ message: shapeMessage(deleted) });
+  });
+
+  /**
+   * A live message in a channel the caller has joined and can still write to,
+   * for reacting and pinning. Writes 404/409 and returns null otherwise.
+   */
+  function actionableMessage(
+    caller: Caller,
+    messageId: string,
+    res: Response,
+  ): { channel: HubChatChannelRow; message: HubChatMessageRow } | null {
+    const message = getMessage(messageId);
+    if (!message || message.deleted_at) {
+      bad(res, 404, 'Message not found', 'message_not_found');
+      return null;
+    }
+    const m = memberChannel(caller, message.channel_id, res);
+    if (!m) return null;
+    if (m.channel.archived_at) {
+      bad(res, 409, 'This channel is archived', 'channel_archived');
+      return null;
+    }
+    return { channel: m.channel, message };
+  }
+
+  /** Sends the message's reaction/pin state to members and the caller. */
+  function respondMeta(
+    res: Response,
+    channel: HubChatChannelRow,
+    messageId: string,
+    changed: boolean,
+    pinChanged = false,
+  ) {
+    const fresh = getMessage(messageId);
+    if (!fresh) {
+      bad(res, 404, 'Message not found', 'message_not_found');
+      return;
+    }
+    const meta = { messageId: fresh.id, channelId: channel.id, ...shapeMessageMeta(fresh) };
+    if (changed) {
+      emit(HUB_CHAT_MESSAGE_META_EVENT, recipientsOf(listMembers(channel.id)), {
+        orgId: channel.org_id,
+        ...meta,
+        pinChanged,
+      });
+    }
+    res.json({ meta });
+  }
+
+  router.put('/api/chat/messages/:messageId/reactions', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const body = parse(ReactionRequestSchema, req.body, res);
+    if (!body) return;
+    const a = actionableMessage(caller, String(req.params.messageId), res);
+    if (!a) return;
+    const result = addReaction(a.message.id, caller.userId, body.emoji);
+    if (result === 'too_many') {
+      bad(
+        res,
+        400,
+        'This message has as many different reactions as it can hold',
+        'too_many_reactions',
+      );
+      return;
+    }
+    respondMeta(res, a.channel, a.message.id, result === 'added');
+  });
+
+  router.delete('/api/chat/messages/:messageId/reactions', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const q = parse(RemoveReactionQuerySchema, req.query, res);
+    if (!q) return;
+    const a = actionableMessage(caller, String(req.params.messageId), res);
+    if (!a) return;
+    const result = removeReaction(a.message.id, caller.userId, q.emoji);
+    respondMeta(res, a.channel, a.message.id, result === 'removed');
+  });
+
+  router.put('/api/chat/messages/:messageId/pin', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const a = actionableMessage(caller, String(req.params.messageId), res);
+    if (!a) return;
+    const changed = pinMessage(a.message, caller.userId);
+    respondMeta(res, a.channel, a.message.id, changed, true);
+  });
+
+  router.delete('/api/chat/messages/:messageId/pin', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const a = actionableMessage(caller, String(req.params.messageId), res);
+    if (!a) return;
+    const changed = unpinMessage(a.message.id);
+    respondMeta(res, a.channel, a.message.id, changed, true);
+  });
+
+  router.get('/api/chat/channels/:channelId/pins', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const v = visibleChannel(caller, String(req.params.channelId), res);
+    if (!v) return;
+    res.json({
+      pins: listPins(v.channel.id).map(({ pin, message }) => ({
+        message: shapeMessage(message),
+        pinnedByUserId: pin.pinned_by_user_id,
+        pinnedAt: pin.pinned_at,
+      })),
+    });
   });
 
   router.post('/api/chat/channels/:channelId/read', (req: Request, res: Response) => {

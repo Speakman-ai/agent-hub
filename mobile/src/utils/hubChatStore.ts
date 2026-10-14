@@ -23,6 +23,8 @@ import {
   type HubChatChannel,
   type HubChatMembership,
   type HubChatMessage,
+  type HubChatMessageMeta,
+  parseMessageMetaEvent,
   applyAgentStateToChannels,
   type HubChatAgentState,
 } from '@shared/utils/hubChat';
@@ -60,6 +62,8 @@ export type HubChatLiveEvent =
   | { type: 'hub_chat_message' | 'hub_chat_message_update'; message: HubChatMessage }
   | { type: 'hub_chat_read'; channelId: string; lastReadSeq: number }
   | { type: 'hub_chat_channel_update'; channelId: string | null }
+  /** Reactions or pin changed; `pinChanged` means the channel's pinned list did. */
+  | { type: 'hub_chat_message_meta'; meta: HubChatMessageMeta; pinChanged: boolean }
   /** The connection came back: events may have been missed, reload what is shown. */
   | { type: 'resync' };
 
@@ -68,6 +72,7 @@ export const HUB_CHAT_WS_EVENTS: ReadonlySet<string> = new Set([
   'hub_chat_message_update',
   'hub_chat_read',
   'hub_chat_channel_update',
+  'hub_chat_message_meta',
 ]);
 
 type MembershipPatch = Partial<Pick<HubChatMembership, 'notifyLevel' | 'mutedUntil'>>;
@@ -561,6 +566,14 @@ export function createHubChatStore(chatApi: HubChatStoreApi) {
           if (typeof channelId !== 'string' || typeof lastReadSeq !== 'number') return;
           for (const l of liveListeners) l({ type: 'hub_chat_read', channelId, lastReadSeq });
           confirmRead(channelId, lastReadSeq);
+          return;
+        }
+        case 'hub_chat_message_meta': {
+          // Reactions and pins never change unread state; only views listen.
+          const meta = parseMessageMetaEvent(data);
+          if (!meta) return;
+          const pinChanged = data.pinChanged === true;
+          for (const l of liveListeners) l({ type: 'hub_chat_message_meta', meta, pinChanged });
           return;
         }
         case 'hub_chat_channel_update': {

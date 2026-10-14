@@ -87,6 +87,67 @@ export interface HubChatMessage {
   editedAt: string | null;
   deletedAt: string | null;
   createdAt: string;
+  /** Revision of `reactions` and `pinned`; bumped by the server on every change. */
+  metaRev?: number;
+  reactions?: HubChatReaction[];
+  pinned?: HubChatPinInfo | null;
+}
+
+export interface HubChatReaction {
+  emoji: string;
+  count: number;
+  userIds: string[];
+}
+
+export interface HubChatPinInfo {
+  byUserId: string | null;
+  at: string;
+}
+
+/** Reaction and pin state of one message, as carried by `hub_chat_message_meta`. */
+export interface HubChatMessageMeta {
+  messageId: string;
+  channelId: string;
+  metaRev: number;
+  reactions: HubChatReaction[];
+  pinned: HubChatPinInfo | null;
+}
+
+/** A pinned message as listed in a channel's pinned list. */
+export interface HubChatPinnedMessage {
+  message: HubChatMessage;
+  pinnedByUserId: string | null;
+  pinnedAt: string;
+}
+
+/** Quick-pick reactions offered on every message. */
+export const HUB_CHAT_QUICK_REACTIONS: readonly string[] = ['👍', '❤️', '😂', '🎉', '👀', '✅'];
+
+/** True when the viewer is among a reaction's users. */
+export function reactedByViewer(reaction: HubChatReaction, viewerUserId: string | null): boolean {
+  return !!viewerUserId && reaction.userIds.includes(viewerUserId);
+}
+
+/**
+ * Reactions after the viewer toggles `emoji`, for an optimistic update. The
+ * server's next meta event replaces it either way.
+ */
+export function toggleReaction(
+  reactions: HubChatReaction[] | undefined,
+  emoji: string,
+  viewerUserId: string,
+): HubChatReaction[] {
+  const list = reactions ?? [];
+  const hit = list.find((r) => r.emoji === emoji);
+  if (!hit) return [...list, { emoji, count: 1, userIds: [viewerUserId] }];
+  if (hit.userIds.includes(viewerUserId)) {
+    const userIds = hit.userIds.filter((u) => u !== viewerUserId);
+    return userIds.length
+      ? list.map((r) => (r === hit ? { ...r, count: userIds.length, userIds } : r))
+      : list.filter((r) => r !== hit);
+  }
+  const userIds = [...hit.userIds, viewerUserId];
+  return list.map((r) => (r === hit ? { ...r, count: userIds.length, userIds } : r));
 }
 
 /** Entities that list where they were discussed in chat. */
@@ -471,10 +532,36 @@ export function isSameOrNewerRevision(incoming: HubChatMessage, current: HubChat
 export interface MessageWindow {
   messages: HubChatMessage[];
   revisions: Readonly<Record<string, HubChatMessage>>;
+  /**
+   * Newest reaction/pin state seen per message id, including messages not
+   * loaded yet, so a history page fetched before a live reaction cannot
+   * bring the old reactions back.
+   */
+  metas?: Readonly<Record<string, MetaFields>>;
 }
 
-function newest(a: HubChatMessage, b: HubChatMessage | undefined): HubChatMessage {
-  return !b || isSameOrNewerRevision(a, b) ? a : b;
+export type MetaFields = Pick<HubChatMessageMeta, 'metaRev' | 'reactions' | 'pinned'>;
+
+export function metaOf(m: HubChatMessage): MetaFields {
+  return { metaRev: m.metaRev ?? 0, reactions: m.reactions ?? [], pinned: m.pinned ?? null };
+}
+
+function newerMeta(a: MetaFields, b: MetaFields | undefined): MetaFields {
+  return !b || a.metaRev >= b.metaRev ? a : b;
+}
+
+/** `m` with `meta` applied when `meta` is the newer reaction/pin revision. */
+export function withMeta(m: HubChatMessage, meta: MetaFields | undefined): HubChatMessage {
+  if (!meta || meta.metaRev <= (m.metaRev ?? 0)) return m;
+  return { ...m, metaRev: meta.metaRev, reactions: meta.reactions, pinned: meta.pinned };
+}
+
+/** The newer of two copies of one message, field group by field group. */
+export function newestRevision(a: HubChatMessage, b: HubChatMessage | undefined): HubChatMessage {
+  // Body and deletion follow the edit revision; reactions and pins follow
+  // their own revision, so neither can roll the other back.
+  const body = !b || isSameOrNewerRevision(a, b) ? a : b;
+  return withMeta(body, b ? newerMeta(metaOf(a), metaOf(b)) : undefined);
 }
 
 /**
@@ -489,12 +576,56 @@ export function mergeIntoWindow(
 ): MessageWindow {
   if (!incoming.length) return w;
   const revisions: Record<string, HubChatMessage> = { ...w.revisions };
-  for (const m of incoming) revisions[m.id] = newest(m, revisions[m.id]);
+  const metas: Record<string, MetaFields> = { ...w.metas };
+  for (const m of incoming) {
+    revisions[m.id] = withMeta(newestRevision(m, revisions[m.id]), metas[m.id]);
+    metas[m.id] = metaOf(revisions[m.id]);
+  }
   const shown = new Map(w.messages.map((m) => [m.id, m]));
   for (const m of incoming) {
     if (insert || shown.has(m.id)) shown.set(m.id, revisions[m.id]);
   }
-  return { messages: [...shown.values()].sort((a, b) => a.seq - b.seq), revisions };
+  return { messages: [...shown.values()].sort((a, b) => a.seq - b.seq), revisions, metas };
+}
+
+/**
+ * Applies a live reaction/pin change. Updates the message when shown and
+ * remembers the state otherwise; an older revision changes nothing.
+ */
+export function applyMetaToWindow(w: MessageWindow, meta: HubChatMessageMeta): MessageWindow {
+  const known = w.metas?.[meta.messageId];
+  if (known && known.metaRev >= meta.metaRev) return w;
+  const fields: MetaFields = {
+    metaRev: meta.metaRev,
+    reactions: meta.reactions,
+    pinned: meta.pinned,
+  };
+  const metas = { ...w.metas, [meta.messageId]: fields };
+  const rev = w.revisions[meta.messageId];
+  const revisions = rev ? { ...w.revisions, [meta.messageId]: withMeta(rev, fields) } : w.revisions;
+  const messages = w.messages.map((m) => (m.id === meta.messageId ? withMeta(m, fields) : m));
+  return { messages, revisions, metas };
+}
+
+/** Parses a `hub_chat_message_meta` event body, or null when malformed. */
+export function parseMessageMetaEvent(data: unknown): HubChatMessageMeta | null {
+  if (!data || typeof data !== 'object') return null;
+  const d = data as Record<string, unknown>;
+  if (
+    typeof d.messageId !== 'string' ||
+    typeof d.channelId !== 'string' ||
+    typeof d.metaRev !== 'number' ||
+    !Array.isArray(d.reactions)
+  ) {
+    return null;
+  }
+  return {
+    messageId: d.messageId,
+    channelId: d.channelId,
+    metaRev: d.metaRev,
+    reactions: d.reactions as HubChatReaction[],
+    pinned: (d.pinned as HubChatPinInfo | null | undefined) ?? null,
+  };
 }
 
 /** Consecutive messages from one sender closer together than this share a header. */

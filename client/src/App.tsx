@@ -3341,6 +3341,7 @@ export default function App({ initialView }: any = {}) {
         case 'hub_chat_message_update':
         case 'hub_chat_read':
         case 'hub_chat_channel_update':
+        case 'hub_chat_message_meta':
           window.dispatchEvent(new CustomEvent(data.type, { detail: data }));
           break;
 

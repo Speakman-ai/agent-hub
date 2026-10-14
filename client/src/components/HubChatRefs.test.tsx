@@ -5,6 +5,7 @@ vi.mock('../utils/api', () => ({
   api: {
     hubChat: {
       members: vi.fn(),
+      pins: vi.fn(() => Promise.resolve({ pins: [] })),
       channels: vi.fn(),
       messages: vi.fn(),
       post: vi.fn(),
