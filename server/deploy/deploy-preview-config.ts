@@ -10,6 +10,7 @@
  *     service: app                          # service whose port is exposed
  *     port: 3000                            # container port on that service
  *     health: /healthz                      # optional, default "/"
+ *     health_timeout_minutes: 40            # optional, default 5, max 60
  *     steps:                                # optional, run after `compose up`
  *       - name: migrate
  *         run: docker compose exec -T app npm run db:migrate
@@ -26,11 +27,21 @@ import { isReservedEnvKey } from '../preview/reserved-env-keys.js';
 
 export const PREVIEW_DEFAULT_HEALTH_PATH = '/';
 
+/** How long `health` may take to answer after `compose up` returns. */
+export const PREVIEW_DEFAULT_HEALTH_TIMEOUT_MINUTES = 5;
+/**
+ * Upper bound on `health_timeout_minutes`. Long enough for a backend that
+ * migrates an empty database on first boot; anything slower should boot from
+ * a pre-migrated snapshot instead.
+ */
+export const PREVIEW_MAX_HEALTH_TIMEOUT_MINUTES = 60;
+
 const SUPPORTED_PREVIEW_KEYS = new Set([
   'compose',
   'service',
   'port',
   'health',
+  'health_timeout_minutes',
   'steps',
   'secrets',
 ]);
@@ -53,6 +64,8 @@ export interface PreviewConfig {
   port: number;
   /** Health probe path on the exposed port. */
   health: string;
+  /** Minutes {@link PreviewConfig.health} may take to answer before boot fails. */
+  healthTimeoutMinutes: number;
   /** Build/seed steps run in order after `compose up`. */
   steps: PreviewStep[];
   /** Preview-secret names injected as env. Values are resolved at boot. */
@@ -147,6 +160,22 @@ function parseHealth(raw: unknown): string {
   return raw.trim();
 }
 
+function parseHealthTimeoutMinutes(raw: unknown): number {
+  if (raw === undefined || raw === null) return PREVIEW_DEFAULT_HEALTH_TIMEOUT_MINUTES;
+  if (
+    typeof raw !== 'number' ||
+    !Number.isInteger(raw) ||
+    raw < 1 ||
+    raw > PREVIEW_MAX_HEALTH_TIMEOUT_MINUTES
+  ) {
+    throw new DeployConfigError(
+      'invalid_preview_health_timeout',
+      `preview: "health_timeout_minutes" must be an integer between 1 and ${PREVIEW_MAX_HEALTH_TIMEOUT_MINUTES}.`,
+    );
+  }
+  return raw;
+}
+
 function parseStep(raw: unknown, index: number): PreviewStep {
   const where = `preview step ${index}`;
   if (!isPlainObject(raw)) {
@@ -221,6 +250,7 @@ export function parsePreviewConfig(raw: unknown): PreviewConfig {
     service: parseService(raw.service),
     port: parsePort(raw.port),
     health: parseHealth(raw.health),
+    healthTimeoutMinutes: parseHealthTimeoutMinutes(raw.health_timeout_minutes),
     steps: parseSteps(raw.steps),
     secrets: parseSecrets(raw.secrets),
   };

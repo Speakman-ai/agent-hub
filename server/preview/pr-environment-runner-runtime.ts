@@ -87,6 +87,7 @@ export function previewToEnvironmentSpec(
     service: preview.service,
     port: preview.port,
     health: preview.health,
+    healthTimeoutMs: preview.healthTimeoutMinutes * 60_000,
     steps: preview.steps.map((s) => ({ name: s.name, run: s.run })),
   };
 }

@@ -5,7 +5,11 @@
 import '../test/setup.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { parseDeployConfig, DeployConfigError } from './deploy-config.js';
-import { PREVIEW_DEFAULT_HEALTH_PATH } from './deploy-preview-config.js';
+import {
+  PREVIEW_DEFAULT_HEALTH_PATH,
+  PREVIEW_DEFAULT_HEALTH_TIMEOUT_MINUTES,
+} from './deploy-preview-config.js';
+import { previewToEnvironmentSpec } from '../preview/pr-environment-runner-runtime.js';
 import {
   findMissingPreviewSecrets,
   resolvePreviewSecretEnv,
@@ -23,6 +27,7 @@ preview:
   service: app
   port: 3000
   health: /healthz
+  health_timeout_minutes: 40
   steps:
     - name: migrate
       run: docker compose -f docker-compose.preview.yml exec -T app npm run db:migrate
@@ -58,6 +63,7 @@ describe('parseDeployConfig: preview block', () => {
       service: 'app',
       port: 3000,
       health: '/healthz',
+      healthTimeoutMinutes: 40,
       steps: [
         {
           name: 'migrate',
@@ -88,9 +94,17 @@ describe('parseDeployConfig: preview block', () => {
     expect(cfg.preview).toMatchObject({
       compose: 'ops/compose.yml',
       health: PREVIEW_DEFAULT_HEALTH_PATH,
+      healthTimeoutMinutes: PREVIEW_DEFAULT_HEALTH_TIMEOUT_MINUTES,
       steps: [],
       secrets: [],
     });
+  });
+
+  it('carries health_timeout_minutes into the runner spec as healthTimeoutMs', () => {
+    const cfg = parseDeployConfig(FULL);
+    expect(previewToEnvironmentSpec(cfg.preview!, 1591).healthTimeoutMs).toBe(40 * 60_000);
+    const dflt = parseDeployConfig(previewDoc('  compose: c.yml\n  service: web\n  port: 80\n'));
+    expect(previewToEnvironmentSpec(dflt.preview!, 1).healthTimeoutMs).toBe(5 * 60_000);
   });
 
   it('still requires environments when there is no preview block', () => {
@@ -127,6 +141,21 @@ describe('parseDeployConfig: preview block', () => {
       'relative health',
       '  compose: c.yml\n  service: app\n  port: 1\n  health: healthz\n',
       'invalid_preview_health',
+    ],
+    [
+      'zero health timeout',
+      '  compose: c.yml\n  service: app\n  port: 1\n  health_timeout_minutes: 0\n',
+      'invalid_preview_health_timeout',
+    ],
+    [
+      'health timeout above the cap',
+      '  compose: c.yml\n  service: app\n  port: 1\n  health_timeout_minutes: 61\n',
+      'invalid_preview_health_timeout',
+    ],
+    [
+      'fractional health timeout',
+      '  compose: c.yml\n  service: app\n  port: 1\n  health_timeout_minutes: 1.5\n',
+      'invalid_preview_health_timeout',
     ],
     [
       'non-list steps',

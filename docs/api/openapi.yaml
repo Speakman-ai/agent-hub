@@ -4815,6 +4815,9 @@ components:
         health:
           type: string
           description: Health probe path on the exposed port.
+        healthTimeoutMinutes:
+          type: integer
+          description: Minutes `health` may take to answer after `compose up` before boot fails.
         steps:
           type: array
           items:
@@ -4843,6 +4846,7 @@ components:
         - service
         - port
         - health
+        - healthTimeoutMinutes
         - steps
         - secrets
         - missingSecrets
@@ -28969,6 +28973,9 @@ paths:
                       health:
                         type: string
                         description: Health probe path on the exposed port.
+                      healthTimeoutMinutes:
+                        type: integer
+                        description: Minutes `health` may take to answer after `compose up` before boot fails.
                       steps:
                         type: array
                         items:
@@ -28992,6 +28999,7 @@ paths:
                       - service
                       - port
                       - health
+                      - healthTimeoutMinutes
                       - steps
                       - secrets
                 required:

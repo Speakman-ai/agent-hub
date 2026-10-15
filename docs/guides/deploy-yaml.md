@@ -36,14 +36,15 @@ Session previews (`prEnv.devServer`) run a dev server with HMR for the agent
 and the operator. That is the wrong thing to hand an end user, so a PR
 environment boots the project's own compose stack instead, declared here.
 
-| Key       | Required | Meaning                                                                                     |
-| --------- | -------- | ------------------------------------------------------------------------------------------- |
-| `compose` | yes      | Compose file path, relative to the repo root. Absolute paths and `..` escapes are rejected. |
-| `service` | yes      | Compose service whose port is exposed to the user.                                          |
-| `port`    | yes      | Container port on `service` (integer, 1 to 65535).                                          |
-| `health`  | no       | Health probe path on that port. Must start with `/`. Default `/`.                           |
-| `steps`   | no       | Build or seed steps (`name`, `run`) run in order after `docker compose up`.                 |
-| `secrets` | no       | Names of project preview secrets to inject as env.                                          |
+| Key                      | Required | Meaning                                                                                                                                                          |
+| ------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `compose`                | yes      | Compose file path, relative to the repo root. Absolute paths and `..` escapes are rejected.                                                                      |
+| `service`                | yes      | Compose service whose port is exposed to the user.                                                                                                               |
+| `port`                   | yes      | Container port on `service` (integer, 1 to 65535).                                                                                                               |
+| `health`                 | no       | Health probe path on that port. Must start with `/`. Default `/`.                                                                                                |
+| `health_timeout_minutes` | no       | How long `health` may take to answer after `docker compose up` returns, 1 to 60. Default 5. Raise it when `health` points at an API that migrates on first boot. |
+| `steps`                  | no       | Build or seed steps (`name`, `run`) run in order after `docker compose up`.                                                                                      |
+| `secrets`                | no       | Names of project preview secrets to inject as env.                                                                                                               |
 
 `environments` may be omitted when `preview` is present, so a project can
 declare its PR environment before it has any deploy targets.

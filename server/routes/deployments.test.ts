@@ -649,6 +649,7 @@ preview:
       service: 'app',
       port: 3000,
       health: '/',
+      healthTimeoutMinutes: 5,
       steps: [],
       secrets: ['POSTGRES_PASSWORD', 'STRIPE_TEST_KEY'],
       missingSecrets: ['STRIPE_TEST_KEY'],

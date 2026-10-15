@@ -352,6 +352,10 @@ const DeployPreviewConfigSchema = registerComponent(
     service: z.string().describe('Compose service whose container port is exposed.'),
     port: z.number().int().describe('Container port on `service`.'),
     health: z.string().describe('Health probe path on the exposed port.'),
+    healthTimeoutMinutes: z
+      .number()
+      .int()
+      .describe('Minutes `health` may take to answer after `compose up` before boot fails.'),
     steps: z
       .array(z.object({ name: z.string(), run: z.string() }))
       .describe('Build/seed steps run after `docker compose up`.'),

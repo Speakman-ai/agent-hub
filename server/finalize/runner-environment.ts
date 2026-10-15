@@ -53,6 +53,7 @@ export interface RunnerEnvironmentSpec {
   health: string;
   /** Seed steps run after `compose up`. */
   steps: Array<{ name: string; run: string }>;
+  /** From `preview.health_timeout_minutes`; defaults to 5 minutes. */
   healthTimeoutMs?: number;
 }
 

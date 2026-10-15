@@ -15,6 +15,7 @@ const PREVIEW: PreviewConfig = {
   service: 'app',
   port: 3000,
   health: '/healthz',
+  healthTimeoutMinutes: 5,
   steps: [{ name: 'seed', run: 'make seed' }],
   secrets: ['DB_PASSWORD'],
 };

@@ -99,6 +99,7 @@ preview:
   service: app # compose service to expose (required)
   port: 3000 # container port on that service (required)
   health: /healthz # optional, default "/"
+  health_timeout_minutes: 5 # optional, 1-60; raise when health waits on a migrating API
   steps: # optional, run in order after `docker compose up`
     - name: migrate
       run: docker compose -f docker-compose.preview.yml exec -T app npm run db:migrate
