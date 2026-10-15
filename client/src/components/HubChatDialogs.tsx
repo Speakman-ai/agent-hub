@@ -21,16 +21,25 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err ?? 'Request failed');
 }
 
+const DIALOG_SIZE_CLASS = {
+  md: 'max-h-[85vh] max-w-md',
+  lg: 'max-h-[90vh] max-w-2xl',
+} as const;
+
+export type HubChatDialogSize = keyof typeof DIALOG_SIZE_CLASS;
+
 function Dialog({
   title,
   onClose,
   children,
   testId,
+  size = 'md',
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   testId: string;
+  size?: HubChatDialogSize;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -49,7 +58,7 @@ function Dialog({
         aria-modal="true"
         aria-label={title}
         data-testid={testId}
-        className="flex max-h-[85vh] w-full max-w-md flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-xl"
+        className={`flex w-full ${DIALOG_SIZE_CLASS[size]} flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-xl`}
       >
         <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
           <h2 className="text-sm font-semibold text-white">{title}</h2>
@@ -627,6 +636,7 @@ export function ChannelSettingsDialog({
       title={`${channelLabel(channel, usernames, viewerUserId)} settings`}
       onClose={onClose}
       testId="hub-chat-settings"
+      size="lg"
     >
       <div className="flex flex-col gap-4">
         {!isDm && (
@@ -690,74 +700,79 @@ export function ChannelSettingsDialog({
             <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
               Notifications
             </h3>
-            <label className="text-xs text-gray-400">
-              Notify me about
-              <select
-                value={membership.notifyLevel}
-                aria-label="Notify level"
-                disabled={busy !== null}
-                onChange={(e) =>
-                  void run('notify', async () => {
-                    const issuedAt = clock();
-                    const res = await api.hubChat.setNotifyLevel(
-                      channel.id,
-                      e.target.value as HubChatNotifyLevel,
-                    );
-                    onMembershipChanged(channel.id, res.membership, issuedAt);
-                  })
-                }
-                className={`mt-1 ${inputClass}`}
-              >
-                <option value="all">All messages</option>
-                <option value="mentions">Mentions only</option>
-                <option value="none">Nothing</option>
-              </select>
-            </label>
-            {muted ? (
-              <div className="flex items-center justify-between text-sm text-gray-300">
-                <span>Muted</span>
-                <button
-                  type="button"
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <label className="text-xs text-gray-400">
+                Notify me about
+                <select
+                  value={membership.notifyLevel}
+                  aria-label="Notify level"
                   disabled={busy !== null}
-                  onClick={() =>
-                    void run('mute', async () => {
+                  onChange={(e) =>
+                    void run('notify', async () => {
                       const issuedAt = clock();
-                      const res = await api.hubChat.setMute(channel.id, null);
+                      const res = await api.hubChat.setNotifyLevel(
+                        channel.id,
+                        e.target.value as HubChatNotifyLevel,
+                      );
                       onMembershipChanged(channel.id, res.membership, issuedAt);
                     })
                   }
-                  className="rounded border border-gray-700 px-2 py-0.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50"
-                >
-                  Unmute
-                </button>
-              </div>
-            ) : (
-              <label className="text-xs text-gray-400">
-                Mute
-                <select
-                  value=""
-                  aria-label="Mute"
-                  disabled={busy !== null}
-                  onChange={(e) => {
-                    const preset = MUTE_PRESETS[Number(e.target.value)];
-                    if (!preset) return;
-                    void run('mute', async () => {
-                      const issuedAt = clock();
-                      const res = await api.hubChat.setMute(channel.id, muteUntilIso(preset.hours));
-                      onMembershipChanged(channel.id, res.membership, issuedAt);
-                    });
-                  }}
                   className={`mt-1 ${inputClass}`}
                 >
-                  <option value="">Not muted</option>
-                  {MUTE_PRESETS.map((p, i) => (
-                    <option key={p.label} value={i}>
-                      {p.label}
-                    </option>
-                  ))}
+                  <option value="all">All messages</option>
+                  <option value="mentions">Mentions only</option>
+                  <option value="none">Nothing</option>
                 </select>
               </label>
-            )}
+              {muted ? (
+                <div className="flex items-center justify-between self-end text-sm text-gray-300">
+                  <span>Muted</span>
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      void run('mute', async () => {
+                        const issuedAt = clock();
+                        const res = await api.hubChat.setMute(channel.id, null);
+                        onMembershipChanged(channel.id, res.membership, issuedAt);
+                      })
+                    }
+                    className="rounded border border-gray-700 px-2 py-0.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+                  >
+                    Unmute
+                  </button>
+                </div>
+              ) : (
+                <label className="text-xs text-gray-400">
+                  Mute
+                  <select
+                    value=""
+                    aria-label="Mute"
+                    disabled={busy !== null}
+                    onChange={(e) => {
+                      const preset = MUTE_PRESETS[Number(e.target.value)];
+                      if (!preset) return;
+                      void run('mute', async () => {
+                        const issuedAt = clock();
+                        const res = await api.hubChat.setMute(
+                          channel.id,
+                          muteUntilIso(preset.hours),
+                        );
+                        onMembershipChanged(channel.id, res.membership, issuedAt);
+                      });
+                    }}
+                    className={`mt-1 ${inputClass}`}
+                  >
+                    <option value="">Not muted</option>
+                    {MUTE_PRESETS.map((p, i) => (
+                      <option key={p.label} value={i}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
           </section>
         )}
 

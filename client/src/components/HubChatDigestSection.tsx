@@ -191,8 +191,8 @@ export function HubChatDigestSection({
           <option value="custom">Custom (cron)</option>
         </select>
       </label>
-      <div className="flex gap-2">
-        <label className="flex-1 text-xs text-gray-400">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <label className="text-xs text-gray-400">
           Cron
           <input
             value={draft.cron}
@@ -202,7 +202,7 @@ export function HubChatDigestSection({
             className={`mt-1 font-mono ${inputClass}`}
           />
         </label>
-        <label className="flex-1 text-xs text-gray-400">
+        <label className="text-xs text-gray-400">
           Timezone
           <input
             value={draft.timeZone}
