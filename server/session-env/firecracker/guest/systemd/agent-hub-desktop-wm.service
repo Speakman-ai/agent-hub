@@ -1,0 +1,16 @@
+[Unit]
+Description=Agent Hub desktop window manager (openbox)
+ConditionKernelCommandLine=ahvm.desktop=1
+BindsTo=agent-hub-desktop-display.service
+After=agent-hub-desktop-display.service
+
+[Service]
+Type=simple
+User=runner
+Environment=DISPLAY=:99
+ExecStart=/usr/bin/openbox --sm-disable
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

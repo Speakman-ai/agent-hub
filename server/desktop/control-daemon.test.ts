@@ -289,9 +289,9 @@ describe('desktop image', () => {
     const users = [...dockerfile.matchAll(/^USER\s+(\S+)/gm)].map((m) => m[1]);
     expect(users.at(-1)).toBe('desktop');
     expect(dockerfile).not.toMatch(/docker\.sock|docker-ce|docker\.io/);
-    for (const pkg of ['xvfb', 'openbox', 'chromium', 'xdotool', 'scrot']) {
-      expect(dockerfile).toMatch(new RegExp(`\\b${pkg}\\b`));
-    }
+    // Desktop packages come from the installer shared with the Firecracker
+    // guest; desktop-guest-image.test.ts covers its contents.
+    expect(dockerfile).toContain('install-desktop.sh --target container');
     expect(dockerfile).toContain('DESKTOP_WIDTH=1280');
     expect(dockerfile).toContain('DESKTOP_HEIGHT=800');
     expect(dockerfile).toContain('COPY server/desktop/control-daemon.ts');

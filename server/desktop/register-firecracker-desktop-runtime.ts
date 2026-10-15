@@ -52,12 +52,22 @@ export function createFirecrackerSlotPool(store: DesktopComputersStore): InMemor
   return new InMemorySlotPool({ reserved });
 }
 
+/**
+ * Desktop computers boot the desktop rootfs (display, window manager, VNC).
+ * Without one configured they fall back to the session rootfs, which boots
+ * but has no display, so screenshot and input fail with the guest's error.
+ */
+export function desktopVmPaths(paths: FirecrackerPaths): FirecrackerPaths {
+  return paths.desktopRootfsPath ? { ...paths, baseRootfsPath: paths.desktopRootfsPath } : paths;
+}
+
 export function createFirecrackerDesktopRuntime(opts: {
   store: DesktopComputersStore;
   slots: InMemorySlotPool;
   vmDefaults: FirecrackerDesktopVmDefaults;
   now?: () => number;
 }): FirecrackerDesktopRuntime {
+  const paths = desktopVmPaths(opts.vmDefaults.paths);
   return new FirecrackerDesktopRuntime({
     store: opts.store,
     slots: opts.slots,
@@ -65,6 +75,7 @@ export function createFirecrackerDesktopRuntime(opts: {
     createVm: (spec) =>
       new FirecrackerSessionEnv({
         ...opts.vmDefaults,
+        paths,
         sessionId: spec.vmId,
         vmId: spec.vmId,
         worktreePath: null,

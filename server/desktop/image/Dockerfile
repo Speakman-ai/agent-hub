@@ -1,5 +1,5 @@
-# Agent desktop image (SPEC-5 container backend): Debian slim + Xvfb (1280x800)
-# + openbox + Chromium + xdotool + scrot, driven by the control daemon in
+# Agent desktop image (container backend): Debian slim + Xvfb (1280x800)
+# + openbox + Chromium + xdotool + scrot + x11vnc, driven by the control daemon in
 # server/desktop/control-daemon.ts.
 #
 # Runs unprivileged: the final USER is `desktop` (uid 1000), nothing needs
@@ -26,25 +26,20 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      xvfb openbox xdotool scrot x11-utils \
-      chromium fonts-dejavu-core fonts-liberation \
-      tini bash ca-certificates curl procps xdg-utils \
+ && apt-get install -y --no-install-recommends tini bash ca-certificates curl procps \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
-# Chromium's own sandbox needs user namespaces, which Docker's default seccomp
-# profile refuses to an unprivileged container. The container is the sandbox
-# here, so Chromium runs without its inner one. /dev/shm is 64 MB by default.
-RUN printf '%s\n' \
-      'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --disable-dev-shm-usage --no-first-run --no-default-browser-check --password-store=basic"' \
-      > /etc/chromium.d/agent-hub
+# The desktop layer itself is shared with the Firecracker guest image
+# (session-env/firecracker/build/Dockerfile.guest-desktop) so both backends
+# carry the same tools.
+COPY server/desktop/image/install-desktop.sh /opt/agent-hub-desktop/install-desktop.sh
+RUN /opt/agent-hub-desktop/install-desktop.sh --target container
 
 # uid 1000 so a host-side persistent home volume gets a stable owner.
 RUN groupadd --gid 1000 desktop \
- && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/desktop --shell /bin/bash desktop \
- && mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+ && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/desktop --shell /bin/bash desktop
 
 COPY server/desktop/control-daemon.ts /opt/agent-hub-desktop/control-daemon.ts
 COPY server/desktop/image/entrypoint.sh /opt/agent-hub-desktop/entrypoint.sh

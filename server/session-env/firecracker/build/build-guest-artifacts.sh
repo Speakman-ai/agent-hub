@@ -9,6 +9,12 @@
 #                  runner image CI uses, so a command behaves identically in
 #                  a session and in the gate. Divergence between those two is
 #                  the thing this whole subsystem exists to prevent.
+#   rootfs-desktop.ext4
+#                — the same guest plus the agent desktop layer (Xvfb on :99,
+#                  openbox, Chromium, xdotool, scrot, x11vnc on 5900), booted
+#                  by desktop computers. The layer is installed by
+#                  server/desktop/image/install-desktop.sh, the script the
+#                  container desktop image runs too.
 #
 # Both are content-addressed by a build id so a host can hold several versions
 # and roll back without a rebuild.
@@ -17,6 +23,8 @@
 #   build-guest-artifacts.sh [--out DIR] [--kernel-version 6.1.130]
 #                            [--runner-image IMAGE] [--skip-kernel]
 #                            [--vm-agent-bundle PATH]
+#                            [--variant session|desktop|all]
+#                            [--desktop-installer PATH]
 #
 # Runs on any Linux host with docker. The kernel compile is the slow part
 # (~10 min on 4 vCPU); --skip-kernel reuses an existing vmlinux while
@@ -25,7 +33,12 @@
 # By default the agent is bundled here, which needs the repo's server/
 # node_modules. Deployment hosts do not have a checkout, so --vm-agent-bundle
 # takes an already-bundled vm-agent.mjs instead and the builder only needs
-# this directory, ../guest/systemd, and docker.
+# this directory, ../guest, docker, and (for the desktop variant)
+# install-desktop.sh, which --desktop-installer points at when it is not in
+# its repo location.
+#
+# --variant picks which rootfs to build (default: all). Both come from the
+# same guest image build, so rebuilding them together keeps them in step.
 
 set -euo pipefail
 
@@ -37,6 +50,11 @@ KERNEL_VERSION="6.1.130"
 RUNNER_IMAGE="agent-hub/finalize-runner:ubuntu-24.04"
 SKIP_KERNEL=0
 VM_AGENT_BUNDLE=""
+VARIANT="all"
+DESKTOP_INSTALLER="${REPO_ROOT}/server/desktop/image/install-desktop.sh"
+# Started at boot in the desktop rootfs only.
+DESKTOP_UNITS=(agent-hub-desktop-display.service agent-hub-desktop-wm.service
+               agent-hub-desktop-vnc.service)
 # Sized for a full node_modules plus a build cache; the image is sparse, so
 # this costs only what is written.
 ROOTFS_SIZE_MIB="${ROOTFS_SIZE_MIB:-12288}"
@@ -51,10 +69,23 @@ while [[ $# -gt 0 ]]; do
     --runner-image) RUNNER_IMAGE="$2"; shift 2 ;;
     --skip-kernel) SKIP_KERNEL=1; shift ;;
     --vm-agent-bundle) VM_AGENT_BUNDLE="$2"; shift 2 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    --variant) VARIANT="$2"; shift 2 ;;
+    --desktop-installer) DESKTOP_INSTALLER="$2"; shift 2 ;;
+    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+case "${VARIANT}" in
+  session) BUILD_SESSION=1; BUILD_DESKTOP=0 ;;
+  desktop) BUILD_SESSION=0; BUILD_DESKTOP=1 ;;
+  all)     BUILD_SESSION=1; BUILD_DESKTOP=1 ;;
+  *) echo "error: --variant must be session, desktop or all (got ${VARIANT})" >&2; exit 2 ;;
+esac
+if [[ "${BUILD_DESKTOP}" -eq 1 && ! -f "${DESKTOP_INSTALLER}" ]]; then
+  echo "error: desktop installer not found at ${DESKTOP_INSTALLER} (pass --desktop-installer)" >&2
+  exit 1
+fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "error: guest artifacts must be built on Linux (mkfs.ext4 + loop mounts)." >&2
@@ -168,96 +199,148 @@ else
   )
 fi
 
-# ── 3. Root filesystem ────────────────────────────────────────────
-echo "==> Exporting ${RUNNER_IMAGE} into a rootfs"
+# ── 3. Root filesystems ───────────────────────────────────────────
+echo "==> Building the guest image from ${RUNNER_IMAGE}"
 
 docker build -t agent-hub/fc-guest:latest \
   --build-arg "RUNNER_IMAGE=${RUNNER_IMAGE}" \
   -f "${SCRIPT_DIR}/Dockerfile.guest" \
   "${SCRIPT_DIR}"
 
-CONTAINER_ID="$(docker create agent-hub/fc-guest:latest /bin/true)"
-trap 'docker rm -f "${CONTAINER_ID}" >/dev/null 2>&1 || true; rm -rf "${WORK_DIR}"' EXIT
-
-ROOTFS_IMG="${WORK_DIR}/rootfs.ext4"
-truncate -s "${ROOTFS_SIZE_MIB}M" "${ROOTFS_IMG}"
-mkfs.ext4 -q -F -L agent-hub-root "${ROOTFS_IMG}"
-
-MOUNT_DIR="${WORK_DIR}/mnt"
-mkdir -p "${MOUNT_DIR}"
-sudo mount -o loop "${ROOTFS_IMG}" "${MOUNT_DIR}"
-# shellcheck disable=SC2064  # expand MOUNT_DIR now, while it is still set
-trap "sudo umount '${MOUNT_DIR}' 2>/dev/null || true; docker rm -f '${CONTAINER_ID}' >/dev/null 2>&1 || true; rm -rf '${WORK_DIR}'" EXIT
-
-docker export "${CONTAINER_ID}" | sudo tar -x -C "${MOUNT_DIR}"
-
-# The agent and its units are installed here rather than in the Dockerfile so
-# a rebuild after an agent change does not re-export the whole image.
-sudo install -D -m 0644 "${WORK_DIR}/vm-agent.mjs" "${MOUNT_DIR}/usr/local/lib/agent-hub/vm-agent.mjs"
-# The guest resolver writer runs before anything that needs DNS.
-sudo install -D -m 0755 "${SCRIPT_DIR}/../guest/agent-hub-write-resolv.sh" \
-  "${MOUNT_DIR}/usr/local/bin/agent-hub-write-resolv"
-# Desktop computers bind the workspace user's home onto the persistent disk.
-sudo install -D -m 0755 "${SCRIPT_DIR}/../guest/agent-hub-desktop-home.sh" \
-  "${MOUNT_DIR}/usr/local/bin/agent-hub-desktop-home"
-
-# Seed a working resolver. This cannot be done in the Dockerfile: docker
-# bind-mounts /etc/resolv.conf over the image during build and the export drops
-# it, leaving a zero-byte file that silently means "no DNS". The boot-time
-# service replaces this with the host's own resolvers when it gets them.
-printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:2\n' \
-  | sudo tee "${MOUNT_DIR}/etc/resolv.conf" >/dev/null
-sudo chmod 0644 "${MOUNT_DIR}/etc/resolv.conf"
-
-for unit in agent-hub-vm-agent.service agent-hub-vsock-bridge.service workspace.mount \
-            agent-hub-resolv.service agent-hub-desktop-home.service; do
-  sudo install -D -m 0644 "${SCRIPT_DIR}/../guest/systemd/${unit}" \
-    "${MOUNT_DIR}/etc/systemd/system/${unit}"
-done
-
-# Enable by symlink: `systemctl enable` needs a booted system, and this image
-# is not one yet.
-sudo mkdir -p "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants" \
-              "${MOUNT_DIR}/etc/systemd/system/sysinit.target.wants" \
-              "${MOUNT_DIR}/etc/systemd/system/local-fs.target.wants" \
-              "${MOUNT_DIR}/workspace"
-sudo ln -sf ../agent-hub-resolv.service \
-  "${MOUNT_DIR}/etc/systemd/system/sysinit.target.wants/agent-hub-resolv.service"
-sudo ln -sf ../agent-hub-vm-agent.service \
-  "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/agent-hub-vm-agent.service"
-sudo ln -sf ../agent-hub-vsock-bridge.service \
-  "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/agent-hub-vsock-bridge.service"
-sudo ln -sf ../workspace.mount \
-  "${MOUNT_DIR}/etc/systemd/system/local-fs.target.wants/workspace.mount"
-sudo ln -sf ../agent-hub-desktop-home.service \
-  "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/agent-hub-desktop-home.service"
-
-sudo sync
-sudo umount "${MOUNT_DIR}"
-
-e2fsck -y -f "${ROOTFS_IMG}" >/dev/null 2>&1 || true
-
-# This image used to be shrunk to its minimum size (`resize2fs -M`) on the
-# theory that a base every VM clones multiplies any slack per session. It does
-# not: the clone is `cp --reflink=auto` onto a reflink filesystem (xfs/btrfs —
-# setup-firecracker-host.sh warns when it is missing), so clones share blocks
-# and cost only what they subsequently write, and the image is sparse besides.
-# What the shrink actually multiplied was a guest with ~0 bytes free, where the
-# first `npm ci` filled the root filesystem and hung with no error — the
-# process just stopped making progress. Leave the filesystem at its built size.
-FREE_MIB=$(( $(dumpe2fs -h "${ROOTFS_IMG}" 2>/dev/null | awk '/Free blocks:/ {print $3}') \
-  * $(dumpe2fs -h "${ROOTFS_IMG}" 2>/dev/null | awk '/Block size:/ {print $3}') / 1048576 ))
-if [[ "${FREE_MIB}" -lt "${MIN_FREE_MIB}" ]]; then
-  echo "error: guest rootfs has only ${FREE_MIB}MiB free, need >= ${MIN_FREE_MIB}MiB." >&2
-  echo "       A dev environment installs npm/pip packages and pulls container" >&2
-  echo "       images into this filesystem; too little room hangs the first build." >&2
-  echo "       Raise ROOTFS_SIZE_MIB (currently ${ROOTFS_SIZE_MIB})." >&2
-  exit 1
+if [[ "${BUILD_DESKTOP}" -eq 1 ]]; then
+  echo "==> Building the desktop guest image"
+  # A two-file context: the deployment-host builder may not have the rest of
+  # the repo, and the desktop layer needs nothing else.
+  DESKTOP_CTX="${WORK_DIR}/desktop-context"
+  mkdir -p "${DESKTOP_CTX}"
+  install -m 0755 "${DESKTOP_INSTALLER}" "${DESKTOP_CTX}/install-desktop.sh"
+  install -m 0644 "${SCRIPT_DIR}/Dockerfile.guest-desktop" "${DESKTOP_CTX}/Dockerfile"
+  docker build -t agent-hub/fc-guest-desktop:latest \
+    --build-arg "BASE_IMAGE=agent-hub/fc-guest:latest" \
+    "${DESKTOP_CTX}"
 fi
-echo "==> Guest rootfs has ${FREE_MIB}MiB free"
 
-install -m 0644 "${ROOTFS_IMG}" "${OUT_DIR}/rootfs.ext4"
+GUEST_DIR="${SCRIPT_DIR}/../guest"
+CONTAINER_ID=""
+MOUNT_DIR=""
+cleanup() {
+  if [[ -n "${MOUNT_DIR}" ]]; then sudo umount "${MOUNT_DIR}" 2>/dev/null || true; fi
+  if [[ -n "${CONTAINER_ID}" ]]; then docker rm -f "${CONTAINER_ID}" >/dev/null 2>&1 || true; fi
+  rm -rf "${WORK_DIR}"
+}
+trap cleanup EXIT
+
+enable_unit() {
+  # Enable by symlink: `systemctl enable` needs a booted system, and this
+  # image is not one yet.
+  local unit="$1" target="$2"
+  sudo mkdir -p "${MOUNT_DIR}/etc/systemd/system/${target}.wants"
+  sudo ln -sf "../${unit}" "${MOUNT_DIR}/etc/systemd/system/${target}.wants/${unit}"
+}
+
+# assemble_rootfs IMAGE OUTPUT_NAME VARIANT
+#   Export IMAGE into a fresh ext4 filesystem, install the guest agent and
+#   units, and write it to ${OUT_DIR}/OUTPUT_NAME. VARIANT is `session` or
+#   `desktop`; the desktop variant also gets the display, window manager and
+#   VNC units.
+assemble_rootfs() {
+  local image="$1" out_name="$2" variant="$3"
+  echo "==> Assembling ${out_name} from ${image}"
+
+  CONTAINER_ID="$(docker create "${image}" /bin/true)"
+
+  local rootfs_img="${WORK_DIR}/${out_name}"
+  truncate -s "${ROOTFS_SIZE_MIB}M" "${rootfs_img}"
+  mkfs.ext4 -q -F -L agent-hub-root "${rootfs_img}"
+
+  MOUNT_DIR="${WORK_DIR}/mnt"
+  mkdir -p "${MOUNT_DIR}"
+  sudo mount -o loop "${rootfs_img}" "${MOUNT_DIR}"
+
+  docker export "${CONTAINER_ID}" | sudo tar -x -C "${MOUNT_DIR}"
+  docker rm -f "${CONTAINER_ID}" >/dev/null 2>&1 || true
+  CONTAINER_ID=""
+
+  # The agent and its units are installed here rather than in the Dockerfile so
+  # a rebuild after an agent change does not re-export the whole image.
+  sudo install -D -m 0644 "${WORK_DIR}/vm-agent.mjs" "${MOUNT_DIR}/usr/local/lib/agent-hub/vm-agent.mjs"
+  # The guest resolver writer runs before anything that needs DNS.
+  sudo install -D -m 0755 "${GUEST_DIR}/agent-hub-write-resolv.sh" \
+    "${MOUNT_DIR}/usr/local/bin/agent-hub-write-resolv"
+  # Desktop computers bind the workspace user's home onto the persistent disk.
+  sudo install -D -m 0755 "${GUEST_DIR}/agent-hub-desktop-home.sh" \
+    "${MOUNT_DIR}/usr/local/bin/agent-hub-desktop-home"
+
+  # Seed a working resolver. This cannot be done in the Dockerfile: docker
+  # bind-mounts /etc/resolv.conf over the image during build and the export drops
+  # it, leaving a zero-byte file that silently means "no DNS". The boot-time
+  # service replaces this with the host's own resolvers when it gets them.
+  printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:2\n' \
+    | sudo tee "${MOUNT_DIR}/etc/resolv.conf" >/dev/null
+  sudo chmod 0644 "${MOUNT_DIR}/etc/resolv.conf"
+
+  local units=(agent-hub-vm-agent.service agent-hub-vsock-bridge.service workspace.mount
+               agent-hub-resolv.service agent-hub-desktop-home.service)
+  if [[ "${variant}" == "desktop" ]]; then
+    units+=("${DESKTOP_UNITS[@]}")
+  fi
+  for unit in "${units[@]}"; do
+    sudo install -D -m 0644 "${GUEST_DIR}/systemd/${unit}" \
+      "${MOUNT_DIR}/etc/systemd/system/${unit}"
+  done
+
+  sudo mkdir -p "${MOUNT_DIR}/workspace"
+  enable_unit agent-hub-resolv.service sysinit.target
+  enable_unit agent-hub-vm-agent.service multi-user.target
+  enable_unit agent-hub-vsock-bridge.service multi-user.target
+  enable_unit workspace.mount local-fs.target
+  enable_unit agent-hub-desktop-home.service multi-user.target
+  if [[ "${variant}" == "desktop" ]]; then
+    for unit in "${DESKTOP_UNITS[@]}"; do
+      enable_unit "${unit}" multi-user.target
+    done
+  fi
+
+  sudo sync
+  sudo umount "${MOUNT_DIR}"
+  MOUNT_DIR=""
+
+  e2fsck -y -f "${rootfs_img}" >/dev/null 2>&1 || true
+
+  # This image used to be shrunk to its minimum size (`resize2fs -M`) on the
+  # theory that a base every VM clones multiplies any slack per session. It does
+  # not: the clone is `cp --reflink=auto` onto a reflink filesystem (xfs/btrfs —
+  # setup-firecracker-host.sh warns when it is missing), so clones share blocks
+  # and cost only what they subsequently write, and the image is sparse besides.
+  # What the shrink actually multiplied was a guest with ~0 bytes free, where the
+  # first `npm ci` filled the root filesystem and hung with no error — the
+  # process just stopped making progress. Leave the filesystem at its built size.
+  local free_mib
+  free_mib=$(( $(dumpe2fs -h "${rootfs_img}" 2>/dev/null | awk '/Free blocks:/ {print $3}') \
+    * $(dumpe2fs -h "${rootfs_img}" 2>/dev/null | awk '/Block size:/ {print $3}') / 1048576 ))
+  if [[ "${free_mib}" -lt "${MIN_FREE_MIB}" ]]; then
+    echo "error: ${out_name} has only ${free_mib}MiB free, need >= ${MIN_FREE_MIB}MiB." >&2
+    echo "       A dev environment installs npm/pip packages and pulls container" >&2
+    echo "       images into this filesystem; too little room hangs the first build." >&2
+    echo "       Raise ROOTFS_SIZE_MIB (currently ${ROOTFS_SIZE_MIB})." >&2
+    exit 1
+  fi
+  echo "==> ${out_name} has ${free_mib}MiB free"
+
+  install -m 0644 "${rootfs_img}" "${OUT_DIR}/${out_name}"
+  rm -f "${rootfs_img}"
+}
+
+BUILT=("${OUT_DIR}/vmlinux")
+if [[ "${BUILD_SESSION}" -eq 1 ]]; then
+  assemble_rootfs agent-hub/fc-guest:latest rootfs.ext4 session
+  BUILT+=("${OUT_DIR}/rootfs.ext4")
+fi
+if [[ "${BUILD_DESKTOP}" -eq 1 ]]; then
+  assemble_rootfs agent-hub/fc-guest-desktop:latest rootfs-desktop.ext4 desktop
+  BUILT+=("${OUT_DIR}/rootfs-desktop.ext4")
+fi
 
 echo
 echo "==> Guest artifacts ready:"
-ls -lh "${OUT_DIR}/vmlinux" "${OUT_DIR}/rootfs.ext4"
+ls -lh "${BUILT[@]}"

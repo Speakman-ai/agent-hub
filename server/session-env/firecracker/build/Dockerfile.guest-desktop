@@ -1,0 +1,19 @@
+# Desktop variant of the Firecracker guest: the session guest (Dockerfile.guest)
+# plus the agent desktop layer. Desktop computers boot this rootfs; session VMs
+# keep the headless one.
+#
+# build-guest-artifacts.sh builds it from a staging context holding only
+# install-desktop.sh, the same installer server/desktop/image/Dockerfile runs,
+# so the container and VM computers carry the same tools.
+#
+# The display, window manager and VNC server are systemd units installed by
+# build-guest-artifacts.sh (guest/systemd/agent-hub-desktop-*.service).
+
+ARG BASE_IMAGE=agent-hub/fc-guest:latest
+FROM ${BASE_IMAGE}
+
+USER root
+COPY install-desktop.sh /usr/local/lib/agent-hub/install-desktop.sh
+RUN /usr/local/lib/agent-hub/install-desktop.sh --target vm
+
+CMD ["/sbin/init"]

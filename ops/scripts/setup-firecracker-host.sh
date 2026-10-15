@@ -242,7 +242,9 @@ chmod 0711 "${JAILER_DIR}"
 chown root:root "${ARTIFACT_DIR}"
 chmod 0755 "${ARTIFACT_DIR}"
 if [[ -f "${ARTIFACT_DIR}/vmlinux" ]]; then chmod 0644 "${ARTIFACT_DIR}/vmlinux"; fi
-if [[ -f "${ARTIFACT_DIR}/rootfs.ext4" ]]; then chmod 0644 "${ARTIFACT_DIR}/rootfs.ext4"; fi
+for rootfs in rootfs.ext4 rootfs-desktop.ext4; do
+  if [[ -f "${ARTIFACT_DIR}/${rootfs}" ]]; then chmod 0644 "${ARTIFACT_DIR}/${rootfs}"; fi
+done
 
 # Control plane Hub must write.
 if id -u "${HUB_USER}" >/dev/null 2>&1; then
@@ -365,6 +367,10 @@ if [[ ! -f "${ARTIFACT_DIR}/vmlinux" || ! -f "${ARTIFACT_DIR}/rootfs.ext4" ]]; t
   echo "    it uses sysbox (or host) instead."
 else
   echo "    Guest artifacts present. Restart the Hub to pick up the backend."
+  if [[ ! -f "${ARTIFACT_DIR}/rootfs-desktop.ext4" ]]; then
+    echo "    No rootfs-desktop.ext4: desktop computers will fail to boot until"
+    echo "    build-guest-artifacts.sh --variant desktop has been run."
+  fi
 fi
 echo
 if id -u "${HUB_USER}" >/dev/null 2>&1; then

@@ -1,0 +1,19 @@
+[Unit]
+Description=Agent Hub desktop VNC server (port 5900)
+ConditionKernelCommandLine=ahvm.desktop=1
+BindsTo=agent-hub-desktop-display.service
+After=agent-hub-desktop-display.service
+
+[Service]
+Type=simple
+User=runner
+# Listens on every guest address, which in practice means the Hub: the host
+# bridge drops guest-to-guest traffic and forwards nothing inbound from the
+# uplink, so the only peer that can reach <guest-ip>:5900 is the Hub host. No
+# VNC password for the same reason; the Hub's live view is the access check.
+ExecStart=/usr/bin/x11vnc -display :99 -rfbport 5900 -forever -shared -nopw -noxdamage -quiet
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

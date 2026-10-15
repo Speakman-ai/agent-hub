@@ -1,0 +1,22 @@
+[Unit]
+Description=Agent Hub desktop display (Xvfb :99, 1280x800)
+ConditionKernelCommandLine=ahvm.desktop=1
+# The home bind comes first so openbox and anything else writing dotfiles
+# lands on the persistent disk, not on the re-cloned rootfs.
+Wants=agent-hub-desktop-home.service
+After=agent-hub-desktop-home.service
+
+[Service]
+Type=simple
+User=runner
+# -ac: every guest process may draw. The guest is one computer for one
+# (user, agent, project), and the agent's exec commands need the display.
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1280x800x24 -nolisten tcp -ac
+# Ready once a client can connect, so the window manager and VNC never race
+# an X server that is still starting.
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 100); do DISPLAY=:99 xdpyinfo >/dev/null 2>&1 && exit 0; sleep 0.1; done; exit 1'
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

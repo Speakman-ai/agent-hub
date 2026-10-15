@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  firecrackerHostPaths,
   forgetPersistedFirecrackerDisks,
   registerFirecrackerBackend,
   resolveFirecrackerUseJailer,
@@ -41,6 +42,19 @@ describe('Firecracker backend capability status', () => {
 
     unregisterFirecrackerBackend();
     expect(isFirecrackerBackendRegistered()).toBe(false);
+  });
+});
+
+describe('firecrackerHostPaths', () => {
+  it('puts the desktop rootfs next to the session rootfs, overridable on its own', () => {
+    expect(firecrackerHostPaths({ AGENT_HUB_FIRECRACKER_DIR: '/fc' })).toMatchObject({
+      baseRootfsPath: '/fc/rootfs.ext4',
+      desktopRootfsPath: '/fc/rootfs-desktop.ext4',
+    });
+    expect(
+      firecrackerHostPaths({ AGENT_HUB_FIRECRACKER_DESKTOP_ROOTFS: '/x/desk.ext4' })
+        .desktopRootfsPath,
+    ).toBe('/x/desk.ext4');
   });
 });
 

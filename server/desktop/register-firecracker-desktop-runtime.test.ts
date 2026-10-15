@@ -10,6 +10,7 @@ import { createDesktopComputersStore } from './desktop-computers-store.js';
 import {
   createFirecrackerDesktopRuntime,
   createFirecrackerSlotPool,
+  desktopVmPaths,
   DesktopSlotReservationError,
 } from './register-firecracker-desktop-runtime.js';
 import { desktopVmId } from './firecracker-desktop-runtime.js';
@@ -92,6 +93,7 @@ function setup() {
       paths: {
         kernelPath: '/fc/vmlinux',
         baseRootfsPath: '/fc/rootfs.ext4',
+        desktopRootfsPath: '/fc/rootfs-desktop.ext4',
         runDir: '/fc/vms',
         controlDir: '/fc/control',
         jailerChrootBase: '/fc/jailer',
@@ -121,6 +123,7 @@ describe('Firecracker desktop runtime on FirecrackerSessionEnv', () => {
     const prepare = runs.find(isPrepare)!;
     expect(prepare).toEqual(expect.arrayContaining(['--vm-id', vmId, '--no-worktree']));
     expect(prepare).not.toContain('--worktree');
+    expect(prepare[prepare.indexOf('--base-rootfs') + 1]).toBe('/fc/rootfs-desktop.ext4');
     expect(spawnVmm).toHaveBeenCalledWith(expect.objectContaining({ vmId }));
     const config = JSON.parse([...written.values()].find((c) => c.includes('boot-source'))!);
     expect(config['boot-source'].boot_args).toContain('ahvm.desktop=1');
@@ -147,6 +150,19 @@ describe('Firecracker desktop runtime on FirecrackerSessionEnv', () => {
     expect(taps).toEqual(['ahfct3', 'ahfct3']);
     const prepares = runs.filter(isPrepare).map((a) => a[a.indexOf('--vm-id') + 1]);
     expect(new Set(prepares)).toEqual(new Set([desktopVmId(KEY)]));
+  });
+
+  it('falls back to the session rootfs only when no desktop rootfs is configured', () => {
+    const paths = {
+      kernelPath: 'k',
+      baseRootfsPath: '/fc/rootfs.ext4',
+      runDir: 'r',
+      controlDir: 'c',
+    };
+    expect(desktopVmPaths(paths).baseRootfsPath).toBe('/fc/rootfs.ext4');
+    expect(
+      desktopVmPaths({ ...paths, desktopRootfsPath: '/fc/rootfs-desktop.ext4' }).baseRootfsPath,
+    ).toBe('/fc/rootfs-desktop.ext4');
   });
 
   it('refuses to build a pool when the reserved slots cannot be read', () => {

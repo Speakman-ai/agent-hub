@@ -255,6 +255,11 @@ export interface FirecrackerPaths {
   /** Read-only base rootfs; each VM boots a copy-on-write clone. */
   baseRootfsPath: string;
   /**
+   * Base rootfs for desktop computers: the same guest plus the desktop layer
+   * (rootfs-desktop.ext4 from build-guest-artifacts.sh). Session VMs ignore it.
+   */
+  desktopRootfsPath?: string;
+  /**
    * Root-owned per-VM disk scratch (`$runDir/<vmId>/*.ext4`). Must not be
    * writable by the Hub account — the prepare-disks helper constructs paths
    * here so an unprivileged symlink swap cannot retarget truncate/mkfs.
