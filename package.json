@@ -1,6 +1,6 @@
 {
   "name": "agent-hub",
-  "version": "2.31.195",
+  "version": "2.31.196",
   "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "main": "electron/main.js",
