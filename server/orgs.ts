@@ -7,6 +7,7 @@ import type { OrgRow } from './types.js';
 import { USER_SKILL_CREDENTIALS_SCHEMA } from './skill-credentials-schema.js';
 import { USER_SKILL_OPTIONS_SCHEMA } from './skill-options-schema.js';
 import { GOOGLE_CONNECTIONS_SCHEMA } from './google-connections-schema.js';
+import { BROWSER_PROFILES_SCHEMA } from './browser-profiles-schema.js';
 import { GOOGLE_CHAT_DRAFTS_SCHEMA } from './google-chat-drafts-schema.js';
 import { GMAIL_IMPORTANCE_SCHEMA } from './gmail-importance-schema.js';
 import { AUTH_CREDENTIAL_AUDIT_SCHEMA } from './auth-credential-audit-schema.js';
@@ -208,6 +209,9 @@ export function initOrgsDb(): void {
   // table rather than columns on `users` — keeps the encrypted token blobs
   // off the hot identity row. See google-connections-store.ts.
   orgsDb.exec(GOOGLE_CONNECTIONS_SCHEMA);
+  // Per-(user, agent, project) browser logins, encrypted at rest. See
+  // browser-profiles-store.ts.
+  orgsDb.exec(BROWSER_PROFILES_SCHEMA);
   // Agent-written Chat replies held for the owner's approval.
   orgsDb.exec(GOOGLE_CHAT_DRAFTS_SCHEMA);
   // AI importance scan settings + cached per-thread verdicts for the Gmail pane.
