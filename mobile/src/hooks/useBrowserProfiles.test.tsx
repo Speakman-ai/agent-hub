@@ -10,6 +10,8 @@ const apiMock = vi.hoisted(() => ({
   getMyBrowserProfiles: vi.fn<() => Promise<any>>(),
   clearBrowserProfileDomain: vi.fn<(id: string, domain: string) => Promise<any>>(),
   deleteBrowserProfile: vi.fn<(id: string) => Promise<any>>(),
+  setBrowserDomainPolicy: vi.fn<(id: string, domain: string, policy: string) => Promise<any>>(),
+  deleteBrowserDomainPolicy: vi.fn<(id: string, domain: string) => Promise<any>>(),
 }));
 vi.mock('../utils/api', () => ({ api: apiMock }));
 
@@ -24,6 +26,7 @@ function profile(id: string, over: Record<string, unknown> = {}) {
     projectId: 'p1',
     projectName: 'Project One',
     domains: ['github.com', 'example.com'],
+    domainPolicies: [],
     hasState: true,
     inUse: false,
     lastUsedAt: '2026-10-15 10:00:00',
@@ -122,5 +125,37 @@ describe('useBrowserProfiles', () => {
     });
     expect(h.current.error).toBe('404: gone');
     expect(h.current.profiles!.map((p) => p.id)).toEqual(['a']);
+  });
+
+  it('sets and removes a site policy, replacing the profile with the server copy', async () => {
+    apiMock.getMyBrowserProfiles.mockResolvedValue({ profiles: [profile('a')] });
+    apiMock.setBrowserDomainPolicy.mockResolvedValue(
+      profile('a', { domainPolicies: [{ domain: 'bank.com', policy: 'ask' }] }),
+    );
+    apiMock.deleteBrowserDomainPolicy.mockResolvedValue(profile('a'));
+    const h = await mount();
+    let ok = false;
+    await act(async () => {
+      ok = await h.current.setPolicy(h.current.profiles![0], 'bank.com', 'ask');
+    });
+    expect(ok).toBe(true);
+    expect(apiMock.setBrowserDomainPolicy).toHaveBeenCalledWith('a', 'bank.com', 'ask');
+    expect(h.current.profiles![0].domainPolicies).toEqual([{ domain: 'bank.com', policy: 'ask' }]);
+    await act(async () => {
+      await h.current.removePolicy(h.current.profiles![0], 'bank.com');
+    });
+    expect(h.current.profiles![0].domainPolicies).toEqual([]);
+  });
+
+  it('reports a failed policy save', async () => {
+    apiMock.getMyBrowserProfiles.mockResolvedValue({ profiles: [profile('a')] });
+    apiMock.setBrowserDomainPolicy.mockRejectedValue(new Error('400: bad'));
+    const h = await mount();
+    let ok = true;
+    await act(async () => {
+      ok = await h.current.setPolicy(h.current.profiles![0], 'bank.com', 'block');
+    });
+    expect(ok).toBe(false);
+    expect(h.current.error).toBe('400: bad');
   });
 });

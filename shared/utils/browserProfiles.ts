@@ -3,6 +3,45 @@
  * mobile so both group and label profiles the same way.
  */
 
+export type BrowserDomainPolicy = 'allow' | 'ask' | 'block';
+
+export interface BrowserDomainPolicyWire {
+  domain: string;
+  policy: BrowserDomainPolicy;
+}
+
+export const BROWSER_DOMAIN_POLICY_OPTIONS: ReadonlyArray<{
+  value: BrowserDomainPolicy;
+  label: string;
+  description: string;
+}> = [
+  { value: 'allow', label: 'Allow', description: 'The agent acts freely.' },
+  { value: 'ask', label: 'Ask first', description: 'Clicks and typing wait for your approval.' },
+  { value: 'block', label: 'Block', description: 'The agent may not open or act on the site.' },
+];
+
+/**
+ * Reduce what the user typed (`https://Shop.com/cart`, `shop.com`) to a bare
+ * hostname, or null when it is not one. Mirrors the server's check so the
+ * form can refuse input before a round trip.
+ */
+export function normalizePolicyDomainInput(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  let host: string;
+  try {
+    host = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`)
+      .hostname;
+  } catch {
+    return null;
+  }
+  host = host.toLowerCase().replace(/\.$/, '');
+  if (!host || host.length > 253 || !/^[a-z0-9.-]+$/.test(host) || !host.includes('.')) {
+    return null;
+  }
+  return host;
+}
+
 /** Shape of one row from `GET /api/me/browser-profiles`. */
 export interface BrowserProfileWire {
   id: string;
@@ -11,6 +50,8 @@ export interface BrowserProfileWire {
   projectId: string;
   projectName: string;
   domains: string[];
+  /** Site policies applied to agent browser ops; unlisted sites are allowed. */
+  domainPolicies: BrowserDomainPolicyWire[];
   hasState: boolean;
   inUse: boolean;
   lastUsedAt: string | null;

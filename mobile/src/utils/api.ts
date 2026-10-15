@@ -9,7 +9,7 @@ import { normalizeSessionMessagesResponse } from '@shared/utils/sessionMessagesR
 import { isDeadSessionResponse } from '@shared/utils/authErrorCodes';
 import type { SessionContextUsage } from '@shared/utils/contextUsage';
 import type { InboxNotification } from '@shared/utils/notificationInbox';
-import type { BrowserProfileWire } from '@shared/utils/browserProfiles';
+import type { BrowserDomainPolicy, BrowserProfileWire } from '@shared/utils/browserProfiles';
 import type { ApprovalDecision, ApprovalRuleWire, ApprovalWire } from '@shared/utils/approvals';
 /** A machine error code (`no_pushable_commits`) rather than human copy. */
 const ERROR_CODE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
@@ -1293,6 +1293,20 @@ export const api = {
   listApprovalRules: (): Promise<{ rules: ApprovalRuleWire[] }> => fetchJSON('/me/approval-rules'),
   deleteApprovalRule: (ruleId: string): Promise<{ ok: true }> =>
     fetchJSON(`/me/approval-rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' }),
+  setBrowserDomainPolicy: (
+    profileId: string,
+    domain: string,
+    policy: BrowserDomainPolicy,
+  ): Promise<BrowserProfileWire> =>
+    fetchJSON(
+      `/me/browser-profiles/${encodeURIComponent(profileId)}/domain-policies/${encodeURIComponent(domain)}`,
+      { method: 'PUT', body: JSON.stringify({ policy }) },
+    ),
+  deleteBrowserDomainPolicy: (profileId: string, domain: string): Promise<BrowserProfileWire> =>
+    fetchJSON(
+      `/me/browser-profiles/${encodeURIComponent(profileId)}/domain-policies/${encodeURIComponent(domain)}`,
+      { method: 'DELETE' },
+    ),
   // Agent Hub chat (/api/chat). The server acts as the signed-in user.
   hubChat: {
     members: () => fetchJSON('/chat/members'),

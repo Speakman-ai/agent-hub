@@ -52,6 +52,7 @@ import {
   type BrowserLoginRequest,
   type BrowserLoginResolution,
 } from './browser-login-handoff.js';
+import { describeBrowserBlock, type BrowserDomainGate } from './browser-domain-policy.js';
 
 // Types
 
@@ -1052,6 +1053,8 @@ export type BrowserReActStepOutcome = {
   savedScreenshotPath?: string;
   /** Page snapshot captured with a successful screenshot, used for Hub traces. */
   pageSnapshot?: { url: string; title: string; textExcerpt: string };
+  /** The domain policy refused this op; the rest of the ReAct batch must not run. */
+  haltRemaining?: string;
 };
 
 export function summarizeJsonPreview(data: unknown, maxChars = 400): string | undefined {
@@ -1281,6 +1284,24 @@ async function runRequestLoginStep(
   }
 }
 
+const documentBlockDenyByContext = new WeakMap<object, () => void>();
+
+/**
+ * Fail document requests to sites the profile blocks for the life of the
+ * browser context, so redirects, link clicks and human moves in the pane are
+ * stopped before they load. Installed once per context.
+ */
+function installDocumentBlockDeny(host: unknown, blockedBy: (url: string) => string | null): void {
+  const ctx = contextObjectOf(host);
+  if (!ctx || documentBlockDenyByContext.has(ctx)) return;
+  const guard = getContextFetchGuard(ctx);
+  if (!guard?.installed) return;
+  documentBlockDenyByContext.set(
+    ctx,
+    guard.addDocumentDeny((url) => blockedBy(url) !== null),
+  );
+}
+
 /**
  * Run one browser tool from a parsed ReAct action. Injects markdown for the model.
  */
@@ -1290,6 +1311,7 @@ export async function runBrowserReActStep(
   sessionLaunchOpts: BrowserSessionOptions = {},
   policyOpts?: BrowserNavigationPolicyOpts,
   loginDeps: BrowserLoginHandoffDeps = {},
+  domainGate?: BrowserDomainGate,
 ): Promise<BrowserReActStepOutcome> {
   const opRaw = typeof input.op === 'string' ? input.op.trim() : '';
   if (!opRaw || !BROWSER_REACT_OP_SET.has(opRaw)) {
@@ -1331,11 +1353,21 @@ export async function runBrowserReActStep(
     };
   }
   const opTimeoutMs = sessionLaunchOpts.timeoutMs ?? session.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const host = session;
+  const blockedBy = domainGate?.blockedBy;
+  // The only way `host` is set: every browser this step acts on carries the
+  // request-time block deny, including one reopened while a wait was pending.
+  let host = session;
+  const attachHost = (next: BrowserSession): void => {
+    host = next;
+    if (blockedBy) installDocumentBlockDeny(next, blockedBy);
+  };
+  attachHost(session);
   const profileNotice = session.profile?.takeNotice() ?? null;
+  let gateNotice: string | null = null;
 
   const finish = (b: BrowserReActStepOutcome): BrowserReActStepOutcome => {
     if (profileNotice) b = { ...b, markdown: `${b.markdown}\n\n${profileNotice}` };
+    if (gateNotice) b = { ...b, markdown: `${gateNotice}\n\n${b.markdown}` };
     logBrowserToolAudit({
       chatSessionId,
       op: opRaw,
@@ -1367,30 +1399,142 @@ export async function runBrowserReActStep(
     ].join('\n');
   };
 
-  // Not an agent step: the human must be able to drive the pane while it waits.
-  if (op === 'request_login') {
-    return finish(
-      await runRequestLoginStep(chatSessionId, input, host, opTimeoutMs, policyOpts, loginDeps),
-    );
+  /** Leave a page the policy blocks. Returns the blocking policy domain, if any. */
+  const leaveBlockedPage = async (): Promise<{ host: string; by: string } | null> => {
+    if (!blockedBy) return null;
+    const url = currentPageUrlOf(host);
+    const by = url ? blockedBy(url) : null;
+    if (!url || !by) return null;
+    try {
+      await getActivePage(host).goto('about:blank');
+    } catch {
+      // The refusal below still stops the agent using the page.
+    }
+    return { host: normalizeBrowserLoginDomain(url) ?? by, by };
+  };
+  const blockedPageOutcome = (b: { host: string; by: string }): BrowserReActStepOutcome => ({
+    markdown: [
+      `## Browser: ${op} refused`,
+      '',
+      `The page ended up on ${b.host}, which is ${describeBrowserBlock(b.by)}. The host left the page and discarded this step's result. Do not open, read or act on that site, or reach it another way. Tell the human in chat what you could not do.`,
+    ].join('\n'),
+    hostExit: 2,
+    hostDetail: 'blocked_domain',
+    haltRemaining: `browser ${op} reached ${b.host}, which the domain policy blocks`,
+    ui: { summary: `Blocked: ${b.host}`, errorLine: `Blocked: ${b.host}` },
+  });
+
+  // A page already on a blocked site (a human moved there, or a navigation
+  // the request-time deny could not see) is off limits to every op.
+  // Close only tears the session down, so it must always run.
+  if (op !== 'navigate' && op !== 'close') {
+    const already = await leaveBlockedPage();
+    if (already) return finish(blockedPageOutcome(already));
   }
 
-  incrementBrowserToolOpEntered(chatSessionId);
-  try {
+  // Not an agent step: the human must be able to drive the pane while it waits.
+  if (op === 'request_login') {
+    const loginDomain = normalizeBrowserLoginDomain(input.domain ?? input.url);
+    const loginBlockedBy = loginDomain && blockedBy ? blockedBy(`https://${loginDomain}/`) : null;
+    if (loginDomain && loginBlockedBy) {
+      return finish({
+        markdown: `## Browser: request_login refused\n\n${loginDomain} is ${describeBrowserBlock(loginBlockedBy)}. Do not open it or ask for a sign-in to it. Tell the human in chat what you could not do.`,
+        hostExit: 2,
+        hostDetail: 'blocked_domain',
+        haltRemaining: `request_login for ${loginDomain} was refused by the domain policy`,
+        ui: { summary: `Blocked: ${loginDomain}`, errorLine: `Blocked: ${loginDomain}` },
+      });
+    }
+    const login = await runRequestLoginStep(
+      chatSessionId,
+      input,
+      host,
+      opTimeoutMs,
+      policyOpts,
+      loginDeps,
+    );
+    // The human may have closed and reopened the browser while signing in.
+    const live = getBrowserSession(chatSessionId);
+    if (live) attachHost(live);
+    const landed = await leaveBlockedPage();
+    return finish(landed ? blockedPageOutcome(landed) : login);
+  }
+
+  // Runs before the op is marked in flight: an approval can wait for hours,
+  // and the human must be able to use the pane meanwhile.
+  if (domainGate && (op === 'navigate' || op === 'click' || op === 'type')) {
+    const gateUrl = op === 'navigate' ? (input.url ?? null) : currentPageUrlOf(host);
+    let gate: Awaited<ReturnType<BrowserDomainGate>>;
+    try {
+      gate = await domainGate({ op, url: gateUrl, target: input.target, text: input.text });
+    } catch (err) {
+      // Fail closed: an op the policy could not clear does not run.
+      console.warn(`[browser-policy] gate failed, refusing ${op}: ${String(err)}`);
+      gate = {
+        proceed: false,
+        markdown: `## Browser: ${op} refused\n\nThe host could not check the human's browser profile policy, so \`${op}\` was not performed. Do not retry it or reach the site another way. Tell the human in chat what you could not do.`,
+        hostDetail: 'policy_unavailable',
+        summary: 'Policy check failed',
+        halt: `browser ${op} was refused: the domain policy could not be checked`,
+      };
+    }
+    if (!gate.proceed) {
+      return finish({
+        markdown: gate.markdown,
+        hostExit: 2,
+        hostDetail: gate.hostDetail,
+        haltRemaining: gate.halt,
+        ui: { summary: gate.summary, errorLine: gate.summary },
+      });
+    }
+    if (gate.notice) {
+      // We waited on a human; the browser may have closed or moved on.
+      try {
+        attachHost(await getOrCreateBrowserSessionForChat(chatSessionId, sessionLaunchOpts));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return finish({
+          markdown: `## Browser tool error\nFailed to reopen browser session: ${msg}`,
+          hostExit: 1,
+          hostDetail: 'launch_failed',
+          ui: { summary: 'Browser failed to start', errorLine: msg },
+        });
+      }
+      // The approval was for this exact page. Another page on the same site
+      // (order 2 instead of order 1) is a different action.
+      const nowUrl = currentPageUrlOf(host);
+      if (op !== 'navigate' && nowUrl !== gateUrl) {
+        return finish({
+          markdown: `## Browser: ${op} not performed\n\nThe human approved \`${op}\` on ${gateUrl ?? 'the page'}, but the page is now ${nowUrl ?? 'closed'}. Nothing was done. Look at the page again; acting on it needs a fresh approval.`,
+          hostExit: 1,
+          hostDetail: 'page_changed_during_approval',
+          ui: { summary: 'Page changed during approval', errorLine: 'Page changed' },
+        });
+      }
+      // Re-check the policy against the page as it is now: the site may have
+      // been blocked while the approval was pending.
+      const nowBlocked = await leaveBlockedPage();
+      if (nowBlocked) return finish(blockedPageOutcome(nowBlocked));
+      gateNotice = gate.notice;
+    }
+  }
+
+  const runOp = async (): Promise<BrowserReActStepOutcome> => {
     switch (op) {
       case 'close': {
         const closed = await closeBrowserSession(chatSessionId);
         const r = result('close', true, { closed });
-        return finish({
+        return {
           markdown: fmt(r, 'Browser: close'),
           hostExit: 0,
           hostDetail: 'close',
           ui: { summary: 'Browser session closed' },
-        });
+        };
       }
       case 'navigate': {
         const r = await browserNavigate(host, input.url ?? '', opTimeoutMs, policyOpts);
         const openedHost = r.ok ? hostHintFromNavigateData(r.data) : undefined;
-        return finish({
+        return {
           markdown: fmt(r, 'Browser: navigate'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? input.url?.slice(0, 120) : r.error,
@@ -1404,11 +1548,11 @@ export async function runBrowserReActStep(
                 errorLine: r.error,
                 targetSummary: input.url?.slice(0, 220),
               },
-        });
+        };
       }
       case 'click': {
         const r = await browserClick(host, input.target ?? '');
-        return finish({
+        return {
           markdown: fmt(r, 'Browser: click'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { method?: string })?.method : r.error,
@@ -1419,11 +1563,11 @@ export async function runBrowserReActStep(
                 errorLine: r.error,
                 targetSummary: input.target?.slice(0, 220),
               },
-        });
+        };
       }
       case 'type': {
         const r = await browserType(host, input.target ?? '', input.text ?? '');
-        return finish({
+        return {
           markdown: fmt(r, 'Browser: type'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { method?: string })?.method : r.error,
@@ -1437,19 +1581,19 @@ export async function runBrowserReActStep(
                 errorLine: r.error,
                 targetSummary: input.target?.slice(0, 160),
               },
-        });
+        };
       }
       case 'extract': {
         const r = await browserExtract(host, input.instruction, input.schema);
         const preview = r.ok ? summarizeJsonPreview(r.data) : undefined;
-        return finish({
+        return {
           markdown: fmt(r, 'Browser: extract'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? 'extract' : r.error,
           ui: r.ok
             ? { summary: 'Extracted page data', extractPreview: preview }
             : { summary: 'Extract failed', errorLine: r.error },
-        });
+        };
       }
       case 'screenshot': {
         const r = await browserScreenshot(host);
@@ -1500,7 +1644,7 @@ export async function runBrowserReActStep(
             screenshotWsUrl = dataUrl;
           }
         }
-        return finish({
+        return {
           markdown: lines.join('\n'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? 'screenshot' : r.error,
@@ -1513,11 +1657,11 @@ export async function runBrowserReActStep(
                 screenshotCaptured: Boolean(imageBase64),
               }
             : { summary: 'Screenshot failed', errorLine: r.error },
-        });
+        };
       }
       case 'scroll': {
         const r = await browserScroll(host, input.direction ?? '');
-        return finish({
+        return {
           markdown: fmt(r, 'Browser: scroll'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? input.direction : r.error,
@@ -1527,54 +1671,54 @@ export async function runBrowserReActStep(
                 targetSummary: input.direction,
               }
             : { summary: 'Scroll failed', errorLine: r.error },
-        });
+        };
       }
       case 'back': {
         const r = await browserBack(host, opTimeoutMs, policyOpts);
         const openedHost = r.ok ? hostHintFromNavigateData(r.data) : undefined;
-        return finish({
+        return {
           markdown: fmt(r, 'Browser: back'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { url?: string } | undefined)?.url : r.error,
           ui: r.ok
             ? { summary: openedHost ? `Back · ${openedHost}` : 'Navigated back' }
             : { summary: 'Back navigation failed', errorLine: r.error },
-        });
+        };
       }
       case 'forward': {
         const r = await browserForward(host, opTimeoutMs, policyOpts);
         const openedHost = r.ok ? hostHintFromNavigateData(r.data) : undefined;
-        return finish({
+        return {
           markdown: fmt(r, 'Browser: forward'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { url?: string } | undefined)?.url : r.error,
           ui: r.ok
             ? { summary: openedHost ? `Forward · ${openedHost}` : 'Navigated forward' }
             : { summary: 'Forward navigation failed', errorLine: r.error },
-        });
+        };
       }
       case 'wait': {
         const r = await browserWaitFixed(host, input.condition ?? '', opTimeoutMs);
-        return finish({
+        return {
           markdown: fmt(r, 'Browser: wait'),
           hostExit: r.ok ? 0 : 1,
           hostDetail: r.ok ? (r.data as { kind?: string } | undefined)?.kind : r.error,
           ui: r.ok
             ? { summary: `Wait finished (${input.condition ?? ''})`.slice(0, 220) }
             : { summary: 'Wait timed out', errorLine: r.error },
-        });
+        };
       }
       case 'read_page': {
         const r = await browserReadPage(host);
         const body = r.data as { text?: string } | undefined;
         const pageText = body?.text ?? '';
         if (!r.ok) {
-          return finish({
+          return {
             markdown: fmt(r, 'Browser: read_page'),
             hostExit: 1,
             hostDetail: r.error,
             ui: { summary: 'Read page failed', errorLine: r.error },
-          });
+          };
         }
         const maxShow = 24_000;
         const fullLen = pageText.length;
@@ -1596,7 +1740,7 @@ export async function runBrowserReActStep(
           ...surfaceObservationLines('web', currentPageUrlOf(host)),
         ];
         const preview = snippet.length <= 520 ? snippet : `${snippet.slice(0, 519)}…`;
-        return finish({
+        return {
           markdown: lines.join('\n'),
           hostExit: 0,
           hostDetail: `chars:${fullLen}`,
@@ -1604,26 +1748,41 @@ export async function runBrowserReActStep(
             summary: `Read ${fullLen.toLocaleString()} characters from page`,
             extractPreview: preview,
           },
-        });
+        };
       }
       default: {
-        return finish({
+        return {
           markdown: `## Browser tool error\nUnsupported op`,
           hostExit: 1,
           hostDetail: 'bad_op',
           ui: { summary: 'Unsupported browser op', errorLine: 'bad_op' },
-        });
+        };
       }
     }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return finish({
-      markdown: `## Browser tool error\n${msg}`,
-      hostExit: 1,
-      hostDetail: 'threw',
-      ui: { summary: 'Browser threw an error', errorLine: msg },
-    });
+  };
+
+  incrementBrowserToolOpEntered(chatSessionId);
+  let outcome: BrowserReActStepOutcome;
+  try {
+    try {
+      outcome = await runOp();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      outcome = {
+        markdown: `## Browser tool error\n${msg}`,
+        hostExit: 1,
+        hostDetail: 'threw',
+        ui: { summary: 'Browser threw an error', errorLine: msg },
+      };
+    }
+    // Catches what the request-time deny cannot: bfcache history moves, and
+    // contexts where the Fetch guard is not installed.
+    if (op !== 'close') {
+      const landed = await leaveBlockedPage();
+      if (landed) outcome = blockedPageOutcome(landed);
+    }
   } finally {
     notifyBrowserToolOpEnded(chatSessionId);
   }
+  return finish(outcome);
 }

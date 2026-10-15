@@ -138,4 +138,44 @@ describe('installContextFetchGuard', () => {
     expect(session.off).toHaveBeenCalledWith('Fetch.requestPaused', expect.any(Function));
     expect(getContextFetchGuard(context)).toBeUndefined();
   });
+
+  it('keeps standing document denies in force while a navigate policy is swapped in', async () => {
+    const { session, send, handlers } = makeCdpSession();
+    const guard = await installContextFetchGuard({}, session, { blockAdsTrackers: false });
+    const h = handlers.get('Fetch.requestPaused')!;
+    const remove = guard.addDocumentDeny((url) => new URL(url).hostname.endsWith('bank.com'));
+    const restore = guard.setDocumentPolicy(() => true);
+
+    // A redirect hop or link click onto the blocked site fails before egress.
+    h({ requestId: 'r1', resourceType: 'Document', request: { url: 'https://www.bank.com/' } });
+    expect(send).toHaveBeenCalledWith('Fetch.failRequest', {
+      requestId: 'r1',
+      errorReason: 'BlockedByClient',
+    });
+    // Subresources are not documents and pass.
+    h({ requestId: 'r2', resourceType: 'Image', request: { url: 'https://bank.com/a.png' } });
+    expect(send).toHaveBeenCalledWith('Fetch.continueRequest', { requestId: 'r2' });
+
+    restore();
+    remove();
+    h({ requestId: 'r3', resourceType: 'Document', request: { url: 'https://bank.com/' } });
+    expect(send).toHaveBeenCalledWith('Fetch.continueRequest', { requestId: 'r3' });
+  });
+
+  it('fails closed when a deny check throws', async () => {
+    const { session, send, handlers } = makeCdpSession();
+    const guard = await installContextFetchGuard({}, session, { blockAdsTrackers: false });
+    guard.addDocumentDeny(() => {
+      throw new Error('db gone');
+    });
+    handlers.get('Fetch.requestPaused')!({
+      requestId: 'x',
+      resourceType: 'Document',
+      request: { url: 'https://example.com/' },
+    });
+    expect(send).toHaveBeenCalledWith('Fetch.failRequest', {
+      requestId: 'x',
+      errorReason: 'BlockedByClient',
+    });
+  });
 });

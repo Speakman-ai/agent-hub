@@ -8,6 +8,8 @@ import { api, type BrowserProfileWire } from '../utils/api';
     getMyBrowserProfiles: vi.fn(),
     clearBrowserProfileDomain: vi.fn(),
     deleteBrowserProfile: vi.fn(),
+    setBrowserDomainPolicy: vi.fn(),
+    deleteBrowserDomainPolicy: vi.fn(),
   },
 }));
 
@@ -21,6 +23,7 @@ function profile(over: Partial<BrowserProfileWire> = {}): BrowserProfileWire {
     projectId: 'proj-1',
     projectName: 'Project One',
     domains: ['github.com', 'google.com'],
+    domainPolicies: [],
     hasState: true,
     inUse: false,
     lastUsedAt: '2026-10-15 12:00:00',
@@ -116,5 +119,56 @@ describe('BrowserProfilesSection', () => {
     expect(formatLastUsed('2026-10-15 12:00:00')).toBe(
       new Date('2026-10-15T12:00:00Z').toLocaleString(),
     );
+  });
+
+  describe('site policies', () => {
+    it('adds a policy from typed input, normalizing the domain', async () => {
+      mocked.getMyBrowserProfiles.mockResolvedValue({ profiles: [profile()] });
+      mocked.setBrowserDomainPolicy.mockResolvedValue(
+        profile({ domainPolicies: [{ domain: 'bank.com', policy: 'block' }] }),
+      );
+      render(<BrowserProfilesSection />);
+      fireEvent.change(await screen.findByLabelText('New site policy domain for Agent A'), {
+        target: { value: 'https://Bank.com/login' },
+      });
+      fireEvent.change(screen.getByLabelText('New site policy'), { target: { value: 'block' } });
+      fireEvent.click(screen.getByText('Add'));
+      await waitFor(() =>
+        expect(mocked.setBrowserDomainPolicy).toHaveBeenCalledWith('p1', 'bank.com', 'block'),
+      );
+      expect(
+        ((await screen.findByLabelText('Policy for bank.com')) as HTMLSelectElement).value,
+      ).toBe('block');
+    });
+
+    it('refuses input that is not a site', async () => {
+      mocked.getMyBrowserProfiles.mockResolvedValue({ profiles: [profile()] });
+      render(<BrowserProfilesSection />);
+      fireEvent.change(await screen.findByLabelText('New site policy domain for Agent A'), {
+        target: { value: 'localhost' },
+      });
+      fireEvent.click(screen.getByText('Add'));
+      expect(await screen.findByText('Enter a site such as example.com')).toBeTruthy();
+      expect(mocked.setBrowserDomainPolicy).not.toHaveBeenCalled();
+    });
+
+    it('changes and removes an existing policy', async () => {
+      const withAsk = profile({ domainPolicies: [{ domain: 'shop.com', policy: 'ask' }] });
+      mocked.getMyBrowserProfiles.mockResolvedValue({ profiles: [withAsk] });
+      mocked.setBrowserDomainPolicy.mockResolvedValue(
+        profile({ domainPolicies: [{ domain: 'shop.com', policy: 'allow' }] }),
+      );
+      mocked.deleteBrowserDomainPolicy.mockResolvedValue(profile());
+      render(<BrowserProfilesSection />);
+      fireEvent.change(await screen.findByLabelText('Policy for shop.com'), {
+        target: { value: 'allow' },
+      });
+      await waitFor(() =>
+        expect(mocked.setBrowserDomainPolicy).toHaveBeenCalledWith('p1', 'shop.com', 'allow'),
+      );
+      fireEvent.click(await screen.findByLabelText('Remove policy for shop.com'));
+      await waitFor(() => expect(screen.queryByLabelText('Policy for shop.com')).toBeNull());
+      expect(mocked.deleteBrowserDomainPolicy).toHaveBeenCalledWith('p1', 'shop.com');
+    });
   });
 });

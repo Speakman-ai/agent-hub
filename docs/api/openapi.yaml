@@ -11768,6 +11768,21 @@ components:
       required:
         - error
       description: Error envelope.
+    BrowserDomainPolicy:
+      type: object
+      properties:
+        domain:
+          type: string
+        policy:
+          type: string
+          enum:
+            - allow
+            - ask
+            - block
+      required:
+        - domain
+        - policy
+      description: "What the host does when the agent acts on this site and its subdomains: `allow` runs ops, `ask` raises an approval before click / type, `block` stops the agent browser loading the site (explicit navigation, redirects, link clicks, history) and refuses every op on a page that reaches it. The most specific domain wins; sites with no entry are `allow`."
     BrowserProfileSummary:
       type: object
       properties:
@@ -11788,6 +11803,11 @@ components:
           items:
             type: string
           description: Hostnames with saved sign-in state.
+        domainPolicies:
+          type: array
+          items:
+            $ref: "#/components/schemas/BrowserDomainPolicy"
+          description: Site policies applied to agent browser ops, sorted by domain.
         hasState:
           type: boolean
         inUse:
@@ -11808,6 +11828,7 @@ components:
         - projectId
         - projectName
         - domains
+        - domainPolicies
         - hasState
         - inUse
         - lastUsedAt
@@ -18548,6 +18569,71 @@ paths:
                 $ref: "#/components/schemas/ApprovalErrorResponse"
         "403":
           description: Called with agent credentials (global API key, spawn key, or X-Agent-Hub-Session-Id). Only people answer approvals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+    post:
+      tags:
+        - Approvals
+      summary: Save an approval rule on one of the caller browser profiles
+      description: 'A `require` rule makes the matching action ask every time, beating any always-allow rule and an `allow` domain policy. It also covers subdomains, and `action: "*"` matches every action. `allow` rules match the exact host and action. Idempotent: saving an existing rule returns it.'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                profileId:
+                  type: string
+                domain:
+                  type: string
+                  description: Hostname or URL; reduced to the host.
+                action:
+                  type: string
+                  description: Verb such as `click`, `type`, `send`, or `*` (require only).
+                effect:
+                  type: string
+                  enum:
+                    - allow
+                    - require
+                  description: Default `require`.
+              required:
+                - profileId
+                - domain
+                - action
+      responses:
+        "201":
+          description: The saved rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rule:
+                    $ref: "#/components/schemas/ApprovalRule"
+                required:
+                  - rule
+        "400":
+          description: Bad effect, domain or action.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "403":
+          description: Called with agent credentials (global API key, spawn key, or X-Agent-Hub-Session-Id). Only people answer approvals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "404":
+          description: No browser profile with this id belongs to the caller.
           content:
             application/json:
               schema:
@@ -42923,6 +43009,7 @@ paths:
       tags:
         - Browser Profiles
       summary: Delete one of the caller profiles and everything it saved
+      description: Also removes the profile site policies and approval rules, so agent credentials are refused.
       parameters:
         - schema:
             type: string
@@ -42949,8 +43036,115 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BrowserProfileErrorResponse"
+        "403":
+          description: Called with agent credentials. Only people delete browser profiles.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
         "404":
           description: No profile with this id belongs to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+  /api/me/browser-profiles/{profileId}/domain-policies/{domain}:
+    put:
+      tags:
+        - Browser Profiles
+      summary: Set the site policy for a domain on one of the caller profiles
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: profileId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: domain
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                policy:
+                  type: string
+                  enum:
+                    - allow
+                    - ask
+                    - block
+              required:
+                - policy
+      responses:
+        "200":
+          description: Profile after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileSummary"
+        "400":
+          description: Bad policy or domain.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+        "403":
+          description: Called with agent credentials. Only people change site policies.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+        "404":
+          description: No profile with this id belongs to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+    delete:
+      tags:
+        - Browser Profiles
+      summary: Remove the site policy for a domain (back to allow)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: profileId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: domain
+          in: path
+      responses:
+        "200":
+          description: Profile after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileSummary"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+        "403":
+          description: Called with agent credentials. Only people change site policies.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+        "404":
+          description: Profile not found for the caller, or no policy for this domain.
           content:
             application/json:
               schema:

@@ -325,6 +325,7 @@ import {
 } from './browser-tools.js';
 import { browserLoginHandoffDeps } from './browser-login-broadcast.js';
 import { approvalGranted, runApprovalReActStep } from './approval-requests.js';
+import { createBrowserDomainGate } from './browser-domain-policy.js';
 import {
   runPreviewReActStep,
   resolvePreviewReactRuntime,
@@ -1095,7 +1096,7 @@ ${skillsList.join('\n')}`;
       ? '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."},{"tool":"browser","op":"navigate","url":"https://example.com"}]}'
       : '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."}]}';
     const browserToolLines = browserToolsOn
-      ? `- \`browser\` — host Chromium via Playwright (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — CSS/XPath preferred; natural-language labels use Playwright getByText), \`extract\` (page text snapshot — you parse it; optional \`instruction\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`, \`request_login\` (\`domain\`, optional \`reason\`: hands the page to the human for a password, 2FA, CAPTCHA or payment step and pauses the turn until they click Done or Cancel; never ask for those in chat). \`screenshot\` writes the image to a file and returns its absolute path — open that path with your file-reading tool if you can view images; the observation also includes visible page text. Requires Playwright Chromium on the server.
+      ? `- \`browser\` — host Chromium via Playwright (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — CSS/XPath preferred; natural-language labels use Playwright getByText), \`extract\` (page text snapshot — you parse it; optional \`instruction\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`, \`request_login\` (\`domain\`, optional \`reason\`: hands the page to the human for a password, 2FA, CAPTCHA or payment step and pauses the turn until they click Done or Cancel; never ask for those in chat). The human's site policy can block a site or pause a \`click\` / \`type\` until they approve it; a refused op says so, and you must not work around it. \`screenshot\` writes the image to a file and returns its absolute path — open that path with your file-reading tool if you can view images; the observation also includes visible page text. Requires Playwright Chromium on the server.
 - **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.`
       : `- **Browser tools** are turned off for this agent (project default or \`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them. Preview screenshot/navigate (below) still work when a dev server is configured.`;
     const previewToolLines = previewEnabledForPrompt
@@ -6330,6 +6331,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                       sessionName: session!.name ?? null,
                       ownerUserId: session!.owner_user_id ?? null,
                     }),
+                    createBrowserDomainGate(
+                      {
+                        sessionId,
+                        ownerUserId: session!.owner_user_id ?? null,
+                        agentId: agent.id,
+                        agentName: agent.name,
+                        projectId: project?.id ?? null,
+                        sessionName: session!.name ?? null,
+                      },
+                      { broadcast, isCancelled: () => isReactChainCancelRequested(sessionId) },
+                    ),
                   );
                 } catch (err: unknown) {
                   emitBrowserActivityEvent(
@@ -6370,6 +6382,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     `- browser(${action.op}) host step finished (exit ${b.hostExit}).`,
                   );
                 }
+                if (b.haltRemaining) haltRemainingActions = b.haltRemaining;
                 hostExit = b.hostExit;
                 hostDetail = b.hostDetail || action.op;
                 continue;

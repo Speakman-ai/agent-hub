@@ -30,11 +30,12 @@ const { default: createMeBrowserProfilesRoutes } = await import('./me-browser-pr
 
 const SECRET = 'cookie-value-must-not-leak';
 
-function makeApp(userId: string | null) {
+function makeApp(userId: string | null, opts: { viaApiKey?: boolean } = {}) {
   const app = express();
   app.use(express.json());
   app.use((req: Request, _res: Response, next: NextFunction) => {
     if (userId) (req as unknown as { authUserId?: string }).authUserId = userId;
+    if (opts.viaApiKey) (req as unknown as { authViaApiKey?: boolean }).authViaApiKey = true;
     next();
   });
   const deps = {
@@ -141,9 +142,72 @@ describe('/api/me/browser-profiles', () => {
     expect(store.getBrowserProfileForUser(alice, p.id)?.domains).toContain('github.com');
   });
 
+  it('refuses profile deletion by agent callers and keeps its site policies', async () => {
+    const p = seed(alice);
+    const { setBrowserDomainPolicy, listBrowserDomainPolicies } =
+      await import('../browser-domain-policy.js');
+    setBrowserDomainPolicy(p.id, 'bank.com', 'block');
+    await request(makeApp(alice, { viaApiKey: true }))
+      .delete(`/api/me/browser-profiles/${p.id}`)
+      .expect(403);
+    expect(store.getBrowserProfileForUser(alice, p.id)).not.toBeNull();
+    expect(listBrowserDomainPolicies(p.id)).toEqual([
+      expect.objectContaining({ domain: 'bank.com', policy: 'block' }),
+    ]);
+  });
+
+  it('refuses profile deletion via the session header the agent wrappers send', async () => {
+    const p = seed(alice);
+    await request(makeApp(alice))
+      .delete(`/api/me/browser-profiles/${p.id}`)
+      .set('X-Agent-Hub-Session-Id', 'sess-1')
+      .expect(403);
+    expect(store.getBrowserProfileForUser(alice, p.id)).not.toBeNull();
+  });
+
   it('deletes a profile', async () => {
     const p = seed(alice);
     await request(makeApp(alice)).delete(`/api/me/browser-profiles/${p.id}`).expect(200);
     expect(store.listBrowserProfilesForUser(alice)).toEqual([]);
+  });
+
+  describe('domain policies', () => {
+    const url = (id: string, domain: string) =>
+      `/api/me/browser-profiles/${id}/domain-policies/${domain}`;
+
+    it('sets, lists, changes and removes a policy', async () => {
+      const p = seed(alice);
+      const app = makeApp(alice);
+      const set = await request(app).put(url(p.id, 'Bank.com')).send({ policy: 'ask' }).expect(200);
+      expect(set.body.domainPolicies).toEqual([{ domain: 'bank.com', policy: 'ask' }]);
+      await request(app).put(url(p.id, 'bank.com')).send({ policy: 'block' }).expect(200);
+      const list = await request(app).get('/api/me/browser-profiles').expect(200);
+      expect(list.body.profiles[0].domainPolicies).toEqual([
+        { domain: 'bank.com', policy: 'block' },
+      ]);
+      const del = await request(app).delete(url(p.id, 'bank.com')).expect(200);
+      expect(del.body.domainPolicies).toEqual([]);
+      await request(app).delete(url(p.id, 'bank.com')).expect(404);
+    });
+
+    it('rejects a bad policy or domain', async () => {
+      const p = seed(alice);
+      const app = makeApp(alice);
+      await request(app).put(url(p.id, 'bank.com')).send({ policy: 'maybe' }).expect(400);
+      await request(app).put(url(p.id, 'localhost')).send({ policy: 'ask' }).expect(400);
+    });
+
+    it("cannot touch another user's profile", async () => {
+      const p = seed(alice);
+      await request(makeApp(bob)).put(url(p.id, 'bank.com')).send({ policy: 'allow' }).expect(404);
+    });
+
+    it('refuses agent callers so an agent cannot loosen its own gate', async () => {
+      const p = seed(alice);
+      await request(makeApp(alice, { viaApiKey: true }))
+        .put(url(p.id, 'bank.com'))
+        .send({ policy: 'allow' })
+        .expect(403);
+    });
   });
 });

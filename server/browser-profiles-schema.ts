@@ -16,6 +16,10 @@
  *   - lease_holder / lease_expires_at: single write lease. `lease_expires_at`
  *     is epoch milliseconds so expiry compares exactly against the caller's
  *     clock. A crashed holder simply stops renewing and the lease lapses.
+ *
+ * browser_profile_domain_policies: what the host does when the agent acts on
+ * a site through this profile. A policy on `example.com` also covers its
+ * subdomains; the most specific entry wins. Sites with no entry are `allow`.
  */
 export const BROWSER_PROFILES_SCHEMA = `
   CREATE TABLE IF NOT EXISTS browser_profiles (
@@ -34,4 +38,13 @@ export const BROWSER_PROFILES_SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_browser_profiles_project_agent
     ON browser_profiles(project_id, agent_id);
+
+  CREATE TABLE IF NOT EXISTS browser_profile_domain_policies (
+    profile_id  TEXT NOT NULL REFERENCES browser_profiles(id) ON DELETE CASCADE,
+    domain      TEXT NOT NULL,
+    policy      TEXT NOT NULL CHECK (policy IN ('allow', 'ask', 'block')),
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (profile_id, domain)
+  );
 `;

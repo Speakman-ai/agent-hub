@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   groupBrowserProfilesByAgent,
+  type BrowserDomainPolicy,
   type BrowserProfileAgentGroup,
   type BrowserProfileWire,
 } from '@shared/utils/browserProfiles';
@@ -16,6 +17,13 @@ export interface UseBrowserProfiles {
   reload: () => Promise<void>;
   clearDomain: (profile: BrowserProfileWire, domain: string) => Promise<void>;
   deleteProfile: (profile: BrowserProfileWire) => Promise<void>;
+  /** Resolves true when saved. Busy key is `<profileId>:policy:<domain>`. */
+  setPolicy: (
+    profile: BrowserProfileWire,
+    domain: string,
+    policy: BrowserDomainPolicy,
+  ) => Promise<boolean>;
+  removePolicy: (profile: BrowserProfileWire, domain: string) => Promise<void>;
 }
 
 function message(err: unknown, fallback: string): string {
@@ -74,7 +82,49 @@ export function useBrowserProfiles(): UseBrowserProfiles {
     }
   }, []);
 
+  const replace = (updated: BrowserProfileWire) =>
+    setProfiles((prev) => (prev ?? []).map((p) => (p.id === updated.id ? updated : p)));
+
+  const setPolicy = useCallback(
+    async (profile: BrowserProfileWire, domain: string, policy: BrowserDomainPolicy) => {
+      setBusy(`${profile.id}:policy:${domain}`);
+      setError(null);
+      try {
+        replace(await api.setBrowserDomainPolicy(profile.id, domain, policy));
+        return true;
+      } catch (err) {
+        setError(message(err, 'Failed to save site policy'));
+        return false;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [],
+  );
+
+  const removePolicy = useCallback(async (profile: BrowserProfileWire, domain: string) => {
+    setBusy(`${profile.id}:policy:${domain}`);
+    setError(null);
+    try {
+      replace(await api.deleteBrowserDomainPolicy(profile.id, domain));
+    } catch (err) {
+      setError(message(err, 'Failed to remove site policy'));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
   const groups = useMemo(() => groupBrowserProfilesByAgent(profiles ?? []), [profiles]);
 
-  return { profiles, groups, error, busy, reload, clearDomain, deleteProfile };
+  return {
+    profiles,
+    groups,
+    error,
+    busy,
+    reload,
+    clearDomain,
+    deleteProfile,
+    setPolicy,
+    removePolicy,
+  };
 }

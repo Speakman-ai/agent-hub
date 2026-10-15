@@ -189,6 +189,50 @@ registerPath({
 });
 
 registerPath({
+  method: 'post',
+  path: '/api/me/approval-rules',
+  tags: ['Approvals'],
+  summary: 'Save an approval rule on one of the caller browser profiles',
+  description:
+    'A `require` rule makes the matching action ask every time, beating any always-allow rule and an `allow` domain policy. It also covers subdomains, and `action: "*"` matches every action. `allow` rules match the exact host and action. Idempotent: saving an existing rule returns it.',
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            profileId: z.string(),
+            domain: z.string().openapi({ description: 'Hostname or URL; reduced to the host.' }),
+            action: z.string().openapi({
+              description: 'Verb such as `click`, `type`, `send`, or `*` (require only).',
+            }),
+            effect: z
+              .enum(['allow', 'require'])
+              .optional()
+              .openapi({ description: 'Default `require`.' }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: 'The saved rule.',
+      content: { 'application/json': { schema: z.object({ rule: ApprovalRuleSchema }) } },
+    },
+    400: {
+      description: 'Bad effect, domain or action.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: unauthenticated,
+    403: agentCaller,
+    404: {
+      description: 'No browser profile with this id belongs to the caller.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
   method: 'delete',
   path: '/api/me/approval-rules/{ruleId}',
   tags: ['Approvals'],

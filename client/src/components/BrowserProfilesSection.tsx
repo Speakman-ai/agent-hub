@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, Trash2, X } from 'lucide-react';
-import { formatLastUsed, groupBrowserProfilesByAgent } from '@shared/utils/browserProfiles';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { Loader2, Plus, Trash2, X } from 'lucide-react';
+import {
+  BROWSER_DOMAIN_POLICY_OPTIONS,
+  formatLastUsed,
+  groupBrowserProfilesByAgent,
+  normalizePolicyDomainInput,
+  type BrowserDomainPolicy,
+} from '@shared/utils/browserProfiles';
 import { api, type BrowserProfileWire } from '../utils/api';
 
 export { formatLastUsed };
@@ -42,6 +48,40 @@ export default function BrowserProfilesSection() {
       setProfiles((prev) => (prev ?? []).map((p) => (p.id === updated.id ? updated : p)));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to clear domain');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function replaceProfile(updated: BrowserProfileWire) {
+    setProfiles((prev) => (prev ?? []).map((p) => (p.id === updated.id ? updated : p)));
+  }
+
+  async function setPolicy(
+    profile: BrowserProfileWire,
+    domain: string,
+    policy: BrowserDomainPolicy,
+  ): Promise<boolean> {
+    setBusy(`${profile.id}:policy:${domain}`);
+    setError(null);
+    try {
+      replaceProfile(await api.setBrowserDomainPolicy(profile.id, domain, policy));
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save site policy');
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removePolicy(profile: BrowserProfileWire, domain: string) {
+    setBusy(`${profile.id}:policy:${domain}`);
+    setError(null);
+    try {
+      replaceProfile(await api.deleteBrowserDomainPolicy(profile.id, domain));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove site policy');
     } finally {
       setBusy(null);
     }
@@ -172,11 +212,120 @@ export default function BrowserProfilesSection() {
                     ))}
                   </ul>
                 )}
+                <SitePolicies
+                  profile={profile}
+                  busy={busy}
+                  onSet={(domain, policy) => setPolicy(profile, domain, policy)}
+                  onRemove={(domain) => removePolicy(profile, domain)}
+                />
               </li>
             ))}
           </ul>
         </section>
       ))}
+    </div>
+  );
+}
+
+interface SitePoliciesProps {
+  profile: BrowserProfileWire;
+  busy: string | null;
+  onSet: (domain: string, policy: BrowserDomainPolicy) => Promise<boolean>;
+  onRemove: (domain: string) => void;
+}
+
+/** Per-profile allow / ask / block list the host enforces on agent browser ops. */
+function SitePolicies({ profile, busy, onSet, onRemove }: SitePoliciesProps) {
+  const [draftDomain, setDraftDomain] = useState('');
+  const [draftPolicy, setDraftPolicy] = useState<BrowserDomainPolicy>('ask');
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const policies = profile.domainPolicies ?? [];
+
+  async function add(e: FormEvent) {
+    e.preventDefault();
+    const domain = normalizePolicyDomainInput(draftDomain);
+    if (!domain) {
+      setDraftError('Enter a site such as example.com');
+      return;
+    }
+    setDraftError(null);
+    if (await onSet(domain, draftPolicy)) setDraftDomain('');
+  }
+
+  return (
+    <div className="space-y-2 pt-1" data-testid={`browser-profile-policies-${profile.id}`}>
+      <div className="text-xs font-medium text-gray-300">Site policies</div>
+      <p className="text-xs text-gray-500">
+        Ask first makes clicks and typing wait for your approval; Block stops the agent opening or
+        acting on the site. A policy covers subdomains. Sites not listed are allowed.
+      </p>
+      {policies.length > 0 && (
+        <ul className="space-y-1">
+          {policies.map(({ domain, policy }) => {
+            const rowBusy = busy === `${profile.id}:policy:${domain}`;
+            return (
+              <li key={domain} className="flex items-center gap-2 text-xs text-gray-300">
+                <span className="min-w-0 flex-1 truncate">{domain}</span>
+                <select
+                  value={policy}
+                  onChange={(e) => onSet(domain, e.target.value as BrowserDomainPolicy)}
+                  disabled={busy !== null}
+                  aria-label={`Policy for ${domain}`}
+                  className="rounded-md border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-200"
+                >
+                  {BROWSER_DOMAIN_POLICY_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => onRemove(domain)}
+                  disabled={busy !== null}
+                  aria-label={`Remove policy for ${domain}`}
+                  className="rounded-full p-1 text-gray-400 hover:bg-gray-700 hover:text-white disabled:opacity-40"
+                >
+                  {rowBusy ? <Loader2 size={11} className="animate-spin" /> : <X size={11} />}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <form onSubmit={add} className="flex items-center gap-2">
+        <input
+          value={draftDomain}
+          onChange={(e) => setDraftDomain(e.target.value)}
+          placeholder="example.com"
+          aria-label={`New site policy domain for ${profile.agentName}`}
+          className="min-w-0 flex-1 rounded-md border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-200 placeholder:text-gray-500"
+        />
+        <select
+          value={draftPolicy}
+          onChange={(e) => setDraftPolicy(e.target.value as BrowserDomainPolicy)}
+          aria-label="New site policy"
+          className="rounded-md border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-200"
+        >
+          {BROWSER_DOMAIN_POLICY_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          disabled={busy !== null || !draftDomain.trim()}
+          className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-2 py-1 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+        >
+          <Plus size={12} /> Add
+        </button>
+      </form>
+      {draftError && (
+        <p role="alert" className="text-xs text-red-300">
+          {draftError}
+        </p>
+      )}
     </div>
   );
 }

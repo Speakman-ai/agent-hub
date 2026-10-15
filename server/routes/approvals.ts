@@ -14,22 +14,28 @@ import type { AuthenticatedRequest } from '../auth.js';
 import { hasAtLeastRole } from '../roles.js';
 import { AGENT_HUB_SESSION_ID_HEADER } from '../kanban-caller-session.js';
 import {
+  ANY_APPROVAL_ACTION,
   deleteApprovalRuleForUser,
   getApprovalRequest,
   listApprovalRequestsForUser,
   listApprovalRulesForUser,
+  saveApprovalRule,
   type ApprovalRequest,
   type ApprovalStatus,
 } from '../approvals-store.js';
 import {
   answerApprovalRequest,
   isApprovalDecision,
+  normalizeApprovalAction,
   serializeApproval,
 } from '../approval-requests.js';
+import { getBrowserProfileForUser } from '../browser-profiles-store.js';
+import { normalizeBrowserLoginDomain } from '../browser-login-handoff.js';
 
 const STATUSES: readonly ApprovalStatus[] = ['pending', 'allowed', 'denied', 'cancelled'];
 
-function isAgentCaller(req: Request): boolean {
+/** Agent credentials: the global API key, a spawn key, or the wrapper's session header. */
+export function isAgentCaller(req: Request): boolean {
   const r = req as AuthenticatedRequest;
   return !!(r.authViaApiKey || r.authSpawnSessionId || req.get(AGENT_HUB_SESSION_ID_HEADER));
 }
@@ -117,6 +123,39 @@ export default function createApprovalsRoutes(): Router {
     const userId = human(req, res);
     if (!userId) return;
     res.json({ rules: listApprovalRulesForUser(userId) });
+  });
+
+  router.post('/api/me/approval-rules', (req: Request, res: Response) => {
+    const userId = human(req, res);
+    if (!userId) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const effect = body.effect ?? 'require';
+    if (effect !== 'allow' && effect !== 'require') {
+      res.status(400).json({ error: 'effect must be allow or require' });
+      return;
+    }
+    const domain = normalizeBrowserLoginDomain(body.domain);
+    if (!domain) {
+      res.status(400).json({ error: 'domain must be a hostname such as example.com' });
+      return;
+    }
+    const action =
+      body.action === ANY_APPROVAL_ACTION
+        ? ANY_APPROVAL_ACTION
+        : normalizeApprovalAction(body.action);
+    if (!action || (action === ANY_APPROVAL_ACTION && effect !== 'require')) {
+      res.status(400).json({
+        error: 'action must be a verb such as click, type or send ("*" only for require rules)',
+      });
+      return;
+    }
+    const profile = getBrowserProfileForUser(userId, String(body.profileId ?? ''));
+    if (!profile) {
+      res.status(404).json({ error: 'Browser profile not found' });
+      return;
+    }
+    const rule = saveApprovalRule({ profileId: profile.id, userId, domain, action, effect });
+    res.status(201).json({ rule });
   });
 
   router.delete('/api/me/approval-rules/:ruleId', (req: Request, res: Response) => {

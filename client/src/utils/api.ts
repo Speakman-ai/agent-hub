@@ -8,7 +8,7 @@ import type { ApiErrorBody, AgentWire, MessageWire, ProjectWire, SessionWire } f
 import type { DeployTriggerEvent } from './deployTriggers';
 import type { InfraServicePackWire } from '@shared/utils/infraPacks';
 import type { InfraSpendTrendWire } from '@shared/utils/infraSpend';
-import type { BrowserProfileWire } from '@shared/utils/browserProfiles';
+import type { BrowserDomainPolicy, BrowserProfileWire } from '@shared/utils/browserProfiles';
 import type { ApprovalDecision, ApprovalRuleWire, ApprovalWire } from '@shared/utils/approvals';
 import type { InfraFleetWire } from '@shared/utils/infraFleet';
 import type { InboxNotification } from './notificationTarget';
@@ -1100,6 +1100,16 @@ export const api = {
     fetchJSON<{ ok: true }>(`/me/approval-rules/${encodeURIComponent(ruleId)}`, {
       method: 'DELETE',
     }),
+  setBrowserDomainPolicy: (profileId: string, domain: string, policy: BrowserDomainPolicy) =>
+    fetchJSON<BrowserProfileWire>(
+      `/me/browser-profiles/${encodeURIComponent(profileId)}/domain-policies/${encodeURIComponent(domain)}`,
+      { method: 'PUT', body: JSON.stringify({ policy }) },
+    ),
+  deleteBrowserDomainPolicy: (profileId: string, domain: string) =>
+    fetchJSON<BrowserProfileWire>(
+      `/me/browser-profiles/${encodeURIComponent(profileId)}/domain-policies/${encodeURIComponent(domain)}`,
+      { method: 'DELETE' },
+    ),
   /** Persistent Hub assistant session for the signed-in user (get-or-create). */
   getHubSession: () =>
     fetchJSON<{ session: Record<string, unknown>; agent: Record<string, unknown> }>(

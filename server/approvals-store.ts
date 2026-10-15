@@ -236,24 +236,40 @@ export function cancelOrphanedApprovalRequests(now: number = Date.now()): number
     .run(now).changes;
 }
 
+/** Rule action that matches every action. Only `require` rules may use it. */
+export const ANY_APPROVAL_ACTION = '*';
+
+/** `host` is `domain` or one of its subdomains. */
+export function hostWithinDomain(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
 /**
- * The rule that decides a (profile, domain, action) request. A `require` rule
- * beats any `allow` rule. Domain and action match exactly.
+ * The rule that decides a (profile, domain, action) request. A `require`
+ * rule beats any `allow` rule. `require` rules also cover subdomains and may
+ * name `*` for every action; `allow` rules match the domain and action
+ * exactly, so a remembered "yes" never spreads further than what was asked.
  */
 export function findApprovalRule(key: {
   profileId: string;
   domain: string;
   action: string;
 }): ApprovalRule | null {
-  const row = getOrgsDb()
+  const rows = getOrgsDb()
     .prepare(
       `SELECT * FROM approval_rules
-        WHERE profile_id = ? AND domain = ? AND action = ?
-        ORDER BY CASE effect WHEN 'require' THEN 0 ELSE 1 END, created_at
-        LIMIT 1`,
+        WHERE profile_id = ? AND (action = ? OR action = ?)
+        ORDER BY created_at`,
     )
-    .get(key.profileId, key.domain, key.action) as RuleRow | undefined;
-  return row ? toRule(row) : null;
+    .all(key.profileId, key.action, ANY_APPROVAL_ACTION) as RuleRow[];
+  const require = rows.find(
+    (r) => r.effect === 'require' && hostWithinDomain(key.domain, r.domain),
+  );
+  if (require) return toRule(require);
+  const allow = rows.find(
+    (r) => r.effect === 'allow' && r.domain === key.domain && r.action === key.action,
+  );
+  return allow ? toRule(allow) : null;
 }
 
 export function saveApprovalRule(input: {

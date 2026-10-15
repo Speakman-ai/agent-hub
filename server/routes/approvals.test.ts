@@ -198,3 +198,63 @@ describe('/api/me/approvals', () => {
     expect((await done).hostDetail).toBe('allow_once');
   });
 });
+
+describe('POST /api/me/approval-rules', () => {
+  async function profileFor(userId: string) {
+    const profiles = await import('../browser-profiles-store.js');
+    return profiles.getOrCreateBrowserProfile({ userId, agentId: 'agent-a', projectId: 'proj-1' });
+  }
+
+  it('saves a require rule (the default effect) that beats always-allow', async () => {
+    const p = await profileFor(alice);
+    store.saveApprovalRule({
+      profileId: p.id,
+      userId: alice,
+      domain: 'shop.com',
+      action: 'click',
+      effect: 'allow',
+    });
+    const res = await request(makeApp({ userId: alice }))
+      .post('/api/me/approval-rules')
+      .send({ profileId: p.id, domain: 'https://Shop.com/cart', action: 'click' })
+      .expect(201);
+    expect(res.body.rule).toMatchObject({ domain: 'shop.com', action: 'click', effect: 'require' });
+    expect(
+      store.findApprovalRule({ profileId: p.id, domain: 'shop.com', action: 'click' }),
+    ).toMatchObject({ effect: 'require' });
+  });
+
+  it('accepts "*" only for require rules', async () => {
+    const p = await profileFor(alice);
+    const app = makeApp({ userId: alice });
+    await request(app)
+      .post('/api/me/approval-rules')
+      .send({ profileId: p.id, domain: 'bank.com', action: '*', effect: 'allow' })
+      .expect(400);
+    await request(app)
+      .post('/api/me/approval-rules')
+      .send({ profileId: p.id, domain: 'bank.com', action: '*' })
+      .expect(201);
+  });
+
+  it("rejects bad input, other users' profiles and agent callers", async () => {
+    const p = await profileFor(alice);
+    const body = { profileId: p.id, domain: 'bank.com', action: 'click' };
+    await request(makeApp({ userId: alice }))
+      .post('/api/me/approval-rules')
+      .send({ ...body, effect: 'nope' })
+      .expect(400);
+    await request(makeApp({ userId: alice }))
+      .post('/api/me/approval-rules')
+      .send({ ...body, domain: '' })
+      .expect(400);
+    await request(makeApp({ userId: bob }))
+      .post('/api/me/approval-rules')
+      .send(body)
+      .expect(404);
+    await request(makeApp({ userId: alice, viaApiKey: true }))
+      .post('/api/me/approval-rules')
+      .send(body)
+      .expect(403);
+  });
+});

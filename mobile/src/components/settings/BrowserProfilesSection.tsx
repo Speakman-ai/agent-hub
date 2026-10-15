@@ -1,6 +1,20 @@
-import React from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { formatLastUsed, type BrowserProfileWire } from '@shared/utils/browserProfiles';
+import React, { useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import {
+  BROWSER_DOMAIN_POLICY_OPTIONS,
+  formatLastUsed,
+  normalizePolicyDomainInput,
+  type BrowserDomainPolicy,
+  type BrowserProfileWire,
+} from '@shared/utils/browserProfiles';
 import { useBrowserProfiles } from '../../hooks/useBrowserProfiles';
 import { colors } from '../../theme/colors';
 
@@ -10,7 +24,8 @@ import { colors } from '../../theme/colors';
  * delete-profile actions. Backed by /api/me/browser-profiles.
  */
 export default function BrowserProfilesSection() {
-  const { profiles, groups, error, busy, clearDomain, deleteProfile } = useBrowserProfiles();
+  const { profiles, groups, error, busy, clearDomain, deleteProfile, setPolicy, removePolicy } =
+    useBrowserProfiles();
 
   function confirmClear(profile: BrowserProfileWire, domain: string) {
     Alert.alert(
@@ -124,10 +139,148 @@ export default function BrowserProfilesSection() {
                   Close the running session browser before clearing a domain.
                 </Text>
               ) : null}
+              <SitePolicies
+                profile={profile}
+                busy={busy}
+                onSet={(domain, policy) => setPolicy(profile, domain, policy)}
+                onRemove={(domain) => removePolicy(profile, domain)}
+              />
             </View>
           ))}
         </View>
       ))}
+    </View>
+  );
+}
+
+interface SitePoliciesProps {
+  profile: BrowserProfileWire;
+  busy: string | null;
+  onSet: (domain: string, policy: BrowserDomainPolicy) => Promise<boolean>;
+  onRemove: (domain: string) => void;
+}
+
+function PolicyPicker({
+  value,
+  disabled,
+  onChange,
+  label,
+}: {
+  value: BrowserDomainPolicy;
+  disabled: boolean;
+  onChange: (p: BrowserDomainPolicy) => void;
+  label: string;
+}) {
+  return (
+    <View style={styles.segment} accessibilityLabel={label}>
+      {BROWSER_DOMAIN_POLICY_OPTIONS.map((o) => {
+        const selected = o.value === value;
+        return (
+          <TouchableOpacity
+            key={o.value}
+            onPress={() => !selected && onChange(o.value)}
+            disabled={disabled}
+            style={[
+              styles.segmentItem,
+              selected && styles.segmentSelected,
+              disabled && styles.disabled,
+            ]}
+            accessibilityRole="button"
+            accessibilityState={{ selected, disabled }}
+            accessibilityLabel={`${label}: ${o.label}`}
+          >
+            <Text style={[styles.segmentText, selected && styles.segmentTextSelected]}>
+              {o.label}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+/** Per-profile allow / ask / block list the host enforces on agent browser ops. */
+function SitePolicies({ profile, busy, onSet, onRemove }: SitePoliciesProps) {
+  const [draftDomain, setDraftDomain] = useState('');
+  const [draftPolicy, setDraftPolicy] = useState<BrowserDomainPolicy>('ask');
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const policies = profile.domainPolicies ?? [];
+
+  async function add() {
+    const domain = normalizePolicyDomainInput(draftDomain);
+    if (!domain) {
+      setDraftError('Enter a site such as example.com');
+      return;
+    }
+    setDraftError(null);
+    if (await onSet(domain, draftPolicy)) setDraftDomain('');
+  }
+
+  return (
+    <View style={styles.policies} testID={`browser-profile-policies-${profile.id}`}>
+      <Text style={styles.policiesTitle}>Site policies</Text>
+      <Text style={styles.small}>
+        Ask first makes clicks and typing wait for your approval; Block stops the agent opening or
+        acting on the site. A policy covers subdomains. Sites not listed are allowed.
+      </Text>
+      {policies.map(({ domain, policy }) => (
+        <View key={domain} style={styles.policyRow}>
+          <Text style={styles.policyDomain} numberOfLines={1}>
+            {domain}
+          </Text>
+          <PolicyPicker
+            value={policy}
+            disabled={busy !== null}
+            onChange={(p) => onSet(domain, p)}
+            label={`Policy for ${domain}`}
+          />
+          <TouchableOpacity
+            onPress={() => onRemove(domain)}
+            disabled={busy !== null}
+            style={[styles.chipClear, busy !== null && styles.disabled]}
+            accessibilityLabel={`Remove policy for ${domain}`}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            {busy === `${profile.id}:policy:${domain}` ? (
+              <ActivityIndicator size="small" color={colors.gray400} />
+            ) : (
+              <Text style={styles.chipClearText}>{'✕'}</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      ))}
+      <TextInput
+        value={draftDomain}
+        onChangeText={setDraftDomain}
+        placeholder="example.com"
+        placeholderTextColor={colors.gray500}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="url"
+        style={styles.input}
+        accessibilityLabel={`New site policy domain for ${profile.agentName}`}
+      />
+      <View style={styles.policyRow}>
+        <PolicyPicker
+          value={draftPolicy}
+          disabled={busy !== null}
+          onChange={setDraftPolicy}
+          label="New site policy"
+        />
+        <TouchableOpacity
+          style={[styles.addBtn, (busy !== null || !draftDomain.trim()) && styles.disabled]}
+          onPress={add}
+          disabled={busy !== null || !draftDomain.trim()}
+          accessibilityLabel="Add site policy"
+        >
+          <Text style={styles.addText}>Add</Text>
+        </TouchableOpacity>
+      </View>
+      {draftError ? (
+        <Text style={styles.draftError} accessibilityRole="alert">
+          {draftError}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -199,4 +352,38 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 12, color: colors.gray300 },
   chipClear: { paddingHorizontal: 4 },
   chipClearText: { fontSize: 11, color: colors.gray400 },
+  policies: { gap: 6, paddingTop: 4 },
+  policiesTitle: { fontSize: 12, fontWeight: '600', color: colors.gray300 },
+  policyRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  policyDomain: { flex: 1, fontSize: 12, color: colors.gray300 },
+  segment: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  segmentItem: { paddingHorizontal: 8, paddingVertical: 4, backgroundColor: colors.gray800 },
+  segmentSelected: { backgroundColor: colors.gray700 },
+  segmentText: { fontSize: 11, color: colors.gray400 },
+  segmentTextSelected: { color: colors.white, fontWeight: '600' },
+  input: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray800,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    fontSize: 13,
+    color: colors.gray200,
+  },
+  addBtn: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+  },
+  addText: { fontSize: 12, color: colors.gray200 },
+  draftError: { fontSize: 12, color: colors.red400 },
 });

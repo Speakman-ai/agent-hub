@@ -64,6 +64,13 @@ export interface ContextFetchGuard {
    * semantics without a second Fetch client.
    */
   setDocumentPolicy(policy: DocumentUrlPolicy | null): () => void;
+  /**
+   * Add a standing deny check for document requests (true = fail it). Unlike
+   * the single policy slot, deny checks stack and stay in force while a
+   * navigate-time policy is swapped in, so a redirect or link click cannot
+   * slip past them. Returns a remove fn.
+   */
+  addDocumentDeny(deny: DocumentUrlPolicy): () => void;
   /** Detach the sole Fetch client from the context. */
   uninstall(): Promise<void>;
 }
@@ -79,6 +86,7 @@ export function getContextFetchGuard(context: unknown): ContextFetchGuard | unde
 const NOOP_GUARD: ContextFetchGuard = {
   installed: false,
   setDocumentPolicy: () => () => {},
+  addDocumentDeny: () => () => {},
   uninstall: async () => {},
 };
 
@@ -94,6 +102,7 @@ export async function installContextFetchGuard(
   opts: { blockAdsTrackers: boolean },
 ): Promise<ContextFetchGuard> {
   let docPolicy: DocumentUrlPolicy | null = null;
+  const denies = new Set<DocumentUrlPolicy>();
 
   const fail = (requestId: string) => {
     void session
@@ -118,9 +127,23 @@ export async function installContextFetchGuard(
         // Malformed URL — fall through to the document check / continue.
       }
     }
-    if (pausedRequestResourceType(params) === 'Document' && docPolicy && !docPolicy(url)) {
-      fail(requestId);
-      return;
+    if (pausedRequestResourceType(params) === 'Document') {
+      if (docPolicy && !docPolicy(url)) {
+        fail(requestId);
+        return;
+      }
+      for (const deny of denies) {
+        let denied = true;
+        try {
+          denied = deny(url);
+        } catch {
+          // A failing check fails closed.
+        }
+        if (denied) {
+          fail(requestId);
+          return;
+        }
+      }
     }
     cont(requestId);
   };
@@ -150,6 +173,12 @@ export async function installContextFetchGuard(
       docPolicy = policy;
       return () => {
         docPolicy = prev;
+      };
+    },
+    addDocumentDeny(deny) {
+      denies.add(deny);
+      return () => {
+        denies.delete(deny);
       };
     },
     uninstall: async () => {

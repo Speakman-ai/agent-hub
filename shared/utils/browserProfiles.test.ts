@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatLastUsed,
   groupBrowserProfilesByAgent,
+  normalizePolicyDomainInput,
   parseSqliteUtc,
   type BrowserProfileWire,
 } from './browserProfiles';
@@ -14,6 +15,7 @@ function profile(id: string, agentId: string, agentName: string): BrowserProfile
     projectId: 'p',
     projectName: 'P',
     domains: [],
+    domainPolicies: [],
     hasState: true,
     inUse: false,
     lastUsedAt: null,
@@ -47,5 +49,17 @@ describe('groupBrowserProfilesByAgent', () => {
     ]);
     expect(groups.map((g) => g.agentName)).toEqual(['Alpha', 'Zed']);
     expect(groups[1].profiles.map((p) => p.id)).toEqual(['1', '3']);
+  });
+});
+
+describe('normalizePolicyDomainInput', () => {
+  it('reduces URLs and mixed case to a hostname', () => {
+    expect(normalizePolicyDomainInput(' https://Shop.Example.com/cart ')).toBe('shop.example.com');
+    expect(normalizePolicyDomainInput('bank.com')).toBe('bank.com');
+  });
+  it('rejects empty input and non-hostnames', () => {
+    expect(normalizePolicyDomainInput('')).toBeNull();
+    expect(normalizePolicyDomainInput('localhost')).toBeNull();
+    expect(normalizePolicyDomainInput('not a host')).toBeNull();
   });
 });

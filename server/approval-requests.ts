@@ -373,6 +373,16 @@ export async function runApprovalReActStep(
   }
 
   const approval = insertApprovalRequest(base);
+  return approvalObservation(await waitForAnswer(approval, ctx, deps, timeoutMs), timeoutMs);
+}
+
+/** Park until a pending request settles, broadcasting it open and closed. */
+async function waitForAnswer(
+  approval: ApprovalRequest,
+  ctx: ApprovalContext,
+  deps: ApprovalDeps,
+  timeoutMs: number,
+): Promise<Wake> {
   const settled = new Promise<Wake>((resolve) => {
     const timer = setTimeout(() => {
       const timedOut = settleApprovalRequest(approval.id, {
@@ -413,7 +423,45 @@ export async function runApprovalReActStep(
   } catch (err) {
     console.warn(`[approval] resolve broadcast failed: ${String(err)}`);
   }
-  return approvalObservation(wake, timeoutMs);
+  return wake;
+}
+
+export interface HostApprovalInput {
+  profileId: string;
+  /** Browser op being gated, e.g. `click`. */
+  action: string;
+  /** Page URL the op would act on. */
+  target: string;
+  domain: string;
+  details: string;
+}
+
+/**
+ * Raise an approval on the agent's behalf: the domain policy gate found a
+ * mutating op that needs a human's yes. Same lifecycle as an agent-declared
+ * request (notification, 24h timeout, Stop). Resolves with the settled row.
+ */
+export async function requestHostApproval(
+  input: HostApprovalInput,
+  ctx: ApprovalContext,
+  deps: ApprovalDeps = {},
+): Promise<ApprovalRequest> {
+  const now = deps.now?.() ?? Date.now();
+  const timeoutMs = Math.max(1, deps.timeoutMs ?? APPROVAL_TIMEOUT_MS);
+  const approval = insertApprovalRequest({
+    sessionId: ctx.sessionId,
+    userId: ctx.ownerUserId,
+    agentId: ctx.agentId,
+    projectId: ctx.projectId,
+    profileId: input.profileId,
+    action: input.action,
+    target: input.target.slice(0, APPROVAL_TARGET_MAX_CHARS),
+    domain: input.domain,
+    details: input.details.slice(0, APPROVAL_DETAILS_MAX_CHARS),
+    requestedAt: now,
+    expiresAt: now + timeoutMs,
+  });
+  return (await waitForAnswer(approval, ctx, deps, timeoutMs)).approval;
 }
 
 /** Test-only. */
