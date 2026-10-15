@@ -17,6 +17,7 @@ import CronSchedulePicker from './CronSchedulePicker';
 import AgentAvatar from './AgentAvatar';
 import AccountSection, { OrganizationSection } from './AccountSection';
 import JobQueueSection from './JobQueueSection';
+import NotificationPreferencesSection from './NotificationPreferencesSection';
 import GithubConnectionSection from './GithubConnectionSection';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection';
 import GithubAppConfigSection from './GithubAppConfigSection';
@@ -128,6 +129,7 @@ import {
   Package,
   ClipboardCheck,
   Users,
+  Bell,
 } from 'lucide-react';
 
 /** Grid of Lucide icon chips used as quick-pick agent avatars. */
@@ -5474,6 +5476,7 @@ function ServerLogsSection({ wsRef }: any) {
 const SETTINGS_TABS = [
   { id: 'general', iconName: 'Settings', text: 'General' },
   { id: 'account', iconName: 'UserCircle', text: 'Account' },
+  { id: 'notifications', iconName: 'Bell', text: 'Notifications' },
   { id: 'organization', iconName: 'Users', text: 'Organization' },
   { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
   // Host-wide Gemini API key (used for wiki embeddings; managed in
@@ -5511,6 +5514,7 @@ const SETTINGS_ICONS = {
   Plug,
   Monitor,
   ClipboardCheck,
+  Bell,
 } as Record<string, any>;
 
 function SettingsNavItem({ tab, active, onSelect }: any) {
@@ -5749,6 +5753,7 @@ export default function SettingsPage({
             <SettingsErrorBoundary key={tab}>
               {tab === 'general' && <GeneralSection desktopUpdate={desktopUpdate} />}
               {tab === 'account' && <AccountSection />}
+              {tab === 'notifications' && <NotificationPreferencesSection />}
               {tab === 'organization' && isAdminPlus && <OrganizationSection />}
               {tab === 'claude-auth' && isAdminPlus && <GeminiAuthSection />}
               {tab === 'global-skills' && (

@@ -42,6 +42,31 @@ interface UpdateDeployScheduleBody {
   meta?: unknown;
 }
 
+type NotificationChannelKey = 'in_app' | 'desktop' | 'push';
+
+export interface NotificationCategoryPrefsWire {
+  category: string;
+  section: string;
+  label: string;
+  description: string;
+  in_app: boolean;
+  desktop: boolean;
+  push: boolean;
+  defaults: Record<NotificationChannelKey, boolean>;
+  isDefault: boolean;
+}
+
+export interface NotificationPreferencesWire {
+  channels: NotificationChannelKey[];
+  sections: { id: string; label: string; categories: string[] }[];
+  categories: NotificationCategoryPrefsWire[];
+}
+
+export type NotificationPreferencesPatch = Record<
+  string,
+  Partial<Record<NotificationChannelKey, boolean>>
+>;
+
 interface UpdateNotificationRoutingBody {
   ticketReleaseEnabled?: boolean;
   releaseDigestEnabled?: boolean;
@@ -1056,6 +1081,13 @@ export const api = {
     return fetchJSON<MeDashboardWire>(`/me/dashboard${qs ? `?${qs}` : ''}`);
   },
   getMyWork: () => fetchJSON<DashboardWorkWire>('/me/work'),
+  getNotificationPreferences: () =>
+    fetchJSON<NotificationPreferencesWire>('/me/notification-preferences'),
+  updateNotificationPreferences: (categories: NotificationPreferencesPatch) =>
+    fetchJSON<NotificationPreferencesWire>('/me/notification-preferences', {
+      method: 'PUT',
+      body: JSON.stringify({ categories }),
+    }),
   /** Persistent Hub assistant session for the signed-in user (get-or-create). */
   getHubSession: () =>
     fetchJSON<{ session: Record<string, unknown>; agent: Record<string, unknown> }>(

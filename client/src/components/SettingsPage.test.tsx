@@ -75,6 +75,10 @@ import { fetchOrgs } from '../utils/orgs';
     createGlobalSkill: vi.fn().mockResolvedValue({ id: 'new-skill' }),
     updateGlobalSkill: vi.fn().mockResolvedValue({ id: 'skill' }),
     deleteGlobalSkill: vi.fn().mockResolvedValue({ ok: true }),
+    getNotificationPreferences: vi
+      .fn()
+      .mockResolvedValue({ channels: [], sections: [], categories: [] }),
+    updateNotificationPreferences: vi.fn(),
   },
 }));
 
@@ -540,6 +544,7 @@ describe('SettingsPage — sidebar navigation', () => {
     expect(getAllByText('Account').length).toBeGreaterThan(0);
     expect(getAllByText('Global Skills').length).toBeGreaterThan(0);
     expect(getAllByText('GitHub').length).toBeGreaterThan(0);
+    expect(getAllByText('Notifications').length).toBeGreaterThan(0);
     expect(queryByText('Workspace')).toBeNull();
     expect(queryByText('Agents & Auth')).toBeNull();
     expect(queryByText('Automation')).toBeNull();
@@ -555,6 +560,13 @@ describe('SettingsPage — sidebar navigation', () => {
       const active = within(nav).getByRole('button', { name: 'Account' });
       expect(active!).toHaveAttribute('aria-current', 'page');
     });
+  });
+
+  it('opens the Notifications tab with the preference matrix', async () => {
+    const { findByTestId } = render(
+      <SettingsPage projects={[]} agents={[]} initialTab="notifications" />,
+    );
+    expect(await findByTestId('notification-preferences')).toBeInTheDocument();
   });
 
   it('marks the active sidebar item with aria-current="page"', () => {
