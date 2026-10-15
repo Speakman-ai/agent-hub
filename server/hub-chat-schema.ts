@@ -100,6 +100,8 @@ export const HUB_CHAT_SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_hub_chat_agent_turns_session
     ON hub_chat_agent_turns(session_id);
+  CREATE INDEX IF NOT EXISTS idx_hub_chat_agent_turns_channel
+    ON hub_chat_agent_turns(channel_id);
 
   -- Project triggers: route one project event (see shared/utils/chatTriggers.ts)
   -- into a chat channel. filter_json narrows which occurrences post.

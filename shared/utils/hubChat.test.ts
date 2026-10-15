@@ -17,6 +17,9 @@ import {
   sectionChannels,
   type HubChatChannel,
   type HubChatMessage,
+  mentionPendingText,
+  parseMentionNotices,
+  parseMentionPending,
 } from './hubChat';
 
 function channel(over: Partial<HubChatChannel> = {}): HubChatChannel {
@@ -544,5 +547,30 @@ describe('reactions and pins in a message window', () => {
     );
     expect(parseMessageMetaEvent({ messageId: 'm1' })).toBeNull();
     expect(parseMessageMetaEvent(null)).toBeNull();
+  });
+});
+
+describe('mention pending and notices', () => {
+  it('words the pending agents', () => {
+    const p = (agentName: string) => ({ agentId: agentName, agentName, sessionId: null });
+    expect(mentionPendingText([])).toBeNull();
+    expect(mentionPendingText([p('Web Dev')])).toBe('Web Dev is working…');
+    expect(mentionPendingText([p('A'), p('B'), p('C')])).toBe('A, B and C are working…');
+  });
+
+  it('parses a mention_state list, dropping malformed rows', () => {
+    expect(parseMentionPending(null)).toBeNull();
+    expect(
+      parseMentionPending([{ agentId: 'web-dev', sessionId: 's1' }, { agentName: 'x' }, 7]),
+    ).toEqual([{ agentId: 'web-dev', agentName: 'web-dev', sessionId: 's1' }]);
+  });
+
+  it('keys response notices and live notices the same way', () => {
+    const n = { agentId: 'vault-dev', code: 'mention_forbidden', message: 'no' };
+    const fromResponse = parseMentionNotices([n], { channelId: 'c1', messageId: 'm1' });
+    const live = parseMentionNotices({ ...n, channelId: 'c1', messageId: 'm1' });
+    expect(fromResponse).toEqual(live);
+    expect(live[0]).toMatchObject({ key: 'm1:vault-dev', channelId: 'c1' });
+    expect(parseMentionNotices([{ agentId: 'x', message: 'y' }])).toEqual([]);
   });
 });

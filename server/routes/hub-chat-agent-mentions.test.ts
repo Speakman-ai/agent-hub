@@ -376,4 +376,71 @@ describe('@agent mentions in channels', () => {
     expect(reply).toMatchObject({ author_agent_id: 'web-dev' });
     expect(reply!.body.split('\n')[0]).toBe('resumed answer');
   });
+
+  it('broadcasts which mentioned agents are still answering, and clears them', async () => {
+    const ch = general();
+    const mentionStates = () =>
+      broadcasts
+        .filter((b) => b.reason === 'mention_state' && b.channelId === ch.id)
+        .map((b) => b.mentionPending);
+    await post(alice, ch.id, `${mention('web-dev')} ${mention('api-dev')} status?`);
+    expect(mentionStates().at(-1)).toEqual([
+      { agentId: 'web-dev', agentName: 'web Dev', sessionId: 'sess-1' },
+      { agentId: 'api-dev', agentName: 'api Dev', sessionId: 'sess-2' },
+    ]);
+    expect(broadcasts.find((b) => b.reason === 'mention_state')?.recipientUserIds).toEqual(
+      [alice, bob].sort(),
+    );
+    const listed = await request(as(bob)).get('/api/chat/channels').expect(200);
+    const row = listed.body.channels.find((c: { id: string }) => c.id === ch.id);
+    expect(row.mentionPending.map((p: { agentId: string }) => p.agentId)).toEqual([
+      'web-dev',
+      'api-dev',
+    ]);
+    expect(row.agentState).toBeNull();
+
+    turnDone('sess-1', 'all green');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(mentionStates().at(-1)).toEqual([
+      { agentId: 'api-dev', agentName: 'api Dev', sessionId: 'sess-2' },
+    ]);
+
+    // A turn that ends without a reply (error, cancel) is no longer pending.
+    agentChannels.observeBroadcastForAgentChannels({ type: 'error', sessionId: 'sess-2' });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(mentionStates().at(-1)).toEqual([]);
+  });
+
+  it('clears the pending agent when its session cannot start', async () => {
+    const ch = general();
+    dispatch.mockImplementationOnce(() => {
+      throw new Error('no credentials');
+    });
+    await post(alice, ch.id, `${mention('web-dev')} hi`);
+    const states = broadcasts.filter((b) => b.reason === 'mention_state');
+    expect(states.at(-1)?.mentionPending).toEqual([]);
+  });
+});
+
+describe('@ autocomplete for agents', () => {
+  const agentLabels = (body: { suggestions: { kind: string; label: string }[] }) =>
+    body.suggestions.filter((s) => s.kind === 'agent').map((s) => s.label);
+
+  it('offers only agents the poster can use that answer mentions', async () => {
+    const asBob = await request(as(bob)).get('/api/chat/refs/search?trigger=@&q=dev').expect(200);
+    expect(agentLabels(asBob.body)).toEqual(['web Dev', 'api Dev', 'ops Dev', 'docs Dev']);
+    const reviewers = await request(as(alice))
+      .get('/api/chat/refs/search?trigger=@&q=reviewer')
+      .expect(200);
+    expect(agentLabels(reviewers.body)).toEqual([]);
+  });
+
+  it('keeps room for agents in an org with many members', async () => {
+    for (let i = 0; i < 12; i++) {
+      createMembership(createUser({ username: `user${i}`, passwordHash: 'x' }).id, 'acme', 'User');
+    }
+    const res = await request(as(alice)).get('/api/chat/refs/search?trigger=@&q=').expect(200);
+    expect(res.body.suggestions).toHaveLength(8);
+    expect(agentLabels(res.body)).toHaveLength(4);
+  });
 });

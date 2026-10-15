@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { ComposerMention } from '@shared/utils/hubChatRefs';
+import type { HubChatMentionNotice } from '@shared/utils/hubChat';
 
 /**
  * What the user has in progress in Agent Hub chat: the open channel, unsent
@@ -38,6 +39,8 @@ export interface HubChatSessionState {
    * and clears this.
    */
   focus: { channelId: string; messageId: string | null } | null;
+  /** Mentions of agents the user cannot use, per channel, until dismissed. */
+  mentionNotices: Readonly<Record<string, HubChatMentionNotice[]>>;
 }
 
 const INITIAL: HubChatSessionState = {
@@ -48,6 +51,7 @@ const INITIAL: HubChatSessionState = {
   sendErrors: {},
   editing: null,
   focus: null,
+  mentionNotices: {},
 };
 
 let state: HubChatSessionState = INITIAL;
@@ -102,6 +106,30 @@ export function setPendingSend(channelId: string, pending: boolean): void {
     if (pending) pendingSends.add(channelId);
     else pendingSends.delete(channelId);
     return { ...s, pendingSends };
+  });
+}
+
+/** Adds refusal notices, skipping any already shown (response and live event). */
+export function addMentionNotices(notices: readonly HubChatMentionNotice[]): void {
+  if (notices.length === 0) return;
+  updateHubChatSession((s) => {
+    let changed = false;
+    const next = { ...s.mentionNotices };
+    for (const n of notices) {
+      const list = next[n.channelId] ?? [];
+      if (list.some((x) => x.key === n.key)) continue;
+      next[n.channelId] = [...list, n];
+      changed = true;
+    }
+    return changed ? { ...s, mentionNotices: next } : s;
+  });
+}
+
+export function dismissMentionNotices(channelId: string): void {
+  updateHubChatSession((s) => {
+    if (!s.mentionNotices[channelId]) return s;
+    const { [channelId]: _gone, ...rest } = s.mentionNotices;
+    return { ...s, mentionNotices: rest };
   });
 }
 

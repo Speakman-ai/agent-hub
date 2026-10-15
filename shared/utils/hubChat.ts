@@ -45,6 +45,13 @@ export interface HubChatAgentState {
   running: boolean;
 }
 
+/** An agent an `@` mention asked that has not answered yet. */
+export interface HubChatMentionPending {
+  agentId: string;
+  agentName: string;
+  sessionId: string | null;
+}
+
 export interface HubChatChannel {
   id: string;
   orgId: string;
@@ -64,6 +71,8 @@ export interface HubChatChannel {
   mentionCount: number;
   /** Set for agent channels only. */
   agentState?: HubChatAgentState | null;
+  /** Channels, groups and DMs: mentioned agents still answering. */
+  mentionPending?: HubChatMentionPending[] | null;
 }
 
 export interface HubChatRef {
@@ -735,6 +744,78 @@ export function applyAgentStateToChannels(
   agentState: HubChatAgentState,
 ): HubChatChannel[] {
   return channels.map((c) => (c.id === channelId ? { ...c, agentState } : c));
+}
+
+/** Applies a live `mention_state` channel update. */
+export function applyMentionPendingToChannels(
+  channels: HubChatChannel[],
+  channelId: string,
+  mentionPending: HubChatMentionPending[],
+): HubChatChannel[] {
+  return channels.map((c) => (c.id === channelId ? { ...c, mentionPending } : c));
+}
+
+/** Reads a `mention_state` update's list, dropping malformed rows. */
+export function parseMentionPending(value: unknown): HubChatMentionPending[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: HubChatMentionPending[] = [];
+  for (const v of value) {
+    if (!v || typeof v !== 'object') continue;
+    const row = v as Record<string, unknown>;
+    if (typeof row.agentId !== 'string' || !row.agentId) continue;
+    out.push({
+      agentId: row.agentId,
+      agentName: typeof row.agentName === 'string' && row.agentName ? row.agentName : row.agentId,
+      sessionId: typeof row.sessionId === 'string' ? row.sessionId : null,
+    });
+  }
+  return out;
+}
+
+/** "Web Dev is working…", "Web Dev and API Dev are working…". */
+export function mentionPendingText(pending: readonly HubChatMentionPending[]): string | null {
+  const names = pending.map((p) => p.agentName);
+  if (names.length === 0) return null;
+  if (names.length === 1) return `${names[0]} is working…`;
+  const list = `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  return `${list} are working…`;
+}
+
+/** A mention the server did not dispatch, shown to the poster only. */
+export interface HubChatMentionNotice {
+  /** `<messageId>:<agentId>`, so the POST response and the live event dedupe. */
+  key: string;
+  channelId: string;
+  agentId: string;
+  code: string;
+  message: string;
+}
+
+/**
+ * Reads mention notices from a post response (`mentionNotices`, with the
+ * message's channel and id given) or a live `hub_chat_notice` event.
+ */
+export function parseMentionNotices(
+  value: unknown,
+  context: { channelId?: string; messageId?: string } = {},
+): HubChatMentionNotice[] {
+  const rows = Array.isArray(value) ? value : value ? [value] : [];
+  const out: HubChatMentionNotice[] = [];
+  for (const v of rows) {
+    if (!v || typeof v !== 'object') continue;
+    const row = v as Record<string, unknown>;
+    const channelId = typeof row.channelId === 'string' ? row.channelId : context.channelId;
+    const messageId = typeof row.messageId === 'string' ? row.messageId : context.messageId;
+    if (!channelId || typeof row.agentId !== 'string' || typeof row.message !== 'string') continue;
+    out.push({
+      key: `${messageId ?? ''}:${row.agentId}`,
+      channelId,
+      agentId: row.agentId,
+      code: typeof row.code === 'string' ? row.code : 'mention_forbidden',
+      message: row.message,
+    });
+  }
+  return out;
 }
 
 /** Agent roles that never answer a chat channel (mirrors the server rule). */

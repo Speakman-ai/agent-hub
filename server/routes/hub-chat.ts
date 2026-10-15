@@ -39,6 +39,8 @@ import {
 import { channelLabel } from '../../shared/utils/hubChat.js';
 import {
   agentChannelState,
+  emitAgentState,
+  mentionPendingState,
   reserveAgentChannelTurn,
   reserveMentionTurn,
   runAgentChannelPost,
@@ -222,6 +224,7 @@ function shapeChannel(
     unreadCount: summary?.unread_count ?? 0,
     mentionCount: summary?.mention_count ?? 0,
     agentState: agentChannelState(row),
+    mentionPending: mentionPendingState(row),
   };
 }
 
@@ -357,6 +360,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
   const refLookups: RefLookups = {
     findProject: (id) => deps.findProject?.(id) ?? null,
     getProjects: () => deps.getProjects?.() ?? [],
+    canAnswerMentions: isEligibleBackgroundSessionAgent,
   };
 
   function refViewer(caller: Caller): RefViewer {
@@ -886,6 +890,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
         message,
       }).sessionId,
     }));
+    if (mentionTurns.length > 0) emitAgentState(m.channel.id);
     for (const notice of mentions.notices) {
       emit(HUB_CHAT_NOTICE_EVENT, [caller.userId], {
         orgId: caller.orgId,

@@ -54,6 +54,7 @@ import {
   getSessionCurrentTurn,
   insertAgentTurn,
   listAgentTurnsForSession,
+  listMentionTurnsForChannel,
   listOrphanedAgentTurns,
   listSessionsWithAgentTurns,
   setAgentTurnReply,
@@ -227,10 +228,41 @@ export function agentChannelState(channel: HubChatChannelRow): AgentChannelState
   };
 }
 
-function emitAgentState(channelId: string): void {
+/** An agent a mention asked that has not answered yet. */
+export interface MentionPending {
+  agentId: string;
+  agentName: string;
+  sessionId: string | null;
+}
+
+/**
+ * Agents still working on mentions in a channel, one row per agent (several
+ * posters can ask the same agent). Null for kinds where mentions never run.
+ */
+export function mentionPendingState(channel: HubChatChannelRow): MentionPending[] | null {
+  if (!MENTION_DISPATCH_KINDS.has(channel.kind)) return null;
+  const byAgent = new Map<string, MentionPending>();
+  for (const turn of listMentionTurnsForChannel(channel.id)) {
+    if (!turn.agent_id || byAgent.has(turn.agent_id)) continue;
+    byAgent.set(turn.agent_id, {
+      agentId: turn.agent_id,
+      agentName: agentName(turn.agent_id, turn.project_id ?? null),
+      sessionId: turn.session_id,
+    });
+  }
+  return [...byAgent.values()];
+}
+
+/**
+ * Tells a channel's members what its agents are doing: the agent channel's
+ * session state, or which mentioned agents are still answering.
+ */
+export function emitAgentState(channelId: string): void {
   // Read at send time, after the commit, so the state is the committed one.
   const channel = getChannel(channelId);
-  if (!channel || channel.kind !== 'agent' || !deps) return;
+  if (!channel || !deps) return;
+  const mentionPending = channel.kind === 'agent' ? null : mentionPendingState(channel);
+  if (channel.kind !== 'agent' && !mentionPending) return;
   const recipientUserIds = recipientsOf(listMembers(channel.id));
   if (recipientUserIds.length === 0) return;
   deps.broadcast({
@@ -238,8 +270,9 @@ function emitAgentState(channelId: string): void {
     recipientUserIds,
     orgId: channel.org_id,
     channelId: channel.id,
-    reason: 'agent_state',
-    agentState: agentChannelState(channel),
+    ...(channel.kind === 'agent'
+      ? { reason: 'agent_state', agentState: agentChannelState(channel) }
+      : { reason: 'mention_state', mentionPending }),
   });
 }
 
@@ -601,13 +634,17 @@ function settle(sessionId: string): void {
       flushReplies(sessionId, out);
       // Started channel turns that ended without a reply (error, cancel) are
       // over. A turn not started yet may still be on its way into the session.
+      const mentionChannels = new Set<string>();
       for (const turn of listAgentTurnsForSession(sessionId)) {
-        if (turn.started === 1) deleteAgentTurn(turn.turn_id);
+        if (turn.started !== 1) continue;
+        deleteAgentTurn(turn.turn_id);
+        if (turn.agent_id) mentionChannels.add(turn.channel_id);
       }
       if (!isAwaiting(sessionId)) clearSessionCurrentTurn(sessionId);
       for (const channel of listAgentChannelsForSession(sessionId)) {
         out.push(() => emitAgentState(channel.id));
       }
+      for (const channelId of mentionChannels) out.push(() => emitAgentState(channelId));
     });
   } catch (err) {
     // Nothing was written; the turns and their replies are intact. Retry.

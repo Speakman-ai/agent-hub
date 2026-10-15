@@ -47,6 +47,17 @@ const AgentStateComponent = registerComponent(
   }),
 );
 
+const MentionPendingComponent = registerComponent(
+  'HubChatMentionPending',
+  z.object({
+    agentId: z.string(),
+    agentName: z.string(),
+    sessionId: z.string().nullable().openapi({
+      description: 'The session answering; null until it is known.',
+    }),
+  }),
+);
+
 export const HubChatChannelComponent = registerComponent(
   'HubChatChannel',
   z
@@ -74,6 +85,10 @@ export const HubChatChannelComponent = registerComponent(
       mentionCount: z.number().int(),
       agentState: AgentStateComponent.nullable().openapi({
         description: 'Agent channels only: the linked session and whether it is working.',
+      }),
+      mentionPending: z.array(MentionPendingComponent).nullable().openapi({
+        description:
+          'Channels, groups and DMs: agents an `@` mention asked that have not answered yet. Null for other kinds. Live updates arrive as `hub_chat_channel_update` with reason `mention_state`.',
       }),
     })
     .openapi({ description: 'A chat channel as seen by the caller, with their unread state.' }),

@@ -17,6 +17,7 @@ import {
   Settings,
   Ticket,
   Trash2,
+  X,
 } from 'lucide-react';
 import type { SessionWire } from '@shared/types';
 import type { CaptureCardDraft } from '@shared/utils/captureCard';
@@ -56,6 +57,8 @@ import {
   nextAttempt,
   getHubChatSession,
   focusHubChatMessage,
+  addMentionNotices,
+  dismissMentionNotices,
   type HubChatEditState,
 } from '../utils/hubChatSession';
 import {
@@ -89,6 +92,10 @@ import {
   sectionChannels,
   agentChannelStatus,
   applyAgentStateToChannels,
+  applyMentionPendingToChannels,
+  parseMentionPending,
+  parseMentionNotices,
+  mentionPendingText,
   type HubChatAgentState,
   type HubChatChannel,
   type HubChatMessage,
@@ -291,8 +298,16 @@ export default function HubChatPage({
   }, []);
   // Per-channel drafts, sends and the open edit outlive this page (see
   // hubChatSession.ts), so late responses and remounts never lose user input.
-  const { selectedId, drafts, draftMentions, pendingSends, sendErrors, editing, focus } =
-    useHubChatSession();
+  const {
+    selectedId,
+    drafts,
+    draftMentions,
+    pendingSends,
+    sendErrors,
+    editing,
+    focus,
+    mentionNotices,
+  } = useHubChatSession();
   const setSelectedId = (id: string | null) =>
     updateHubChatSession((s) => (s.selectedId === id ? s : { ...s, selectedId: id }));
   const setEditing = (
@@ -815,6 +830,15 @@ export default function HubChatPage({
         );
         return;
       }
+      if (data.reason === 'mention_state' && data.channelId) {
+        const pending = parseMentionPending(data.mentionPending);
+        if (pending) {
+          changeChannels(data.channelId, [], (prev) =>
+            applyMentionPendingToChannels(prev, data.channelId, pending),
+          );
+        }
+        return;
+      }
       if (data.reason === 'membership' && data.membership && data.channelId) {
         // A live event is the server's current value, newer than any change
         // stamped so far.
@@ -823,6 +847,9 @@ export default function HubChatPage({
       }
       void refreshChannels();
       if (data.reason === 'member_added' || data.reason === 'created') void refreshMembers();
+    };
+    const onNotice = (e: Event) => {
+      addMentionNotices(parseMentionNotices((e as CustomEvent).detail));
     };
     const onReconnect = () => {
       void refreshChannels();
@@ -840,6 +867,7 @@ export default function HubChatPage({
     window.addEventListener('hub_chat_message_meta', onMeta);
     window.addEventListener('hub_chat_read', onRead);
     window.addEventListener('hub_chat_channel_update', onChannelUpdate);
+    window.addEventListener('hub_chat_notice', onNotice);
     window.addEventListener('agenthub:ws_reconnected', onReconnect);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
@@ -848,6 +876,7 @@ export default function HubChatPage({
       window.removeEventListener('hub_chat_message_meta', onMeta);
       window.removeEventListener('hub_chat_read', onRead);
       window.removeEventListener('hub_chat_channel_update', onChannelUpdate);
+      window.removeEventListener('hub_chat_notice', onNotice);
       window.removeEventListener('agenthub:ws_reconnected', onReconnect);
       document.removeEventListener('visibilitychange', onVisible);
     };
@@ -889,6 +918,9 @@ export default function HubChatPage({
       const message = res.message as HubChatMessage;
       // Keep anything typed while the request was in flight.
       clearSentDraft(channelId, draftText);
+      addMentionNotices(
+        parseMentionNotices(res.mentionNotices, { channelId, messageId: message.id }),
+      );
       updateView(sentFrom, (v) => ({ ...v, ...mergeIntoWindow(v, [message], true) }));
       changeChannels(channelId, [], (prev) =>
         applyMessageToChannels(prev, message, {
@@ -1309,6 +1341,8 @@ export default function HubChatPage({
   const draft = selectedId ? (drafts[selectedId] ?? '') : '';
   const sending = !!selectedId && pendingSends.has(selectedId);
   const sendError = selectedId ? (sendErrors[selectedId] ?? null) : null;
+  const pendingText = mentionPendingText(selected?.mentionPending ?? []);
+  const notices = selectedId ? (mentionNotices[selectedId] ?? []) : [];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col md:flex-row" data-testid="hub-chat-page">
@@ -1918,6 +1952,38 @@ export default function HubChatPage({
             </div>
 
             <div className="shrink-0 border-t border-gray-800 p-3">
+              {pendingText && (
+                <p
+                  role="status"
+                  data-testid="hub-chat-mention-pending"
+                  className="mb-2 flex items-center gap-1.5 text-xs text-gray-400"
+                >
+                  <Loader2 size={12} className="animate-spin text-blue-400" aria-hidden />
+                  {pendingText}
+                </p>
+              )}
+              {notices.length > 0 && selectedId && (
+                <div
+                  role="alert"
+                  data-testid="hub-chat-mention-notices"
+                  className="mb-2 flex items-start gap-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200"
+                >
+                  <AlertCircle size={13} className="mt-0.5 shrink-0" aria-hidden />
+                  <ul className="flex-1 space-y-0.5">
+                    {notices.map((n) => (
+                      <li key={n.key}>{n.message}</li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    onClick={() => dismissMentionNotices(selectedId)}
+                    aria-label="Dismiss"
+                    className="shrink-0 text-amber-300 hover:text-amber-100"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              )}
               {sendError && (
                 <p role="alert" className="mb-2 text-xs text-red-300">
                   {sendError}

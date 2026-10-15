@@ -76,6 +76,17 @@ export function listAgentTurnsForSession(sessionId: string): AgentTurnRow[] {
     .all(sessionId) as AgentTurnRow[];
 }
 
+/** Open mention turns in a channel, oldest first. */
+export function listMentionTurnsForChannel(channelId: string): AgentTurnRow[] {
+  return db()
+    .prepare(
+      `SELECT * FROM hub_chat_agent_turns
+       WHERE channel_id = ? AND agent_id IS NOT NULL
+       ORDER BY created_at, rowid`,
+    )
+    .all(channelId) as AgentTurnRow[];
+}
+
 export function countAgentTurnsForSession(sessionId: string): number {
   const row = db()
     .prepare('SELECT COUNT(*) AS n FROM hub_chat_agent_turns WHERE session_id = ?')

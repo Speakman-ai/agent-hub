@@ -7530,6 +7530,21 @@ components:
         - sessionId
         - sessionName
         - running
+    HubChatMentionPending:
+      type: object
+      properties:
+        agentId:
+          type: string
+        agentName:
+          type: string
+        sessionId:
+          type: string
+          nullable: true
+          description: The session answering; null until it is known.
+      required:
+        - agentId
+        - agentName
+        - sessionId
     HubChatChannel:
       type: object
       properties:
@@ -7610,6 +7625,12 @@ components:
             - $ref: "#/components/schemas/HubChatAgentState"
             - nullable: true
               description: "Agent channels only: the linked session and whether it is working."
+        mentionPending:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/HubChatMentionPending"
+          description: "Channels, groups and DMs: agents an `@` mention asked that have not answered yet. Null for other kinds. Live updates arrive as `hub_chat_channel_update` with reason `mention_state`."
       required:
         - id
         - orgId
@@ -7628,6 +7649,7 @@ components:
         - unreadCount
         - mentionCount
         - agentState
+        - mentionPending
       description: A chat channel as seen by the caller, with their unread state.
     HubChatMember:
       type: object

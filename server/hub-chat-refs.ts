@@ -66,6 +66,11 @@ export interface RefViewer {
 export interface RefLookups {
   findProject: (projectId: string) => Project | null;
   getProjects: () => Project[];
+  /**
+   * Agents `@` autocomplete offers. Mentioning an agent asks it to answer, so
+   * one that never answers chat is left out. Omitted: every agent.
+   */
+  canAnswerMentions?: (agent: Agent) => boolean;
 }
 
 /**
@@ -396,6 +401,7 @@ export function searchRefs(
     const agents: RefSuggestion[] = [];
     for (const p of projects) {
       for (const a of p.agents ?? []) {
+        if (lookups.canAnswerMentions && !lookups.canAnswerMentions(a)) continue;
         if (q && !a.name.toLowerCase().includes(q) && !a.id.toLowerCase().includes(q)) continue;
         agents.push({
           kind: 'agent',
@@ -406,7 +412,9 @@ export function searchRefs(
         });
       }
     }
-    return [...users.slice(0, LIMIT), ...agents].slice(0, LIMIT);
+    // A big org must not crowd agents out: they keep at least half the rows.
+    const agentRows = Math.min(agents.length, Math.max(LIMIT - users.length, LIMIT / 2));
+    return [...users.slice(0, LIMIT - agentRows), ...agents.slice(0, agentRows)];
   }
 
   if (projects.length === 0) return [];
