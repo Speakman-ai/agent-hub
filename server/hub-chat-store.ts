@@ -301,6 +301,20 @@ export function appendMessage(input: AppendMessageInput): HubChatMessageRow {
   return getMessage(id) as HubChatMessageRow;
 }
 
+/** Which of `messageIds` are in `channelId` at or before `seq`. */
+export function messageIdsReadThrough(
+  channelId: string,
+  seq: number,
+  messageIds: string[],
+): Set<string> {
+  const out = new Set<string>();
+  const stmt = db().prepare(
+    'SELECT 1 FROM hub_chat_messages WHERE id = ? AND channel_id = ? AND seq <= ?',
+  );
+  for (const id of messageIds) if (stmt.get(id, channelId, seq)) out.add(id);
+  return out;
+}
+
 export function getMessage(messageId: string): HubChatMessageRow | null {
   const row = db().prepare('SELECT * FROM hub_chat_messages WHERE id = ?').get(messageId) as
     | HubChatMessageRow

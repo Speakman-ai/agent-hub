@@ -36935,6 +36935,7 @@ paths:
       tags:
         - Hub Chat
       summary: Mark a channel read
+      description: Also marks the caller's DM and mention inbox rows for messages up to the new pointer read, emitting `notification_read` to the caller's clients when any flipped.
       parameters:
         - schema:
             type: string

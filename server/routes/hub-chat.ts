@@ -40,6 +40,7 @@ import {
   runAgentChannelPost,
 } from '../hub-chat-agent-channels.js';
 import { getDb } from '../db.js';
+import { syncChatReadToInbox } from '../hub-chat-inbox-sync.js';
 import type {
   HubChatChannelRow,
   HubChatChannelSummary,
@@ -946,6 +947,11 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     if (!body) return;
     const lastReadSeq = markRead(m.channel.id, caller.userId, body.seq) ?? m.member.last_read_seq;
     emitRead(caller, m.channel.id, lastReadSeq);
+    try {
+      syncChatReadToInbox(caller.userId, m.channel.id, lastReadSeq, deps.broadcast);
+    } catch (err) {
+      console.error(`[hub-chat] inbox read sync failed: ${(err as Error).message}`);
+    }
     res.json({ lastReadSeq });
   });
 

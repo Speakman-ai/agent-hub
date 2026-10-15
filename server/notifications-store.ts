@@ -247,6 +247,35 @@ export function markNotificationReadBySourceKey(
   return info.changes > 0;
 }
 
+/** Unread rows whose source key starts with `prefix`, as `{ id, sourceKey }`. */
+export function listUnreadBySourcePrefix(
+  userId: string,
+  prefix: string,
+): Array<{ id: string; sourceKey: string }> {
+  const rows = getOrgsDb()
+    .prepare(
+      `SELECT id, source_key FROM notifications
+       WHERE user_id = ? AND read_at IS NULL AND substr(source_key, 1, ?) = ?`,
+    )
+    .all(userId, prefix.length, prefix) as Array<{ id: string; source_key: string }>;
+  return rows.map((r) => ({ id: r.id, sourceKey: r.source_key }));
+}
+
+/** Marks the given unread rows read; returns the ids that flipped. */
+export function markNotificationsReadByIds(
+  userId: string,
+  ids: string[],
+  now: Date = new Date(),
+): string[] {
+  if (!ids.length) return [];
+  const conn = getOrgsDb();
+  const stmt = conn.prepare(
+    'UPDATE notifications SET read_at = ? WHERE user_id = ? AND id = ? AND read_at IS NULL',
+  );
+  const at = now.toISOString();
+  return conn.transaction(() => ids.filter((id) => stmt.run(at, userId, id).changes > 0))();
+}
+
 /** Returns the number of rows flipped to read. */
 export function markAllNotificationsRead(userId: string, now: Date = new Date()): number {
   const info = getOrgsDb()

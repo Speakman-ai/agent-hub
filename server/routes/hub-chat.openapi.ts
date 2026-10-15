@@ -643,6 +643,8 @@ registerPath({
   path: '/api/chat/channels/{channelId}/read',
   tags: [TAG],
   summary: 'Mark a channel read',
+  description:
+    "Also marks the caller's DM and mention inbox rows for messages up to the new pointer read, emitting `notification_read` to the caller's clients when any flipped.",
   request: { params: channelParams, body: { content: jsonContent(MarkReadRequestSchema) } },
   responses: {
     200: {
