@@ -7,7 +7,7 @@ import { db } from '../db.js';
 import type { RouteDeps, EnrichedAgent, AppConfig, Project } from '../types.js';
 import { getLogBuffer } from '../server-log.js';
 import { isLogShippingEnabled } from '../log-shipper.js';
-import { PUSH_EVENT_TYPES } from '../push.js';
+import { PUSH_EVENT_TYPES } from '../../shared/utils/notificationCategories.js';
 import { isAuthConfigured } from '../auth-store.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import {

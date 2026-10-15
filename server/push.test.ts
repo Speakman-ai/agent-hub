@@ -18,10 +18,10 @@ import {
   filterTokensForBroadcastVisibility,
   filterTokensForSessionOwner,
   EXPO_PUSH_URL,
-  PUSH_EVENT_TYPES,
   type DeviceTokenRowWithPrefs,
   type ExpoPushMessage,
 } from './push.js';
+import { PUSH_EVENT_TYPES } from '../shared/utils/notificationCategories.js';
 
 function token(
   t: string,

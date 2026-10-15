@@ -11,25 +11,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { api } from '../../utils/api';
 import { colors } from '../../theme/colors';
-/** Matches server/push.ts PUSH_EVENT_TYPES */
-export const PUSH_EVENT_OPTIONS = [
-  { key: 'awaiting_feedback', label: 'Awaiting feedback', desc: 'Agent needs your input' },
-  { key: 'ready_to_push', label: 'Ready to push', desc: 'Finalize passed — ready to ship' },
-  { key: 'pushed', label: 'Pushed', desc: 'Changes were pushed to GitHub' },
-  { key: 'support_ticket_created', label: 'Support ticket created', desc: 'New support ticket' },
-  {
-    key: 'review_assigned_to_you',
-    label: 'Review assigned to you',
-    desc: 'PR or card needs review',
-  },
-  { key: 'pr_merged', label: 'PR merged', desc: 'Linked PR was merged' },
-  { key: 'infra_alert', label: 'Infrastructure alerts', desc: 'AWS monitoring state changes' },
-  {
-    key: 'chat_message',
-    label: 'Chat messages',
-    desc: 'Direct messages, mentions, and channels set to all',
-  },
-];
+import { PUSH_EVENT_OPTIONS } from '@shared/utils/notificationCategories';
 const PERMISSION_LABEL: Record<string, any> = {
   granted: 'Granted',
   denied: 'Denied',

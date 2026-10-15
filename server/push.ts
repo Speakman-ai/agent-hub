@@ -33,19 +33,7 @@ import { locateChatMarkdownCode } from './hub-chat-markdown.js';
 import { chatPushRecipients, HUB_CHAT_MESSAGE_EVENT, mentionedUserIds } from './hub-chat-events.js';
 import { getChannel, listMembers } from './hub-chat-store.js';
 
-// Event types that can trigger a push
-export const PUSH_EVENT_TYPES = [
-  'awaiting_feedback',
-  'ready_to_push',
-  'pushed',
-  'support_ticket_created',
-  'review_assigned_to_you',
-  'pr_merged',
-  'infra_alert',
-  'chat_message',
-] as const;
-
-export type PushEventType = (typeof PUSH_EVENT_TYPES)[number];
+import type { PushEventType } from '../shared/utils/notificationCategories.js';
 
 // Payload shape sent to Expo
 export interface ExpoPushMessage {
@@ -224,7 +212,7 @@ export function chatMessagePush(args: {
 
 /**
  * Back-compat map from retired `enabled_events` preference keys to their
- * renamed equivalents in the current {@link PUSH_EVENT_TYPES} taxonomy.
+ * renamed equivalents in the current `PUSH_EVENT_TYPES` taxonomy (shared catalog).
  *
  * The push event taxonomy was renamed (see git history of this file). A device
  * row persisted under the old names still has e.g. `["session_complete",

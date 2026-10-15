@@ -4,7 +4,7 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
-import { PUSH_EVENT_TYPES } from '../push.js';
+import { PUSH_EVENT_TYPES } from '../../shared/utils/notificationCategories.js';
 
 const ErrorResponse = registerComponent(
   'MiscErrorResponse',
