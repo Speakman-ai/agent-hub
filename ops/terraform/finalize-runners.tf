@@ -78,6 +78,33 @@ resource "aws_iam_role_policy" "hub_worktree_s3" {
   })
 }
 
+# ci.yaml `cache:` entries: the Hub checks for keys and matches restore-keys
+# with prefix-scoped ListObjectsV2 calls (never HeadObject, whose missing-key
+# 404 needs an unconditioned ListBucket), and presigns the GET and conditional
+# PUT URLs the job container uses. Objects stay under the finalize-cache/
+# prefix, which the bucket lifecycle expires.
+resource "aws_iam_role_policy" "hub_cache_s3" {
+  count = var.enable_finalize_runners && var.enable_instance_ssm ? 1 : 0
+  name  = "finalize-cache-s3"
+  role  = aws_iam_role.ec2_ssm[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject"]
+        Resource = ["arn:aws:s3:::${var.finalize_cache_bucket_name}/finalize-cache/*"]
+      },
+      {
+        Effect    = "Allow"
+        Action    = ["s3:ListBucket"]
+        Resource  = ["arn:aws:s3:::${var.finalize_cache_bucket_name}"]
+        Condition = { StringLike = { "s3:prefix" = ["finalize-cache/*"] } }
+      },
+    ]
+  })
+}
+
 # The Hub's queue-depth autoscaler sets the agent ECS service's desiredCount to
 # run jobs concurrently (and back to zero when idle). Grant the Hub instance role
 # the minimal ECS controls on this env's fleet service only.

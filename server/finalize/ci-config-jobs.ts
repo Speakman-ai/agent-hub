@@ -16,6 +16,15 @@ import {
   type CiConfigParseResult,
   type CiTrigger,
 } from './ci-config.js';
+import {
+  CACHE_MAX_ENTRIES_PER_JOB,
+  CACHE_MAX_PATHS,
+  CACHE_MAX_RESTORE_KEYS,
+  validateCachePath,
+  validateKeyTemplate,
+  type CiCacheEntry,
+  type CiStepCacheAction,
+} from './ci-cache-spec.js';
 
 export interface CiStep {
   /**
@@ -44,6 +53,11 @@ export interface CiStep {
    * hard cap stays an upper bound, so a value above it is clamped to the cap.
    */
   timeoutMinutes?: number;
+  /**
+   * Set only on the Restore/Save cache steps the job runner plans from a job's
+   * `cache:` entries. Never parsed from YAML.
+   */
+  cache?: CiStepCacheAction;
 }
 
 export interface CiJob {
@@ -78,6 +92,11 @@ export interface CiJob {
    * fall back to the coarse "any code change counts as a fix" heuristic.
    */
   paths?: string[];
+  /**
+   * S3-backed cache entries for paths under /finalize-cache, shared across
+   * runner hosts (see ci-cache.ts). Absent when omitted.
+   */
+  cache?: CiCacheEntry[];
   /**
    * How many extra times a FAILED shard (job instance) is re-run within the
    * same checks phase before its failure is reported. The shard command is
@@ -143,6 +162,7 @@ export interface JobInstance {
   needs: string[];
   /** Extra same-commit re-runs of this shard on a genuine test failure (see CiJob.retries). */
   retries: number;
+  cache?: CiCacheEntry[];
   steps: CiStep[];
   /** Merged env: top + job + matrix builtins (not step env). */
   env: Record<string, string>;
@@ -156,6 +176,7 @@ const JOB_KEYS = new Set([
   'needs',
   'paths',
   'retries',
+  'cache',
   'matrix',
   'env',
   'steps',
@@ -180,6 +201,7 @@ export type CiConfigJobsErrorCode =
   | 'invalid_needs'
   | 'invalid_paths'
   | 'invalid_retries'
+  | 'invalid_cache'
   | 'unknown_needs_job'
   | 'cyclic_needs'
   | 'unknown_top_level_key'
@@ -510,6 +532,8 @@ function parseJob(
     }
     retries = rawRetries;
   }
+  const cacheParsed = parseCacheEntries(jobObj.cache, `${jobPath}.cache`);
+  if (!cacheParsed.ok) return cacheParsed;
   const matrixParsed = parseMatrixInclude(jobObj.matrix, jobPath);
   if (!matrixParsed.ok) return matrixParsed;
   let jobEnv: Record<string, string> | undefined;
@@ -531,12 +555,110 @@ function parseJob(
       warmup,
       needs,
       retries,
+      ...(cacheParsed.cache.length > 0 ? { cache: cacheParsed.cache } : {}),
       matrixInclude: matrixParsed.include,
       ...(paths ? { paths } : {}),
       ...(jobEnv ? { env: jobEnv } : {}),
       steps: stepsParsed.steps,
     },
   };
+}
+
+const CACHE_ENTRY_KEYS = new Set(['key', 'path', 'restore-keys']);
+
+function parseStringList(raw: unknown): string[] | null {
+  const list = Array.isArray(raw) ? raw : [raw];
+  if (list.length === 0) return null;
+  const out: string[] = [];
+  for (const item of list) {
+    if (typeof item !== 'string' || item.trim().length === 0) return null;
+    out.push(item.trim());
+  }
+  return [...new Set(out)];
+}
+
+/**
+ * Parse a job's `cache:` list. Each entry is
+ * `{ key, path: string | string[], restore-keys?: string | string[] }`.
+ */
+function parseCacheEntries(
+  raw: unknown,
+  cachePath: string,
+): { ok: true; cache: CiCacheEntry[] } | { ok: false; error: CiConfigParseError } {
+  if (raw === null || raw === undefined) return { ok: true, cache: [] };
+  if (!Array.isArray(raw)) {
+    return err('invalid_cache', `'${cachePath}' must be a list of cache entries.`, cachePath);
+  }
+  if (raw.length > CACHE_MAX_ENTRIES_PER_JOB) {
+    return err(
+      'invalid_cache',
+      `'${cachePath}' has ${raw.length} entries; at most ${CACHE_MAX_ENTRIES_PER_JOB} are allowed.`,
+      cachePath,
+    );
+  }
+  const cache: CiCacheEntry[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const at = `${cachePath}[${i}]`;
+    const entry = raw[i];
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      return err('invalid_cache', `'${at}' must be a mapping with 'key' and 'path'.`, at);
+    }
+    const obj = entry as Record<string, unknown>;
+    for (const k of Object.keys(obj)) {
+      if (!CACHE_ENTRY_KEYS.has(k)) {
+        return err('invalid_cache', `Unknown key in '${at}': '${k}'.`, `${at}.${k}`);
+      }
+    }
+    if (typeof obj.key !== 'string' || obj.key.trim().length === 0) {
+      return err('invalid_cache', `'${at}.key' must be a non-empty string.`, `${at}.key`);
+    }
+    const keyProblem = validateKeyTemplate(obj.key);
+    if (keyProblem) return err('invalid_cache', `'${at}.key' ${keyProblem}`, `${at}.key`);
+    const paths = parseStringList(obj.path);
+    if (!paths) {
+      return err(
+        'invalid_cache',
+        `'${at}.path' must be a path or a list of paths under /finalize-cache.`,
+        `${at}.path`,
+      );
+    }
+    if (paths.length > CACHE_MAX_PATHS) {
+      return err(
+        'invalid_cache',
+        `'${at}.path' lists ${paths.length} paths; at most ${CACHE_MAX_PATHS} are allowed.`,
+        `${at}.path`,
+      );
+    }
+    for (const p of paths) {
+      const problem = validateCachePath(p);
+      if (problem)
+        return err('invalid_cache', `'${at}.path' entry '${p}' ${problem}.`, `${at}.path`);
+    }
+    let restoreKeys: string[] = [];
+    if (obj['restore-keys'] !== undefined && obj['restore-keys'] !== null) {
+      const parsed = parseStringList(obj['restore-keys']);
+      if (!parsed || parsed.length > CACHE_MAX_RESTORE_KEYS) {
+        return err(
+          'invalid_cache',
+          `'${at}.restore-keys' must be 1-${CACHE_MAX_RESTORE_KEYS} non-empty key prefixes.`,
+          `${at}.restore-keys`,
+        );
+      }
+      for (const rk of parsed) {
+        const problem = validateKeyTemplate(rk);
+        if (problem) {
+          return err(
+            'invalid_cache',
+            `'${at}.restore-keys' entry ${problem}`,
+            `${at}.restore-keys`,
+          );
+        }
+      }
+      restoreKeys = parsed;
+    }
+    cache.push({ key: obj.key.trim(), paths, restoreKeys });
+  }
+  return { ok: true, cache };
 }
 
 /**
@@ -718,6 +840,7 @@ export function expandJobInstances(
         warmup: job.warmup,
         needs: job.needs,
         retries: job.retries,
+        ...(job.cache ? { cache: job.cache } : {}),
         steps: job.steps,
         env,
       });

@@ -78,6 +78,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ghostscript \
     xvfb \
     sudo \
+    zstd \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 

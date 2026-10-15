@@ -75,6 +75,7 @@ into a separate phase.
 | `matrix` | No | `{ include: [ {k: "v"}, ... ] }`. Each row spawns a concurrent instance; **all values must be quoted strings**. |
 | `paths` | No | List of path globs this job covers. Read only by the flake-recovery classifier, which uses it to tell a real fix from a laundered flake. |
 | `retries` | No | Integer in `[0, 10]`. Extra same-commit re-runs of a shard that fails a test. Default 2 for a normal job, 0 for a `warmup` job. |
+| `cache` | No | List of `{ key, path, restore-keys }` entries that back paths under `/finalize-cache` with S3 so they survive across runner hosts. See **Cross-runner cache** below. |
 | `env` | No | Map of string→string, overrides top-level. |
 
 ## Step keys (allowlist)
@@ -124,8 +125,9 @@ A job with no `matrix` is one instance: ordinal `1` of total `1`. An explicit
   ECS desired-count); there is no fixed runner cap to design around.
 - **No `node_modules` / artifact sharing between jobs** — each job runs
   on its own runner with a fresh worktree, so every job installs its own
-  deps. (A `/finalize-cache` Docker volume exists for `docker save/load`
-  image reuse via a `warmup` job — not for npm.)
+  deps. `/finalize-cache` is a Docker volume local to one runner host;
+  on the fleet each shard usually lands on a different host, so use a
+  job `cache:` entry to share anything written there across hosts.
 - Pipeline wall-clock (jobs/steps) is capped at `timeout_minutes`. The
   4-hour active-time budget for reviewer / fix-dispatch agent turns is
   a separate ceiling and is **not** lowered by this field.
@@ -134,6 +136,62 @@ A job with no `matrix` is one instance: ordinal `1` of total `1`. An explicit
 - On failure, the orchestrator dispatches the failed-step context
   back into the originating session (the "fix-dispatch" loop). The
   next commit re-enters from rebase.
+
+## Cross-runner cache (`cache:`)
+
+GitHub `actions/cache` semantics for paths under `/finalize-cache`
+(container jobs only). For each entry the runner adds two visible steps:
+
+- **Restore cache** before the job's steps: downloads the exact `key`,
+  else the newest entry matching a `restore-keys` prefix (tried in order),
+  and extracts it without overwriting files already on the host.
+- **Save cache** after every job step passed, only when the exact key
+  missed. Tars the paths (zstd, gzip fallback) and uploads them with a
+  create-only PUT, so entries are immutable: when two shards save the same
+  key at once, the first upload wins and the other logs that it kept that
+  copy. Archives over 5 GiB are not saved.
+
+Cache steps never fail the job: a missing bucket, lookup error, failed or
+stalled transfer, or a cache step that hits its 30-minute deadline prints a
+`[cache] warning` (or a failed cache step row) and the job's result comes
+from its own steps. Losing the runner during a restore still retries the
+job on a fresh runner, and a Stop still cancels it. Entries are
+shared by every branch of the project and expire after 7 days. The Hub
+needs `FINALIZE_CACHE_BUCKET`; without it the steps log that caching is
+disabled.
+
+```yaml
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    cache:
+      - key: e2e-images-${FINALIZE_HEAD_SHA}
+        path: e2e-images
+    steps:
+      - run: ./scripts/build_e2e_images.sh   # writes /finalize-cache/e2e-images/
+  e2e:
+    runs-on: ubuntu-24.04
+    needs: prepare
+    cache:
+      - key: e2e-images-${FINALIZE_HEAD_SHA}
+        path: e2e-images
+      - key: testdb-${{ hashFiles('backend/**/migrations/*.py') }}
+        path: backend-testdb-*.dump
+        restore-keys: testdb-
+    matrix: { include: [ { group: "a" }, { group: "b" } ] }
+    steps:
+      - run: ./run_e2e_ci.sh
+```
+
+- `key`: `${VAR}` resolves like step env. `${{ hashFiles('glob', ...) }}`
+  hashes the matching files in the commit under test (`**` spans
+  directories); it yields an empty string when nothing matches.
+- `path`: a string or list, relative to `/finalize-cache`. Plain `*`, `?`
+  and `[...]` globs; no `..`, no absolute paths.
+- `restore-keys`: optional string or list of key prefixes.
+- Pair a producer job with `needs:` so consumers wait for its save. A
+  matrix job whose shards write different data should put
+  `${FINALIZE_MATRIX_KEY}` in the key.
 
 ## Error codes (from the parser)
 
@@ -170,6 +228,7 @@ invalid_warmup          — `warmup` is not a boolean
 invalid_needs           — `needs` is not a job id / list of job ids
 invalid_paths           — `paths` is not a list of non-empty strings
 invalid_retries         — `retries` outside [0, 10]
+invalid_cache           — a `cache` entry is malformed (bad key/path/restore-keys)
 unknown_needs_job       — `needs` references a job that doesn't exist
 cyclic_needs            — the `needs` graph has a cycle
 missing_steps           — job has no `steps` key

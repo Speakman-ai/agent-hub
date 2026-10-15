@@ -566,3 +566,87 @@ jobs:
     }
   });
 });
+
+describe('job cache entries', () => {
+  const cfg = (cacheYaml: string) => `
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    cache:
+${cacheYaml}
+    steps:
+      - run: ./run_e2e_ci.sh
+`;
+
+  it('parses key, path list, and restore-keys, and carries them onto every shard', () => {
+    const r = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    matrix:
+      include:
+        - group: "a"
+        - group: "b"
+    cache:
+      - key: img-\${FINALIZE_HEAD_SHA}
+        path: e2e-images
+      - key: db-\${{ hashFiles('backend/**/migrations/*.py') }}
+        path: [backend-testdb-*.dump, cypress]
+        restore-keys: db-
+    steps:
+      - run: ./run_e2e_ci.sh
+`);
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.config.version !== 2) return;
+    expect(r.config.jobs.e2e.cache).toEqual([
+      { key: 'img-${FINALIZE_HEAD_SHA}', paths: ['e2e-images'], restoreKeys: [] },
+      {
+        key: "db-${{ hashFiles('backend/**/migrations/*.py') }}",
+        paths: ['backend-testdb-*.dump', 'cypress'],
+        restoreKeys: ['db-'],
+      },
+    ]);
+    const instances = expandJobInstances(
+      r.config,
+      buildFinalizeBuiltinEnv({ branch: 'b', headSha: 's' }),
+    );
+    expect(instances.map((i) => i.cache?.length)).toEqual([2, 2]);
+  });
+
+  it('omits cache when the job declares none', () => {
+    const r = parseCiConfig(jobCfgNoCache);
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.config.version !== 2) return;
+    expect(r.config.jobs.only.cache).toBeUndefined();
+  });
+
+  it.each([
+    ['      - path: x', 'missing key'],
+    ['      - key: k', 'missing path'],
+    ['      - key: k\n        path: /etc', 'absolute path'],
+    ['      - key: k\n        path: ../up', 'traversal'],
+    ['      - key: k\n        path: "a;b"', 'shell metacharacter'],
+    ['      - key: k\n        path: x\n        ttl: 3', 'unknown key'],
+    ['      - key: "k-${{ hashFiles(a) }}"\n        path: x', 'unquoted hashFiles glob'],
+    ['      key: k', 'not a list'],
+  ])('rejects %j (%s) with invalid_cache', (yaml) => {
+    const r = parseCiConfig(cfg(yaml));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('invalid_cache');
+  });
+});
+
+const jobCfgNoCache = `
+version: 2
+on: [finalize]
+jobs:
+  only:
+    runs-on: host
+    steps:
+      - run: echo hi
+`;

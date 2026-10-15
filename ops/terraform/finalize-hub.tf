@@ -48,6 +48,8 @@ locals {
       "FINALIZE_RUNNER_BACKEND=remote",
       "FINALIZE_WORKTREE_BUCKET=${var.finalize_worktree_bucket_name}",
       "FINALIZE_WORKTREE_BUCKET_REGION=${var.aws_region}",
+      "FINALIZE_CACHE_BUCKET=${var.finalize_cache_bucket_name}",
+      "FINALIZE_CACHE_BUCKET_REGION=${var.aws_region}",
       "AWS_REGION=${var.aws_region}",
       "FINALIZE_FLEET_ECS_CLUSTER=${var.project_name}-finalize-runner",
       "FINALIZE_FLEET_ECS_SERVICE=${var.project_name}-finalize-runner-agent",

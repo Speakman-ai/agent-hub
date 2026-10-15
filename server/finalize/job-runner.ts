@@ -39,6 +39,18 @@ import { classifyFailureReason } from './infra-retry.js';
 import { isWorktreeBundleFailureMessage } from './worktree-bundle.js';
 import type { CancelSignal } from './fix-dispatch.js';
 import { jobInstanceKey } from './base-drift-policy.js';
+import {
+  buildRestoreScript,
+  boundedCacheSetup,
+  buildSaveScript,
+  CACHE_STEP_TIMEOUT_MINUTES,
+  cacheStepName,
+  gitTreeHashFiles,
+  JobCacheSession,
+  type CacheStore,
+  type HashFilesFn,
+} from './ci-cache.js';
+import { resolveCacheStore } from './ci-cache-s3.js';
 
 /** Default max parallel job shards (override with FINALIZE_MAX_PARALLEL_JOBS). */
 export const DEFAULT_MAX_PARALLEL_JOBS = 4;
@@ -62,6 +74,15 @@ export interface JobRunnerOptions {
    * of blocking until every test finishes on its own.
    */
   signal?: CancelSignal;
+  /**
+   * Storage behind ci.yaml `cache:` entries. `undefined` resolves from
+   * FINALIZE_CACHE_BUCKET; `null` disables caching. Injectable for tests.
+   */
+  cacheStore?: CacheStore | null;
+  /** hashFiles implementation for cache keys. Defaults to the head commit's git tree. */
+  cacheHashFiles?: HashFilesFn;
+  /** Override the cache-step setup deadline (tests). */
+  cacheSetupTimeoutMs?: number;
   /**
    * Instances (keyed by `jobInstanceKey`) whose passing result from the
    * previous round carries over: they do not run, and their job + step rows
@@ -713,20 +734,53 @@ async function runJobInstance(
   }
 
   const instanceSteps = planned.filter((p) => p.instance === instance);
-  const remainingBudgetMs = budgetMs - (now() - budgetStartedAt);
-  const timeoutMinutes = Math.max(1, Math.ceil(remainingBudgetMs / 60_000));
-
-  let result: StepRunResult;
-  try {
-    result = await runStepsSequence(
+  // Cache steps run as their own one-step sequences so each presigned URL is
+  // minted right before use and a cache problem can be judged on its own (see
+  // runCacheStep). Save steps run only after every job step passed.
+  const restoreSteps = instanceSteps.filter((p) => p.step.cache?.action === 'restore');
+  const jobSteps = instanceSteps.filter((p) => !p.step.cache);
+  const saveSteps = instanceSteps.filter((p) => p.step.cache?.action === 'save');
+  const cacheSession = instanceSteps.some((p) => p.step.cache)
+    ? new JobCacheSession({
+        store: opts.cacheStore === undefined ? resolveCacheStore() : opts.cacheStore,
+        orgId: opts.orgId,
+        projectId: opts.projectId,
+        env: mergedEnv,
+        hashFiles: opts.cacheHashFiles ?? gitTreeHashFiles(worktreePath, opts.headSha),
+      })
+    : null;
+  // Setup (key hashing, S3 lookups, presigning) runs before the step's own
+  // deadline exists, so it is bounded and cancellable on its own. On
+  // cancellation the step is returned without cache env: the sequence sees
+  // the aborted signal and returns without spawning it.
+  const withCacheEnv = async (p: PlannedStep): Promise<PlannedStep> => {
+    const cache = p.step.cache;
+    if (!cache || !cacheSession) return p;
+    const outcome = await boundedCacheSetup(
+      (signal) =>
+        cache.action === 'restore'
+          ? cacheSession.restoreEnv(cache.entry, signal)
+          : cacheSession.saveEnv(cache.entry, signal),
+      {
+        ...(opts.cacheSetupTimeoutMs !== undefined ? { timeoutMs: opts.cacheSetupTimeoutMs } : {}),
+        ...(opts.signal ? { cancel: opts.signal } : {}),
+      },
+    );
+    if (outcome.kind === 'cancelled') return p;
+    return { ...p, step: { ...p.step, env: { ...(p.step.env ?? {}), ...outcome.env } } };
+  };
+  const runSequence = (steps: PlannedStep[]): Promise<StepRunResult> => {
+    const remainingBudgetMs = budgetMs - (now() - budgetStartedAt);
+    const timeoutMinutes = Math.max(1, Math.ceil(remainingBudgetMs / 60_000));
+    return runStepsSequence(
       { ...deps, spawnStep },
       {
         runId,
         sessionId,
         worktreePath,
-        steps: instanceSteps.map((p) => p.step),
-        stepIndices: instanceSteps.map((p) => p.stepIndex),
-        stepNamePrefix: instanceSteps[0]?.namePrefix,
+        steps: steps.map((p) => p.step),
+        stepIndices: steps.map((p) => p.stepIndex),
+        stepNamePrefix: steps[0]?.namePrefix,
         timeoutMinutes: Math.min(config.timeoutMinutes, timeoutMinutes),
         env: mergedEnv,
         persistMeta,
@@ -742,6 +796,60 @@ async function runJobInstance(
         deferRunTerminal: true,
       },
     );
+  };
+
+  // A cache step's own failure or timeout is only a warning: the job runs cold
+  // or simply doesn't populate the cache. Two outcomes are not cache-only and
+  // still end the attempt: a cancellation, and losing the runner before the
+  // job's steps ran (the attempt is retried on a fresh agent).
+  const runCacheStep = async (p: PlannedStep): Promise<StepRunResult> => {
+    const res = await runSequence([await withCacheEnv(p)]);
+    if (res.status !== 'success' && !opts.signal?.aborted) {
+      console.warn(
+        `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} ${p.step.name} ended ` +
+          `${res.status}${res.infraErrorDetail ? ` (${res.infraErrorDetail})` : ''}; ` +
+          'continuing, cache steps never fail a job',
+      );
+    }
+    return res;
+  };
+
+  const runAll = async (): Promise<StepRunResult> => {
+    const ran: StepRunResult[] = [];
+    for (const [i, p] of restoreSteps.entries()) {
+      const res = await runCacheStep(p);
+      ran.push(res);
+      if (opts.signal?.aborted || res.status === 'infra_error') {
+        markStepsSkipped(
+          deps,
+          runId,
+          [...restoreSteps.slice(i + 1), ...jobSteps, ...saveSteps],
+          persistMeta,
+        );
+        return combineResults(res, ran);
+      }
+    }
+    const main = await runSequence(jobSteps);
+    ran.push(main);
+    if (saveSteps.length === 0) return combineResults(main, ran);
+    if (main.status !== 'success' || opts.signal?.aborted) {
+      markStepsSkipped(deps, runId, saveSteps, persistMeta);
+      return combineResults(main, ran);
+    }
+    for (const [i, p] of saveSteps.entries()) {
+      const res = await runCacheStep(p);
+      ran.push(res);
+      if (opts.signal?.aborted) {
+        markStepsSkipped(deps, runId, saveSteps.slice(i + 1), persistMeta);
+        return combineResults(res, ran);
+      }
+    }
+    return combineResults(main, ran);
+  };
+
+  let result: StepRunResult;
+  try {
+    result = await runAll();
   } finally {
     if (lease) {
       await lease.release();
@@ -766,6 +874,50 @@ async function runJobInstance(
   );
 
   return { instance, result };
+}
+
+/**
+ * Combine the sequences one job attempt ran. Status and failure detail come
+ * only from `decisive`, so a failed cache step contributes its step record and
+ * billed time without changing whether the job passed.
+ */
+function combineResults(decisive: StepRunResult, ran: StepRunResult[]): StepRunResult {
+  if (ran.length === 1) return decisive;
+  return {
+    ...decisive,
+    stepResults: ran.flatMap((r) => r.stepResults),
+    activeSecondsBilled: ran.reduce((sum, r) => sum + r.activeSecondsBilled, 0),
+  };
+}
+
+/** Close out planned steps that will never run so they don't sit `queued`. */
+function markStepsSkipped(
+  deps: StepRunnerDeps,
+  runId: string,
+  steps: PlannedStep[],
+  meta: StepPersistMeta,
+): void {
+  for (const p of steps) {
+    try {
+      deps.stmts.upsertFinalizeRunStep.run(
+        runId,
+        p.stepIndex,
+        `${p.namePrefix}${p.step.name}`,
+        'skipped',
+        null,
+        null,
+        null,
+        meta.jobId ?? null,
+        meta.matrixKey ?? null,
+      );
+    } catch (err) {
+      console.warn(
+        `[finalize-job-runner] skip-step persist failed run=${runId} step=${p.stepIndex}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
 }
 
 /**
@@ -832,11 +984,43 @@ export async function runJobPhase(
     const mergedEnv = resolveMergedEnv(instance, opts.env);
     const groupLabel = instance.matrix.group ?? instance.matrixKey;
     const namePrefix = `${instance.jobId} / ${groupLabel} / `;
+    // Cache steps need the /finalize-cache volume, which only container jobs
+    // mount. Their scripts read AH_CACHE_* at run time, so they skip the
+    // ${VAR} substitution user steps get.
+    const cacheEntries = isContainerRunsOn(instance.runsOn) ? (instance.cache ?? []) : [];
+    for (const entry of cacheEntries) {
+      stepIndex += 1;
+      planned.push({
+        instance,
+        step: {
+          name: cacheStepName('restore', entry),
+          run: buildRestoreScript(),
+          timeoutMinutes: CACHE_STEP_TIMEOUT_MINUTES,
+          cache: { action: 'restore', entry },
+        },
+        stepIndex,
+        namePrefix,
+      });
+    }
     for (const rawStep of instance.steps) {
       stepIndex += 1;
       planned.push({
         instance,
         step: toCiStep(rawStep, mergedEnv),
+        stepIndex,
+        namePrefix,
+      });
+    }
+    for (const entry of cacheEntries) {
+      stepIndex += 1;
+      planned.push({
+        instance,
+        step: {
+          name: cacheStepName('save', entry),
+          run: buildSaveScript(entry),
+          timeoutMinutes: CACHE_STEP_TIMEOUT_MINUTES,
+          cache: { action: 'save', entry },
+        },
         stepIndex,
         namePrefix,
       });
