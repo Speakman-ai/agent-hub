@@ -300,6 +300,7 @@ import createMeHubRoutes from './routes/me-hub.js';
 import createMeNotificationPreferencesRoutes from './routes/me-notification-preferences.js';
 import createMeBrowserProfilesRoutes from './routes/me-browser-profiles.js';
 import createApprovalsRoutes from './routes/approvals.js';
+import createDesktopRuntimeRoutes from './routes/desktop-runtime.js';
 import { cancelOrphanedApprovalRequests } from './approvals-store.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
 import createGoogleOAuthRoutes from './routes/google-oauth.js';
@@ -2535,6 +2536,7 @@ app.use(createMeHubRoutes(routeDeps));
 app.use(createMeNotificationPreferencesRoutes(routeDeps));
 app.use(createMeBrowserProfilesRoutes(routeDeps));
 app.use(createApprovalsRoutes());
+app.use(createDesktopRuntimeRoutes());
 // PR-env settings/provisioning routes and the `pr_env_config` DB row
 // were removed as part of the "Strip PR Environments" epic (88367984).
 // Worktree previews (per-session, host-side) are the supported preview

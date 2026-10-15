@@ -26,6 +26,7 @@ import { resolveGoogleOAuthConfig } from './google-oauth-config.js';
 import { resolveGoogleChatEventsConfig } from './google-chat-events-config.js';
 import { normalizeSmtpConfig } from './smtp-config.js';
 import { coerceSessionEnvAdapterMode } from './session-env/sysbox-capability.js';
+import { coerceDesktopRuntimeMode } from './desktop/desktop-runtime.js';
 import { CODEX_DEFAULT_MODEL } from './codex-model-capability.js';
 import { MUSE_DEFAULT_MODEL, MUSE_MODELS, applyMuseSpawnEnv } from './muse-cli.js';
 import { sanitizeSpawnPythonEnv } from './spawn-python-env.js';
@@ -617,6 +618,13 @@ const config: AppConfig = {
   // silently. See server/session-env/sysbox-capability.ts.
   sessionEnvAdapter: coerceSessionEnvAdapterMode(
     resolve('AGENT_HUB_SESSION_ENV_ADAPTER', 'sessionEnvAdapter', 'auto'),
+  ),
+
+  // Backend for agent desktops (the `computer` tool). 'auto' takes Firecracker
+  // when its backend is registered, else a container. See
+  // server/desktop/desktop-runtime-selection.ts.
+  desktopRuntime: coerceDesktopRuntimeMode(
+    resolve('AGENT_HUB_DESKTOP_RUNTIME', 'desktopRuntime', 'auto'),
   ),
 
   // Card → Done on push. Default false: a successful GitHub push parks the

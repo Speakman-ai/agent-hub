@@ -5458,6 +5458,59 @@ components:
           type: string
       required:
         - error
+    DesktopRuntimeStatus:
+      type: object
+      properties:
+        available:
+          type: boolean
+          description: False when the configured backend cannot run on this host (fail closed).
+        configured:
+          type: string
+          enum:
+            - auto
+            - container
+            - firecracker
+          description: The `desktopRuntime` config value.
+        kind:
+          type: string
+          nullable: true
+          enum:
+            - container
+            - firecracker
+            - null
+          description: Active backend; null when unavailable.
+        containerPlacement:
+          type: string
+          nullable: true
+          enum:
+            - runner-fleet
+            - hub-docker
+            - null
+          description: Where container desktops run; null for Firecracker or when unavailable.
+        reason:
+          type: string
+          description: Why this backend was chosen, or why none was.
+        firecrackerRegistered:
+          type: boolean
+        screen:
+          type: object
+          properties:
+            width:
+              type: integer
+            height:
+              type: integer
+          required:
+            - width
+            - height
+      required:
+        - available
+        - configured
+        - kind
+        - containerPlacement
+        - reason
+        - firecrackerRegistered
+        - screen
+      description: Agent desktop runtime backend for this host.
     DevServerWizardErrorResponse:
       type: object
       properties:
@@ -30569,6 +30622,18 @@ paths:
           description: 'Import could not proceed. `error: "design_import_failed"` (e.g. no eligible target agent in a linked project) is terminal; `error: "import_in_progress"` (`retryable: true`) means a concurrent import holds the lock — retry shortly.'
         "503":
           description: Worktree provisioning is not wired.
+  /api/desktop/runtime:
+    get:
+      tags:
+        - Desktop
+      summary: Report the active agent desktop runtime backend and why
+      responses:
+        "200":
+          description: Backend selection for this host.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DesktopRuntimeStatus"
   /api/projects/{projectId}/dev-server/setup-draft:
     get:
       tags:

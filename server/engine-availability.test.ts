@@ -73,6 +73,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     personalOAuth: null,
     apiKey: null,
     slackWebhookUrl: null,
+    desktopRuntime: 'auto',
     browserMaxConcurrentContexts: 1,
     browserIdleTimeoutMs: 60000,
     browserAllowDownloads: false,

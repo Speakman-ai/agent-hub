@@ -49,6 +49,7 @@ function makeCfg(): AppConfig {
     codexApiKey: null,
     cursorApiKey: null,
     slackWebhookUrl: null,
+    desktopRuntime: 'auto',
     browserMaxConcurrentContexts: 3,
     browserIdleTimeoutMs: 300_000,
     browserAllowDownloads: false,

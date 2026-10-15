@@ -4088,6 +4088,13 @@ export interface AppConfig {
    */
   sessionEnvAdapter: 'auto' | 'host' | 'sysbox' | 'container' | 'firecracker';
   /**
+   * Backend for agent desktops. `auto` picks `firecracker` when its backend is
+   * registered, else `container`. An explicit `firecracker` fails closed when
+   * unavailable. Configure via `desktopRuntime` in config.json or env
+   * `AGENT_HUB_DESKTOP_RUNTIME`.
+   */
+  desktopRuntime: 'auto' | 'container' | 'firecracker';
+  /**
    * When false (the default), a successful push to GitHub parks the linked
    * kanban card in **Review**; only the PR-merge moves it to **Done**. This is
    * the merge-gated §15 Finalize flow (push → Review, merge → Done) and encodes
