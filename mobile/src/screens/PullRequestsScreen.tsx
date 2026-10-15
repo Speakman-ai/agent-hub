@@ -41,6 +41,7 @@ import {
   startPrEnvironmentPoller,
 } from '@shared/utils/prPreview';
 import { prAgentReviewProgress } from '@shared/utils/prAgentReview';
+import { updateBranchButtonState } from '@shared/utils/prUpdateBranch';
 import {
   appendPrPage,
   canLoadMore,
@@ -341,6 +342,10 @@ export function PrDetail({
   const [editOpen, setEditOpen] = useState(false);
   const [reopening, setReopening] = useState(false);
   const [reverting, setReverting] = useState(false);
+  const [updatingBranch, setUpdatingBranch] = useState(false);
+  const updateBranch = updateBranchButtonState(pr ?? null, {
+    isNative: detail?.source === 'agenthub',
+  });
   const [togglingAutoMerge, setTogglingAutoMerge] = useState(false);
   // The review currently being dismissed (drives the dismiss sheet), or null.
   const [dismissTarget, setDismissTarget] = useState<any>(null);
@@ -529,6 +534,18 @@ export function PrDetail({
       setReverting(false);
     }
   }, [projectId, prNumber, onRefresh]);
+  const handleUpdateBranch = useCallback(async () => {
+    if (updatingBranch || !prNumber) return;
+    setUpdatingBranch(true);
+    try {
+      await api.updatePullBranch(projectId, prNumber);
+      onRefresh();
+    } catch (err: any) {
+      Alert.alert('Update branch failed', err?.message || 'Failed to update branch');
+    } finally {
+      setUpdatingBranch(false);
+    }
+  }, [projectId, prNumber, updatingBranch, onRefresh]);
   const handleToggleAutoMerge = useCallback(async () => {
     if (togglingAutoMerge || !prNumber) return;
     const next = !caps.autoMergeEnabled;
@@ -838,6 +855,30 @@ export function PrDetail({
         {caps.canEdit ? (
           <TouchableOpacity style={styles.prActionButton} onPress={() => setEditOpen(true)}>
             <Text style={styles.prActionButtonText}>Edit</Text>
+          </TouchableOpacity>
+        ) : null}
+        {updateBranch.visible ? (
+          <TouchableOpacity
+            style={[
+              styles.prActionButton,
+              (updatingBranch || !updateBranch.enabled) && styles.resolveButtonDisabled,
+            ]}
+            onPress={handleUpdateBranch}
+            disabled={updatingBranch || !updateBranch.enabled}
+            accessibilityLabel={updateBranch.label}
+            accessibilityHint={updateBranch.reason}
+            accessibilityState={{
+              disabled: updatingBranch || !updateBranch.enabled,
+              busy: updatingBranch,
+            }}
+          >
+            {updatingBranch ? (
+              <ActivityIndicator size="small" color={colors.sky400} />
+            ) : (
+              <Text style={[styles.prActionButtonText, { color: colors.sky400 }]}>
+                {updateBranch.label}
+              </Text>
+            )}
           </TouchableOpacity>
         ) : null}
         {caps.canReopen ? (

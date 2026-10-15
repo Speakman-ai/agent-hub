@@ -521,6 +521,35 @@ describe('native PR review lifecycle', () => {
     expect(again.body.error).toMatch(/already reverted/i);
   });
 
+  it('update-branch: merges main into the head, surfaces behind_by, refuses when current', async () => {
+    const { id, branch, work } = await hostedProjectWithBranch();
+    const bare = gitHostRepoPath(id);
+    await postPulls(id).send({ headBranch: branch, title: 'Adds b' }).expect(201);
+
+    // Head already contains main → nothing to update.
+    const current = await authedPost(`/api/projects/${id}/pulls/1/update-branch`).expect(409);
+    expect(current.body.error).toMatch(/already contains/);
+
+    git(work, 'checkout main');
+    writeFileSync(path.join(work, 'c.txt'), 'c\n');
+    git(work, 'add c.txt');
+    git(work, 'commit -m "add c on main"');
+    git(work, 'push origin main');
+
+    const before = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(before.body.pr).toMatchObject({ behind_by: 1, mergeable: true });
+
+    const res = await authedPost(`/api/projects/${id}/pulls/1/update-branch`).expect(200);
+    expect(git(bare, `rev-parse refs/heads/${branch}`)).toBe(res.body.headSha);
+    expect(res.body.pr).toMatchObject({ status: 'open', head_sha: res.body.headSha });
+    expect(git(bare, `ls-tree --name-only ${res.body.headSha}`).split('\n')).toEqual(
+      expect.arrayContaining(['a.txt', 'b.txt', 'c.txt']),
+    );
+
+    const after = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(after.body.pr.behind_by).toBe(0);
+  });
+
   it('request-review flags the PR; a verdict clears it; reviews render in detail', async () => {
     const { id, branch } = await hostedProjectWithBranch();
     await postPulls(id).send({ headBranch: branch, title: 'Needs review' }).expect(201);

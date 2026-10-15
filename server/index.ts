@@ -1222,6 +1222,14 @@ const nativePr = createNativePrService({
     requestReleaseGateSweep('base-branch-moved');
     await notifyMirrorPush(project, [`refs/heads/${baseBranch}`], { broadcast });
   },
+  // "Update branch" merged the base into a PR head via `update-ref`, so no
+  // post-receive hook fired. Rerun PR CI, rebuild the PR environment, and
+  // mirror the head. No auto-review: the new commit only brings in the base.
+  afterHeadBranchMoved: async ({ project, row }) => {
+    void maybeRunPrCi(project, row, { stmts: stmts!, broadcast });
+    syncNativePrEnvironment(project, row.number);
+    await notifyMirrorPush(project, [`refs/heads/${row.head_branch}`], { broadcast });
+  },
   // PR head changed (created or reused with a new sha): if Finalize
   // already fully validated this exact sha the PR inherits that result;
   // otherwise run PR-level CI so the PR still shows check status. Covers

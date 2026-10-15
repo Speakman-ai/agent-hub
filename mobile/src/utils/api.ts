@@ -1907,6 +1907,12 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ localDateTime, timeZone }),
     }),
+  // Merge the base branch into the PR head (GitHub's "Update branch").
+  updatePullBranch: (projectId: any, number: any) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/update-branch`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   // Undo a merged PR: commits the inverse on the base branch and pushes the
   // moved branch to the GitHub mirror. Adds a commit; no history rewrite.
   revertPull: (projectId: any, number: any) =>

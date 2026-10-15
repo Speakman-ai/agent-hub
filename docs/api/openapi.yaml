@@ -45906,6 +45906,73 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/pulls/{number}/update-branch:
+    post:
+      tags:
+        - Projects
+      summary: Update a native pull request branch with its base
+      description: "GitHub's \"Update branch\": merges the base branch into the PR head branch in the hosted repo (a merge commit on the head; the base is untouched), then mirrors the head and reruns PR-level CI. Open Agent Hub-hosted PRs only. Refused when the merge would conflict or the head already contains the base."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: number
+          in: path
+      responses:
+        "200":
+          description: The new head sha and the updated PR row.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  headSha:
+                    type: string
+                  pr:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - headSha
+                  - pr
+        "400":
+          description: Not Hub-hosted or invalid PR number.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project/PR, or the base/head branch is gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: PR is not open, the head already contains the base, the merge conflicts, or the head moved during the update.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/pulls/{number}/preview/start:
     post:
       tags:

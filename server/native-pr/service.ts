@@ -80,6 +80,7 @@ async function ciEmptyStateNote(repoPath: string, sha: string): Promise<string |
   return 'Checks have not started yet for the head commit.';
 }
 import { mergePullRequest, type MergeMethod } from './merge.js';
+import { commitsBehind, updatePullRequestBranch } from './update-branch.js';
 import { tryAutoMergeArmedNativePr } from './auto-merge-armed.js';
 import { revertPullRequest } from './revert.js';
 import { handleCardOnMerge } from './card-on-merge.js';
@@ -104,6 +105,12 @@ export interface NativePrServiceDeps {
     sha: string;
     reason: 'merge' | 'revert';
   }) => Promise<void>;
+  /**
+   * Fired after "Update branch" moves a PR head with `update-ref`. Like
+   * afterBaseBranchMoved, no post-receive hook fires, so this is what mirrors
+   * the head and reruns PR-level CI. Fired and forgotten.
+   */
+  afterHeadBranchMoved?: (args: { project: Project; row: PullRequestRow }) => Promise<void>;
   /**
    * Fired when a PR is created or an open PR is reused with a fresh head sha.
    * Fire-and-forget. The reason lets consumers distinguish PR creation from a
@@ -290,6 +297,15 @@ export interface NativePrService {
     | { ok: true; mergedSha: string }
     | { ok: false; status: number; error: string; mergeable?: false }
   >;
+  /**
+   * GitHub's "Update branch": merge the base branch into the PR head in the
+   * hosted repo. 409 on conflict / up to date / non-open PR.
+   */
+  updateBranch(args: {
+    project: Project;
+    number: number;
+    actor: string;
+  }): Promise<{ ok: true; headSha: string } | { ok: false; status: number; error: string }>;
   /**
    * Undo a merged PR by committing its inverse on the base branch. Adds a
    * commit rather than rewriting history — see revert.ts for why. Once only:
@@ -906,6 +922,7 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       const row = requirePr(stmts, project, number);
 
       let mergeable: boolean | null = null;
+      let behindBy: number | null = null;
       let stat = { additions: 0, deletions: 0, changedFiles: 0 };
       let commits: PrCommitEntry[] = [];
       let headSha: string | null = row.status === 'open' ? null : row.head_sha;
@@ -921,6 +938,11 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
           mergeable = tree.mergeable;
         } catch {
           mergeable = null; // computation failed — suppress the badge
+        }
+        try {
+          behindBy = await commitsBehind(repoPath, baseSha, liveHead);
+        } catch {
+          behindBy = null;
         }
         try {
           [stat, commits] = await Promise.all([
@@ -963,6 +985,7 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         source: 'agenthub' as const,
         pr: summarize(project.id, row, {
           mergeable,
+          behind_by: behindBy,
           additions: stat.additions,
           deletions: stat.deletions,
           changed_files: stat.changedFiles,
@@ -1096,6 +1119,49 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       }
 
       return { ok: true as const, mergedSha: result.mergedSha };
+    },
+
+    async updateBranch({ project, number, actor }) {
+      const repoPath = requireHostedRepo(project);
+      const row = requirePr(stmts, project, number);
+      if (row.status !== 'open') {
+        return { ok: false as const, status: 409, error: `PR #${number} is ${row.status}` };
+      }
+      const result = await updatePullRequestBranch({
+        repoPath,
+        baseBranch: row.base_branch,
+        headBranch: row.head_branch,
+        actor,
+      });
+      if (!result.ok) {
+        if (result.reason === 'missing_ref') {
+          return { ok: false as const, status: 404, error: result.detail };
+        }
+        if (result.reason === 'conflict') {
+          return { ok: false as const, status: 409, error: `merge conflict: ${result.detail}` };
+        }
+        return { ok: false as const, status: 409, error: result.detail };
+      }
+
+      stmts.updatePullRequestHeadSha.run(result.headSha, Date.now(), row.id);
+      const updated =
+        (stmts.getPullRequestByNumber.get(project.id, number) as PullRequestRow | undefined) ?? row;
+      broadcast({
+        type: 'native_pr_update',
+        projectId: project.id,
+        prNumber: number,
+        action: 'updated',
+      });
+      if (deps.afterHeadBranchMoved) {
+        void deps.afterHeadBranchMoved({ project, row: updated }).catch((err: unknown) => {
+          console.warn(
+            `[native-pr] afterHeadBranchMoved hook failed for ${project.id}#${number}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
+      }
+      return { ok: true as const, headSha: result.headSha };
     },
 
     async revert({ project, number, actor }) {

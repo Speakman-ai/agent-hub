@@ -2276,6 +2276,9 @@ export const api = {
   // moved branch to the GitHub mirror. Adds a commit; never rewrites history.
   revertNativePr: (projectId: any, number: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/revert`, { method: 'POST' }),
+  // Merge the base branch into the PR head (GitHub's "Update branch").
+  updateNativePrBranch: (projectId: any, number: any) =>
+    fetchJSON(`/projects/${projectId}/pulls/${number}/update-branch`, { method: 'POST' }),
   // kind: 'human' flips the human-review flag only; 'agent' dispatches the
   // project Reviewer agent only; 'both' (default) does both (legacy behavior).
   requestNativePrReview: (projectId: any, number: any, requested: any = true, kind: any = 'both') =>

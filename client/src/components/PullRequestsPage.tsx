@@ -20,6 +20,7 @@ import {
   Zap,
   ZapOff,
   Undo2,
+  GitBranch,
 } from 'lucide-react';
 import { Pencil, Check, X, Sparkles, SquareKanban, Layers } from 'lucide-react';
 import { api } from '../utils/api';
@@ -53,6 +54,7 @@ import {
   startPrEnvironmentPoller,
 } from '@shared/utils/prPreview';
 import { prAgentReviewProgress } from '@shared/utils/prAgentReview';
+import { updateBranchButtonState } from '@shared/utils/prUpdateBranch';
 import GitHubRepoChrome from './github/GitHubRepoChrome';
 import { parsePrSearchQuery, prMatchesMerged, prMatchesTerms } from './github/prSearchQuery';
 
@@ -620,6 +622,7 @@ function PrDetail({
   const [closing, setClosing] = useState(false);
   const [reopening, setReopening] = useState(false);
   const [reverting, setReverting] = useState(false);
+  const [updatingBranch, setUpdatingBranch] = useState(false);
   const [confirmingRevert, setConfirmingRevert] = useState(false);
   const [togglingReview, setTogglingReview] = useState(false);
   const [dispatchingAgentReview, setDispatchingAgentReview] = useState(false);
@@ -837,6 +840,25 @@ function PrDetail({
       toastErr(err);
     } finally {
       setReopening(false);
+    }
+  };
+
+  const handleUpdateBranch = async () => {
+    setUpdatingBranch(true);
+    try {
+      const res = await api.updateNativePrBranch(projectId, pr.number);
+      if (onToast) {
+        onToast(
+          `Merged ${pr.base} into ${pr.head} (${String(res?.headSha || '').slice(0, 7)}).`,
+          'success',
+          5000,
+        );
+      }
+      onRefresh();
+    } catch (err: any) {
+      toastErr(err);
+    } finally {
+      setUpdatingBranch(false);
     }
   };
 
@@ -1082,6 +1104,8 @@ function PrDetail({
       ? 'No PR URL available'
       : mergeState.reason;
 
+  const updateBranch = updateBranchButtonState(pr, { isNative });
+
   const autoMergeState = autoMergeToggleState(pr, { isNative });
   const autoMergeTitle = togglingAutoMerge
     ? 'Updating auto-merge…'
@@ -1168,6 +1192,23 @@ function PrDetail({
             >
               {togglingReview ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
               {pr.review_requested ? 'Human review requested' : 'Request Human Review'}
+            </button>
+          )}
+          {updateBranch.visible && (
+            <button
+              type="button"
+              onClick={handleUpdateBranch}
+              disabled={updatingBranch || !updateBranch.enabled}
+              title={updatingBranch ? 'Updating branch…' : updateBranch.reason}
+              data-testid="pr-update-branch-button"
+              className="flex items-center gap-1.5 text-sm text-sky-300 hover:text-sky-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {updatingBranch ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <GitBranch size={14} />
+              )}
+              {updateBranch.label}
             </button>
           )}
           {isOpen && (

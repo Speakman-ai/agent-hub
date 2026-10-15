@@ -3030,6 +3030,7 @@ export interface Stmts {
   getOpenPullRequestByHeadBranch: Stmt;
   /** Refresh head_sha/title/body on reuse. Params: (head_sha, title, body, updated_at, id). */
   updatePullRequestHead: Stmt;
+  updatePullRequestHeadSha: Stmt;
   /** Title/body edit (open PRs only). Params: (title, body, updated_at, id). */
   updatePullRequestText: Stmt;
   /** Retarget an open PR's base branch (open PRs only). Params: (base_branch, updated_at, id). */

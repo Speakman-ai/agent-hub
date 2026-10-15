@@ -7836,6 +7836,11 @@ function initDb(dataDir: string): void {
     updatePullRequestHead: db.prepare(
       'UPDATE pull_requests SET head_sha = ?, title = ?, body = ?, updated_at = ? WHERE id = ?',
     ),
+    // Head-only move ("Update branch"): never rewrites title/body, so a
+    // concurrent metadata edit survives the git work that preceded it.
+    updatePullRequestHeadSha: db.prepare(
+      `UPDATE pull_requests SET head_sha = ?, updated_at = ? WHERE id = ? AND status = 'open'`,
+    ),
     // Title/body edit from the PR detail UI — open PRs only.
     updatePullRequestText: db.prepare(
       `UPDATE pull_requests SET title = ?, body = ?, updated_at = ? WHERE id = ? AND status = 'open'`,

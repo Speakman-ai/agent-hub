@@ -396,6 +396,37 @@ registerPath({
   },
 });
 
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/pulls/{number}/update-branch',
+  tags: ['Projects'],
+  summary: 'Update a native pull request branch with its base',
+  description:
+    'GitHub\'s "Update branch": merges the base branch into the PR head branch in the hosted repo (a merge commit on the head; the base is untouched), then mirrors the head and reruns PR-level CI. Open Agent Hub-hosted PRs only. Refused when the merge would conflict or the head already contains the base.',
+  request: { params: z.object({ projectId: z.string(), number: z.string() }) },
+  responses: {
+    200: {
+      description: 'The new head sha and the updated PR row.',
+      content: jsonContent(
+        z.object({ headSha: z.string(), pr: z.record(z.string(), z.unknown()) }),
+      ),
+    },
+    400: {
+      description: 'Not Hub-hosted or invalid PR number.',
+      content: jsonContent(PrErrorSchema),
+    },
+    404: {
+      description: 'Unknown project/PR, or the base/head branch is gone.',
+      content: jsonContent(PrErrorSchema),
+    },
+    409: {
+      description:
+        'PR is not open, the head already contains the base, the merge conflicts, or the head moved during the update.',
+      content: jsonContent(PrErrorSchema),
+    },
+  },
+});
+
 export const PrEnvironmentSchema = z.object({
   id: z.string(),
   projectId: z.string(),
@@ -1121,6 +1152,28 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
         });
       } catch (err: unknown) {
         sendNativeError(res, err);
+      }
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/pulls/:number/update-branch',
+    async (req: Request, res: Response) => {
+      const ctx = resolveActionContext(req, res);
+      if (!ctx) return;
+      const areq = req as AuthenticatedRequest;
+      try {
+        const result = await deps.nativePr!.updateBranch({
+          project: ctx.project,
+          number: ctx.number,
+          actor: areq.authUser ?? areq.authUserId ?? 'user',
+        });
+        if (!result.ok) return res.status(result.status).json({ error: result.error });
+        const pr = deps.stmts.getPullRequestByNumber.get(ctx.project.id, ctx.number);
+        return res.json({ headSha: result.headSha, pr });
+      } catch (err: unknown) {
+        sendNativeError(res, err);
+        return;
       }
     },
   );
